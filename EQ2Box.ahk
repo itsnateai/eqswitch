@@ -10,6 +10,7 @@
 ;   5. Save and enjoy
 ;
 ; Version 1.1
+; https://github.com/itsnateai/eqswitch
 ; =========================================================
 
 #Requires AutoHotkey v2.0
