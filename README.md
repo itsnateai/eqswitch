@@ -150,3 +150,4 @@ Built for the **Shards of Dalaya** community. Long Live Dalaya! ⚔
 ## 📜 License
 
 Do whatever you want with it. Share it, modify it, pass it to your guildmates.
+https://github.com/itsnateai/eqswitch
