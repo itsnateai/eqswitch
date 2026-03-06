@@ -10,7 +10,8 @@
 
 | Tray Menu | Settings |
 |:---:|:---:|
-| ![Tray Menu](tray.png) | ![Settings](settings.png) |
+| ![Tray Menu](tray.png) | ![Context Menu](traymenu.png) |
+| ![Settings](settings.png) |
 
 ---
 
