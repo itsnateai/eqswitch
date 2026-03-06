@@ -11,7 +11,7 @@
 | Tray Menu | Settings |
 |:---:|:---:|
 | ![Tray Menu](tray.png) | ![Context Menu](traymenu.png) |
-| ![Settings](settings.png) |
+| ![Settings](settings.png) | ![Tray Settings](traysettings.png) |
 
 ---
 
