@@ -1,0 +1,25 @@
+# EQ Switch — Git Ignore
+
+# User config (contains personal paths, don't share)
+eqbox.cfg
+
+# Personal notes file
+notes.txt
+
+# Compiled exe (built from source, not stored in git)
+# Comment this out if you want to distribute the exe via releases
+# EQ2Box.exe
+
+# Ahk2Exe compiler — not part of the project source
+Ahk2Exe.exe
+
+# AutoHotkey64 main Exe
+AutoHotkey64.exe
+
+# Windows thumbnail cache
+Thumbs.db
+desktop.ini
+
+# Any leftover temp files
+*.tmp
+*.bak
