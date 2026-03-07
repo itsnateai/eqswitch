@@ -6,9 +6,8 @@ eqbox.cfg
 # Personal notes file
 notes.txt
 
-# Compiled exe (built from source, not stored in git)
-# Comment this out if you want to distribute the exe via releases
-# EQ2Box.exe
+# Compiled exe — distribute via GitHub Releases, not tracked in git
+EQ2Box.exe
 
 # Ahk2Exe compiler — not part of the project source
 Ahk2Exe.exe
