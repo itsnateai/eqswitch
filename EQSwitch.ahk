@@ -21,6 +21,10 @@ EQ_TITLE         := "EverQuest"
 SETTINGS_OPEN    := false
 TOOLTIP_MS       := 2000
 g_multiMonState  := 0
+g_launchOneLabel := "⚔  Launch Client"
+g_launchAllLabel := "🎮  Launch Both"
+g_lastDblClick   := 0
+g_tripleClickCooldown := 0
 
 ; =========================================================
 ; HELPERS
@@ -61,6 +65,7 @@ LoadConfig() {
     global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES, RECENT_CHARS
     global EQ_SERVER, LAUNCH_DELAY, LAUNCH_FIX_DELAY, NUM_CLIENTS
     global TOGGLE_BEEP, FIX_MODE, STARTUP_ENABLED, MULTIMON_HOTKEY, MULTIMON_ENABLED
+    global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
 
     ; Migrate from old "EQ2Box" section name (pre-v1.2 rename)
     try {
@@ -101,6 +106,9 @@ LoadConfig() {
     STARTUP_ENABLED  := ReadKey("STARTUP_ENABLED",   "0")
     MULTIMON_HOTKEY  := ReadKey("MULTIMON_HOTKEY",   ">!m")
     MULTIMON_ENABLED := ReadKey("MULTIMON_ENABLED", "1")
+    LAUNCH_ONE_HOTKEY := ReadKey("LAUNCH_ONE_HOTKEY", "")
+    LAUNCH_ALL_HOTKEY := ReadKey("LAUNCH_ALL_HOTKEY", "")
+    TRIPLECLICK_LAUNCH := ReadKey("TRIPLECLICK_LAUNCH", "0")
 }
 
 SaveConfig() {
@@ -108,6 +116,7 @@ SaveConfig() {
     global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES, RECENT_CHARS
     global EQ_SERVER, LAUNCH_DELAY, LAUNCH_FIX_DELAY, NUM_CLIENTS
     global TOGGLE_BEEP, FIX_MODE, STARTUP_ENABLED, MULTIMON_HOTKEY, MULTIMON_ENABLED
+    global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
     IniWrite(EQ_EXE,           CFG_FILE, "EQSwitch", "EQ_EXE")
     IniWrite(EQ_ARGS,          CFG_FILE, "EQSwitch", "EQ_ARGS")
     IniWrite(EQ_HOTKEY,        CFG_FILE, "EQSwitch", "EQ_HOTKEY")
@@ -125,6 +134,9 @@ SaveConfig() {
     IniWrite(STARTUP_ENABLED,  CFG_FILE, "EQSwitch", "STARTUP_ENABLED")
     IniWrite(MULTIMON_HOTKEY,  CFG_FILE, "EQSwitch", "MULTIMON_HOTKEY")
     IniWrite(MULTIMON_ENABLED, CFG_FILE, "EQSwitch", "MULTIMON_ENABLED")
+    IniWrite(LAUNCH_ONE_HOTKEY, CFG_FILE, "EQSwitch", "LAUNCH_ONE_HOTKEY")
+    IniWrite(LAUNCH_ALL_HOTKEY, CFG_FILE, "EQSwitch", "LAUNCH_ALL_HOTKEY")
+    IniWrite(TRIPLECLICK_LAUNCH, CFG_FILE, "EQSwitch", "TRIPLECLICK_LAUNCH")
 }
 
 LoadConfig()
@@ -197,6 +209,48 @@ SwitchWindow(*) {
 BindHotkey(EQ_HOTKEY)
 if (MULTIMON_ENABLED = "1")
     BindMultiMonHotkey(MULTIMON_HOTKEY)
+BindLaunchHotkey(LAUNCH_ONE_HOTKEY, "one")
+BindLaunchHotkey(LAUNCH_ALL_HOTKEY, "all")
+
+BindLaunchHotkey(key, which) {
+    if (key = "")
+        return true
+    fn := (which = "one") ? LaunchOne : LaunchBoth
+    try {
+        Hotkey(key, fn, "On")
+        return true
+    } catch {
+        return false
+    }
+}
+
+FormatHotkeyDisplay(key) {
+    if (key = "")
+        return ""
+    display := StrReplace(key, "!", "Alt+")
+    display := StrReplace(display, "^", "Ctrl+")
+    display := StrReplace(display, "+", "Shift+")
+    display := StrReplace(display, "#", "Win+")
+    display := StrReplace(display, ">", "R")
+    display := StrReplace(display, "<", "L")
+    return display
+}
+
+UpdateTrayMenuLabels() {
+    global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, g_launchOneLabel, g_launchAllLabel
+    oneSuffix := FormatHotkeyDisplay(LAUNCH_ONE_HOTKEY)
+    allSuffix := FormatHotkeyDisplay(LAUNCH_ALL_HOTKEY)
+    newOne := "⚔  Launch Client" . (oneSuffix != "" ? "`t" oneSuffix : "")
+    newAll := "🎮  Launch Both" . (allSuffix != "" ? "`t" allSuffix : "")
+    if (g_launchOneLabel != newOne) {
+        try A_TrayMenu.Rename(g_launchOneLabel, newOne)
+        g_launchOneLabel := newOne
+    }
+    if (g_launchAllLabel != newAll) {
+        try A_TrayMenu.Rename(g_launchAllLabel, newAll)
+        g_launchAllLabel := newAll
+    }
+}
 
 ; =========================================================
 ; MENU HELPERS
@@ -298,8 +352,18 @@ A_IconTip := "EQ Switch"
 A_TrayMenu.Delete()
 OnMessage(0x404, TrayClick)
 TrayClick(wParam, lParam, *) {
-    global DBLCLICK_LAUNCH, MIDCLICK_NOTES
+    global DBLCLICK_LAUNCH, MIDCLICK_NOTES, TRIPLECLICK_LAUNCH
+    global g_lastDblClick, g_tripleClickCooldown
+    now := A_TickCount
     if (lParam = 0x203) {  ; WM_LBUTTONDBLCLK
+        ; Check for triple-click: double-click within 500ms of last double-click
+        if (TRIPLECLICK_LAUNCH = "1" && (now - g_lastDblClick) < 500 && (now - g_tripleClickCooldown) > 5000) {
+            g_tripleClickCooldown := now
+            g_lastDblClick := 0
+            LaunchBoth()
+            return
+        }
+        g_lastDblClick := now
         if (DBLCLICK_LAUNCH = "1")
             LaunchOne()
         else
@@ -340,7 +404,8 @@ A_TrayMenu.Add("⚙  Settings",          (*) => OpenSettings())
 A_TrayMenu.Add()
 A_TrayMenu.Add("✖  Exit",              (*) => ExitApp())
 
-; Apply bold to Launch Client + Launch Both (by text match, not position)
+; Update menu labels with hotkey text, then apply bold
+UpdateTrayMenuLabels()
 SetMenuItemsBold(A_TrayMenu.Handle, ["Launch Client", "Launch Both"])
 
 ; =========================================================
@@ -589,9 +654,10 @@ OpenNotes(*) {
             ; First-run: ask the user
             result := MsgBox(
                 "No notes file configured.`n`n" .
-                "Would you like to select an existing .txt file?`n`n" .
-                "Click 'No' to create notes.txt in the EQ Switch folder.",
-                "EQ Switch — Notes Setup", "YesNo Icon?")
+                "Yes — pick an existing .txt file`n" .
+                "No — create notes.txt in the EQ Switch folder`n" .
+                "Cancel — do nothing",
+                "EQ Switch — Notes Setup", "YesNoCancel Icon?")
             if (result = "Yes") {
                 f := FileSelect(, , "Select your notes .txt file", "Text Files (*.txt)")
                 if (f = "")
@@ -599,12 +665,13 @@ OpenNotes(*) {
                 notesPath  := f
                 NOTES_FILE := f
                 SaveConfig()
-            } else {
-                ; Create the default and save its real path so Settings shows it
+            } else if (result = "No") {
                 notesPath  := defaultPath
                 FileAppend("== EQ Notes ==`n`n", notesPath)
                 NOTES_FILE := defaultPath
                 SaveConfig()
+            } else {
+                return
             }
         }
     }
@@ -624,6 +691,7 @@ OpenSettings(*) {
     global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES, RECENT_CHARS
     global EQ_SERVER, NUM_CLIENTS, TOGGLE_BEEP, FIX_MODE, STARTUP_ENABLED
     global MULTIMON_HOTKEY, MULTIMON_ENABLED, g_version, TOOLTIP_MS
+    global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
     if SETTINGS_OPEN
         return
     SETTINGS_OPEN := true
@@ -673,7 +741,8 @@ OpenSettings(*) {
     g.AddText("xm y+4 w440 h1 0x10")
 
     g.AddText("xm y+6 Section", "Clients:")
-    clientsEdit := g.AddEdit("x+4 yp-2 w40", NUM_CLIENTS)
+    clientsEdit := g.AddEdit("x+4 yp-2 w40 Number", NUM_CLIENTS)
+    g.AddUpDown("Range1-8", NUM_CLIENTS)
     g.AddText("x+10 yp+2", "Window mode:")
     fixModes := ["maximize", "restore", "sidebyside", "multimonitor"]
     fixModeCombo := g.AddDropDownList("x+4 yp-2 w130", fixModes)
@@ -684,6 +753,11 @@ OpenSettings(*) {
     if (fixModeCombo.Value = 0)
         fixModeCombo.Choose(1)
 
+    g.AddText("xm y+6", "Launch One hotkey:")
+    launchOneHkCtrl := g.AddHotkey("x+4 yp-2 w120", LAUNCH_ONE_HOTKEY)
+    g.AddText("x+14 yp+2", "Launch All hotkey:")
+    launchAllHkCtrl := g.AddHotkey("x+4 yp-2 w120", LAUNCH_ALL_HOTKEY)
+
     dblClickChk := g.AddCheckbox("xm y+6", "Tray double-click launches client")
     dblClickChk.Value := (DBLCLICK_LAUNCH = "1") ? 1 : 0
     startupChk := g.AddCheckbox("x+20 yp", "Run at Windows startup")
@@ -691,9 +765,16 @@ OpenSettings(*) {
 
     midClickChk := g.AddCheckbox("xm y+4", "Tray middle-click opens notes")
     midClickChk.Value := (MIDCLICK_NOTES = "1") ? 1 : 0
+    tripleClickChk := g.AddCheckbox("x+20 yp", "Tray triple-click launches all clients")
+    tripleClickChk.Value := (TRIPLECLICK_LAUNCH = "1") ? 1 : 0
 
     g.AddButton("xm y+6 w130 h24", "🖥 Desktop Shortcut").OnEvent("Click", CreateDesktopShortcut)
-    g.AddButton("x+8 yp w130 h24", "🔧 Tray Icon Settings").OnEvent("Click", (*) => Run("ms-settings:taskbar"))
+    g.AddButton("x+8 yp w130 h24", "🔧 Tray Icon Settings").OnEvent("Click", OpenTraySettings)
+
+    OpenTraySettings(*) {
+        Run("ms-settings:taskbar")
+        TrayTip("Look for 'Other system tray icons' and enable EQ Switch", "Tray Icon Settings", "Iconi")
+    }
 
     ; ── 🖥 Multi-Monitor ──────────────────────────────────
     g.AddText("xm y+10 w440 cNavy", "🖥  Multi-Monitor")
@@ -721,20 +802,24 @@ OpenSettings(*) {
     g.SetFont("s9", "Segoe UI")
     g.AddButton("x+3 yp w30 h24", "...").OnEvent("Click", (*) => BrowseNotes(notesEdit))
 
-    ; ── 📋 Backup & Profiles ─────────────────────────────
+    ; ── 📋 Character Config Backup ──────────────────────
     g.SetFont("s8", "Segoe UI")
-    g.AddText("xm y+10 w440 cNavy", "📋  Backup & Profiles")
+    g.AddText("xm y+10 w440 cNavy", "📋  Character Config Backup")
     g.AddText("xm y+3 w440 h1 0x10")
-    ; Character row
-    g.AddText("xm y+4", "Char:")
+
+    ; ─ Single Character ─
+    g.AddText("xm y+4 w440 cGray", "── Single Character ─────────────────────────")
+    g.AddText("xm y+3", "Character:")
     recentList := (RECENT_CHARS != "") ? StrSplit(RECENT_CHARS, "|") : []
     charCombo  := g.AddComboBox("x+4 yp-2 w140", recentList)
     if (recentList.Length > 0)
         charCombo.Choose(1)
     g.AddButton("x+4 yp w60 h20", "Backup").OnEvent("Click", (*) => DoBackup(charCombo.Text))
     g.AddButton("x+3 yp w60 h20", "Restore").OnEvent("Click", (*) => DoRestore(charCombo.Text))
-    ; Profile row
-    g.AddText("xm y+4", "Profile:")
+
+    ; ─ Profiles (saved groups) ─
+    g.AddText("xm y+6 w440 cGray", "── Profiles (saved character groups) ───────")
+    g.AddText("xm y+3", "Profile:")
     profileNames := GetProfileNames()
     profileDropdown := g.AddDropDownList("x+4 yp-2 w110", profileNames)
     g.AddButton("x+3 yp w40 h20", "Load").OnEvent("Click", (*) => DoLoadProfile(profileDropdown, charCombo))
@@ -744,7 +829,10 @@ OpenSettings(*) {
     if (profileDropdown.Value > 0)
         UpdateProfileDisplay(profileDropdown, profileCharsText)
     profileDropdown.OnEvent("Change", (*) => UpdateProfileDisplay(profileDropdown, profileCharsText))
-    g.AddButton("xm y+2 w160 h20", "Backup All in Profile").OnEvent("Click", (*) => DoBackupAll(profileDropdown))
+
+    ; ─ Batch Operations ─
+    g.AddText("xm y+4 w440 cGray", "── Batch (all characters in profile) ──────")
+    g.AddButton("xm y+3 w160 h20", "Backup All in Profile").OnEvent("Click", (*) => DoBackupAll(profileDropdown))
     g.AddButton("x+6 yp w160 h20", "Restore All in Profile").OnEvent("Click", (*) => DoRestoreAll(profileDropdown))
     g.SetFont("s9", "Segoe UI")
 
@@ -803,7 +891,7 @@ OpenSettings(*) {
         h.MarginY := 10
 
         h.SetFont("s10 Bold", "Segoe UI")
-        h.AddText("w420 c0xAA3300", "⌨  Window Switch Hotkey")
+        h.AddText("w420 c0xAA3300", "⚔  Window Switch Hotkey")
         h.SetFont("s9", "Segoe UI")
         h.AddText("w420 y+4",
             "The main feature. Set a key (e.g. \ or F12) that cycles between your open EQ windows. "
@@ -821,13 +909,18 @@ OpenSettings(*) {
         h.AddText("w420 y+10 cNavy", "🎮  Launch & Tray Options")
         h.SetFont("s9", "Segoe UI")
         h.AddText("w420 y+4",
-            "Clients — how many EQ windows to launch at once (max 8).`n"
+            "Clients — how many EQ windows to launch at once (1–8).`n"
             . "Window mode — how windows are arranged after launch:`n"
-            . "  • maximize — all windows fullscreen on primary monitor`n"
-            . "  • restore — all windows in their default/restored size`n"
+            . "  • maximize — all fullscreen on primary monitor`n"
+            . "  • restore — default/restored window size`n"
             . "  • sidebyside — split left/right on primary monitor`n"
-            . "  • multimonitor — one window per monitor, maximized`n"
-            . "Desktop Shortcut — creates a shortcut to EQSwitch on your Desktop.")
+            . "  • multimonitor — one window per monitor, maximized`n`n"
+            . "Launch One / Launch All hotkeys — global shortcuts to launch clients from anywhere.`n`n"
+            . "Tray double-click — launches a single client.`n"
+            . "Tray triple-click — launches all clients (off by default, 5s cooldown).`n"
+            . "Tray middle-click — opens your notes file.`n"
+            . "Desktop Shortcut — creates an EQSwitch shortcut on your Desktop.`n"
+            . "Tray Icon Settings — opens Windows settings to pin EQSwitch to the taskbar tray.")
 
         h.SetFont("s10 Bold", "Segoe UI")
         h.AddText("w420 y+10 cNavy", "🖥  Multi-Monitor")
@@ -838,18 +931,31 @@ OpenSettings(*) {
             . "or stack them all back on the primary. Uncheck to disable.")
 
         h.SetFont("s10 Bold", "Segoe UI")
-        h.AddText("w420 y+10 cNavy", "📋  Backup & Profiles")
+        h.AddText("w420 y+10 cNavy", "🎯  Gina & Notes")
         h.SetFont("s9", "Segoe UI")
         h.AddText("w420 y+4",
-            "Character — type or pick a recent character name.`n"
-            . "  Backup — copies that character's UI and settings files to your Desktop.`n"
-            . "  Restore — copies them back from your Desktop into the EQ folder.`n`n"
-            . "Profile — a saved group of characters (e.g. 'Raid Duo', 'Farm Team').`n"
-            . "  Load — fills the character dropdown with the profile's characters.`n"
+            "Gina path — path to Gina.exe (the EQ trigger/audio overlay tool).`n"
+            . "Notes file — a .txt file for your personal EQ notes. "
+            . "Leave blank and EQSwitch will offer to create one on first use.")
+
+        h.SetFont("s10 Bold", "Segoe UI")
+        h.AddText("w420 y+10 cNavy", "📋  Character Config Backup")
+        h.SetFont("s9", "Segoe UI")
+        h.AddText("w420 y+4",
+            "Backs up your character UI/keybind config files (UI_Name_server.ini "
+            . "and Name_server.ini) to and from your Desktop.`n`n"
+            . "Single Character:`n"
+            . "  Character — type or pick a recent character name.`n"
+            . "  Backup — copies that character's config files to your Desktop.`n"
+            . "  Restore — copies them back from Desktop into the EQ folder.`n`n"
+            . "Profiles (saved character groups):`n"
+            . "  A profile is a named group of characters (e.g. 'Raid Duo', 'Farm Team').`n"
+            . "  Load — populates the character dropdown with the profile's characters.`n"
             . "  Save As — saves your current recent characters as a new profile.`n"
-            . "  Delete — removes the selected profile.`n"
-            . "  Backup All — backs up every character in the profile to Desktop.`n"
-            . "  Restore All — restores every character in the profile from Desktop.")
+            . "  Delete — removes the selected profile.`n`n"
+            . "Batch Operations:`n"
+            . "  Backup All — backs up config files for every character in the profile.`n"
+            . "  Restore All — restores config files for every character from Desktop.")
 
         h.AddText("w420 y+10 h1 0x10")
         h.AddButton("w80 h26 y+6 Default", "Close").OnEvent("Click", (*) => h.Destroy())
@@ -1133,9 +1239,12 @@ OpenSettings(*) {
         global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES
         global EQ_SERVER, NUM_CLIENTS, TOGGLE_BEEP, FIX_MODE, STARTUP_ENABLED
         global MULTIMON_HOTKEY, MULTIMON_ENABLED, TOOLTIP_MS
+        global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
 
         newHotkey := hotkeyCtrl.Value
         newMultimonHk := multimonHkCtrl.Value
+        newLaunchOneHk := launchOneHkCtrl.Value
+        newLaunchAllHk := launchAllHkCtrl.Value
 
         ; Unbind the old hotkeys
         HotIfWinActive("ahk_exe eqgame.exe")
@@ -1143,6 +1252,10 @@ OpenSettings(*) {
         HotIfWinActive()
         if (MULTIMON_HOTKEY != "")
             try Hotkey(MULTIMON_HOTKEY, "Off")
+        if (LAUNCH_ONE_HOTKEY != "")
+            try Hotkey(LAUNCH_ONE_HOTKEY, "Off")
+        if (LAUNCH_ALL_HOTKEY != "")
+            try Hotkey(LAUNCH_ALL_HOTKEY, "Off")
 
         ; Validate EQ path (non-blocking warning)
         if (exeEdit.Value != "" && !FileExist(exeEdit.Value))
@@ -1156,6 +1269,7 @@ OpenSettings(*) {
         GINA_PATH       := ginaEdit.Value
         NOTES_FILE      := notesEdit.Value
         MIDCLICK_NOTES  := midClickChk.Value ? "1" : "0"
+        TRIPLECLICK_LAUNCH := tripleClickChk.Value ? "1" : "0"
         EQ_SERVER       := serverEdit.Value
         ; Validate client count — must be 1-8
         clientVal := clientsEdit.Value
@@ -1193,8 +1307,23 @@ OpenSettings(*) {
                     "EQ Switch — Warning", "Icon!")
         }
 
+        ; Handle launch hotkeys
+        LAUNCH_ONE_HOTKEY := newLaunchOneHk
+        if (newLaunchOneHk != "") {
+            if !BindLaunchHotkey(LAUNCH_ONE_HOTKEY, "one")
+                MsgBox("The Launch One hotkey '" LAUNCH_ONE_HOTKEY "' could not be bound.",
+                    "EQ Switch — Warning", "Icon!")
+        }
+        LAUNCH_ALL_HOTKEY := newLaunchAllHk
+        if (newLaunchAllHk != "") {
+            if !BindLaunchHotkey(LAUNCH_ALL_HOTKEY, "all")
+                MsgBox("The Launch All hotkey '" LAUNCH_ALL_HOTKEY "' could not be bound.",
+                    "EQ Switch — Warning", "Icon!")
+        }
+
         SaveConfig()
         UpdateTrayTip()
+        UpdateTrayMenuLabels()
 
         ; Manage startup shortcut
         shortcutPath := A_Startup "\EQSwitch.lnk"
