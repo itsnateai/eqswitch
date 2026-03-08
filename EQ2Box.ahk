@@ -218,6 +218,7 @@ A_TrayMenu.Add()
 
 A_TrayMenu.Add("🌐  Dalaya Wiki",       (*) => Run("https://wiki.dalaya.org/"))
 A_TrayMenu.Add("🌐  Shards Wiki",       (*) => Run("https://wiki.shardsofdalaya.com/wiki/Main_Page"))
+A_TrayMenu.Add("🌐  Dalaya Fomelo",     (*) => Run("https://dalaya.org/fomelo/"))
 A_TrayMenu.Add()
 
 A_TrayMenu.Add("⚙  Settings",          (*) => OpenSettings())
