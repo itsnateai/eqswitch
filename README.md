@@ -148,7 +148,7 @@ In `eqbox.cfg` next to the exe, as a plain INI file you can read or edit manuall
 
 ## 💬 Credits
 
-Built for the **Shards of Dalaya** community. Long Live Dalaya! ⚔
+Long Live Dalaya! ⚔
 
 ---
 
