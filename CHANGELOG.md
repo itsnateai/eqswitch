@@ -2,6 +2,29 @@
 
 All notable changes to EQ Switch are documented here.
 
+## v1.7 — 2026-03-08
+
+### New Features
+- **Process Priority Management** — auto-set eqgame.exe to High (or AboveNormal) priority on launch. Configurable dropdown in Settings. Replaces need for Process Lasso
+- **CPU Affinity Control** — configure which CPU cores eqgame.exe can use via the Process Manager. Useful since EQ defaults to single-core, causing bottlenecks
+- **Process Manager** — dedicated window (tray menu or Settings) showing all running EQ processes with PID, priority, and affinity. Apply settings to already-running clients or configure for future launches
+- **Profile Quick-Launch** — profiles now store launch config (client count, window mode). New "Launch Profile" tray submenu spawns clients with profile settings in one click
+- **Per-Profile eqclient.ini** — each profile can use its own eqclient.ini. Run your main at full graphics and alts at potato mode. Custom ini is swapped in before launch, original restored after
+- **FixWindows offset tuning** — configurable top/bottom pixel offsets for fine-tuning window positioning. Top offset adjusts Y start, bottom offset extends past work area into taskbar zone
+- **Window Presets** — save/restore named window layouts (position + size for each client). Save current layout, load presets from tray menu or Settings. Goes beyond FixWindows for custom arrangements
+- **Picture-in-Picture overlay** — live preview of alt EQ windows overlaid on your screen using DWM thumbnails. Toggle via tray menu. Click-through overlay positioned in bottom-right corner
+
+### Bug Fixes & Code Quality
+- **Process Manager single-instance guard** — prevents opening multiple Process Manager windows simultaneously
+- **PiP flicker fix** — swaps DWM thumbnail sources in-place instead of destroying and recreating the overlay on every window switch
+- **LaunchOne timer consolidation** — priority and affinity now applied in a single deferred timer instead of two racing anonymous timers
+- **Path validation on save** — Settings now warns if Gina or Notes paths don't exist (matching existing EQ exe validation)
+- **ShowTip helper** — extracted repeated ToolTip+SetTimer dismiss pattern (~38 instances) into a `ShowTip(msg, ms?)` helper
+- **Font consistency** — Character Config section now uses same `s9` font as the rest of Settings
+- **Beep feature removed** — removed dead beep references; CHANGELOG updated to reflect removal
+- **.gitignore cleanup** — replaced individual exe entries with `*.exe` wildcard
+- **README compile path** — updated to reference bundled `./Ahk2Exe.exe` with Git Bash `MSYS_NO_PATHCONV=1` note
+
 ## v1.6 — 2026-03-08
 
 ### Settings GUI Redesign
@@ -17,7 +40,7 @@ All notable changes to EQ Switch are documented here.
 - **Open Log File redesign** — replaced Windows InputBox with a custom GUI using ComboBox of recent characters with inline error display
 - **Multi-monitor enable/disable** — new checkbox to enable or disable the multi-monitor toggle hotkey; when unchecked, the hotkey field is grayed out and the hotkey is unbound
 - **Desktop Shortcut button** — one-click button to create an EQSwitch shortcut on your Desktop
-- **Beep test on toggle** — checking "Beep on window switch" plays a test beep immediately so you know it works; silently fails with tooltip if no audio device
+- ~~**Beep on window switch**~~ — _removed in v1.7 (added in v1.2, caused audio device issues)_
 
 ## v1.5 — 2026-03-08
 
@@ -61,7 +84,7 @@ All notable changes to EQ Switch are documented here.
 - **Restore from Backup** — restore character files from Desktop with confirmation dialog
 - **Configurable FixWindows** — choose maximize, restore, or side-by-side window arrangement
 - **Run at Startup** — checkbox in Settings to auto-launch with Windows
-- **Sound feedback** — optional beep on window switch (off by default)
+- ~~**Sound feedback**~~ — _beep on window switch (removed in v1.7)_
 - **Server name** — configurable server name for log/ini file paths (default: dalaya)
 - **Progress tooltips** — visual feedback during multi-client launch sequence
 - **Version display** — version shown in tray tooltip and Settings title bar

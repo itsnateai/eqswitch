@@ -56,8 +56,12 @@ Right-click the tray icon to access everything:
 |---|---|
 | **⚔ Launch Client** | Launches one EQ client |
 | **🎮 Launch Both** | Launches N clients (configurable), waits for them to load, then arranges windows |
+| **🚀 Launch Profile** | Quick-launch a saved character profile with its own settings |
 | **🪟 Fix Windows** | Arranges all open EQ windows (maximize, restore, or side-by-side) |
 | **🔄 Swap Windows** | Rotates EQ window positions — swaps which client is on which monitor |
+| **🪟 Window Presets** | Save/load named window layouts |
+| **📺 Picture-in-Picture** | Toggle live preview overlay of alt EQ windows |
+| **⚡ Process Manager** | View and configure EQ process priority and CPU affinity |
 | **📜 Open Log File** | Opens an EQ character's log file in Notepad (prompts for char name) |
 | **📂 Open eqclient.ini** | Opens eqclient.ini from your EQ folder in Notepad |
 | **🎯 Open Gina** | Launches Gina trigger app (path configured in Settings) |
@@ -85,7 +89,20 @@ The core feature. Set the key you'll press in-game to switch between clients. Th
 - **Window arrangement** — what happens after launch: `maximize` (default), `restore`, `sidebyside`, or `multimonitor`
   - `multimonitor` distributes one EQ window per monitor, maximized — ideal for dual-monitor boxing
 - **Multi-monitor toggle hotkey** — a global hotkey (default: Right Alt + M) that cycles through: spread windows across monitors → swap which client is on which monitor → stack all back on primary. Works outside the game window
-- **Beep on switch** — play a short beep when switching windows (off by default)
+- **Launch One / Launch All hotkeys** — optional global hotkeys to launch clients from anywhere, even when EQ isn't focused
+- **Top/Bottom offset** — fine-tune pixel offsets for Fix Windows and multi-monitor mode. Top offset adjusts Y start; bottom offset extends into the taskbar zone
+
+### 🪟 Window Presets
+Save and restore named window layouts (position + size for each client). Save your current arrangement, then reload it anytime from the tray menu or Settings. Goes beyond Fix Windows for custom multi-window setups.
+
+### ⚡ Process Manager
+Dedicated window showing all running EQ processes with PID, priority, and CPU affinity. Configure which CPU cores eqgame.exe can use (useful since EQ defaults to a single core). Settings are applied automatically on future launches, or you can apply them to already-running clients.
+
+- **Process priority** — set eqgame.exe to Normal, AboveNormal, or High priority on launch
+- **CPU affinity** — select which CPU cores EQ can use via checkboxes
+
+### 📺 Picture-in-Picture
+Live preview overlay of your alt EQ windows using DWM thumbnails. Toggle via the tray menu. The overlay is click-through and semi-transparent, positioned in the bottom-right corner. Automatically updates when you switch between EQ windows to always show your alt client(s).
 
 ### 🎯 Open Gina
 Set the path to `Gina.exe` so the tray menu can launch it directly.
@@ -103,7 +120,7 @@ Copies your character's UI and settings files to/from your Desktop with one clic
 - `UI_CharName_server.ini` — your custom UI layout
 - `CharName_server.ini` — your character settings
 
-Type a character name or pick from the recent names dropdown, then hit **Backup** or **Restore**. Restore will prompt for confirmation before overwriting. Recent names are saved between sessions.
+Type a character name or pick from the recent names dropdown, then hit **Backup** or **Restore**. Restore will prompt for confirmation before overwriting. Recent names are saved between sessions. Use the **✕** button to remove a name from the recent list.
 
 #### Profiles
 Save your frequently-used character groups as named profiles (e.g., "Raid Duo", "Farm Team"). Profiles let you:
@@ -111,6 +128,8 @@ Save your frequently-used character groups as named profiles (e.g., "Raid Duo", 
 - **Backup All** / **Restore All** to batch-backup or restore every character in the profile at once
 - **Save As...** to save your current recent characters list as a new profile
 - **Delete** to remove a saved profile
+- **Launch Profile** — profiles store their own client count and window mode. Use the "Launch Profile" tray submenu to launch with profile-specific settings in one click
+- **Custom eqclient.ini** — each profile can use its own eqclient.ini file. Run your main at full graphics and alts at potato mode. The custom ini is swapped in before launch and the original is automatically restored after
 
 ---
 
@@ -133,10 +152,12 @@ If you'd rather run the `.ahk` directly instead of the compiled exe:
 1. Install [AutoHotkey v2](https://www.autohotkey.com/) (v2.x, **not** v1)
 2. Double-click `EQSwitch.ahk`
 
-To compile it yourself:
+To compile it yourself (using the bundled `Ahk2Exe.exe` in this folder):
 ```
-"C:\Program Files\AutoHotkey\Compiler\Ahk2Exe.exe" /in EQSwitch.ahk /icon eqbox.ico /compress 0
+./Ahk2Exe.exe /in EQSwitch.ahk /icon eqbox.ico /compress 0
 ```
+> **Git Bash users:** AHK's `/in`, `/out`, `/icon` flags get mangled by MSYS path conversion. Prefix the command with `MSYS_NO_PATHCONV=1` to fix it.
+
 The `/compress 0` flag avoids Windows Defender false positives (see FAQ). Make sure you select **AutoHotkey v2** as the base file in Ahk2Exe — using v1 will give a syntax error.
 
 ---

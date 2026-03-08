@@ -6,14 +6,8 @@ eqswitch.cfg
 # Personal notes file
 notes.txt
 
-# Compiled exe — distribute via GitHub Releases, not tracked in git
-EQSwitch.exe
-
-# Ahk2Exe compiler — not part of the project source
-Ahk2Exe.exe
-
-# AutoHotkey64 main Exe
-AutoHotkey64.exe
+# Compiled and bundled executables — distribute via GitHub Releases
+*.exe
 
 # Windows thumbnail cache
 Thumbs.db
@@ -23,6 +17,18 @@ desktop.ini
 AUDIT_TASKS.md
 TODO_LIST.md
 SCHEDULED_TASKS.md
+
+# Editor/OS artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+$RECYCLE.BIN/
+
+# Logs
+*.log
 
 # Any leftover temp files
 *.tmp
