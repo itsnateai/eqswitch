@@ -63,6 +63,7 @@ Right-click the tray icon to access everything:
 | **📝 Open Notes** | Opens your notes .txt file in Notepad |
 | **🌐 Dalaya Wiki** | Opens https://wiki.dalaya.org/ in your browser |
 | **🌐 Shards Wiki** | Opens https://wiki.shardsofdalaya.com in your browser |
+| **🌐 Dalaya Fomelo** | Opens https://dalaya.org/fomelo/ in your browser |
 | **⚙ Settings** | Opens the Options window |
 | **✖ Exit** | Closes EQ Switch |
 
@@ -127,6 +128,9 @@ Make sure you select **AutoHotkey v2** as the base file in Ahk2Exe — using v1 
 
 **Q: Windows says the file is from an unknown publisher — is it safe?**
 Yes. EQ Switch is an unsigned personal tool. Click *More info → Run anyway* on the SmartScreen prompt. You can inspect the full source code in `EQ2Box.ahk`.
+
+**Q: Windows Defender / my antivirus flagged EQ2Box.exe — is it a virus?**
+No. AutoHotkey-compiled executables are frequently flagged as false positives by heuristic AV engines because the packaging technique (bundling an interpreter + script into a single exe) is also used by some malware. The exe is compiled with `/compress 0` to minimize these detections. You can verify the source yourself in `EQ2Box.ahk`, or run it from source directly with AutoHotkey v2 installed.
 
 **Q: The switch hotkey isn't working**
 Make sure EverQuest is the **active/focused** window when you press it — the hotkey is intentionally scoped to only fire inside EQ so it doesn't conflict with other apps.
