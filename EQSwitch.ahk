@@ -15,7 +15,7 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
-g_version        := "1.4"
+g_version        := "1.5"
 CFG_FILE         := A_ScriptDir "\eqswitch.cfg"
 EQ_TITLE         := "EverQuest"
 SETTINGS_OPEN    := false
@@ -153,10 +153,16 @@ FirstRunWelcome(*) {
 ; =========================================================
 BindHotkey(key) {
     if (key = "")
-        return
+        return true
     HotIfWinActive("ahk_exe eqgame.exe")
-    try Hotkey(key, SwitchWindow, "On")
-    HotIfWinActive()
+    try {
+        Hotkey(key, SwitchWindow, "On")
+        HotIfWinActive()
+        return true
+    } catch {
+        HotIfWinActive()
+        return false
+    }
 }
 
 SwitchWindow(*) {
@@ -185,7 +191,7 @@ SwitchWindow(*) {
     }
 
     nextIndex := Mod(currentIndex, visible.Length) + 1
-    WinActivate("ahk_id " visible[nextIndex])
+    try WinActivate("ahk_id " visible[nextIndex])
 
     if (TOGGLE_BEEP = "1")
         SoundBeep(800, 50)
@@ -343,8 +349,8 @@ SetMenuItemsBold(A_TrayMenu.Handle, ["Launch Client", "Launch Both"])
 ; FIX WINDOWS
 ; =========================================================
 FixWindows(*) {
-    global EQ_TITLE, FIX_MODE, TOOLTIP_MS
-    winList := WinGetList(EQ_TITLE)
+    global FIX_MODE, TOOLTIP_MS
+    winList := GetVisibleEqWindows()
     if (winList.Length = 0) {
         ToolTip("No EverQuest windows found!")
         SetTimer(() => ToolTip(), -TOOLTIP_MS)
@@ -353,7 +359,12 @@ FixWindows(*) {
 
     if (FIX_MODE = "sidebyside") {
         ; Arrange side-by-side across the primary monitor
-        MonitorGetWorkArea(1, &mLeft, &mTop, &mRight, &mBottom)
+        try MonitorGetWorkArea(1, &mLeft, &mTop, &mRight, &mBottom)
+        catch {
+            ToolTip("⚠ Could not read monitor info")
+            SetTimer(() => ToolTip(), -TOOLTIP_MS)
+            return
+        }
         mWidth  := mRight - mLeft
         mHeight := mBottom - mTop
         count   := winList.Length
@@ -373,8 +384,8 @@ FixWindows(*) {
         Loop count {
             id := winList[A_Index]
             mon := Mod(A_Index - 1, monCount) + 1
-            MonitorGetWorkArea(mon, &mLeft, &mTop, &mRight, &mBottom)
             try {
+                MonitorGetWorkArea(mon, &mLeft, &mTop, &mRight, &mBottom)
                 WinRestore("ahk_id " id)
                 WinMove(mLeft, mTop, mRight - mLeft, mBottom - mTop, "ahk_id " id)
             }
@@ -465,8 +476,8 @@ ToggleMultiMon(*) {
             winIdx := Mod(A_Index - 1 + offset, count) + 1
             id     := visible[winIdx]
             mon    := Mod(A_Index - 1, monCount) + 1
-            MonitorGetWorkArea(mon, &mLeft, &mTop, &mRight, &mBottom)
             try {
+                MonitorGetWorkArea(mon, &mLeft, &mTop, &mRight, &mBottom)
                 WinRestore("ahk_id " id)
                 WinMove(mLeft, mTop, mRight - mLeft, mBottom - mTop, "ahk_id " id)
             }
@@ -481,8 +492,13 @@ ToggleMultiMon(*) {
 
 BindMultiMonHotkey(key) {
     if (key = "")
-        return
-    try Hotkey(key, ToggleMultiMon, "On")
+        return true
+    try {
+        Hotkey(key, ToggleMultiMon, "On")
+        return true
+    } catch {
+        return false
+    }
 }
 
 ; =========================================================
@@ -543,7 +559,8 @@ OpenGina(*) {
         SetTimer(() => ToolTip(), -TOOLTIP_MS)
         return
     }
-    Run('"' GINA_PATH '"')
+    SplitPath(GINA_PATH, , &ginaDir)
+    Run('"' GINA_PATH '"', ginaDir)
 }
 
 ; =========================================================
@@ -1050,12 +1067,14 @@ OpenSettings(*) {
         NOTES_FILE      := notesEdit.Value
         MIDCLICK_NOTES  := midClickChk.Value ? "1" : "0"
         EQ_SERVER       := serverEdit.Value
-        ; Validate client count — must be a positive integer
+        ; Validate client count — must be 1-8
         clientVal := clientsEdit.Value
         try {
             clientNum := Integer(clientVal)
             if (clientNum < 1)
                 clientNum := 1
+            else if (clientNum > 8)
+                clientNum := 8
         } catch {
             clientNum := 2
         }
@@ -1068,7 +1087,9 @@ OpenSettings(*) {
         ; Handle hotkey — skip binding if empty
         if (newHotkey != "") {
             EQ_HOTKEY := newHotkey
-            BindHotkey(EQ_HOTKEY)
+            if !BindHotkey(EQ_HOTKEY)
+                MsgBox("The switch hotkey '" EQ_HOTKEY "' could not be bound — it may be invalid or already in use.",
+                    "EQ Switch — Warning", "Icon!")
         } else {
             EQ_HOTKEY := ""
         }
@@ -1076,7 +1097,9 @@ OpenSettings(*) {
         ; Handle multimon hotkey
         if (newMultimonHk != "") {
             MULTIMON_HOTKEY := newMultimonHk
-            BindMultiMonHotkey(MULTIMON_HOTKEY)
+            if !BindMultiMonHotkey(MULTIMON_HOTKEY)
+                MsgBox("The multi-monitor hotkey '" MULTIMON_HOTKEY "' could not be bound — it may be invalid or already in use.",
+                    "EQ Switch — Warning", "Icon!")
         } else {
             MULTIMON_HOTKEY := ""
         }

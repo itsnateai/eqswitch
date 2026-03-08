@@ -2,6 +2,17 @@
 
 All notable changes to EQ Switch are documented here.
 
+## v1.5 — 2026-03-08
+
+### Bug Fixes
+- **SwitchWindow crash** — `WinActivate` now wrapped in `try` to prevent crash if an EQ window closes mid-switch (race condition)
+- **FixWindows crash on monitor disconnect** — `MonitorGetWorkArea` calls now inside `try/catch` in both `sidebyside` and `multimonitor` modes, preventing crash if monitor topology changes
+- **ToggleMultiMon crash on monitor disconnect** — same `MonitorGetWorkArea` protection applied to the multi-monitor toggle hotkey
+- **OpenGina working directory** — Gina now launches with its own directory as the working directory, preventing it from failing to find config/data files
+- **Client count cap** — `NUM_CLIENTS` is now capped at 8 (was unlimited), preventing accidental launch of hundreds of clients
+- **FixWindows consistency** — now uses `GetVisibleEqWindows()` instead of raw `WinGetList`, consistent with all other window operations and avoiding hidden windows
+- **Silent hotkey binding failure** — `BindHotkey` and `BindMultiMonHotkey` now return success/failure; Settings shows a warning dialog if a hotkey couldn't be bound (invalid key or already in use)
+
 ## v1.4 — 2026-03-08
 
 ### Bug Fixes
