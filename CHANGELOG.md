@@ -2,6 +2,23 @@
 
 All notable changes to EQ Switch are documented here.
 
+## v1.6 — 2026-03-08
+
+### Settings GUI Redesign
+- **Compact layout** — reduced vertical height significantly by using side-by-side layouts and tighter spacing
+- **Args + Server side-by-side** — launch arguments and server name now share a single row
+- **Gina + Notes side-by-side** — Gina path and Notes file share a row with inline Browse buttons
+- **Merged sections** — "Launch Options" and "Tray Icon" combined into a single "Launch & Tray Options" section
+- **Checkboxes paired** — beep/dbl-click and middle-click/startup are on shared rows
+- **Larger Browse button** — EQ exe now has a proper "Browse..." button (w66) instead of tiny "..."
+- **Backup & Profiles compact** — character and profile rows use inline labels instead of stacked
+
+### New Features
+- **Open Log File redesign** — replaced Windows InputBox with a custom GUI using ComboBox of recent characters with inline error display
+- **Multi-monitor enable/disable** — new checkbox to enable or disable the multi-monitor toggle hotkey; when unchecked, the hotkey field is grayed out and the hotkey is unbound
+- **Desktop Shortcut button** — one-click button to create an EQSwitch shortcut on your Desktop
+- **Beep test on toggle** — checking "Beep on window switch" plays a test beep immediately so you know it works; silently fails with tooltip if no audio device
+
 ## v1.5 — 2026-03-08
 
 ### Bug Fixes
