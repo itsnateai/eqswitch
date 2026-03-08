@@ -1,6 +1,6 @@
 # ⚔ EQ Switch
 
-**EQ Switch** is a lightweight Windows tray utility for **Shards of Dalaya** that lets you instantly flip between two game clients with a single keypress — plus a handful of handy tools for managing your session.
+**EQ Switch** is a lightweight Windows tray utility for **Shards of Dalaya** that lets you instantly flip between multiple game clients with a single keypress — plus a handful of handy tools for managing your session.
 
 > Built with AutoHotkey v2. No installation required. Single `.exe`, no system footprint.
 
@@ -10,17 +10,17 @@
 
 | Tray Menu | Settings |
 |:---:|:---:|
-| ![Tray Menu](tray.png) | ![Context Menu](traymenu.png) |
-| ![Settings](settings.png) | ![Tray Settings](traysettings.png) |
+| ![Tray Menu](screenshots/tray.png) | ![Context Menu](screenshots/traymenu.png) |
+| ![Settings](screenshots/settings.png) | ![Tray Settings](screenshots/traysettings.png) |
 
 ---
 
 ## 📥 Download & Install
 
-1. Go to the [**Releases**](../../releases) page and download the latest `EQ2Box.exe`
+1. Go to the [**Releases**](../../releases) page and download the latest `EQSwitch.exe`
 2. Drop it anywhere you want — your game folder, Desktop, wherever
 3. Optionally place `eqbox.ico` in the same folder for the custom tray icon
-4. Double-click `EQ2Box.exe` to run it — it lives in your system tray
+4. Double-click `EQSwitch.exe` to run it — it lives in your system tray
 5. **Right-click the tray icon → Settings** and set up your switch hotkey
 
 That's it. No installer, no registry entries, nothing left behind if you delete it.
@@ -55,8 +55,9 @@ Right-click the tray icon to access everything:
 | Menu Item | What it does |
 |---|---|
 | **⚔ Launch Client** | Launches one EQ client |
-| **🎮 Launch Both** | Launches two clients, waits for them to load, then maximizes both |
-| **🪟 Fix Windows** | Maximizes all open EQ windows (useful after alt-tab issues) |
+| **🎮 Launch Both** | Launches N clients (configurable), waits for them to load, then arranges windows |
+| **🪟 Fix Windows** | Arranges all open EQ windows (maximize, restore, or side-by-side) |
+| **🔄 Swap Windows** | Rotates EQ window positions — swaps which client is on which monitor |
 | **📜 Open Log File** | Opens an EQ character's log file in Notepad (prompts for char name) |
 | **📂 Open eqclient.ini** | Opens eqclient.ini from your EQ folder in Notepad |
 | **🎯 Open Gina** | Launches Gina trigger app (path configured in Settings) |
@@ -77,6 +78,14 @@ The core feature. Set the key you'll press in-game to switch between clients. Th
 ### ⚔ EQ Settings
 - **EQ Executable** — path to your `eqgame.exe`
 - **Launch Arguments** — defaults to `-patchme`, change if your server needs something different
+- **Server Name** — used for log/ini file paths (default: `dalaya`). Change if you play on a different server
+
+### 🎮 Launch Options
+- **Number of clients** — how many clients "Launch Both" starts (default: 2)
+- **Window arrangement** — what happens after launch: `maximize` (default), `restore`, `sidebyside`, or `multimonitor`
+  - `multimonitor` distributes one EQ window per monitor, maximized — ideal for dual-monitor boxing
+- **Multi-monitor toggle hotkey** — a global hotkey (default: Right Alt + M) that cycles through: spread windows across monitors → swap which client is on which monitor → stack all back on primary. Works outside the game window
+- **Beep on switch** — play a short beep when switching windows (off by default)
 
 ### 🎯 Open Gina
 Set the path to `Gina.exe` so the tray menu can launch it directly.
@@ -87,13 +96,21 @@ Point to any `.txt` file to use as your in-game notes. Leave blank and EQ Switch
 ### 🖱 Tray Icon
 - **Double-click launches a client** — double-clicking the tray icon launches one EQ client instead of opening Settings
 - **Middle-click opens Notepad notes** — middle-clicking the tray icon opens your notes file directly
+- **Run at Windows startup** — automatically start EQ Switch when you log in
 
-### 💾 Backup Char Files
-Copies your character's UI and settings files to your Desktop with one click:
-- `UI_CharName_dalaya.ini` — your custom UI layout
-- `CharName_dalaya.ini` — your character settings
+### 📋 Character Profiles & Backup
+Copies your character's UI and settings files to/from your Desktop with one click:
+- `UI_CharName_server.ini` — your custom UI layout
+- `CharName_server.ini` — your character settings
 
-Type a character name or pick from the recent names dropdown, then hit **Backup to Desktop**. Recent names are saved between sessions.
+Type a character name or pick from the recent names dropdown, then hit **Backup** or **Restore**. Restore will prompt for confirmation before overwriting. Recent names are saved between sessions.
+
+#### Profiles
+Save your frequently-used character groups as named profiles (e.g., "Raid Duo", "Farm Team"). Profiles let you:
+- **Load** a profile to populate the character dropdown with that group
+- **Backup All** / **Restore All** to batch-backup or restore every character in the profile at once
+- **Save As...** to save your current recent characters list as a new profile
+- **Delete** to remove a saved profile
 
 ---
 
@@ -101,11 +118,11 @@ Type a character name or pick from the recent names dropdown, then hit **Backup 
 
 | File | Purpose |
 |---|---|
-| `EQ2Box.exe` | The main program — this is all you need |
+| `EQSwitch.exe` | The main program — this is all you need |
 | `eqbox.ico` | Tray icon (optional, place next to the exe) |
-| `eqbox.cfg` | Auto-created config file, stores all your settings |
+| `eqswitch.cfg` | Auto-created config file, stores all your settings |
 | `notes.txt` | Auto-created if you use the Notes feature without setting a custom path |
-| `EQ2Box.ahk` | Source code (AutoHotkey v2) |
+| `EQSwitch.ahk` | Source code (AutoHotkey v2) |
 
 ---
 
@@ -114,23 +131,23 @@ Type a character name or pick from the recent names dropdown, then hit **Backup 
 If you'd rather run the `.ahk` directly instead of the compiled exe:
 
 1. Install [AutoHotkey v2](https://www.autohotkey.com/) (v2.x, **not** v1)
-2. Double-click `EQ2Box.ahk`
+2. Double-click `EQSwitch.ahk`
 
 To compile it yourself:
 ```
-"C:\Program Files\AutoHotkey\Compiler\Ahk2Exe.exe" /in EQ2Box.ahk /icon eqbox.ico
+"C:\Program Files\AutoHotkey\Compiler\Ahk2Exe.exe" /in EQSwitch.ahk /icon eqbox.ico /compress 0
 ```
-Make sure you select **AutoHotkey v2** as the base file in Ahk2Exe — using v1 will give a syntax error.
+The `/compress 0` flag avoids Windows Defender false positives (see FAQ). Make sure you select **AutoHotkey v2** as the base file in Ahk2Exe — using v1 will give a syntax error.
 
 ---
 
 ## ❓ FAQ
 
 **Q: Windows says the file is from an unknown publisher — is it safe?**
-Yes. EQ Switch is an unsigned personal tool. Click *More info → Run anyway* on the SmartScreen prompt. You can inspect the full source code in `EQ2Box.ahk`.
+Yes. EQ Switch is an unsigned personal tool. Click *More info → Run anyway* on the SmartScreen prompt. You can inspect the full source code in `EQSwitch.ahk`.
 
-**Q: Windows Defender / my antivirus flagged EQ2Box.exe — is it a virus?**
-No. AutoHotkey-compiled executables are frequently flagged as false positives by heuristic AV engines because the packaging technique (bundling an interpreter + script into a single exe) is also used by some malware. The exe is compiled with `/compress 0` to minimize these detections. You can verify the source yourself in `EQ2Box.ahk`, or run it from source directly with AutoHotkey v2 installed.
+**Q: Windows Defender / my antivirus flagged EQSwitch.exe — is it a virus?**
+No. AutoHotkey-compiled executables are frequently flagged as false positives by heuristic AV engines because the packaging technique (bundling an interpreter + script into a single exe) is also used by some malware. The exe is compiled with `/compress 0` to minimize these detections. You can verify the source yourself in `EQSwitch.ahk`, or run it from source directly with AutoHotkey v2 installed.
 
 **Q: The switch hotkey isn't working**
 Make sure the game is the **active/focused** window when you press it — the hotkey is intentionally scoped to only fire inside EQ so it doesn't conflict with other apps.
@@ -142,7 +159,13 @@ This was a known bug that's been fixed. If it happens, just close and reopen EQ 
 Yes! It cycles through all visible EQ windows in order. Just keep pressing your switch key to rotate through them.
 
 **Q: Where is my config saved?**
-In `eqbox.cfg` next to the exe, as a plain INI file you can read or edit manually.
+In `eqswitch.cfg` next to the exe, as a plain INI file you can read or edit manually. Note: AutoHotkey's `IniWrite` may save this file in UTF-16 encoding — this is normal and the file can still be opened in Notepad or any text editor.
+
+**Q: I updated from an older version and my settings were lost**
+Older versions used the section name `[EQ2Box]` in the config file. v1.2+ automatically migrates your settings to the new `[EQSwitch]` section on first run — no action needed.
+
+**Q: Can I configure launch delays or other advanced settings?**
+Yes. Open `eqswitch.cfg` in a text editor and look for `LAUNCH_DELAY` (ms between client launches, default 3000) and `LAUNCH_FIX_DELAY` (ms before window arrangement, default 15000).
 
 ---
 
@@ -154,5 +177,4 @@ Long Live Dalaya! ⚔
 
 ## 📜 License
 
-Do whatever you want with it. Share it, modify it, pass it to your guildmates.
-https://github.com/itsnateai/eqswitch
+MIT License — see [LICENSE](LICENSE) for details.

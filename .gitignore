@@ -1,13 +1,13 @@
 # EQ Switch — Git Ignore
 
 # User config (contains personal paths, don't share)
-eqbox.cfg
+eqswitch.cfg
 
 # Personal notes file
 notes.txt
 
 # Compiled exe — distribute via GitHub Releases, not tracked in git
-EQ2Box.exe
+EQSwitch.exe
 
 # Ahk2Exe compiler — not part of the project source
 Ahk2Exe.exe
@@ -18,6 +18,11 @@ AutoHotkey64.exe
 # Windows thumbnail cache
 Thumbs.db
 desktop.ini
+
+# Task Management
+AUDIT_TASKS.md
+TODO_LIST.md
+SCHEDULED_TASKS.md
 
 # Any leftover temp files
 *.tmp
