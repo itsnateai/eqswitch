@@ -60,6 +60,9 @@ Right-click the tray icon to access everything:
 | **🔄 Swap Windows** | Rotates EQ window positions — swaps which client is on which monitor |
 | **🪟 Window Presets** | Save/load named window layouts |
 | **📺 Picture-in-Picture** | Toggle live preview overlay of alt EQ windows |
+| **🔲 Active Border** | Toggle colored highlight border on the active EQ window |
+| **📦 Auto-Minimize** | Toggle auto-minimization of inactive EQ clients |
+| **🔕 Flash Suppress** | Toggle taskbar flash suppression for background EQ windows |
 | **⚡ Process Manager** | View and configure EQ process priority and CPU affinity |
 | **📜 Open Log File** | Opens an EQ character's log file in Notepad (prompts for char name) |
 | **📂 Open eqclient.ini** | Opens eqclient.ini from your EQ folder in Notepad |
@@ -102,6 +105,16 @@ Dedicated window showing all running EQ processes with PID, priority, and CPU af
 
 ### 📺 Picture-in-Picture
 Live preview overlay of your alt EQ windows using DWM thumbnails. Toggle via the tray menu. The overlay is click-through and semi-transparent, positioned in the bottom-right corner. Automatically updates when you switch between EQ windows to always show your alt client(s).
+
+### ✨ Window Extras
+Toggle features for managing multiple EQ windows:
+
+- **Suppress taskbar flashing** — stops background EQ windows from flashing their taskbar buttons (common community pain point)
+- **Auto-minimize inactive** — automatically minimizes background EQ windows when switching clients, reducing GPU/CPU load
+- **Active window highlight border** — shows a colored border overlay around the focused EQ window so you always know which client is active. Border color is configurable (hex RGB)
+- **PiP zoom on hover** — when enabled, hovering your mouse over a PiP thumbnail shows a 2× magnified popup, letting you read text or check health bars without switching
+
+All features can be toggled from the tray menu (with check marks) or from the Settings window.
 
 ### 🎯 Open Gina
 Set the path to `Gina.exe` so the tray menu can launch it directly.

@@ -15,7 +15,7 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
-g_version        := "1.8"
+g_version        := "1.9"
 CFG_FILE         := A_ScriptDir "\eqswitch.cfg"
 EQ_TITLE         := "EverQuest"
 SETTINGS_OPEN    := false
@@ -185,6 +185,7 @@ LoadConfig() {
     global PROCESS_PRIORITY, CPU_AFFINITY
     global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
     global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY
+    global FLASH_SUPPRESS, AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR, PIP_ZOOM
 
     ; Migrate from old "EQ2Box" section name (pre-v1.2 rename)
     try {
@@ -234,6 +235,11 @@ LoadConfig() {
     PIP_WIDTH          := ReadKey("PIP_WIDTH",            "320")
     PIP_HEIGHT         := ReadKey("PIP_HEIGHT",           "180")
     PIP_OPACITY        := ReadKey("PIP_OPACITY",          "200")
+    FLASH_SUPPRESS     := ReadKey("FLASH_SUPPRESS",       "0")
+    AUTO_MINIMIZE      := ReadKey("AUTO_MINIMIZE",        "0")
+    BORDER_ENABLED     := ReadKey("BORDER_ENABLED",       "0")
+    BORDER_COLOR       := ReadKey("BORDER_COLOR",         "00FF00")
+    PIP_ZOOM           := ReadKey("PIP_ZOOM",             "0")
 }
 
 SaveConfig() {
@@ -245,6 +251,7 @@ SaveConfig() {
     global PROCESS_PRIORITY, CPU_AFFINITY
     global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
     global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY
+    global FLASH_SUPPRESS, AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR, PIP_ZOOM
     IniWrite(EQ_EXE,           CFG_FILE, "EQSwitch", "EQ_EXE")
     IniWrite(EQ_ARGS,          CFG_FILE, "EQSwitch", "EQ_ARGS")
     IniWrite(EQ_HOTKEY,        CFG_FILE, "EQSwitch", "EQ_HOTKEY")
@@ -271,6 +278,11 @@ SaveConfig() {
     IniWrite(PIP_WIDTH, CFG_FILE, "EQSwitch", "PIP_WIDTH")
     IniWrite(PIP_HEIGHT, CFG_FILE, "EQSwitch", "PIP_HEIGHT")
     IniWrite(PIP_OPACITY, CFG_FILE, "EQSwitch", "PIP_OPACITY")
+    IniWrite(FLASH_SUPPRESS,  CFG_FILE, "EQSwitch", "FLASH_SUPPRESS")
+    IniWrite(AUTO_MINIMIZE,   CFG_FILE, "EQSwitch", "AUTO_MINIMIZE")
+    IniWrite(BORDER_ENABLED,  CFG_FILE, "EQSwitch", "BORDER_ENABLED")
+    IniWrite(BORDER_COLOR,    CFG_FILE, "EQSwitch", "BORDER_COLOR")
+    IniWrite(PIP_ZOOM,        CFG_FILE, "EQSwitch", "PIP_ZOOM")
 }
 
 LoadConfig()
@@ -592,6 +604,9 @@ g_presetMenu := Menu()
 BuildPresetMenu()
 A_TrayMenu.Add("🪟  Window Presets",    g_presetMenu)
 A_TrayMenu.Add("📺  Picture-in-Picture", (*) => TogglePiP())
+A_TrayMenu.Add("🔲  Active Border",     (*) => ToggleBorderFromTray())
+A_TrayMenu.Add("📦  Auto-Minimize",     (*) => ToggleAutoMinFromTray())
+A_TrayMenu.Add("🔕  Flash Suppress",    (*) => ToggleFlashFromTray())
 A_TrayMenu.Add("⚡  Process Manager",   (*) => OpenProcessManager())
 A_TrayMenu.Add()
 
@@ -613,6 +628,7 @@ A_TrayMenu.Add("✖  Exit",              (*) => ExitApp())
 ; Update menu labels with hotkey text, then apply bold
 UpdateTrayMenuLabels()
 SetMenuItemsBold(A_TrayMenu.Handle, ["Launch Client", "Launch Both"])
+UpdateExtrasCheckmarks()
 
 ; =========================================================
 ; FIX WINDOWS
@@ -1087,6 +1103,34 @@ BuildPiPSection(g, ctl) {
     g.AddText("x+6 yp+2 cGray", "(50-255)")
 }
 
+BuildExtrasSection(g, ctl) {
+    global FLASH_SUPPRESS, AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR, PIP_ZOOM
+    g.AddText("xm y+10 w440 cNavy", "✨  Window Extras")
+    g.AddText("xm y+4 w440 h1 0x10")
+
+    ctl["flashSuppressChk"] := g.AddCheckbox("xm y+6", "Suppress taskbar flashing on background EQ windows")
+    ctl["flashSuppressChk"].Value := (FLASH_SUPPRESS = "1") ? 1 : 0
+
+    ctl["autoMinimizeChk"] := g.AddCheckbox("xm y+4", "Auto-minimize inactive EQ windows on switch")
+    ctl["autoMinimizeChk"].Value := (AUTO_MINIMIZE = "1") ? 1 : 0
+
+    ctl["borderEnabledChk"] := g.AddCheckbox("xm y+4", "Highlight active EQ window with colored border")
+    ctl["borderEnabledChk"].Value := (BORDER_ENABLED = "1") ? 1 : 0
+    ctl["borderEnabledChk"].OnEvent("Click", ToggleBorderFields)
+
+    g.AddText("xm y+4", "Border color:")
+    ctl["borderColorEdit"] := g.AddEdit("x+4 yp-2 w70", BORDER_COLOR)
+    ctl["borderColorEdit"].Enabled := (BORDER_ENABLED = "1") ? true : false
+    g.AddText("x+6 yp+2 cGray", "Hex RGB (e.g. 00FF00=green, FF0000=red)")
+
+    ctl["pipZoomChk"] := g.AddCheckbox("xm y+6", "PiP zoom on hover (2× magnification when mouse enters PiP)")
+    ctl["pipZoomChk"].Value := (PIP_ZOOM = "1") ? 1 : 0
+
+    ToggleBorderFields(*) {
+        ctl["borderColorEdit"].Enabled := ctl["borderEnabledChk"].Value ? true : false
+    }
+}
+
 BuildPathsSection(g, ctl) {
     global GINA_PATH, NOTES_FILE
     g.SetFont("s9 Bold", "Segoe UI")
@@ -1365,6 +1409,7 @@ OpenSettings(*) {
     BuildProcessSection(g, ctl)
     BuildMultiMonSection(g, ctl)
     BuildPiPSection(g, ctl)
+    BuildExtrasSection(g, ctl)
     BuildPathsSection(g, ctl)
     BuildCharacterSection(g, ctl)
     g.SetFont("s9", "Segoe UI")
@@ -1388,6 +1433,7 @@ OpenSettings(*) {
         global PROCESS_PRIORITY, CPU_AFFINITY
         global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
         global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY
+        global FLASH_SUPPRESS, AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR, PIP_ZOOM
 
         newHotkey := ctl["hotkeyCtrl"].Value
         newMultimonHk := ctl["multimonHkCtrl"].Value
@@ -1447,6 +1493,11 @@ OpenSettings(*) {
         PIP_WIDTH        := ctl["pipWidthEdit"].Value
         PIP_HEIGHT       := ctl["pipHeightEdit"].Value
         PIP_OPACITY      := ctl["pipOpacityEdit"].Value
+        FLASH_SUPPRESS  := ctl["flashSuppressChk"].Value ? "1" : "0"
+        AUTO_MINIMIZE   := ctl["autoMinimizeChk"].Value ? "1" : "0"
+        BORDER_ENABLED  := ctl["borderEnabledChk"].Value ? "1" : "0"
+        BORDER_COLOR    := ctl["borderColorEdit"].Value
+        PIP_ZOOM        := ctl["pipZoomChk"].Value ? "1" : "0"
         STARTUP_ENABLED := ctl["startupChk"].Value ? "1" : "0"
 
         ; Handle hotkey — skip binding if empty
@@ -1483,6 +1534,11 @@ OpenSettings(*) {
         }
 
         SaveConfig()
+        UpdateFeatureTimer()
+        UpdateExtrasCheckmarks()
+        ; Clean up border if disabled
+        if (BORDER_ENABLED = "0")
+            DestroyBorder()
         UpdateTrayTip()
         UpdateTrayMenuLabels()
 
@@ -1517,6 +1573,9 @@ g_pipGui        := ""
 g_pipThumbnails := []
 g_pipTimer      := ""
 g_pipLastActive := 0
+g_pipZoomGui    := ""
+g_pipZoomThumb  := 0
+g_pipZoomIndex  := -1
 ; PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY are loaded from config
 ; (defaults: 320, 180, 200) — see LoadConfig()
 
@@ -1655,6 +1714,11 @@ RefreshPiP(*) {
         if isEq
             SwapPiPSources(visible, activeID)
     }
+
+    ; P4-01: PiP zoom on hover
+    global PIP_ZOOM
+    if (PIP_ZOOM = "1")
+        UpdatePiPZoom()
 }
 
 ; Swap PiP thumbnail sources on the existing GUI (avoids flicker from full teardown)
@@ -1733,7 +1797,328 @@ DestroyPiP(*) {
     }
 
     g_pipEnabled := false
+    DestroyPiPZoom()
 }
+
+; ── PiP Zoom on Hover ──────────────────────────────────
+UpdatePiPZoom(*) {
+    global g_pipGui, g_pipThumbnails, g_pipZoomGui, g_pipZoomThumb, g_pipZoomIndex
+    global PIP_WIDTH, PIP_HEIGHT
+
+    if (!g_pipGui || g_pipThumbnails.Length = 0)
+        return
+
+    ; Get mouse position and PiP GUI position
+    MouseGetPos(&mx, &my)
+    try WinGetPos(&px, &py, &pw, &ph, "ahk_id " g_pipGui.Hwnd)
+    catch
+        return
+
+    ; Check if mouse is within PiP bounds
+    if (mx < px || mx > px + pw || my < py || my > py + ph) {
+        if (g_pipZoomIndex >= 0)
+            DestroyPiPZoom()
+        return
+    }
+
+    ; Determine which thumbnail the mouse is over
+    thumbIdx := -1
+    yOffset := my - py
+    thumbH := Integer(PIP_HEIGHT) + 4  ; height + gap
+    Loop g_pipThumbnails.Length {
+        thumbTop := (A_Index - 1) * thumbH
+        thumbBottom := thumbTop + Integer(PIP_HEIGHT)
+        if (yOffset >= thumbTop && yOffset < thumbBottom) {
+            thumbIdx := A_Index
+            break
+        }
+    }
+
+    if (thumbIdx < 0) {
+        if (g_pipZoomIndex >= 0)
+            DestroyPiPZoom()
+        return
+    }
+
+    ; Already zooming this thumbnail?
+    if (thumbIdx = g_pipZoomIndex)
+        return
+
+    ; Create zoom popup for this thumbnail
+    ShowPiPZoom(thumbIdx)
+}
+
+ShowPiPZoom(thumbIdx) {
+    global g_pipGui, g_pipThumbnails, g_pipZoomGui, g_pipZoomThumb, g_pipZoomIndex
+    global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY
+
+    ; Clean up previous zoom
+    DestroyPiPZoom()
+
+    ; Find which source window this thumbnail shows
+    visible := GetVisibleEqWindows()
+    activeID := 0
+    try activeID := WinGetID("A")
+    altWindows := []
+    for id in visible {
+        if (id != activeID)
+            altWindows.Push(id)
+    }
+    if (altWindows.Length = 0 && visible.Length > 1)
+        altWindows.Push(visible[2])
+
+    if (thumbIdx > altWindows.Length)
+        return
+
+    srcId := altWindows[thumbIdx]
+
+    ; Zoom size: 2× the PiP dimensions
+    zoomW := Integer(PIP_WIDTH) * 2
+    zoomH := Integer(PIP_HEIGHT) * 2
+
+    ; Position: to the left of the PiP GUI
+    try WinGetPos(&px, &py, &pw, &ph, "ahk_id " g_pipGui.Hwnd)
+    catch
+        return
+
+    zoomX := px - zoomW - 8
+    zoomY := py + (thumbIdx - 1) * (Integer(PIP_HEIGHT) + 4) - (Integer(PIP_HEIGHT) // 2)
+
+    ; Keep zoom on screen
+    if (zoomX < 0)
+        zoomX := px + pw + 8  ; flip to right side
+    if (zoomY < 0)
+        zoomY := 0
+
+    ; Create zoom GUI
+    zg := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")
+    zg.BackColor := "000000"
+    zg.Show("x" zoomX " y" zoomY " w" zoomW " h" zoomH " NoActivate")
+    opacityVal := Min(Integer(PIP_OPACITY) + 40, 255)
+    WinSetTransparent(opacityVal, "ahk_id " zg.Hwnd)
+
+    ; Register DWM thumbnail for the zoomed view
+    hThumb := 0
+    hr := DllCall("dwmapi\DwmRegisterThumbnail",
+        "Ptr", zg.Hwnd,
+        "Ptr", srcId,
+        "Ptr*", &hThumb,
+        "Int")
+
+    if (hr = 0 && hThumb != 0) {
+        props := Buffer(48, 0)
+        NumPut("UInt", 0x01 | 0x08 | 0x10, props, 0)  ; RECTDEST | VISIBLE | SOURCECLIENTAREAONLY
+        NumPut("Int", 0, props, 4)          ; left
+        NumPut("Int", 0, props, 8)          ; top
+        NumPut("Int", zoomW, props, 12)     ; right
+        NumPut("Int", zoomH, props, 16)     ; bottom
+        NumPut("Int", 1, props, 40)         ; fVisible
+        NumPut("Int", 1, props, 44)         ; fSourceClientAreaOnly
+        DllCall("dwmapi\DwmUpdateThumbnailProperties", "Ptr", hThumb, "Ptr", props)
+    }
+
+    g_pipZoomGui := zg
+    g_pipZoomThumb := hThumb
+    g_pipZoomIndex := thumbIdx
+}
+
+DestroyPiPZoom(*) {
+    global g_pipZoomGui, g_pipZoomThumb, g_pipZoomIndex
+    if (g_pipZoomThumb)
+        try DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", g_pipZoomThumb)
+    g_pipZoomThumb := 0
+    if (g_pipZoomGui) {
+        try g_pipZoomGui.Destroy()
+        g_pipZoomGui := ""
+    }
+    g_pipZoomIndex := -1
+}
+
+; =========================================================
+; WINDOW FEATURES ENGINE
+; =========================================================
+; Unified timer for: flash suppression (P2-06), auto-minimize (P2-05), border highlight (P2-04)
+g_featureTimer      := ""
+g_featureLastActive := 0
+g_borderGuis        := []    ; [top, bottom, left, right] bar GUIs
+g_borderTarget      := 0     ; hwnd currently highlighted
+
+; Start/stop the feature timer based on which features are enabled
+UpdateFeatureTimer() {
+    global FLASH_SUPPRESS, AUTO_MINIMIZE, BORDER_ENABLED, g_featureTimer
+    needTimer := (FLASH_SUPPRESS = "1" || AUTO_MINIMIZE = "1" || BORDER_ENABLED = "1")
+    if (needTimer && !g_featureTimer) {
+        g_featureTimer := FeatureRefresh
+        SetTimer(g_featureTimer, 250)
+    } else if (!needTimer && g_featureTimer) {
+        SetTimer(g_featureTimer, 0)
+        g_featureTimer := ""
+        DestroyBorder()
+    }
+}
+
+FeatureRefresh(*) {
+    global FLASH_SUPPRESS, AUTO_MINIMIZE, BORDER_ENABLED
+    global g_featureLastActive
+
+    visible := GetVisibleEqWindows()
+    if (visible.Length = 0) {
+        HideBorder()
+        return
+    }
+
+    activeID := 0
+    try activeID := WinGetID("A")
+
+    ; Is the active window an EQ window?
+    isEq := false
+    for id in visible {
+        if (id = activeID) {
+            isEq := true
+            break
+        }
+    }
+
+    ; P2-06: Flash suppression — stop taskbar flashing on background EQ windows
+    if (FLASH_SUPPRESS = "1") {
+        for id in visible {
+            if (id != activeID)
+                try DllCall("FlashWindow", "Ptr", id, "Int", 0)
+        }
+    }
+
+    ; P2-05: Auto-minimize — minimize inactive EQ windows when an EQ window is active
+    if (AUTO_MINIMIZE = "1" && isEq && activeID != g_featureLastActive) {
+        for id in visible {
+            if (id != activeID) {
+                try {
+                    if (WinGetMinMax("ahk_id " id) != -1)  ; not already minimized
+                        WinMinimize("ahk_id " id)
+                }
+            }
+        }
+    }
+
+    ; P2-04: Active window highlight border
+    if (BORDER_ENABLED = "1") {
+        if (isEq && visible.Length >= 2)
+            UpdateBorder(activeID)
+        else
+            HideBorder()
+    }
+
+    if isEq
+        g_featureLastActive := activeID
+}
+
+; ── Border Highlight ──────────────────────────────────
+CreateBorder() {
+    global g_borderGuis, BORDER_COLOR
+    if (g_borderGuis.Length > 0)
+        return  ; already created
+
+    Loop 4 {
+        bar := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")  ; click-through
+        bar.BackColor := BORDER_COLOR
+        g_borderGuis.Push(bar)
+    }
+}
+
+UpdateBorder(targetHwnd) {
+    global g_borderGuis, g_borderTarget, BORDER_COLOR
+    static BW := 3  ; border width in pixels
+
+    if (g_borderGuis.Length = 0)
+        CreateBorder()
+
+    ; Get target window position
+    try {
+        WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " targetHwnd)
+    } catch {
+        HideBorder()
+        return
+    }
+
+    ; Update color if it changed
+    if (g_borderGuis[1].BackColor != BORDER_COLOR) {
+        for bar in g_borderGuis
+            bar.BackColor := BORDER_COLOR
+    }
+
+    ; Position the 4 bars around the window
+    g_borderGuis[1].Show("x" (wx - BW) " y" (wy - BW) " w" (ww + 2*BW) " h" BW " NoActivate")     ; top
+    g_borderGuis[2].Show("x" (wx - BW) " y" (wy + wh) " w" (ww + 2*BW) " h" BW " NoActivate")     ; bottom
+    g_borderGuis[3].Show("x" (wx - BW) " y" wy " w" BW " h" wh " NoActivate")                       ; left
+    g_borderGuis[4].Show("x" (wx + ww) " y" wy " w" BW " h" wh " NoActivate")                       ; right
+
+    g_borderTarget := targetHwnd
+}
+
+HideBorder() {
+    global g_borderGuis, g_borderTarget
+    for bar in g_borderGuis {
+        try bar.Show("Hide")
+    }
+    g_borderTarget := 0
+}
+
+DestroyBorder() {
+    global g_borderGuis, g_borderTarget
+    for bar in g_borderGuis {
+        try bar.Destroy()
+    }
+    g_borderGuis := []
+    g_borderTarget := 0
+}
+
+; ── Tray Toggle Helpers ──────────────────────────────────
+ToggleBorderFromTray(*) {
+    global BORDER_ENABLED
+    BORDER_ENABLED := (BORDER_ENABLED = "1") ? "0" : "1"
+    if (BORDER_ENABLED = "0")
+        DestroyBorder()
+    UpdateFeatureTimer()
+    UpdateExtrasCheckmarks()
+    SaveConfig()
+    ShowTip(BORDER_ENABLED = "1" ? "🔲 Active border ON" : "🔲 Active border OFF")
+}
+
+ToggleAutoMinFromTray(*) {
+    global AUTO_MINIMIZE
+    AUTO_MINIMIZE := (AUTO_MINIMIZE = "1") ? "0" : "1"
+    UpdateFeatureTimer()
+    UpdateExtrasCheckmarks()
+    SaveConfig()
+    ShowTip(AUTO_MINIMIZE = "1" ? "📦 Auto-minimize ON" : "📦 Auto-minimize OFF")
+}
+
+ToggleFlashFromTray(*) {
+    global FLASH_SUPPRESS
+    FLASH_SUPPRESS := (FLASH_SUPPRESS = "1") ? "0" : "1"
+    UpdateFeatureTimer()
+    UpdateExtrasCheckmarks()
+    SaveConfig()
+    ShowTip(FLASH_SUPPRESS = "1" ? "🔕 Flash suppress ON" : "🔕 Flash suppress OFF")
+}
+
+UpdateExtrasCheckmarks() {
+    global BORDER_ENABLED, AUTO_MINIMIZE, FLASH_SUPPRESS
+    try {
+        if (BORDER_ENABLED = "1") A_TrayMenu.Check("🔲  Active Border")
+        else A_TrayMenu.Uncheck("🔲  Active Border")
+    }
+    try {
+        if (AUTO_MINIMIZE = "1") A_TrayMenu.Check("📦  Auto-Minimize")
+        else A_TrayMenu.Uncheck("📦  Auto-Minimize")
+    }
+    try {
+        if (FLASH_SUPPRESS = "1") A_TrayMenu.Check("🔕  Flash Suppress")
+        else A_TrayMenu.Uncheck("🔕  Flash Suppress")
+    }
+}
+
+; Start feature timer on load if any feature is enabled
+UpdateFeatureTimer()
 
 ; =========================================================
 ; PROCESS MANAGER GUI

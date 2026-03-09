@@ -2,6 +2,19 @@
 
 All notable changes to EQ Switch are documented here.
 
+## v1.9 — 2026-03-09
+
+### New Features
+- **Active window highlight border** — colored border overlay highlights which EQ window is currently focused. Uses 4 thin click-through GUI bars positioned around the active window. Toggle from tray menu or Settings. Configurable hex color (default: green). Only activates with 2+ EQ windows (P2-04)
+- **Auto-minimize inactive EQ clients** — automatically minimizes background EQ windows when switching between clients. Reduces GPU/CPU load on lower-end hardware. Detects window changes at 250ms intervals, only minimizes non-minimized windows. Toggle from tray or Settings (P2-05)
+- **Taskbar flash suppression** — stops background EQ windows from flashing their taskbar buttons. Calls `FlashWindow(hwnd, false)` on all non-active EQ windows at 250ms intervals. Toggle from tray or Settings (P2-06)
+- **PiP zoom on hover** — hovering over a PiP thumbnail shows a 2× magnified popup to the left. Uses a second DWM thumbnail at double resolution. Automatically hides when mouse leaves PiP area. Toggle in Settings (P4-01)
+
+### Architecture
+- **Unified feature timer engine** — single 250ms `FeatureRefresh` timer handles all three window features (flash, minimize, border). Starts/stops automatically based on which features are enabled. No timer overhead when all features are off
+- **Tray toggle checkmarks** — Active Border, Auto-Minimize, and Flash Suppress tray menu items show check marks reflecting current state
+- **Settings GUI** — new "Window Extras" section with 4 toggles and border color configuration
+
 ## v1.8 — 2026-03-09
 
 ### Removed
