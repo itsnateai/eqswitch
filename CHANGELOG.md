@@ -2,14 +2,31 @@
 
 All notable changes to EQ Switch are documented here.
 
+## v1.8 — 2026-03-09
+
+### Removed
+- **Profile system removed** — removed character profiles, profile quick-launch, per-profile eqclient.ini, and batch backup/restore. EQ doesn't support command-line character selection (`-args`), so the profile launch feature never worked. The eqclient.ini swap mechanism built on top of it was fragile and risked corrupting the user's original ini file
+- **Crash recovery for ini swap** — removed startup recovery block that detected and restored orphaned eqclient.ini backups (no longer needed without the swap mechanism)
+
+### Fixed
+- **ToolTip auto-dismiss** — `ToggleMultiMon` "OFF" tooltip now uses `ShowTip()` so it auto-dismisses instead of persisting on screen indefinitely (P1-01)
+- **LaunchOne re-entry guard** — `LaunchOne()` now blocks if `LaunchBoth()` is in progress, and has a 3-second debounce to prevent rapid double-click spawning extra clients (P1-03)
+- **Process Manager Close button** — clicking the X button now properly destroys the GUI instead of just resetting the flag (P2-01)
+- **Settings changes mid-launch** — `LaunchBoth()` now snapshots EQ path, args, priority, affinity, and window mode at launch start so changing Settings during the async launch chain won't affect behavior (P2-02)
+- **Window preset count** — tooltip now shows "(N of M windows)" when a preset is loaded with fewer windows than saved (P2-03)
+
+### Code Quality
+- **Settings GUI cleanup** — simplified Character Config section (removed profile dropdown, load/save/delete buttons, custom ini path, batch operations)
+- **Help dialog cleanup** — removed profile-related help text
+
 ## v1.7 — 2026-03-08
 
 ### New Features
 - **Process Priority Management** — auto-set eqgame.exe to High (or AboveNormal) priority on launch. Configurable dropdown in Settings. Replaces need for Process Lasso
 - **CPU Affinity Control** — configure which CPU cores eqgame.exe can use via the Process Manager. Useful since EQ defaults to single-core, causing bottlenecks
 - **Process Manager** — dedicated window (tray menu or Settings) showing all running EQ processes with PID, priority, and affinity. Apply settings to already-running clients or configure for future launches
-- **Profile Quick-Launch** — profiles now store launch config (client count, window mode). New "Launch Profile" tray submenu spawns clients with profile settings in one click
-- **Per-Profile eqclient.ini** — each profile can use its own eqclient.ini. Run your main at full graphics and alts at potato mode. Custom ini is swapped in before launch, original restored after
+- ~~**Profile Quick-Launch**~~ — _removed in v1.8 (EQ doesn't support command-line character selection, making profile launch non-functional)_
+- ~~**Per-Profile eqclient.ini**~~ — _removed in v1.8 (dependent on profile quick-launch)_
 - **FixWindows offset tuning** — configurable top/bottom pixel offsets for fine-tuning window positioning. Top offset adjusts Y start, bottom offset extends past work area into taskbar zone
 - **Window Presets** — save/restore named window layouts (position + size for each client). Save current layout, load presets from tray menu or Settings. Goes beyond FixWindows for custom arrangements
 - **Picture-in-Picture overlay** — live preview of alt EQ windows overlaid on your screen using DWM thumbnails. Toggle via tray menu. Click-through overlay positioned in bottom-right corner
@@ -34,7 +51,7 @@ All notable changes to EQ Switch are documented here.
 - **Merged sections** — "Launch Options" and "Tray Icon" combined into a single "Launch & Tray Options" section
 - **Checkboxes paired** — beep/dbl-click and middle-click/startup are on shared rows
 - **Larger Browse button** — EQ exe now has a proper "Browse..." button (w66) instead of tiny "..."
-- **Backup & Profiles compact** — character and profile rows use inline labels instead of stacked
+- **Backup section compact** — character rows use inline labels instead of stacked
 
 ### New Features
 - **Open Log File redesign** — replaced Windows InputBox with a custom GUI using ComboBox of recent characters with inline error display
@@ -70,12 +87,7 @@ All notable changes to EQ Switch are documented here.
 - **Multi-monitor window arrangement** — new `multimonitor` FixWindows mode distributes one EQ window per monitor, maximized. Cycles through monitors if you have more windows than screens. Ideal for dual-monitor boxing
 - **Multi-monitor toggle hotkey** — configurable global hotkey (default: Right Alt + M) that cycles through multi-monitor states: spread windows across monitors, swap which client is on which monitor, and stack back on primary. Handles resolution differences between monitors automatically
 - **Swap Windows** — new tray menu item that rotates all EQ window positions (swaps which client is on which monitor/position)
-- **Character profiles** — save named groups of characters (e.g., "Raid Duo", "Farm Team") for quick batch backup/restore. Profiles are stored in the config file and persist between sessions
-  - **Load** — populates the character dropdown with the profile's characters
-  - **Save As...** — saves your current recent characters as a new named profile
-  - **Delete** — removes a saved profile
-  - **Backup All in Profile** — backs up all characters in the selected profile to Desktop
-  - **Restore All in Profile** — restores all characters in the selected profile from Desktop
+- ~~**Character profiles**~~ — _removed in v1.8 (profile system depended on EQ supporting command-line character selection, which it doesn't)_
 
 ## v1.2 — 2026-03-08
 

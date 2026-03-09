@@ -56,7 +56,6 @@ Right-click the tray icon to access everything:
 |---|---|
 | **⚔ Launch Client** | Launches one EQ client |
 | **🎮 Launch Both** | Launches N clients (configurable), waits for them to load, then arranges windows |
-| **🚀 Launch Profile** | Quick-launch a saved character profile with its own settings |
 | **🪟 Fix Windows** | Arranges all open EQ windows (maximize, restore, or side-by-side) |
 | **🔄 Swap Windows** | Rotates EQ window positions — swaps which client is on which monitor |
 | **🪟 Window Presets** | Save/load named window layouts |
@@ -115,21 +114,12 @@ Point to any `.txt` file to use as your in-game notes. Leave blank and EQ Switch
 - **Middle-click opens Notepad notes** — middle-clicking the tray icon opens your notes file directly
 - **Run at Windows startup** — automatically start EQ Switch when you log in
 
-### 📋 Character Profiles & Backup
+### 📋 Character Backup
 Copies your character's UI and settings files to/from your Desktop with one click:
 - `UI_CharName_server.ini` — your custom UI layout
 - `CharName_server.ini` — your character settings
 
 Type a character name or pick from the recent names dropdown, then hit **Backup** or **Restore**. Restore will prompt for confirmation before overwriting. Recent names are saved between sessions. Use the **✕** button to remove a name from the recent list.
-
-#### Profiles
-Save your frequently-used character groups as named profiles (e.g., "Raid Duo", "Farm Team"). Profiles let you:
-- **Load** a profile to populate the character dropdown with that group
-- **Backup All** / **Restore All** to batch-backup or restore every character in the profile at once
-- **Save As...** to save your current recent characters list as a new profile
-- **Delete** to remove a saved profile
-- **Launch Profile** — profiles store their own client count and window mode. Use the "Launch Profile" tray submenu to launch with profile-specific settings in one click
-- **Custom eqclient.ini** — each profile can use its own eqclient.ini file. Run your main at full graphics and alts at potato mode. The custom ini is swapped in before launch and the original is automatically restored after
 
 ---
 

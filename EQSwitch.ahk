@@ -15,7 +15,7 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
-g_version        := "1.7"
+g_version        := "1.8"
 CFG_FILE         := A_ScriptDir "\eqswitch.cfg"
 EQ_TITLE         := "EverQuest"
 SETTINGS_OPEN    := false
@@ -34,7 +34,6 @@ g_lastDblClick   := 0
 g_tripleClickCooldown := 0
 g_launchActive   := false
 g_pmOpen         := false
-g_pendingIniRestore := ""
 
 ; =========================================================
 ; HELPERS
@@ -53,16 +52,16 @@ GetVisibleEqWindows() {
         if WinGetStyle("ahk_id " id) & 0x10000000  ; WS_VISIBLE
             visible.Push(id)
     }
+    ; Insertion sort — stable, efficient for small arrays (2-8 windows)
     Loop visible.Length - 1 {
-        i := A_Index
-        Loop visible.Length - i {
-            j := A_Index
-            if (visible[j] > visible[j+1]) {
-                tmp          := visible[j]
-                visible[j]   := visible[j+1]
-                visible[j+1] := tmp
-            }
+        i := A_Index + 1
+        key := visible[i]
+        j := i - 1
+        while (j >= 1 && visible[j] > key) {
+            visible[j + 1] := visible[j]
+            j--
         }
+        visible[j + 1] := key
     }
     return visible
 }
@@ -143,6 +142,27 @@ AffinityMaskToCores(maskStr, coreCount) {
     return cores
 }
 
+; Get process priority name by PID (DllCall since ProcessGetPriority isn't in AHKv2)
+GetProcessPriorityName(pid) {
+    try {
+        hProc := DllCall("OpenProcess", "UInt", 0x0400, "Int", 0, "UInt", pid, "Ptr")
+        if (!hProc)
+            return "Unknown"
+        priClass := DllCall("GetPriorityClass", "Ptr", hProc, "UInt")
+        DllCall("CloseHandle", "Ptr", hProc)
+        switch priClass {
+            case 0x20:   return "Normal"
+            case 0x4000: return "BelowNormal"
+            case 0x8000: return "AboveNormal"
+            case 0x80:   return "High"
+            case 0x100:  return "Realtime"
+            case 0x40:   return "Idle"
+            default:     return "Unknown"
+        }
+    }
+    return "Unknown"
+}
+
 ; Convert array of booleans back to affinity mask
 CoresMaskToAffinity(cores) {
     mask := 0
@@ -164,6 +184,7 @@ LoadConfig() {
     global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
     global PROCESS_PRIORITY, CPU_AFFINITY
     global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
+    global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY
 
     ; Migrate from old "EQ2Box" section name (pre-v1.2 rename)
     try {
@@ -210,6 +231,9 @@ LoadConfig() {
     CPU_AFFINITY       := ReadKey("CPU_AFFINITY",        "")
     FIX_TOP_OFFSET     := ReadKey("FIX_TOP_OFFSET",      "0")
     FIX_BOTTOM_OFFSET  := ReadKey("FIX_BOTTOM_OFFSET",   "0")
+    PIP_WIDTH          := ReadKey("PIP_WIDTH",            "320")
+    PIP_HEIGHT         := ReadKey("PIP_HEIGHT",           "180")
+    PIP_OPACITY        := ReadKey("PIP_OPACITY",          "200")
 }
 
 SaveConfig() {
@@ -220,6 +244,7 @@ SaveConfig() {
     global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
     global PROCESS_PRIORITY, CPU_AFFINITY
     global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
+    global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY
     IniWrite(EQ_EXE,           CFG_FILE, "EQSwitch", "EQ_EXE")
     IniWrite(EQ_ARGS,          CFG_FILE, "EQSwitch", "EQ_ARGS")
     IniWrite(EQ_HOTKEY,        CFG_FILE, "EQSwitch", "EQ_HOTKEY")
@@ -243,19 +268,12 @@ SaveConfig() {
     IniWrite(CPU_AFFINITY, CFG_FILE, "EQSwitch", "CPU_AFFINITY")
     IniWrite(FIX_TOP_OFFSET, CFG_FILE, "EQSwitch", "FIX_TOP_OFFSET")
     IniWrite(FIX_BOTTOM_OFFSET, CFG_FILE, "EQSwitch", "FIX_BOTTOM_OFFSET")
+    IniWrite(PIP_WIDTH, CFG_FILE, "EQSwitch", "PIP_WIDTH")
+    IniWrite(PIP_HEIGHT, CFG_FILE, "EQSwitch", "PIP_HEIGHT")
+    IniWrite(PIP_OPACITY, CFG_FILE, "EQSwitch", "PIP_OPACITY")
 }
 
 LoadConfig()
-
-; Crash recovery: restore eqclient.ini if a previous profile launch was interrupted
-try {
-    _eqDir := GetEqDir()
-    _backupIni := _eqDir "eqclient.ini.eqswitch-backup"
-    if FileExist(_backupIni) {
-        FileCopy(_backupIni, _eqDir "eqclient.ini", 1)
-        FileDelete(_backupIni)
-    }
-}
 
 ; Keep the tray tooltip in sync with the active switch key
 UpdateTrayTip() {
@@ -404,22 +422,6 @@ SetMenuItemsBold(hMenu, itemTexts) {
     }
 }
 
-; Build/rebuild the profile quick-launch tray submenu
-BuildProfileMenu() {
-    global g_profileMenu
-    g_profileMenu.Delete()
-    profileNames := GetProfileNames()
-    if (profileNames.Length = 0) {
-        g_profileMenu.Add("(no profiles saved)", (*) => 0)
-        g_profileMenu.Disable("(no profiles saved)")
-    } else {
-        for name in profileNames {
-            boundName := name  ; capture for closure
-            g_profileMenu.Add(name, (*) => LaunchProfile(boundName))
-        }
-    }
-}
-
 ; Add a char name to the recent-chars list stored in the cfg
 AddRecentChar(charName) {
     global RECENT_CHARS
@@ -437,113 +439,6 @@ AddRecentChar(charName) {
         joined .= (i > 1 ? "|" : "") name
     RECENT_CHARS := joined
     SaveConfig()
-}
-
-; =========================================================
-; CHARACTER PROFILES
-; =========================================================
-GetProfileNames() {
-    global CFG_FILE
-    names := []
-    try {
-        section := IniRead(CFG_FILE, "Profiles")
-        for line in StrSplit(section, "`n") {
-            if (line = "")
-                continue
-            eqPos := InStr(line, "=")
-            if (eqPos > 0)
-                names.Push(SubStr(line, 1, eqPos - 1))
-        }
-    }
-    return names
-}
-
-GetProfileChars(profileName) {
-    global CFG_FILE
-    try {
-        val := IniRead(CFG_FILE, "Profiles", profileName)
-        if (val = "")
-            return []
-        return StrSplit(val, "|")
-    }
-    return []
-}
-
-SaveProfileData(profileName, chars) {
-    global CFG_FILE
-    joined := ""
-    for i, name in chars
-        joined .= (i > 1 ? "|" : "") name
-    IniWrite(joined, CFG_FILE, "Profiles", profileName)
-}
-
-DeleteProfileData(profileName) {
-    global CFG_FILE
-    try IniDelete(CFG_FILE, "Profiles", profileName)
-    try IniDelete(CFG_FILE, "ProfileLaunch", profileName . "_clients")
-    try IniDelete(CFG_FILE, "ProfileLaunch", profileName . "_fixmode")
-}
-
-GetProfileLaunchConfig(profileName) {
-    global CFG_FILE
-    config := {}
-    try config.clients := IniRead(CFG_FILE, "ProfileLaunch", profileName . "_clients")
-    catch
-        config.clients := ""
-    try config.fixmode := IniRead(CFG_FILE, "ProfileLaunch", profileName . "_fixmode")
-    catch
-        config.fixmode := ""
-    try config.eqclient := IniRead(CFG_FILE, "ProfileLaunch", profileName . "_eqclient")
-    catch
-        config.eqclient := ""
-    return config
-}
-
-SaveProfileLaunchConfig(profileName, clients, fixmode, eqclientIni := "") {
-    global CFG_FILE
-    IniWrite(clients, CFG_FILE, "ProfileLaunch", profileName . "_clients")
-    IniWrite(fixmode, CFG_FILE, "ProfileLaunch", profileName . "_fixmode")
-    IniWrite(eqclientIni, CFG_FILE, "ProfileLaunch", profileName . "_eqclient")
-}
-
-LaunchProfile(profileName) {
-    global RECENT_CHARS, NUM_CLIENTS, FIX_MODE, TOOLTIP_MS, g_pendingIniRestore
-    chars := GetProfileChars(profileName)
-    if (chars.Length = 0) {
-        ShowTip("⚠ Profile '" profileName "' is empty or missing")
-        return
-    }
-    ; Load profile characters
-    joined := ""
-    for i, c in chars
-        joined .= (i > 1 ? "|" : "") c
-    RECENT_CHARS := joined
-
-    ; Apply profile launch config (or keep current settings)
-    config := GetProfileLaunchConfig(profileName)
-    if (config.clients != "")
-        NUM_CLIENTS := config.clients
-    if (config.fixmode != "")
-        FIX_MODE := config.fixmode
-    SaveConfig()
-
-    ; Swap eqclient.ini if profile has a custom one
-    eqDir := GetEqDir()
-    origIni := eqDir "eqclient.ini"
-    backupIni := eqDir "eqclient.ini.eqswitch-backup"
-    if (config.eqclient != "" && FileExist(config.eqclient)) {
-        try {
-            if FileExist(origIni)
-                FileCopy(origIni, backupIni, 1)
-            FileCopy(config.eqclient, origIni, 1)
-            ; Tell async LaunchBoth to restore this when done
-            g_pendingIniRestore := backupIni
-        }
-    }
-
-    ShowTip("🚀 Launching profile: " profileName, 500)
-    LaunchBoth()
-    ; ini restore now handled by LaunchBoth's DoFinalize via g_pendingIniRestore
 }
 
 ; =========================================================
@@ -609,7 +504,10 @@ LoadWindowPreset(presetName) {
             }
         }
     }
-    ShowTip("🪟 Preset loaded: " presetName)
+    msg := "🪟 Preset loaded: " presetName
+    if (visible.Length != windows.Length)
+        msg .= " (" count " of " windows.Length " windows)"
+    ShowTip(msg)
 }
 
 DeleteWindowPreset(presetName) {
@@ -686,10 +584,6 @@ A_TrayMenu.Add()
 A_TrayMenu.Add("⚔  Launch Client",     LaunchOne)
 A_TrayMenu.Add("🎮  Launch Both",       LaunchBoth)
 
-; Profile Quick-Launch submenu
-g_profileMenu := Menu()
-BuildProfileMenu()
-A_TrayMenu.Add("🚀  Launch Profile", g_profileMenu)
 A_TrayMenu.Add()
 
 A_TrayMenu.Add("🪟  Fix Windows",       (*) => FixWindows())
@@ -846,7 +740,7 @@ ToggleMultiMon(*) {
             id := visible[A_Index]
             try WinMaximize("ahk_id " id)
         }
-        ToolTip("🪟 Multi-monitor OFF — stacked on primary")
+        ShowTip("🪟 Multi-monitor OFF — stacked on primary")
     } else {
         ; Spread across monitors with rotation offset
         try topOff := Integer(FIX_TOP_OFFSET)
@@ -1004,34 +898,13 @@ OpenNotes(*) {
 }
 
 ; =========================================================
-; SETTINGS GUI
+; SETTINGS GUI — Section Builders
 ; =========================================================
-OpenSettings(*) {
-    global EQ_EXE, EQ_ARGS, EQ_HOTKEY, DBLCLICK_LAUNCH, SETTINGS_OPEN
-    global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES, RECENT_CHARS
-    global EQ_SERVER, NUM_CLIENTS, FIX_MODE, STARTUP_ENABLED
-    global MULTIMON_HOTKEY, MULTIMON_ENABLED, g_version, TOOLTIP_MS
-    global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
-    if SETTINGS_OPEN
-        return
-    SETTINGS_OPEN := true
+; Each builder takes (g, ctl) where g is the Gui and ctl is
+; a Map() for storing control references used by SaveAndClose.
 
-    ; Always reset the flag on any close path — X button, Alt-F4, crash, anything
-    CleanupSettings(*) {
-        global SETTINGS_OPEN
-        SETTINGS_OPEN := false
-    }
-
-    try {
-
-    g := Gui("+AlwaysOnTop", "⚔ EQ Switch v" g_version " — Options")
-    g.OnEvent("Close",   CleanupSettings)   ; X button / Alt-F4
-    g.OnEvent("Escape",  CleanupSettings)   ; Escape key
-    g.SetFont("s9", "Segoe UI")
-    g.MarginX := 14
-    g.MarginY := 10
-
-    ; ── ⌨ Window Switch Hotkey — THE MAIN FEATURE ─────────
+BuildHotkeySection(g, ctl) {
+    global EQ_HOTKEY
     g.SetFont("s10 Bold", "Segoe UI")
     g.AddText("xm w440 c0xAA3300", "⚔  Window Switch Hotkey  ⚔")
     g.SetFont("s9", "Segoe UI")
@@ -1039,42 +912,48 @@ OpenSettings(*) {
     activeKeyDisplay := (EQ_HOTKEY != "") ? EQ_HOTKEY : "(not set!)"
     statusColor := (EQ_HOTKEY != "") ? "c0x007700" : "c0xCC0000"
     g.AddText("xm y+6 w440 " statusColor, "Active key:  " activeKeyDisplay "       Press a new key below to change:")
-    hotkeyCtrl := g.AddHotkey("xm y+4 w120", EQ_HOTKEY)
+    ctl["hotkeyCtrl"] := g.AddHotkey("xm y+4 w120", EQ_HOTKEY)
     g.AddText("x+10 yp+4 w220 cGray", "← click the box and press your key")
+}
 
-    ; ── ⚔ EverQuest ──────────────────────────────────────
+BuildEverQuestSection(g, ctl) {
+    global EQ_EXE, EQ_ARGS
     g.AddText("xm y+10 w440 cNavy", "⚔  EverQuest")
     g.AddText("xm y+4 w440 h1 0x10")
 
     g.AddText("xm y+6", "EQ Executable:")
-    exeEdit := g.AddEdit("xm y+3 w370", EQ_EXE)
-    g.AddButton("x+4 yp w66 h24", "Browse...").OnEvent("Click", (*) => BrowseExe(exeEdit))
+    ctl["exeEdit"] := g.AddEdit("xm y+3 w370", EQ_EXE)
+    g.AddButton("x+4 yp w66 h24", "Browse...").OnEvent("Click", (*) => BrowseFile(ctl["exeEdit"], "Select eqgame.exe", "Executable (*.exe)"))
 
     g.AddText("xm y+6", "Launch args:")
-    argsEdit := g.AddEdit("xm y+3 w200", EQ_ARGS)
+    ctl["argsEdit"] := g.AddEdit("xm y+3 w200", EQ_ARGS)
+}
 
-    ; ── 🎮 Launch & Tray Options ─────────────────────────
+BuildLaunchSection(g, ctl) {
+    global NUM_CLIENTS, FIX_MODE, FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
+    global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY
+    global DBLCLICK_LAUNCH, STARTUP_ENABLED, MIDCLICK_NOTES, TRIPLECLICK_LAUNCH
     g.AddText("xm y+10 w440 cNavy", "🎮  Launch & Tray Options")
     g.AddText("xm y+4 w440 h1 0x10")
 
     g.AddText("xm y+6 Section", "Clients:")
-    clientsEdit := g.AddEdit("x+4 yp-2 w40 Number", NUM_CLIENTS)
+    ctl["clientsEdit"] := g.AddEdit("x+4 yp-2 w40 Number", NUM_CLIENTS)
     g.AddUpDown("Range1-8", NUM_CLIENTS)
     g.AddText("x+10 yp+2", "Window mode:")
-    fixModes := ["maximize", "restore", "sidebyside", "multimonitor"]
-    fixModeCombo := g.AddDropDownList("x+4 yp-2 w130", fixModes)
-    for i, mode in fixModes {
+    ctl["fixModes"] := ["maximize", "restore", "sidebyside", "multimonitor"]
+    ctl["fixModeCombo"] := g.AddDropDownList("x+4 yp-2 w130", ctl["fixModes"])
+    for i, mode in ctl["fixModes"] {
         if (mode = FIX_MODE)
-            fixModeCombo.Choose(i)
+            ctl["fixModeCombo"].Choose(i)
     }
-    if (fixModeCombo.Value = 0)
-        fixModeCombo.Choose(1)
+    if (ctl["fixModeCombo"].Value = 0)
+        ctl["fixModeCombo"].Choose(1)
 
     g.AddText("xm y+6", "Top offset (px):")
-    topOffsetEdit := g.AddEdit("x+4 yp-2 w50 Number", FIX_TOP_OFFSET)
+    ctl["topOffsetEdit"] := g.AddEdit("x+4 yp-2 w50 Number", FIX_TOP_OFFSET)
     g.AddUpDown("Range-100-100", Integer(FIX_TOP_OFFSET))
     g.AddText("x+14 yp+2", "Bottom offset (px):")
-    bottomOffsetEdit := g.AddEdit("x+4 yp-2 w50 Number", FIX_BOTTOM_OFFSET)
+    ctl["bottomOffsetEdit"] := g.AddEdit("x+4 yp-2 w50 Number", FIX_BOTTOM_OFFSET)
     g.AddUpDown("Range-100-100", Integer(FIX_BOTTOM_OFFSET))
     g.AddText("x+8 yp+2 cGray", "fine-tune FixWindows")
 
@@ -1095,7 +974,6 @@ OpenSettings(*) {
         if (result.Result = "Cancel" || result.Value = "")
             return
         SaveWindowPreset(result.Value)
-        ; Refresh dropdown
         fresh := GetPresetNames()
         presetDropdown.Delete()
         presetDropdown.Add(fresh)
@@ -1119,19 +997,19 @@ OpenSettings(*) {
     }
 
     g.AddText("xm y+6", "Launch One hotkey:")
-    launchOneHkCtrl := g.AddHotkey("x+4 yp-2 w120", LAUNCH_ONE_HOTKEY)
+    ctl["launchOneHkCtrl"] := g.AddHotkey("x+4 yp-2 w120", LAUNCH_ONE_HOTKEY)
     g.AddText("x+14 yp+2", "Launch All hotkey:")
-    launchAllHkCtrl := g.AddHotkey("x+4 yp-2 w120", LAUNCH_ALL_HOTKEY)
+    ctl["launchAllHkCtrl"] := g.AddHotkey("x+4 yp-2 w120", LAUNCH_ALL_HOTKEY)
 
-    dblClickChk := g.AddCheckbox("xm y+6", "Tray double-click launches client")
-    dblClickChk.Value := (DBLCLICK_LAUNCH = "1") ? 1 : 0
-    startupChk := g.AddCheckbox("x+20 yp", "Run at Windows startup")
-    startupChk.Value := (STARTUP_ENABLED = "1") ? 1 : 0
+    ctl["dblClickChk"] := g.AddCheckbox("xm y+6", "Tray double-click launches client")
+    ctl["dblClickChk"].Value := (DBLCLICK_LAUNCH = "1") ? 1 : 0
+    ctl["startupChk"] := g.AddCheckbox("x+20 yp", "Run at Windows startup")
+    ctl["startupChk"].Value := (STARTUP_ENABLED = "1") ? 1 : 0
 
-    midClickChk := g.AddCheckbox("xm y+4", "Tray middle-click opens notes")
-    midClickChk.Value := (MIDCLICK_NOTES = "1") ? 1 : 0
-    tripleClickChk := g.AddCheckbox("x+20 yp", "Tray triple-click launches all clients")
-    tripleClickChk.Value := (TRIPLECLICK_LAUNCH = "1") ? 1 : 0
+    ctl["midClickChk"] := g.AddCheckbox("xm y+4", "Tray middle-click opens notes")
+    ctl["midClickChk"].Value := (MIDCLICK_NOTES = "1") ? 1 : 0
+    ctl["tripleClickChk"] := g.AddCheckbox("x+20 yp", "Tray triple-click launches all clients")
+    ctl["tripleClickChk"].Value := (TRIPLECLICK_LAUNCH = "1") ? 1 : 0
 
     g.AddButton("xm y+6 w130 h24", "🖥 Desktop Shortcut").OnEvent("Click", CreateDesktopShortcut)
     g.AddButton("x+8 yp w130 h24", "🔧 Tray Icon Settings").OnEvent("Click", OpenTraySettings)
@@ -1141,58 +1019,99 @@ OpenSettings(*) {
         TrayTip("Look for 'Other system tray icons' and enable EQ Switch", "Tray Icon Settings", "Iconi")
     }
 
-    ; ── ⚡ Process Settings ────────────────────────────────
+    CreateDesktopShortcut(*) {
+        desktop := EnvGet("USERPROFILE") "\Desktop\EQSwitch.lnk"
+        ico := A_ScriptDir "\eqbox.ico"
+        try {
+            if FileExist(ico)
+                FileCreateShortcut(A_ScriptFullPath, desktop, A_ScriptDir,, "EQ Switch", ico)
+            else
+                FileCreateShortcut(A_ScriptFullPath, desktop)
+            ShowTip("🖥 Desktop shortcut created!")
+        } catch {
+            ShowTip("⚠ Could not create shortcut")
+        }
+    }
+}
+
+BuildProcessSection(g, ctl) {
+    global PROCESS_PRIORITY
     g.AddText("xm y+10 w440 cNavy", "⚡  Process Settings")
     g.AddText("xm y+4 w440 h1 0x10")
 
     g.AddText("xm y+6", "Process priority:")
-    priorityLevels := ["Normal", "AboveNormal", "High"]
-    priorityCombo := g.AddDropDownList("x+4 yp-2 w120", priorityLevels)
-    for i, lvl in priorityLevels {
+    ctl["priorityLevels"] := ["Normal", "AboveNormal", "High"]
+    ctl["priorityCombo"] := g.AddDropDownList("x+4 yp-2 w120", ctl["priorityLevels"])
+    for i, lvl in ctl["priorityLevels"] {
         if (lvl = PROCESS_PRIORITY)
-            priorityCombo.Choose(i)
+            ctl["priorityCombo"].Choose(i)
     }
-    if (priorityCombo.Value = 0)
-        priorityCombo.Choose(1)
+    if (ctl["priorityCombo"].Value = 0)
+        ctl["priorityCombo"].Choose(1)
     g.AddText("x+10 yp+2 cGray", "Applied to eqgame.exe on launch")
 
     g.AddButton("xm y+6 w180 h24", "⚡ Process Manager...").OnEvent("Click", (*) => OpenProcessManager())
+}
 
-    ; ── 🖥 Multi-Monitor ──────────────────────────────────
+BuildMultiMonSection(g, ctl) {
+    global MULTIMON_ENABLED, MULTIMON_HOTKEY
     g.AddText("xm y+10 w440 cNavy", "🖥  Multi-Monitor")
     g.AddText("xm y+4 w440 h1 0x10")
-    multimonEnabled := g.AddCheckbox("xm y+6", "Enable multi-monitor toggle hotkey")
-    multimonEnabled.Value := (MULTIMON_ENABLED = "1") ? 1 : 0
-    multimonEnabled.OnEvent("Click", ToggleMultimonField)
+    ctl["multimonEnabled"] := g.AddCheckbox("xm y+6", "Enable multi-monitor toggle hotkey")
+    ctl["multimonEnabled"].Value := (MULTIMON_ENABLED = "1") ? 1 : 0
+    ctl["multimonEnabled"].OnEvent("Click", ToggleMultimonField)
     g.AddText("xm y+4", "Hotkey:")
-    multimonHkCtrl := g.AddHotkey("x+6 yp-2 w120", MULTIMON_HOTKEY)
-    multimonHkCtrl.Enabled := (MULTIMON_ENABLED = "1") ? true : false
+    ctl["multimonHkCtrl"] := g.AddHotkey("x+6 yp-2 w120", MULTIMON_HOTKEY)
+    ctl["multimonHkCtrl"].Enabled := (MULTIMON_ENABLED = "1") ? true : false
     g.AddText("x+8 yp+2 cGray", "Default: RAlt+M")
 
-    ; ── Gina & Notes (inline headers) ───────────────────
+    ToggleMultimonField(*) {
+        ctl["multimonHkCtrl"].Enabled := ctl["multimonEnabled"].Value ? true : false
+    }
+}
+
+BuildPiPSection(g, ctl) {
+    global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY
+    g.AddText("xm y+10 w440 cNavy", "📺  Picture-in-Picture")
+    g.AddText("xm y+4 w440 h1 0x10")
+
+    g.AddText("xm y+6", "Width:")
+    ctl["pipWidthEdit"] := g.AddEdit("x+4 yp-2 w55 Number", PIP_WIDTH)
+    g.AddUpDown("Range160-800", Integer(PIP_WIDTH))
+    g.AddText("x+12 yp+2", "Height:")
+    ctl["pipHeightEdit"] := g.AddEdit("x+4 yp-2 w55 Number", PIP_HEIGHT)
+    g.AddUpDown("Range90-450", Integer(PIP_HEIGHT))
+    g.AddText("x+12 yp+2", "Opacity:")
+    ctl["pipOpacityEdit"] := g.AddEdit("x+4 yp-2 w45 Number", PIP_OPACITY)
+    g.AddUpDown("Range50-255", Integer(PIP_OPACITY))
+    g.AddText("x+6 yp+2 cGray", "(50-255)")
+}
+
+BuildPathsSection(g, ctl) {
+    global GINA_PATH, NOTES_FILE
     g.SetFont("s9 Bold", "Segoe UI")
     g.AddText("xm y+10 Section", "🎯 Gina path:")
     g.SetFont("s7", "Segoe UI")
-    ginaEdit := g.AddEdit("xm y+3 w184", GINA_PATH)
+    ctl["ginaEdit"] := g.AddEdit("xm y+3 w184", GINA_PATH)
     g.SetFont("s9", "Segoe UI")
-    g.AddButton("x+3 yp w30 h24", "...").OnEvent("Click", (*) => BrowseGina(ginaEdit))
+    g.AddButton("x+3 yp w30 h24", "...").OnEvent("Click", (*) => BrowseFile(ctl["ginaEdit"], "Select Gina.exe", "Executable (*.exe)"))
     g.SetFont("s9 Bold", "Segoe UI")
     g.AddText("xs+232 ys", "📝 Notes file:")
     g.SetFont("s7", "Segoe UI")
-    notesEdit := g.AddEdit("xs+232 y+3 w176", NOTES_FILE)
+    ctl["notesEdit"] := g.AddEdit("xs+232 y+3 w176", NOTES_FILE)
     g.SetFont("s9", "Segoe UI")
-    g.AddButton("x+3 yp w30 h24", "...").OnEvent("Click", (*) => BrowseNotes(notesEdit))
+    g.AddButton("x+3 yp w30 h24", "...").OnEvent("Click", (*) => BrowseFile(ctl["notesEdit"], "Select notes .txt file", "Text Files (*.txt)"))
+}
 
-    ; ── 📋 Character Config && Backup ─────────────────
+BuildCharacterSection(g, ctl) {
+    global EQ_SERVER, RECENT_CHARS
     g.SetFont("s9", "Segoe UI")
     g.AddText("xm y+10 w440 cNavy", "📋  Character Config && Backup")
     g.AddText("xm y+3 w440 h1 0x10")
     g.AddText("xm y+4", "Server name:")
-    serverEdit := g.AddEdit("x+4 yp-2 w120", EQ_SERVER)
+    ctl["serverEdit"] := g.AddEdit("x+4 yp-2 w120", EQ_SERVER)
 
-    ; ─ Single Character ─
-    g.AddText("xm y+4 w440 cGray", "── Single Character ─────────────────────────")
-    g.AddText("xm y+3", "Character:")
+    g.AddText("xm y+4", "Character:")
     recentList := (RECENT_CHARS != "") ? StrSplit(RECENT_CHARS, "|") : []
     charCombo  := g.AddComboBox("x+4 yp-2 w140", recentList)
     if (recentList.Length > 0)
@@ -1201,72 +1120,7 @@ OpenSettings(*) {
     g.AddButton("x+4 yp w60 h20", "Backup").OnEvent("Click", (*) => DoBackup(charCombo.Text))
     g.AddButton("x+3 yp w60 h20", "Restore").OnEvent("Click", (*) => DoRestore(charCombo.Text))
 
-    ; ─ Profiles (saved groups) ─
-    g.AddText("xm y+6 w440 cGray", "── Profiles (saved character groups) ───────")
-    g.AddText("xm y+3", "Profile:")
-    profileNames := GetProfileNames()
-    profileDropdown := g.AddDropDownList("x+4 yp-2 w110", profileNames)
-    g.AddButton("x+3 yp w40 h20", "Load").OnEvent("Click", (*) => DoLoadProfile(profileDropdown, charCombo))
-    g.AddButton("x+2 yp w52 h20", "Save As").OnEvent("Click", (*) => DoSaveProfile(charCombo, profileDropdown))
-    g.AddButton("x+2 yp w44 h20", "Delete").OnEvent("Click", (*) => DoDeleteProfile(profileDropdown))
-    profileCharsText := g.AddText("xm y+2 w440 cGray", "")
-    if (profileDropdown.Value > 0)
-        UpdateProfileDisplay(profileDropdown, profileCharsText)
-    profileDropdown.OnEvent("Change", (*) => (UpdateProfileDisplay(profileDropdown, profileCharsText), UpdateProfileIniField(profileDropdown)))
-
-    g.AddText("xm y+3", "Custom eqclient.ini:")
-    profileIniEdit := g.AddEdit("x+4 yp-2 w230", "")
-    g.AddButton("x+3 yp w30 h20", "...").OnEvent("Click", (*) => BrowseProfileIni(profileIniEdit))
-    g.AddButton("x+3 yp w50 h20", "Save").OnEvent("Click", (*) => SaveProfileIni(profileDropdown, profileIniEdit))
-    g.AddText("x+4 yp+2 cGray", "per-profile")
-
-    BrowseProfileIni(ctrl) {
-        f := FileSelect(, ctrl.Value, "Select custom eqclient.ini", "INI Files (*.ini)")
-        if f
-            ctrl.Value := f
-    }
-
-    SaveProfileIni(dropdown, iniEdit) {
-        global TOOLTIP_MS
-        if (dropdown.Value = 0 || dropdown.Text = "") {
-            MsgBox("Select a profile first.", "EQ Switch", "Icon!")
-            return
-        }
-        config := GetProfileLaunchConfig(dropdown.Text)
-        SaveProfileLaunchConfig(dropdown.Text,
-            config.clients != "" ? config.clients : NUM_CLIENTS,
-            config.fixmode != "" ? config.fixmode : FIX_MODE,
-            iniEdit.Value)
-        ShowTip("Custom ini saved for: " dropdown.Text)
-    }
-
-    UpdateProfileIniField(dropdown) {
-        if (dropdown.Value = 0 || dropdown.Text = "") {
-            profileIniEdit.Value := ""
-            return
-        }
-        config := GetProfileLaunchConfig(dropdown.Text)
-        profileIniEdit.Value := config.eqclient
-    }
-    ; Initialize the ini field for current selection
-    if (profileDropdown.Value > 0)
-        UpdateProfileIniField(profileDropdown)
-
-    ; ─ Batch Operations ─
-    g.AddText("xm y+4 w440 cGray", "── Batch (all characters in profile) ──────")
-    g.AddButton("xm y+3 w160 h20", "Backup All in Profile").OnEvent("Click", (*) => DoBackupAll(profileDropdown))
-    g.AddButton("x+6 yp w160 h20", "Restore All in Profile").OnEvent("Click", (*) => DoRestoreAll(profileDropdown))
-    g.SetFont("s9", "Segoe UI")
-
-    ; ── Save / Cancel / Help ──────────────────────────────
-    g.AddText("xm y+8 w440 h1 0x10")
-    g.AddButton("xm y+6 w80 h28 Default", "💾 Save").OnEvent("Click", SaveAndClose)
-    g.AddButton("x+8 yp w80 h28", "Cancel").OnEvent("Click", (*) => (SETTINGS_OPEN := false, g.Destroy()))
-    g.AddButton("x+100 yp w80 h28", "❓ Help").OnEvent("Click", ShowHelp)
-
-    g.Show("AutoSize")
-
-    ; ---- Inner helpers (closures) -------------------------
+    ; ---- Character section helpers (closures) ----
 
     DoRemoveChar(combo) {
         global RECENT_CHARS
@@ -1292,140 +1146,8 @@ OpenSettings(*) {
             combo.Text := ""
     }
 
-    BrowseExe(ctrl) {
-        f := FileSelect(, ctrl.Value, "Select eqgame.exe", "Executable (*.exe)")
-        if f
-            ctrl.Value := f
-    }
-
-    BrowseGina(ctrl) {
-        f := FileSelect(, ctrl.Value, "Select Gina.exe", "Executable (*.exe)")
-        if f
-            ctrl.Value := f
-    }
-
-    BrowseNotes(ctrl) {
-        f := FileSelect(, ctrl.Value, "Select notes .txt file", "Text Files (*.txt)")
-        if f
-            ctrl.Value := f
-    }
-
-    ToggleMultimonField(*) {
-        multimonHkCtrl.Enabled := multimonEnabled.Value ? true : false
-    }
-
-    CreateDesktopShortcut(*) {
-        global TOOLTIP_MS
-        desktop := EnvGet("USERPROFILE") "\Desktop\EQSwitch.lnk"
-        ico := A_ScriptDir "\eqbox.ico"
-        try {
-            if FileExist(ico)
-                FileCreateShortcut(A_ScriptFullPath, desktop, A_ScriptDir,, "EQ Switch", ico)
-            else
-                FileCreateShortcut(A_ScriptFullPath, desktop)
-            ShowTip("🖥 Desktop shortcut created!")
-        } catch {
-            ShowTip("⚠ Could not create shortcut")
-        }
-    }
-
-    ShowHelp(*) {
-        h := Gui("+AlwaysOnTop +Owner" g.Hwnd, "❓ EQ Switch — Help")
-        h.SetFont("s9", "Segoe UI")
-        h.MarginX := 14
-        h.MarginY := 10
-
-        h.SetFont("s10 Bold", "Segoe UI")
-        h.AddText("w420 c0xAA3300", "⚔  Window Switch Hotkey")
-        h.SetFont("s9", "Segoe UI")
-        h.AddText("w420 y+4",
-            "The main feature. Set a key (e.g. \ or F12) that cycles between your open EQ windows. "
-            . "Only works while an EQ window is focused — won't interfere with other apps.")
-
-        h.SetFont("s10 Bold", "Segoe UI")
-        h.AddText("w420 y+10 cNavy", "⚔  EverQuest Settings")
-        h.SetFont("s9", "Segoe UI")
-        h.AddText("w420 y+4",
-            "EQ Executable — path to your eqgame.exe, used by the Launch feature.`n"
-            . "Launch args — command-line flags passed to EQ (e.g. -patchme).`n"
-            . "Server name — used to find your character log and ini files (e.g. 'dalaya').")
-
-        h.SetFont("s10 Bold", "Segoe UI")
-        h.AddText("w420 y+10 cNavy", "🎮  Launch & Tray Options")
-        h.SetFont("s9", "Segoe UI")
-        h.AddText("w420 y+4",
-            "Clients — how many EQ windows to launch at once (1–8).`n"
-            . "Window mode — how windows are arranged after launch:`n"
-            . "  • maximize — all fullscreen on primary monitor`n"
-            . "  • restore — default/restored window size`n"
-            . "  • sidebyside — split left/right on primary monitor`n"
-            . "  • multimonitor — one window per monitor, maximized`n`n"
-            . "Launch One / Launch All hotkeys — global shortcuts to launch clients from anywhere.`n`n"
-            . "Tray double-click — launches a single client.`n"
-            . "Tray triple-click — launches all clients (off by default, 5s cooldown).`n"
-            . "Tray middle-click — opens your notes file.`n"
-            . "Desktop Shortcut — creates an EQSwitch shortcut on your Desktop.`n"
-            . "Tray Icon Settings — opens Windows settings to pin EQSwitch to the taskbar tray.")
-
-        h.SetFont("s10 Bold", "Segoe UI")
-        h.AddText("w420 y+10 cNavy", "⚡  Process Settings")
-        h.SetFont("s9", "Segoe UI")
-        h.AddText("w420 y+4",
-            "Process priority — sets eqgame.exe priority after launch (Normal, AboveNormal, High). "
-            . "Higher priority helps prevent EQ from lagging when alt-tabbed or on virtual desktops.`n`n"
-            . "Process Manager — opens a dedicated window showing all running EQ processes "
-            . "with their PIDs, priorities, and CPU affinity. Lets you configure which CPU cores "
-            . "EQ can use (useful since EQ defaults to a single core). Changes are applied "
-            . "automatically on future launches, or you can apply them to already-running clients.")
-
-        h.SetFont("s10 Bold", "Segoe UI")
-        h.AddText("w420 y+10 cNavy", "🖥  Multi-Monitor")
-        h.SetFont("s9", "Segoe UI")
-        h.AddText("w420 y+4",
-            "A global hotkey (works even outside EQ) that cycles through multi-monitor layouts: "
-            . "spread windows across monitors, swap which window is on which monitor, "
-            . "or stack them all back on the primary. Uncheck to disable.")
-
-        h.SetFont("s10 Bold", "Segoe UI")
-        h.AddText("w420 y+10 cNavy", "🎯  Gina path")
-        h.SetFont("s9", "Segoe UI")
-        h.AddText("w420 y+4",
-            "Path to Gina.exe (the EQ trigger/audio overlay tool).")
-
-        h.SetFont("s10 Bold", "Segoe UI")
-        h.AddText("w420 y+10 cNavy", "📝  Notes file")
-        h.SetFont("s9", "Segoe UI")
-        h.AddText("w420 y+4",
-            "A .txt file for your personal EQ notes. "
-            . "Leave blank and EQSwitch will offer to create one on first use.")
-
-        h.SetFont("s10 Bold", "Segoe UI")
-        h.AddText("w420 y+10 cNavy", "📋  Character Config && Backup")
-        h.SetFont("s9", "Segoe UI")
-        h.AddText("w420 y+4",
-            "Backs up your character UI/keybind config files (UI_Name_server.ini "
-            . "and Name_server.ini) to and from your Desktop.`n`n"
-            . "Single Character:`n"
-            . "  Character — type or pick a recent character name.`n"
-            . "  Backup — copies that character's config files to your Desktop.`n"
-            . "  Restore — copies them back from Desktop into the EQ folder.`n`n"
-            . "Profiles (saved character groups):`n"
-            . "  A profile is a named group of characters (e.g. 'Raid Duo', 'Farm Team').`n"
-            . "  Load — populates the character dropdown with the profile's characters.`n"
-            . "  Save As — saves your current recent characters as a new profile.`n"
-            . "  Delete — removes the selected profile.`n`n"
-            . "Batch Operations:`n"
-            . "  Backup All — backs up config files for every character in the profile.`n"
-            . "  Restore All — restores config files for every character from Desktop.")
-
-        h.AddText("w420 y+10 h1 0x10")
-        h.AddButton("w80 h26 y+6 Default", "Close").OnEvent("Click", (*) => h.Destroy())
-        h.OnEvent("Escape", (*) => h.Destroy())
-        h.Show("AutoSize")
-    }
-
     DoBackup(charName) {
-        global EQ_SERVER, TOOLTIP_MS
+        global EQ_SERVER
         if (charName = "") {
             MsgBox("Please enter or select a character name.", "EQ Switch — Backup", "Icon!")
             return
@@ -1512,193 +1234,150 @@ OpenSettings(*) {
         else
             MsgBox(found " file(s) restored from Desktop ✓", "EQ Switch — Restore", "Icon!")
     }
+}
 
-    UpdateProfileDisplay(dropdown, textCtrl) {
-        if (dropdown.Value = 0 || dropdown.Text = "") {
-            textCtrl.Value := ""
-            return
-        }
-        chars := GetProfileChars(dropdown.Text)
-        if (chars.Length = 0) {
-            textCtrl.Value := ""
-            return
-        }
-        display := "Characters: "
-        for i, c in chars
-            display .= (i > 1 ? ", " : "") c
-        config := GetProfileLaunchConfig(dropdown.Text)
-        if (config.clients != "" || config.fixmode != "")
-            display .= "  |  Launch: " config.clients " clients, " config.fixmode
-        textCtrl.Value := display
+ShowSettingsHelp(parentHwnd) {
+    h := Gui("+AlwaysOnTop +Owner" parentHwnd, "❓ EQ Switch — Help")
+    h.SetFont("s9", "Segoe UI")
+    h.MarginX := 14
+    h.MarginY := 10
+
+    h.SetFont("s10 Bold", "Segoe UI")
+    h.AddText("w420 c0xAA3300", "⚔  Window Switch Hotkey")
+    h.SetFont("s9", "Segoe UI")
+    h.AddText("w420 y+4",
+        "The main feature. Set a key (e.g. \ or F12) that cycles between your open EQ windows. "
+        . "Only works while an EQ window is focused — won't interfere with other apps.")
+
+    h.SetFont("s10 Bold", "Segoe UI")
+    h.AddText("w420 y+10 cNavy", "⚔  EverQuest Settings")
+    h.SetFont("s9", "Segoe UI")
+    h.AddText("w420 y+4",
+        "EQ Executable — path to your eqgame.exe, used by the Launch feature.`n"
+        . "Launch args — command-line flags passed to EQ (e.g. -patchme).`n"
+        . "Server name — used to find your character log and ini files (e.g. 'dalaya').")
+
+    h.SetFont("s10 Bold", "Segoe UI")
+    h.AddText("w420 y+10 cNavy", "🎮  Launch & Tray Options")
+    h.SetFont("s9", "Segoe UI")
+    h.AddText("w420 y+4",
+        "Clients — how many EQ windows to launch at once (1–8).`n"
+        . "Window mode — how windows are arranged after launch:`n"
+        . "  • maximize — all fullscreen on primary monitor`n"
+        . "  • restore — default/restored window size`n"
+        . "  • sidebyside — split left/right on primary monitor`n"
+        . "  • multimonitor — one window per monitor, maximized`n`n"
+        . "Launch One / Launch All hotkeys — global shortcuts to launch clients from anywhere.`n`n"
+        . "Tray double-click — launches a single client.`n"
+        . "Tray triple-click — launches all clients (off by default, 5s cooldown).`n"
+        . "Tray middle-click — opens your notes file.`n"
+        . "Desktop Shortcut — creates an EQSwitch shortcut on your Desktop.`n"
+        . "Tray Icon Settings — opens Windows settings to pin EQSwitch to the taskbar tray.")
+
+    h.SetFont("s10 Bold", "Segoe UI")
+    h.AddText("w420 y+10 cNavy", "⚡  Process Settings")
+    h.SetFont("s9", "Segoe UI")
+    h.AddText("w420 y+4",
+        "Process priority — sets eqgame.exe priority after launch (Normal, AboveNormal, High). "
+        . "Higher priority helps prevent EQ from lagging when alt-tabbed or on virtual desktops.`n`n"
+        . "Process Manager — opens a dedicated window showing all running EQ processes "
+        . "with their PIDs, priorities, and CPU affinity. Lets you configure which CPU cores "
+        . "EQ can use (useful since EQ defaults to a single core). Changes are applied "
+        . "automatically on future launches, or you can apply them to already-running clients.")
+
+    h.SetFont("s10 Bold", "Segoe UI")
+    h.AddText("w420 y+10 cNavy", "🖥  Multi-Monitor")
+    h.SetFont("s9", "Segoe UI")
+    h.AddText("w420 y+4",
+        "A global hotkey (works even outside EQ) that cycles through multi-monitor layouts: "
+        . "spread windows across monitors, swap which window is on which monitor, "
+        . "or stack them all back on the primary. Uncheck to disable.")
+
+    h.SetFont("s10 Bold", "Segoe UI")
+    h.AddText("w420 y+10 cNavy", "🎯  Gina path")
+    h.SetFont("s9", "Segoe UI")
+    h.AddText("w420 y+4",
+        "Path to Gina.exe (the EQ trigger/audio overlay tool).")
+
+    h.SetFont("s10 Bold", "Segoe UI")
+    h.AddText("w420 y+10 cNavy", "📝  Notes file")
+    h.SetFont("s9", "Segoe UI")
+    h.AddText("w420 y+4",
+        "A .txt file for your personal EQ notes. "
+        . "Leave blank and EQSwitch will offer to create one on first use.")
+
+    h.SetFont("s10 Bold", "Segoe UI")
+    h.AddText("w420 y+10 cNavy", "📋  Character Config && Backup")
+    h.SetFont("s9", "Segoe UI")
+    h.AddText("w420 y+4",
+        "Backs up your character UI/keybind config files (UI_Name_server.ini "
+        . "and Name_server.ini) to and from your Desktop.`n`n"
+        . "Character — type or pick a recent character name.`n"
+        . "Backup — copies that character's config files to your Desktop.`n"
+        . "Restore — copies them back from Desktop into the EQ folder.")
+
+    h.AddText("w420 y+10 h1 0x10")
+    h.AddButton("w80 h26 y+6 Default", "Close").OnEvent("Click", (*) => h.Destroy())
+    h.OnEvent("Escape", (*) => h.Destroy())
+    h.Show("AutoSize")
+}
+
+; Shared file browser helper for Settings sections
+BrowseFile(ctrl, title, filter) {
+    f := FileSelect(, ctrl.Value, title, filter)
+    if f
+        ctrl.Value := f
+}
+
+; =========================================================
+; SETTINGS GUI
+; =========================================================
+OpenSettings(*) {
+    global EQ_EXE, EQ_ARGS, EQ_HOTKEY, DBLCLICK_LAUNCH, SETTINGS_OPEN
+    global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES, RECENT_CHARS
+    global EQ_SERVER, NUM_CLIENTS, FIX_MODE, STARTUP_ENABLED
+    global MULTIMON_HOTKEY, MULTIMON_ENABLED, g_version, TOOLTIP_MS
+    global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
+    if SETTINGS_OPEN
+        return
+    SETTINGS_OPEN := true
+
+    ; Always reset the flag on any close path — X button, Alt-F4, crash, anything
+    CleanupSettings(*) {
+        global SETTINGS_OPEN
+        SETTINGS_OPEN := false
     }
 
-    DoLoadProfile(dropdown, combo) {
-        global RECENT_CHARS, TOOLTIP_MS
-        if (dropdown.Value = 0 || dropdown.Text = "") {
-            MsgBox("Please select a profile first.", "EQ Switch — Profiles", "Icon!")
-            return
-        }
-        chars := GetProfileChars(dropdown.Text)
-        if (chars.Length = 0) {
-            MsgBox("Profile is empty.", "EQ Switch — Profiles", "Icon!")
-            return
-        }
-        joined := ""
-        for i, c in chars
-            joined .= (i > 1 ? "|" : "") c
-        RECENT_CHARS := joined
-        SaveConfig()
-        combo.Delete()
-        combo.Add(chars)
-        combo.Choose(1)
-        ShowTip("Loaded profile: " dropdown.Text)
-    }
+    try {
 
-    DoSaveProfile(combo, dropdown) {
-        global RECENT_CHARS, TOOLTIP_MS, NUM_CLIENTS, FIX_MODE
-        chars := (RECENT_CHARS != "") ? StrSplit(RECENT_CHARS, "|") : []
-        if (chars.Length = 0) {
-            MsgBox("No characters in the recent list to save.`nType a character name and run a backup first.", "EQ Switch — Profiles", "Icon!")
-            return
-        }
-        charDisplay := ""
-        for i, c in chars
-            charDisplay .= (i > 1 ? ", " : "") c
-        result := InputBox("Enter a name for this profile:`n`nCharacters: " charDisplay
-            . "`n`nLaunch config: " NUM_CLIENTS " clients, " FIX_MODE " mode",
-            "Save Profile", "w350 h180")
-        if (result.Result = "Cancel" || result.Value = "")
-            return
-        SaveProfileData(result.Value, chars)
-        SaveProfileLaunchConfig(result.Value, NUM_CLIENTS, FIX_MODE)
-        names := GetProfileNames()
-        dropdown.Delete()
-        dropdown.Add(names)
-        for i, n in names {
-            if (n = result.Value) {
-                dropdown.Choose(i)
-                break
-            }
-        }
-        UpdateProfileDisplay(dropdown, profileCharsText)
-        BuildProfileMenu()
-        ShowTip("Profile saved: " result.Value)
-    }
+    g := Gui("+AlwaysOnTop", "⚔ EQ Switch v" g_version " — Options")
+    g.OnEvent("Close",   CleanupSettings)   ; X button / Alt-F4
+    g.OnEvent("Escape",  CleanupSettings)   ; Escape key
+    g.SetFont("s9", "Segoe UI")
+    g.MarginX := 14
+    g.MarginY := 10
 
-    DoDeleteProfile(dropdown) {
-        global TOOLTIP_MS
-        if (dropdown.Value = 0 || dropdown.Text = "") {
-            MsgBox("Please select a profile to delete.", "EQ Switch — Profiles", "Icon!")
-            return
-        }
-        profileName := dropdown.Text
-        result := MsgBox("Delete profile '" profileName "'?", "EQ Switch — Profiles", "YesNo Icon?")
-        if (result != "Yes")
-            return
-        DeleteProfileData(profileName)
-        names := GetProfileNames()
-        dropdown.Delete()
-        dropdown.Add(names)
-        profileCharsText.Value := ""
-        BuildProfileMenu()
-        ShowTip("Profile deleted: " profileName)
-    }
+    ; Build all UI sections via dedicated builder functions
+    ctl := Map()
+    BuildHotkeySection(g, ctl)
+    BuildEverQuestSection(g, ctl)
+    BuildLaunchSection(g, ctl)
+    BuildProcessSection(g, ctl)
+    BuildMultiMonSection(g, ctl)
+    BuildPiPSection(g, ctl)
+    BuildPathsSection(g, ctl)
+    BuildCharacterSection(g, ctl)
+    g.SetFont("s9", "Segoe UI")
 
-    DoBackupAll(dropdown) {
-        global EQ_SERVER, TOOLTIP_MS
-        if (dropdown.Value = 0 || dropdown.Text = "") {
-            MsgBox("Please select a profile first.", "EQ Switch — Backup All", "Icon!")
-            return
-        }
-        chars := GetProfileChars(dropdown.Text)
-        if (chars.Length = 0) {
-            MsgBox("Profile is empty.", "EQ Switch — Backup All", "Icon!")
-            return
-        }
-        eqDir   := GetEqDir()
-        desktop := EnvGet("USERPROFILE") "\Desktop\"
-        total   := 0
-        errors  := ""
-        for _, charName in chars {
-            file1 := eqDir "UI_" charName "_" EQ_SERVER ".ini"
-            file2 := eqDir charName "_" EQ_SERVER ".ini"
-            if FileExist(file1) {
-                try {
-                    FileCopy(file1, desktop "UI_" charName "_" EQ_SERVER ".ini", 1)
-                    total++
-                } catch as err {
-                    errors .= charName " UI: " err.Message "`n"
-                }
-            }
-            if FileExist(file2) {
-                try {
-                    FileCopy(file2, desktop charName "_" EQ_SERVER ".ini", 1)
-                    total++
-                } catch as err {
-                    errors .= charName " Char: " err.Message "`n"
-                }
-            }
-        }
-        if (errors != "")
-            MsgBox("Some files failed:`n" errors, "EQ Switch — Backup All", "Icon!")
-        else if (total = 0)
-            MsgBox("No character files found for this profile.", "EQ Switch — Backup All", "Icon!")
-        else
-            MsgBox(total " file(s) backed up to Desktop ✓`nProfile: " dropdown.Text, "EQ Switch — Backup All", "Icon!")
-    }
+    ; ── Save / Cancel / Help ──────────────────────────────
+    g.AddText("xm y+8 w440 h1 0x10")
+    g.AddButton("xm y+6 w80 h28 Default", "💾 Save").OnEvent("Click", SaveAndClose)
+    g.AddButton("x+8 yp w80 h28", "Cancel").OnEvent("Click", (*) => (SETTINGS_OPEN := false, g.Destroy()))
+    g.AddButton("x+100 yp w80 h28", "❓ Help").OnEvent("Click", (*) => ShowSettingsHelp(g.Hwnd))
 
-    DoRestoreAll(dropdown) {
-        global EQ_SERVER
-        if (dropdown.Value = 0 || dropdown.Text = "") {
-            MsgBox("Please select a profile first.", "EQ Switch — Restore All", "Icon!")
-            return
-        }
-        chars := GetProfileChars(dropdown.Text)
-        if (chars.Length = 0) {
-            MsgBox("Profile is empty.", "EQ Switch — Restore All", "Icon!")
-            return
-        }
-        charList := ""
-        for i, c in chars
-            charList .= (i > 1 ? ", " : "") c
-        result := MsgBox(
-            "Restore ALL character files for profile '" dropdown.Text "'?`n`n" .
-            "Characters: " charList "`n`n" .
-            "This will OVERWRITE current files in your EQ folder.",
-            "EQ Switch — Restore All", "YesNo Icon!")
-        if (result != "Yes")
-            return
-        eqDir   := GetEqDir()
-        desktop := EnvGet("USERPROFILE") "\Desktop\"
-        total   := 0
-        errors  := ""
-        for _, charName in chars {
-            file1 := desktop "UI_" charName "_" EQ_SERVER ".ini"
-            file2 := desktop charName "_" EQ_SERVER ".ini"
-            if FileExist(file1) {
-                try {
-                    FileCopy(file1, eqDir "UI_" charName "_" EQ_SERVER ".ini", 1)
-                    total++
-                } catch as err {
-                    errors .= charName " UI: " err.Message "`n"
-                }
-            }
-            if FileExist(file2) {
-                try {
-                    FileCopy(file2, eqDir charName "_" EQ_SERVER ".ini", 1)
-                    total++
-                } catch as err {
-                    errors .= charName " Char: " err.Message "`n"
-                }
-            }
-        }
-        if (errors != "")
-            MsgBox("Some files failed:`n" errors, "EQ Switch — Restore All", "Icon!")
-        else if (total = 0)
-            MsgBox("No backup files found on Desktop for this profile.", "EQ Switch — Restore All", "Icon!")
-        else
-            MsgBox(total " file(s) restored from Desktop ✓`nProfile: " dropdown.Text, "EQ Switch — Restore All", "Icon!")
-    }
+    g.Show("AutoSize")
+
+    ; ---- SaveAndClose (reads from ctl Map) ----------------
 
     SaveAndClose(*) {
         global EQ_EXE, EQ_ARGS, EQ_HOTKEY, DBLCLICK_LAUNCH
@@ -1708,11 +1387,12 @@ OpenSettings(*) {
         global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
         global PROCESS_PRIORITY, CPU_AFFINITY
         global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
+        global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY
 
-        newHotkey := hotkeyCtrl.Value
-        newMultimonHk := multimonHkCtrl.Value
-        newLaunchOneHk := launchOneHkCtrl.Value
-        newLaunchAllHk := launchAllHkCtrl.Value
+        newHotkey := ctl["hotkeyCtrl"].Value
+        newMultimonHk := ctl["multimonHkCtrl"].Value
+        newLaunchOneHk := ctl["launchOneHkCtrl"].Value
+        newLaunchAllHk := ctl["launchAllHkCtrl"].Value
 
         ; Unbind the old hotkeys
         HotIfWinActive("ahk_exe eqgame.exe")
@@ -1726,29 +1406,29 @@ OpenSettings(*) {
             try Hotkey(LAUNCH_ALL_HOTKEY, "Off")
 
         ; Validate paths (non-blocking warnings)
-        if (exeEdit.Value != "" && !FileExist(exeEdit.Value))
-            MsgBox("The EQ executable path doesn't exist:`n" exeEdit.Value
+        if (ctl["exeEdit"].Value != "" && !FileExist(ctl["exeEdit"].Value))
+            MsgBox("The EQ executable path doesn't exist:`n" ctl["exeEdit"].Value
                 . "`n`nSettings will be saved, but Launch won't work until the path is valid.",
                 "EQ Switch — Warning", "Icon!")
-        if (ginaEdit.Value != "" && !FileExist(ginaEdit.Value))
-            MsgBox("The Gina path doesn't exist:`n" ginaEdit.Value
+        if (ctl["ginaEdit"].Value != "" && !FileExist(ctl["ginaEdit"].Value))
+            MsgBox("The Gina path doesn't exist:`n" ctl["ginaEdit"].Value
                 . "`n`nSettings will be saved, but Open Gina won't work until the path is valid.",
                 "EQ Switch — Warning", "Icon!")
-        if (notesEdit.Value != "" && !FileExist(notesEdit.Value))
-            MsgBox("The notes file doesn't exist:`n" notesEdit.Value
+        if (ctl["notesEdit"].Value != "" && !FileExist(ctl["notesEdit"].Value))
+            MsgBox("The notes file doesn't exist:`n" ctl["notesEdit"].Value
                 . "`n`nSettings will be saved. The file will be created when you first open Notes.",
                 "EQ Switch — Warning", "Icon!")
 
-        EQ_EXE          := exeEdit.Value
-        EQ_ARGS         := argsEdit.Value
-        DBLCLICK_LAUNCH := dblClickChk.Value ? "1" : "0"
-        GINA_PATH       := ginaEdit.Value
-        NOTES_FILE      := notesEdit.Value
-        MIDCLICK_NOTES  := midClickChk.Value ? "1" : "0"
-        TRIPLECLICK_LAUNCH := tripleClickChk.Value ? "1" : "0"
-        EQ_SERVER       := serverEdit.Value
+        EQ_EXE          := ctl["exeEdit"].Value
+        EQ_ARGS         := ctl["argsEdit"].Value
+        DBLCLICK_LAUNCH := ctl["dblClickChk"].Value ? "1" : "0"
+        GINA_PATH       := ctl["ginaEdit"].Value
+        NOTES_FILE      := ctl["notesEdit"].Value
+        MIDCLICK_NOTES  := ctl["midClickChk"].Value ? "1" : "0"
+        TRIPLECLICK_LAUNCH := ctl["tripleClickChk"].Value ? "1" : "0"
+        EQ_SERVER       := ctl["serverEdit"].Value
         ; Validate client count — must be 1-8
-        clientVal := clientsEdit.Value
+        clientVal := ctl["clientsEdit"].Value
         try {
             clientNum := Integer(clientVal)
             if (clientNum < 1)
@@ -1759,12 +1439,15 @@ OpenSettings(*) {
             clientNum := 2
         }
         NUM_CLIENTS     := String(clientNum)
-        clientsEdit.Value := NUM_CLIENTS
-        FIX_MODE        := fixModes[fixModeCombo.Value]
-        PROCESS_PRIORITY := priorityLevels[priorityCombo.Value]
-        FIX_TOP_OFFSET   := topOffsetEdit.Value
-        FIX_BOTTOM_OFFSET := bottomOffsetEdit.Value
-        STARTUP_ENABLED := startupChk.Value ? "1" : "0"
+        ctl["clientsEdit"].Value := NUM_CLIENTS
+        FIX_MODE        := ctl["fixModes"][ctl["fixModeCombo"].Value]
+        PROCESS_PRIORITY := ctl["priorityLevels"][ctl["priorityCombo"].Value]
+        FIX_TOP_OFFSET   := ctl["topOffsetEdit"].Value
+        FIX_BOTTOM_OFFSET := ctl["bottomOffsetEdit"].Value
+        PIP_WIDTH        := ctl["pipWidthEdit"].Value
+        PIP_HEIGHT       := ctl["pipHeightEdit"].Value
+        PIP_OPACITY      := ctl["pipOpacityEdit"].Value
+        STARTUP_ENABLED := ctl["startupChk"].Value ? "1" : "0"
 
         ; Handle hotkey — skip binding if empty
         if (newHotkey != "") {
@@ -1777,7 +1460,7 @@ OpenSettings(*) {
         }
 
         ; Handle multimon hotkey
-        MULTIMON_ENABLED := multimonEnabled.Value ? "1" : "0"
+        MULTIMON_ENABLED := ctl["multimonEnabled"].Value ? "1" : "0"
         MULTIMON_HOTKEY := newMultimonHk
         if (MULTIMON_ENABLED = "1" && newMultimonHk != "") {
             if !BindMultiMonHotkey(MULTIMON_HOTKEY)
@@ -1834,9 +1517,8 @@ g_pipGui        := ""
 g_pipThumbnails := []
 g_pipTimer      := ""
 g_pipLastActive := 0
-PIP_WIDTH       := 320
-PIP_HEIGHT      := 180
-PIP_OPACITY     := 200  ; 0-255
+; PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY are loaded from config
+; (defaults: 320, 180, 200) — see LoadConfig()
 
 TogglePiP(*) {
     global g_pipEnabled
@@ -2087,10 +1769,7 @@ OpenProcessManager(*) {
                 pid := WinGetPID("ahk_id " id)
                 title := WinGetTitle("ahk_id " id)
                 ; Read current priority
-                try
-                    pri := ProcessGetPriority(pid)
-                catch
-                    pri := "Unknown"
+                pri := GetProcessPriorityName(pid)
                 ; Read current affinity
                 affStr := "—"
                 try {
@@ -2182,7 +1861,7 @@ OpenProcessManager(*) {
     }
 
     pm.OnEvent("Escape", (*) => (g_pmOpen := false, pm.Destroy()))
-    pm.OnEvent("Close", (*) => (g_pmOpen := false))
+    pm.OnEvent("Close", (*) => (g_pmOpen := false, pm.Destroy()))
     pm.Show("AutoSize")
 }
 
@@ -2190,7 +1869,16 @@ OpenProcessManager(*) {
 ; LAUNCH
 ; =========================================================
 LaunchOne(*) {
-    global EQ_EXE, EQ_ARGS, TOOLTIP_MS, PROCESS_PRIORITY, CPU_AFFINITY
+    global EQ_EXE, EQ_ARGS, TOOLTIP_MS, PROCESS_PRIORITY, CPU_AFFINITY, g_launchActive
+    static lastLaunch := 0
+    if g_launchActive {
+        ShowTip("⚠ Launch already in progress!")
+        return
+    }
+    ; Debounce: ignore rapid double-clicks within 3 seconds
+    if (A_TickCount - lastLaunch < 3000)
+        return
+    lastLaunch := A_TickCount
     if !FileExist(EQ_EXE) {
         ShowTip("⚠ EQ executable not found — check Settings")
         return
@@ -2212,8 +1900,8 @@ LaunchOne(*) {
 }
 
 LaunchBoth(*) {
-    global g_launchActive, g_pendingIniRestore
-    global EQ_EXE, EQ_ARGS, LAUNCH_DELAY, LAUNCH_FIX_DELAY, NUM_CLIENTS, TOOLTIP_MS, PROCESS_PRIORITY, CPU_AFFINITY
+    global g_launchActive
+    global EQ_EXE, EQ_ARGS, LAUNCH_DELAY, LAUNCH_FIX_DELAY, NUM_CLIENTS, TOOLTIP_MS, PROCESS_PRIORITY, CPU_AFFINITY, FIX_MODE
     if g_launchActive {
         ShowTip("⚠ Launch already in progress!")
         return
@@ -2236,6 +1924,13 @@ LaunchBoth(*) {
         return
     }
 
+    ; Snapshot settings at launch time so mid-launch Settings changes can't affect behavior
+    launchExe      := EQ_EXE
+    launchArgs     := EQ_ARGS
+    launchPriority := PROCESS_PRIORITY
+    launchAffinity := CPU_AFFINITY
+    launchFixMode  := FIX_MODE
+
     g_launchActive := true
     pids := []
     launchIdx := 0
@@ -2245,7 +1940,7 @@ LaunchBoth(*) {
         launchIdx++
         ToolTip("🎮 Launching client " launchIdx " of " count "...")
         try {
-            Run('"' EQ_EXE '" ' EQ_ARGS, eqDir, , &newPid)
+            Run('"' launchExe '" ' launchArgs, eqDir, , &newPid)
             pids.Push(newPid)
         } catch as err {
             ShowTip("⚠ Failed to launch client " launchIdx ": " err.Message, 3000)
@@ -2256,13 +1951,13 @@ LaunchBoth(*) {
             SetTimer(DoNextLaunch, -delay)
         else {
             ; All clients launched — apply process settings
-            if (PROCESS_PRIORITY != "Normal" && PROCESS_PRIORITY != "") {
+            if (launchPriority != "Normal" && launchPriority != "") {
                 for pid in pids
-                    try ProcessSetPriority(PROCESS_PRIORITY, pid)
+                    try ProcessSetPriority(launchPriority, pid)
             }
-            if (CPU_AFFINITY != "") {
+            if (launchAffinity != "") {
                 for pid in pids
-                    ApplyAffinityToPid(pid, CPU_AFFINITY)
+                    ApplyAffinityToPid(pid, launchAffinity)
             }
             ToolTip("🎮 Waiting for windows to settle...")
             SetTimer(DoFinalize, -fixWait)
@@ -2270,22 +1965,13 @@ LaunchBoth(*) {
     }
 
     DoFinalize() {
-        global g_launchActive, g_pendingIniRestore
+        global g_launchActive, FIX_MODE
         ToolTip("🪟 Arranging windows...")
+        ; Temporarily inject captured fix mode so FixWindows() uses launch-time setting
+        savedMode := FIX_MODE
+        FIX_MODE := launchFixMode
         FixWindows()
-
-        ; Restore eqclient.ini if a profile launch swapped it
-        if (g_pendingIniRestore != "") {
-            try {
-                if FileExist(g_pendingIniRestore) {
-                    iniDir := GetEqDir()
-                    FileCopy(g_pendingIniRestore, iniDir "eqclient.ini", 1)
-                    FileDelete(g_pendingIniRestore)
-                }
-            }
-            g_pendingIniRestore := ""
-        }
-
+        FIX_MODE := savedMode
         g_launchActive := false
         ShowTip("✅ Ready to play!")
     }
