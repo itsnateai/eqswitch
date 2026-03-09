@@ -2,6 +2,19 @@
 
 All notable changes to EQ Switch are documented here.
 
+## v1.10 — 2026-03-09
+
+### Bug Fixes
+- **Window preset menu closure bug** — all preset menu items were loading the last preset due to AHK v2 closure variable capture. Fixed by using `.Bind()` to freeze the value per iteration (P1-04)
+- **Tray toggle + Settings conflict** — toggling Active Border, Auto-Minimize, or Flash Suppress via the tray menu while Settings was open would silently revert when Settings was saved. Tray toggles now blocked while Settings is open (P1-06)
+- **Character name validation** — Open Log File now validates character names (letters only) before constructing file paths, preventing malformed shell commands (P2-08)
+- **Open Log File saves to recent list** — character names used in Open Log File are now saved to the recent characters list (P2-09)
+
+### Robustness
+- **Process Manager error recovery** — wrapped GUI construction in try/catch so `g_pmOpen` flag is properly cleared on errors, matching the existing `OpenSettings` pattern (P1-05)
+- **Process handle safety** — `GetProcessPriorityName()` and `ApplyAffinityToPid()` now use try-finally blocks to guarantee process handles are closed even on exceptions (P2-07)
+- **ShowTip dismiss timer** — rapid `ShowTip()` calls no longer stack dismiss timers. Previous timer is cancelled before setting a new one, preventing tooltips from disappearing prematurely (P2-10)
+
 ## v1.9 — 2026-03-09
 
 ### New Features

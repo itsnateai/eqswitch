@@ -15,17 +15,21 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
-g_version        := "1.9"
+g_version        := "1.10"
 CFG_FILE         := A_ScriptDir "\eqswitch.cfg"
 EQ_TITLE         := "EverQuest"
 SETTINGS_OPEN    := false
 TOOLTIP_MS       := 2000
 
 ; Show a tooltip that auto-dismisses after ms (default TOOLTIP_MS)
+g_tipDismissTimer := ""
 ShowTip(msg, ms?) {
-    global TOOLTIP_MS
+    global TOOLTIP_MS, g_tipDismissTimer
+    if g_tipDismissTimer
+        SetTimer(g_tipDismissTimer, 0)
     ToolTip(msg)
-    SetTimer(() => ToolTip(), -(ms ?? TOOLTIP_MS))
+    g_tipDismissTimer := () => ToolTip()
+    SetTimer(g_tipDismissTimer, -(ms ?? TOOLTIP_MS))
 }
 g_multiMonState  := 0
 g_launchOneLabel := "⚔  Launch Client"
@@ -86,15 +90,17 @@ ApplyProcessPriority(priority) {
 ApplyAffinityToPid(pid, affinityStr) {
     if (affinityStr = "")
         return
+    hProc := 0
     try {
         mask := Integer(affinityStr)
         if (mask <= 0)
             return
         hProc := DllCall("OpenProcess", "UInt", 0x0200, "Int", 0, "UInt", pid, "Ptr")  ; PROCESS_SET_INFORMATION
-        if (hProc) {
+        if (hProc)
             DllCall("SetProcessAffinityMask", "Ptr", hProc, "UPtr", mask)
+    } finally {
+        if (hProc)
             DllCall("CloseHandle", "Ptr", hProc)
-        }
     }
 }
 
@@ -144,12 +150,12 @@ AffinityMaskToCores(maskStr, coreCount) {
 
 ; Get process priority name by PID (DllCall since ProcessGetPriority isn't in AHKv2)
 GetProcessPriorityName(pid) {
+    hProc := 0
     try {
         hProc := DllCall("OpenProcess", "UInt", 0x0400, "Int", 0, "UInt", pid, "Ptr")
         if (!hProc)
             return "Unknown"
         priClass := DllCall("GetPriorityClass", "Ptr", hProc, "UInt")
-        DllCall("CloseHandle", "Ptr", hProc)
         switch priClass {
             case 0x20:   return "Normal"
             case 0x4000: return "BelowNormal"
@@ -159,6 +165,9 @@ GetProcessPriorityName(pid) {
             case 0x40:   return "Idle"
             default:     return "Unknown"
         }
+    } finally {
+        if (hProc)
+            DllCall("CloseHandle", "Ptr", hProc)
     }
     return "Unknown"
 }
@@ -538,8 +547,7 @@ BuildPresetMenu() {
         g_presetMenu.Disable("(no presets saved)")
     } else {
         for name in presetNames {
-            boundName := name
-            g_presetMenu.Add(name, (*) => LoadWindowPreset(boundName))
+            g_presetMenu.Add(name, ((n, *) => LoadWindowPreset(n)).Bind(name))
         }
     }
     g_presetMenu.Add()
@@ -820,11 +828,16 @@ OpenLogFile(*) {
         charName := combo.Text
         if (charName = "")
             return
+        if !RegExMatch(charName, "^[A-Za-z]+$") {
+            statusTxt.Value := "Invalid name — letters only"
+            return
+        }
         logPath := eqDir "Logs\eqlog_" charName "_" EQ_SERVER ".txt"
         if !FileExist(logPath) {
             statusTxt.Value := "Log not found for: " charName
             return
         }
+        AddRecentChar(charName)
         dlg.Destroy()
         Run('notepad.exe "' logPath '"')
     }
@@ -2073,7 +2086,11 @@ DestroyBorder() {
 
 ; ── Tray Toggle Helpers ──────────────────────────────────
 ToggleBorderFromTray(*) {
-    global BORDER_ENABLED
+    global BORDER_ENABLED, SETTINGS_OPEN
+    if SETTINGS_OPEN {
+        ShowTip("⚠ Close Settings first")
+        return
+    }
     BORDER_ENABLED := (BORDER_ENABLED = "1") ? "0" : "1"
     if (BORDER_ENABLED = "0")
         DestroyBorder()
@@ -2084,7 +2101,11 @@ ToggleBorderFromTray(*) {
 }
 
 ToggleAutoMinFromTray(*) {
-    global AUTO_MINIMIZE
+    global AUTO_MINIMIZE, SETTINGS_OPEN
+    if SETTINGS_OPEN {
+        ShowTip("⚠ Close Settings first")
+        return
+    }
     AUTO_MINIMIZE := (AUTO_MINIMIZE = "1") ? "0" : "1"
     UpdateFeatureTimer()
     UpdateExtrasCheckmarks()
@@ -2093,7 +2114,11 @@ ToggleAutoMinFromTray(*) {
 }
 
 ToggleFlashFromTray(*) {
-    global FLASH_SUPPRESS
+    global FLASH_SUPPRESS, SETTINGS_OPEN
+    if SETTINGS_OPEN {
+        ShowTip("⚠ Close Settings first")
+        return
+    }
     FLASH_SUPPRESS := (FLASH_SUPPRESS = "1") ? "0" : "1"
     UpdateFeatureTimer()
     UpdateExtrasCheckmarks()
@@ -2128,6 +2153,8 @@ OpenProcessManager(*) {
     if g_pmOpen
         return
     g_pmOpen := true
+
+    try {
 
     coreCount := GetCoreCount()
     pm := Gui("+AlwaysOnTop", "⚡ EQ Switch — Process Manager")
@@ -2248,6 +2275,12 @@ OpenProcessManager(*) {
     pm.OnEvent("Escape", (*) => (g_pmOpen := false, pm.Destroy()))
     pm.OnEvent("Close", (*) => (g_pmOpen := false, pm.Destroy()))
     pm.Show("AutoSize")
+
+    } catch as err {
+        g_pmOpen := false
+        try pm.Destroy()
+        ShowTip("⚠ Process Manager error: " err.Message, 3000)
+    }
 }
 
 ; =========================================================
