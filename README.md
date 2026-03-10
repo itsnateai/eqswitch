@@ -26,7 +26,7 @@
 
 | Picture-in-Picture |
 |:---:|
-| ![Picture-in-Picture](screenshots/pip.png) |
+| ![Picture-in-Picture](screenshots/pip.jpg) |
 
 | Hidden Taskbar Mode |
 |:---:|
