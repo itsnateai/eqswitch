@@ -25,7 +25,7 @@ AppCleanup(reason, code) {
     return 0  ; allow exit
 }
 
-g_version        := "1.12"
+g_version        := "1.6"
 CFG_FILE         := A_ScriptDir "\eqswitch.cfg"
 EQ_TITLE         := "EverQuest"
 SETTINGS_OPEN    := false

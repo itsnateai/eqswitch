@@ -2,115 +2,70 @@
 
 All notable changes to EQ Switch are documented here.
 
-## v1.12 — 2026-03-10
-
-### Performance
-- **Flash suppress + auto-minimize on switch only** — `FlashWindow` DllCalls and auto-minimize checks now only fire on active window change instead of every 250ms tick (was ~28 DllCalls/sec with 8 clients, now 0 during steady play)
-- **GetVisibleEqWindows() cache** — added 200ms TTL cache so the feature timer (250ms) and PiP timer (500ms) share the same `WinGetList` + sort result instead of duplicating the work
-- **ShowTip reusable function object** — tooltip dismiss callback is now a single function created at startup instead of allocating a new lambda on every tooltip call
-
-### Robustness
-- **OnExit cleanup handler** — app now properly cleans up PiP overlays, border GUIs, and feature timers on exit via `OnExit()` callback
-- **Character name validation** — backup/restore now validates character names against `[A-Za-z0-9_-]` to prevent path traversal via crafted names
-- **Hotkey rollback on bind failure** — if a new hotkey fails to bind in Settings, the previous hotkey is restored instead of leaving the user with no hotkey
-- **GetRecentCharList() helper** — extracted repeated `RECENT_CHARS` parsing into a shared helper, reducing 5 duplication points to 1
-
-## v1.11 — 2026-03-09
-
-### Bug Fixes
-- **PiP zoom cleanup on DWM failure** — PiP zoom GUI is now destroyed if `DwmRegisterThumbnail` fails, preventing a visible black rectangle from persisting on screen (P1-07)
-- **WinGetStyle race condition** — `GetVisibleEqWindows()` now wraps `WinGetStyle` in try/catch so a window closing mid-enumeration won't crash the script (P1-08)
-- **Border color validation** — invalid hex color values in `BORDER_COLOR` now fall back to green (`00FF00`) instead of causing a 250ms error loop in `CreateBorder` (P1-09)
-
-### Robustness
-- **LaunchOne settings snapshot** — `ApplyDelayed` timer now uses captured `launchPriority`/`launchAffinity` instead of live globals, preventing mid-launch Settings changes from affecting behavior (P2-11)
-- **Process Manager handle safety** — `RefreshProcessList` now uses try/finally to guarantee process handles are closed (P2-12)
-- **DWM thumbnail error handling** — all 3 `DwmUpdateThumbnailProperties` call sites now check return values and clean up on failure (P2-13)
-- **PiP zoom source tracking** — zoom popup now uses stored `g_pipAltWindows` array to target the correct source window, preventing wrong-window zoom after window changes (P2-14)
-- **PiP reposition on display change** — `RefreshPiP` now checks if the PiP overlay position matches the expected corner and repositions if the monitor work area changed (P2-15)
-
-## v1.10 — 2026-03-09
-
-### Bug Fixes
-- **Window preset menu closure bug** — all preset menu items were loading the last preset due to AHK v2 closure variable capture. Fixed by using `.Bind()` to freeze the value per iteration (P1-04)
-- **Tray toggle + Settings conflict** — toggling Active Border, Auto-Minimize, or Flash Suppress via the tray menu while Settings was open would silently revert when Settings was saved. Tray toggles now blocked while Settings is open (P1-06)
-- **Character name validation** — Open Log File now validates character names (letters only) before constructing file paths, preventing malformed shell commands (P2-08)
-- **Open Log File saves to recent list** — character names used in Open Log File are now saved to the recent characters list (P2-09)
-
-### Robustness
-- **Process Manager error recovery** — wrapped GUI construction in try/catch so `g_pmOpen` flag is properly cleared on errors, matching the existing `OpenSettings` pattern (P1-05)
-- **Process handle safety** — `GetProcessPriorityName()` and `ApplyAffinityToPid()` now use try-finally blocks to guarantee process handles are closed even on exceptions (P2-07)
-- **ShowTip dismiss timer** — rapid `ShowTip()` calls no longer stack dismiss timers. Previous timer is cancelled before setting a new one, preventing tooltips from disappearing prematurely (P2-10)
-
-## v1.9 — 2026-03-09
-
-### New Features
-- **Active window highlight border** — colored border overlay highlights which EQ window is currently focused. Uses 4 thin click-through GUI bars positioned around the active window. Toggle from tray menu or Settings. Configurable hex color (default: green). Only activates with 2+ EQ windows (P2-04)
-- **Auto-minimize inactive EQ clients** — automatically minimizes background EQ windows when switching between clients. Reduces GPU/CPU load on lower-end hardware. Detects window changes at 250ms intervals, only minimizes non-minimized windows. Toggle from tray or Settings (P2-05)
-- **Taskbar flash suppression** — stops background EQ windows from flashing their taskbar buttons. Calls `FlashWindow(hwnd, false)` on all non-active EQ windows at 250ms intervals. Toggle from tray or Settings (P2-06)
-- **PiP zoom on hover** — hovering over a PiP thumbnail shows a 2× magnified popup to the left. Uses a second DWM thumbnail at double resolution. Automatically hides when mouse leaves PiP area. Toggle in Settings (P4-01)
-
-### Architecture
-- **Unified feature timer engine** — single 250ms `FeatureRefresh` timer handles all three window features (flash, minimize, border). Starts/stops automatically based on which features are enabled. No timer overhead when all features are off
-- **Tray toggle checkmarks** — Active Border, Auto-Minimize, and Flash Suppress tray menu items show check marks reflecting current state
-- **Settings GUI** — new "Window Extras" section with 4 toggles and border color configuration
-
-## v1.8 — 2026-03-09
-
-### Removed
-- **Profile system removed** — removed character profiles, profile quick-launch, per-profile eqclient.ini, and batch backup/restore. EQ doesn't support command-line character selection (`-args`), so the profile launch feature never worked. The eqclient.ini swap mechanism built on top of it was fragile and risked corrupting the user's original ini file
-- **Crash recovery for ini swap** — removed startup recovery block that detected and restored orphaned eqclient.ini backups (no longer needed without the swap mechanism)
-
-### Fixed
-- **ToolTip auto-dismiss** — `ToggleMultiMon` "OFF" tooltip now uses `ShowTip()` so it auto-dismisses instead of persisting on screen indefinitely (P1-01)
-- **LaunchOne re-entry guard** — `LaunchOne()` now blocks if `LaunchBoth()` is in progress, and has a 3-second debounce to prevent rapid double-click spawning extra clients (P1-03)
-- **Process Manager Close button** — clicking the X button now properly destroys the GUI instead of just resetting the flag (P2-01)
-- **Settings changes mid-launch** — `LaunchBoth()` now snapshots EQ path, args, priority, affinity, and window mode at launch start so changing Settings during the async launch chain won't affect behavior (P2-02)
-- **Window preset count** — tooltip now shows "(N of M windows)" when a preset is loaded with fewer windows than saved (P2-03)
-
-### Code Quality
-- **Settings GUI cleanup** — simplified Character Config section (removed profile dropdown, load/save/delete buttons, custom ini path, batch operations)
-- **Help dialog cleanup** — removed profile-related help text
-
-## v1.7 — 2026-03-08
+## v1.6 — 2026-03-10
 
 ### New Features
 - **Process Priority Management** — auto-set eqgame.exe to High (or AboveNormal) priority on launch. Configurable dropdown in Settings. Replaces need for Process Lasso
 - **CPU Affinity Control** — configure which CPU cores eqgame.exe can use via the Process Manager. Useful since EQ defaults to single-core, causing bottlenecks
 - **Process Manager** — dedicated window (tray menu or Settings) showing all running EQ processes with PID, priority, and affinity. Apply settings to already-running clients or configure for future launches
-- ~~**Profile Quick-Launch**~~ — _removed in v1.8 (EQ doesn't support command-line character selection, making profile launch non-functional)_
-- ~~**Per-Profile eqclient.ini**~~ — _removed in v1.8 (dependent on profile quick-launch)_
-- **FixWindows offset tuning** — configurable top/bottom pixel offsets for fine-tuning window positioning. Top offset adjusts Y start, bottom offset extends past work area into taskbar zone
-- **Window Presets** — save/restore named window layouts (position + size for each client). Save current layout, load presets from tray menu or Settings. Goes beyond FixWindows for custom arrangements
 - **Picture-in-Picture overlay** — live preview of alt EQ windows overlaid on your screen using DWM thumbnails. Toggle via tray menu. Click-through overlay positioned in bottom-right corner
-
-### Bug Fixes & Code Quality
-- **Process Manager single-instance guard** — prevents opening multiple Process Manager windows simultaneously
-- **PiP flicker fix** — swaps DWM thumbnail sources in-place instead of destroying and recreating the overlay on every window switch
-- **LaunchOne timer consolidation** — priority and affinity now applied in a single deferred timer instead of two racing anonymous timers
-- **Path validation on save** — Settings now warns if Gina or Notes paths don't exist (matching existing EQ exe validation)
-- **ShowTip helper** — extracted repeated ToolTip+SetTimer dismiss pattern (~38 instances) into a `ShowTip(msg, ms?)` helper
-- **Font consistency** — Character Config section now uses same `s9` font as the rest of Settings
-- **Beep feature removed** — removed dead beep references; CHANGELOG updated to reflect removal
-- **.gitignore cleanup** — replaced individual exe entries with `*.exe` wildcard
-- **README compile path** — updated to reference bundled `./Ahk2Exe.exe` with Git Bash `MSYS_NO_PATHCONV=1` note
-
-## v1.6 — 2026-03-08
+- **PiP zoom on hover** — hovering over a PiP thumbnail shows a 2× magnified popup to the left. Uses a second DWM thumbnail at double resolution. Toggle in Settings
+- **Active window highlight border** — colored border overlay highlights which EQ window is currently focused. Configurable hex color (default: green). Toggle from tray or Settings
+- **Auto-minimize inactive EQ clients** — automatically minimizes background EQ windows when switching between clients. Reduces GPU/CPU load on lower-end hardware. Toggle from tray or Settings
+- **Taskbar flash suppression** — stops background EQ windows from flashing their taskbar buttons. Toggle from tray or Settings
+- **Window Presets** — save/restore named window layouts (position + size per client). Save current layout, load presets from tray menu or Settings
+- **FixWindows offset tuning** — configurable top/bottom pixel offsets for fine-tuning window positioning
+- **Open Log File redesign** — custom GUI with ComboBox of recent characters and inline error display
+- **Multi-monitor enable/disable** — checkbox to enable or disable the multi-monitor toggle hotkey
+- **Desktop Shortcut button** — one-click button to create an EQSwitch shortcut on your Desktop
 
 ### Settings GUI Redesign
-- **Compact layout** — reduced vertical height significantly by using side-by-side layouts and tighter spacing
-- **Args + Server side-by-side** — launch arguments and server name now share a single row
+- **Compact layout** — reduced vertical height with side-by-side layouts and tighter spacing
+- **Args + Server side-by-side** — launch arguments and server name share a single row
 - **Gina + Notes side-by-side** — Gina path and Notes file share a row with inline Browse buttons
-- **Merged sections** — "Launch Options" and "Tray Icon" combined into a single "Launch & Tray Options" section
-- **Checkboxes paired** — beep/dbl-click and middle-click/startup are on shared rows
-- **Larger Browse button** — EQ exe now has a proper "Browse..." button (w66) instead of tiny "..."
-- **Backup section compact** — character rows use inline labels instead of stacked
+- **Merged sections** — "Launch Options" and "Tray Icon" combined into "Launch & Tray Options"
+- **Window Extras section** — 4 toggles (border, auto-minimize, flash suppress, PiP zoom) and border color config
+- **Tray toggle checkmarks** — Active Border, Auto-Minimize, and Flash Suppress show check marks in tray menu
 
-### New Features
-- **Open Log File redesign** — replaced Windows InputBox with a custom GUI using ComboBox of recent characters with inline error display
-- **Multi-monitor enable/disable** — new checkbox to enable or disable the multi-monitor toggle hotkey; when unchecked, the hotkey field is grayed out and the hotkey is unbound
-- **Desktop Shortcut button** — one-click button to create an EQSwitch shortcut on your Desktop
-- ~~**Beep on window switch**~~ — _removed in v1.7 (added in v1.2, caused audio device issues)_
+### Removed
+- **Profile system** — removed character profiles, profile quick-launch, per-profile eqclient.ini, and batch backup/restore. EQ doesn't support command-line character selection, so the profile launch feature never worked
+- **Beep on window switch** — caused audio device issues (added in v1.2)
+
+### Performance
+- **Flash suppress + auto-minimize on switch only** — now only fire on active window change instead of every 250ms tick
+- **GetVisibleEqWindows() cache** — 200ms TTL cache eliminates duplicate `WinGetList` + sort between timers
+- **Unified feature timer engine** — single 250ms timer handles all window features; no overhead when all features are off
+- **ShowTip reusable function object** — single function at startup instead of allocating a new lambda per call
+
+### Bug Fixes
+- **PiP zoom cleanup on DWM failure** — zoom GUI destroyed if `DwmRegisterThumbnail` fails, preventing black rectangles
+- **WinGetStyle race condition** — window closing mid-enumeration no longer crashes the script
+- **Border color validation** — invalid hex colors fall back to green instead of error-looping
+- **Window preset menu closure bug** — fixed AHK v2 closure variable capture with `.Bind()`
+- **Tray toggle + Settings conflict** — tray toggles now blocked while Settings is open to prevent silent reverts
+- **ToolTip auto-dismiss** — multi-monitor "OFF" tooltip no longer persists forever
+- **LaunchOne re-entry guard** — 3-second debounce prevents rapid double-click spawning extra clients
+- **Process Manager Close button** — X button now properly destroys the GUI
+- **Settings changes mid-launch** — launch snapshots settings at start so mid-launch changes don't affect behavior
+- **ShowTip dismiss timer** — rapid calls no longer stack timers causing premature dismissal
+- **PiP flicker fix** — swaps DWM thumbnail sources in-place instead of recreating the overlay
+
+### Robustness
+- **OnExit cleanup handler** — properly cleans up PiP overlays, border GUIs, and timers on exit
+- **Character name validation** — validates against `[A-Za-z0-9_-]` to prevent path traversal
+- **Hotkey rollback on bind failure** — previous hotkey restored if new one fails to bind
+- **Process handle safety** — try-finally blocks guarantee process handles are closed on exceptions
+- **DWM thumbnail error handling** — all call sites check return values and clean up on failure
+- **PiP zoom source tracking** — zoom targets correct source window after window changes
+- **PiP reposition on display change** — repositions if monitor work area changed
+- **Process Manager error recovery** — GUI errors properly clear the open flag
+- **LaunchOne settings snapshot** — uses captured values instead of live globals during launch
+
+### Code Quality
+- **GetRecentCharList() helper** — extracted repeated `RECENT_CHARS` parsing into shared helper
+- **ShowTip helper** — extracted ~38 repeated ToolTip+SetTimer patterns into `ShowTip(msg, ms?)`
+- **Profile cleanup** — removed profile dropdown, load/save/delete buttons, custom ini path, batch operations from Settings
+- **.gitignore cleanup** — replaced individual exe entries with `*.exe` wildcard
 
 ## v1.5 — 2026-03-08
 
