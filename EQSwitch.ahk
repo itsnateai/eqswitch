@@ -1038,15 +1038,22 @@ BuildLaunchSection(g, ctl) {
     global NUM_CLIENTS, FIX_MODE
     global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY
     global DBLCLICK_LAUNCH, STARTUP_ENABLED, MIDCLICK_MODE, TRIPLECLICK_LAUNCH
+    global MULTIMON_ENABLED, MULTIMON_HOTKEY
     g.AddText("xm y+10 w440 cNavy", "🎮  Launch & Tray Options")
     g.AddText("xm y+4 w440 h1 0x10")
 
     g.AddText("xm y+6 Section", "Clients:")
     ctl["clientsEdit"] := g.AddEdit("x+4 yp-2 w40 Number", NUM_CLIENTS)
     g.AddUpDown("Range1-8", NUM_CLIENTS)
-    g.AddText("x+10 yp+2", "Multi-Mon:")
+    g.AddText("x+10 yp+2", "Single Monitor /")
+    ctl["multimonEnabled"] := g.AddCheckbox("x+2 yp" (MULTIMON_ENABLED = "1" ? " Checked" : ""), "Multi-Monitor")
+    ctl["multimonEnabled"].OnEvent("Click", ToggleMultimonField)
+    g.AddText("x+6 yp", "Toggle:")
+    ctl["multimonHkCtrl"] := g.AddHotkey("x+2 yp-2 w80", MULTIMON_HOTKEY)
+    ctl["multimonHkCtrl"].Enabled := (MULTIMON_ENABLED = "1") ? true : false
+
     ctl["fixModes"] := ["single screen", "multimonitor"]
-    ctl["fixModeCombo"] := g.AddDropDownList("x+4 yp-2 w100", ctl["fixModes"])
+    ctl["fixModeCombo"] := g.AddDropDownList("xm y+4 w100", ctl["fixModes"])
     for i, mode in ctl["fixModes"] {
         if (mode = FIX_MODE)
             ctl["fixModeCombo"].Choose(i)
@@ -1067,6 +1074,10 @@ BuildLaunchSection(g, ctl) {
         targetMon := 1
     ctl["targetMonCombo"].Choose(targetMon)
     ctl["targetMonCombo"].Enabled := (FIX_MODE = "single screen")
+
+    ToggleMultimonField(*) {
+        ctl["multimonHkCtrl"].Enabled := ctl["multimonEnabled"].Value ? true : false
+    }
 
     g.AddText("xm y+6", "Launch One hotkey:")
     ctl["launchOneHkCtrl"] := g.AddHotkey("x+4 yp-2 w90", LAUNCH_ONE_HOTKEY)
@@ -1120,22 +1131,7 @@ BuildLaunchSection(g, ctl) {
 
 ; Process Settings merged into BuildEverQuestSection
 
-BuildMultiMonSection(g, ctl) {
-    global MULTIMON_ENABLED, MULTIMON_HOTKEY
-    g.AddText("xm y+10 w440 cNavy", "🖥  Multi-Monitor")
-    g.AddText("xm y+4 w440 h1 0x10")
-    ctl["multimonEnabled"] := g.AddCheckbox("xm y+6", "Enable multi-monitor toggle")
-    ctl["multimonEnabled"].Value := (MULTIMON_ENABLED = "1") ? 1 : 0
-    ctl["multimonEnabled"].OnEvent("Click", ToggleMultimonField)
-    g.AddText("xm y+4", "Hotkey:")
-    ctl["multimonHkCtrl"] := g.AddHotkey("x+6 yp-2 w120", MULTIMON_HOTKEY)
-    ctl["multimonHkCtrl"].Enabled := (MULTIMON_ENABLED = "1") ? true : false
-    g.AddText("x+8 yp+4 cGray", "← press your key")
-
-    ToggleMultimonField(*) {
-        ctl["multimonHkCtrl"].Enabled := ctl["multimonEnabled"].Value ? true : false
-    }
-}
+; Multi-Monitor section merged into BuildLaunchSection
 
 BuildPiPSection(g, ctl) {
     global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY
@@ -1431,6 +1427,7 @@ Multi-Monitor Toggle (default: Alt+M)
 
 Launch One / Launch All
   Launch EQ clients using tray menu, hotkeys, or tray clicks. Set the number of clients (1-8) in Settings.
+  All launch and global hotkeys are automatically disabled while Settings is open so you can safely change bindings.
 
 Tray double-click — launches a single client.
 Tray middle-click — configurable single + triple-click actions:
@@ -1546,10 +1543,23 @@ OpenSettings(*) {
         return
     SETTINGS_OPEN := true
 
+    ; Suspend global hotkeys while Settings is open — prevents accidental
+    ; launches when the user is trying to set new hotkey bindings
+    if (LAUNCH_ONE_HOTKEY != "")
+        try Hotkey(LAUNCH_ONE_HOTKEY, "Off")
+    if (LAUNCH_ALL_HOTKEY != "")
+        try Hotkey(LAUNCH_ALL_HOTKEY, "Off")
+    if (FOCUS_HOTKEY != "")
+        try Hotkey(FOCUS_HOTKEY, "Off")
+
     ; Always reset the flag on any close path — X button, Alt-F4, crash, anything
     CleanupSettings(*) {
         global SETTINGS_OPEN
         SETTINGS_OPEN := false
+        ; Re-enable global hotkeys that were suspended while Settings was open
+        BindLaunchHotkey(LAUNCH_ONE_HOTKEY, "one")
+        BindLaunchHotkey(LAUNCH_ALL_HOTKEY, "all")
+        BindFocusHotkey(FOCUS_HOTKEY)
     }
 
     try {
@@ -1566,7 +1576,6 @@ OpenSettings(*) {
     BuildHotkeySection(g, ctl)
     BuildEverQuestSection(g, ctl)
     BuildLaunchSection(g, ctl)
-    BuildMultiMonSection(g, ctl)
     BuildPiPSection(g, ctl)
     BuildExtrasSection(g, ctl)
     BuildPathsSection(g, ctl)
@@ -1577,7 +1586,7 @@ OpenSettings(*) {
     g.AddText("xm y+8 w440 h1 0x10")
     g.AddButton("xm y+6 w80 h28 Default", "Save").OnEvent("Click", SaveAndClose)
     g.AddButton("x+8 yp w80 h28", "Apply").OnEvent("Click", (*) => ApplySettings())
-    g.AddButton("x+8 yp w80 h28", "Close").OnEvent("Click", (*) => (SETTINGS_OPEN := false, g.Destroy()))
+    g.AddButton("x+8 yp w80 h28", "Close").OnEvent("Click", (*) => (CleanupSettings(), g.Destroy()))
     g.AddButton("x+8 yp w80 h28", "❓ Help").OnEvent("Click", (*) => ShowSettingsHelp())
 
     g.Show("AutoSize")
@@ -1586,7 +1595,7 @@ OpenSettings(*) {
 
     SaveAndClose(*) {
         ApplySettings()
-        SETTINGS_OPEN := false
+        CleanupSettings()
         g.Destroy()
     }
 
