@@ -60,6 +60,10 @@ GetEqDir() {
 g_visibleCache     := []
 g_visibleCacheTick := 0
 
+IsHungWindow(hwnd) {
+    return DllCall("IsHungAppWindow", "Ptr", hwnd, "Int")
+}
+
 GetVisibleEqWindows() {
     global EQ_TITLE, g_visibleCache, g_visibleCacheTick
     ; Return cached result if fresh (< 200ms) — avoids redundant WinGetList+sort
@@ -96,8 +100,8 @@ GetVisibleEqWindows() {
 
 ; Apply process priority to all running eqgame.exe instances
 ApplyProcessPriority(priority) {
-    if (priority = "" || priority = "Normal")
-        return
+    if (priority = "")
+        priority := "Normal"
     for id in WinGetList("ahk_exe eqgame.exe") {
         try {
             pid := WinGetPID("ahk_id " id)
@@ -213,7 +217,7 @@ LoadConfig() {
     global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
     global PROCESS_PRIORITY, CPU_AFFINITY
     global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
-    global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY
+    global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY, PIP_X, PIP_Y
     global FLASH_SUPPRESS, AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR, PIP_ZOOM
 
     ; Migrate from old "EQ2Box" section name (pre-v1.2 rename)
@@ -283,7 +287,7 @@ SaveConfig() {
     global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
     global PROCESS_PRIORITY, CPU_AFFINITY
     global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
-    global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY
+    global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY, PIP_X, PIP_Y
     global FLASH_SUPPRESS, AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR, PIP_ZOOM
     IniWrite(EQ_EXE,           CFG_FILE, "EQSwitch", "EQ_EXE")
     IniWrite(EQ_ARGS,          CFG_FILE, "EQSwitch", "EQ_ARGS")
@@ -695,6 +699,8 @@ FixWindows(*) {
         count := winList.Length
         Loop count {
             id := winList[A_Index]
+            if IsHungWindow(id)
+                continue
             mon := Mod(A_Index - 1, monCount) + 1
             try {
                 MonitorGetWorkArea(mon, &mLeft, &mTop, &mRight, &mBottom)
@@ -708,6 +714,8 @@ FixWindows(*) {
         ; Default: maximize
         Loop winList.Length {
             id := winList[A_Index]
+            if IsHungWindow(id)
+                continue
             try WinMaximize("ahk_id " id)
         }
     }
@@ -723,9 +731,13 @@ SwapWindows(*) {
         ShowTip("Need at least 2 EQ windows to swap!")
         return
     }
-    ; Read current positions
+    ; Read current positions — skip hung windows
     positions := []
     for id in visible {
+        if IsHungWindow(id) {
+            ShowTip("⚠ An EQ window is not responding — swap skipped")
+            return
+        }
         try {
             WinGetPos(&x, &y, &w, &h, "ahk_id " id)
             positions.Push({x: x, y: y, w: w, h: h})
@@ -1071,21 +1083,10 @@ BuildLaunchSection(g, ctl) {
 }
 
 BuildProcessSection(g, ctl) {
-    global PROCESS_PRIORITY
     g.AddText("xm y+10 w440 cNavy", "⚡  Process Settings")
     g.AddText("xm y+4 w440 h1 0x10")
 
-    g.AddText("xm y+6", "Process priority:")
-    ctl["priorityLevels"] := ["Normal", "AboveNormal", "High"]
-    ctl["priorityCombo"] := g.AddDropDownList("x+4 yp-2 w120", ctl["priorityLevels"])
-    for i, lvl in ctl["priorityLevels"] {
-        if (lvl = PROCESS_PRIORITY)
-            ctl["priorityCombo"].Choose(i)
-    }
-    if (ctl["priorityCombo"].Value = 0)
-        ctl["priorityCombo"].Choose(1)
-    g.AddText("x+10 yp+2 cGray", "Applied to eqgame.exe on launch")
-
+    g.AddText("xm y+6 cGray", "Priority and CPU affinity are configured in the Process Manager.")
     g.AddButton("xm y+6 w180 h24", "⚡ Process Manager...").OnEvent("Click", (*) => OpenProcessManager())
 }
 
@@ -1463,7 +1464,6 @@ OpenSettings(*) {
         global EQ_SERVER, NUM_CLIENTS, FIX_MODE, STARTUP_ENABLED
         global MULTIMON_HOTKEY, MULTIMON_ENABLED, TOOLTIP_MS
         global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
-        global PROCESS_PRIORITY, CPU_AFFINITY
         global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
         global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY
         global FLASH_SUPPRESS, AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR, PIP_ZOOM
@@ -1521,7 +1521,6 @@ OpenSettings(*) {
         NUM_CLIENTS     := String(clientNum)
         ctl["clientsEdit"].Value := NUM_CLIENTS
         FIX_MODE        := ctl["fixModes"][ctl["fixModeCombo"].Value]
-        PROCESS_PRIORITY := ctl["priorityLevels"][ctl["priorityCombo"].Value]
         FIX_TOP_OFFSET   := ctl["topOffsetEdit"].Value
         FIX_BOTTOM_OFFSET := ctl["bottomOffsetEdit"].Value
         PIP_WIDTH        := ctl["pipWidthEdit"].Value
@@ -1641,7 +1640,7 @@ TogglePiP(*) {
 
 CreatePiP(*) {
     global g_pipEnabled, g_pipGui, g_pipThumbnails, g_pipTimer
-    global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY, TOOLTIP_MS
+    global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY, PIP_X, PIP_Y, TOOLTIP_MS
 
     if g_pipEnabled
         DestroyPiP()
@@ -1652,9 +1651,18 @@ CreatePiP(*) {
         return
     }
 
-    ; Get the active EQ window (or first one)
+    ; Get the active EQ window — if focus isn't on an EQ window, use the first one
     activeID := 0
     try activeID := WinGetID("A")
+    isEqActive := false
+    for id in visible {
+        if (id = activeID) {
+            isEqActive := true
+            break
+        }
+    }
+    if !isEqActive
+        activeID := visible[1]
 
     ; Find non-active EQ windows to show as thumbnails
     altWindows := []
@@ -1675,7 +1683,6 @@ CreatePiP(*) {
     totalW := PIP_WIDTH
 
     ; Use saved position if available, otherwise bottom-right corner
-    global PIP_X, PIP_Y
     if (PIP_X != "" && PIP_Y != "") {
         try {
             posX := Integer(PIP_X)
@@ -2070,7 +2077,7 @@ FeatureRefresh(*) {
         ; P2-06: Flash suppression — stop taskbar flashing on background EQ windows
         if (FLASH_SUPPRESS = "1") {
             for id in visible {
-                if (id != activeID)
+                if (id != activeID && !IsHungWindow(id))
                     try DllCall("FlashWindow", "Ptr", id, "Int", 0)
             }
         }
@@ -2078,7 +2085,7 @@ FeatureRefresh(*) {
         ; P2-05: Auto-minimize — minimize inactive EQ windows on switch
         if (AUTO_MINIMIZE = "1") {
             for id in visible {
-                if (id != activeID) {
+                if (id != activeID && !IsHungWindow(id)) {
                     try {
                         if (WinGetMinMax("ahk_id " id) != -1)
                             WinMinimize("ahk_id " id)
@@ -2121,6 +2128,12 @@ UpdateBorder(targetHwnd) {
 
     if (g_borderGuis.Length = 0)
         CreateBorder()
+
+    ; Skip hung windows — WinGetPos can block on unresponsive processes
+    if IsHungWindow(targetHwnd) {
+        HideBorder()
+        return
+    }
 
     ; Get target window position
     try {
@@ -2264,13 +2277,11 @@ OpenProcessManager(*) {
             try {
                 pid := WinGetPID("ahk_id " id)
                 title := WinGetTitle("ahk_id " id)
-                ; Read current priority
                 pri := GetProcessPriorityName(pid)
-                ; Read current affinity
                 affStr := "—"
                 hProc := 0
                 try {
-                    hProc := DllCall("OpenProcess", "UInt", 0x0400, "Int", 0, "UInt", pid, "Ptr")  ; PROCESS_QUERY_INFORMATION
+                    hProc := DllCall("OpenProcess", "UInt", 0x0400, "Int", 0, "UInt", pid, "Ptr")
                     if (hProc) {
                         procMask := 0
                         sysMask := 0
@@ -2291,28 +2302,34 @@ OpenProcessManager(*) {
 
     pm.AddButton("xm y+6 w100 h24", "🔄 Refresh").OnEvent("Click", RefreshProcessList)
 
-    ApplyToRunning(*) {
-        if (PROCESS_PRIORITY != "Normal" && PROCESS_PRIORITY != "")
-            ApplyProcessPriority(PROCESS_PRIORITY)
-        if (CPU_AFFINITY != "")
-            ApplyAffinityToAll(CPU_AFFINITY)
-        RefreshProcessList()
-        ShowTip("⚡ Process settings applied!")
+    ; ── Process Priority ──
+    pm.AddText("xm y+12 w500 h1 0x10")
+    pm.SetFont("s10 Bold", "Segoe UI")
+    pm.AddText("xm y+6 w500 cNavy", "🔥  Process Priority")
+    pm.SetFont("s9", "Segoe UI")
+    pm.AddText("xm y+4 cGray", "Applied to all EQ processes on launch and when EQSwitch starts.")
+
+    pm.AddText("xm y+6", "Priority:")
+    priorityLevels := ["Normal", "AboveNormal", "High"]
+    priorityCombo := pm.AddDropDownList("x+4 yp-2 w120", priorityLevels)
+    for i, lvl in priorityLevels {
+        if (lvl = PROCESS_PRIORITY)
+            priorityCombo.Choose(i)
     }
-    pm.AddButton("x+8 yp w180 h24", "⚡ Apply Settings to Running").OnEvent("Click", ApplyToRunning)
+    if (priorityCombo.Value = 0)
+        priorityCombo.Choose(1)
 
     ; ── CPU Affinity ──
     pm.AddText("xm y+12 w500 h1 0x10")
     pm.SetFont("s10 Bold", "Segoe UI")
-    pm.AddText("xm y+6 w500 cNavy", "🔧  CPU Affinity (applied on launch)")
+    pm.AddText("xm y+6 w500 cNavy", "🔧  CPU Affinity")
     pm.SetFont("s9", "Segoe UI")
-    pm.AddText("xm y+4 cGray", "Select which CPU cores eqgame.exe can use. Unchecking all = use all cores.")
+    pm.AddText("xm y+4 cGray", "Applied to all EQ processes on launch and when EQSwitch starts. Unchecking all = use all cores.")
 
     cores := AffinityMaskToCores(CPU_AFFINITY, coreCount)
     coreChecks := []
-    ; Arrange checkboxes in rows of 8
     Loop coreCount {
-        xOpt := (Mod(A_Index - 1, 8) = 0) ? "xm y+4" : "x+6 yp"
+        xOpt := (Mod(A_Index - 1, 7) = 0) ? "xm y+4" : "x+6 yp"
         chk := pm.AddCheckbox(xOpt, "Core " A_Index)
         chk.Value := cores[A_Index]
         coreChecks.Push(chk)
@@ -2330,19 +2347,21 @@ OpenProcessManager(*) {
             chk.Value := 0
     }
 
-    ; ── Save / Close ──
+    ; ── Save / Apply / Close ──
     pm.AddText("xm y+10 w500 h1 0x10")
-    pm.AddButton("xm y+6 w80 h28 Default", "💾 Save").OnEvent("Click", SavePM)
+    pm.AddButton("xm y+6 w120 h28 Default", "💾 Save && Apply").OnEvent("Click", SavePM)
     pm.AddButton("x+8 yp w80 h28", "Close").OnEvent("Click", (*) => (g_pmOpen := false, pm.Destroy()))
 
     SavePM(*) {
-        global CPU_AFFINITY
+        global CPU_AFFINITY, PROCESS_PRIORITY
+        ; Read priority from dropdown
+        PROCESS_PRIORITY := priorityLevels[priorityCombo.Value]
+
         ; Build affinity mask from checkboxes
         coreVals := []
         for chk in coreChecks
             coreVals.Push(chk.Value)
         mask := CoresMaskToAffinity(coreVals)
-        ; If all cores selected or none selected, clear the affinity (use system default)
         allSelected := true
         noneSelected := true
         for val in coreVals {
@@ -2351,12 +2370,25 @@ OpenProcessManager(*) {
             if val
                 noneSelected := false
         }
-        if (allSelected || noneSelected)
+        ; All or none selected = use all cores (full system mask)
+        if (allSelected || noneSelected) {
             CPU_AFFINITY := ""
-        else
+            fullMask := (1 << coreCount) - 1
+            applyMask := String(fullMask)
+        } else {
             CPU_AFFINITY := String(mask)
+            applyMask := CPU_AFFINITY
+        }
+
+        ; Save to INI
         SaveConfig()
-        ShowTip("⚡ Process settings saved!")
+
+        ; Apply immediately to running processes
+        ApplyProcessPriority(PROCESS_PRIORITY)
+        ApplyAffinityToAll(applyMask)
+
+        RefreshProcessList()
+        ShowTip("⚡ Process settings saved and applied!")
     }
 
     pm.OnEvent("Escape", (*) => (g_pmOpen := false, pm.Destroy()))
@@ -2402,7 +2434,7 @@ LaunchOne(*) {
             if needsAff
                 ApplyAffinityToPid(newPid, launchAffinity)
         }
-        SetTimer(ApplyDelayed, -2000)
+        SetTimer(ApplyDelayed, -5000)
     }
 }
 
