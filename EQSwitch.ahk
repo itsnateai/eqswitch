@@ -15,7 +15,7 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
-g_version        := "1.10"
+g_version        := "1.11"
 CFG_FILE         := A_ScriptDir "\eqswitch.cfg"
 EQ_TITLE         := "EverQuest"
 SETTINGS_OPEN    := false
@@ -53,8 +53,10 @@ GetVisibleEqWindows() {
     global EQ_TITLE
     visible := []
     for id in WinGetList(EQ_TITLE) {
-        if WinGetStyle("ahk_id " id) & 0x10000000  ; WS_VISIBLE
-            visible.Push(id)
+        try {
+            if WinGetStyle("ahk_id " id) & 0x10000000  ; WS_VISIBLE
+                visible.Push(id)
+        }
     }
     ; Insertion sort — stable, efficient for small arrays (2-8 windows)
     Loop visible.Length - 1 {
@@ -1509,7 +1511,8 @@ OpenSettings(*) {
         FLASH_SUPPRESS  := ctl["flashSuppressChk"].Value ? "1" : "0"
         AUTO_MINIMIZE   := ctl["autoMinimizeChk"].Value ? "1" : "0"
         BORDER_ENABLED  := ctl["borderEnabledChk"].Value ? "1" : "0"
-        BORDER_COLOR    := ctl["borderColorEdit"].Value
+        borderInput     := ctl["borderColorEdit"].Value
+        BORDER_COLOR    := RegExMatch(borderInput, "^[0-9A-Fa-f]{6}$") ? borderInput : "00FF00"
         PIP_ZOOM        := ctl["pipZoomChk"].Value ? "1" : "0"
         STARTUP_ENABLED := ctl["startupChk"].Value ? "1" : "0"
 
@@ -1586,6 +1589,7 @@ g_pipGui        := ""
 g_pipThumbnails := []
 g_pipTimer      := ""
 g_pipLastActive := 0
+g_pipAltWindows := []
 g_pipZoomGui    := ""
 g_pipZoomThumb  := 0
 g_pipZoomIndex  := -1
@@ -1674,12 +1678,16 @@ CreatePiP(*) {
             ; fSourceClientAreaOnly
             NumPut("Int", 1, props, 44)
 
-            DllCall("dwmapi\DwmUpdateThumbnailProperties", "Ptr", hThumb, "Ptr", props)
-            g_pipThumbnails.Push(hThumb)
+            hrUpdate := DllCall("dwmapi\DwmUpdateThumbnailProperties", "Ptr", hThumb, "Ptr", props, "Int")
+            if (hrUpdate = 0)
+                g_pipThumbnails.Push(hThumb)
+            else
+                DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", hThumb)
         }
         yPos += PIP_HEIGHT + 4
     }
 
+    g_pipAltWindows := altWindows
     g_pipGui := pipG
     g_pipEnabled := true
     g_pipLastActive := activeID
@@ -1691,6 +1699,7 @@ CreatePiP(*) {
 
 RefreshPiP(*) {
     global g_pipEnabled, g_pipGui, g_pipThumbnails, g_pipLastActive
+    global PIP_WIDTH, PIP_HEIGHT
     if !g_pipEnabled
         return
 
@@ -1710,6 +1719,17 @@ RefreshPiP(*) {
     if (visible.Length < 2) {
         DestroyPiP()
         return
+    }
+
+    ; Reposition PiP if monitor work area changed (resolution change, monitor disconnect)
+    try {
+        MonitorGetWorkArea(1, &mLeft, &mTop, &mRight, &mBottom)
+        totalH := g_pipThumbnails.Length * PIP_HEIGHT + (g_pipThumbnails.Length - 1) * 4
+        expectedX := mRight - PIP_WIDTH - 10
+        expectedY := mBottom - totalH - 10
+        WinGetPos(&curX, &curY, , , "ahk_id " g_pipGui.Hwnd)
+        if (curX != expectedX || curY != expectedY)
+            g_pipGui.Move(expectedX, expectedY)
     }
 
     ; If active EQ window changed, swap PiP thumbnail sources without rebuilding the GUI
@@ -1780,17 +1800,21 @@ SwapPiPSources(visible, activeID) {
             NumPut("Int", yPos + PIP_HEIGHT, props, 16)
             NumPut("Int", 1, props, 40)
             NumPut("Int", 1, props, 44)
-            DllCall("dwmapi\DwmUpdateThumbnailProperties", "Ptr", hThumb, "Ptr", props)
-            g_pipThumbnails.Push(hThumb)
+            hrUpdate := DllCall("dwmapi\DwmUpdateThumbnailProperties", "Ptr", hThumb, "Ptr", props, "Int")
+            if (hrUpdate = 0)
+                g_pipThumbnails.Push(hThumb)
+            else
+                DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", hThumb)
         }
         yPos += PIP_HEIGHT + 4
     }
 
+    g_pipAltWindows := altWindows
     g_pipLastActive := activeID
 }
 
 DestroyPiP(*) {
-    global g_pipEnabled, g_pipGui, g_pipThumbnails, g_pipTimer
+    global g_pipEnabled, g_pipGui, g_pipThumbnails, g_pipTimer, g_pipAltWindows
 
     ; Unregister all thumbnails
     for hThumb in g_pipThumbnails {
@@ -1809,6 +1833,7 @@ DestroyPiP(*) {
         g_pipGui := ""
     }
 
+    g_pipAltWindows := []
     g_pipEnabled := false
     DestroyPiPZoom()
 }
@@ -1863,27 +1888,16 @@ UpdatePiPZoom(*) {
 
 ShowPiPZoom(thumbIdx) {
     global g_pipGui, g_pipThumbnails, g_pipZoomGui, g_pipZoomThumb, g_pipZoomIndex
-    global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY
+    global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY, g_pipAltWindows
 
     ; Clean up previous zoom
     DestroyPiPZoom()
 
-    ; Find which source window this thumbnail shows
-    visible := GetVisibleEqWindows()
-    activeID := 0
-    try activeID := WinGetID("A")
-    altWindows := []
-    for id in visible {
-        if (id != activeID)
-            altWindows.Push(id)
-    }
-    if (altWindows.Length = 0 && visible.Length > 1)
-        altWindows.Push(visible[2])
-
-    if (thumbIdx > altWindows.Length)
+    ; Use stored alt windows to match the PiP thumbnails exactly
+    if (g_pipAltWindows.Length = 0 || thumbIdx > g_pipAltWindows.Length)
         return
 
-    srcId := altWindows[thumbIdx]
+    srcId := g_pipAltWindows[thumbIdx]
 
     ; Zoom size: 2× the PiP dimensions
     zoomW := Integer(PIP_WIDTH) * 2
@@ -1918,16 +1932,24 @@ ShowPiPZoom(thumbIdx) {
         "Ptr*", &hThumb,
         "Int")
 
-    if (hr = 0 && hThumb != 0) {
-        props := Buffer(48, 0)
-        NumPut("UInt", 0x01 | 0x08 | 0x10, props, 0)  ; RECTDEST | VISIBLE | SOURCECLIENTAREAONLY
-        NumPut("Int", 0, props, 4)          ; left
-        NumPut("Int", 0, props, 8)          ; top
-        NumPut("Int", zoomW, props, 12)     ; right
-        NumPut("Int", zoomH, props, 16)     ; bottom
-        NumPut("Int", 1, props, 40)         ; fVisible
-        NumPut("Int", 1, props, 44)         ; fSourceClientAreaOnly
-        DllCall("dwmapi\DwmUpdateThumbnailProperties", "Ptr", hThumb, "Ptr", props)
+    if (hr != 0 || hThumb = 0) {
+        try zg.Destroy()
+        return
+    }
+
+    props := Buffer(48, 0)
+    NumPut("UInt", 0x01 | 0x08 | 0x10, props, 0)  ; RECTDEST | VISIBLE | SOURCECLIENTAREAONLY
+    NumPut("Int", 0, props, 4)          ; left
+    NumPut("Int", 0, props, 8)          ; top
+    NumPut("Int", zoomW, props, 12)     ; right
+    NumPut("Int", zoomH, props, 16)     ; bottom
+    NumPut("Int", 1, props, 40)         ; fVisible
+    NumPut("Int", 1, props, 44)         ; fSourceClientAreaOnly
+    hrUpdate := DllCall("dwmapi\DwmUpdateThumbnailProperties", "Ptr", hThumb, "Ptr", props, "Int")
+    if (hrUpdate != 0) {
+        try DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", hThumb)
+        try zg.Destroy()
+        return
     }
 
     g_pipZoomGui := zg
@@ -2030,9 +2052,11 @@ CreateBorder() {
     if (g_borderGuis.Length > 0)
         return  ; already created
 
+    ; Validate color — fallback to green if invalid
+    color := RegExMatch(BORDER_COLOR, "^[0-9A-Fa-f]{6}$") ? BORDER_COLOR : "00FF00"
     Loop 4 {
         bar := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")  ; click-through
-        bar.BackColor := BORDER_COLOR
+        bar.BackColor := color
         g_borderGuis.Push(bar)
     }
 }
@@ -2184,15 +2208,18 @@ OpenProcessManager(*) {
                 pri := GetProcessPriorityName(pid)
                 ; Read current affinity
                 affStr := "—"
+                hProc := 0
                 try {
                     hProc := DllCall("OpenProcess", "UInt", 0x0400, "Int", 0, "UInt", pid, "Ptr")  ; PROCESS_QUERY_INFORMATION
                     if (hProc) {
                         procMask := 0
                         sysMask := 0
                         DllCall("GetProcessAffinityMask", "Ptr", hProc, "UPtr*", &procMask, "UPtr*", &sysMask)
-                        DllCall("CloseHandle", "Ptr", hProc)
                         affStr := String(procMask)
                     }
+                } finally {
+                    if (hProc)
+                        DllCall("CloseHandle", "Ptr", hProc)
                 }
                 processList.Add(, pid, title, pri, affStr)
             }
@@ -2303,15 +2330,17 @@ LaunchOne(*) {
     }
     eqDir := GetEqDir()
     Run('"' EQ_EXE '" ' EQ_ARGS, eqDir, , &newPid)
-    ; Apply process settings after a short delay to let the process initialize
-    needsPri := (PROCESS_PRIORITY != "Normal" && PROCESS_PRIORITY != "")
-    needsAff := (CPU_AFFINITY != "")
+    ; Snapshot settings at launch time so mid-launch Settings changes can't affect behavior
+    launchPriority := PROCESS_PRIORITY
+    launchAffinity := CPU_AFFINITY
+    needsPri := (launchPriority != "Normal" && launchPriority != "")
+    needsAff := (launchAffinity != "")
     if (needsPri || needsAff) {
         ApplyDelayed(*) {
             if needsPri
-                try ProcessSetPriority(PROCESS_PRIORITY, newPid)
+                try ProcessSetPriority(launchPriority, newPid)
             if needsAff
-                ApplyAffinityToPid(newPid, CPU_AFFINITY)
+                ApplyAffinityToPid(newPid, launchAffinity)
         }
         SetTimer(ApplyDelayed, -2000)
     }
