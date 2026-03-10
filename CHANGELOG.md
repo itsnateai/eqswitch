@@ -2,6 +2,20 @@
 
 All notable changes to EQ Switch are documented here.
 
+## v1.11 — 2026-03-09
+
+### Bug Fixes
+- **PiP zoom cleanup on DWM failure** — PiP zoom GUI is now destroyed if `DwmRegisterThumbnail` fails, preventing a visible black rectangle from persisting on screen (P1-07)
+- **WinGetStyle race condition** — `GetVisibleEqWindows()` now wraps `WinGetStyle` in try/catch so a window closing mid-enumeration won't crash the script (P1-08)
+- **Border color validation** — invalid hex color values in `BORDER_COLOR` now fall back to green (`00FF00`) instead of causing a 250ms error loop in `CreateBorder` (P1-09)
+
+### Robustness
+- **LaunchOne settings snapshot** — `ApplyDelayed` timer now uses captured `launchPriority`/`launchAffinity` instead of live globals, preventing mid-launch Settings changes from affecting behavior (P2-11)
+- **Process Manager handle safety** — `RefreshProcessList` now uses try/finally to guarantee process handles are closed (P2-12)
+- **DWM thumbnail error handling** — all 3 `DwmUpdateThumbnailProperties` call sites now check return values and clean up on failure (P2-13)
+- **PiP zoom source tracking** — zoom popup now uses stored `g_pipAltWindows` array to target the correct source window, preventing wrong-window zoom after window changes (P2-14)
+- **PiP reposition on display change** — `RefreshPiP` now checks if the PiP overlay position matches the expected corner and repositions if the monitor work area changed (P2-15)
+
 ## v1.10 — 2026-03-09
 
 ### Bug Fixes
