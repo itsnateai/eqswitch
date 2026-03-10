@@ -15,16 +15,12 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
-;@Ahk2Exe-AddResource eqbox.ico, 160
+;@Ahk2Exe-AddResource eqswitch.ico, 160
 
 OnExit(AppCleanup)
 AppCleanup(reason, code) {
     try DestroyPiP()
-    try DestroyBorder()
     try DestroyPiPBorder()
-    global g_featureTimer
-    if g_featureTimer
-        try SetTimer(g_featureTimer, 0)
     return 0  ; allow exit
 }
 
@@ -42,12 +38,11 @@ ShowTip(msg, ms?) {
     ToolTip(msg)
     SetTimer(g_tipClearFn, -(ms ?? TOOLTIP_MS))
 }
-g_multiMonState  := 0
+g_multiMonState  := 0  ; updated after LoadConfig if FIX_MODE = multimonitor
 g_launchOneLabel := "⚔  Launch Client"
 g_launchAllLabel := "🎮  Launch Both"
 g_tripleClickCooldown := 0
 g_launchActive   := false
-g_launchGrace    := 0          ; tick count — auto-minimize suppressed until this time
 g_pmOpen         := false
 
 ; =========================================================
@@ -214,14 +209,14 @@ CoresMaskToAffinity(cores) {
 ; =========================================================
 LoadConfig() {
     global EQ_EXE, EQ_ARGS, EQ_HOTKEY, CFG_FILE, DBLCLICK_LAUNCH
-    global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES, MIDCLICK_PIP, RECENT_CHARS
+    global GINA_PATH, NOTES_FILE, MIDCLICK_MODE, RECENT_CHARS
     global EQ_SERVER, LAUNCH_DELAY, LAUNCH_FIX_DELAY, NUM_CLIENTS
-    global FIX_MODE, STARTUP_ENABLED, MULTIMON_HOTKEY, MULTIMON_ENABLED
-    global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
+    global FIX_MODE, TARGET_MONITOR, STARTUP_ENABLED, MULTIMON_HOTKEY, MULTIMON_ENABLED
+    global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, FOCUS_HOTKEY, TRIPLECLICK_LAUNCH
     global PROCESS_PRIORITY, CPU_AFFINITY
     global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
     global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY, PIP_X, PIP_Y
-    global AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR
+    global BORDER_COLOR, PIP_BORDER_ENABLED
 
     ; Migrate from old "EQ2Box" section name (pre-v1.2 rename)
     try {
@@ -251,21 +246,44 @@ LoadConfig() {
     DBLCLICK_LAUNCH  := ReadKey("DBLCLICK_LAUNCH",   "0")
     GINA_PATH        := ReadKey("GINA_PATH",         "")
     NOTES_FILE       := ReadKey("NOTES_FILE",        "")
-    MIDCLICK_NOTES   := ReadKey("MIDCLICK_NOTES",    "0")
-    MIDCLICK_PIP     := ReadKey("MIDCLICK_PIP",      "0")
+    MIDCLICK_MODE    := ReadKey("MIDCLICK_MODE",      "notes_pip")
+    if (MIDCLICK_MODE != "off" && MIDCLICK_MODE != "pip_notes" && MIDCLICK_MODE != "notes_pip") {
+        ; Migrate old config keys
+        oldNotes := ReadKey("MIDCLICK_NOTES", "0")
+        oldPip   := ReadKey("MIDCLICK_PIP",   "0")
+        if (oldPip = "1")
+            MIDCLICK_MODE := "pip_notes"
+        else if (oldNotes = "1")
+            MIDCLICK_MODE := "notes_pip"
+        else
+            MIDCLICK_MODE := "off"
+    }
     RECENT_CHARS     := ReadKey("RECENT_CHARS",      "")
     EQ_SERVER        := ReadKey("EQ_SERVER",         "dalaya")
     LAUNCH_DELAY     := ReadKey("LAUNCH_DELAY",      "3000")
     LAUNCH_FIX_DELAY := ReadKey("LAUNCH_FIX_DELAY",  "15000")
     NUM_CLIENTS      := ReadKey("NUM_CLIENTS",       "2")
-    FIX_MODE         := ReadKey("FIX_MODE",          "maximize")
-    if (FIX_MODE != "maximize" && FIX_MODE != "multimonitor")
-        FIX_MODE := "maximize"
+    FIX_MODE         := ReadKey("FIX_MODE",          "single screen")
+    ; Migrate old config value
+    if (FIX_MODE = "maximize")
+        FIX_MODE := "single screen"
+    if (FIX_MODE != "single screen" && FIX_MODE != "multimonitor")
+        FIX_MODE := "single screen"
+    TARGET_MONITOR   := ReadKey("TARGET_MONITOR",    "2")
+    ; Clamp to available monitors — fail silently if saved monitor doesn't exist
+    try {
+        if (Integer(TARGET_MONITOR) > MonitorGetCount())
+            TARGET_MONITOR := String(MonitorGetCount())
+        if (Integer(TARGET_MONITOR) < 1)
+            TARGET_MONITOR := "1"
+    } catch
+        TARGET_MONITOR := "1"
     STARTUP_ENABLED  := ReadKey("STARTUP_ENABLED",   "0")
     MULTIMON_HOTKEY  := ReadKey("MULTIMON_HOTKEY",   ">!m")
     MULTIMON_ENABLED := ReadKey("MULTIMON_ENABLED", "1")
     LAUNCH_ONE_HOTKEY := ReadKey("LAUNCH_ONE_HOTKEY", "")
     LAUNCH_ALL_HOTKEY := ReadKey("LAUNCH_ALL_HOTKEY", "")
+    FOCUS_HOTKEY      := ReadKey("FOCUS_HOTKEY",      "]")
     TRIPLECLICK_LAUNCH := ReadKey("TRIPLECLICK_LAUNCH", "0")
     PROCESS_PRIORITY   := ReadKey("PROCESS_PRIORITY",   "Normal")
     CPU_AFFINITY       := ReadKey("CPU_AFFINITY",        "")
@@ -276,40 +294,40 @@ LoadConfig() {
     PIP_OPACITY        := ReadKey("PIP_OPACITY",          "200")
     PIP_X              := ReadKey("PIP_X",                "")
     PIP_Y              := ReadKey("PIP_Y",                "")
-    AUTO_MINIMIZE      := ReadKey("AUTO_MINIMIZE",        "0")
-    BORDER_ENABLED     := ReadKey("BORDER_ENABLED",       "0")
     BORDER_COLOR       := ReadKey("BORDER_COLOR",         "00FF00")
+    PIP_BORDER_ENABLED := ReadKey("PIP_BORDER_ENABLED",  "1")
 }
 
 SaveConfig() {
     global CFG_FILE, EQ_EXE, EQ_ARGS, EQ_HOTKEY, DBLCLICK_LAUNCH
-    global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES, MIDCLICK_PIP, RECENT_CHARS
+    global GINA_PATH, NOTES_FILE, MIDCLICK_MODE, RECENT_CHARS
     global EQ_SERVER, LAUNCH_DELAY, LAUNCH_FIX_DELAY, NUM_CLIENTS
-    global FIX_MODE, STARTUP_ENABLED, MULTIMON_HOTKEY, MULTIMON_ENABLED
-    global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
+    global FIX_MODE, TARGET_MONITOR, STARTUP_ENABLED, MULTIMON_HOTKEY, MULTIMON_ENABLED
+    global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, FOCUS_HOTKEY, TRIPLECLICK_LAUNCH
     global PROCESS_PRIORITY, CPU_AFFINITY
     global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
     global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY, PIP_X, PIP_Y
-    global AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR
+    global BORDER_COLOR, PIP_BORDER_ENABLED
     IniWrite(EQ_EXE,           CFG_FILE, "EQSwitch", "EQ_EXE")
     IniWrite(EQ_ARGS,          CFG_FILE, "EQSwitch", "EQ_ARGS")
     IniWrite(EQ_HOTKEY,        CFG_FILE, "EQSwitch", "EQ_HOTKEY")
     IniWrite(DBLCLICK_LAUNCH,  CFG_FILE, "EQSwitch", "DBLCLICK_LAUNCH")
     IniWrite(GINA_PATH,        CFG_FILE, "EQSwitch", "GINA_PATH")
     IniWrite(NOTES_FILE,       CFG_FILE, "EQSwitch", "NOTES_FILE")
-    IniWrite(MIDCLICK_NOTES,   CFG_FILE, "EQSwitch", "MIDCLICK_NOTES")
-    IniWrite(MIDCLICK_PIP,     CFG_FILE, "EQSwitch", "MIDCLICK_PIP")
+    IniWrite(MIDCLICK_MODE,    CFG_FILE, "EQSwitch", "MIDCLICK_MODE")
     IniWrite(RECENT_CHARS,     CFG_FILE, "EQSwitch", "RECENT_CHARS")
     IniWrite(EQ_SERVER,        CFG_FILE, "EQSwitch", "EQ_SERVER")
     IniWrite(LAUNCH_DELAY,     CFG_FILE, "EQSwitch", "LAUNCH_DELAY")
     IniWrite(LAUNCH_FIX_DELAY, CFG_FILE, "EQSwitch", "LAUNCH_FIX_DELAY")
     IniWrite(NUM_CLIENTS,      CFG_FILE, "EQSwitch", "NUM_CLIENTS")
     IniWrite(FIX_MODE,         CFG_FILE, "EQSwitch", "FIX_MODE")
+    IniWrite(TARGET_MONITOR,   CFG_FILE, "EQSwitch", "TARGET_MONITOR")
     IniWrite(STARTUP_ENABLED,  CFG_FILE, "EQSwitch", "STARTUP_ENABLED")
     IniWrite(MULTIMON_HOTKEY,  CFG_FILE, "EQSwitch", "MULTIMON_HOTKEY")
     IniWrite(MULTIMON_ENABLED, CFG_FILE, "EQSwitch", "MULTIMON_ENABLED")
     IniWrite(LAUNCH_ONE_HOTKEY, CFG_FILE, "EQSwitch", "LAUNCH_ONE_HOTKEY")
     IniWrite(LAUNCH_ALL_HOTKEY, CFG_FILE, "EQSwitch", "LAUNCH_ALL_HOTKEY")
+    IniWrite(FOCUS_HOTKEY,     CFG_FILE, "EQSwitch", "FOCUS_HOTKEY")
     IniWrite(TRIPLECLICK_LAUNCH, CFG_FILE, "EQSwitch", "TRIPLECLICK_LAUNCH")
     IniWrite(PROCESS_PRIORITY, CFG_FILE, "EQSwitch", "PROCESS_PRIORITY")
     IniWrite(CPU_AFFINITY, CFG_FILE, "EQSwitch", "CPU_AFFINITY")
@@ -320,12 +338,13 @@ SaveConfig() {
     IniWrite(PIP_OPACITY, CFG_FILE, "EQSwitch", "PIP_OPACITY")
     IniWrite(PIP_X, CFG_FILE, "EQSwitch", "PIP_X")
     IniWrite(PIP_Y, CFG_FILE, "EQSwitch", "PIP_Y")
-    IniWrite(AUTO_MINIMIZE,   CFG_FILE, "EQSwitch", "AUTO_MINIMIZE")
-    IniWrite(BORDER_ENABLED,  CFG_FILE, "EQSwitch", "BORDER_ENABLED")
     IniWrite(BORDER_COLOR,    CFG_FILE, "EQSwitch", "BORDER_COLOR")
+    IniWrite(PIP_BORDER_ENABLED, CFG_FILE, "EQSwitch", "PIP_BORDER_ENABLED")
 }
 
 LoadConfig()
+if (FIX_MODE = "multimonitor")
+    g_multiMonState := 1
 
 ; Keep the tray tooltip in sync with the active switch key
 UpdateTrayTip() {
@@ -364,7 +383,7 @@ BindHotkey(key) {
 }
 
 SwitchWindow(*) {
-    global TOOLTIP_MS
+    global TOOLTIP_MS, g_multiMonState
 
     visible := GetVisibleEqWindows()
 
@@ -387,6 +406,32 @@ SwitchWindow(*) {
     }
 
     nextIndex := Mod(currentIndex, visible.Length) + 1
+
+    ; If windows are spread across monitors, swap their positions too
+    if (g_multiMonState > 0 && visible.Length >= 2) {
+        ; Read all current positions
+        positions := []
+        for id in visible {
+            try {
+                WinGetPos(&x, &y, &w, &h, "ahk_id " id)
+                positions.Push({x: x, y: y, w: w, h: h})
+            } catch {
+                positions.Push({x: 0, y: 0, w: 0, h: 0})
+            }
+        }
+        ; Rotate positions: each window moves to the next window's position
+        count := visible.Length
+        Loop count {
+            nextPos := positions[Mod(A_Index, count) + 1]
+            id := visible[A_Index]
+            try {
+                if (WinGetMinMax("ahk_id " id) = 1)
+                    WinRestore("ahk_id " id)
+                WinMove(nextPos.x, nextPos.y, nextPos.w, nextPos.h, "ahk_id " id)
+            }
+        }
+    }
+
     try WinActivate("ahk_id " visible[nextIndex])
 }
 
@@ -395,6 +440,37 @@ if (MULTIMON_ENABLED = "1")
     BindMultiMonHotkey(MULTIMON_HOTKEY)
 BindLaunchHotkey(LAUNCH_ONE_HOTKEY, "one")
 BindLaunchHotkey(LAUNCH_ALL_HOTKEY, "all")
+BindFocusHotkey(FOCUS_HOTKEY)
+
+; Focus EQ — global hotkey to pull EQ to front, then cycle on repeat presses
+FocusEQ(*) {
+    visible := GetVisibleEqWindows()
+    if (visible.Length = 0) {
+        ShowTip("No EverQuest windows found!")
+        return
+    }
+    ; If an EQ window is already active, cycle to next (same as switch hotkey)
+    try activeExe := WinGetProcessName("A")
+    catch
+        activeExe := ""
+    if (activeExe = "eqgame.exe") {
+        SwitchWindow()
+        return
+    }
+    ; No EQ focused — bring the first one to front
+    try WinActivate("ahk_id " visible[1])
+}
+
+BindFocusHotkey(key) {
+    if (key = "")
+        return true
+    try {
+        Hotkey(key, FocusEQ, "On")
+        return true
+    } catch {
+        return false
+    }
+}
 
 BindLaunchHotkey(key, which) {
     if (key = "")
@@ -502,7 +578,7 @@ AddRecentChar(charName) {
 ; =========================================================
 ; TRAY
 ; =========================================================
-iconPath := A_ScriptDir "\eqbox.ico"
+iconPath := A_ScriptDir "\eqswitch.ico"
 if FileExist(iconPath)
     TraySetIcon(iconPath)
 else if A_IsCompiled
@@ -513,15 +589,19 @@ A_TrayMenu.Delete()
 OnMessage(0x404, TrayClick)
 g_dblClickPending := false  ; true while waiting to see if a 3rd click follows
 g_dblClickTimer   := ""
+g_midClickCount := 0
+g_midClickTimer := ""
 TrayClick(wParam, lParam, *) {
-    global DBLCLICK_LAUNCH, MIDCLICK_NOTES, MIDCLICK_PIP, TRIPLECLICK_LAUNCH
-    global g_tripleClickCooldown, g_dblClickPending, g_dblClickTimer
+    global DBLCLICK_LAUNCH, MIDCLICK_MODE, TRIPLECLICK_LAUNCH
+    global g_tripleClickCooldown, g_dblClickPending, g_dblClickTimer, g_dblClickUpIgnore
+    global g_midClickCount, g_midClickTimer
     now := A_TickCount
 
     if (lParam = 0x203) {  ; WM_LBUTTONDBLCLK
         ; If triple-click is enabled, delay the double-click action to watch for 3rd click
         if (TRIPLECLICK_LAUNCH = "1" && (now - g_tripleClickCooldown) > 5000) {
             g_dblClickPending := true
+            g_dblClickUpIgnore := true  ; Ignore the UP from the double-click itself
             ; Fire double-click action after 400ms if no 3rd click arrives
             g_dblClickTimer := DblClickFire
             SetTimer(g_dblClickTimer, -400)
@@ -536,6 +616,11 @@ TrayClick(wParam, lParam, *) {
 
     ; 3rd click arrives as WM_LBUTTONUP after the double-click
     if (lParam = 0x202 && g_dblClickPending) {  ; WM_LBUTTONUP
+        ; Skip the UP that's part of the double-click itself
+        if (g_dblClickUpIgnore) {
+            g_dblClickUpIgnore := false
+            return
+        }
         g_dblClickPending := false
         if g_dblClickTimer
             SetTimer(g_dblClickTimer, 0)
@@ -545,13 +630,44 @@ TrayClick(wParam, lParam, *) {
         return
     }
 
-    if (lParam = 0x208) {  ; WM_MBUTTONUP — middle-click
-        if (MIDCLICK_PIP = "1") {
-            TogglePiP()
-            ShowTip(g_pipEnabled ? "📺 PiP ON" : "📺 PiP OFF", 1500)
-        } else if (MIDCLICK_NOTES = "1") {
+    ; Middle-click — count WM_MBUTTONUP (0x208) only
+    ; DOWN (0x207) is unreliable on Win11 tray.
+    ; Single click = action 1, rapid triple-click = action 2
+    ; 1.2s cooldown after action fires prevents double-click re-triggering
+    if (lParam = 0x208) {
+        static midCooldown := 0
+        if (MIDCLICK_MODE = "off")
+            return
+        if (now - midCooldown < 1200)
+            return
+        g_midClickCount++
+        if g_midClickTimer
+            SetTimer(g_midClickTimer, 0)
+        g_midClickTimer := MidClickResolve
+        SetTimer(g_midClickTimer, -700)
+    }
+}
+
+MidClickResolve(*) {
+    global MIDCLICK_MODE, g_midClickCount, g_midClickTimer
+    count := g_midClickCount
+    g_midClickCount := 0
+    g_midClickTimer := ""
+    if (count >= 2) {
+        ; Triple-click action (rapid clicks land 2+ within 500ms window)
+        if (MIDCLICK_MODE = "pip_notes")
             OpenNotes()
+        else if (MIDCLICK_MODE = "notes_pip") {
+            TogglePiP()
+            ShowTip(g_pipEnabled ? "PiP ON" : "PiP OFF", 1500)
         }
+    } else {
+        ; Single-click action
+        if (MIDCLICK_MODE = "pip_notes") {
+            TogglePiP()
+            ShowTip(g_pipEnabled ? "PiP ON" : "PiP OFF", 1500)
+        } else if (MIDCLICK_MODE = "notes_pip")
+            OpenNotes()
     }
 }
 
@@ -610,23 +726,29 @@ SetMenuItemsBold(A_TrayMenu.Handle, ["Launch Client", "Launch Both"])
 ; FIX WINDOWS
 ; =========================================================
 FixWindows(*) {
-    global FIX_MODE, TOOLTIP_MS, FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
+    global FIX_MODE, TARGET_MONITOR, TOOLTIP_MS, g_multiMonState
+    global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
     winList := GetVisibleEqWindows()
     if (winList.Length = 0) {
         ShowTip("No EverQuest windows found!")
         return
     }
 
-    ; Parse offsets (top offset adjusts Y start, bottom offset extends past work area)
-    try topOff := Integer(FIX_TOP_OFFSET)
+    try targetMon := Integer(TARGET_MONITOR)
     catch
-        topOff := 0
-    try botOff := Integer(FIX_BOTTOM_OFFSET)
+        targetMon := 1
+    if (targetMon > MonitorGetCount() || targetMon < 1)
+        targetMon := 1
+
+    ; Parse Y offset — positive = push window south (down)
+    try yOff := Integer(FIX_TOP_OFFSET)
     catch
-        botOff := 0
+        yOff := 0
 
     if (FIX_MODE = "multimonitor") {
-        ; Distribute windows across monitors (one per monitor, maximized)
+        ; Set multi-mon state so switch hotkey knows to swap positions
+        g_multiMonState := 1
+        ; Distribute windows across monitors (one per monitor, full screen including taskbar)
         monCount := MonitorGetCount()
         count := winList.Length
         Loop count {
@@ -635,20 +757,28 @@ FixWindows(*) {
                 continue
             mon := Mod(A_Index - 1, monCount) + 1
             try {
-                MonitorGetWorkArea(mon, &mLeft, &mTop, &mRight, &mBottom)
-                adjTop    := mTop + topOff
-                adjHeight := (mBottom + botOff) - adjTop
+                MonitorGet(mon, &mLeft, &mTop, &mRight, &mBottom)
                 WinRestore("ahk_id " id)
-                WinMove(mLeft, adjTop, mRight - mLeft, adjHeight, "ahk_id " id)
+                WinMove(mLeft, mTop + yOff, mRight - mLeft, mBottom - mTop, "ahk_id " id)
             }
         }
     } else {
-        ; Default: maximize
+        ; Clear multi-mon state so switch hotkey does focus-only
+        g_multiMonState := 0
+        ; Default: maximize — move all windows to target monitor
+        try MonitorGet(targetMon, &pLeft, &pTop, &pRight, &pBottom)
+        catch {
+            ShowTip("⚠ Could not get monitor " targetMon " info!")
+            return
+        }
         Loop winList.Length {
             id := winList[A_Index]
             if IsHungWindow(id)
                 continue
-            try WinMaximize("ahk_id " id)
+            try {
+                WinRestore("ahk_id " id)
+                WinMove(pLeft, pTop + yOff, pRight - pLeft, pBottom - pTop, "ahk_id " id)
+            }
         }
     }
 }
@@ -690,6 +820,7 @@ SwapWindows(*) {
         }
     }
     Sleep(50)  ; brief pause for WM to process restore
+
     ; Rotate each window to the next window's position
     count := visible.Length
     Loop count {
@@ -701,60 +832,27 @@ SwapWindows(*) {
 }
 
 ToggleMultiMon(*) {
-    global g_multiMonState, TOOLTIP_MS, FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
-    ; Invalidate cache to get fresh window list
-    global g_visibleCacheTick
-    g_visibleCacheTick := 0
-    visible := GetVisibleEqWindows()
-    if (visible.Length < 2) {
-        ShowTip("Need at least 2 EQ windows!")
+    global g_multiMonState, FIX_MODE, TOOLTIP_MS
+    ; Debounce — ignore rapid presses while windows are mid-move
+    static lastToggle := 0
+    if (A_TickCount - lastToggle < 500)
         return
-    }
-    monCount := MonitorGetCount()
-    if (monCount < 2) {
-        ShowTip("Need at least 2 monitors!")
-        return
-    }
+    lastToggle := A_TickCount
 
-    ; Cycle: 0 = stacked, 1..N = spread with rotation offset
-    if (g_multiMonState > visible.Length)
+    ; Simple on/off toggle — switch FIX_MODE and apply
+    if (FIX_MODE = "multimonitor") {
+        FIX_MODE := "single screen"
         g_multiMonState := 0
-    g_multiMonState := Mod(g_multiMonState + 1, visible.Length + 1)
-
-    if (g_multiMonState = 0) {
-        ; Stack all windows on primary monitor (maximize)
-        Loop visible.Length {
-            id := visible[A_Index]
-            try WinMaximize("ahk_id " id)
-        }
-        ShowTip("🪟 Multi-monitor OFF — stacked on primary")
     } else {
-        ; Spread across monitors with rotation offset
-        try topOff := Integer(FIX_TOP_OFFSET)
-        catch
-            topOff := 0
-        try botOff := Integer(FIX_BOTTOM_OFFSET)
-        catch
-            botOff := 0
-        offset := g_multiMonState - 1
-        count  := visible.Length
-        Loop count {
-            winIdx := Mod(A_Index - 1 + offset, count) + 1
-            id     := visible[winIdx]
-            mon    := Mod(A_Index - 1, monCount) + 1
-            try {
-                MonitorGetWorkArea(mon, &mLeft, &mTop, &mRight, &mBottom)
-                adjTop    := mTop + topOff
-                adjHeight := (mBottom + botOff) - adjTop
-                WinRestore("ahk_id " id)
-                WinMove(mLeft, adjTop, mRight - mLeft, adjHeight, "ahk_id " id)
-            }
-        }
-        if (g_multiMonState = 1)
-            ShowTip("🖥 Multi-monitor ON")
-        else
-            ShowTip("🔄 Multi-monitor swapped")
+        FIX_MODE := "multimonitor"
+        g_multiMonState := 1
     }
+    SaveConfig()
+    FixWindows()
+    if (FIX_MODE = "multimonitor")
+        ShowTip("🖥 Multi-monitor ON")
+    else
+        ShowTip("🪟 Multi-monitor OFF")
 }
 
 BindMultiMonHotkey(key) {
@@ -896,16 +994,25 @@ OpenNotes(*) {
 ; a Map() for storing control references used by SaveAndClose.
 
 BuildHotkeySection(g, ctl) {
-    global EQ_HOTKEY
+    global EQ_HOTKEY, FOCUS_HOTKEY
     g.SetFont("s10 Bold", "Segoe UI")
-    g.AddText("xm w440 c0xAA3300", "⚔  Window Switch Hotkey  ⚔")
+    g.AddText("xm w440 c0xAA3300", "⚔  Hotkeys  ⚔")
     g.SetFont("s9", "Segoe UI")
     g.AddText("xm y+4 w440 h2 0x10")
-    activeKeyDisplay := (EQ_HOTKEY != "") ? EQ_HOTKEY : "(not set!)"
-    statusColor := (EQ_HOTKEY != "") ? "c0x007700" : "c0xCC0000"
-    g.AddText("xm y+6 w440 " statusColor, "Active key:  " activeKeyDisplay "       Press a new key below to change:")
-    ctl["hotkeyCtrl"] := g.AddHotkey("xm y+4 w120", EQ_HOTKEY)
-    g.AddText("x+10 yp+4 w220 cGray", "← click the box and press your key")
+
+    ; Left column — EQ Switch Key (switch between EQ windows)
+    activeDisplay := (EQ_HOTKEY != "") ? EQ_HOTKEY : "(not set!)"
+    activeColor := (EQ_HOTKEY != "") ? "c0x007700" : "c0xCC0000"
+    g.AddText("xm y+6 w200 Section " activeColor, "EQ Switch Key:  " activeDisplay)
+    ctl["hotkeyCtrl"] := g.AddHotkey("xm y+3 w90", EQ_HOTKEY)
+    g.AddText("x+6 yp+4 cGray", "← click and press key")
+
+    ; Right column — Global Switch (pull EQ to front from any app)
+    focusDisplay := (FOCUS_HOTKEY != "") ? FOCUS_HOTKEY : "(not set!)"
+    focusColor := (FOCUS_HOTKEY != "") ? "c0x007700" : "c0xCC0000"
+    g.AddText("xs+220 ys w200 " focusColor, "Global Switch:  " focusDisplay)
+    ctl["focusHkCtrl"] := g.AddHotkey("xs+220 y+3 w90", FOCUS_HOTKEY)
+    g.AddText("x+6 yp+4 cGray", "← pulls EQ to front")
 }
 
 BuildEverQuestSection(g, ctl) {
@@ -924,41 +1031,58 @@ BuildEverQuestSection(g, ctl) {
 BuildLaunchSection(g, ctl) {
     global NUM_CLIENTS, FIX_MODE
     global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY
-    global DBLCLICK_LAUNCH, STARTUP_ENABLED, MIDCLICK_NOTES, MIDCLICK_PIP, TRIPLECLICK_LAUNCH
+    global DBLCLICK_LAUNCH, STARTUP_ENABLED, MIDCLICK_MODE, TRIPLECLICK_LAUNCH
     g.AddText("xm y+10 w440 cNavy", "🎮  Launch & Tray Options")
     g.AddText("xm y+4 w440 h1 0x10")
 
     g.AddText("xm y+6 Section", "Clients:")
     ctl["clientsEdit"] := g.AddEdit("x+4 yp-2 w40 Number", NUM_CLIENTS)
     g.AddUpDown("Range1-8", NUM_CLIENTS)
-    g.AddText("x+10 yp+2", "Window mode:")
-    ctl["fixModes"] := ["maximize", "multimonitor"]
-    ctl["fixModeCombo"] := g.AddDropDownList("x+4 yp-2 w130", ctl["fixModes"])
+    g.AddText("x+10 yp+2", "Multi-Mon:")
+    ctl["fixModes"] := ["single screen", "multimonitor"]
+    ctl["fixModeCombo"] := g.AddDropDownList("x+4 yp-2 w100", ctl["fixModes"])
     for i, mode in ctl["fixModes"] {
         if (mode = FIX_MODE)
             ctl["fixModeCombo"].Choose(i)
     }
     if (ctl["fixModeCombo"].Value = 0)
         ctl["fixModeCombo"].Choose(1)
+    ctl["fixModeCombo"].OnEvent("Change", (*) => (ctl["targetMonCombo"].Enabled := ctl["fixModes"][ctl["fixModeCombo"].Value] = "single screen"))
+    ctl["monLabel"] := g.AddText("x+10 yp+2", "Monitor:")
+    monCount := MonitorGetCount()
+    monChoices := []
+    Loop monCount
+        monChoices.Push("Monitor " A_Index)
+    ctl["targetMonCombo"] := g.AddDropDownList("x+4 yp-2 w90", monChoices)
+    try targetMon := Integer(TARGET_MONITOR)
+    catch
+        targetMon := 1
+    if (targetMon < 1 || targetMon > monCount)
+        targetMon := 1
+    ctl["targetMonCombo"].Choose(targetMon)
+    ctl["targetMonCombo"].Enabled := (FIX_MODE = "single screen")
 
     g.AddText("xm y+6", "Launch One hotkey:")
-    ctl["launchOneHkCtrl"] := g.AddHotkey("x+4 yp-2 w120", LAUNCH_ONE_HOTKEY)
+    ctl["launchOneHkCtrl"] := g.AddHotkey("x+4 yp-2 w90", LAUNCH_ONE_HOTKEY)
     g.AddText("x+14 yp+2", "Launch All hotkey:")
-    ctl["launchAllHkCtrl"] := g.AddHotkey("x+4 yp-2 w120", LAUNCH_ALL_HOTKEY)
+    ctl["launchAllHkCtrl"] := g.AddHotkey("x+4 yp-2 w90", LAUNCH_ALL_HOTKEY)
 
     ctl["dblClickChk"] := g.AddCheckbox("xm y+6", "Tray double-click launches client")
     ctl["dblClickChk"].Value := (DBLCLICK_LAUNCH = "1") ? 1 : 0
     ctl["startupChk"] := g.AddCheckbox("x+20 yp", "Run at Windows startup")
     ctl["startupChk"].Value := (STARTUP_ENABLED = "1") ? 1 : 0
 
-    ctl["midClickChk"] := g.AddCheckbox("xm y+4", "Tray middle-click opens notes")
-    ctl["midClickChk"].Value := (MIDCLICK_NOTES = "1") ? 1 : 0
-    ctl["midClickPipChk"] := g.AddCheckbox("x+20 yp", "Tray middle-click toggles PiP")
-    ctl["midClickPipChk"].Value := (MIDCLICK_PIP = "1") ? 1 : 0
-    ; Make notes and pip middle-click mutually exclusive
-    ctl["midClickChk"].OnEvent("Click", (*) => (ctl["midClickPipChk"].Value := 0))
-    ctl["midClickPipChk"].OnEvent("Click", (*) => (ctl["midClickChk"].Value := 0))
-    ctl["tripleClickChk"] := g.AddCheckbox("xm y+4", "Tray triple-click launches all clients")
+    g.AddText("xm y+6", "Tray middle-click:")
+    ctl["midClickModes"] := ["off", "notes_pip", "pip_notes"]
+    ctl["midClickLabels"] := ["Off — disabled", "Click: open Notes — Triple Click: toggle PiP", "Click: toggle PiP — Triple Click: open Notes"]
+    ctl["midClickCombo"] := g.AddDropDownList("x+4 yp-2 w310", ctl["midClickLabels"])
+    for i, mode in ctl["midClickModes"] {
+        if (mode = MIDCLICK_MODE)
+            ctl["midClickCombo"].Choose(i)
+    }
+    if (ctl["midClickCombo"].Value = 0)
+        ctl["midClickCombo"].Choose(1)
+    ctl["tripleClickChk"] := g.AddCheckbox("xm y+6", "Tray triple-click launches all clients")
     ctl["tripleClickChk"].Value := (TRIPLECLICK_LAUNCH = "1") ? 1 : 0
 
     btnDesktop := g.AddButton("xm y+6 w130 h24", "🖥 Desktop Shortcut")
@@ -975,7 +1099,7 @@ BuildLaunchSection(g, ctl) {
 
     CreateDesktopShortcut(*) {
         desktop := EnvGet("USERPROFILE") "\Desktop\EQSwitch.lnk"
-        ico := A_ScriptDir "\eqbox.ico"
+        ico := A_ScriptDir "\eqswitch.ico"
         try {
             if FileExist(ico)
                 FileCreateShortcut(A_ScriptFullPath, desktop, A_ScriptDir,, "EQ Switch", ico)
@@ -996,6 +1120,7 @@ BuildProcessSection(g, ctl) {
     btnVideoMode := g.AddButton("x+20 yp-4 w130 h24", "🖥 Video Settings...")
     btnVideoMode.OnEvent("Click", (*) => OpenVideoModeEditor())
     btnVideoMode.ToolTip := "Edit eqclient.ini resolution/window settings"
+    g.AddText("xm y+4 cGray", "Screen resolution, offsets, and window mode")
 }
 
 BuildMultiMonSection(g, ctl) {
@@ -1008,7 +1133,7 @@ BuildMultiMonSection(g, ctl) {
     g.AddText("xm y+4", "Hotkey:")
     ctl["multimonHkCtrl"] := g.AddHotkey("x+6 yp-2 w120", MULTIMON_HOTKEY)
     ctl["multimonHkCtrl"].Enabled := (MULTIMON_ENABLED = "1") ? true : false
-    g.AddText("x+8 yp+4 cGray", "← click the box and press your key")
+    g.AddText("x+8 yp+4 cGray", "← press your key    Ctrl+drag to move PiP")
 
     ToggleMultimonField(*) {
         ctl["multimonHkCtrl"].Enabled := ctl["multimonEnabled"].Value ? true : false
@@ -1022,16 +1147,16 @@ BuildPiPSection(g, ctl) {
 
     ; Size presets
     g.AddText("xm y+6", "Size:")
-    pipPresets := ["Small (320×180)", "Medium (400×225)", "Large (480×270)", "XL (600×338)", "Custom"]
-    pipPresetCombo := g.AddDropDownList("x+4 yp-2 w140", pipPresets)
+    pipPresets := ["Small (320×180)", "Medium (400×225)", "Large (480×270)", "XL (600×338)", "XXL (768×432)", "Custom"]
+    pipPresetCombo := g.AddDropDownList("x+4 yp-2 w150", pipPresets)
     ; Select current preset or "Custom"
     currentMatch := 0
-    presetSizes := [[320,180], [400,225], [480,270], [600,338]]
+    presetSizes := [[320,180], [400,225], [480,270], [600,338], [768,432]]
     for i, sz in presetSizes {
         if (Integer(PIP_WIDTH) = sz[1] && Integer(PIP_HEIGHT) = sz[2])
             currentMatch := i
     }
-    pipPresetCombo.Choose(currentMatch > 0 ? currentMatch : 5)
+    pipPresetCombo.Choose(currentMatch > 0 ? currentMatch : 6)
 
     g.AddText("x+10 yp+2", "W:")
     ctl["pipWidthEdit"] := g.AddEdit("x+2 yp-2 w45 Number", PIP_WIDTH)
@@ -1057,24 +1182,28 @@ BuildPiPSection(g, ctl) {
 }
 
 BuildExtrasSection(g, ctl) {
-    global AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR
+    global BORDER_COLOR, PIP_BORDER_ENABLED
     g.AddText("xm y+10 w440 cNavy", "✨  Window Extras")
     g.AddText("xm y+4 w440 h1 0x10")
 
-    ctl["autoMinimizeChk"] := g.AddCheckbox("xm y+6", "Auto-minimize inactive EQ windows on switch")
-    ctl["autoMinimizeChk"].Value := (AUTO_MINIMIZE = "1") ? 1 : 0
+    ctl["pipBorderChk"] := g.AddCheckbox("xm y+6", "Show border around PiP window")
+    ctl["pipBorderChk"].Value := (PIP_BORDER_ENABLED = "1") ? 1 : 0
+    ctl["pipBorderChk"].OnEvent("Click", ToggleBorderFields)
 
-    ctl["borderEnabledChk"] := g.AddCheckbox("xm y+4", "Highlight active EQ window with colored border")
-    ctl["borderEnabledChk"].Value := (BORDER_ENABLED = "1") ? 1 : 0
-    ctl["borderEnabledChk"].OnEvent("Click", ToggleBorderFields)
-
-    g.AddText("xm y+4", "Border color:")
-    ctl["borderColorEdit"] := g.AddEdit("x+4 yp-2 w70", BORDER_COLOR)
-    ctl["borderColorEdit"].Enabled := (BORDER_ENABLED = "1") ? true : false
-    g.AddText("x+6 yp+2 cGray", "Hex RGB (e.g. 00FF00=green, FF0000=red)")
+    g.AddText("x+10 yp+2", "Color:")
+    ctl["borderColorNames"]  := ["Green", "Blue", "Red", "Black"]
+    ctl["borderColorValues"] := ["00FF00", "0080FF", "FF0000", "000000"]
+    ctl["borderColorCombo"]  := g.AddDropDownList("x+4 yp-2 w80", ctl["borderColorNames"])
+    colorMatch := 1
+    for i, val in ctl["borderColorValues"] {
+        if (val = BORDER_COLOR)
+            colorMatch := i
+    }
+    ctl["borderColorCombo"].Choose(colorMatch)
+    ctl["borderColorCombo"].Enabled := (PIP_BORDER_ENABLED = "1") ? true : false
 
     ToggleBorderFields(*) {
-        ctl["borderColorEdit"].Enabled := ctl["borderEnabledChk"].Value ? true : false
+        ctl["borderColorCombo"].Enabled := ctl["pipBorderChk"].Value ? true : false
     }
 }
 
@@ -1267,99 +1396,161 @@ BuildCharacterSection(g, ctl) {
     }
 }
 
-ShowSettingsHelp(parentHwnd) {
-    h := Gui("+AlwaysOnTop +Owner" parentHwnd, "❓ EQ Switch — Help")
-    h.SetFont("s9", "Segoe UI")
-    h.MarginX := 14
-    h.MarginY := 10
+global g_helpGui := 0
 
-    h.SetFont("s10 Bold", "Segoe UI")
-    h.AddText("w420 c0xAA3300", "⚔  Window Switch Hotkey")
-    h.SetFont("s9", "Segoe UI")
-    h.AddText("w420 y+4",
-        "The main feature. Set a key (e.g. \ or F12) that cycles between your open EQ windows. "
-        . "Only works while an EQ window is focused — won't interfere with other apps.")
+ShowSettingsHelp(*) {
+    global g_helpGui, g_version
+    ; Singleton — reuse existing window if open
+    if g_helpGui {
+        try {
+            g_helpGui.Show()
+            return
+        }
+        g_helpGui := 0
+    }
 
-    h.SetFont("s10 Bold", "Segoe UI")
-    h.AddText("w420 y+10 cNavy", "⚔  EverQuest Settings")
-    h.SetFont("s9", "Segoe UI")
-    h.AddText("w420 y+4",
-        "EQ Executable — path to your eqgame.exe, used by the Launch feature.`n"
-        . "Launch args — command-line flags passed to EQ (e.g. -patchme).`n"
-        . "Server name — used to find your character log and ini files (e.g. 'dalaya').")
+    hlp := Gui("+AlwaysOnTop +Resize +MinSize420x300", "EQ Switch v" g_version " — Help")
+    hlp.BackColor := "FFFFFF"
+    hlp.SetFont("s9", "Segoe UI")
 
-    h.SetFont("s10 Bold", "Segoe UI")
-    h.AddText("w420 y+10 cNavy", "🎮  Launch & Tray Options")
-    h.SetFont("s9", "Segoe UI")
-    h.AddText("w420 y+4",
-        "Clients — how many EQ windows to launch at once (1–8).`n"
-        . "Window mode — how windows are arranged after launch:`n"
-        . "  • maximize — all fullscreen on primary monitor`n"
-        . "  • multimonitor — one window per monitor, maximized`n`n"
-        . "Launch One / Launch All hotkeys — global shortcuts to launch clients from anywhere.`n`n"
-        . "Tray double-click — launches a single client.`n"
-        . "Tray triple-click — launches all clients (3 rapid clicks, 5s cooldown).`n"
-        . "Tray middle-click — opens your notes file.`n"
-        . "Desktop Shortcut — creates an EQSwitch shortcut on your Desktop.`n"
-        . "Tray Icon Settings — opens Windows settings to pin EQSwitch to the taskbar tray.")
+    helpText := "
+    (
+EQ SWITCH — Multi-Box Window Manager for EverQuest
+====================================================
 
-    h.SetFont("s10 Bold", "Segoe UI")
-    h.AddText("w420 y+10 cNavy", "⚡  Process Settings")
-    h.SetFont("s9", "Segoe UI")
-    h.AddText("w420 y+4",
-        "Process Manager — shows all running EQ processes with their PIDs, priorities, and CPU affinity. "
-        . "Configure which CPU cores EQ can use (useful since EQ defaults to a single core). "
-        . "'Force Apply to All' pushes current settings to all running clients immediately.`n`n"
-        . "Video Settings — edits eqclient.ini resolution and window offset settings. "
-        . "WindowedHeight=1009 sits above the taskbar. Set offsets to -8 for borderless-windowed mode.`n`n"
-        . "Note: EQ's own CPUAffinity1-6 in eqclient.ini are per-box core preferences (max 6). "
-        . "These are separate from the Windows-level affinity mask set here.")
+Manage multiple EQ clients with hotkeys, PiP overlays, multi-monitor layouts, and one-click launching.
 
-    h.SetFont("s10 Bold", "Segoe UI")
-    h.AddText("w420 y+10 cNavy", "📺  Picture-in-Picture")
-    h.SetFont("s9", "Segoe UI")
-    h.AddText("w420 y+4",
-        "Shows a live DWM thumbnail of inactive EQ windows as an overlay. "
-        . "Ctrl+drag to reposition. Position is saved between toggles.`n`n"
-        . "Size presets: Small (320×180), Medium (400×225), Large (480×270), XL (600×338), or Custom. "
-        . "Changes take effect immediately if PiP is active.")
 
-    h.SetFont("s10 Bold", "Segoe UI")
-    h.AddText("w420 y+10 cNavy", "🖥  Multi-Monitor")
-    h.SetFont("s9", "Segoe UI")
-    h.AddText("w420 y+4",
-        "A global hotkey (works even outside EQ) that cycles through multi-monitor layouts. "
-        . "Hotkey uses AHK syntax (e.g. >!m = RAlt+M, ^F12 = Ctrl+F12). Uncheck to disable.")
+HOTKEYS
+-------------------------------------------------------
 
-    h.SetFont("s10 Bold", "Segoe UI")
-    h.AddText("w420 y+10 cNavy", "✨  Window Extras")
-    h.SetFont("s9", "Segoe UI")
-    h.AddText("w420 y+4",
-        "Auto-minimize — minimizes inactive EQ windows when you switch to another. "
-        . "Suppressed for 30s after launch to let clients load.`n`n"
-        . "Border highlight — draws a colored border around the active EQ window "
-        . "(and around the PiP overlay). Color is hex RGB (e.g. 00FF00=green).")
+EQ Switch Key (default: \)
+  Cycles between your open EQ windows. Only works while an EQ window is focused, so it won't interfere with other apps.
 
-    h.SetFont("s10 Bold", "Segoe UI")
-    h.AddText("w420 y+10 cNavy", "📋  Character Config && Backup")
-    h.SetFont("s9", "Segoe UI")
-    h.AddText("w420 y+4",
-        "Backs up character UI/keybind files to and from your Desktop.`n"
-        . "Server — your EQ server name (for file paths).`n"
-        . "Char — type or pick a recent character name (saved on Apply/Save).`n"
-        . "Backup — copies config files to Desktop.`n"
-        . "Restore — copies them back (overwrites existing files).")
+Global Switch Key (default: ])
+  Pulls the last-active EQ window to the front from any application. Press repeatedly to cycle through clients. Works even when EQ isn't focused.
 
-    h.SetFont("s10 Bold", "Segoe UI")
-    h.AddText("w420 y+10 cNavy", "🎯  Gina / 📝  Notes")
-    h.SetFont("s9", "Segoe UI")
-    h.AddText("w420 y+4",
-        "Gina — path to Gina.exe. Notes — a .txt file for EQ notes (created on first use).")
+Multi-Monitor Toggle (default: Alt+M)
+  Toggles between single screen and multi-monitor window layout. Uncheck in Settings to disable.
 
-    h.AddText("w420 y+10 h1 0x10")
-    h.AddButton("w80 h26 y+6 Default", "Close").OnEvent("Click", (*) => h.Destroy())
-    h.OnEvent("Escape", (*) => h.Destroy())
-    h.Show("AutoSize")
+
+LAUNCHING
+-------------------------------------------------------
+
+Launch One / Launch All
+  Launch EQ clients using tray menu, hotkeys, or tray clicks. Set the number of clients (1-8) in Settings.
+
+Tray double-click — launches a single client.
+Tray middle-click — configurable single + triple-click actions:
+  Single click = primary action (e.g. open Notes)
+  Triple click = secondary action (e.g. toggle PiP)
+  Actions are swappable in the dropdown.
+
+Desktop Shortcut — creates an EQSwitch shortcut on your Desktop.
+Tray Icon Settings — opens Windows settings to pin EQSwitch to the system tray.
+
+
+EVERQUEST SETTINGS
+-------------------------------------------------------
+
+EQ Executable — path to your eqgame.exe.
+Launch args — command-line flags (e.g. -patchme).
+Server name — used to locate character log and ini files.
+
+
+WINDOW LAYOUT
+-------------------------------------------------------
+
+Multi-Mon mode:
+  Single screen — all clients fill the target monitor.
+  Multimonitor — one client per monitor, full screen.
+
+Target Monitor — which monitor to use in single screen mode.
+Fix Windows (tray menu) — re-applies the current layout.
+
+
+VIDEO SETTINGS
+-------------------------------------------------------
+
+Edits eqclient.ini resolution and window positioning.
+
+  Resolution — windowed width and height.
+  X/Y Offsets — fine-tune EQ's window placement.
+  WindowedMode — toggles windowed vs fullscreen.
+    Fullscreen is not tested and may cause issues.
+  Title Bar Offset — pushes the window down to
+    hide the title bar. Default: 0px (title bar visible).
+
+Note: EQ only re-reads these values when you toggle
+window mode (windowed to fullscreen and back).
+
+
+PICTURE-IN-PICTURE (PiP)
+-------------------------------------------------------
+
+Shows a live thumbnail of inactive EQ windows as a floating overlay.
+
+  Ctrl+drag to reposition (position is saved).
+  Click-through enabled — clicks pass to EQ underneath.
+  Size presets: Small, Medium, Large, XL, XXL, or Custom.
+
+PiP Border — draws a thin colored border around the overlay for visibility. Toggle on/off with color picker in Settings.
+
+
+PROCESS MANAGER
+-------------------------------------------------------
+
+Shows all running EQ processes with PID, priority, and CPU affinity.
+
+  Priority — set process priority (Normal, High, etc.).
+  CPU Affinity — choose which cores EQ can use. Useful since EQ defaults to a single core.
+  Force Apply to All — pushes settings to all running clients.
+
+Note: EQ's own CPUAffinity1-6 in eqclient.ini are per-character core preferences (max 6). These are separate from the Windows-level affinity set here.
+
+
+CHARACTER CONFIG & BACKUP
+-------------------------------------------------------
+
+Backs up and restores character UI layout and keybind files.
+
+  Server — your EQ server name (for file paths).
+  Char — type or pick a recent character (saved on Apply).
+  Backup — copies config files to Desktop.
+  Restore — copies them back (overwrites existing).
+
+
+GINA & NOTES
+-------------------------------------------------------
+
+Gina — path to Gina.exe for audio triggers.
+Notes — a .txt file for EQ notes (created on first use). Accessible via tray menu or middle-click action.
+
+
+TIPS
+-------------------------------------------------------
+
+  Press \ while in EQ to quickly swap between characters.
+  Use Fix Windows from the tray menu if windows get misaligned.
+  Ctrl+drag the PiP overlay to reposition it anywhere.
+  Video Settings changes require an EQ restart or window mode toggle.
+    )"
+
+    hlp.Add("Edit", "x10 y10 w480 h420 ReadOnly -E0x200 Multi +VScroll", helpText)
+    hlp.OnEvent("Close", (*) => (g_helpGui.Destroy(), g_helpGui := 0))
+    hlp.OnEvent("Escape", (*) => (g_helpGui.Destroy(), g_helpGui := 0))
+    hlp.OnEvent("Size", HelpResize)
+    g_helpGui := hlp
+    hlp.Show("w500 h440")
+}
+
+HelpResize(hlp, minMax, w, h) {
+    if (minMax = -1)  ; minimized
+        return
+    try {
+        ctrl := hlp["Edit1"]
+        ctrl.Move(10, 10, w - 20, h - 20)
+    }
 }
 
 ; Shared file browser helper for Settings sections
@@ -1374,7 +1565,7 @@ BrowseFile(ctrl, title, filter) {
 ; =========================================================
 OpenSettings(*) {
     global EQ_EXE, EQ_ARGS, EQ_HOTKEY, DBLCLICK_LAUNCH, SETTINGS_OPEN
-    global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES, RECENT_CHARS
+    global GINA_PATH, NOTES_FILE, MIDCLICK_MODE, RECENT_CHARS
     global EQ_SERVER, NUM_CLIENTS, FIX_MODE, STARTUP_ENABLED
     global MULTIMON_HOTKEY, MULTIMON_ENABLED, g_version, TOOLTIP_MS
     global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
@@ -1415,7 +1606,7 @@ OpenSettings(*) {
     g.AddButton("xm y+6 w80 h28 Default", "Save").OnEvent("Click", SaveAndClose)
     g.AddButton("x+8 yp w80 h28", "Apply").OnEvent("Click", (*) => ApplySettings())
     g.AddButton("x+8 yp w80 h28", "Close").OnEvent("Click", (*) => (SETTINGS_OPEN := false, g.Destroy()))
-    g.AddButton("x+8 yp w80 h28", "❓ Help").OnEvent("Click", (*) => ShowSettingsHelp(g.Hwnd))
+    g.AddButton("x+8 yp w80 h28", "❓ Help").OnEvent("Click", (*) => ShowSettingsHelp())
 
     g.Show("AutoSize")
 
@@ -1429,25 +1620,27 @@ OpenSettings(*) {
 
     ApplySettings(*) {
         global EQ_EXE, EQ_ARGS, EQ_HOTKEY, DBLCLICK_LAUNCH
-        global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES, MIDCLICK_PIP
-        global EQ_SERVER, NUM_CLIENTS, FIX_MODE, STARTUP_ENABLED
+        global GINA_PATH, NOTES_FILE, MIDCLICK_MODE
+        global EQ_SERVER, NUM_CLIENTS, FIX_MODE, TARGET_MONITOR, STARTUP_ENABLED
         global MULTIMON_HOTKEY, MULTIMON_ENABLED, TOOLTIP_MS
-        global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
-        global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
+        global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, FOCUS_HOTKEY, TRIPLECLICK_LAUNCH
         global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY
-        global AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR
-
+        global BORDER_COLOR, PIP_BORDER_ENABLED
         newHotkey := ctl["hotkeyCtrl"].Value
         newMultimonHk := ctl["multimonHkCtrl"].Value
         newLaunchOneHk := ctl["launchOneHkCtrl"].Value
         newLaunchAllHk := ctl["launchAllHkCtrl"].Value
+        newFocusHk := ctl["focusHkCtrl"].Value
 
-        ; Save old hotkeys for rollback on bind failure
+        ; Save old values for rollback and conditional FixWindows
         oldEqHotkey := EQ_HOTKEY
         oldMultimonHk := MULTIMON_HOTKEY
         oldMultimonEnabled := MULTIMON_ENABLED
         oldLaunchOneHk := LAUNCH_ONE_HOTKEY
         oldLaunchAllHk := LAUNCH_ALL_HOTKEY
+        oldFocusHk := FOCUS_HOTKEY
+        oldFixMode := FIX_MODE
+        oldTargetMon := TARGET_MONITOR
 
         ; Unbind the old hotkeys
         HotIfWinActive("ahk_exe eqgame.exe")
@@ -1459,6 +1652,8 @@ OpenSettings(*) {
             try Hotkey(LAUNCH_ONE_HOTKEY, "Off")
         if (LAUNCH_ALL_HOTKEY != "")
             try Hotkey(LAUNCH_ALL_HOTKEY, "Off")
+        if (FOCUS_HOTKEY != "")
+            try Hotkey(FOCUS_HOTKEY, "Off")
 
         ; Validate paths (non-blocking warnings)
         if (ctl["exeEdit"].Value != "" && !FileExist(ctl["exeEdit"].Value))
@@ -1473,8 +1668,7 @@ OpenSettings(*) {
         DBLCLICK_LAUNCH := ctl["dblClickChk"].Value ? "1" : "0"
         GINA_PATH       := ctl["ginaEdit"].Value
         NOTES_FILE      := ctl["notesEdit"].Value
-        MIDCLICK_NOTES  := ctl["midClickChk"].Value ? "1" : "0"
-        MIDCLICK_PIP    := ctl["midClickPipChk"].Value ? "1" : "0"
+        MIDCLICK_MODE   := ctl["midClickModes"][ctl["midClickCombo"].Value]
         TRIPLECLICK_LAUNCH := ctl["tripleClickChk"].Value ? "1" : "0"
         ; EQ_SERVER stays as loaded from config (no GUI field)
         ; Save character name to recent list if user typed one
@@ -1497,16 +1691,16 @@ OpenSettings(*) {
         NUM_CLIENTS     := String(clientNum)
         ctl["clientsEdit"].Value := NUM_CLIENTS
         FIX_MODE        := ctl["fixModes"][ctl["fixModeCombo"].Value]
+        TARGET_MONITOR  := String(ctl["targetMonCombo"].Value)
         PIP_WIDTH        := ctl["pipWidthEdit"].Value
         PIP_HEIGHT       := ctl["pipHeightEdit"].Value
         PIP_OPACITY      := ctl["pipOpacityEdit"].Value
-        AUTO_MINIMIZE   := ctl["autoMinimizeChk"].Value ? "1" : "0"
-        BORDER_ENABLED  := ctl["borderEnabledChk"].Value ? "1" : "0"
-        borderInput     := ctl["borderColorEdit"].Value
-        BORDER_COLOR    := RegExMatch(borderInput, "^[0-9A-Fa-f]{6}$") ? borderInput : "00FF00"
+        PIP_BORDER_ENABLED := ctl["pipBorderChk"].Value ? "1" : "0"
+        BORDER_COLOR    := ctl["borderColorValues"][ctl["borderColorCombo"].Value]
         STARTUP_ENABLED := ctl["startupChk"].Value ? "1" : "0"
 
         ; Handle hotkey — skip binding if empty; rollback to old key on failure
+        ; Note: AHK Hotkey control can't display bare keys like "\" — if empty, preserve old binding
         if (newHotkey != "") {
             EQ_HOTKEY := newHotkey
             if !BindHotkey(EQ_HOTKEY) {
@@ -1514,8 +1708,10 @@ OpenSettings(*) {
                 EQ_HOTKEY := oldEqHotkey
                 BindHotkey(EQ_HOTKEY)
             }
-        } else {
-            EQ_HOTKEY := ""
+        } else if (oldEqHotkey != "") {
+            ; Preserve existing hotkey — control returned empty (can't represent bare keys)
+            EQ_HOTKEY := oldEqHotkey
+            BindHotkey(EQ_HOTKEY)
         }
 
         ; Handle multimon hotkey
@@ -1548,16 +1744,31 @@ OpenSettings(*) {
             }
         }
 
+        ; Handle focus/global switch hotkey — same bare-key protection as EQ_HOTKEY
+        if (newFocusHk != "") {
+            FOCUS_HOTKEY := newFocusHk
+            if !BindFocusHotkey(FOCUS_HOTKEY) {
+                ShowTip("⚠ Global Switch hotkey '" FOCUS_HOTKEY "' couldn't be bound — reverting", 5000)
+                FOCUS_HOTKEY := oldFocusHk
+                BindFocusHotkey(FOCUS_HOTKEY)
+            }
+        } else if (oldFocusHk != "") {
+            ; Preserve existing hotkey — control returned empty (can't represent bare keys like ])
+            FOCUS_HOTKEY := oldFocusHk
+            BindFocusHotkey(FOCUS_HOTKEY)
+        }
+
         SaveConfig()
-        UpdateFeatureTimer()
         ; Rebuild PiP if active and size changed
         if (g_pipEnabled) {
             DestroyPiP()
             CreatePiP()
         }
-        ; Clean up border if disabled
-        if (BORDER_ENABLED = "0")
-            DestroyBorder()
+        ; Update PiP border state
+        if (PIP_BORDER_ENABLED = "1" && g_pipEnabled)
+            UpdatePiPBorder()
+        else
+            DestroyPiPBorder()
         UpdateTrayTip()
         UpdateTrayMenuLabels()
 
@@ -1566,7 +1777,7 @@ OpenSettings(*) {
         shortcutPath := startupDir "\EQSwitch.lnk"
         if (STARTUP_ENABLED = "1") {
             try {
-                ico := A_ScriptDir "\eqbox.ico"
+                ico := A_ScriptDir "\eqswitch.ico"
                 if FileExist(ico)
                     FileCreateShortcut(A_ScriptFullPath, shortcutPath, A_ScriptDir, , "EQ Switch", ico)
                 else
@@ -1577,6 +1788,9 @@ OpenSettings(*) {
                 try FileDelete(shortcutPath)
         }
 
+        ; Only re-arrange windows if mode or monitor changed (avoids all-clients-to-front flash)
+        if (FIX_MODE != oldFixMode || TARGET_MONITOR != oldTargetMon)
+            FixWindows()
         ShowTip("Settings applied!")
     }
 
@@ -1600,14 +1814,34 @@ g_pipLastActive := 0
 g_pipAltWindows := []
 ; PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY, PIP_X, PIP_Y are loaded from config
 ; Ctrl+drag to reposition PiP; position saved on destroy
+; WS_EX_TRANSPARENT (0x20) makes PiP fully click-through at OS level.
+; When Ctrl is held, we temporarily remove it so dragging works.
 OnMessage(0x0084, PiPHitTest)
+g_pipCtrlWatch := ""
 PiPHitTest(wParam, lParam, msg, hwnd) {
     global g_pipGui
-    if (g_pipGui && hwnd = g_pipGui.Hwnd) {
-        if GetKeyState("Ctrl")
-            return 2   ; HTCAPTION — draggable
-        return -1      ; HTTRANSPARENT — click-through
+    try {
+        if (g_pipGui && hwnd = g_pipGui.Hwnd)
+            return 2   ; HTCAPTION — draggable (only reached when WS_EX_TRANSPARENT is off)
     }
+}
+PiPCtrlWatch(*) {
+    global g_pipGui, g_pipEnabled
+    if (!g_pipEnabled || !g_pipGui)
+        return
+    pipHwnd := g_pipGui.Hwnd
+    static wasCtrl := false
+    isCtrl := GetKeyState("Ctrl", "P")
+    if (isCtrl && !wasCtrl) {
+        ; Remove WS_EX_TRANSPARENT so PiP receives mouse input
+        exStyle := WinGetExStyle("ahk_id " pipHwnd)
+        WinSetExStyle(exStyle & ~0x20, "ahk_id " pipHwnd)
+    } else if (!isCtrl && wasCtrl) {
+        ; Restore WS_EX_TRANSPARENT for click-through
+        exStyle := WinGetExStyle("ahk_id " pipHwnd)
+        WinSetExStyle(exStyle | 0x20, "ahk_id " pipHwnd)
+    }
+    wasCtrl := isCtrl
 }
 
 TogglePiP(*) {
@@ -1619,8 +1853,9 @@ TogglePiP(*) {
 }
 
 CreatePiP(*) {
-    global g_pipEnabled, g_pipGui, g_pipThumbnails, g_pipTimer
+    global g_pipEnabled, g_pipGui, g_pipThumbnails, g_pipTimer, g_pipCtrlWatch
     global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY, PIP_X, PIP_Y, TOOLTIP_MS
+    global PIP_BORDER_ENABLED
 
     if g_pipEnabled
         DestroyPiP()
@@ -1644,43 +1879,61 @@ CreatePiP(*) {
     if !isEqActive
         activeID := visible[1]
 
-    ; Find non-active EQ windows to show as thumbnails
+    ; Find non-active EQ windows to show as thumbnails (max 3)
     altWindows := []
     for id in visible {
-        if (id != activeID)
+        if (id != activeID) {
             altWindows.Push(id)
+            if (altWindows.Length >= 3)
+                break
+        }
     }
     if (altWindows.Length = 0)
         altWindows.Push(visible[2])  ; fallback: show second window
 
     ; Create the overlay GUI — borderless, always on top
     ; Click-through handled by WM_NCHITTEST (PiPHitTest); Ctrl+drag to move
-    pipG := Gui("+AlwaysOnTop -Caption +ToolWindow")
+    pipG := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")
     pipG.BackColor := "000000"
 
     ; Calculate total size needed
     totalH := altWindows.Length * PIP_HEIGHT + (altWindows.Length - 1) * 4
     totalW := PIP_WIDTH
 
-    ; Use saved position if available, otherwise bottom-right corner
+    ; Position PiP on the target monitor, clamped to fit within bounds
+    try targetMon := Integer(TARGET_MONITOR)
+    catch
+        targetMon := 1
+    if (targetMon > MonitorGetCount() || targetMon < 1)
+        targetMon := 1
+    try MonitorGetWorkArea(targetMon, &mLeft, &mTop, &mRight, &mBottom)
+    catch {
+        mLeft := 0
+        mTop := 0
+        mRight := A_ScreenWidth
+        mBottom := A_ScreenHeight
+    }
+    posX := ""
     if (PIP_X != "" && PIP_Y != "") {
         try {
             posX := Integer(PIP_X)
             posY := Integer(PIP_Y)
+            ; Hard clamp: ensure PiP fits entirely within the monitor
+            if (posX + totalW > mRight)
+                posX := mRight - totalW - 10
+            if (posX < mLeft)
+                posX := mLeft + 10
+            if (posY + totalH > mBottom)
+                posY := mBottom - totalH - 10
+            if (posY < mTop)
+                posY := mTop + 10
         } catch {
             posX := ""
         }
-    } else {
-        posX := ""
     }
     if (posX = "") {
-        try MonitorGetWorkArea(1, &mLeft, &mTop, &mRight, &mBottom)
-        catch {
-            mRight := A_ScreenWidth
-            mBottom := A_ScreenHeight
-        }
         posX := mRight - totalW - 10
-        posY := mBottom - totalH - 10
+        posY := mBottom - totalH - 2
     }
 
     pipG.Show("x" posX " y" posY " w" totalW " h" totalH " NoActivate")
@@ -1727,15 +1980,24 @@ CreatePiP(*) {
     g_pipGui := pipG
     g_pipEnabled := true
     g_pipLastActive := activeID
+    ShowTip("PiP ON — Ctrl+drag to reposition", 5000)
+
+    ; Show PiP border if enabled
+    if (PIP_BORDER_ENABLED = "1")
+        UpdatePiPBorder()
 
     ; Set up a timer to refresh when active window changes
     g_pipTimer := RefreshPiP
     SetTimer(g_pipTimer, 500)
+
+    ; Start Ctrl key watcher for drag-to-reposition
+    g_pipCtrlWatch := PiPCtrlWatch
+    SetTimer(g_pipCtrlWatch, 100)
 }
 
 RefreshPiP(*) {
     global g_pipEnabled, g_pipGui, g_pipThumbnails, g_pipLastActive
-    global PIP_WIDTH, PIP_HEIGHT
+    global PIP_WIDTH, PIP_HEIGHT, PIP_BORDER_ENABLED
     if !g_pipEnabled
         return
 
@@ -1775,6 +2037,9 @@ RefreshPiP(*) {
             SwapPiPSources(visible, activeID)
     }
 
+    ; Keep PiP border in sync with PiP position (e.g. after Ctrl+drag)
+    if (PIP_BORDER_ENABLED = "1")
+        UpdatePiPBorder()
 }
 
 ; Swap PiP thumbnail sources on the existing GUI (avoids flicker from full teardown)
@@ -1782,11 +2047,14 @@ SwapPiPSources(visible, activeID) {
     global g_pipGui, g_pipThumbnails, g_pipLastActive
     global PIP_WIDTH, PIP_HEIGHT
 
-    ; Find non-active EQ windows
+    ; Find non-active EQ windows (max 3)
     altWindows := []
     for id in visible {
-        if (id != activeID)
+        if (id != activeID) {
             altWindows.Push(id)
+            if (altWindows.Length >= 3)
+                break
+        }
     }
     if (altWindows.Length = 0)
         altWindows.Push(visible[2])
@@ -1837,7 +2105,7 @@ SwapPiPSources(visible, activeID) {
 }
 
 DestroyPiP(*) {
-    global g_pipEnabled, g_pipGui, g_pipThumbnails, g_pipTimer, g_pipAltWindows
+    global g_pipEnabled, g_pipGui, g_pipThumbnails, g_pipTimer, g_pipCtrlWatch, g_pipAltWindows
     global PIP_X, PIP_Y
 
     ; Save current position so it persists across toggles
@@ -1861,6 +2129,11 @@ DestroyPiP(*) {
         SetTimer(g_pipTimer, 0)
     g_pipTimer := ""
 
+    ; Stop Ctrl key watcher
+    if g_pipCtrlWatch
+        SetTimer(g_pipCtrlWatch, 0)
+    g_pipCtrlWatch := ""
+
     ; Destroy the GUI
     if g_pipGui {
         try g_pipGui.Destroy()
@@ -1873,151 +2146,8 @@ DestroyPiP(*) {
 }
 
 ; =========================================================
-; WINDOW FEATURES ENGINE
+; PiP BORDER
 ; =========================================================
-; Unified timer for: auto-minimize (P2-05), border highlight (P2-04)
-g_featureTimer      := ""
-g_featureLastActive := 0
-g_borderGuis        := []    ; [top, bottom, left, right] bar GUIs
-g_borderTarget      := 0     ; hwnd currently highlighted
-
-; Start/stop the feature timer based on which features are enabled
-UpdateFeatureTimer() {
-    global AUTO_MINIMIZE, BORDER_ENABLED, g_featureTimer
-    needTimer := (AUTO_MINIMIZE = "1" || BORDER_ENABLED = "1")
-    if (needTimer && !g_featureTimer) {
-        g_featureTimer := FeatureRefresh
-        SetTimer(g_featureTimer, 2000)
-    } else if (!needTimer && g_featureTimer) {
-        SetTimer(g_featureTimer, 0)
-        g_featureTimer := ""
-        DestroyBorder()
-    }
-}
-
-FeatureRefresh(*) {
-    global AUTO_MINIMIZE, BORDER_ENABLED
-    global g_featureLastActive
-
-    visible := GetVisibleEqWindows()
-    if (visible.Length = 0) {
-        HideBorder()
-        return
-    }
-
-    activeID := 0
-    try activeID := WinGetID("A")
-
-    ; Is the active window an EQ window?
-    isEq := false
-    for id in visible {
-        if (id = activeID) {
-            isEq := true
-            break
-        }
-    }
-
-    ; Auto-minimize only needs to act on window switch, not every tick
-    if (isEq && activeID != g_featureLastActive) {
-        ; P2-05: Auto-minimize — minimize inactive EQ windows on switch
-        ; Skip during launch grace period (30s after launch to let clients load)
-        if (AUTO_MINIMIZE = "1" && A_TickCount > g_launchGrace) {
-            for id in visible {
-                if (id != activeID && !IsHungWindow(id)) {
-                    try {
-                        if (WinGetMinMax("ahk_id " id) != -1)
-                            WinMinimize("ahk_id " id)
-                    }
-                }
-            }
-        }
-    }
-
-    ; P2-04: Active window highlight border (also frames PiP overlay)
-    if (BORDER_ENABLED = "1") {
-        if (isEq && visible.Length >= 2) {
-            UpdateBorder(activeID)
-            ; Also highlight PiP overlay if active
-            global g_pipEnabled, g_pipGui
-            if (g_pipEnabled && g_pipGui)
-                try UpdatePiPBorder()
-        } else {
-            HideBorder()
-            HidePiPBorder()
-        }
-    }
-
-    if isEq
-        g_featureLastActive := activeID
-}
-
-; ── Border Highlight ──────────────────────────────────
-CreateBorder() {
-    global g_borderGuis, BORDER_COLOR
-    if (g_borderGuis.Length > 0)
-        return  ; already created
-
-    ; Validate color — fallback to green if invalid
-    color := RegExMatch(BORDER_COLOR, "^[0-9A-Fa-f]{6}$") ? BORDER_COLOR : "00FF00"
-    Loop 4 {
-        bar := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")  ; click-through
-        bar.BackColor := color
-        g_borderGuis.Push(bar)
-    }
-}
-
-UpdateBorder(targetHwnd) {
-    global g_borderGuis, g_borderTarget, BORDER_COLOR
-    static BW := 3  ; border width in pixels
-
-    if (g_borderGuis.Length = 0)
-        CreateBorder()
-
-    ; Skip hung windows — WinGetPos can block on unresponsive processes
-    if IsHungWindow(targetHwnd) {
-        HideBorder()
-        return
-    }
-
-    ; Get target window position
-    try {
-        WinGetPos(&wx, &wy, &ww, &wh, "ahk_id " targetHwnd)
-    } catch {
-        HideBorder()
-        return
-    }
-
-    ; Update color if it changed
-    if (g_borderGuis[1].BackColor != BORDER_COLOR) {
-        for bar in g_borderGuis
-            bar.BackColor := BORDER_COLOR
-    }
-
-    ; Position the 4 bars around the window
-    g_borderGuis[1].Show("x" (wx - BW) " y" (wy - BW) " w" (ww + 2*BW) " h" BW " NoActivate")     ; top
-    g_borderGuis[2].Show("x" (wx - BW) " y" (wy + wh) " w" (ww + 2*BW) " h" BW " NoActivate")     ; bottom
-    g_borderGuis[3].Show("x" (wx - BW) " y" wy " w" BW " h" wh " NoActivate")                       ; left
-    g_borderGuis[4].Show("x" (wx + ww) " y" wy " w" BW " h" wh " NoActivate")                       ; right
-
-    g_borderTarget := targetHwnd
-}
-
-HideBorder() {
-    global g_borderGuis, g_borderTarget
-    for bar in g_borderGuis {
-        try bar.Show("Hide")
-    }
-    g_borderTarget := 0
-}
-
-DestroyBorder() {
-    global g_borderGuis, g_borderTarget
-    for bar in g_borderGuis {
-        try bar.Destroy()
-    }
-    g_borderGuis := []
-    g_borderTarget := 0
-}
 
 ; ── PiP Border Highlight ──────────────────────────────
 g_pipBorderGuis := []
@@ -2067,9 +2197,6 @@ DestroyPiPBorder() {
         try bar.Destroy()
     g_pipBorderGuis := []
 }
-
-; Start feature timer on load if any feature is enabled
-UpdateFeatureTimer()
 
 ; =========================================================
 ; PROCESS MANAGER GUI
@@ -2284,17 +2411,19 @@ OpenVideoModeEditor(*) {
     vm.SetFont("s9", "Segoe UI")
     vm.AddText("xm y+4 w400 h1 0x10")
 
-    ; Resolution presets
+    ; Resolution presets — "Custom" remembers whatever you typed
     vm.AddText("xm y+6", "Preset:")
-    resPresets := ["1920×1080", "1920×1200", "2560×1440", "1280×720", "Custom"]
+    resPresets := ["1920×1009", "1920×1080", "1920×1200", "1920×1280", "2560×1440", "1280×720", "Custom"]
     resPresetCombo := vm.AddDropDownList("x+4 yp-2 w130", resPresets)
-    resPresetCombo.Choose(5)  ; default to Custom
-    presetMap := [[1920,1080], [1920,1200], [2560,1440], [1280,720]]
+    resPresetCombo.Choose(7)  ; default to Custom
+    presetMap := [[1920,1009], [1920,1080], [1920,1200], [1920,1280], [2560,1440], [1280,720]]
+    customW := 0  ; stashed custom width
+    customH := 0  ; stashed custom height
 
     vm.AddText("xm y+8", "WindowedWidth:")
     vmWW := vm.AddEdit("x+4 yp-2 w60 Number", ReadVM("WindowedWidth", "1920"))
     vm.AddText("x+10 yp+2", "WindowedHeight:")
-    vmWH := vm.AddEdit("x+4 yp-2 w60 Number", ReadVM("WindowedHeight", "1080"))
+    vmWH := vm.AddEdit("x+4 yp-2 w60 Number", ReadVM("WindowedHeight", "1009"))
 
     vm.AddText("xm y+6", "WindowedModeXOffset:")
     vmXOff := vm.AddEdit("x+4 yp-2 w50", ReadVM("WindowedModeXOffset", "0"))
@@ -2302,30 +2431,42 @@ OpenVideoModeEditor(*) {
     vmYOff := vm.AddEdit("x+4 yp-2 w50", ReadVM("WindowedModeYOffset", "0"))
 
     vm.AddText("xm y+8 cGray w400",
-        "Tip: WindowedHeight=1009 sits above taskbar. Set XOffset/YOffset to -8 for borderless-windowed (hides title bar).")
+        "Tip: Leave offsets at 0 for standard positioning.")
 
-    ; Borderless preset button
-    vm.AddButton("xm y+6 w160 h24", "Apply Borderless Preset").OnEvent("Click", ApplyBorderless)
-    vm.AddButton("x+8 yp w100 h24", "Default Offsets").OnEvent("Click", ResetDefaults)
-
-    ApplyBorderless(*) {
-        ; Keep current resolution, only set offsets for borderless-windowed
-        vmXOff.Value := "-8"
-        vmYOff.Value := "-8"
-    }
-    ResetDefaults(*) {
-        vmXOff.Value := "0"
-        vmYOff.Value := "0"
-    }
-
+    ; Stash current values as custom before switching to a preset
     resPresetCombo.OnEvent("Change", OnResPreset)
     OnResPreset(*) {
         idx := resPresetCombo.Value
         if (idx >= 1 && idx <= presetMap.Length) {
+            ; Save what's in the fields before overwriting
+            customW := vmWW.Value
+            customH := vmWH.Value
             vmWW.Value := presetMap[idx][1]
             vmWH.Value := presetMap[idx][2]
+        } else {
+            ; "Custom" selected — restore stashed values
+            if (customW > 0 && customH > 0) {
+                vmWW.Value := customW
+                vmWH.Value := customH
+            }
         }
     }
+
+    ; --- Window Mode & Title Bar Offset ---
+    vm.AddText("xm y+10 w400 h1 0x10")
+    vm.SetFont("s10 Bold", "Segoe UI")
+    vm.AddText("xm y+6 w400 c0xAA3300", "🎮  Window Mode")
+    vm.SetFont("s9", "Segoe UI")
+
+    ; Read current WindowedMode from eqclient.ini [Defaults]
+    curWinMode := "TRUE"
+    try curWinMode := IniRead(iniPath, "Defaults", "WindowedMode", "TRUE")
+    vmWindowedMode := vm.AddCheckbox("xm y+4" (curWinMode = "TRUE" ? " Checked" : ""), "WindowedMode (windowed)")
+    vm.AddText("xm y+2 cGray w400", "Fullscreen mode is not tested — use at your own risk.")
+
+    vm.AddText("xm y+6", "Title bar offset:")
+    vmTitleBar := vm.AddEdit("x+4 yp-2 w45 Number", FIX_TOP_OFFSET)
+    vm.AddText("x+4 yp+2", "px")
 
     vm.AddText("xm y+10 w400 h1 0x10")
     vm.AddButton("xm y+6 w80 h28 Default", "Save").OnEvent("Click", SaveAndCloseVM)
@@ -2333,12 +2474,18 @@ OpenVideoModeEditor(*) {
     vm.AddButton("x+8 yp w80 h28", "Close").OnEvent("Click", (*) => (g_vmOpen := false, vm.Destroy()))
 
     ApplyVM(*) {
+        global FIX_TOP_OFFSET
         try {
             IniWrite(vmWW.Value, iniPath, "VideoMode", "WindowedWidth")
             IniWrite(vmWH.Value, iniPath, "VideoMode", "WindowedHeight")
             IniWrite(vmXOff.Value, iniPath, "VideoMode", "WindowedModeXOffset")
             IniWrite(vmYOff.Value, iniPath, "VideoMode", "WindowedModeYOffset")
-            ShowTip("🖥 Video settings saved to eqclient.ini — restart EQ to apply")
+            ; Save WindowedMode to eqclient.ini [Defaults]
+            IniWrite(vmWindowedMode.Value ? "TRUE" : "FALSE", iniPath, "Defaults", "WindowedMode")
+            ; Save title bar offset to EQSwitch config
+            FIX_TOP_OFFSET := vmTitleBar.Value
+            IniWrite(FIX_TOP_OFFSET, CFG_FILE, "EQSwitch", "FIX_TOP_OFFSET")
+            ShowTip("🖥 Video settings saved — toggle window mode or use Fix Windows to apply")
         } catch as err {
             ShowTip("⚠ Failed to save: " err.Message, 5000)
         }
@@ -2380,7 +2527,6 @@ LaunchOne(*) {
         return
     }
     eqDir := GetEqDir()
-    g_launchGrace := A_TickCount + 30000  ; suppress auto-minimize for 30s during load
     Run('"' EQ_EXE '" ' EQ_ARGS, eqDir, , &newPid)
     ; Snapshot settings at launch time so mid-launch Settings changes can't affect behavior
     launchPriority := PROCESS_PRIORITY
@@ -2437,7 +2583,6 @@ LaunchBoth(*) {
     launchFixMode  := FIX_MODE
 
     g_launchActive := true
-    g_launchGrace := A_TickCount + 30000  ; suppress auto-minimize for 30s during load
     pids := []
     launchIdx := 0
 
@@ -2478,12 +2623,14 @@ LaunchBoth(*) {
 
     DoFinalize() {
         global g_launchActive, FIX_MODE
-        ToolTip("🪟 Arranging windows...")
-        ; Temporarily inject captured fix mode so FixWindows() uses launch-time setting
-        savedMode := FIX_MODE
-        FIX_MODE := launchFixMode
-        FixWindows()
-        FIX_MODE := savedMode
+        ; Only auto-arrange in multimonitor mode — single screen lets EQ use eqclient.ini positioning
+        if (launchFixMode = "multimonitor") {
+            ToolTip("🪟 Arranging windows...")
+            savedMode := FIX_MODE
+            FIX_MODE := launchFixMode
+            FixWindows()
+            FIX_MODE := savedMode
+        }
         g_launchActive := false
         ShowTip("✅ Ready to play!")
     }
