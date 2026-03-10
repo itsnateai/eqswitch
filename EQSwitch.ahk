@@ -19,15 +19,16 @@ OnExit(AppCleanup)
 AppCleanup(reason, code) {
     try DestroyPiP()
     try DestroyBorder()
+    try DestroyPiPBorder()
     global g_featureTimer
     if g_featureTimer
         try SetTimer(g_featureTimer, 0)
     return 0  ; allow exit
 }
 
-g_version        := "1.6"
+g_version        := "1.7"
 CFG_FILE         := A_ScriptDir "\eqswitch.cfg"
-EQ_TITLE         := "EverQuest"
+EQ_TITLE         := "ahk_exe eqgame.exe"
 SETTINGS_OPEN    := false
 TOOLTIP_MS       := 2000
 
@@ -42,9 +43,9 @@ ShowTip(msg, ms?) {
 g_multiMonState  := 0
 g_launchOneLabel := "⚔  Launch Client"
 g_launchAllLabel := "🎮  Launch Both"
-g_lastDblClick   := 0
 g_tripleClickCooldown := 0
 g_launchActive   := false
+g_launchGrace    := 0          ; tick count — auto-minimize suppressed until this time
 g_pmOpen         := false
 
 ; =========================================================
@@ -218,7 +219,7 @@ LoadConfig() {
     global PROCESS_PRIORITY, CPU_AFFINITY
     global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
     global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY, PIP_X, PIP_Y
-    global FLASH_SUPPRESS, AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR, PIP_ZOOM
+    global AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR
 
     ; Migrate from old "EQ2Box" section name (pre-v1.2 rename)
     try {
@@ -272,11 +273,9 @@ LoadConfig() {
     PIP_OPACITY        := ReadKey("PIP_OPACITY",          "200")
     PIP_X              := ReadKey("PIP_X",                "")
     PIP_Y              := ReadKey("PIP_Y",                "")
-    FLASH_SUPPRESS     := ReadKey("FLASH_SUPPRESS",       "0")
     AUTO_MINIMIZE      := ReadKey("AUTO_MINIMIZE",        "0")
     BORDER_ENABLED     := ReadKey("BORDER_ENABLED",       "0")
     BORDER_COLOR       := ReadKey("BORDER_COLOR",         "00FF00")
-    PIP_ZOOM           := ReadKey("PIP_ZOOM",             "0")
 }
 
 SaveConfig() {
@@ -288,7 +287,7 @@ SaveConfig() {
     global PROCESS_PRIORITY, CPU_AFFINITY
     global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
     global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY, PIP_X, PIP_Y
-    global FLASH_SUPPRESS, AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR, PIP_ZOOM
+    global AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR
     IniWrite(EQ_EXE,           CFG_FILE, "EQSwitch", "EQ_EXE")
     IniWrite(EQ_ARGS,          CFG_FILE, "EQSwitch", "EQ_ARGS")
     IniWrite(EQ_HOTKEY,        CFG_FILE, "EQSwitch", "EQ_HOTKEY")
@@ -317,11 +316,9 @@ SaveConfig() {
     IniWrite(PIP_OPACITY, CFG_FILE, "EQSwitch", "PIP_OPACITY")
     IniWrite(PIP_X, CFG_FILE, "EQSwitch", "PIP_X")
     IniWrite(PIP_Y, CFG_FILE, "EQSwitch", "PIP_Y")
-    IniWrite(FLASH_SUPPRESS,  CFG_FILE, "EQSwitch", "FLASH_SUPPRESS")
     IniWrite(AUTO_MINIMIZE,   CFG_FILE, "EQSwitch", "AUTO_MINIMIZE")
     IniWrite(BORDER_ENABLED,  CFG_FILE, "EQSwitch", "BORDER_ENABLED")
     IniWrite(BORDER_COLOR,    CFG_FILE, "EQSwitch", "BORDER_COLOR")
-    IniWrite(PIP_ZOOM,        CFG_FILE, "EQSwitch", "PIP_ZOOM")
 }
 
 LoadConfig()
@@ -607,28 +604,54 @@ A_IconTip := "EQ Switch"
 
 A_TrayMenu.Delete()
 OnMessage(0x404, TrayClick)
+g_dblClickPending := false  ; true while waiting to see if a 3rd click follows
+g_dblClickTimer   := ""
 TrayClick(wParam, lParam, *) {
     global DBLCLICK_LAUNCH, MIDCLICK_NOTES, TRIPLECLICK_LAUNCH
-    global g_lastDblClick, g_tripleClickCooldown
+    global g_tripleClickCooldown, g_dblClickPending, g_dblClickTimer
     now := A_TickCount
+
     if (lParam = 0x203) {  ; WM_LBUTTONDBLCLK
-        ; Check for triple-click: double-click within 500ms of last double-click
-        if (TRIPLECLICK_LAUNCH = "1" && (now - g_lastDblClick) < 500 && (now - g_tripleClickCooldown) > 5000) {
-            g_tripleClickCooldown := now
-            g_lastDblClick := 0
-            LaunchBoth()
+        ; If triple-click is enabled, delay the double-click action to watch for 3rd click
+        if (TRIPLECLICK_LAUNCH = "1" && (now - g_tripleClickCooldown) > 5000) {
+            g_dblClickPending := true
+            ; Fire double-click action after 400ms if no 3rd click arrives
+            g_dblClickTimer := DblClickFire
+            SetTimer(g_dblClickTimer, -400)
             return
         }
-        g_lastDblClick := now
+        ; Triple-click disabled — fire immediately
         if (DBLCLICK_LAUNCH = "1")
             LaunchOne()
         else
             OpenSettings()
     }
+
+    ; 3rd click arrives as WM_LBUTTONUP after the double-click
+    if (lParam = 0x202 && g_dblClickPending) {  ; WM_LBUTTONUP
+        g_dblClickPending := false
+        if g_dblClickTimer
+            SetTimer(g_dblClickTimer, 0)
+        g_dblClickTimer := ""
+        g_tripleClickCooldown := now
+        LaunchBoth()
+        return
+    }
+
     if (lParam = 0x208) {  ; WM_MBUTTONUP — middle-click opens notes
         if (MIDCLICK_NOTES = "1")
             OpenNotes()
     }
+}
+
+DblClickFire(*) {
+    global DBLCLICK_LAUNCH, g_dblClickPending, g_dblClickTimer
+    g_dblClickPending := false
+    g_dblClickTimer := ""
+    if (DBLCLICK_LAUNCH = "1")
+        LaunchOne()
+    else
+        OpenSettings()
 }
 
 ; Decorated title banner
@@ -648,21 +671,22 @@ g_presetMenu := Menu()
 BuildPresetMenu()
 A_TrayMenu.Add("🪟  Window Presets",    g_presetMenu)
 A_TrayMenu.Add("📺  Picture-in-Picture", (*) => TogglePiP())
-A_TrayMenu.Add("🔲  Active Border",     (*) => ToggleBorderFromTray())
-A_TrayMenu.Add("📦  Auto-Minimize",     (*) => ToggleAutoMinFromTray())
-A_TrayMenu.Add("🔕  Flash Suppress",    (*) => ToggleFlashFromTray())
 A_TrayMenu.Add("⚡  Process Manager",   (*) => OpenProcessManager())
 A_TrayMenu.Add()
 
-A_TrayMenu.Add("📜  Open Log File",     (*) => OpenLogFile())
-A_TrayMenu.Add("📂  Open eqclient.ini", (*) => OpenEqClientIni())
-A_TrayMenu.Add("🎯  Open Gina",         (*) => OpenGina())
-A_TrayMenu.Add("📝  Open Notes",        (*) => OpenNotes())
-A_TrayMenu.Add()
+; Compact submenus for file/link items
+g_openMenu := Menu()
+g_openMenu.Add("Log File",     (*) => OpenLogFile())
+g_openMenu.Add("eqclient.ini", (*) => OpenEqClientIni())
+g_openMenu.Add("Gina",         (*) => OpenGina())
+g_openMenu.Add("Notes",        (*) => OpenNotes())
+A_TrayMenu.Add("📂  Open",    g_openMenu)
 
-A_TrayMenu.Add("🌐  Dalaya Wiki",       (*) => Run("https://wiki.dalaya.org/"))
-A_TrayMenu.Add("🌐  Shards Wiki",       (*) => Run("https://wiki.shardsofdalaya.com/wiki/Main_Page"))
-A_TrayMenu.Add("🌐  Dalaya Fomelo",     (*) => Run("https://dalaya.org/fomelo/"))
+g_linksMenu := Menu()
+g_linksMenu.Add("Dalaya Wiki",    (*) => Run("https://wiki.dalaya.org/"))
+g_linksMenu.Add("Shards Wiki",    (*) => Run("https://wiki.shardsofdalaya.com/wiki/Main_Page"))
+g_linksMenu.Add("Dalaya Fomelo",  (*) => Run("https://dalaya.org/fomelo/"))
+A_TrayMenu.Add("🌐  Links",   g_linksMenu)
 A_TrayMenu.Add()
 
 A_TrayMenu.Add("⚙  Settings",          (*) => OpenSettings())
@@ -672,7 +696,7 @@ A_TrayMenu.Add("✖  Exit",              (*) => ExitApp())
 ; Update menu labels with hotkey text, then apply bold
 UpdateTrayMenuLabels()
 SetMenuItemsBold(A_TrayMenu.Handle, ["Launch Client", "Launch Both"])
-UpdateExtrasCheckmarks()
+
 
 ; =========================================================
 ; FIX WINDOWS
@@ -1059,8 +1083,12 @@ BuildLaunchSection(g, ctl) {
     ctl["tripleClickChk"] := g.AddCheckbox("x+20 yp", "Tray triple-click launches all clients")
     ctl["tripleClickChk"].Value := (TRIPLECLICK_LAUNCH = "1") ? 1 : 0
 
-    g.AddButton("xm y+6 w130 h24", "🖥 Desktop Shortcut").OnEvent("Click", CreateDesktopShortcut)
-    g.AddButton("x+8 yp w130 h24", "🔧 Tray Icon Settings").OnEvent("Click", OpenTraySettings)
+    btnDesktop := g.AddButton("xm y+6 w130 h24", "🖥 Desktop Shortcut")
+    btnDesktop.OnEvent("Click", CreateDesktopShortcut)
+    btnDesktop.ToolTip := "Create an EQSwitch shortcut on your Desktop"
+    btnTray := g.AddButton("x+8 yp w130 h24", "🔧 Tray Icon Settings")
+    btnTray.OnEvent("Click", OpenTraySettings)
+    btnTray.ToolTip := "Open Windows settings to pin EQSwitch to the system tray"
 
     OpenTraySettings(*) {
         Run("ms-settings:taskbar")
@@ -1085,9 +1113,11 @@ BuildLaunchSection(g, ctl) {
 BuildProcessSection(g, ctl) {
     g.AddText("xm y+10 w440 cNavy", "⚡  Process Settings")
     g.AddText("xm y+4 w440 h1 0x10")
-
-    g.AddText("xm y+6 cGray", "Priority and CPU affinity are configured in the Process Manager.")
-    g.AddButton("xm y+6 w180 h24", "⚡ Process Manager...").OnEvent("Click", (*) => OpenProcessManager())
+    g.AddButton("xm y+6 w160 h24", "⚡ Process Manager...").OnEvent("Click", (*) => OpenProcessManager())
+    g.AddText("x+10 yp+4 cGray", "Priority && CPU affinity")
+    btnVideoMode := g.AddButton("x+20 yp-4 w130 h24", "🖥 Video Settings...")
+    btnVideoMode.OnEvent("Click", (*) => OpenVideoModeEditor())
+    btnVideoMode.ToolTip := "Edit eqclient.ini resolution/window settings"
 }
 
 BuildMultiMonSection(g, ctl) {
@@ -1097,10 +1127,13 @@ BuildMultiMonSection(g, ctl) {
     ctl["multimonEnabled"] := g.AddCheckbox("xm y+6", "Enable multi-monitor toggle hotkey")
     ctl["multimonEnabled"].Value := (MULTIMON_ENABLED = "1") ? 1 : 0
     ctl["multimonEnabled"].OnEvent("Click", ToggleMultimonField)
+    ; AHK Hotkey control can't represent sided modifiers (RAlt, RCtrl) — use Edit fallback
     g.AddText("xm y+4", "Hotkey:")
-    ctl["multimonHkCtrl"] := g.AddHotkey("x+6 yp-2 w120", MULTIMON_HOTKEY)
+    ctl["multimonHkCtrl"] := g.AddEdit("x+6 yp-2 w120", MULTIMON_HOTKEY)
     ctl["multimonHkCtrl"].Enabled := (MULTIMON_ENABLED = "1") ? true : false
-    g.AddText("x+8 yp+2 cGray", "Default: RAlt+M")
+    currentDisplay := FormatHotkeyDisplay(MULTIMON_HOTKEY)
+    hintText := currentDisplay != "" ? "Current: " currentDisplay : "Default: RAlt+M"
+    g.AddText("x+8 yp+2 cGray", hintText "  (AHK syntax: >!m)")
 
     ToggleMultimonField(*) {
         ctl["multimonHkCtrl"].Enabled := ctl["multimonEnabled"].Value ? true : false
@@ -1112,27 +1145,48 @@ BuildPiPSection(g, ctl) {
     g.AddText("xm y+10 w440 cNavy", "📺  Picture-in-Picture")
     g.AddText("xm y+4 w440 h1 0x10")
 
-    g.AddText("xm y+6", "Width:")
-    ctl["pipWidthEdit"] := g.AddEdit("x+4 yp-2 w55 Number", PIP_WIDTH)
+    ; Size presets
+    g.AddText("xm y+6", "Size:")
+    pipPresets := ["Small (320×180)", "Medium (400×225)", "Large (480×270)", "XL (600×338)", "Custom"]
+    pipPresetCombo := g.AddDropDownList("x+4 yp-2 w140", pipPresets)
+    ; Select current preset or "Custom"
+    currentMatch := 0
+    presetSizes := [[320,180], [400,225], [480,270], [600,338]]
+    for i, sz in presetSizes {
+        if (Integer(PIP_WIDTH) = sz[1] && Integer(PIP_HEIGHT) = sz[2])
+            currentMatch := i
+    }
+    pipPresetCombo.Choose(currentMatch > 0 ? currentMatch : 5)
+
+    g.AddText("x+10 yp+2", "W:")
+    ctl["pipWidthEdit"] := g.AddEdit("x+2 yp-2 w45 Number", PIP_WIDTH)
     g.AddUpDown("Range160-800", Integer(PIP_WIDTH))
-    g.AddText("x+12 yp+2", "Height:")
-    ctl["pipHeightEdit"] := g.AddEdit("x+4 yp-2 w55 Number", PIP_HEIGHT)
+    g.AddText("x+4 yp+2", "H:")
+    ctl["pipHeightEdit"] := g.AddEdit("x+2 yp-2 w45 Number", PIP_HEIGHT)
     g.AddUpDown("Range90-450", Integer(PIP_HEIGHT))
-    g.AddText("x+12 yp+2", "Opacity:")
+
+    g.AddText("xm y+6", "Opacity:")
     ctl["pipOpacityEdit"] := g.AddEdit("x+4 yp-2 w45 Number", PIP_OPACITY)
     g.AddUpDown("Range50-255", Integer(PIP_OPACITY))
     g.AddText("x+6 yp+2 cGray", "(50-255)")
+
+    ; Preset selection auto-fills width/height
+    pipPresetCombo.OnEvent("Change", OnPipPreset)
+    OnPipPreset(*) {
+        idx := pipPresetCombo.Value
+        if (idx >= 1 && idx <= presetSizes.Length) {
+            ctl["pipWidthEdit"].Value := presetSizes[idx][1]
+            ctl["pipHeightEdit"].Value := presetSizes[idx][2]
+        }
+    }
 }
 
 BuildExtrasSection(g, ctl) {
-    global FLASH_SUPPRESS, AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR, PIP_ZOOM
+    global AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR
     g.AddText("xm y+10 w440 cNavy", "✨  Window Extras")
     g.AddText("xm y+4 w440 h1 0x10")
 
-    ctl["flashSuppressChk"] := g.AddCheckbox("xm y+6", "Suppress taskbar flashing on background EQ windows")
-    ctl["flashSuppressChk"].Value := (FLASH_SUPPRESS = "1") ? 1 : 0
-
-    ctl["autoMinimizeChk"] := g.AddCheckbox("xm y+4", "Auto-minimize inactive EQ windows on switch")
+    ctl["autoMinimizeChk"] := g.AddCheckbox("xm y+6", "Auto-minimize inactive EQ windows on switch")
     ctl["autoMinimizeChk"].Value := (AUTO_MINIMIZE = "1") ? 1 : 0
 
     ctl["borderEnabledChk"] := g.AddCheckbox("xm y+4", "Highlight active EQ window with colored border")
@@ -1143,9 +1197,6 @@ BuildExtrasSection(g, ctl) {
     ctl["borderColorEdit"] := g.AddEdit("x+4 yp-2 w70", BORDER_COLOR)
     ctl["borderColorEdit"].Enabled := (BORDER_ENABLED = "1") ? true : false
     g.AddText("x+6 yp+2 cGray", "Hex RGB (e.g. 00FF00=green, FF0000=red)")
-
-    ctl["pipZoomChk"] := g.AddCheckbox("xm y+6", "PiP zoom on hover (2× magnification when mouse enters PiP)")
-    ctl["pipZoomChk"].Value := (PIP_ZOOM = "1") ? 1 : 0
 
     ToggleBorderFields(*) {
         ctl["borderColorEdit"].Enabled := ctl["borderEnabledChk"].Value ? true : false
@@ -1170,20 +1221,26 @@ BuildPathsSection(g, ctl) {
 
 BuildCharacterSection(g, ctl) {
     global EQ_SERVER, RECENT_CHARS
-    g.SetFont("s9", "Segoe UI")
+    g.SetFont("s8", "Segoe UI")
     g.AddText("xm y+10 w440 cNavy", "📋  Character Config && Backup")
     g.AddText("xm y+3 w440 h1 0x10")
-    g.AddText("xm y+4", "Server name:")
-    ctl["serverEdit"] := g.AddEdit("x+4 yp-2 w120", EQ_SERVER)
-
-    g.AddText("xm y+4", "Character:")
+    ; All on one line: Server | Character | ✕ | Backup | Restore
+    g.AddText("xm y+4", "Server:")
+    ctl["serverEdit"] := g.AddEdit("x+2 yp-2 w80 h20", EQ_SERVER)
+    g.AddText("x+6 yp+2", "Char:")
     recentList := GetRecentCharList()
-    charCombo  := g.AddComboBox("x+4 yp-2 w140", recentList)
+    charCombo  := g.AddComboBox("x+2 yp-2 w100 h20", recentList)
+    ctl["charCombo"] := charCombo
     if (recentList.Length > 0)
         charCombo.Choose(1)
-    g.AddButton("x+3 yp w20 h20", "✕").OnEvent("Click", (*) => DoRemoveChar(charCombo))
-    g.AddButton("x+4 yp w60 h20", "Backup").OnEvent("Click", (*) => DoBackup(charCombo.Text))
-    g.AddButton("x+3 yp w60 h20", "Restore").OnEvent("Click", (*) => DoRestore(charCombo.Text))
+    g.AddButton("x+2 yp w18 h20", "✕").OnEvent("Click", (*) => DoRemoveChar(charCombo))
+    btnBackup := g.AddButton("x+3 yp w52 h20", "Backup")
+    btnBackup.OnEvent("Click", (*) => DoBackup(charCombo.Text))
+    btnBackup.ToolTip := "Copy character UI/keybind files to your Desktop"
+    btnRestore := g.AddButton("x+2 yp w52 h20", "Restore")
+    btnRestore.OnEvent("Click", (*) => DoRestore(charCombo.Text))
+    btnRestore.ToolTip := "Copy character files from Desktop back to EQ folder (overwrites!)"
+    g.SetFont("s9", "Segoe UI")
 
     ; ---- Character section helpers (closures) ----
 
@@ -1340,7 +1397,7 @@ ShowSettingsHelp(parentHwnd) {
         . "  • multimonitor — one window per monitor, maximized`n`n"
         . "Launch One / Launch All hotkeys — global shortcuts to launch clients from anywhere.`n`n"
         . "Tray double-click — launches a single client.`n"
-        . "Tray triple-click — launches all clients (off by default, 5s cooldown).`n"
+        . "Tray triple-click — launches all clients (3 rapid clicks, 5s cooldown).`n"
         . "Tray middle-click — opens your notes file.`n"
         . "Desktop Shortcut — creates an EQSwitch shortcut on your Desktop.`n"
         . "Tray Icon Settings — opens Windows settings to pin EQSwitch to the taskbar tray.")
@@ -1349,43 +1406,54 @@ ShowSettingsHelp(parentHwnd) {
     h.AddText("w420 y+10 cNavy", "⚡  Process Settings")
     h.SetFont("s9", "Segoe UI")
     h.AddText("w420 y+4",
-        "Process priority — sets eqgame.exe priority after launch (Normal, AboveNormal, High). "
-        . "Higher priority helps prevent EQ from lagging when alt-tabbed or on virtual desktops.`n`n"
-        . "Process Manager — opens a dedicated window showing all running EQ processes "
-        . "with their PIDs, priorities, and CPU affinity. Lets you configure which CPU cores "
-        . "EQ can use (useful since EQ defaults to a single core). Changes are applied "
-        . "automatically on future launches, or you can apply them to already-running clients.")
+        "Process Manager — shows all running EQ processes with their PIDs, priorities, and CPU affinity. "
+        . "Configure which CPU cores EQ can use (useful since EQ defaults to a single core). "
+        . "'Force Apply to All' pushes current settings to all running clients immediately.`n`n"
+        . "Video Settings — edits eqclient.ini resolution and window offset settings. "
+        . "WindowedHeight=1009 sits above the taskbar. Set offsets to -8 for borderless-windowed mode.`n`n"
+        . "Note: EQ's own CPUAffinity1-6 in eqclient.ini are per-box core preferences (max 6). "
+        . "These are separate from the Windows-level affinity mask set here.")
+
+    h.SetFont("s10 Bold", "Segoe UI")
+    h.AddText("w420 y+10 cNavy", "📺  Picture-in-Picture")
+    h.SetFont("s9", "Segoe UI")
+    h.AddText("w420 y+4",
+        "Shows a live DWM thumbnail of inactive EQ windows as an overlay. "
+        . "Ctrl+drag to reposition. Position is saved between toggles.`n`n"
+        . "Size presets: Small (320×180), Medium (400×225), Large (480×270), XL (600×338), or Custom. "
+        . "Changes take effect immediately if PiP is active.")
 
     h.SetFont("s10 Bold", "Segoe UI")
     h.AddText("w420 y+10 cNavy", "🖥  Multi-Monitor")
     h.SetFont("s9", "Segoe UI")
     h.AddText("w420 y+4",
-        "A global hotkey (works even outside EQ) that cycles through multi-monitor layouts: "
-        . "spread windows across monitors, swap which window is on which monitor, "
-        . "or stack them all back on the primary. Uncheck to disable.")
+        "A global hotkey (works even outside EQ) that cycles through multi-monitor layouts. "
+        . "Hotkey uses AHK syntax (e.g. >!m = RAlt+M, ^F12 = Ctrl+F12). Uncheck to disable.")
 
     h.SetFont("s10 Bold", "Segoe UI")
-    h.AddText("w420 y+10 cNavy", "🎯  Gina path")
+    h.AddText("w420 y+10 cNavy", "✨  Window Extras")
     h.SetFont("s9", "Segoe UI")
     h.AddText("w420 y+4",
-        "Path to Gina.exe (the EQ trigger/audio overlay tool).")
-
-    h.SetFont("s10 Bold", "Segoe UI")
-    h.AddText("w420 y+10 cNavy", "📝  Notes file")
-    h.SetFont("s9", "Segoe UI")
-    h.AddText("w420 y+4",
-        "A .txt file for your personal EQ notes. "
-        . "Leave blank and EQSwitch will offer to create one on first use.")
+        "Auto-minimize — minimizes inactive EQ windows when you switch to another. "
+        . "Suppressed for 30s after launch to let clients load.`n`n"
+        . "Border highlight — draws a colored border around the active EQ window "
+        . "(and around the PiP overlay). Color is hex RGB (e.g. 00FF00=green).")
 
     h.SetFont("s10 Bold", "Segoe UI")
     h.AddText("w420 y+10 cNavy", "📋  Character Config && Backup")
     h.SetFont("s9", "Segoe UI")
     h.AddText("w420 y+4",
-        "Backs up your character UI/keybind config files (UI_Name_server.ini "
-        . "and Name_server.ini) to and from your Desktop.`n`n"
-        . "Character — type or pick a recent character name.`n"
-        . "Backup — copies that character's config files to your Desktop.`n"
-        . "Restore — copies them back from Desktop into the EQ folder.")
+        "Backs up character UI/keybind files to and from your Desktop.`n"
+        . "Server — your EQ server name (for file paths).`n"
+        . "Char — type or pick a recent character name (saved on Apply/Save).`n"
+        . "Backup — copies config files to Desktop.`n"
+        . "Restore — copies them back (overwrites existing files).")
+
+    h.SetFont("s10 Bold", "Segoe UI")
+    h.AddText("w420 y+10 cNavy", "🎯  Gina / 📝  Notes")
+    h.SetFont("s9", "Segoe UI")
+    h.AddText("w420 y+4",
+        "Gina — path to Gina.exe. Notes — a .txt file for EQ notes (created on first use).")
 
     h.AddText("w420 y+10 h1 0x10")
     h.AddButton("w80 h26 y+6 Default", "Close").OnEvent("Click", (*) => h.Destroy())
@@ -1466,7 +1534,7 @@ OpenSettings(*) {
         global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
         global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
         global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY
-        global FLASH_SUPPRESS, AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR, PIP_ZOOM
+        global AUTO_MINIMIZE, BORDER_ENABLED, BORDER_COLOR
 
         newHotkey := ctl["hotkeyCtrl"].Value
         newMultimonHk := ctl["multimonHkCtrl"].Value
@@ -1507,6 +1575,12 @@ OpenSettings(*) {
         MIDCLICK_NOTES  := ctl["midClickChk"].Value ? "1" : "0"
         TRIPLECLICK_LAUNCH := ctl["tripleClickChk"].Value ? "1" : "0"
         EQ_SERVER       := ctl["serverEdit"].Value
+        ; Save character name to recent list if user typed one
+        if (ctl.Has("charCombo") && ctl["charCombo"].Text != "") {
+            charText := ctl["charCombo"].Text
+            if RegExMatch(charText, "^[A-Za-z]+$")
+                AddRecentChar(charText)
+        }
         ; Validate client count — must be 1-8
         clientVal := ctl["clientsEdit"].Value
         try {
@@ -1526,12 +1600,10 @@ OpenSettings(*) {
         PIP_WIDTH        := ctl["pipWidthEdit"].Value
         PIP_HEIGHT       := ctl["pipHeightEdit"].Value
         PIP_OPACITY      := ctl["pipOpacityEdit"].Value
-        FLASH_SUPPRESS  := ctl["flashSuppressChk"].Value ? "1" : "0"
         AUTO_MINIMIZE   := ctl["autoMinimizeChk"].Value ? "1" : "0"
         BORDER_ENABLED  := ctl["borderEnabledChk"].Value ? "1" : "0"
         borderInput     := ctl["borderColorEdit"].Value
         BORDER_COLOR    := RegExMatch(borderInput, "^[0-9A-Fa-f]{6}$") ? borderInput : "00FF00"
-        PIP_ZOOM        := ctl["pipZoomChk"].Value ? "1" : "0"
         STARTUP_ENABLED := ctl["startupChk"].Value ? "1" : "0"
 
         ; Handle hotkey — skip binding if empty; rollback to old key on failure
@@ -1578,7 +1650,11 @@ OpenSettings(*) {
 
         SaveConfig()
         UpdateFeatureTimer()
-        UpdateExtrasCheckmarks()
+        ; Rebuild PiP if active and size changed
+        if (g_pipEnabled) {
+            DestroyPiP()
+            CreatePiP()
+        }
         ; Clean up border if disabled
         if (BORDER_ENABLED = "0")
             DestroyBorder()
@@ -1615,9 +1691,6 @@ g_pipThumbnails := []
 g_pipTimer      := ""
 g_pipLastActive := 0
 g_pipAltWindows := []
-g_pipZoomGui    := ""
-g_pipZoomThumb  := 0
-g_pipZoomIndex  := -1
 ; PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY, PIP_X, PIP_Y are loaded from config
 ; Ctrl+drag to reposition PiP; position saved on destroy
 OnMessage(0x0084, PiPHitTest)
@@ -1795,10 +1868,6 @@ RefreshPiP(*) {
             SwapPiPSources(visible, activeID)
     }
 
-    ; P4-01: PiP zoom on hover
-    global PIP_ZOOM
-    if (PIP_ZOOM = "1")
-        UpdatePiPZoom()
 }
 
 ; Swap PiP thumbnail sources on the existing GUI (avoids flicker from full teardown)
@@ -1893,144 +1962,13 @@ DestroyPiP(*) {
 
     g_pipAltWindows := []
     g_pipEnabled := false
-    DestroyPiPZoom()
-}
-
-; ── PiP Zoom on Hover ──────────────────────────────────
-UpdatePiPZoom(*) {
-    global g_pipGui, g_pipThumbnails, g_pipZoomGui, g_pipZoomThumb, g_pipZoomIndex
-    global PIP_WIDTH, PIP_HEIGHT
-
-    if (!g_pipGui || g_pipThumbnails.Length = 0)
-        return
-
-    ; Get mouse position and PiP GUI position
-    MouseGetPos(&mx, &my)
-    try WinGetPos(&px, &py, &pw, &ph, "ahk_id " g_pipGui.Hwnd)
-    catch
-        return
-
-    ; Check if mouse is within PiP bounds
-    if (mx < px || mx > px + pw || my < py || my > py + ph) {
-        if (g_pipZoomIndex >= 0)
-            DestroyPiPZoom()
-        return
-    }
-
-    ; Determine which thumbnail the mouse is over
-    thumbIdx := -1
-    yOffset := my - py
-    thumbH := Integer(PIP_HEIGHT) + 4  ; height + gap
-    Loop g_pipThumbnails.Length {
-        thumbTop := (A_Index - 1) * thumbH
-        thumbBottom := thumbTop + Integer(PIP_HEIGHT)
-        if (yOffset >= thumbTop && yOffset < thumbBottom) {
-            thumbIdx := A_Index
-            break
-        }
-    }
-
-    if (thumbIdx < 0) {
-        if (g_pipZoomIndex >= 0)
-            DestroyPiPZoom()
-        return
-    }
-
-    ; Already zooming this thumbnail?
-    if (thumbIdx = g_pipZoomIndex)
-        return
-
-    ; Create zoom popup for this thumbnail
-    ShowPiPZoom(thumbIdx)
-}
-
-ShowPiPZoom(thumbIdx) {
-    global g_pipGui, g_pipThumbnails, g_pipZoomGui, g_pipZoomThumb, g_pipZoomIndex
-    global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY, g_pipAltWindows
-
-    ; Clean up previous zoom
-    DestroyPiPZoom()
-
-    ; Use stored alt windows to match the PiP thumbnails exactly
-    if (g_pipAltWindows.Length = 0 || thumbIdx > g_pipAltWindows.Length)
-        return
-
-    srcId := g_pipAltWindows[thumbIdx]
-
-    ; Zoom size: 2× the PiP dimensions
-    zoomW := Integer(PIP_WIDTH) * 2
-    zoomH := Integer(PIP_HEIGHT) * 2
-
-    ; Position: to the left of the PiP GUI
-    try WinGetPos(&px, &py, &pw, &ph, "ahk_id " g_pipGui.Hwnd)
-    catch
-        return
-
-    zoomX := px - zoomW - 8
-    zoomY := py + (thumbIdx - 1) * (Integer(PIP_HEIGHT) + 4) - (Integer(PIP_HEIGHT) // 2)
-
-    ; Keep zoom on screen
-    if (zoomX < 0)
-        zoomX := px + pw + 8  ; flip to right side
-    if (zoomY < 0)
-        zoomY := 0
-
-    ; Create zoom GUI
-    zg := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")
-    zg.BackColor := "000000"
-    zg.Show("x" zoomX " y" zoomY " w" zoomW " h" zoomH " NoActivate")
-    opacityVal := Min(Integer(PIP_OPACITY) + 40, 255)
-    WinSetTransparent(opacityVal, "ahk_id " zg.Hwnd)
-
-    ; Register DWM thumbnail for the zoomed view
-    hThumb := 0
-    hr := DllCall("dwmapi\DwmRegisterThumbnail",
-        "Ptr", zg.Hwnd,
-        "Ptr", srcId,
-        "Ptr*", &hThumb,
-        "Int")
-
-    if (hr != 0 || hThumb = 0) {
-        try zg.Destroy()
-        return
-    }
-
-    props := Buffer(48, 0)
-    NumPut("UInt", 0x01 | 0x08 | 0x10, props, 0)  ; RECTDEST | VISIBLE | SOURCECLIENTAREAONLY
-    NumPut("Int", 0, props, 4)          ; left
-    NumPut("Int", 0, props, 8)          ; top
-    NumPut("Int", zoomW, props, 12)     ; right
-    NumPut("Int", zoomH, props, 16)     ; bottom
-    NumPut("Int", 1, props, 40)         ; fVisible
-    NumPut("Int", 1, props, 44)         ; fSourceClientAreaOnly
-    hrUpdate := DllCall("dwmapi\DwmUpdateThumbnailProperties", "Ptr", hThumb, "Ptr", props, "Int")
-    if (hrUpdate != 0) {
-        try DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", hThumb)
-        try zg.Destroy()
-        return
-    }
-
-    g_pipZoomGui := zg
-    g_pipZoomThumb := hThumb
-    g_pipZoomIndex := thumbIdx
-}
-
-DestroyPiPZoom(*) {
-    global g_pipZoomGui, g_pipZoomThumb, g_pipZoomIndex
-    if (g_pipZoomThumb)
-        try DllCall("dwmapi\DwmUnregisterThumbnail", "Ptr", g_pipZoomThumb)
-    g_pipZoomThumb := 0
-    if (g_pipZoomGui) {
-        try g_pipZoomGui.Destroy()
-        g_pipZoomGui := ""
-    }
-    g_pipZoomIndex := -1
+    try DestroyPiPBorder()
 }
 
 ; =========================================================
 ; WINDOW FEATURES ENGINE
 ; =========================================================
-; Unified timer for: flash suppression (P2-06), auto-minimize (P2-05), border highlight (P2-04)
+; Unified timer for: auto-minimize (P2-05), border highlight (P2-04)
 g_featureTimer      := ""
 g_featureLastActive := 0
 g_borderGuis        := []    ; [top, bottom, left, right] bar GUIs
@@ -2038,11 +1976,11 @@ g_borderTarget      := 0     ; hwnd currently highlighted
 
 ; Start/stop the feature timer based on which features are enabled
 UpdateFeatureTimer() {
-    global FLASH_SUPPRESS, AUTO_MINIMIZE, BORDER_ENABLED, g_featureTimer
-    needTimer := (FLASH_SUPPRESS = "1" || AUTO_MINIMIZE = "1" || BORDER_ENABLED = "1")
+    global AUTO_MINIMIZE, BORDER_ENABLED, g_featureTimer
+    needTimer := (AUTO_MINIMIZE = "1" || BORDER_ENABLED = "1")
     if (needTimer && !g_featureTimer) {
         g_featureTimer := FeatureRefresh
-        SetTimer(g_featureTimer, 250)
+        SetTimer(g_featureTimer, 2000)
     } else if (!needTimer && g_featureTimer) {
         SetTimer(g_featureTimer, 0)
         g_featureTimer := ""
@@ -2051,7 +1989,7 @@ UpdateFeatureTimer() {
 }
 
 FeatureRefresh(*) {
-    global FLASH_SUPPRESS, AUTO_MINIMIZE, BORDER_ENABLED
+    global AUTO_MINIMIZE, BORDER_ENABLED
     global g_featureLastActive
 
     visible := GetVisibleEqWindows()
@@ -2072,18 +2010,11 @@ FeatureRefresh(*) {
         }
     }
 
-    ; Flash suppress + auto-minimize only need to act on window switch, not every tick
+    ; Auto-minimize only needs to act on window switch, not every tick
     if (isEq && activeID != g_featureLastActive) {
-        ; P2-06: Flash suppression — stop taskbar flashing on background EQ windows
-        if (FLASH_SUPPRESS = "1") {
-            for id in visible {
-                if (id != activeID && !IsHungWindow(id))
-                    try DllCall("FlashWindow", "Ptr", id, "Int", 0)
-            }
-        }
-
         ; P2-05: Auto-minimize — minimize inactive EQ windows on switch
-        if (AUTO_MINIMIZE = "1") {
+        ; Skip during launch grace period (30s after launch to let clients load)
+        if (AUTO_MINIMIZE = "1" && A_TickCount > g_launchGrace) {
             for id in visible {
                 if (id != activeID && !IsHungWindow(id)) {
                     try {
@@ -2095,12 +2026,18 @@ FeatureRefresh(*) {
         }
     }
 
-    ; P2-04: Active window highlight border
+    ; P2-04: Active window highlight border (also frames PiP overlay)
     if (BORDER_ENABLED = "1") {
-        if (isEq && visible.Length >= 2)
+        if (isEq && visible.Length >= 2) {
             UpdateBorder(activeID)
-        else
+            ; Also highlight PiP overlay if active
+            global g_pipEnabled, g_pipGui
+            if (g_pipEnabled && g_pipGui)
+                try UpdatePiPBorder()
+        } else {
             HideBorder()
+            HidePiPBorder()
+        }
     }
 
     if isEq
@@ -2175,68 +2112,53 @@ DestroyBorder() {
     g_borderTarget := 0
 }
 
-; ── Tray Toggle Helpers ──────────────────────────────────
-ToggleBorderFromTray(*) {
-    global BORDER_ENABLED, SETTINGS_OPEN
-    if SETTINGS_OPEN {
-        ShowTip("⚠ Close Settings first")
+; ── PiP Border Highlight ──────────────────────────────
+g_pipBorderGuis := []
+
+UpdatePiPBorder() {
+    global g_pipBorderGuis, g_pipGui, BORDER_COLOR
+    static BW := 2
+
+    if (!g_pipGui)
         return
+
+    try WinGetPos(&px, &py, &pw, &ph, "ahk_id " g_pipGui.Hwnd)
+    catch
+        return
+
+    ; Create border bars if needed
+    if (g_pipBorderGuis.Length = 0) {
+        color := RegExMatch(BORDER_COLOR, "^[0-9A-Fa-f]{6}$") ? BORDER_COLOR : "00FF00"
+        Loop 4 {
+            bar := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")
+            bar.BackColor := color
+            g_pipBorderGuis.Push(bar)
+        }
     }
-    BORDER_ENABLED := (BORDER_ENABLED = "1") ? "0" : "1"
-    if (BORDER_ENABLED = "0")
-        DestroyBorder()
-    UpdateFeatureTimer()
-    UpdateExtrasCheckmarks()
-    SaveConfig()
-    ShowTip(BORDER_ENABLED = "1" ? "🔲 Active border ON" : "🔲 Active border OFF")
+
+    ; Update color if changed
+    if (g_pipBorderGuis[1].BackColor != BORDER_COLOR) {
+        for bar in g_pipBorderGuis
+            bar.BackColor := BORDER_COLOR
+    }
+
+    g_pipBorderGuis[1].Show("x" (px - BW) " y" (py - BW) " w" (pw + 2*BW) " h" BW " NoActivate")
+    g_pipBorderGuis[2].Show("x" (px - BW) " y" (py + ph) " w" (pw + 2*BW) " h" BW " NoActivate")
+    g_pipBorderGuis[3].Show("x" (px - BW) " y" py " w" BW " h" ph " NoActivate")
+    g_pipBorderGuis[4].Show("x" (px + pw) " y" py " w" BW " h" ph " NoActivate")
 }
 
-ToggleAutoMinFromTray(*) {
-    global AUTO_MINIMIZE, SETTINGS_OPEN
-    if SETTINGS_OPEN {
-        ShowTip("⚠ Close Settings first")
-        return
-    }
-    AUTO_MINIMIZE := (AUTO_MINIMIZE = "1") ? "0" : "1"
-    UpdateFeatureTimer()
-    UpdateExtrasCheckmarks()
-    SaveConfig()
-    ShowTip(AUTO_MINIMIZE = "1" ? "📦 Auto-minimize ON" : "📦 Auto-minimize OFF")
+HidePiPBorder() {
+    global g_pipBorderGuis
+    for bar in g_pipBorderGuis
+        try bar.Show("Hide")
 }
 
-ToggleFlashFromTray(*) {
-    global FLASH_SUPPRESS, SETTINGS_OPEN
-    if SETTINGS_OPEN {
-        ShowTip("⚠ Close Settings first")
-        return
-    }
-    FLASH_SUPPRESS := (FLASH_SUPPRESS = "1") ? "0" : "1"
-    UpdateFeatureTimer()
-    UpdateExtrasCheckmarks()
-    SaveConfig()
-    ShowTip(FLASH_SUPPRESS = "1" ? "🔕 Flash suppress ON" : "🔕 Flash suppress OFF")
-}
-
-UpdateExtrasCheckmarks() {
-    global BORDER_ENABLED, AUTO_MINIMIZE, FLASH_SUPPRESS
-    try {
-        if (BORDER_ENABLED = "1")
-            A_TrayMenu.Check("🔲  Active Border")
-        else
-            A_TrayMenu.Uncheck("🔲  Active Border")
-    }
-    try {
-        if (AUTO_MINIMIZE = "1")
-            A_TrayMenu.Check("📦  Auto-Minimize")
-        else
-            A_TrayMenu.Uncheck("📦  Auto-Minimize")
-    }
-    try {
-        if (FLASH_SUPPRESS = "1")
-            A_TrayMenu.Check("🔕  Flash Suppress")
-        else
-            A_TrayMenu.Uncheck("🔕  Flash Suppress")
-    }
+DestroyPiPBorder() {
+    global g_pipBorderGuis
+    for bar in g_pipBorderGuis
+        try bar.Destroy()
+    g_pipBorderGuis := []
 }
 
 ; Start feature timer on load if any feature is enabled
@@ -2301,6 +2223,23 @@ OpenProcessManager(*) {
     RefreshProcessList()
 
     pm.AddButton("xm y+6 w100 h24", "🔄 Refresh").OnEvent("Click", RefreshProcessList)
+    btnForceApply := pm.AddButton("x+6 yp w160 h24", "⚡ Force Apply to All")
+    btnForceApply.ToolTip := "Push current priority && affinity settings to all running EQ processes"
+    btnForceApply.OnEvent("Click", ForceApplyAll)
+
+    ForceApplyAll(*) {
+        global CPU_AFFINITY, PROCESS_PRIORITY
+        ApplyProcessPriority(PROCESS_PRIORITY)
+        if (CPU_AFFINITY != "")
+            ApplyAffinityToAll(CPU_AFFINITY)
+        else {
+            ; If no affinity set, apply full system mask
+            fullMask := (1 << coreCount) - 1
+            ApplyAffinityToAll(String(fullMask))
+        }
+        RefreshProcessList()
+        ShowTip("⚡ Settings forced on all running EQ processes!")
+    }
 
     ; ── Process Priority ──
     pm.AddText("xm y+12 w500 h1 0x10")
@@ -2403,6 +2342,116 @@ OpenProcessManager(*) {
 }
 
 ; =========================================================
+; VIDEO MODE EDITOR (eqclient.ini)
+; =========================================================
+g_vmOpen := false
+OpenVideoModeEditor(*) {
+    global g_vmOpen, TOOLTIP_MS
+    if g_vmOpen
+        return
+    g_vmOpen := true
+
+    eqDir := GetEqDir()
+    iniPath := eqDir "eqclient.ini"
+    if !FileExist(iniPath) {
+        g_vmOpen := false
+        ShowTip("⚠ eqclient.ini not found — check EQ path in Settings")
+        return
+    }
+
+    try {
+
+    ; Read current VideoMode values
+    ReadVM(key, def) {
+        try return IniRead(iniPath, "VideoMode", key)
+        catch
+            return def
+    }
+
+    vm := Gui("+AlwaysOnTop", "🖥 EQ Video Settings")
+    vm.SetFont("s9", "Segoe UI")
+    vm.MarginX := 14
+    vm.MarginY := 10
+
+    vm.SetFont("s10 Bold", "Segoe UI")
+    vm.AddText("w400 c0xAA3300", "🖥  eqclient.ini — [VideoMode]")
+    vm.SetFont("s9", "Segoe UI")
+    vm.AddText("xm y+4 w400 h1 0x10")
+
+    ; Resolution presets
+    vm.AddText("xm y+6", "Preset:")
+    resPresets := ["1920×1080", "1920×1200", "2560×1440", "1280×720", "Custom"]
+    resPresetCombo := vm.AddDropDownList("x+4 yp-2 w130", resPresets)
+    resPresetCombo.Choose(5)  ; default to Custom
+    presetMap := [[1920,1080], [1920,1200], [2560,1440], [1280,720]]
+
+    vm.AddText("xm y+8", "WindowedWidth:")
+    vmWW := vm.AddEdit("x+4 yp-2 w60 Number", ReadVM("WindowedWidth", "1920"))
+    vm.AddText("x+10 yp+2", "WindowedHeight:")
+    vmWH := vm.AddEdit("x+4 yp-2 w60 Number", ReadVM("WindowedHeight", "1080"))
+
+    vm.AddText("xm y+6", "WindowedModeXOffset:")
+    vmXOff := vm.AddEdit("x+4 yp-2 w50", ReadVM("WindowedModeXOffset", "0"))
+    vm.AddText("x+10 yp+2", "WindowedModeYOffset:")
+    vmYOff := vm.AddEdit("x+4 yp-2 w50", ReadVM("WindowedModeYOffset", "0"))
+
+    vm.AddText("xm y+8 cGray w400",
+        "Tip: WindowedHeight=1009 sits above taskbar. Set XOffset/YOffset to -8 for borderless-windowed (hides title bar).")
+
+    ; Borderless preset button
+    vm.AddButton("xm y+6 w160 h24", "Apply Borderless Preset").OnEvent("Click", ApplyBorderless)
+    vm.AddButton("x+8 yp w160 h24", "Reset to Defaults").OnEvent("Click", ResetDefaults)
+
+    ApplyBorderless(*) {
+        vmWW.Value := "1920"
+        vmWH.Value := "1080"
+        vmXOff.Value := "-8"
+        vmYOff.Value := "-8"
+    }
+    ResetDefaults(*) {
+        vmWW.Value := "1920"
+        vmWH.Value := "1080"
+        vmXOff.Value := "0"
+        vmYOff.Value := "0"
+    }
+
+    resPresetCombo.OnEvent("Change", OnResPreset)
+    OnResPreset(*) {
+        idx := resPresetCombo.Value
+        if (idx >= 1 && idx <= presetMap.Length) {
+            vmWW.Value := presetMap[idx][1]
+            vmWH.Value := presetMap[idx][2]
+        }
+    }
+
+    vm.AddText("xm y+10 w400 h1 0x10")
+    vm.AddButton("xm y+6 w100 h28 Default", "💾 Save").OnEvent("Click", SaveVM)
+    vm.AddButton("x+8 yp w80 h28", "Close").OnEvent("Click", (*) => (g_vmOpen := false, vm.Destroy()))
+
+    SaveVM(*) {
+        try {
+            IniWrite(vmWW.Value, iniPath, "VideoMode", "WindowedWidth")
+            IniWrite(vmWH.Value, iniPath, "VideoMode", "WindowedHeight")
+            IniWrite(vmXOff.Value, iniPath, "VideoMode", "WindowedModeXOffset")
+            IniWrite(vmYOff.Value, iniPath, "VideoMode", "WindowedModeYOffset")
+            ShowTip("🖥 Video settings saved to eqclient.ini — restart EQ to apply")
+        } catch as err {
+            ShowTip("⚠ Failed to save: " err.Message, 5000)
+        }
+    }
+
+    vm.OnEvent("Escape", (*) => (g_vmOpen := false, vm.Destroy()))
+    vm.OnEvent("Close", (*) => (g_vmOpen := false, vm.Destroy()))
+    vm.Show("AutoSize")
+
+    } catch as err {
+        g_vmOpen := false
+        try vm.Destroy()
+        ShowTip("⚠ Video settings error: " err.Message, 3000)
+    }
+}
+
+; =========================================================
 ; LAUNCH
 ; =========================================================
 LaunchOne(*) {
@@ -2421,6 +2470,7 @@ LaunchOne(*) {
         return
     }
     eqDir := GetEqDir()
+    g_launchGrace := A_TickCount + 30000  ; suppress auto-minimize for 30s during load
     Run('"' EQ_EXE '" ' EQ_ARGS, eqDir, , &newPid)
     ; Snapshot settings at launch time so mid-launch Settings changes can't affect behavior
     launchPriority := PROCESS_PRIORITY
@@ -2428,11 +2478,17 @@ LaunchOne(*) {
     needsPri := (launchPriority != "Normal" && launchPriority != "")
     needsAff := (launchAffinity != "")
     if (needsPri || needsAff) {
+        ; Apply with retry — EQ may reset affinity during its own startup sequence
+        retryCount := 0
         ApplyDelayed(*) {
+            retryCount++
             if needsPri
                 try ProcessSetPriority(launchPriority, newPid)
             if needsAff
                 ApplyAffinityToPid(newPid, launchAffinity)
+            ; Retry up to 3 times (at 5s, 10s, 20s) to catch EQ resetting affinity on load
+            if (retryCount < 3)
+                SetTimer(ApplyDelayed, -(retryCount = 1 ? 5000 : 10000))
         }
         SetTimer(ApplyDelayed, -5000)
     }
@@ -2471,8 +2527,20 @@ LaunchBoth(*) {
     launchFixMode  := FIX_MODE
 
     g_launchActive := true
+    g_launchGrace := A_TickCount + 30000  ; suppress auto-minimize for 30s during load
     pids := []
     launchIdx := 0
+
+    ApplyLaunchSettings(*) {
+        if (launchPriority != "Normal" && launchPriority != "") {
+            for pid in pids
+                try ProcessSetPriority(launchPriority, pid)
+        }
+        if (launchAffinity != "") {
+            for pid in pids
+                ApplyAffinityToPid(pid, launchAffinity)
+        }
+    }
 
     ; Async launch: each client launched via timer, UI stays responsive
     DoNextLaunch() {
@@ -2490,14 +2558,9 @@ LaunchBoth(*) {
             SetTimer(DoNextLaunch, -delay)
         else {
             ; All clients launched — apply process settings
-            if (launchPriority != "Normal" && launchPriority != "") {
-                for pid in pids
-                    try ProcessSetPriority(launchPriority, pid)
-            }
-            if (launchAffinity != "") {
-                for pid in pids
-                    ApplyAffinityToPid(pid, launchAffinity)
-            }
+            ApplyLaunchSettings()
+            ; Re-apply after 10s — EQ may reset affinity during its startup sequence
+            SetTimer(ApplyLaunchSettings, -10000)
             ToolTip("🎮 Waiting for windows to settle...")
             SetTimer(DoFinalize, -fixWait)
         }
