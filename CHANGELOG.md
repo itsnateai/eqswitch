@@ -2,7 +2,12 @@
 
 All notable changes to EQ Switch are documented here.
 
-## v1.12 — 2026-03-09
+## v1.12 — 2026-03-10
+
+### Performance
+- **Flash suppress + auto-minimize on switch only** — `FlashWindow` DllCalls and auto-minimize checks now only fire on active window change instead of every 250ms tick (was ~28 DllCalls/sec with 8 clients, now 0 during steady play)
+- **GetVisibleEqWindows() cache** — added 200ms TTL cache so the feature timer (250ms) and PiP timer (500ms) share the same `WinGetList` + sort result instead of duplicating the work
+- **ShowTip reusable function object** — tooltip dismiss callback is now a single function created at startup instead of allocating a new lambda on every tooltip call
 
 ### Robustness
 - **OnExit cleanup handler** — app now properly cleans up PiP overlays, border GUIs, and feature timers on exit via `OnExit()` callback

@@ -32,14 +32,12 @@ SETTINGS_OPEN    := false
 TOOLTIP_MS       := 2000
 
 ; Show a tooltip that auto-dismisses after ms (default TOOLTIP_MS)
-g_tipDismissTimer := ""
+g_tipClearFn := () => ToolTip()  ; single reusable function object — no allocation per call
 ShowTip(msg, ms?) {
-    global TOOLTIP_MS, g_tipDismissTimer
-    if g_tipDismissTimer
-        SetTimer(g_tipDismissTimer, 0)
+    global TOOLTIP_MS, g_tipClearFn
+    SetTimer(g_tipClearFn, 0)  ; cancel any pending dismiss
     ToolTip(msg)
-    g_tipDismissTimer := () => ToolTip()
-    SetTimer(g_tipDismissTimer, -(ms ?? TOOLTIP_MS))
+    SetTimer(g_tipClearFn, -(ms ?? TOOLTIP_MS))
 }
 g_multiMonState  := 0
 g_launchOneLabel := "⚔  Launch Client"
@@ -59,8 +57,16 @@ GetEqDir() {
     return dir "\"
 }
 
+g_visibleCache     := []
+g_visibleCacheTick := 0
+
 GetVisibleEqWindows() {
-    global EQ_TITLE
+    global EQ_TITLE, g_visibleCache, g_visibleCacheTick
+    ; Return cached result if fresh (< 200ms) — avoids redundant WinGetList+sort
+    ; when both feature timer (250ms) and PiP timer (500ms) call this near-simultaneously
+    if (g_visibleCache.Length > 0 && A_TickCount - g_visibleCacheTick < 200)
+        return g_visibleCache
+
     visible := []
     for id in WinGetList(EQ_TITLE) {
         try {
@@ -79,6 +85,8 @@ GetVisibleEqWindows() {
         }
         visible[j + 1] := key
     }
+    g_visibleCache := visible
+    g_visibleCacheTick := A_TickCount
     return visible
 }
 
@@ -2058,21 +2066,24 @@ FeatureRefresh(*) {
         }
     }
 
-    ; P2-06: Flash suppression — stop taskbar flashing on background EQ windows
-    if (FLASH_SUPPRESS = "1") {
-        for id in visible {
-            if (id != activeID)
-                try DllCall("FlashWindow", "Ptr", id, "Int", 0)
+    ; Flash suppress + auto-minimize only need to act on window switch, not every tick
+    if (isEq && activeID != g_featureLastActive) {
+        ; P2-06: Flash suppression — stop taskbar flashing on background EQ windows
+        if (FLASH_SUPPRESS = "1") {
+            for id in visible {
+                if (id != activeID)
+                    try DllCall("FlashWindow", "Ptr", id, "Int", 0)
+            }
         }
-    }
 
-    ; P2-05: Auto-minimize — minimize inactive EQ windows when an EQ window is active
-    if (AUTO_MINIMIZE = "1" && isEq && activeID != g_featureLastActive) {
-        for id in visible {
-            if (id != activeID) {
-                try {
-                    if (WinGetMinMax("ahk_id " id) != -1)  ; not already minimized
-                        WinMinimize("ahk_id " id)
+        ; P2-05: Auto-minimize — minimize inactive EQ windows on switch
+        if (AUTO_MINIMIZE = "1") {
+            for id in visible {
+                if (id != activeID) {
+                    try {
+                        if (WinGetMinMax("ahk_id " id) != -1)
+                            WinMinimize("ahk_id " id)
+                    }
                 }
             }
         }
