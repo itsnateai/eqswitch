@@ -5,21 +5,38 @@ All notable changes to EQ Switch are documented here.
 ## v2.0 — 2026-03-10
 
 ### New Features
-- **Middle-click PiP toggle** — new option to toggle PiP overlay by middle-clicking the tray icon (alternative to opening Notes)
-- **Embedded tray icon** — icon compiled into the exe via `@Ahk2Exe-AddResource`, with fallback chain for uncompiled scripts
+- **Middle-click PiP toggle** — single + triple-click paradigm on tray middle button. Single click = primary action (Notes or PiP), triple click = secondary. Actions swappable in Settings dropdown
+- **Global Switch hotkey** (default: `]`) — pulls EQ to front from any app, cycles through clients on repeat presses. Works even when EQ isn't focused
+- **WindowedMode toggle** — checkbox in Video Settings writes WindowedMode=TRUE/FALSE to eqclient.ini. Fullscreen not tested (disclaimer shown)
+- **Title Bar Offset** — configurable pixel offset in Video Settings pushes game window down to hide the title bar. Default: 0px
+- **Sticky resolution presets** — Video Settings dropdown stashes custom values before switching; selecting "Custom" restores them. Added 1920×1009 preset
+- **PiP border** — 1px thin colored border around PiP overlay for visibility. Toggle + color picker in Settings
+- **Embedded tray icon** — eqswitch.ico compiled into the exe via `@Ahk2Exe-AddResource`, with fallback chain for uncompiled scripts
+
+### Settings GUI Redesign
+- **Compact EverQuest section** — Launch args moved inline with EQ Executable label. Process Manager + Video Settings buttons merged into EverQuest section (removed standalone Process Settings section)
+- **Screen resolution label** — "Screen resolution, offsets, and window mode" description next to Video Settings button
+- **EQ Switch Key** — renamed from "Active Key" for clarity
+- **PiP controls** — W/H edit boxes widened for readability; "Ctrl+drag to move PiP" hint moved to Opacity line
+
+### Help Window
+- **Cyberpunk style** — `─── SECTION NAME ─────` Unicode box-drawing dividers with `•` bullet points
+- **Scrollable & resizable** — single Edit control with ReadOnly +VScroll, singleton pattern prevents duplicate windows
+- **Template saved** — `_templates/templates/helpmenu_template.md` for reuse across projects
 
 ### Removed
-- **Window Presets** — removed save/load/delete window layout presets and tray submenu. Feature saw no real use; window arrangement is better handled by FixWindows modes
-
-### UI Polish
-- **Settings buttons** — removed emoji from Save/Apply/Close buttons for a cleaner look
-- **Process Manager** — tighter, more compact layout (smaller fonts, narrower columns). Split into Save & Close + Apply buttons. Force Apply now reads live UI state instead of stale config
-- **Video Mode Editor** — split into Save & Close + Apply buttons. Borderless preset no longer forces 1920×1080 resolution (keeps current values, only sets offsets)
-- **Restore from Backup** — now finds all matching backup files on Desktop regardless of server name, instead of only the current server
+- **Window Presets** — save/load/delete window layout presets and tray submenu. Feature saw no real use
+- **Fullscreen windowed toggle** — broke EQ on launch; removed entirely
+- **Taskbar toggle** — tray menu item removed
+- **Auto-minimize** — entire FeatureRefresh timer system removed (didn't work in multi-monitor)
+- **Active window border highlight** — removed (broken with maximized windows)
 
 ### Bug Fixes
+- **PiPHitTest race condition** — wrapped `.Hwnd` access in try; OnMessage no longer crashes during PiP destruction
+- **Double-click fix** — triple-click detection ignores the double-click's own button-up to prevent LaunchBoth firing
 - **Startup shortcut** — uses shell Startup folder path via `APPDATA` env var instead of `A_Startup`; shortcut now includes the app icon
-- **Removed stale Settings fields** — FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET, and EQ_SERVER removed from Settings apply (fields no longer in GUI)
+- **Middle-click reliability** — uses WM_MBUTTONUP (0x208) only; Win11 tray doesn't reliably send WM_MBUTTONDOWN (0x207). 1.2s cooldown prevents re-triggering
+- **AHK Hotkey control limitation** — bare keys like `\` or `]` return empty on `.Value` read; fix preserves old binding instead of clearing
 
 ## v1.7 — 2026-03-10
 

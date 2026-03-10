@@ -1020,12 +1020,18 @@ BuildEverQuestSection(g, ctl) {
     g.AddText("xm y+10 w440 cNavy", "⚔  EverQuest")
     g.AddText("xm y+4 w440 h1 0x10")
 
-    g.AddText("xm y+6", "EQ Executable:")
+    g.AddText("xm y+6 Section", "EQ Executable:")
+    g.AddText("x+40 yp", "Launch args:")
+    ctl["argsEdit"] := g.AddEdit("x+4 yp-2 w100", EQ_ARGS)
     ctl["exeEdit"] := g.AddEdit("xm y+3 w370", EQ_EXE)
     g.AddButton("x+4 yp w66 h24", "Browse...").OnEvent("Click", (*) => BrowseFile(ctl["exeEdit"], "Select eqgame.exe", "Executable (*.exe)"))
 
-    g.AddText("xm y+6", "Launch args:")
-    ctl["argsEdit"] := g.AddEdit("xm y+3 w200", EQ_ARGS)
+    ; Process Manager & Video Settings
+    g.AddButton("xm y+6 w160 h24", "⚡ Process Manager...").OnEvent("Click", (*) => OpenProcessManager())
+    g.AddText("x+10 yp+4 cGray", "Priority && CPU affinity")
+    btnVideoMode := g.AddButton("xm y+4 w130 h24", "🖥 Video Settings...")
+    btnVideoMode.OnEvent("Click", (*) => OpenVideoModeEditor())
+    g.AddText("x+8 yp+4 cGray", "Screen resolution, offsets, and window mode")
 }
 
 BuildLaunchSection(g, ctl) {
@@ -1112,16 +1118,7 @@ BuildLaunchSection(g, ctl) {
     }
 }
 
-BuildProcessSection(g, ctl) {
-    g.AddText("xm y+10 w440 cNavy", "⚡  Process Settings")
-    g.AddText("xm y+4 w440 h1 0x10")
-    g.AddButton("xm y+6 w160 h24", "⚡ Process Manager...").OnEvent("Click", (*) => OpenProcessManager())
-    g.AddText("x+10 yp+4 cGray", "Priority && CPU affinity")
-    btnVideoMode := g.AddButton("x+20 yp-4 w130 h24", "🖥 Video Settings...")
-    btnVideoMode.OnEvent("Click", (*) => OpenVideoModeEditor())
-    btnVideoMode.ToolTip := "Edit eqclient.ini resolution/window settings"
-    g.AddText("xm y+4 cGray", "Screen resolution, offsets, and window mode")
-}
+; Process Settings merged into BuildEverQuestSection
 
 BuildMultiMonSection(g, ctl) {
     global MULTIMON_ENABLED, MULTIMON_HOTKEY
@@ -1133,7 +1130,7 @@ BuildMultiMonSection(g, ctl) {
     g.AddText("xm y+4", "Hotkey:")
     ctl["multimonHkCtrl"] := g.AddHotkey("x+6 yp-2 w120", MULTIMON_HOTKEY)
     ctl["multimonHkCtrl"].Enabled := (MULTIMON_ENABLED = "1") ? true : false
-    g.AddText("x+8 yp+4 cGray", "← press your key    Ctrl+drag to move PiP")
+    g.AddText("x+8 yp+4 cGray", "← press your key")
 
     ToggleMultimonField(*) {
         ctl["multimonHkCtrl"].Enabled := ctl["multimonEnabled"].Value ? true : false
@@ -1159,16 +1156,16 @@ BuildPiPSection(g, ctl) {
     pipPresetCombo.Choose(currentMatch > 0 ? currentMatch : 6)
 
     g.AddText("x+10 yp+2", "W:")
-    ctl["pipWidthEdit"] := g.AddEdit("x+2 yp-2 w45 Number", PIP_WIDTH)
+    ctl["pipWidthEdit"] := g.AddEdit("x+2 yp-2 w52 Number", PIP_WIDTH)
     g.AddUpDown("Range160-800", Integer(PIP_WIDTH))
     g.AddText("x+4 yp+2", "H:")
-    ctl["pipHeightEdit"] := g.AddEdit("x+2 yp-2 w45 Number", PIP_HEIGHT)
+    ctl["pipHeightEdit"] := g.AddEdit("x+2 yp-2 w52 Number", PIP_HEIGHT)
     g.AddUpDown("Range90-450", Integer(PIP_HEIGHT))
 
     g.AddText("xm y+6", "Opacity:")
     ctl["pipOpacityEdit"] := g.AddEdit("x+4 yp-2 w45 Number", PIP_OPACITY)
     g.AddUpDown("Range50-255", Integer(PIP_OPACITY))
-    g.AddText("x+6 yp+2 cGray", "(50-255)")
+    g.AddText("x+6 yp+2 cGray", "(50-255)      Ctrl+drag to move PiP")
 
     ; Preset selection auto-fills width/height
     pipPresetCombo.OnEvent("Change", OnPipPreset)
@@ -1416,13 +1413,10 @@ ShowSettingsHelp(*) {
     helpText := "
     (
 EQ SWITCH — Multi-Box Window Manager for EverQuest
-====================================================
 
 Manage multiple EQ clients with hotkeys, PiP overlays, multi-monitor layouts, and one-click launching.
 
-
-HOTKEYS
--------------------------------------------------------
+─── HOTKEYS ─────────────────────────────────
 
 EQ Switch Key (default: \)
   Cycles between your open EQ windows. Only works while an EQ window is focused, so it won't interfere with other apps.
@@ -1433,9 +1427,7 @@ Global Switch Key (default: ])
 Multi-Monitor Toggle (default: Alt+M)
   Toggles between single screen and multi-monitor window layout. Uncheck in Settings to disable.
 
-
-LAUNCHING
--------------------------------------------------------
+─── LAUNCHING ───────────────────────────────
 
 Launch One / Launch All
   Launch EQ clients using tray menu, hotkeys, or tray clicks. Set the number of clients (1-8) in Settings.
@@ -1449,17 +1441,13 @@ Tray middle-click — configurable single + triple-click actions:
 Desktop Shortcut — creates an EQSwitch shortcut on your Desktop.
 Tray Icon Settings — opens Windows settings to pin EQSwitch to the system tray.
 
-
-EVERQUEST SETTINGS
--------------------------------------------------------
+─── EVERQUEST SETTINGS ──────────────────────
 
 EQ Executable — path to your eqgame.exe.
 Launch args — command-line flags (e.g. -patchme).
 Server name — used to locate character log and ini files.
 
-
-WINDOW LAYOUT
--------------------------------------------------------
+─── WINDOW LAYOUT ───────────────────────────
 
 Multi-Mon mode:
   Single screen — all clients fill the target monitor.
@@ -1468,72 +1456,57 @@ Multi-Mon mode:
 Target Monitor — which monitor to use in single screen mode.
 Fix Windows (tray menu) — re-applies the current layout.
 
-
-VIDEO SETTINGS
--------------------------------------------------------
+─── VIDEO SETTINGS ──────────────────────────
 
 Edits eqclient.ini resolution and window positioning.
 
   Resolution — windowed width and height.
-  X/Y Offsets — fine-tune EQ's window placement.
-  WindowedMode — toggles windowed vs fullscreen.
-    Fullscreen is not tested and may cause issues.
-  Title Bar Offset — pushes the window down to
-    hide the title bar. Default: 0px (title bar visible).
+  X/Y Offsets — fine-tune window placement.
+  WindowedMode — toggles windowed vs fullscreen. Fullscreen is not tested and may cause issues.
+  Title Bar Offset — pushes the window down to hide the title bar. Default: 0px (visible).
 
-Note: EQ only re-reads these values when you toggle
-window mode (windowed to fullscreen and back).
+EQ only re-reads these values when you toggle window mode (windowed to fullscreen and back).
 
-
-PICTURE-IN-PICTURE (PiP)
--------------------------------------------------------
+─── PICTURE-IN-PICTURE (PiP) ────────────────
 
 Shows a live thumbnail of inactive EQ windows as a floating overlay.
 
-  Ctrl+drag to reposition (position is saved).
-  Click-through enabled — clicks pass to EQ underneath.
-  Size presets: Small, Medium, Large, XL, XXL, or Custom.
+• Ctrl+drag to reposition (position is saved).
+• Click-through enabled — clicks pass to EQ underneath.
+• Size presets: Small, Medium, Large, XL, XXL, or Custom.
 
 PiP Border — draws a thin colored border around the overlay for visibility. Toggle on/off with color picker in Settings.
 
-
-PROCESS MANAGER
--------------------------------------------------------
+─── PROCESS MANAGER ─────────────────────────
 
 Shows all running EQ processes with PID, priority, and CPU affinity.
 
-  Priority — set process priority (Normal, High, etc.).
-  CPU Affinity — choose which cores EQ can use. Useful since EQ defaults to a single core.
-  Force Apply to All — pushes settings to all running clients.
+• Priority — set process priority (Normal, High, etc.).
+• CPU Affinity — choose which cores EQ can use. Useful since EQ defaults to a single core.
+• Force Apply to All — pushes settings to all running clients.
 
-Note: EQ's own CPUAffinity1-6 in eqclient.ini are per-character core preferences (max 6). These are separate from the Windows-level affinity set here.
+EQ's CPUAffinity1-6 in eqclient.ini are per-character core preferences (max 6). These are separate from the Windows-level affinity set here.
 
-
-CHARACTER CONFIG & BACKUP
--------------------------------------------------------
+─── CHARACTER CONFIG & BACKUP ───────────────
 
 Backs up and restores character UI layout and keybind files.
 
-  Server — your EQ server name (for file paths).
-  Char — type or pick a recent character (saved on Apply).
-  Backup — copies config files to Desktop.
-  Restore — copies them back (overwrites existing).
+• Server — your EQ server name (for file paths).
+• Char — type or pick a recent character (saved on Apply).
+• Backup — copies config files to Desktop.
+• Restore — copies them back (overwrites existing).
 
-
-GINA & NOTES
--------------------------------------------------------
+─── GINA & NOTES ────────────────────────────
 
 Gina — path to Gina.exe for audio triggers.
 Notes — a .txt file for EQ notes (created on first use). Accessible via tray menu or middle-click action.
 
+─── TIPS ────────────────────────────────────
 
-TIPS
--------------------------------------------------------
-
-  Press \ while in EQ to quickly swap between characters.
-  Use Fix Windows from the tray menu if windows get misaligned.
-  Ctrl+drag the PiP overlay to reposition it anywhere.
-  Video Settings changes require an EQ restart or window mode toggle.
+• Press \ while in EQ to quickly swap between characters.
+• Use Fix Windows from the tray menu if windows get misaligned.
+• Ctrl+drag the PiP overlay to reposition it anywhere.
+• Video Settings changes require an EQ restart or window mode toggle.
     )"
 
     hlp.Add("Edit", "x10 y10 w480 h420 ReadOnly -E0x200 Multi +VScroll", helpText)
@@ -1593,7 +1566,6 @@ OpenSettings(*) {
     BuildHotkeySection(g, ctl)
     BuildEverQuestSection(g, ctl)
     BuildLaunchSection(g, ctl)
-    BuildProcessSection(g, ctl)
     BuildMultiMonSection(g, ctl)
     BuildPiPSection(g, ctl)
     BuildExtrasSection(g, ctl)
@@ -2154,7 +2126,7 @@ g_pipBorderGuis := []
 
 UpdatePiPBorder() {
     global g_pipBorderGuis, g_pipGui, BORDER_COLOR
-    static BW := 2
+    static BW := 1
 
     if (!g_pipGui)
         return
