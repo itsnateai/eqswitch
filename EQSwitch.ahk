@@ -15,7 +15,17 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
-g_version        := "1.11"
+OnExit(AppCleanup)
+AppCleanup(reason, code) {
+    try DestroyPiP()
+    try DestroyBorder()
+    global g_featureTimer
+    if g_featureTimer
+        try SetTimer(g_featureTimer, 0)
+    return 0  ; allow exit
+}
+
+g_version        := "1.12"
 CFG_FILE         := A_ScriptDir "\eqswitch.cfg"
 EQ_TITLE         := "EverQuest"
 SETTINGS_OPEN    := false
@@ -445,10 +455,16 @@ SetMenuItemsBold(hMenu, itemTexts) {
     }
 }
 
+; Parse recent character names from pipe-separated config string
+GetRecentCharList() {
+    global RECENT_CHARS
+    return (RECENT_CHARS != "") ? StrSplit(RECENT_CHARS, "|") : []
+}
+
 ; Add a char name to the recent-chars list stored in the cfg
 AddRecentChar(charName) {
     global RECENT_CHARS
-    existing := (RECENT_CHARS != "") ? StrSplit(RECENT_CHARS, "|") : []
+    existing := GetRecentCharList()
     newList  := []
     for name in existing {
         if (name != "" && name != charName)
@@ -814,7 +830,7 @@ OpenLogFile(*) {
     global EQ_SERVER, TOOLTIP_MS, RECENT_CHARS
 
     eqDir := GetEqDir()
-    recentList := (RECENT_CHARS != "") ? StrSplit(RECENT_CHARS, "|") : []
+    recentList := GetRecentCharList()
 
     dlg := Gui("+AlwaysOnTop", "📜 Open Log File")
     dlg.SetFont("s9", "Segoe UI")
@@ -1171,7 +1187,7 @@ BuildCharacterSection(g, ctl) {
     ctl["serverEdit"] := g.AddEdit("x+4 yp-2 w120", EQ_SERVER)
 
     g.AddText("xm y+4", "Character:")
-    recentList := (RECENT_CHARS != "") ? StrSplit(RECENT_CHARS, "|") : []
+    recentList := GetRecentCharList()
     charCombo  := g.AddComboBox("x+4 yp-2 w140", recentList)
     if (recentList.Length > 0)
         charCombo.Choose(1)
@@ -1186,7 +1202,7 @@ BuildCharacterSection(g, ctl) {
         charName := combo.Text
         if (charName = "")
             return
-        existing := (RECENT_CHARS != "") ? StrSplit(RECENT_CHARS, "|") : []
+        existing := GetRecentCharList()
         newList := []
         for name in existing {
             if (name != charName)
@@ -1209,6 +1225,10 @@ BuildCharacterSection(g, ctl) {
         global EQ_SERVER
         if (charName = "") {
             MsgBox("Please enter or select a character name.", "EQ Switch — Backup", "Icon!")
+            return
+        }
+        if !RegExMatch(charName, "^[A-Za-z0-9_-]+$") {
+            MsgBox("Invalid character name — letters, numbers, hyphens, and underscores only.", "EQ Switch — Backup", "Icon!")
             return
         }
         eqDir   := GetEqDir()
@@ -1244,7 +1264,7 @@ BuildCharacterSection(g, ctl) {
         ; Save to recent list and refresh the combobox
         AddRecentChar(charName)
         charCombo.Delete()
-        fresh := (RECENT_CHARS != "") ? StrSplit(RECENT_CHARS, "|") : []
+        fresh := GetRecentCharList()
         charCombo.Add(fresh)
         charCombo.Text := charName
         MsgBox(found " file(s) backed up to Desktop ✓", "EQ Switch — Backup", "Icon!")
@@ -1254,6 +1274,10 @@ BuildCharacterSection(g, ctl) {
         global EQ_SERVER
         if (charName = "") {
             MsgBox("Please enter or select a character name.", "EQ Switch — Restore", "Icon!")
+            return
+        }
+        if !RegExMatch(charName, "^[A-Za-z0-9_-]+$") {
+            MsgBox("Invalid character name — letters, numbers, hyphens, and underscores only.", "EQ Switch — Restore", "Icon!")
             return
         }
         eqDir   := GetEqDir()
@@ -1455,6 +1479,13 @@ OpenSettings(*) {
         newLaunchOneHk := ctl["launchOneHkCtrl"].Value
         newLaunchAllHk := ctl["launchAllHkCtrl"].Value
 
+        ; Save old hotkeys for rollback on bind failure
+        oldEqHotkey := EQ_HOTKEY
+        oldMultimonHk := MULTIMON_HOTKEY
+        oldMultimonEnabled := MULTIMON_ENABLED
+        oldLaunchOneHk := LAUNCH_ONE_HOTKEY
+        oldLaunchAllHk := LAUNCH_ALL_HOTKEY
+
         ; Unbind the old hotkeys
         HotIfWinActive("ahk_exe eqgame.exe")
         try Hotkey(EQ_HOTKEY, "Off")
@@ -1516,12 +1547,15 @@ OpenSettings(*) {
         PIP_ZOOM        := ctl["pipZoomChk"].Value ? "1" : "0"
         STARTUP_ENABLED := ctl["startupChk"].Value ? "1" : "0"
 
-        ; Handle hotkey — skip binding if empty
+        ; Handle hotkey — skip binding if empty; rollback to old key on failure
         if (newHotkey != "") {
             EQ_HOTKEY := newHotkey
-            if !BindHotkey(EQ_HOTKEY)
-                MsgBox("The switch hotkey '" EQ_HOTKEY "' could not be bound — it may be invalid or already in use.",
+            if !BindHotkey(EQ_HOTKEY) {
+                MsgBox("The switch hotkey '" EQ_HOTKEY "' could not be bound — it may be invalid or already in use. Reverting to previous hotkey.",
                     "EQ Switch — Warning", "Icon!")
+                EQ_HOTKEY := oldEqHotkey
+                BindHotkey(EQ_HOTKEY)
+            }
         } else {
             EQ_HOTKEY := ""
         }
@@ -1530,23 +1564,33 @@ OpenSettings(*) {
         MULTIMON_ENABLED := ctl["multimonEnabled"].Value ? "1" : "0"
         MULTIMON_HOTKEY := newMultimonHk
         if (MULTIMON_ENABLED = "1" && newMultimonHk != "") {
-            if !BindMultiMonHotkey(MULTIMON_HOTKEY)
-                MsgBox("The multi-monitor hotkey '" MULTIMON_HOTKEY "' could not be bound — it may be invalid or already in use.",
+            if !BindMultiMonHotkey(MULTIMON_HOTKEY) {
+                MsgBox("The multi-monitor hotkey '" MULTIMON_HOTKEY "' could not be bound — it may be invalid or already in use. Reverting to previous hotkey.",
                     "EQ Switch — Warning", "Icon!")
+                MULTIMON_HOTKEY := oldMultimonHk
+                MULTIMON_ENABLED := oldMultimonEnabled
+                BindMultiMonHotkey(MULTIMON_HOTKEY)
+            }
         }
 
         ; Handle launch hotkeys
         LAUNCH_ONE_HOTKEY := newLaunchOneHk
         if (newLaunchOneHk != "") {
-            if !BindLaunchHotkey(LAUNCH_ONE_HOTKEY, "one")
-                MsgBox("The Launch One hotkey '" LAUNCH_ONE_HOTKEY "' could not be bound.",
+            if !BindLaunchHotkey(LAUNCH_ONE_HOTKEY, "one") {
+                MsgBox("The Launch One hotkey '" LAUNCH_ONE_HOTKEY "' could not be bound. Reverting to previous hotkey.",
                     "EQ Switch — Warning", "Icon!")
+                LAUNCH_ONE_HOTKEY := oldLaunchOneHk
+                BindLaunchHotkey(LAUNCH_ONE_HOTKEY, "one")
+            }
         }
         LAUNCH_ALL_HOTKEY := newLaunchAllHk
         if (newLaunchAllHk != "") {
-            if !BindLaunchHotkey(LAUNCH_ALL_HOTKEY, "all")
-                MsgBox("The Launch All hotkey '" LAUNCH_ALL_HOTKEY "' could not be bound.",
+            if !BindLaunchHotkey(LAUNCH_ALL_HOTKEY, "all") {
+                MsgBox("The Launch All hotkey '" LAUNCH_ALL_HOTKEY "' could not be bound. Reverting to previous hotkey.",
                     "EQ Switch — Warning", "Icon!")
+                LAUNCH_ALL_HOTKEY := oldLaunchAllHk
+                BindLaunchHotkey(LAUNCH_ALL_HOTKEY, "all")
+            }
         }
 
         SaveConfig()

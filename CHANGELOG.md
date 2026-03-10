@@ -2,6 +2,14 @@
 
 All notable changes to EQ Switch are documented here.
 
+## v1.12 — 2026-03-09
+
+### Robustness
+- **OnExit cleanup handler** — app now properly cleans up PiP overlays, border GUIs, and feature timers on exit via `OnExit()` callback
+- **Character name validation** — backup/restore now validates character names against `[A-Za-z0-9_-]` to prevent path traversal via crafted names
+- **Hotkey rollback on bind failure** — if a new hotkey fails to bind in Settings, the previous hotkey is restored instead of leaving the user with no hotkey
+- **GetRecentCharList() helper** — extracted repeated `RECENT_CHARS` parsing into a shared helper, reducing 5 duplication points to 1
+
 ## v1.11 — 2026-03-09
 
 ### Bug Fixes
