@@ -15,6 +15,8 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
+;@Ahk2Exe-AddResource eqbox.ico, 160
+
 OnExit(AppCleanup)
 AppCleanup(reason, code) {
     try DestroyPiP()
@@ -26,7 +28,7 @@ AppCleanup(reason, code) {
     return 0  ; allow exit
 }
 
-g_version        := "1.7"
+g_version        := "2.0"
 CFG_FILE         := A_ScriptDir "\eqswitch.cfg"
 EQ_TITLE         := "ahk_exe eqgame.exe"
 SETTINGS_OPEN    := false
@@ -212,7 +214,7 @@ CoresMaskToAffinity(cores) {
 ; =========================================================
 LoadConfig() {
     global EQ_EXE, EQ_ARGS, EQ_HOTKEY, CFG_FILE, DBLCLICK_LAUNCH
-    global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES, RECENT_CHARS
+    global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES, MIDCLICK_PIP, RECENT_CHARS
     global EQ_SERVER, LAUNCH_DELAY, LAUNCH_FIX_DELAY, NUM_CLIENTS
     global FIX_MODE, STARTUP_ENABLED, MULTIMON_HOTKEY, MULTIMON_ENABLED
     global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
@@ -250,6 +252,7 @@ LoadConfig() {
     GINA_PATH        := ReadKey("GINA_PATH",         "")
     NOTES_FILE       := ReadKey("NOTES_FILE",        "")
     MIDCLICK_NOTES   := ReadKey("MIDCLICK_NOTES",    "0")
+    MIDCLICK_PIP     := ReadKey("MIDCLICK_PIP",      "0")
     RECENT_CHARS     := ReadKey("RECENT_CHARS",      "")
     EQ_SERVER        := ReadKey("EQ_SERVER",         "dalaya")
     LAUNCH_DELAY     := ReadKey("LAUNCH_DELAY",      "3000")
@@ -280,7 +283,7 @@ LoadConfig() {
 
 SaveConfig() {
     global CFG_FILE, EQ_EXE, EQ_ARGS, EQ_HOTKEY, DBLCLICK_LAUNCH
-    global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES, RECENT_CHARS
+    global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES, MIDCLICK_PIP, RECENT_CHARS
     global EQ_SERVER, LAUNCH_DELAY, LAUNCH_FIX_DELAY, NUM_CLIENTS
     global FIX_MODE, STARTUP_ENABLED, MULTIMON_HOTKEY, MULTIMON_ENABLED
     global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
@@ -295,6 +298,7 @@ SaveConfig() {
     IniWrite(GINA_PATH,        CFG_FILE, "EQSwitch", "GINA_PATH")
     IniWrite(NOTES_FILE,       CFG_FILE, "EQSwitch", "NOTES_FILE")
     IniWrite(MIDCLICK_NOTES,   CFG_FILE, "EQSwitch", "MIDCLICK_NOTES")
+    IniWrite(MIDCLICK_PIP,     CFG_FILE, "EQSwitch", "MIDCLICK_PIP")
     IniWrite(RECENT_CHARS,     CFG_FILE, "EQSwitch", "RECENT_CHARS")
     IniWrite(EQ_SERVER,        CFG_FILE, "EQSwitch", "EQ_SERVER")
     IniWrite(LAUNCH_DELAY,     CFG_FILE, "EQSwitch", "LAUNCH_DELAY")
@@ -496,110 +500,13 @@ AddRecentChar(charName) {
 }
 
 ; =========================================================
-; WINDOW PRESETS
-; =========================================================
-GetPresetNames() {
-    global CFG_FILE
-    names := []
-    try {
-        section := IniRead(CFG_FILE, "WindowPresets")
-        for line in StrSplit(section, "`n") {
-            if (line = "")
-                continue
-            eqPos := InStr(line, "=")
-            if (eqPos > 0)
-                names.Push(SubStr(line, 1, eqPos - 1))
-        }
-    }
-    return names
-}
-
-SaveWindowPreset(presetName) {
-    global CFG_FILE, TOOLTIP_MS
-    visible := GetVisibleEqWindows()
-    if (visible.Length = 0) {
-        ShowTip("⚠ No EQ windows to save!")
-        return
-    }
-    data := ""
-    for i, id in visible {
-        try {
-            WinGetPos(&x, &y, &w, &h, "ahk_id " id)
-            data .= (i > 1 ? ";" : "") x "," y "," w "," h
-        }
-    }
-    IniWrite(data, CFG_FILE, "WindowPresets", presetName)
-    BuildPresetMenu()
-    ShowTip("🪟 Preset saved: " presetName " (" visible.Length " windows)")
-}
-
-LoadWindowPreset(presetName) {
-    global CFG_FILE, TOOLTIP_MS
-    try val := IniRead(CFG_FILE, "WindowPresets", presetName)
-    catch {
-        ShowTip("⚠ Preset '" presetName "' not found!")
-        return
-    }
-    windows := StrSplit(val, ";")
-    visible := GetVisibleEqWindows()
-    if (visible.Length = 0) {
-        ShowTip("⚠ No EQ windows to arrange!")
-        return
-    }
-    count := Min(windows.Length, visible.Length)
-    Loop count {
-        coords := StrSplit(windows[A_Index], ",")
-        if (coords.Length >= 4) {
-            id := visible[A_Index]
-            try {
-                WinRestore("ahk_id " id)
-                WinMove(Integer(coords[1]), Integer(coords[2]),
-                        Integer(coords[3]), Integer(coords[4]), "ahk_id " id)
-            }
-        }
-    }
-    msg := "🪟 Preset loaded: " presetName
-    if (visible.Length != windows.Length)
-        msg .= " (" count " of " windows.Length " windows)"
-    ShowTip(msg)
-}
-
-DeleteWindowPreset(presetName) {
-    global CFG_FILE
-    try IniDelete(CFG_FILE, "WindowPresets", presetName)
-    BuildPresetMenu()
-}
-
-; Build/rebuild the window presets tray submenu
-BuildPresetMenu() {
-    global g_presetMenu
-    g_presetMenu.Delete()
-    presetNames := GetPresetNames()
-    if (presetNames.Length = 0) {
-        g_presetMenu.Add("(no presets saved)", (*) => 0)
-        g_presetMenu.Disable("(no presets saved)")
-    } else {
-        for name in presetNames {
-            g_presetMenu.Add(name, ((n, *) => LoadWindowPreset(n)).Bind(name))
-        }
-    }
-    g_presetMenu.Add()
-    g_presetMenu.Add("💾 Save Current Layout...", (*) => PromptSavePreset())
-}
-
-PromptSavePreset(*) {
-    result := InputBox("Enter a name for this window preset:", "Save Window Preset", "w300 h130")
-    if (result.Result = "Cancel" || result.Value = "")
-        return
-    SaveWindowPreset(result.Value)
-}
-
-; =========================================================
 ; TRAY
 ; =========================================================
 iconPath := A_ScriptDir "\eqbox.ico"
 if FileExist(iconPath)
     TraySetIcon(iconPath)
+else if A_IsCompiled
+    try TraySetIcon(A_ScriptFullPath, -160, true)
 A_IconTip := "EQ Switch"
 
 A_TrayMenu.Delete()
@@ -607,7 +514,7 @@ OnMessage(0x404, TrayClick)
 g_dblClickPending := false  ; true while waiting to see if a 3rd click follows
 g_dblClickTimer   := ""
 TrayClick(wParam, lParam, *) {
-    global DBLCLICK_LAUNCH, MIDCLICK_NOTES, TRIPLECLICK_LAUNCH
+    global DBLCLICK_LAUNCH, MIDCLICK_NOTES, MIDCLICK_PIP, TRIPLECLICK_LAUNCH
     global g_tripleClickCooldown, g_dblClickPending, g_dblClickTimer
     now := A_TickCount
 
@@ -638,9 +545,13 @@ TrayClick(wParam, lParam, *) {
         return
     }
 
-    if (lParam = 0x208) {  ; WM_MBUTTONUP — middle-click opens notes
-        if (MIDCLICK_NOTES = "1")
+    if (lParam = 0x208) {  ; WM_MBUTTONUP — middle-click
+        if (MIDCLICK_PIP = "1") {
+            TogglePiP()
+            ShowTip(g_pipEnabled ? "📺 PiP ON" : "📺 PiP OFF", 1500)
+        } else if (MIDCLICK_NOTES = "1") {
             OpenNotes()
+        }
     }
 }
 
@@ -667,25 +578,22 @@ A_TrayMenu.Add()
 
 A_TrayMenu.Add("🪟  Fix Windows",       (*) => FixWindows())
 A_TrayMenu.Add("🔄  Swap Windows",      (*) => SwapWindows())
-g_presetMenu := Menu()
-BuildPresetMenu()
-A_TrayMenu.Add("🪟  Window Presets",    g_presetMenu)
 A_TrayMenu.Add("📺  Picture-in-Picture", (*) => TogglePiP())
 A_TrayMenu.Add("⚡  Process Manager",   (*) => OpenProcessManager())
 A_TrayMenu.Add()
 
 ; Compact submenus for file/link items
 g_openMenu := Menu()
-g_openMenu.Add("Log File",     (*) => OpenLogFile())
-g_openMenu.Add("eqclient.ini", (*) => OpenEqClientIni())
-g_openMenu.Add("Gina",         (*) => OpenGina())
-g_openMenu.Add("Notes",        (*) => OpenNotes())
+g_openMenu.Add("📜  Log File",     (*) => OpenLogFile())
+g_openMenu.Add("📄  eqclient.ini", (*) => OpenEqClientIni())
+g_openMenu.Add("🎯  Gina",         (*) => OpenGina())
+g_openMenu.Add("📝  Notes",        (*) => OpenNotes())
 A_TrayMenu.Add("📂  Open",    g_openMenu)
 
 g_linksMenu := Menu()
-g_linksMenu.Add("Dalaya Wiki",    (*) => Run("https://wiki.dalaya.org/"))
-g_linksMenu.Add("Shards Wiki",    (*) => Run("https://wiki.shardsofdalaya.com/wiki/Main_Page"))
-g_linksMenu.Add("Dalaya Fomelo",  (*) => Run("https://dalaya.org/fomelo/"))
+g_linksMenu.Add("📖  Dalaya Wiki",    (*) => Run("https://wiki.dalaya.org/"))
+g_linksMenu.Add("🗡  Shards Wiki",    (*) => Run("https://wiki.shardsofdalaya.com/wiki/Main_Page"))
+g_linksMenu.Add("🏆  Dalaya Fomelo",  (*) => Run("https://dalaya.org/fomelo/"))
 A_TrayMenu.Add("🌐  Links",   g_linksMenu)
 A_TrayMenu.Add()
 
@@ -750,6 +658,9 @@ FixWindows(*) {
 ; =========================================================
 SwapWindows(*) {
     global TOOLTIP_MS
+    ; Invalidate cache to get fresh window list
+    global g_visibleCacheTick
+    g_visibleCacheTick := 0
     visible := GetVisibleEqWindows()
     if (visible.Length < 2) {
         ShowTip("Need at least 2 EQ windows to swap!")
@@ -763,6 +674,7 @@ SwapWindows(*) {
             return
         }
         try {
+            ; Get actual window placement (handles maximized windows correctly)
             WinGetPos(&x, &y, &w, &h, "ahk_id " id)
             positions.Push({x: x, y: y, w: w, h: h})
         } catch {
@@ -770,21 +682,29 @@ SwapWindows(*) {
             return
         }
     }
+    ; Restore all windows first (un-maximize) before moving
+    for id in visible {
+        try {
+            if (WinGetMinMax("ahk_id " id) = 1)
+                WinRestore("ahk_id " id)
+        }
+    }
+    Sleep(50)  ; brief pause for WM to process restore
     ; Rotate each window to the next window's position
     count := visible.Length
     Loop count {
         nextPos := positions[Mod(A_Index, count) + 1]
         id := visible[A_Index]
-        try {
-            WinRestore("ahk_id " id)
-            WinMove(nextPos.x, nextPos.y, nextPos.w, nextPos.h, "ahk_id " id)
-        }
+        try WinMove(nextPos.x, nextPos.y, nextPos.w, nextPos.h, "ahk_id " id)
     }
     ShowTip("🔄 Windows swapped!")
 }
 
 ToggleMultiMon(*) {
     global g_multiMonState, TOOLTIP_MS, FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
+    ; Invalidate cache to get fresh window list
+    global g_visibleCacheTick
+    g_visibleCacheTick := 0
     visible := GetVisibleEqWindows()
     if (visible.Length < 2) {
         ShowTip("Need at least 2 EQ windows!")
@@ -1002,9 +922,9 @@ BuildEverQuestSection(g, ctl) {
 }
 
 BuildLaunchSection(g, ctl) {
-    global NUM_CLIENTS, FIX_MODE, FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
+    global NUM_CLIENTS, FIX_MODE
     global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY
-    global DBLCLICK_LAUNCH, STARTUP_ENABLED, MIDCLICK_NOTES, TRIPLECLICK_LAUNCH
+    global DBLCLICK_LAUNCH, STARTUP_ENABLED, MIDCLICK_NOTES, MIDCLICK_PIP, TRIPLECLICK_LAUNCH
     g.AddText("xm y+10 w440 cNavy", "🎮  Launch & Tray Options")
     g.AddText("xm y+4 w440 h1 0x10")
 
@@ -1021,53 +941,6 @@ BuildLaunchSection(g, ctl) {
     if (ctl["fixModeCombo"].Value = 0)
         ctl["fixModeCombo"].Choose(1)
 
-    g.AddText("xm y+6", "Top offset (px):")
-    ctl["topOffsetEdit"] := g.AddEdit("x+4 yp-2 w50 Number", FIX_TOP_OFFSET)
-    g.AddUpDown("Range-100-100", Integer(FIX_TOP_OFFSET))
-    g.AddText("x+14 yp+2", "Bottom offset (px):")
-    ctl["bottomOffsetEdit"] := g.AddEdit("x+4 yp-2 w50 Number", FIX_BOTTOM_OFFSET)
-    g.AddUpDown("Range-100-100", Integer(FIX_BOTTOM_OFFSET))
-    g.AddText("x+8 yp+2 cGray", "fine-tune FixWindows")
-
-    presetNames := GetPresetNames()
-    g.AddText("xm y+6", "Window preset:")
-    presetDropdown := g.AddDropDownList("x+4 yp-2 w130", presetNames)
-    g.AddButton("x+3 yp w50 h20", "Load").OnEvent("Click", (*) => DoLoadPreset(presetDropdown))
-    g.AddButton("x+2 yp w50 h20", "Save").OnEvent("Click", (*) => DoSavePreset())
-    g.AddButton("x+2 yp w50 h20", "Delete").OnEvent("Click", (*) => DoDeletePreset(presetDropdown))
-
-    DoLoadPreset(dropdown) {
-        if (dropdown.Value = 0 || dropdown.Text = "")
-            return
-        LoadWindowPreset(dropdown.Text)
-    }
-    DoSavePreset() {
-        result := InputBox("Enter a name for this window preset:", "Save Window Preset", "w300 h130")
-        if (result.Result = "Cancel" || result.Value = "")
-            return
-        SaveWindowPreset(result.Value)
-        fresh := GetPresetNames()
-        presetDropdown.Delete()
-        presetDropdown.Add(fresh)
-        for i, n in fresh {
-            if (n = result.Value)
-                presetDropdown.Choose(i)
-        }
-    }
-    DoDeletePreset(dropdown) {
-        if (dropdown.Value = 0 || dropdown.Text = "")
-            return
-        name := dropdown.Text
-        result := MsgBox("Delete window preset '" name "'?", "EQ Switch", "YesNo Icon?")
-        if (result != "Yes")
-            return
-        DeleteWindowPreset(name)
-        fresh := GetPresetNames()
-        presetDropdown.Delete()
-        presetDropdown.Add(fresh)
-        ShowTip("Preset deleted: " name)
-    }
-
     g.AddText("xm y+6", "Launch One hotkey:")
     ctl["launchOneHkCtrl"] := g.AddHotkey("x+4 yp-2 w120", LAUNCH_ONE_HOTKEY)
     g.AddText("x+14 yp+2", "Launch All hotkey:")
@@ -1080,7 +953,12 @@ BuildLaunchSection(g, ctl) {
 
     ctl["midClickChk"] := g.AddCheckbox("xm y+4", "Tray middle-click opens notes")
     ctl["midClickChk"].Value := (MIDCLICK_NOTES = "1") ? 1 : 0
-    ctl["tripleClickChk"] := g.AddCheckbox("x+20 yp", "Tray triple-click launches all clients")
+    ctl["midClickPipChk"] := g.AddCheckbox("x+20 yp", "Tray middle-click toggles PiP")
+    ctl["midClickPipChk"].Value := (MIDCLICK_PIP = "1") ? 1 : 0
+    ; Make notes and pip middle-click mutually exclusive
+    ctl["midClickChk"].OnEvent("Click", (*) => (ctl["midClickPipChk"].Value := 0))
+    ctl["midClickPipChk"].OnEvent("Click", (*) => (ctl["midClickChk"].Value := 0))
+    ctl["tripleClickChk"] := g.AddCheckbox("xm y+4", "Tray triple-click launches all clients")
     ctl["tripleClickChk"].Value := (TRIPLECLICK_LAUNCH = "1") ? 1 : 0
 
     btnDesktop := g.AddButton("xm y+6 w130 h24", "🖥 Desktop Shortcut")
@@ -1124,16 +1002,13 @@ BuildMultiMonSection(g, ctl) {
     global MULTIMON_ENABLED, MULTIMON_HOTKEY
     g.AddText("xm y+10 w440 cNavy", "🖥  Multi-Monitor")
     g.AddText("xm y+4 w440 h1 0x10")
-    ctl["multimonEnabled"] := g.AddCheckbox("xm y+6", "Enable multi-monitor toggle hotkey")
+    ctl["multimonEnabled"] := g.AddCheckbox("xm y+6", "Enable multi-monitor toggle")
     ctl["multimonEnabled"].Value := (MULTIMON_ENABLED = "1") ? 1 : 0
     ctl["multimonEnabled"].OnEvent("Click", ToggleMultimonField)
-    ; AHK Hotkey control can't represent sided modifiers (RAlt, RCtrl) — use Edit fallback
     g.AddText("xm y+4", "Hotkey:")
-    ctl["multimonHkCtrl"] := g.AddEdit("x+6 yp-2 w120", MULTIMON_HOTKEY)
+    ctl["multimonHkCtrl"] := g.AddHotkey("x+6 yp-2 w120", MULTIMON_HOTKEY)
     ctl["multimonHkCtrl"].Enabled := (MULTIMON_ENABLED = "1") ? true : false
-    currentDisplay := FormatHotkeyDisplay(MULTIMON_HOTKEY)
-    hintText := currentDisplay != "" ? "Current: " currentDisplay : "Default: RAlt+M"
-    g.AddText("x+8 yp+2 cGray", hintText "  (AHK syntax: >!m)")
+    g.AddText("x+8 yp+4 cGray", "← click the box and press your key")
 
     ToggleMultimonField(*) {
         ctl["multimonHkCtrl"].Enabled := ctl["multimonEnabled"].Value ? true : false
@@ -1222,24 +1097,21 @@ BuildPathsSection(g, ctl) {
 BuildCharacterSection(g, ctl) {
     global EQ_SERVER, RECENT_CHARS
     g.SetFont("s8", "Segoe UI")
-    g.AddText("xm y+10 w440 cNavy", "📋  Character Config && Backup")
+    g.AddText("xm y+10 w440 cNavy", "📋  Character Backup")
     g.AddText("xm y+3 w440 h1 0x10")
-    ; All on one line: Server | Character | ✕ | Backup | Restore
-    g.AddText("xm y+4", "Server:")
-    ctl["serverEdit"] := g.AddEdit("x+2 yp-2 w80 h20", EQ_SERVER)
-    g.AddText("x+6 yp+2", "Char:")
+    ; Character | ✕ | Backup | Restore — Server is hidden (uses EQ_SERVER from config)
+    g.AddText("xm y+4", "Char:")
     recentList := GetRecentCharList()
-    charCombo  := g.AddComboBox("x+2 yp-2 w100 h20", recentList)
+    charCombo  := g.AddComboBox("x+2 yp-2 w120 h20", recentList)
     ctl["charCombo"] := charCombo
     if (recentList.Length > 0)
         charCombo.Choose(1)
     g.AddButton("x+2 yp w18 h20", "✕").OnEvent("Click", (*) => DoRemoveChar(charCombo))
     btnBackup := g.AddButton("x+3 yp w52 h20", "Backup")
     btnBackup.OnEvent("Click", (*) => DoBackup(charCombo.Text))
-    btnBackup.ToolTip := "Copy character UI/keybind files to your Desktop"
     btnRestore := g.AddButton("x+2 yp w52 h20", "Restore")
     btnRestore.OnEvent("Click", (*) => DoRestore(charCombo.Text))
-    btnRestore.ToolTip := "Copy character files from Desktop back to EQ folder (overwrites!)"
+    g.AddText("x+6 yp+2 cGray", "Copies UI/keybind files to/from Desktop")
     g.SetFont("s9", "Segoe UI")
 
     ; ---- Character section helpers (closures) ----
@@ -1280,26 +1152,53 @@ BuildCharacterSection(g, ctl) {
         }
         eqDir   := GetEqDir()
         desktop := EnvGet("USERPROFILE") "\Desktop\"
-        file1   := eqDir "UI_" charName "_" EQ_SERVER ".ini"
-        file2   := eqDir charName "_" EQ_SERVER ".ini"
         found   := 0
         errors  := ""
-        if FileExist(file1) {
-            try {
-                FileCopy(file1, desktop "UI_" charName "_" EQ_SERVER ".ini", 1)
-                found++
-            } catch as err {
-                errors .= "UI file: " err.Message "`n"
+
+        ; Search for character files with any server name pattern
+        ; Try exact server match first, then wildcard search
+        patterns := []
+        patterns.Push({src: eqDir "UI_" charName "_" EQ_SERVER ".ini", name: "UI_" charName "_" EQ_SERVER ".ini"})
+        patterns.Push({src: eqDir charName "_" EQ_SERVER ".ini", name: charName "_" EQ_SERVER ".ini"})
+
+        ; Also search for files matching the character name with any server
+        Loop Files eqDir "UI_" charName "_*.ini" {
+            alreadyListed := false
+            for p in patterns {
+                if (p.src = A_LoopFileFullPath) {
+                    alreadyListed := true
+                    break
+                }
+            }
+            if !alreadyListed
+                patterns.Push({src: A_LoopFileFullPath, name: A_LoopFileName})
+        }
+        Loop Files eqDir charName "_*.ini" {
+            ; Skip UI_ prefixed files (already handled above)
+            if InStr(A_LoopFileName, "UI_")
+                continue
+            alreadyListed := false
+            for p in patterns {
+                if (p.src = A_LoopFileFullPath) {
+                    alreadyListed := true
+                    break
+                }
+            }
+            if !alreadyListed
+                patterns.Push({src: A_LoopFileFullPath, name: A_LoopFileName})
+        }
+
+        for p in patterns {
+            if FileExist(p.src) {
+                try {
+                    FileCopy(p.src, desktop p.name, 1)
+                    found++
+                } catch as err {
+                    errors .= p.name ": " err.Message "`n"
+                }
             }
         }
-        if FileExist(file2) {
-            try {
-                FileCopy(file2, desktop charName "_" EQ_SERVER ".ini", 1)
-                found++
-            } catch as err {
-                errors .= "Char file: " err.Message "`n"
-            }
-        }
+
         if (errors != "") {
             ShowTip("⚠ Some files failed to copy", 5000)
             return
@@ -1329,34 +1228,36 @@ BuildCharacterSection(g, ctl) {
         }
         eqDir   := GetEqDir()
         desktop := EnvGet("USERPROFILE") "\Desktop\"
-        file1   := desktop "UI_" charName "_" EQ_SERVER ".ini"
-        file2   := desktop charName "_" EQ_SERVER ".ini"
-        if (!FileExist(file1) && !FileExist(file2)) {
+
+        ; Find all matching backup files on Desktop (any server name)
+        restoreFiles := []
+        Loop Files desktop "UI_" charName "_*.ini" {
+            restoreFiles.Push({src: A_LoopFileFullPath, name: A_LoopFileName})
+        }
+        Loop Files desktop charName "_*.ini" {
+            if InStr(A_LoopFileName, "UI_")
+                continue
+            restoreFiles.Push({src: A_LoopFileFullPath, name: A_LoopFileName})
+        }
+
+        if (restoreFiles.Length = 0) {
             ShowTip("⚠ No backup files found on Desktop for '" charName "'", 5000)
             return
         }
         result := MsgBox(
-            "Restore character files for '" charName "' from Desktop?`n`n" .
+            "Restore " restoreFiles.Length " character file(s) for '" charName "' from Desktop?`n`n" .
             "This will OVERWRITE current files in your EQ folder.",
             "EQ Switch — Restore", "YesNo Icon!")
         if (result != "Yes")
             return
         found  := 0
         errors := ""
-        if FileExist(file1) {
+        for f in restoreFiles {
             try {
-                FileCopy(file1, eqDir "UI_" charName "_" EQ_SERVER ".ini", 1)
+                FileCopy(f.src, eqDir f.name, 1)
                 found++
             } catch as err {
-                errors .= "UI file: " err.Message "`n"
-            }
-        }
-        if FileExist(file2) {
-            try {
-                FileCopy(file2, eqDir charName "_" EQ_SERVER ".ini", 1)
-                found++
-            } catch as err {
-                errors .= "Char file: " err.Message "`n"
+                errors .= f.name ": " err.Message "`n"
             }
         }
         if (errors != "")
@@ -1509,11 +1410,11 @@ OpenSettings(*) {
     BuildCharacterSection(g, ctl)
     g.SetFont("s9", "Segoe UI")
 
-    ; ── Save / Apply / Cancel / Help ────────────────────────
+    ; ── Save / Apply / Close / Help ────────────────────────
     g.AddText("xm y+8 w440 h1 0x10")
-    g.AddButton("xm y+6 w80 h28 Default", "💾 Save").OnEvent("Click", SaveAndClose)
-    g.AddButton("x+8 yp w80 h28", "✅ Apply").OnEvent("Click", (*) => ApplySettings())
-    g.AddButton("x+8 yp w80 h28", "Cancel").OnEvent("Click", (*) => (SETTINGS_OPEN := false, g.Destroy()))
+    g.AddButton("xm y+6 w80 h28 Default", "Save").OnEvent("Click", SaveAndClose)
+    g.AddButton("x+8 yp w80 h28", "Apply").OnEvent("Click", (*) => ApplySettings())
+    g.AddButton("x+8 yp w80 h28", "Close").OnEvent("Click", (*) => (SETTINGS_OPEN := false, g.Destroy()))
     g.AddButton("x+8 yp w80 h28", "❓ Help").OnEvent("Click", (*) => ShowSettingsHelp(g.Hwnd))
 
     g.Show("AutoSize")
@@ -1528,7 +1429,7 @@ OpenSettings(*) {
 
     ApplySettings(*) {
         global EQ_EXE, EQ_ARGS, EQ_HOTKEY, DBLCLICK_LAUNCH
-        global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES
+        global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES, MIDCLICK_PIP
         global EQ_SERVER, NUM_CLIENTS, FIX_MODE, STARTUP_ENABLED
         global MULTIMON_HOTKEY, MULTIMON_ENABLED, TOOLTIP_MS
         global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, TRIPLECLICK_LAUNCH
@@ -1573,8 +1474,9 @@ OpenSettings(*) {
         GINA_PATH       := ctl["ginaEdit"].Value
         NOTES_FILE      := ctl["notesEdit"].Value
         MIDCLICK_NOTES  := ctl["midClickChk"].Value ? "1" : "0"
+        MIDCLICK_PIP    := ctl["midClickPipChk"].Value ? "1" : "0"
         TRIPLECLICK_LAUNCH := ctl["tripleClickChk"].Value ? "1" : "0"
-        EQ_SERVER       := ctl["serverEdit"].Value
+        ; EQ_SERVER stays as loaded from config (no GUI field)
         ; Save character name to recent list if user typed one
         if (ctl.Has("charCombo") && ctl["charCombo"].Text != "") {
             charText := ctl["charCombo"].Text
@@ -1595,8 +1497,6 @@ OpenSettings(*) {
         NUM_CLIENTS     := String(clientNum)
         ctl["clientsEdit"].Value := NUM_CLIENTS
         FIX_MODE        := ctl["fixModes"][ctl["fixModeCombo"].Value]
-        FIX_TOP_OFFSET   := ctl["topOffsetEdit"].Value
-        FIX_BOTTOM_OFFSET := ctl["bottomOffsetEdit"].Value
         PIP_WIDTH        := ctl["pipWidthEdit"].Value
         PIP_HEIGHT       := ctl["pipHeightEdit"].Value
         PIP_OPACITY      := ctl["pipOpacityEdit"].Value
@@ -1661,10 +1561,17 @@ OpenSettings(*) {
         UpdateTrayTip()
         UpdateTrayMenuLabels()
 
-        ; Manage startup shortcut
-        shortcutPath := A_Startup "\EQSwitch.lnk"
+        ; Manage startup shortcut — use shell Startup folder directly
+        startupDir := EnvGet("APPDATA") "\Microsoft\Windows\Start Menu\Programs\Startup"
+        shortcutPath := startupDir "\EQSwitch.lnk"
         if (STARTUP_ENABLED = "1") {
-            try FileCreateShortcut(A_ScriptFullPath, shortcutPath)
+            try {
+                ico := A_ScriptDir "\eqbox.ico"
+                if FileExist(ico)
+                    FileCreateShortcut(A_ScriptFullPath, shortcutPath, A_ScriptDir, , "EQ Switch", ico)
+                else
+                    FileCreateShortcut(A_ScriptFullPath, shortcutPath, A_ScriptDir)
+            }
         } else {
             if FileExist(shortcutPath)
                 try FileDelete(shortcutPath)
@@ -2177,21 +2084,21 @@ OpenProcessManager(*) {
 
     coreCount := GetCoreCount()
     pm := Gui("+AlwaysOnTop", "⚡ EQ Switch — Process Manager")
-    pm.SetFont("s9", "Segoe UI")
-    pm.MarginX := 14
-    pm.MarginY := 10
+    pm.SetFont("s8", "Segoe UI")
+    pm.MarginX := 10
+    pm.MarginY := 6
 
     ; ── Running Processes ──
-    pm.SetFont("s10 Bold", "Segoe UI")
-    pm.AddText("w500 c0xAA3300", "⚡  Running EQ Processes")
-    pm.SetFont("s9", "Segoe UI")
-    pm.AddText("xm y+4 w500 h1 0x10")
+    pm.SetFont("s9 Bold", "Segoe UI")
+    pm.AddText("w420 c0xAA3300", "⚡  Running EQ Processes")
+    pm.SetFont("s8", "Segoe UI")
+    pm.AddText("xm y+3 w420 h1 0x10")
 
-    processList := pm.AddListView("xm y+6 w500 h120 +Grid", ["PID", "Window Title", "Priority", "Affinity Mask"])
-    processList.ModifyCol(1, 60)
-    processList.ModifyCol(2, 220)
-    processList.ModifyCol(3, 100)
-    processList.ModifyCol(4, 100)
+    processList := pm.AddListView("xm y+4 w420 h90 +Grid", ["PID", "Title", "Priority", "Affinity"])
+    processList.ModifyCol(1, 45)
+    processList.ModifyCol(2, 180)
+    processList.ModifyCol(3, 80)
+    processList.ModifyCol(4, 80)
 
     RefreshProcessList(*) {
         processList.Delete()
@@ -2222,31 +2129,23 @@ OpenProcessManager(*) {
     }
     RefreshProcessList()
 
-    pm.AddButton("xm y+6 w100 h24", "🔄 Refresh").OnEvent("Click", RefreshProcessList)
-    btnForceApply := pm.AddButton("x+6 yp w160 h24", "⚡ Force Apply to All")
+    pm.AddButton("xm y+4 w80 h22", "Refresh").OnEvent("Click", RefreshProcessList)
+    btnForceApply := pm.AddButton("x+4 yp w120 h22", "Force Apply to All")
     btnForceApply.ToolTip := "Push current priority && affinity settings to all running EQ processes"
     btnForceApply.OnEvent("Click", ForceApplyAll)
 
     ForceApplyAll(*) {
-        global CPU_AFFINITY, PROCESS_PRIORITY
-        ApplyProcessPriority(PROCESS_PRIORITY)
-        if (CPU_AFFINITY != "")
-            ApplyAffinityToAll(CPU_AFFINITY)
-        else {
-            ; If no affinity set, apply full system mask
-            fullMask := (1 << coreCount) - 1
-            ApplyAffinityToAll(String(fullMask))
-        }
-        RefreshProcessList()
+        ; Read current UI state, not just saved config — same logic as ApplyPM
+        ApplyPM()
         ShowTip("⚡ Settings forced on all running EQ processes!")
     }
 
     ; ── Process Priority ──
-    pm.AddText("xm y+12 w500 h1 0x10")
-    pm.SetFont("s10 Bold", "Segoe UI")
-    pm.AddText("xm y+6 w500 cNavy", "🔥  Process Priority")
-    pm.SetFont("s9", "Segoe UI")
-    pm.AddText("xm y+4 cGray", "Applied to all EQ processes on launch and when EQSwitch starts.")
+    pm.AddText("xm y+8 w420 h1 0x10")
+    pm.SetFont("s9 Bold", "Segoe UI")
+    pm.AddText("xm y+4 w420 cNavy", "🔥  Process Priority")
+    pm.SetFont("s8", "Segoe UI")
+    pm.AddText("xm y+3 cGray", "Applied on launch and when EQSwitch starts.")
 
     pm.AddText("xm y+6", "Priority:")
     priorityLevels := ["Normal", "AboveNormal", "High"]
@@ -2259,23 +2158,23 @@ OpenProcessManager(*) {
         priorityCombo.Choose(1)
 
     ; ── CPU Affinity ──
-    pm.AddText("xm y+12 w500 h1 0x10")
-    pm.SetFont("s10 Bold", "Segoe UI")
-    pm.AddText("xm y+6 w500 cNavy", "🔧  CPU Affinity")
-    pm.SetFont("s9", "Segoe UI")
-    pm.AddText("xm y+4 cGray", "Applied to all EQ processes on launch and when EQSwitch starts. Unchecking all = use all cores.")
+    pm.AddText("xm y+8 w420 h1 0x10")
+    pm.SetFont("s9 Bold", "Segoe UI")
+    pm.AddText("xm y+4 w420 cNavy", "🔧  CPU Affinity")
+    pm.SetFont("s8", "Segoe UI")
+    pm.AddText("xm y+3 cGray", "Unchecking all = use all cores.")
 
     cores := AffinityMaskToCores(CPU_AFFINITY, coreCount)
     coreChecks := []
     Loop coreCount {
-        xOpt := (Mod(A_Index - 1, 7) = 0) ? "xm y+4" : "x+6 yp"
-        chk := pm.AddCheckbox(xOpt, "Core " A_Index)
+        xOpt := (Mod(A_Index - 1, 8) = 0) ? "xm y+3" : "x+4 yp"
+        chk := pm.AddCheckbox(xOpt, "" A_Index)
         chk.Value := cores[A_Index]
         coreChecks.Push(chk)
     }
 
-    pm.AddButton("xm y+8 w80 h24", "All").OnEvent("Click", SelectAllCores)
-    pm.AddButton("x+6 yp w80 h24", "None").OnEvent("Click", SelectNoCores)
+    pm.AddButton("xm y+4 w50 h20", "All").OnEvent("Click", SelectAllCores)
+    pm.AddButton("x+4 yp w50 h20", "None").OnEvent("Click", SelectNoCores)
 
     SelectAllCores(*) {
         for chk in coreChecks
@@ -2287,11 +2186,12 @@ OpenProcessManager(*) {
     }
 
     ; ── Save / Apply / Close ──
-    pm.AddText("xm y+10 w500 h1 0x10")
-    pm.AddButton("xm y+6 w120 h28 Default", "💾 Save && Apply").OnEvent("Click", SavePM)
-    pm.AddButton("x+8 yp w80 h28", "Close").OnEvent("Click", (*) => (g_pmOpen := false, pm.Destroy()))
+    pm.AddText("xm y+6 w420 h1 0x10")
+    pm.AddButton("xm y+4 w70 h26 Default", "Save").OnEvent("Click", SaveAndClosePM)
+    pm.AddButton("x+6 yp w70 h26", "Apply").OnEvent("Click", ApplyPM)
+    pm.AddButton("x+6 yp w70 h26", "Close").OnEvent("Click", (*) => (g_pmOpen := false, pm.Destroy()))
 
-    SavePM(*) {
+    ApplyPM(*) {
         global CPU_AFFINITY, PROCESS_PRIORITY
         ; Read priority from dropdown
         PROCESS_PRIORITY := priorityLevels[priorityCombo.Value]
@@ -2328,6 +2228,12 @@ OpenProcessManager(*) {
 
         RefreshProcessList()
         ShowTip("⚡ Process settings saved and applied!")
+    }
+
+    SaveAndClosePM(*) {
+        ApplyPM()
+        g_pmOpen := false
+        pm.Destroy()
     }
 
     pm.OnEvent("Escape", (*) => (g_pmOpen := false, pm.Destroy()))
@@ -2400,17 +2306,14 @@ OpenVideoModeEditor(*) {
 
     ; Borderless preset button
     vm.AddButton("xm y+6 w160 h24", "Apply Borderless Preset").OnEvent("Click", ApplyBorderless)
-    vm.AddButton("x+8 yp w160 h24", "Reset to Defaults").OnEvent("Click", ResetDefaults)
+    vm.AddButton("x+8 yp w100 h24", "Default Offsets").OnEvent("Click", ResetDefaults)
 
     ApplyBorderless(*) {
-        vmWW.Value := "1920"
-        vmWH.Value := "1080"
+        ; Keep current resolution, only set offsets for borderless-windowed
         vmXOff.Value := "-8"
         vmYOff.Value := "-8"
     }
     ResetDefaults(*) {
-        vmWW.Value := "1920"
-        vmWH.Value := "1080"
         vmXOff.Value := "0"
         vmYOff.Value := "0"
     }
@@ -2425,10 +2328,11 @@ OpenVideoModeEditor(*) {
     }
 
     vm.AddText("xm y+10 w400 h1 0x10")
-    vm.AddButton("xm y+6 w100 h28 Default", "💾 Save").OnEvent("Click", SaveVM)
+    vm.AddButton("xm y+6 w80 h28 Default", "Save").OnEvent("Click", SaveAndCloseVM)
+    vm.AddButton("x+8 yp w80 h28", "Apply").OnEvent("Click", ApplyVM)
     vm.AddButton("x+8 yp w80 h28", "Close").OnEvent("Click", (*) => (g_vmOpen := false, vm.Destroy()))
 
-    SaveVM(*) {
+    ApplyVM(*) {
         try {
             IniWrite(vmWW.Value, iniPath, "VideoMode", "WindowedWidth")
             IniWrite(vmWH.Value, iniPath, "VideoMode", "WindowedHeight")
@@ -2438,6 +2342,12 @@ OpenVideoModeEditor(*) {
         } catch as err {
             ShowTip("⚠ Failed to save: " err.Message, 5000)
         }
+    }
+
+    SaveAndCloseVM(*) {
+        ApplyVM()
+        g_vmOpen := false
+        vm.Destroy()
     }
 
     vm.OnEvent("Escape", (*) => (g_vmOpen := false, vm.Destroy()))

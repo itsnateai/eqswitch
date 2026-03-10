@@ -2,7 +2,26 @@
 
 All notable changes to EQ Switch are documented here.
 
-## v1.6 — 2026-03-10
+## v2.0 — 2026-03-10
+
+### New Features
+- **Middle-click PiP toggle** — new option to toggle PiP overlay by middle-clicking the tray icon (alternative to opening Notes)
+- **Embedded tray icon** — icon compiled into the exe via `@Ahk2Exe-AddResource`, with fallback chain for uncompiled scripts
+
+### Removed
+- **Window Presets** — removed save/load/delete window layout presets and tray submenu. Feature saw no real use; window arrangement is better handled by FixWindows modes
+
+### UI Polish
+- **Settings buttons** — removed emoji from Save/Apply/Close buttons for a cleaner look
+- **Process Manager** — tighter, more compact layout (smaller fonts, narrower columns). Split into Save & Close + Apply buttons. Force Apply now reads live UI state instead of stale config
+- **Video Mode Editor** — split into Save & Close + Apply buttons. Borderless preset no longer forces 1920×1080 resolution (keeps current values, only sets offsets)
+- **Restore from Backup** — now finds all matching backup files on Desktop regardless of server name, instead of only the current server
+
+### Bug Fixes
+- **Startup shortcut** — uses shell Startup folder path via `APPDATA` env var instead of `A_Startup`; shortcut now includes the app icon
+- **Removed stale Settings fields** — FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET, and EQ_SERVER removed from Settings apply (fields no longer in GUI)
+
+## v1.7 — 2026-03-10
 
 ### New Features
 - **Process Priority Management** — auto-set eqgame.exe to High (or AboveNormal) priority on launch. Configurable dropdown in Settings. Replaces need for Process Lasso
