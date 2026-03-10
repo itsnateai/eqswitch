@@ -2380,7 +2380,6 @@ LaunchOne(*) {
 LaunchBoth(*) {
     global g_launchActive
     global EQ_EXE, EQ_ARGS, LAUNCH_DELAY, LAUNCH_FIX_DELAY, NUM_CLIENTS, TOOLTIP_MS, PROCESS_PRIORITY, CPU_AFFINITY, FIX_MODE
-    global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
     if g_launchActive {
         ShowTip("⚠ Launch already in progress!")
         return
@@ -2417,28 +2416,6 @@ LaunchBoth(*) {
     ; Async launch: each client launched via timer, UI stays responsive
     DoNextLaunch() {
         launchIdx++
-        ; In multimonitor mode, set eqclient.ini resolution to match the target monitor
-        ; so EQ renders at the correct size for that monitor
-        if (launchFixMode = "multimonitor") {
-            monCount := MonitorGetCount()
-            mon := Mod(launchIdx - 1, monCount) + 1
-            try {
-                MonitorGetWorkArea(mon, &mLeft, &mTop, &mRight, &mBottom)
-                try topOff := Integer(FIX_TOP_OFFSET)
-                catch
-                    topOff := 0
-                try botOff := Integer(FIX_BOTTOM_OFFSET)
-                catch
-                    botOff := 0
-                monW := mRight - mLeft
-                monH := (mBottom + botOff) - (mTop + topOff)
-                iniPath := eqDir "eqclient.ini"
-                if FileExist(iniPath) {
-                    IniWrite(monW, iniPath, "VideoMode", "WindowedWidth")
-                    IniWrite(monH, iniPath, "VideoMode", "WindowedHeight")
-                }
-            }
-        }
         ToolTip("🎮 Launching client " launchIdx " of " count "...")
         try {
             Run('"' launchExe '" ' launchArgs, eqDir, , &newPid)
