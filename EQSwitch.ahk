@@ -251,6 +251,8 @@ LoadConfig() {
     LAUNCH_FIX_DELAY := ReadKey("LAUNCH_FIX_DELAY",  "15000")
     NUM_CLIENTS      := ReadKey("NUM_CLIENTS",       "2")
     FIX_MODE         := ReadKey("FIX_MODE",          "maximize")
+    if (FIX_MODE != "maximize" && FIX_MODE != "multimonitor")
+        FIX_MODE := "maximize"
     STARTUP_ENABLED  := ReadKey("STARTUP_ENABLED",   "0")
     MULTIMON_HOTKEY  := ReadKey("MULTIMON_HOTKEY",   ">!m")
     MULTIMON_ENABLED := ReadKey("MULTIMON_ENABLED", "1")
@@ -331,7 +333,7 @@ if isFirstRun {
 }
 
 FirstRunWelcome(*) {
-    TrayTip("Right-click the tray icon to get started ⚔", "EQ Switch loaded in tray!", "Iconi")
+    ShowTip("EQ Switch loaded — right-click the tray icon to get started ⚔", 5000)
     SetTimer(OpenSettings, -2000)
 }
 
@@ -683,27 +685,7 @@ FixWindows(*) {
     catch
         botOff := 0
 
-    if (FIX_MODE = "sidebyside") {
-        ; Arrange side-by-side across the primary monitor
-        try MonitorGetWorkArea(1, &mLeft, &mTop, &mRight, &mBottom)
-        catch {
-            ShowTip("⚠ Could not read monitor info")
-            return
-        }
-        adjTop    := mTop + topOff
-        adjHeight := (mBottom + botOff) - adjTop
-        mWidth    := mRight - mLeft
-        count     := winList.Length
-        sliceW    := mWidth // count
-        Loop count {
-            id := winList[A_Index]
-            x  := mLeft + (A_Index - 1) * sliceW
-            try {
-                WinRestore("ahk_id " id)
-                WinMove(x, adjTop, sliceW, adjHeight, "ahk_id " id)
-            }
-        }
-    } else if (FIX_MODE = "multimonitor") {
+    if (FIX_MODE = "multimonitor") {
         ; Distribute windows across monitors (one per monitor, maximized)
         monCount := MonitorGetCount()
         count := winList.Length
@@ -717,11 +699,6 @@ FixWindows(*) {
                 WinRestore("ahk_id " id)
                 WinMove(mLeft, adjTop, mRight - mLeft, adjHeight, "ahk_id " id)
             }
-        }
-    } else if (FIX_MODE = "restore") {
-        Loop winList.Length {
-            id := winList[A_Index]
-            try WinRestore("ahk_id " id)
         }
     } else {
         ; Default: maximize
@@ -995,7 +972,7 @@ BuildLaunchSection(g, ctl) {
     ctl["clientsEdit"] := g.AddEdit("x+4 yp-2 w40 Number", NUM_CLIENTS)
     g.AddUpDown("Range1-8", NUM_CLIENTS)
     g.AddText("x+10 yp+2", "Window mode:")
-    ctl["fixModes"] := ["maximize", "restore", "sidebyside", "multimonitor"]
+    ctl["fixModes"] := ["maximize", "multimonitor"]
     ctl["fixModeCombo"] := g.AddDropDownList("x+4 yp-2 w130", ctl["fixModes"])
     for i, mode in ctl["fixModes"] {
         if (mode = FIX_MODE)
@@ -1071,7 +1048,7 @@ BuildLaunchSection(g, ctl) {
 
     OpenTraySettings(*) {
         Run("ms-settings:taskbar")
-        TrayTip("Look for 'Other system tray icons' and enable EQ Switch", "Tray Icon Settings", "Iconi")
+        ShowTip("Look for 'Other system tray icons' and enable EQ Switch", 5000)
     }
 
     CreateDesktopShortcut(*) {
@@ -1232,11 +1209,11 @@ BuildCharacterSection(g, ctl) {
     DoBackup(charName) {
         global EQ_SERVER
         if (charName = "") {
-            MsgBox("Please enter or select a character name.", "EQ Switch — Backup", "Icon!")
+            ShowTip("⚠ Please enter or select a character name", 5000)
             return
         }
         if !RegExMatch(charName, "^[A-Za-z0-9_-]+$") {
-            MsgBox("Invalid character name — letters, numbers, hyphens, and underscores only.", "EQ Switch — Backup", "Icon!")
+            ShowTip("⚠ Invalid character name — letters, numbers, hyphens, and underscores only", 5000)
             return
         }
         eqDir   := GetEqDir()
@@ -1262,11 +1239,11 @@ BuildCharacterSection(g, ctl) {
             }
         }
         if (errors != "") {
-            MsgBox("Some files failed to copy:`n" errors, "EQ Switch — Backup", "Icon!")
+            ShowTip("⚠ Some files failed to copy", 5000)
             return
         }
         if (found = 0) {
-            MsgBox("No character files found for '" charName "'`nin: " eqDir, "EQ Switch — Backup", "Icon!")
+            ShowTip("⚠ No character files found for '" charName "'", 5000)
             return
         }
         ; Save to recent list and refresh the combobox
@@ -1275,17 +1252,17 @@ BuildCharacterSection(g, ctl) {
         fresh := GetRecentCharList()
         charCombo.Add(fresh)
         charCombo.Text := charName
-        MsgBox(found " file(s) backed up to Desktop ✓", "EQ Switch — Backup", "Icon!")
+        ShowTip(found " file(s) backed up to Desktop ✓")
     }
 
     DoRestore(charName) {
         global EQ_SERVER
         if (charName = "") {
-            MsgBox("Please enter or select a character name.", "EQ Switch — Restore", "Icon!")
+            ShowTip("⚠ Please enter or select a character name", 5000)
             return
         }
         if !RegExMatch(charName, "^[A-Za-z0-9_-]+$") {
-            MsgBox("Invalid character name — letters, numbers, hyphens, and underscores only.", "EQ Switch — Restore", "Icon!")
+            ShowTip("⚠ Invalid character name — letters, numbers, hyphens, and underscores only", 5000)
             return
         }
         eqDir   := GetEqDir()
@@ -1293,7 +1270,7 @@ BuildCharacterSection(g, ctl) {
         file1   := desktop "UI_" charName "_" EQ_SERVER ".ini"
         file2   := desktop charName "_" EQ_SERVER ".ini"
         if (!FileExist(file1) && !FileExist(file2)) {
-            MsgBox("No backup files found on Desktop for '" charName "'.", "EQ Switch — Restore", "Icon!")
+            ShowTip("⚠ No backup files found on Desktop for '" charName "'", 5000)
             return
         }
         result := MsgBox(
@@ -1321,9 +1298,9 @@ BuildCharacterSection(g, ctl) {
             }
         }
         if (errors != "")
-            MsgBox("Some files failed to restore:`n" errors, "EQ Switch — Restore", "Icon!")
+            ShowTip("⚠ Some files failed to restore", 5000)
         else
-            MsgBox(found " file(s) restored from Desktop ✓", "EQ Switch — Restore", "Icon!")
+            ShowTip(found " file(s) restored from Desktop ✓")
     }
 }
 
@@ -1355,8 +1332,6 @@ ShowSettingsHelp(parentHwnd) {
         "Clients — how many EQ windows to launch at once (1–8).`n"
         . "Window mode — how windows are arranged after launch:`n"
         . "  • maximize — all fullscreen on primary monitor`n"
-        . "  • restore — default/restored window size`n"
-        . "  • sidebyside — split left/right on primary monitor`n"
         . "  • multimonitor — one window per monitor, maximized`n`n"
         . "Launch One / Launch All hotkeys — global shortcuts to launch clients from anywhere.`n`n"
         . "Tray double-click — launches a single client.`n"
@@ -1461,17 +1436,24 @@ OpenSettings(*) {
     BuildCharacterSection(g, ctl)
     g.SetFont("s9", "Segoe UI")
 
-    ; ── Save / Cancel / Help ──────────────────────────────
+    ; ── Save / Apply / Cancel / Help ────────────────────────
     g.AddText("xm y+8 w440 h1 0x10")
     g.AddButton("xm y+6 w80 h28 Default", "💾 Save").OnEvent("Click", SaveAndClose)
+    g.AddButton("x+8 yp w80 h28", "✅ Apply").OnEvent("Click", (*) => ApplySettings())
     g.AddButton("x+8 yp w80 h28", "Cancel").OnEvent("Click", (*) => (SETTINGS_OPEN := false, g.Destroy()))
-    g.AddButton("x+100 yp w80 h28", "❓ Help").OnEvent("Click", (*) => ShowSettingsHelp(g.Hwnd))
+    g.AddButton("x+8 yp w80 h28", "❓ Help").OnEvent("Click", (*) => ShowSettingsHelp(g.Hwnd))
 
     g.Show("AutoSize")
 
-    ; ---- SaveAndClose (reads from ctl Map) ----------------
+    ; ---- ApplySettings / SaveAndClose (reads from ctl Map) ----
 
     SaveAndClose(*) {
+        ApplySettings()
+        SETTINGS_OPEN := false
+        g.Destroy()
+    }
+
+    ApplySettings(*) {
         global EQ_EXE, EQ_ARGS, EQ_HOTKEY, DBLCLICK_LAUNCH
         global GINA_PATH, NOTES_FILE, MIDCLICK_NOTES
         global EQ_SERVER, NUM_CLIENTS, FIX_MODE, STARTUP_ENABLED
@@ -1507,17 +1489,11 @@ OpenSettings(*) {
 
         ; Validate paths (non-blocking warnings)
         if (ctl["exeEdit"].Value != "" && !FileExist(ctl["exeEdit"].Value))
-            MsgBox("The EQ executable path doesn't exist:`n" ctl["exeEdit"].Value
-                . "`n`nSettings will be saved, but Launch won't work until the path is valid.",
-                "EQ Switch — Warning", "Icon!")
+            ShowTip("⚠ EQ exe path doesn't exist — Launch won't work until fixed", 5000)
         if (ctl["ginaEdit"].Value != "" && !FileExist(ctl["ginaEdit"].Value))
-            MsgBox("The Gina path doesn't exist:`n" ctl["ginaEdit"].Value
-                . "`n`nSettings will be saved, but Open Gina won't work until the path is valid.",
-                "EQ Switch — Warning", "Icon!")
+            ShowTip("⚠ Gina path doesn't exist — Open Gina won't work until fixed", 5000)
         if (ctl["notesEdit"].Value != "" && !FileExist(ctl["notesEdit"].Value))
-            MsgBox("The notes file doesn't exist:`n" ctl["notesEdit"].Value
-                . "`n`nSettings will be saved. The file will be created when you first open Notes.",
-                "EQ Switch — Warning", "Icon!")
+            ShowTip("⚠ Notes file doesn't exist — will be created on first use", 5000)
 
         EQ_EXE          := ctl["exeEdit"].Value
         EQ_ARGS         := ctl["argsEdit"].Value
@@ -1559,8 +1535,7 @@ OpenSettings(*) {
         if (newHotkey != "") {
             EQ_HOTKEY := newHotkey
             if !BindHotkey(EQ_HOTKEY) {
-                MsgBox("The switch hotkey '" EQ_HOTKEY "' could not be bound — it may be invalid or already in use. Reverting to previous hotkey.",
-                    "EQ Switch — Warning", "Icon!")
+                ShowTip("⚠ Switch hotkey '" EQ_HOTKEY "' couldn't be bound — reverting", 5000)
                 EQ_HOTKEY := oldEqHotkey
                 BindHotkey(EQ_HOTKEY)
             }
@@ -1573,8 +1548,7 @@ OpenSettings(*) {
         MULTIMON_HOTKEY := newMultimonHk
         if (MULTIMON_ENABLED = "1" && newMultimonHk != "") {
             if !BindMultiMonHotkey(MULTIMON_HOTKEY) {
-                MsgBox("The multi-monitor hotkey '" MULTIMON_HOTKEY "' could not be bound — it may be invalid or already in use. Reverting to previous hotkey.",
-                    "EQ Switch — Warning", "Icon!")
+                ShowTip("⚠ Multi-monitor hotkey '" MULTIMON_HOTKEY "' couldn't be bound — reverting", 5000)
                 MULTIMON_HOTKEY := oldMultimonHk
                 MULTIMON_ENABLED := oldMultimonEnabled
                 BindMultiMonHotkey(MULTIMON_HOTKEY)
@@ -1585,8 +1559,7 @@ OpenSettings(*) {
         LAUNCH_ONE_HOTKEY := newLaunchOneHk
         if (newLaunchOneHk != "") {
             if !BindLaunchHotkey(LAUNCH_ONE_HOTKEY, "one") {
-                MsgBox("The Launch One hotkey '" LAUNCH_ONE_HOTKEY "' could not be bound. Reverting to previous hotkey.",
-                    "EQ Switch — Warning", "Icon!")
+                ShowTip("⚠ Launch One hotkey '" LAUNCH_ONE_HOTKEY "' couldn't be bound — reverting", 5000)
                 LAUNCH_ONE_HOTKEY := oldLaunchOneHk
                 BindLaunchHotkey(LAUNCH_ONE_HOTKEY, "one")
             }
@@ -1594,8 +1567,7 @@ OpenSettings(*) {
         LAUNCH_ALL_HOTKEY := newLaunchAllHk
         if (newLaunchAllHk != "") {
             if !BindLaunchHotkey(LAUNCH_ALL_HOTKEY, "all") {
-                MsgBox("The Launch All hotkey '" LAUNCH_ALL_HOTKEY "' could not be bound. Reverting to previous hotkey.",
-                    "EQ Switch — Warning", "Icon!")
+                ShowTip("⚠ Launch All hotkey '" LAUNCH_ALL_HOTKEY "' couldn't be bound — reverting", 5000)
                 LAUNCH_ALL_HOTKEY := oldLaunchAllHk
                 BindLaunchHotkey(LAUNCH_ALL_HOTKEY, "all")
             }
@@ -1619,9 +1591,7 @@ OpenSettings(*) {
                 try FileDelete(shortcutPath)
         }
 
-        SETTINGS_OPEN := false
-        g.Destroy()
-        ShowTip("Settings saved!")
+        ShowTip("Settings applied!")
     }
 
     } catch as err {
@@ -2410,6 +2380,7 @@ LaunchOne(*) {
 LaunchBoth(*) {
     global g_launchActive
     global EQ_EXE, EQ_ARGS, LAUNCH_DELAY, LAUNCH_FIX_DELAY, NUM_CLIENTS, TOOLTIP_MS, PROCESS_PRIORITY, CPU_AFFINITY, FIX_MODE
+    global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
     if g_launchActive {
         ShowTip("⚠ Launch already in progress!")
         return
@@ -2446,6 +2417,28 @@ LaunchBoth(*) {
     ; Async launch: each client launched via timer, UI stays responsive
     DoNextLaunch() {
         launchIdx++
+        ; In multimonitor mode, set eqclient.ini resolution to match the target monitor
+        ; so EQ renders at the correct size for that monitor
+        if (launchFixMode = "multimonitor") {
+            monCount := MonitorGetCount()
+            mon := Mod(launchIdx - 1, monCount) + 1
+            try {
+                MonitorGetWorkArea(mon, &mLeft, &mTop, &mRight, &mBottom)
+                try topOff := Integer(FIX_TOP_OFFSET)
+                catch
+                    topOff := 0
+                try botOff := Integer(FIX_BOTTOM_OFFSET)
+                catch
+                    botOff := 0
+                monW := mRight - mLeft
+                monH := (mBottom + botOff) - (mTop + topOff)
+                iniPath := eqDir "eqclient.ini"
+                if FileExist(iniPath) {
+                    IniWrite(monW, iniPath, "VideoMode", "WindowedWidth")
+                    IniWrite(monH, iniPath, "VideoMode", "WindowedHeight")
+                }
+            }
+        }
         ToolTip("🎮 Launching client " launchIdx " of " count "...")
         try {
             Run('"' launchExe '" ' launchArgs, eqDir, , &newPid)
