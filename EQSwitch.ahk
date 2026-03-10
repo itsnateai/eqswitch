@@ -2197,16 +2197,22 @@ ToggleFlashFromTray(*) {
 UpdateExtrasCheckmarks() {
     global BORDER_ENABLED, AUTO_MINIMIZE, FLASH_SUPPRESS
     try {
-        if (BORDER_ENABLED = "1") A_TrayMenu.Check("🔲  Active Border")
-        else A_TrayMenu.Uncheck("🔲  Active Border")
+        if (BORDER_ENABLED = "1")
+            A_TrayMenu.Check("🔲  Active Border")
+        else
+            A_TrayMenu.Uncheck("🔲  Active Border")
     }
     try {
-        if (AUTO_MINIMIZE = "1") A_TrayMenu.Check("📦  Auto-Minimize")
-        else A_TrayMenu.Uncheck("📦  Auto-Minimize")
+        if (AUTO_MINIMIZE = "1")
+            A_TrayMenu.Check("📦  Auto-Minimize")
+        else
+            A_TrayMenu.Uncheck("📦  Auto-Minimize")
     }
     try {
-        if (FLASH_SUPPRESS = "1") A_TrayMenu.Check("🔕  Flash Suppress")
-        else A_TrayMenu.Uncheck("🔕  Flash Suppress")
+        if (FLASH_SUPPRESS = "1")
+            A_TrayMenu.Check("🔕  Flash Suppress")
+        else
+            A_TrayMenu.Uncheck("🔕  Flash Suppress")
     }
 }
 
