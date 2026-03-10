@@ -266,6 +266,8 @@ LoadConfig() {
     PIP_WIDTH          := ReadKey("PIP_WIDTH",            "320")
     PIP_HEIGHT         := ReadKey("PIP_HEIGHT",           "180")
     PIP_OPACITY        := ReadKey("PIP_OPACITY",          "200")
+    PIP_X              := ReadKey("PIP_X",                "")
+    PIP_Y              := ReadKey("PIP_Y",                "")
     FLASH_SUPPRESS     := ReadKey("FLASH_SUPPRESS",       "0")
     AUTO_MINIMIZE      := ReadKey("AUTO_MINIMIZE",        "0")
     BORDER_ENABLED     := ReadKey("BORDER_ENABLED",       "0")
@@ -309,6 +311,8 @@ SaveConfig() {
     IniWrite(PIP_WIDTH, CFG_FILE, "EQSwitch", "PIP_WIDTH")
     IniWrite(PIP_HEIGHT, CFG_FILE, "EQSwitch", "PIP_HEIGHT")
     IniWrite(PIP_OPACITY, CFG_FILE, "EQSwitch", "PIP_OPACITY")
+    IniWrite(PIP_X, CFG_FILE, "EQSwitch", "PIP_X")
+    IniWrite(PIP_Y, CFG_FILE, "EQSwitch", "PIP_Y")
     IniWrite(FLASH_SUPPRESS,  CFG_FILE, "EQSwitch", "FLASH_SUPPRESS")
     IniWrite(AUTO_MINIMIZE,   CFG_FILE, "EQSwitch", "AUTO_MINIMIZE")
     IniWrite(BORDER_ENABLED,  CFG_FILE, "EQSwitch", "BORDER_ENABLED")
@@ -1615,8 +1619,17 @@ g_pipAltWindows := []
 g_pipZoomGui    := ""
 g_pipZoomThumb  := 0
 g_pipZoomIndex  := -1
-; PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY are loaded from config
-; (defaults: 320, 180, 200) — see LoadConfig()
+; PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY, PIP_X, PIP_Y are loaded from config
+; Ctrl+drag to reposition PiP; position saved on destroy
+OnMessage(0x0084, PiPHitTest)
+PiPHitTest(wParam, lParam, msg, hwnd) {
+    global g_pipGui
+    if (g_pipGui && hwnd = g_pipGui.Hwnd) {
+        if GetKeyState("Ctrl")
+            return 2   ; HTCAPTION — draggable
+        return -1      ; HTTRANSPARENT — click-through
+    }
+}
 
 TogglePiP(*) {
     global g_pipEnabled
@@ -1652,22 +1665,36 @@ CreatePiP(*) {
     if (altWindows.Length = 0)
         altWindows.Push(visible[2])  ; fallback: show second window
 
-    ; Create the overlay GUI — borderless, always on top, transparent background
-    pipG := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")  ; E0x20 = WS_EX_TRANSPARENT (click-through)
+    ; Create the overlay GUI — borderless, always on top
+    ; Click-through handled by WM_NCHITTEST (PiPHitTest); Ctrl+drag to move
+    pipG := Gui("+AlwaysOnTop -Caption +ToolWindow")
     pipG.BackColor := "000000"
 
     ; Calculate total size needed
     totalH := altWindows.Length * PIP_HEIGHT + (altWindows.Length - 1) * 4
     totalW := PIP_WIDTH
 
-    ; Position in bottom-right corner of primary monitor
-    try MonitorGetWorkArea(1, &mLeft, &mTop, &mRight, &mBottom)
-    catch {
-        mRight := A_ScreenWidth
-        mBottom := A_ScreenHeight
+    ; Use saved position if available, otherwise bottom-right corner
+    global PIP_X, PIP_Y
+    if (PIP_X != "" && PIP_Y != "") {
+        try {
+            posX := Integer(PIP_X)
+            posY := Integer(PIP_Y)
+        } catch {
+            posX := ""
+        }
+    } else {
+        posX := ""
     }
-    posX := mRight - totalW - 10
-    posY := mBottom - totalH - 10
+    if (posX = "") {
+        try MonitorGetWorkArea(1, &mLeft, &mTop, &mRight, &mBottom)
+        catch {
+            mRight := A_ScreenWidth
+            mBottom := A_ScreenHeight
+        }
+        posX := mRight - totalW - 10
+        posY := mBottom - totalH - 10
+    }
 
     pipG.Show("x" posX " y" posY " w" totalW " h" totalH " NoActivate")
 
@@ -1743,16 +1770,7 @@ RefreshPiP(*) {
         return
     }
 
-    ; Reposition PiP if monitor work area changed (resolution change, monitor disconnect)
-    try {
-        MonitorGetWorkArea(1, &mLeft, &mTop, &mRight, &mBottom)
-        totalH := g_pipThumbnails.Length * PIP_HEIGHT + (g_pipThumbnails.Length - 1) * 4
-        expectedX := mRight - PIP_WIDTH - 10
-        expectedY := mBottom - totalH - 10
-        WinGetPos(&curX, &curY, , , "ahk_id " g_pipGui.Hwnd)
-        if (curX != expectedX || curY != expectedY)
-            g_pipGui.Move(expectedX, expectedY)
-    }
+    ; Position is user-controlled (Ctrl+drag) — no auto-reposition
 
     ; If active EQ window changed, swap PiP thumbnail sources without rebuilding the GUI
     activeID := 0
@@ -1837,6 +1855,17 @@ SwapPiPSources(visible, activeID) {
 
 DestroyPiP(*) {
     global g_pipEnabled, g_pipGui, g_pipThumbnails, g_pipTimer, g_pipAltWindows
+    global PIP_X, PIP_Y
+
+    ; Save current position so it persists across toggles
+    if g_pipGui {
+        try {
+            WinGetPos(&px, &py, , , "ahk_id " g_pipGui.Hwnd)
+            PIP_X := String(px)
+            PIP_Y := String(py)
+            SaveConfig()
+        }
+    }
 
     ; Unregister all thumbnails
     for hThumb in g_pipThumbnails {
