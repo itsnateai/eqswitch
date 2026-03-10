@@ -24,6 +24,10 @@
 |:---:|:---:|
 | ![Video Settings](screenshots/videomode.png) | ![Process Manager](screenshots/cpuaffinity.png) |
 
+| Picture-in-Picture |
+|:---:|
+| ![Picture-in-Picture](screenshots/pip.png) |
+
 | Hidden Taskbar Mode |
 |:---:|
 | ![Hidden Taskbar](screenshots/hiddentaskbar.png) |
