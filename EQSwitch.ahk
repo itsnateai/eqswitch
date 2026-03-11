@@ -24,7 +24,7 @@ AppCleanup(reason, code) {
     return 0  ; allow exit
 }
 
-g_version        := "2.0"
+g_version        := "2.1"
 CFG_FILE         := A_ScriptDir "\eqswitch.cfg"
 EQ_TITLE         := "ahk_exe eqgame.exe"
 SETTINGS_OPEN    := false
@@ -1023,7 +1023,8 @@ BuildEverQuestSection(g, ctl) {
     g.AddText("xm y+6 Section", "EQ Executable:")
     g.AddText("x+40 yp", "Launch args:")
     ctl["argsEdit"] := g.AddEdit("x+4 yp-2 w100", EQ_ARGS)
-    ctl["exeEdit"] := g.AddEdit("xm y+3 w370", EQ_EXE)
+    ctl["exeEdit"] := g.AddEdit("xm y+3 w330", EQ_EXE)
+    ctl["exeEdit"].ToolTip := EQ_EXE
     g.AddButton("x+4 yp w66 h24", "Browse...").OnEvent("Click", (*) => BrowseFile(ctl["exeEdit"], "Select eqgame.exe", "Executable (*.exe)"))
 
     ; Process Manager & Video Settings
@@ -1039,21 +1040,27 @@ BuildLaunchSection(g, ctl) {
     global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY
     global DBLCLICK_LAUNCH, STARTUP_ENABLED, MIDCLICK_MODE, TRIPLECLICK_LAUNCH
     global MULTIMON_ENABLED, MULTIMON_HOTKEY
-    g.AddText("xm y+10 w440 cNavy", "🎮  Launch & Tray Options")
+
+    ; ── Launch Hotkeys ──
+    g.AddText("xm y+10 w440 cNavy", "⌨  Launch Hotkeys")
+    g.AddText("xm y+4 w440 h1 0x10")
+
+    g.AddText("xm y+6", "Launch One:")
+    ctl["launchOneHkCtrl"] := g.AddHotkey("x+4 yp-2 w90", LAUNCH_ONE_HOTKEY)
+    g.AddText("x+14 yp+2", "Launch All:")
+    ctl["launchAllHkCtrl"] := g.AddHotkey("x+4 yp-2 w90", LAUNCH_ALL_HOTKEY)
+
+    ; ── Monitor & Window Layout ──
+    g.AddText("xm y+10 w440 cNavy", "🖥  Monitor && Window Layout")
     g.AddText("xm y+4 w440 h1 0x10")
 
     g.AddText("xm y+6 Section", "Clients:")
     ctl["clientsEdit"] := g.AddEdit("x+4 yp-2 w40 Number", NUM_CLIENTS)
     g.AddUpDown("Range1-8", NUM_CLIENTS)
-    g.AddText("x+10 yp+2", "Single Monitor /")
-    ctl["multimonEnabled"] := g.AddCheckbox("x+2 yp" (MULTIMON_ENABLED = "1" ? " Checked" : ""), "Multi-Monitor")
-    ctl["multimonEnabled"].OnEvent("Click", ToggleMultimonField)
-    g.AddText("x+6 yp", "Toggle:")
-    ctl["multimonHkCtrl"] := g.AddHotkey("x+2 yp-2 w80", MULTIMON_HOTKEY)
-    ctl["multimonHkCtrl"].Enabled := (MULTIMON_ENABLED = "1") ? true : false
 
+    g.AddText("xm y+6", "Layout:")
     ctl["fixModes"] := ["single screen", "multimonitor"]
-    ctl["fixModeCombo"] := g.AddDropDownList("xm y+4 w100", ctl["fixModes"])
+    ctl["fixModeCombo"] := g.AddDropDownList("x+4 yp-2 w100", ctl["fixModes"])
     for i, mode in ctl["fixModes"] {
         if (mode = FIX_MODE)
             ctl["fixModeCombo"].Choose(i)
@@ -1061,7 +1068,7 @@ BuildLaunchSection(g, ctl) {
     if (ctl["fixModeCombo"].Value = 0)
         ctl["fixModeCombo"].Choose(1)
     ctl["fixModeCombo"].OnEvent("Change", (*) => (ctl["targetMonCombo"].Enabled := ctl["fixModes"][ctl["fixModeCombo"].Value] = "single screen"))
-    ctl["monLabel"] := g.AddText("x+10 yp+2", "Monitor:")
+    ctl["monLabel"] := g.AddText("x+10 yp+2", "Default monitor:")
     monCount := MonitorGetCount()
     monChoices := []
     Loop monCount
@@ -1075,14 +1082,19 @@ BuildLaunchSection(g, ctl) {
     ctl["targetMonCombo"].Choose(targetMon)
     ctl["targetMonCombo"].Enabled := (FIX_MODE = "single screen")
 
+    ctl["multimonEnabled"] := g.AddCheckbox("xm y+6" (MULTIMON_ENABLED = "1" ? " Checked" : ""), "Enable Multi-Monitor mode")
+    ctl["multimonEnabled"].OnEvent("Click", ToggleMultimonField)
+    g.AddText("x+10 yp+2", "Toggle:")
+    ctl["multimonHkCtrl"] := g.AddHotkey("x+4 yp-2 w80", MULTIMON_HOTKEY)
+    ctl["multimonHkCtrl"].Enabled := (MULTIMON_ENABLED = "1") ? true : false
+
     ToggleMultimonField(*) {
         ctl["multimonHkCtrl"].Enabled := ctl["multimonEnabled"].Value ? true : false
     }
 
-    g.AddText("xm y+6", "Launch One hotkey:")
-    ctl["launchOneHkCtrl"] := g.AddHotkey("x+4 yp-2 w90", LAUNCH_ONE_HOTKEY)
-    g.AddText("x+14 yp+2", "Launch All hotkey:")
-    ctl["launchAllHkCtrl"] := g.AddHotkey("x+4 yp-2 w90", LAUNCH_ALL_HOTKEY)
+    ; ── Tray & Startup ──
+    g.AddText("xm y+10 w440 cNavy", "🔧  Tray && Startup")
+    g.AddText("xm y+4 w440 h1 0x10")
 
     ctl["dblClickChk"] := g.AddCheckbox("xm y+6", "Tray double-click launches client")
     ctl["dblClickChk"].Value := (DBLCLICK_LAUNCH = "1") ? 1 : 0
@@ -1636,13 +1648,14 @@ OpenSettings(*) {
         if (FOCUS_HOTKEY != "")
             try Hotkey(FOCUS_HOTKEY, "Off")
 
-        ; Validate paths (non-blocking warnings)
+        ; Validate paths — collect warnings to show AFTER save confirmation
+        warnings := []
         if (ctl["exeEdit"].Value != "" && !FileExist(ctl["exeEdit"].Value))
-            ShowTip("⚠ EQ exe path doesn't exist — Launch won't work until fixed", 5000)
+            warnings.Push("⚠ EQ exe path doesn't exist — Launch won't work until fixed")
         if (ctl["ginaEdit"].Value != "" && !FileExist(ctl["ginaEdit"].Value))
-            ShowTip("⚠ Gina path doesn't exist — Open Gina won't work until fixed", 5000)
+            warnings.Push("⚠ Gina path doesn't exist — Open Gina won't work until fixed")
         if (ctl["notesEdit"].Value != "" && !FileExist(ctl["notesEdit"].Value))
-            ShowTip("⚠ Notes file doesn't exist — will be created on first use", 5000)
+            warnings.Push("⚠ Notes file doesn't exist — will be created on first use")
 
         EQ_EXE          := ctl["exeEdit"].Value
         EQ_ARGS         := ctl["argsEdit"].Value
@@ -1773,6 +1786,14 @@ OpenSettings(*) {
         if (FIX_MODE != oldFixMode || TARGET_MONITOR != oldTargetMon)
             FixWindows()
         ShowTip("Settings applied!")
+        ; Show collected path warnings after save confirmation (delayed so user sees both)
+        if (warnings.Length > 0) {
+            combinedWarning := ""
+            for w in warnings
+                combinedWarning .= w "`n"
+            combinedWarning := RTrim(combinedWarning, "`n")
+            SetTimer(() => ShowTip(combinedWarning, 6000), -1500)
+        }
     }
 
     } catch as err {
