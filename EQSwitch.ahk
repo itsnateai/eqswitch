@@ -1084,7 +1084,7 @@ BuildLaunchSection(g, ctl) {
 
     ctl["multimonEnabled"] := g.AddCheckbox("xm y+6" (MULTIMON_ENABLED = "1" ? " Checked" : ""), "Enable Multi-Monitor mode")
     ctl["multimonEnabled"].OnEvent("Click", ToggleMultimonField)
-    g.AddText("x+10 yp+2", "Toggle:")
+    g.AddText("x+10 yp+2", "Toggle on:")
     ctl["multimonHkCtrl"] := g.AddHotkey("x+4 yp-2 w80", MULTIMON_HOTKEY)
     ctl["multimonHkCtrl"].Enabled := (MULTIMON_ENABLED = "1") ? true : false
 
