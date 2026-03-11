@@ -1,6 +1,6 @@
 # ⚔ EQ Switch
 
-**EQ Switch** is a lightweight Windows tray utility for **Shards of Dalaya** that lets you instantly flip between multiple game clients with a single keypress — plus a suite of tools for managing your multibox session.
+**EQ Switch** is a lightweight Windows tray utility for **EQ** that lets you instantly flip between multiple game clients with a single keypress — plus a suite of tools for managing your multibox session.
 
 > Built with AutoHotkey v2. No installation required. Single `.exe`, no system footprint.
 
