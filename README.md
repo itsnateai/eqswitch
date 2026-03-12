@@ -1,4 +1,4 @@
-# EQSwitch v2.1.0 — C# Port
+# EQSwitch v2.2.0 — C# Port
 
 EverQuest multiboxing window manager for Shards of Dalaya.
 Ported from AHK v2 to C# (.NET 8) for better VirusTotal compatibility, type safety, and debuggability.
@@ -56,6 +56,7 @@ dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 
 ```
 EQSwitch.csproj          # Project config, single-file publish settings
+EQSwitch.sln             # Solution (main + test project)
 Program.cs               # Entry point, single-instance mutex, migration check
 Config/
   AppConfig.cs           # Strongly-typed config model (replaces INI)
@@ -63,6 +64,9 @@ Config/
   ConfigMigration.cs     # AHK eqswitch.cfg → JSON importer
 Core/
   NativeMethods.cs       # All Win32 P/Invoke declarations (50+ imports)
+  IWindowsApi.cs         # Testable Win32 interface abstraction
+  WindowsApi.cs          # Production IWindowsApi implementation
+  FileLogger.cs          # Persistent file logging (Info/Warn/Error)
   ProcessManager.cs      # EQ process detection and tracking
   WindowManager.cs       # Window positioning, grid arrange, swap, title bars
   AffinityManager.cs     # CPU affinity + priority management
@@ -77,6 +81,11 @@ UI/
   SettingsForm.cs        # Tabbed settings GUI
   VideoSettingsForm.cs   # eqclient.ini [VideoMode] editor
   PipOverlay.cs          # DWM thumbnail PiP overlay
+  DarkTheme.cs           # Shared dark theme colors and control factories
+  HelpForm.cs            # Help window with hotkey reference
+  FileOperations.cs      # File access helpers (log, config, GINA)
+  StartupManager.cs      # Run-at-startup registry management
+EQSwitch.Tests/          # 79 xUnit tests (Moq-based)
 ```
 
 ## Config
