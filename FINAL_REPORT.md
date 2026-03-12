@@ -71,7 +71,7 @@ Ship a ReadKey() helper that wraps IniRead with defaults and try/catch. When ren
 
 | File | Purpose |
 |------|---------|
-| eqswitch.ahk | Main application source (2,646 lines) |
+| EQSwitch.ahk | Main application source (~2,640 lines) |
 | eqswitch.ico | Application icon |
 | eqswitch.cfg | User config (gitignored) |
 | CHANGELOG.md | Full version history (v1.0 — v2.1) |
