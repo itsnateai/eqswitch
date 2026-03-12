@@ -126,9 +126,9 @@ Settings uses a pending/staged approach:
 - `eqclient.ini` also uses ANSI encoding — writing UTF-8 can corrupt it.
 
 ## Audit Status (v2.1.0)
-- **33 findings total**, 12 fixed (all 4 P0, 6/8 P1, 2/10 P2)
-- **21 remaining**: 2 P1, 8 P2, 6 P3, 5 P4 — all non-critical
-- Key remaining items: keyboard hook blocking potential (P1-4), RefreshClients race condition (P1-5), affinity mask validation (P2-1), various minor resource leaks
+- **v2 deep audit (2026-03-12):** 28 verified findings (P0:4, P1:9, P2:8, P3:4, P4:3)
+- **Critical P0s:** LL hook callback blocking (kills hook permanently), `]` key swallowed globally, PiP Ctrl+drag broken by WS_EX_TRANSPARENT, eqclient.ini UTF-8 corruption
+- **Previous v1 audit:** 33 items, 12 fixed — those fixes remain valid
 - Full details in `AUDIT_TASKS.md`
 
 ## Conventions
