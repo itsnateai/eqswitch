@@ -37,3 +37,4 @@ $RECYCLE.BIN/
 # Merge/patch artifacts
 *.orig
 *.rej
+ASSUMPTIONS.md
