@@ -114,7 +114,7 @@ public class KeyboardHookManager : IDisposable
             if (hwnd == IntPtr.Zero) return false;
 
             NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
-            var proc = Process.GetProcessById((int)pid);
+            using var proc = Process.GetProcessById((int)pid);
             return proc.ProcessName.Equals(processName, StringComparison.OrdinalIgnoreCase);
         }
         catch

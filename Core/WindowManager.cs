@@ -247,10 +247,10 @@ public class WindowManager
     /// </summary>
     public void RemoveTitleBar(IntPtr hwnd)
     {
-        int style = NativeMethods.GetWindowLong(hwnd, NativeMethods.GWL_STYLE);
+        long style = NativeMethods.GetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE).ToInt64();
         style &= ~NativeMethods.WS_CAPTION;
         style &= ~NativeMethods.WS_THICKFRAME;
-        NativeMethods.SetWindowLong(hwnd, NativeMethods.GWL_STYLE, style);
+        NativeMethods.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, (IntPtr)style);
 
         NativeMethods.SetWindowPos(
             hwnd, IntPtr.Zero, 0, 0, 0, 0,
@@ -263,10 +263,10 @@ public class WindowManager
     /// </summary>
     public void RestoreTitleBar(IntPtr hwnd)
     {
-        int style = NativeMethods.GetWindowLong(hwnd, NativeMethods.GWL_STYLE);
+        long style = NativeMethods.GetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE).ToInt64();
         style |= NativeMethods.WS_CAPTION;
         style |= NativeMethods.WS_THICKFRAME;
-        NativeMethods.SetWindowLong(hwnd, NativeMethods.GWL_STYLE, style);
+        NativeMethods.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, (IntPtr)style);
 
         NativeMethods.SetWindowPos(
             hwnd, IntPtr.Zero, 0, 0, 0, 0,

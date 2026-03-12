@@ -39,7 +39,7 @@ public class EQClient
     {
         try
         {
-            var proc = Process.GetProcessById(ProcessId);
+            using var proc = Process.GetProcessById(ProcessId);
             return !proc.HasExited;
         }
         catch

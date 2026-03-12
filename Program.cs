@@ -61,6 +61,10 @@ static class Program
 
             var processManager = new ProcessManager(config);
             var trayApp = new TrayManager(config, processManager);
+
+            // Ensure cleanup on any exit path (not just tray menu Exit)
+            Application.ApplicationExit += (_, _) => trayApp.Dispose();
+
             trayApp.Initialize();
 
             Application.Run();

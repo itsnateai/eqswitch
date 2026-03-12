@@ -76,10 +76,12 @@ public class SettingsForm : Form
 
     // ─── Characters tab controls
     private ListView _charListView = null!;
+    private List<CharacterProfile> _pendingCharacters = null!;
 
     public SettingsForm(AppConfig config, Action<AppConfig> onApply)
     {
         _config = config;
+        _pendingCharacters = new List<CharacterProfile>(config.Characters);
         _onApply = onApply;
         InitializeForm();
     }
@@ -419,7 +421,7 @@ public class SettingsForm : Form
 
     private void ExportCharacters()
     {
-        if (_config.Characters.Count == 0)
+        if (_pendingCharacters.Count == 0)
         {
             MessageBox.Show("No character profiles to export.", "Export", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
@@ -436,9 +438,9 @@ public class SettingsForm : Form
         {
             try
             {
-                var json = JsonSerializer.Serialize(_config.Characters, new JsonSerializerOptions { WriteIndented = true });
+                var json = JsonSerializer.Serialize(_pendingCharacters, new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(sfd.FileName, json);
-                Debug.WriteLine($"Exported {_config.Characters.Count} characters to {sfd.FileName}");
+                Debug.WriteLine($"Exported {_pendingCharacters.Count} characters to {sfd.FileName}");
             }
             catch (Exception ex)
             {
@@ -464,7 +466,7 @@ public class SettingsForm : Form
                 var imported = JsonSerializer.Deserialize<List<CharacterProfile>>(json);
                 if (imported != null && imported.Count > 0)
                 {
-                    _config.Characters = imported;
+                    _pendingCharacters = imported;
                     RefreshCharacterList();
                     Debug.WriteLine($"Imported {imported.Count} characters from {ofd.FileName}");
                 }
@@ -480,7 +482,7 @@ public class SettingsForm : Form
     private void RefreshCharacterList()
     {
         _charListView.Items.Clear();
-        foreach (var c in _config.Characters)
+        foreach (var c in _pendingCharacters)
         {
             var item = new ListViewItem(c.Name);
             item.SubItems.Add(c.Class);
@@ -499,7 +501,7 @@ public class SettingsForm : Form
         _txtExeName.Text = _config.Launch.ExeName;
         _txtArgs.Text = _config.Launch.Arguments;
         _txtProcessName.Text = _config.EQProcessName;
-        _nudPollingInterval.Value = _config.PollingIntervalMs;
+        _nudPollingInterval.Value = Math.Clamp(_config.PollingIntervalMs, (int)_nudPollingInterval.Minimum, (int)_nudPollingInterval.Maximum);
 
         // Hotkeys
         _txtSwitchKey.Text = _config.Hotkeys.SwitchKey;
@@ -512,10 +514,10 @@ public class SettingsForm : Form
 
         // Layout
         _cboLayoutMode.SelectedItem = _config.Layout.Mode;
-        _nudColumns.Value = _config.Layout.Columns;
-        _nudRows.Value = _config.Layout.Rows;
-        _nudTargetMonitor.Value = _config.Layout.TargetMonitor;
-        _nudTopOffset.Value = _config.Layout.TopOffset;
+        _nudColumns.Value = ClampNud(_nudColumns, _config.Layout.Columns);
+        _nudRows.Value = ClampNud(_nudRows, _config.Layout.Rows);
+        _nudTargetMonitor.Value = ClampNud(_nudTargetMonitor, _config.Layout.TargetMonitor);
+        _nudTopOffset.Value = ClampNud(_nudTopOffset, _config.Layout.TopOffset);
         _chkRemoveTitleBars.Checked = _config.Layout.RemoveTitleBars;
 
         // Affinity
@@ -524,13 +526,13 @@ public class SettingsForm : Form
         _txtBackgroundMask.Text = _config.Affinity.BackgroundMask.ToString("X");
         _cboActivePriority.SelectedItem = _config.Affinity.ActivePriority;
         _cboBackgroundPriority.SelectedItem = _config.Affinity.BackgroundPriority;
-        _nudRetryCount.Value = _config.Affinity.LaunchRetryCount;
-        _nudRetryDelay.Value = _config.Affinity.LaunchRetryDelayMs;
+        _nudRetryCount.Value = ClampNud(_nudRetryCount, _config.Affinity.LaunchRetryCount);
+        _nudRetryDelay.Value = ClampNud(_nudRetryDelay, _config.Affinity.LaunchRetryDelayMs);
 
         // Launch
-        _nudNumClients.Value = _config.Launch.NumClients;
-        _nudLaunchDelay.Value = _config.Launch.LaunchDelayMs;
-        _nudFixDelay.Value = _config.Launch.FixDelayMs;
+        _nudNumClients.Value = ClampNud(_nudNumClients, _config.Launch.NumClients);
+        _nudLaunchDelay.Value = ClampNud(_nudLaunchDelay, _config.Launch.LaunchDelayMs);
+        _nudFixDelay.Value = ClampNud(_nudFixDelay, _config.Launch.FixDelayMs);
 
         // Paths
         _txtGinaPath.Text = _config.GinaPath;
@@ -589,7 +591,8 @@ public class SettingsForm : Form
                 ToggleMultiMonitor = _txtToggleMultiMon.Text.Trim(),
                 LaunchOne = _txtLaunchOne.Text.Trim(),
                 LaunchAll = _txtLaunchAll.Text.Trim(),
-                MultiMonitorEnabled = _chkMultiMonEnabled.Checked
+                MultiMonitorEnabled = _chkMultiMonEnabled.Checked,
+                DirectSwitchKeys = _config.Hotkeys.DirectSwitchKeys
             },
             Launch = new LaunchConfig
             {
@@ -613,7 +616,7 @@ public class SettingsForm : Form
             },
             GinaPath = _txtGinaPath.Text.Trim(),
             NotesPath = _txtNotesPath.Text.Trim(),
-            Characters = _config.Characters // preserve existing
+            Characters = _pendingCharacters
         };
 
         _onApply(newConfig);
@@ -627,6 +630,9 @@ public class SettingsForm : Form
             return result;
         return fallback;
     }
+
+    private static decimal ClampNud(NumericUpDown nud, decimal value) =>
+        Math.Clamp(value, nud.Minimum, nud.Maximum);
 
     // ─── Control Factories ────────────────────────────────────────
 
