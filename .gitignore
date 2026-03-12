@@ -33,3 +33,7 @@ $RECYCLE.BIN/
 # Any leftover temp files
 *.tmp
 *.bak
+
+# Merge/patch artifacts
+*.orig
+*.rej
