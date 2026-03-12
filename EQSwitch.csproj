@@ -23,7 +23,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- System.Text.Json is built-in for .NET 8 -->
+    <Content Include="eqswitch.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

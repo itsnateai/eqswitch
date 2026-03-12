@@ -31,29 +31,36 @@ static class Program
 
         try
         {
-            // Load or create config
             var config = ConfigManager.Load();
 
-            // First-run experience
+            // First-run: try migrating from AHK config, then show EQ path picker
             if (config.IsFirstRun)
             {
-                var firstRun = new FirstRunDialog();
-                if (firstRun.ShowDialog() != DialogResult.OK)
-                    return;
+                var migrated = ConfigMigration.TryImportFromAhk();
+                if (migrated != null)
+                {
+                    config = migrated;
+                    ConfigManager.Save(config);
+                    MessageBox.Show(
+                        "Imported settings from eqswitch.cfg (AHK version).\nCheck Settings to verify everything looks right.",
+                        "EQSwitch — Migration",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+                else
+                {
+                    using var dialog = new FirstRunDialog();
+                    if (dialog.ShowDialog() != DialogResult.OK)
+                        return; // User cancelled — don't start
 
-                config.IsFirstRun = false;
-                config.EQPath = firstRun.SelectedEQPath;
-                ConfigManager.Save(config);
+                    config.EQPath = dialog.SelectedEQPath;
+                    config.IsFirstRun = false;
+                    ConfigManager.Save(config);
+                }
             }
 
-            // Initialize core managers
             var processManager = new ProcessManager(config);
-            var windowManager = new WindowManager(config);
-            var affinityManager = new AffinityManager(config);
-            var hotkeyManager = new HotkeyManager();
-
-            // Start the tray application
-            var trayApp = new TrayManager(config, processManager, windowManager, affinityManager, hotkeyManager);
+            var trayApp = new TrayManager(config, processManager);
             trayApp.Initialize();
 
             Application.Run();

@@ -21,12 +21,23 @@ public class AppConfig
     // Hotkeys
     public HotkeyConfig Hotkeys { get; set; } = new();
 
+    // Launching
+    public LaunchConfig Launch { get; set; } = new();
+
+    // Picture-in-Picture
+    public PipConfig Pip { get; set; } = new();
+
     // Characters
     public List<CharacterProfile> Characters { get; set; } = new();
+
+    // Paths
+    public string GinaPath { get; set; } = "";
+    public string NotesPath { get; set; } = "";
 
     // Misc
     public bool ShowTooltipErrors { get; set; } = true;
     public bool MinimizeToTray { get; set; } = true;
+    public bool RunAtStartup { get; set; } = false;
     public int PollingIntervalMs { get; set; } = 500;
 }
 
@@ -37,6 +48,17 @@ public class WindowLayout
     public bool RemoveTitleBars { get; set; } = false;
     public bool SnapToMonitor { get; set; } = true;
     public int TargetMonitor { get; set; } = 0; // 0 = primary
+
+    /// <summary>
+    /// Pixel offset added to Y position when arranging windows.
+    /// Equivalent to AHK's FIX_TOP_OFFSET — adjusts for taskbar/title bars/bezels.
+    /// </summary>
+    public int TopOffset { get; set; } = 0;
+
+    /// <summary>
+    /// Current layout mode: "single" (all on one monitor) or "multimonitor" (one per monitor).
+    /// </summary>
+    public string Mode { get; set; } = "single";
 }
 
 public class AffinityConfig
@@ -54,19 +76,134 @@ public class AffinityConfig
     /// Default: E-cores on a 12th+ gen Intel (cores 8-15 = 0xFF00)
     /// </summary>
     public long BackgroundMask { get; set; } = 0xFF00;
+
+    /// <summary>
+    /// Process priority for the active EQ client.
+    /// Values: "Normal", "AboveNormal", "High"
+    /// </summary>
+    public string ActivePriority { get; set; } = "AboveNormal";
+
+    /// <summary>
+    /// Process priority for background EQ clients.
+    /// </summary>
+    public string BackgroundPriority { get; set; } = "Normal";
+
+    /// <summary>
+    /// Number of retry attempts when applying affinity to a newly launched client.
+    /// EQ resets its affinity shortly after startup, so we re-apply.
+    /// </summary>
+    public int LaunchRetryCount { get; set; } = 3;
+
+    /// <summary>
+    /// Delay in ms between retry attempts.
+    /// </summary>
+    public int LaunchRetryDelayMs { get; set; } = 2000;
 }
 
 public class HotkeyConfig
 {
     /// <summary>
     /// Hotkey strings use the format: "Modifier+Key" e.g. "Alt+1", "Ctrl+F1"
-    /// Parsed by HotkeyManager at registration time.
+    /// Single keys (no modifier) like "\" or "]" use a low-level keyboard hook instead.
     /// </summary>
-    public string CycleNextClient { get; set; } = "Alt+Tab";
-    public string CyclePrevClient { get; set; } = "Alt+Shift+Tab";
+
+    /// <summary>
+    /// Cycle to next EQ client — only fires when EQ is focused (like AHK HotIfWinActive).
+    /// Uses low-level keyboard hook since it's a single key with no modifier.
+    /// </summary>
+    public string SwitchKey { get; set; } = @"\";
+
+    /// <summary>
+    /// Global switch — if EQ is focused, cycles next. If not, brings EQ to front.
+    /// Uses low-level keyboard hook since it's a single key with no modifier.
+    /// </summary>
+    public string GlobalSwitchKey { get; set; } = "]";
+
+    /// <summary>
+    /// Alt+1 through Alt+6 — jump directly to a client by slot number.
+    /// Uses RegisterHotKey (modifier-based).
+    /// </summary>
     public List<string> DirectSwitchKeys { get; set; } = new() { "Alt+1", "Alt+2", "Alt+3", "Alt+4", "Alt+5", "Alt+6" };
+
+    /// <summary>Arrange all EQ windows in a grid layout.</summary>
     public string ArrangeWindows { get; set; } = "Alt+G";
-    public string ToggleNotes { get; set; } = "MButton"; // Middle-click
+
+    /// <summary>Toggle single-screen / multi-monitor mode.</summary>
+    public string ToggleMultiMonitor { get; set; } = "Alt+M";
+
+    /// <summary>Launch one EQ client.</summary>
+    public string LaunchOne { get; set; } = "";
+
+    /// <summary>Launch all configured EQ clients.</summary>
+    public string LaunchAll { get; set; } = "";
+
+    public bool MultiMonitorEnabled { get; set; } = false;
+}
+
+public class LaunchConfig
+{
+    /// <summary>EQ executable name (usually "eqgame.exe").</summary>
+    public string ExeName { get; set; } = "eqgame.exe";
+
+    /// <summary>Command-line arguments for the EQ client (e.g. "patchme").</summary>
+    public string Arguments { get; set; } = "patchme";
+
+    /// <summary>Number of clients to launch with "Launch All" (1-8).</summary>
+    public int NumClients { get; set; } = 2;
+
+    /// <summary>Delay in ms between launching each client.</summary>
+    public int LaunchDelayMs { get; set; } = 3000;
+
+    /// <summary>Delay in ms after all clients launched before arranging windows.</summary>
+    public int FixDelayMs { get; set; } = 15000;
+}
+
+public class PipConfig
+{
+    public bool Enabled { get; set; } = false;
+
+    /// <summary>Size preset: "Small", "Medium", "Large", "XL", "XXL", "Custom"</summary>
+    public string SizePreset { get; set; } = "Medium";
+
+    /// <summary>Custom width (used when SizePreset = "Custom").</summary>
+    public int CustomWidth { get; set; } = 320;
+
+    /// <summary>Custom height (used when SizePreset = "Custom").</summary>
+    public int CustomHeight { get; set; } = 240;
+
+    /// <summary>Opacity (0-255). 255 = fully opaque.</summary>
+    public byte Opacity { get; set; } = 200;
+
+    /// <summary>Show colored border around PiP windows.</summary>
+    public bool ShowBorder { get; set; } = true;
+
+    /// <summary>Border color name: "Green", "Blue", "Red", "Black".</summary>
+    public string BorderColor { get; set; } = "Green";
+
+    /// <summary>Max number of PiP windows to show (1-3).</summary>
+    public int MaxWindows { get; set; } = 3;
+
+    /// <summary>Saved positions (X,Y pairs per slot).</summary>
+    public List<int[]> SavedPositions { get; set; } = new();
+
+    public (int w, int h) GetSize() => SizePreset switch
+    {
+        "Small" => (200, 150),
+        "Medium" => (320, 240),
+        "Large" => (400, 300),
+        "XL" => (480, 360),
+        "XXL" => (640, 480),
+        _ => (CustomWidth, CustomHeight)
+    };
+
+    public Color GetBorderColor() => BorderColor switch
+    {
+        "Green" => Color.FromArgb(0, 255, 0),
+        "Blue" => Color.FromArgb(0, 128, 255),
+        "Red" => Color.FromArgb(255, 0, 0),
+        "Black" => Color.Black,
+        _ => Color.FromArgb(0, 255, 0)
+    };
 }
 
 public class CharacterProfile

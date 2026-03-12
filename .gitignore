@@ -21,3 +21,8 @@ Thumbs.db
 ## EQSwitch runtime files
 eqswitch-config.json
 backups/
+
+## Task Management
+AUDIT_TASKS.md
+TODO_LIST.md
+SCHEDULED_TASKS.md

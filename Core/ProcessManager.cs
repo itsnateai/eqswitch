@@ -43,6 +43,11 @@ public class ProcessManager : IDisposable
     public void StartPolling() => _pollTimer.Start();
     public void StopPolling() => _pollTimer.Stop();
 
+    public void UpdatePollingInterval(int intervalMs)
+    {
+        _pollTimer.Interval = intervalMs;
+    }
+
     /// <summary>
     /// Scan for EQ processes and update the client list.
     /// </summary>

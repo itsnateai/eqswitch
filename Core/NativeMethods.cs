@@ -63,7 +63,48 @@ internal static class NativeMethods
     public static extern bool GetProcessAffinityMask(IntPtr hProcess, out IntPtr lpProcessAffinityMask, out IntPtr lpSystemAffinityMask);
 
     [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetPriorityClass(IntPtr hProcess, uint dwPriorityClass);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint GetPriorityClass(IntPtr hProcess);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool CloseHandle(IntPtr hObject);
+
+    // ─── Keyboard Hook ────────────────────────────────────────────────
+
+    public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr GetModuleHandle(string? lpModuleName);
+
+    // ─── Window State ──────────────────────────────────────────────
+
+    [DllImport("user32.dll")]
+    public static extern bool IsHungAppWindow(IntPtr hWnd);
+
+    // ─── DWM Thumbnail (PiP) ────────────────────────────────────────
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmRegisterThumbnail(IntPtr destHwnd, IntPtr srcHwnd, out IntPtr thumbnailId);
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmUnregisterThumbnail(IntPtr thumbnailId);
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmUpdateThumbnailProperties(IntPtr thumbnailId, ref DWM_THUMBNAIL_PROPERTIES props);
+
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmQueryThumbnailSourceSize(IntPtr thumbnailId, out SIZE size);
 
     // ─── Monitor/Display ────────────────────────────────────────────
 
@@ -96,12 +137,29 @@ internal static class NativeMethods
     public const uint PROCESS_SET_INFORMATION = 0x0200;
     public const uint PROCESS_QUERY_INFORMATION = 0x0400;
 
+    // Process priority classes
+    public const uint IDLE_PRIORITY_CLASS = 0x00000040;
+    public const uint BELOW_NORMAL_PRIORITY_CLASS = 0x00004000;
+    public const uint NORMAL_PRIORITY_CLASS = 0x00000020;
+    public const uint ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000;
+    public const uint HIGH_PRIORITY_CLASS = 0x00000080;
+    public const uint REALTIME_PRIORITY_CLASS = 0x00000100;
+
     public const uint MOD_ALT = 0x0001;
     public const uint MOD_CONTROL = 0x0002;
     public const uint MOD_SHIFT = 0x0004;
     public const uint MOD_NOREPEAT = 0x4000;
 
     public const int WM_HOTKEY = 0x0312;
+
+    public const int WH_KEYBOARD_LL = 13;
+    public const int WM_KEYDOWN = 0x0100;
+    public const int WM_SYSKEYDOWN = 0x0104;
+
+    // OEM keys (US keyboard layout)
+    public const uint VK_OEM_5 = 0xDC;   // '\' key
+    public const uint VK_OEM_6 = 0xDD;   // ']' key
+    public const uint VK_OEM_4 = 0xDB;   // '[' key
 
     // ─── Structures ─────────────────────────────────────────────────
 
@@ -121,4 +179,46 @@ internal static class NativeMethods
         public RECT rcWork;
         public uint dwFlags;
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KBDLLHOOKSTRUCT
+    {
+        public uint vkCode;
+        public uint scanCode;
+        public uint flags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct DWM_THUMBNAIL_PROPERTIES
+    {
+        public uint dwFlags;
+        public RECT rcDestination;
+        public RECT rcSource;
+        public byte opacity;
+        public bool fVisible;
+        public bool fSourceClientAreaOnly;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SIZE
+    {
+        public int cx;
+        public int cy;
+    }
+
+    // DWM_THUMBNAIL_PROPERTIES flags
+    public const uint DWM_TNP_RECTDESTINATION = 0x00000001;
+    public const uint DWM_TNP_RECTSOURCE = 0x00000002;
+    public const uint DWM_TNP_OPACITY = 0x00000004;
+    public const uint DWM_TNP_VISIBLE = 0x00000008;
+    public const uint DWM_TNP_SOURCECLIENTAREAONLY = 0x00000010;
+
+    // Extended window styles for click-through
+    public const int WS_EX_TRANSPARENT = 0x00000020;
+    public const int WS_EX_LAYERED = 0x00080000;
+    public const int WS_EX_TOOLWINDOW = 0x00000080;
+    public const int WS_EX_TOPMOST = 0x00000008;
+    public const int WS_EX_NOACTIVATE = 0x08000000;
 }
