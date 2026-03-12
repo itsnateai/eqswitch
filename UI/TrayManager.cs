@@ -66,7 +66,13 @@ public class TrayManager : IDisposable
 
         BuildContextMenu();
 
-        _processManager.ClientListChanged += (_, _) => { UpdateClientMenu(); UpdateTrayText(); };
+        _processManager.ClientListChanged += (_, _) =>
+        {
+            UpdateClientMenu();
+            UpdateTrayText();
+            // Update cached PIDs for keyboard hook process filter
+            _keyboardHook.UpdateFilteredPids(_processManager.Clients.Select(c => c.ProcessId));
+        };
         _processManager.ClientDiscovered += (_, c) =>
         {
             ShowBalloon($"Discovered: {c}");
@@ -156,14 +162,14 @@ public class TrayManager : IDisposable
                 }
             }
 
-            // Global Switch Key (default ']') — works from any app
+            // Global Switch Key (default ']') — works from any app, but only when EQ clients exist
             if (!string.IsNullOrEmpty(hk.GlobalSwitchKey))
             {
                 uint vk = HotkeyManager.ResolveVK(hk.GlobalSwitchKey);
                 if (vk != 0)
                 {
-                    _keyboardHook.Register(vk, OnGlobalSwitchKey);
-                    Debug.WriteLine($"Hook: GlobalSwitchKey '{hk.GlobalSwitchKey}' (VK 0x{vk:X2}) — global");
+                    _keyboardHook.Register(vk, OnGlobalSwitchKey, requireClients: true);
+                    Debug.WriteLine($"Hook: GlobalSwitchKey '{hk.GlobalSwitchKey}' (VK 0x{vk:X2}) — global (requires clients)");
                 }
             }
         }

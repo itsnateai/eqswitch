@@ -68,7 +68,9 @@ public class PipOverlay : Form
     }
 
     /// <summary>
-    /// Make the window click-through and layered (for transparency).
+    /// Make the window layered and non-activating.
+    /// Click-through is handled dynamically via WndProc/WM_NCHITTEST
+    /// so that Ctrl+drag still works for repositioning.
     /// </summary>
     protected override CreateParams CreateParams
     {
@@ -76,12 +78,31 @@ public class PipOverlay : Form
         {
             var cp = base.CreateParams;
             cp.ExStyle |= NativeMethods.WS_EX_LAYERED
-                        | NativeMethods.WS_EX_TRANSPARENT
                         | NativeMethods.WS_EX_TOOLWINDOW
                         | NativeMethods.WS_EX_TOPMOST
                         | NativeMethods.WS_EX_NOACTIVATE;
             return cp;
         }
+    }
+
+    /// <summary>
+    /// Selective click-through: transparent by default, but accepts clicks when Ctrl is held.
+    /// </summary>
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == NativeMethods.WM_NCHITTEST)
+        {
+            // If Ctrl is held, allow the click (for drag repositioning)
+            if ((NativeMethods.GetAsyncKeyState(NativeMethods.VK_CONTROL) & 0x8000) != 0)
+            {
+                m.Result = (IntPtr)NativeMethods.HTCLIENT;
+                return;
+            }
+            // Otherwise, pass clicks through to the window underneath
+            m.Result = (IntPtr)NativeMethods.HTTRANSPARENT;
+            return;
+        }
+        base.WndProc(ref m);
     }
 
     /// <summary>
