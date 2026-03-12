@@ -34,7 +34,8 @@ public class HotkeyManager : IDisposable
             return -1;
         }
 
-        int id = _nextId++;
+        int id = _nextId;
+        _nextId = _nextId < int.MaxValue ? _nextId + 1 : 1;
 
         // MOD_NOREPEAT prevents repeated firing when key is held
         modifiers |= NativeMethods.MOD_NOREPEAT;
