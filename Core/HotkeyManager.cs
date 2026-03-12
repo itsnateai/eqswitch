@@ -144,6 +144,11 @@ public class HotkeyManager : IDisposable
         "TAB" => 0x09, "ESCAPE" or "ESC" => 0x1B, "SPACE" => 0x20,
         "BACKQUOTE" or "`" or "TILDE" => 0xC0,
 
+        // OEM keys (US keyboard layout)
+        @"\" or "BACKSLASH" or "OEM_5" => NativeMethods.VK_OEM_5,
+        "]" or "OEM_6" => NativeMethods.VK_OEM_6,
+        "[" or "OEM_4" => NativeMethods.VK_OEM_4,
+
         // Numpad
         "NUMPAD0" => 0x60, "NUMPAD1" => 0x61, "NUMPAD2" => 0x62,
         "NUMPAD3" => 0x63, "NUMPAD4" => 0x64, "NUMPAD5" => 0x65,
@@ -152,6 +157,12 @@ public class HotkeyManager : IDisposable
 
         _ => 0
     };
+
+    /// <summary>
+    /// Resolve a key name string to a VK code. Used by KeyboardHookManager
+    /// to register single-key bindings from config strings.
+    /// </summary>
+    public static uint ResolveVK(string keyName) => KeyNameToVK(keyName.Trim().ToUpperInvariant());
 
     public void Dispose()
     {
