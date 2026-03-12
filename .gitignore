@@ -1,0 +1,23 @@
+## .NET / C#
+bin/
+obj/
+*.user
+*.suo
+*.userprefs
+*.sln.docstates
+*.dll
+*.exe
+*.pdb
+
+## IDE
+.vs/
+.vscode/
+*.code-workspace
+
+## OS
+Thumbs.db
+.DS_Store
+
+## EQSwitch runtime files
+eqswitch-config.json
+backups/
