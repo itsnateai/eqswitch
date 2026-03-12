@@ -2,6 +2,20 @@
 
 All notable changes to EQ Switch are documented here.
 
+## v2.2 — 2026-03-12
+
+### Fixed
+- **Uninitialized global** — `GetClientsByTitle` was reading a global variable before it was assigned, causing silent null behaviour on first call. Explicit initialization added.
+
+### Removed
+- **Dead code cleanup** — removed `HidePiPBorder` and unused `FIX_BOTTOM_OFFSET` global that were left over from earlier refactoring.
+
+## v2.1 — 2026-03-11
+
+### Changed
+- **Settings label** — multimon hotkey label renamed from "Multimon key:" to "Toggle on:" for clarity.
+- **README** — updated to be game-agnostic (removed Shards of Dalaya reference, generalized wording).
+
 ## v2.0 — 2026-03-10
 
 ### New Features
