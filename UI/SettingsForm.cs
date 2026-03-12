@@ -14,14 +14,6 @@ public class SettingsForm : Form
     private readonly AppConfig _config;
     private readonly Action<AppConfig> _onApply;
 
-    // Dark theme colors
-    private static readonly Color BgDark = Color.FromArgb(30, 30, 30);
-    private static readonly Color BgMedium = Color.FromArgb(45, 45, 45);
-    private static readonly Color BgInput = Color.FromArgb(50, 50, 50);
-    private static readonly Color FgWhite = Color.White;
-    private static readonly Color FgGray = Color.FromArgb(180, 180, 180);
-    private static readonly Color AccentGreen = Color.FromArgb(0, 120, 80);
-
     // ─── General tab controls
     private TextBox _txtEQPath = null!;
     private TextBox _txtExeName = null!;
@@ -93,8 +85,8 @@ public class SettingsForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor = BgDark;
-        ForeColor = FgWhite;
+        BackColor = DarkTheme.BgDark;
+        ForeColor = DarkTheme.FgWhite;
         Font = new Font("Segoe UI", 9);
 
         var tabs = new TabControl
@@ -117,16 +109,16 @@ public class SettingsForm : Form
         {
             Dock = DockStyle.Bottom,
             Height = 50,
-            BackColor = BgDark
+            BackColor = DarkTheme.BgDark
         };
 
-        var btnSave = MakeButton("Save", AccentGreen, 200, 10);
+        var btnSave = DarkTheme.MakeButton("Save", DarkTheme.AccentGreen, 200, 10);
         btnSave.Click += (_, _) => { ApplySettings(); ConfigManager.Save(_config); Close(); };
 
-        var btnApply = MakeButton("Apply", BgMedium, 290, 10);
+        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 290, 10);
         btnApply.Click += (_, _) => { ApplySettings(); ConfigManager.Save(_config); };
 
-        var btnClose = MakeButton("Close", BgMedium, 380, 10);
+        var btnClose = DarkTheme.MakeButton("Close", DarkTheme.BgMedium, 380, 10);
         btnClose.Click += (_, _) => Close();
 
         buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnClose });
@@ -141,12 +133,12 @@ public class SettingsForm : Form
 
     private TabPage BuildGeneralTab()
     {
-        var page = MakeTabPage("General");
+        var page = DarkTheme.MakeTabPage("General");
         int y = 15;
 
-        AddLabel(page, "EverQuest Path:", 15, y);
-        _txtEQPath = AddTextBox(page, 15, y += 22, 350);
-        var btnBrowse = MakeButton("Browse...", BgMedium, 375, y - 2);
+        DarkTheme.AddLabel(page, "EverQuest Path:", 15, y);
+        _txtEQPath = DarkTheme.AddTextBox(page, 15, y += 22, 350);
+        var btnBrowse = DarkTheme.MakeButton("Browse...", DarkTheme.BgMedium, 375, y - 2);
         btnBrowse.Size = new Size(80, 26);
         btnBrowse.Click += (_, _) =>
         {
@@ -155,103 +147,103 @@ public class SettingsForm : Form
         };
         page.Controls.Add(btnBrowse);
 
-        AddLabel(page, "Executable Name:", 15, y += 35);
-        _txtExeName = AddTextBox(page, 15, y += 22, 200);
+        DarkTheme.AddLabel(page, "Executable Name:", 15, y += 35);
+        _txtExeName = DarkTheme.AddTextBox(page, 15, y += 22, 200);
 
-        AddLabel(page, "Launch Arguments:", 230, y - 22);
-        _txtArgs = AddTextBox(page, 230, y, 225);
+        DarkTheme.AddLabel(page, "Launch Arguments:", 230, y - 22);
+        _txtArgs = DarkTheme.AddTextBox(page, 230, y, 225);
 
-        AddLabel(page, "Process Name (for detection):", 15, y += 35);
-        _txtProcessName = AddTextBox(page, 15, y += 22, 200);
+        DarkTheme.AddLabel(page, "Process Name (for detection):", 15, y += 35);
+        _txtProcessName = DarkTheme.AddTextBox(page, 15, y += 22, 200);
 
-        AddLabel(page, "Polling Interval (ms):", 230, y - 22);
-        _nudPollingInterval = AddNumeric(page, 230, y, 100, 500, 100, 5000);
+        DarkTheme.AddLabel(page, "Polling Interval (ms):", 230, y - 22);
+        _nudPollingInterval = DarkTheme.AddNumeric(page, 230, y, 100, 500, 100, 5000);
 
         return page;
     }
 
     private TabPage BuildHotkeysTab()
     {
-        var page = MakeTabPage("Hotkeys");
+        var page = DarkTheme.MakeTabPage("Hotkeys");
         int y = 15;
 
-        AddLabel(page, "Switch Key (EQ-only, single key):", 15, y);
-        _txtSwitchKey = AddTextBox(page, 15, y += 22, 120);
-        AddHint(page, "e.g. \\ ] [", 145, y + 3);
+        DarkTheme.AddLabel(page, "Switch Key (EQ-only, single key):", 15, y);
+        _txtSwitchKey = DarkTheme.AddTextBox(page, 15, y += 22, 120);
+        DarkTheme.AddHint(page, "e.g. \\ ] [", 145, y + 3);
 
-        AddLabel(page, "Global Switch Key (any app, single key):", 15, y += 40);
-        _txtGlobalSwitchKey = AddTextBox(page, 15, y += 22, 120);
+        DarkTheme.AddLabel(page, "Global Switch Key (any app, single key):", 15, y += 40);
+        _txtGlobalSwitchKey = DarkTheme.AddTextBox(page, 15, y += 22, 120);
 
-        AddLabel(page, "Arrange Windows:", 250, 15);
-        _txtArrangeWindows = AddTextBox(page, 250, 37, 120);
-        AddHint(page, "e.g. Alt+G", 380, 40);
+        DarkTheme.AddLabel(page, "Arrange Windows:", 250, 15);
+        _txtArrangeWindows = DarkTheme.AddTextBox(page, 250, 37, 120);
+        DarkTheme.AddHint(page, "e.g. Alt+G", 380, 40);
 
-        AddLabel(page, "Toggle Multi-Monitor:", 250, 77);
-        _txtToggleMultiMon = AddTextBox(page, 250, 99, 120);
+        DarkTheme.AddLabel(page, "Toggle Multi-Monitor:", 250, 77);
+        _txtToggleMultiMon = DarkTheme.AddTextBox(page, 250, 99, 120);
 
-        _chkMultiMonEnabled = AddCheckBox(page, "Multi-Monitor Hotkey Enabled", 250, 130);
+        _chkMultiMonEnabled = DarkTheme.AddCheckBox(page, "Multi-Monitor Hotkey Enabled", 250, 130);
 
-        AddLabel(page, "Launch One:", 15, y += 40);
-        _txtLaunchOne = AddTextBox(page, 15, y += 22, 120);
+        DarkTheme.AddLabel(page, "Launch One:", 15, y += 40);
+        _txtLaunchOne = DarkTheme.AddTextBox(page, 15, y += 22, 120);
 
-        AddLabel(page, "Launch All:", 250, y - 22);
-        _txtLaunchAll = AddTextBox(page, 250, y, 120);
+        DarkTheme.AddLabel(page, "Launch All:", 250, y - 22);
+        _txtLaunchAll = DarkTheme.AddTextBox(page, 250, y, 120);
 
-        AddHint(page, "Leave blank to disable. Format: Alt+Key, Ctrl+Key", 15, y + 35);
+        DarkTheme.AddHint(page, "Leave blank to disable. Format: Alt+Key, Ctrl+Key", 15, y + 35);
 
         return page;
     }
 
     private TabPage BuildLayoutTab()
     {
-        var page = MakeTabPage("Layout");
+        var page = DarkTheme.MakeTabPage("Layout");
         int y = 15;
 
-        AddLabel(page, "Layout Mode:", 15, y);
-        _cboLayoutMode = AddComboBox(page, 15, y += 22, 150, new[] { "single", "multimonitor" });
+        DarkTheme.AddLabel(page, "Layout Mode:", 15, y);
+        _cboLayoutMode = DarkTheme.AddComboBox(page, 15, y += 22, 150, new[] { "single", "multimonitor" });
 
-        AddLabel(page, "Grid Columns:", 200, 15);
-        _nudColumns = AddNumeric(page, 200, 37, 80, 2, 1, 4);
+        DarkTheme.AddLabel(page, "Grid Columns:", 200, 15);
+        _nudColumns = DarkTheme.AddNumeric(page, 200, 37, 80, 2, 1, 4);
 
-        AddLabel(page, "Grid Rows:", 310, 15);
-        _nudRows = AddNumeric(page, 310, 37, 80, 2, 1, 4);
+        DarkTheme.AddLabel(page, "Grid Rows:", 310, 15);
+        _nudRows = DarkTheme.AddNumeric(page, 310, 37, 80, 2, 1, 4);
 
-        AddLabel(page, "Target Monitor (0 = primary):", 15, y += 40);
-        _nudTargetMonitor = AddNumeric(page, 15, y += 22, 80, 0, 0, 8);
+        DarkTheme.AddLabel(page, "Target Monitor (0 = primary):", 15, y += 40);
+        _nudTargetMonitor = DarkTheme.AddNumeric(page, 15, y += 22, 80, 0, 0, 8);
 
-        AddLabel(page, "Top Offset (pixels):", 200, y - 22);
-        _nudTopOffset = AddNumeric(page, 200, y, 80, 0, -100, 200);
+        DarkTheme.AddLabel(page, "Top Offset (pixels):", 200, y - 22);
+        _nudTopOffset = DarkTheme.AddNumeric(page, 200, y, 80, 0, -100, 200);
 
-        _chkRemoveTitleBars = AddCheckBox(page, "Remove Title Bars on Arrange", 15, y += 40);
+        _chkRemoveTitleBars = DarkTheme.AddCheckBox(page, "Remove Title Bars on Arrange", 15, y += 40);
 
         return page;
     }
 
     private TabPage BuildAffinityTab()
     {
-        var page = MakeTabPage("Affinity");
+        var page = DarkTheme.MakeTabPage("Affinity");
         int y = 15;
 
-        _chkAffinityEnabled = AddCheckBox(page, "Enable CPU Affinity Management", 15, y);
+        _chkAffinityEnabled = DarkTheme.AddCheckBox(page, "Enable CPU Affinity Management", 15, y);
 
-        AddLabel(page, "Active Client Mask (hex):", 15, y += 35);
-        _txtActiveMask = AddTextBox(page, 15, y += 22, 120);
-        AddHint(page, "e.g. FF (P-cores 0-7)", 145, y + 3);
+        DarkTheme.AddLabel(page, "Active Client Mask (hex):", 15, y += 35);
+        _txtActiveMask = DarkTheme.AddTextBox(page, 15, y += 22, 120);
+        DarkTheme.AddHint(page, "e.g. FF (P-cores 0-7)", 145, y + 3);
 
-        AddLabel(page, "Background Mask (hex):", 15, y += 35);
-        _txtBackgroundMask = AddTextBox(page, 15, y += 22, 120);
-        AddHint(page, "e.g. FF00 (E-cores 8-15)", 145, y + 3);
+        DarkTheme.AddLabel(page, "Background Mask (hex):", 15, y += 35);
+        _txtBackgroundMask = DarkTheme.AddTextBox(page, 15, y += 22, 120);
+        DarkTheme.AddHint(page, "e.g. FF00 (E-cores 8-15)", 145, y + 3);
 
         var priorities = new[] { "Idle", "BelowNormal", "Normal", "AboveNormal", "High" };
 
-        AddLabel(page, "Active Priority:", 15, y += 40);
-        _cboActivePriority = AddComboBox(page, 15, y += 22, 150, priorities);
+        DarkTheme.AddLabel(page, "Active Priority:", 15, y += 40);
+        _cboActivePriority = DarkTheme.AddComboBox(page, 15, y += 22, 150, priorities);
 
-        AddLabel(page, "Background Priority:", 230, y - 22);
-        _cboBackgroundPriority = AddComboBox(page, 230, y, 150, priorities);
+        DarkTheme.AddLabel(page, "Background Priority:", 230, y - 22);
+        _cboBackgroundPriority = DarkTheme.AddComboBox(page, 230, y, 150, priorities);
 
         // All / Clear buttons for masks
-        var btnAllCores = MakeButton("All Cores", BgMedium, 300, 72);
+        var btnAllCores = DarkTheme.MakeButton("All Cores", DarkTheme.BgMedium, 300, 72);
         btnAllCores.Size = new Size(80, 26);
         btnAllCores.Click += (_, _) =>
         {
@@ -261,7 +253,7 @@ public class SettingsForm : Form
         };
         page.Controls.Add(btnAllCores);
 
-        var btnClearCores = MakeButton("Clear", BgMedium, 390, 72);
+        var btnClearCores = DarkTheme.MakeButton("Clear", DarkTheme.BgMedium, 390, 72);
         btnClearCores.Size = new Size(60, 26);
         btnClearCores.Click += (_, _) =>
         {
@@ -270,41 +262,41 @@ public class SettingsForm : Form
         };
         page.Controls.Add(btnClearCores);
 
-        AddLabel(page, "Launch Retry Count:", 15, y += 40);
-        _nudRetryCount = AddNumeric(page, 15, y += 22, 80, 3, 0, 10);
+        DarkTheme.AddLabel(page, "Launch Retry Count:", 15, y += 40);
+        _nudRetryCount = DarkTheme.AddNumeric(page, 15, y += 22, 80, 3, 0, 10);
 
-        AddLabel(page, "Retry Delay (ms):", 200, y - 22);
-        _nudRetryDelay = AddNumeric(page, 200, y, 100, 2000, 500, 10000);
+        DarkTheme.AddLabel(page, "Retry Delay (ms):", 200, y - 22);
+        _nudRetryDelay = DarkTheme.AddNumeric(page, 200, y, 100, 2000, 500, 10000);
 
         return page;
     }
 
     private TabPage BuildLaunchTab()
     {
-        var page = MakeTabPage("Launch");
+        var page = DarkTheme.MakeTabPage("Launch");
         int y = 15;
 
-        AddLabel(page, "Number of Clients (Launch All):", 15, y);
-        _nudNumClients = AddNumeric(page, 15, y += 22, 80, 2, 1, 8);
+        DarkTheme.AddLabel(page, "Number of Clients (Launch All):", 15, y);
+        _nudNumClients = DarkTheme.AddNumeric(page, 15, y += 22, 80, 2, 1, 8);
 
-        AddLabel(page, "Delay Between Launches (ms):", 15, y += 40);
-        _nudLaunchDelay = AddNumeric(page, 15, y += 22, 100, 3000, 500, 30000);
+        DarkTheme.AddLabel(page, "Delay Between Launches (ms):", 15, y += 40);
+        _nudLaunchDelay = DarkTheme.AddNumeric(page, 15, y += 22, 100, 3000, 500, 30000);
 
-        AddLabel(page, "Window Fix Delay (ms):", 15, y += 40);
-        _nudFixDelay = AddNumeric(page, 15, y += 22, 100, 15000, 1000, 60000);
-        AddHint(page, "Wait time after all clients launched before arranging windows", 125, y + 3);
+        DarkTheme.AddLabel(page, "Window Fix Delay (ms):", 15, y += 40);
+        _nudFixDelay = DarkTheme.AddNumeric(page, 15, y += 22, 100, 15000, 1000, 60000);
+        DarkTheme.AddHint(page, "Wait time after all clients launched before arranging windows", 125, y + 3);
 
         return page;
     }
 
     private TabPage BuildPathsTab()
     {
-        var page = MakeTabPage("Paths");
+        var page = DarkTheme.MakeTabPage("Paths");
         int y = 15;
 
-        AddLabel(page, "GINA Path:", 15, y);
-        _txtGinaPath = AddTextBox(page, 15, y += 22, 330);
-        var btnBrowseGina = MakeButton("Browse...", BgMedium, 355, y - 2);
+        DarkTheme.AddLabel(page, "GINA Path:", 15, y);
+        _txtGinaPath = DarkTheme.AddTextBox(page, 15, y += 22, 330);
+        var btnBrowseGina = DarkTheme.MakeButton("Browse...", DarkTheme.BgMedium, 355, y - 2);
         btnBrowseGina.Size = new Size(80, 26);
         btnBrowseGina.Click += (_, _) =>
         {
@@ -318,9 +310,9 @@ public class SettingsForm : Form
         };
         page.Controls.Add(btnBrowseGina);
 
-        AddLabel(page, "Notes File:", 15, y += 45);
-        _txtNotesPath = AddTextBox(page, 15, y += 22, 330);
-        var btnBrowseNotes = MakeButton("Browse...", BgMedium, 355, y - 2);
+        DarkTheme.AddLabel(page, "Notes File:", 15, y += 45);
+        _txtNotesPath = DarkTheme.AddTextBox(page, 15, y += 22, 330);
+        var btnBrowseNotes = DarkTheme.MakeButton("Browse...", DarkTheme.BgMedium, 355, y - 2);
         btnBrowseNotes.Size = new Size(80, 26);
         btnBrowseNotes.Click += (_, _) =>
         {
@@ -334,20 +326,20 @@ public class SettingsForm : Form
         };
         page.Controls.Add(btnBrowseNotes);
 
-        AddHint(page, "Leave blank for defaults. GINA launches the app; Notes opens a text file.", 15, y + 40);
+        DarkTheme.AddHint(page, "Leave blank for defaults. GINA launches the app; Notes opens a text file.", 15, y + 40);
 
         return page;
     }
 
     private TabPage BuildPipTab()
     {
-        var page = MakeTabPage("PiP");
+        var page = DarkTheme.MakeTabPage("PiP");
         int y = 15;
 
-        _chkPipEnabled = AddCheckBox(page, "Enable PiP Overlay", 15, y);
+        _chkPipEnabled = DarkTheme.AddCheckBox(page, "Enable PiP Overlay", 15, y);
 
-        AddLabel(page, "Size Preset:", 15, y += 35);
-        _cboPipSize = AddComboBox(page, 15, y += 22, 150, new[] { "Small", "Medium", "Large", "XL", "XXL", "Custom" });
+        DarkTheme.AddLabel(page, "Size Preset:", 15, y += 35);
+        _cboPipSize = DarkTheme.AddComboBox(page, 15, y += 22, 150, new[] { "Small", "Medium", "Large", "XL", "XXL", "Custom" });
         _cboPipSize.SelectedIndexChanged += (_, _) =>
         {
             bool isCustom = _cboPipSize.SelectedItem?.ToString() == "Custom";
@@ -355,35 +347,35 @@ public class SettingsForm : Form
             _nudPipHeight.Enabled = isCustom;
         };
 
-        AddLabel(page, "Custom Width:", 200, y - 22);
-        _nudPipWidth = AddNumeric(page, 200, y, 80, 320, 100, 1920);
+        DarkTheme.AddLabel(page, "Custom Width:", 200, y - 22);
+        _nudPipWidth = DarkTheme.AddNumeric(page, 200, y, 80, 320, 100, 1920);
         _nudPipWidth.Enabled = false;
 
-        AddLabel(page, "Custom Height:", 310, y - 22);
-        _nudPipHeight = AddNumeric(page, 310, y, 80, 240, 100, 1080);
+        DarkTheme.AddLabel(page, "Custom Height:", 310, y - 22);
+        _nudPipHeight = DarkTheme.AddNumeric(page, 310, y, 80, 240, 100, 1080);
         _nudPipHeight.Enabled = false;
 
-        AddLabel(page, "Opacity (0-255):", 15, y += 40);
-        _nudPipOpacity = AddNumeric(page, 15, y += 22, 80, 200, 0, 255);
+        DarkTheme.AddLabel(page, "Opacity (0-255):", 15, y += 40);
+        _nudPipOpacity = DarkTheme.AddNumeric(page, 15, y += 22, 80, 200, 0, 255);
 
-        _chkPipBorder = AddCheckBox(page, "Show Border", 200, y);
+        _chkPipBorder = DarkTheme.AddCheckBox(page, "Show Border", 200, y);
         _chkPipBorder.CheckedChanged += (_, _) =>
         {
             _cboPipBorderColor.Enabled = _chkPipBorder.Checked;
         };
 
-        AddLabel(page, "Border Color:", 15, y += 40);
-        _cboPipBorderColor = AddComboBox(page, 15, y += 22, 120, new[] { "Green", "Blue", "Red", "Black" });
+        DarkTheme.AddLabel(page, "Border Color:", 15, y += 40);
+        _cboPipBorderColor = DarkTheme.AddComboBox(page, 15, y += 22, 120, new[] { "Green", "Blue", "Red", "Black" });
 
-        AddLabel(page, "Max PiP Windows:", 200, y - 22);
-        _nudPipMaxWindows = AddNumeric(page, 200, y, 60, 3, 1, 3);
+        DarkTheme.AddLabel(page, "Max PiP Windows:", 200, y - 22);
+        _nudPipMaxWindows = DarkTheme.AddNumeric(page, 200, y, 60, 3, 1, 3);
 
         return page;
     }
 
     private TabPage BuildCharactersTab()
     {
-        var page = MakeTabPage("Characters");
+        var page = DarkTheme.MakeTabPage("Characters");
         int y = 15;
 
         _charListView = new ListView
@@ -394,7 +386,7 @@ public class SettingsForm : Form
             FullRowSelect = true,
             GridLines = true,
             BackColor = Color.FromArgb(50, 50, 50),
-            ForeColor = FgWhite,
+            ForeColor = DarkTheme.FgWhite,
             BorderStyle = BorderStyle.FixedSingle,
             HeaderStyle = ColumnHeaderStyle.Nonclickable
         };
@@ -404,17 +396,17 @@ public class SettingsForm : Form
         _charListView.Columns.Add("Affinity", 100);
         page.Controls.Add(_charListView);
 
-        var btnExport = MakeButton("Export...", BgMedium, 15, 275);
+        var btnExport = DarkTheme.MakeButton("Export...", DarkTheme.BgMedium, 15, 275);
         btnExport.Size = new Size(90, 30);
         btnExport.Click += (_, _) => ExportCharacters();
         page.Controls.Add(btnExport);
 
-        var btnImport = MakeButton("Import...", BgMedium, 115, 275);
+        var btnImport = DarkTheme.MakeButton("Import...", DarkTheme.BgMedium, 115, 275);
         btnImport.Size = new Size(90, 30);
         btnImport.Click += (_, _) => ImportCharacters();
         page.Controls.Add(btnImport);
 
-        AddHint(page, "Export/Import character profiles as JSON files", 220, 283);
+        DarkTheme.AddHint(page, "Export/Import character profiles as JSON files", 220, 283);
 
         return page;
     }
@@ -514,10 +506,10 @@ public class SettingsForm : Form
 
         // Layout
         _cboLayoutMode.SelectedItem = _config.Layout.Mode;
-        _nudColumns.Value = ClampNud(_nudColumns, _config.Layout.Columns);
-        _nudRows.Value = ClampNud(_nudRows, _config.Layout.Rows);
-        _nudTargetMonitor.Value = ClampNud(_nudTargetMonitor, _config.Layout.TargetMonitor);
-        _nudTopOffset.Value = ClampNud(_nudTopOffset, _config.Layout.TopOffset);
+        _nudColumns.Value = DarkTheme.ClampNud(_nudColumns, _config.Layout.Columns);
+        _nudRows.Value = DarkTheme.ClampNud(_nudRows, _config.Layout.Rows);
+        _nudTargetMonitor.Value = DarkTheme.ClampNud(_nudTargetMonitor, _config.Layout.TargetMonitor);
+        _nudTopOffset.Value = DarkTheme.ClampNud(_nudTopOffset, _config.Layout.TopOffset);
         _chkRemoveTitleBars.Checked = _config.Layout.RemoveTitleBars;
 
         // Affinity
@@ -526,13 +518,13 @@ public class SettingsForm : Form
         _txtBackgroundMask.Text = _config.Affinity.BackgroundMask.ToString("X");
         _cboActivePriority.SelectedItem = _config.Affinity.ActivePriority;
         _cboBackgroundPriority.SelectedItem = _config.Affinity.BackgroundPriority;
-        _nudRetryCount.Value = ClampNud(_nudRetryCount, _config.Affinity.LaunchRetryCount);
-        _nudRetryDelay.Value = ClampNud(_nudRetryDelay, _config.Affinity.LaunchRetryDelayMs);
+        _nudRetryCount.Value = DarkTheme.ClampNud(_nudRetryCount, _config.Affinity.LaunchRetryCount);
+        _nudRetryDelay.Value = DarkTheme.ClampNud(_nudRetryDelay, _config.Affinity.LaunchRetryDelayMs);
 
         // Launch
-        _nudNumClients.Value = ClampNud(_nudNumClients, _config.Launch.NumClients);
-        _nudLaunchDelay.Value = ClampNud(_nudLaunchDelay, _config.Launch.LaunchDelayMs);
-        _nudFixDelay.Value = ClampNud(_nudFixDelay, _config.Launch.FixDelayMs);
+        _nudNumClients.Value = DarkTheme.ClampNud(_nudNumClients, _config.Launch.NumClients);
+        _nudLaunchDelay.Value = DarkTheme.ClampNud(_nudLaunchDelay, _config.Launch.LaunchDelayMs);
+        _nudFixDelay.Value = DarkTheme.ClampNud(_nudFixDelay, _config.Launch.FixDelayMs);
 
         // Paths
         _txtGinaPath.Text = _config.GinaPath;
@@ -631,110 +623,4 @@ public class SettingsForm : Form
         return fallback;
     }
 
-    private static decimal ClampNud(NumericUpDown nud, decimal value) =>
-        Math.Clamp(value, nud.Minimum, nud.Maximum);
-
-    // ─── Control Factories ────────────────────────────────────────
-
-    private static TabPage MakeTabPage(string title)
-    {
-        return new TabPage(title) { BackColor = BgDark, ForeColor = FgWhite };
-    }
-
-    private static void AddLabel(Control parent, string text, int x, int y)
-    {
-        parent.Controls.Add(new Label
-        {
-            Text = text,
-            Location = new Point(x, y),
-            AutoSize = true,
-            ForeColor = FgWhite
-        });
-    }
-
-    private static void AddHint(Control parent, string text, int x, int y)
-    {
-        parent.Controls.Add(new Label
-        {
-            Text = text,
-            Location = new Point(x, y),
-            AutoSize = true,
-            ForeColor = FgGray,
-            Font = new Font("Segoe UI", 8)
-        });
-    }
-
-    private static TextBox AddTextBox(Control parent, int x, int y, int width)
-    {
-        var tb = new TextBox
-        {
-            Location = new Point(x, y),
-            Size = new Size(width, 25),
-            BackColor = BgInput,
-            ForeColor = FgWhite,
-            BorderStyle = BorderStyle.FixedSingle
-        };
-        parent.Controls.Add(tb);
-        return tb;
-    }
-
-    private static NumericUpDown AddNumeric(Control parent, int x, int y, int width, decimal defaultVal, decimal min, decimal max)
-    {
-        var nud = new NumericUpDown
-        {
-            Location = new Point(x, y),
-            Size = new Size(width, 25),
-            BackColor = BgInput,
-            ForeColor = FgWhite,
-            Minimum = min,
-            Maximum = max,
-            Value = Math.Clamp(defaultVal, min, max),
-            BorderStyle = BorderStyle.FixedSingle
-        };
-        parent.Controls.Add(nud);
-        return nud;
-    }
-
-    private static ComboBox AddComboBox(Control parent, int x, int y, int width, string[] items)
-    {
-        var cb = new ComboBox
-        {
-            Location = new Point(x, y),
-            Size = new Size(width, 25),
-            BackColor = BgInput,
-            ForeColor = FgWhite,
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            FlatStyle = FlatStyle.Flat
-        };
-        cb.Items.AddRange(items);
-        if (cb.Items.Count > 0) cb.SelectedIndex = 0;
-        parent.Controls.Add(cb);
-        return cb;
-    }
-
-    private static CheckBox AddCheckBox(Control parent, string text, int x, int y)
-    {
-        var cb = new CheckBox
-        {
-            Text = text,
-            Location = new Point(x, y),
-            AutoSize = true,
-            ForeColor = FgWhite
-        };
-        parent.Controls.Add(cb);
-        return cb;
-    }
-
-    private static Button MakeButton(string text, Color bgColor, int x, int y)
-    {
-        return new Button
-        {
-            Text = text,
-            Location = new Point(x, y),
-            Size = new Size(80, 30),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = bgColor,
-            ForeColor = FgWhite
-        };
-    }
 }

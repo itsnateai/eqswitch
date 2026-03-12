@@ -96,7 +96,7 @@ public class TrayManager : IDisposable
         _processManager.StartPolling();
         RegisterHotkeys();
         StartAffinityTimer();
-        ValidateStartupRegistryPath();
+        StartupManager.ValidateRegistryPath(_config);
 
         // Log core detection at startup
         var (cores, sysMask) = AffinityManager.DetectCores();
@@ -420,11 +420,11 @@ public class TrayManager : IDisposable
 
         // Files submenu
         var filesMenu = new ToolStripMenuItem("Files");
-        filesMenu.DropDownItems.Add("Open Log File...", null, (_, _) => OpenLogFile());
-        filesMenu.DropDownItems.Add("Open eqclient.ini", null, (_, _) => OpenEqClientIni());
+        filesMenu.DropDownItems.Add("Open Log File...", null, (_, _) => FileOperations.OpenLogFile(_config, ShowBalloon));
+        filesMenu.DropDownItems.Add("Open eqclient.ini", null, (_, _) => FileOperations.OpenEqClientIni(_config, ShowBalloon));
         filesMenu.DropDownItems.Add(new ToolStripSeparator());
-        filesMenu.DropDownItems.Add("Open GINA", null, (_, _) => OpenGina());
-        filesMenu.DropDownItems.Add("Open Notes", null, (_, _) => OpenNotes());
+        filesMenu.DropDownItems.Add("Open GINA", null, (_, _) => FileOperations.OpenGina(_config, ShowBalloon));
+        filesMenu.DropDownItems.Add("Open Notes", null, (_, _) => FileOperations.OpenNotes(_config, ShowBalloon));
         _contextMenu.Items.Add(filesMenu);
 
         _contextMenu.Items.Add("Settings", null, (_, _) => ShowSettings());
@@ -444,20 +444,20 @@ public class TrayManager : IDisposable
         startupItem.CheckedChanged += (_, _) =>
         {
             _config.RunAtStartup = startupItem.Checked;
-            SetRunAtStartup(startupItem.Checked);
+            StartupManager.SetRunAtStartup(startupItem.Checked);
             ConfigManager.Save(_config);
         };
         _contextMenu.Items.Add(startupItem);
-        _contextMenu.Items.Add("Create Desktop Shortcut", null, (_, _) => CreateDesktopShortcut());
+        _contextMenu.Items.Add("Create Desktop Shortcut", null, (_, _) => StartupManager.CreateDesktopShortcut(ShowBalloon));
 
         // Links submenu
         var linksMenu = new ToolStripMenuItem("Links");
-        linksMenu.DropDownItems.Add("Dalaya Wiki", null, (_, _) => OpenUrl("http://wiki.shardsofdalaya.com"));
-        linksMenu.DropDownItems.Add("Shards Wiki", null, (_, _) => OpenUrl("https://shards.wiki"));
-        linksMenu.DropDownItems.Add("Fomelo", null, (_, _) => OpenUrl("http://fomelo.shardsofdalaya.com"));
+        linksMenu.DropDownItems.Add("Dalaya Wiki", null, (_, _) => FileOperations.OpenUrl("http://wiki.shardsofdalaya.com"));
+        linksMenu.DropDownItems.Add("Shards Wiki", null, (_, _) => FileOperations.OpenUrl("https://shards.wiki"));
+        linksMenu.DropDownItems.Add("Fomelo", null, (_, _) => FileOperations.OpenUrl("http://fomelo.shardsofdalaya.com"));
         _contextMenu.Items.Add(linksMenu);
 
-        _contextMenu.Items.Add("Help", null, (_, _) => ShowHelp());
+        _contextMenu.Items.Add("Help", null, (_, _) => HelpForm.Show(_config));
         _contextMenu.Items.Add(new ToolStripSeparator());
         _contextMenu.Items.Add("Exit", null, (_, _) => Shutdown());
 
@@ -574,278 +574,6 @@ public class TrayManager : IDisposable
         }
     }
 
-    private void ShowHelp()
-    {
-        var helpForm = new Form
-        {
-            Text = "EQSwitch — Help",
-            Size = new Size(520, 500),
-            StartPosition = FormStartPosition.CenterScreen,
-            BackColor = Color.FromArgb(30, 30, 30),
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 9),
-            MaximizeBox = true,
-            MinimizeBox = false
-        };
-
-        var rtb = new RichTextBox
-        {
-            Dock = DockStyle.Fill,
-            ReadOnly = true,
-            BackColor = Color.FromArgb(30, 30, 30),
-            ForeColor = Color.White,
-            BorderStyle = BorderStyle.None,
-            Font = new Font("Consolas", 10),
-            Text = GetHelpText()
-        };
-
-        helpForm.Controls.Add(rtb);
-        helpForm.Show();
-    }
-
-    private string GetHelpText()
-    {
-        var hk = _config.Hotkeys;
-        return $@"EQSwitch — EverQuest Window Manager
-====================================
-
-HOTKEYS:
-  Switch Key ({hk.SwitchKey})     — Cycle to next EQ client (EQ must be focused)
-  Global Switch ({hk.GlobalSwitchKey})  — Cycle next / bring EQ to front from any app
-  {hk.ArrangeWindows}            — Arrange all windows in grid layout
-  {hk.ToggleMultiMonitor}            — Toggle single-screen / multi-monitor mode
-  Alt+1..6          — Switch directly to client by slot number
-  {(string.IsNullOrEmpty(hk.LaunchOne) ? "(not set)" : hk.LaunchOne)}           — Launch one EQ client
-  {(string.IsNullOrEmpty(hk.LaunchAll) ? "(not set)" : hk.LaunchAll)}           — Launch all configured clients
-
-TRAY ICON:
-  Right-click       — Context menu
-  Double-click      — Launch one EQ client
-  Middle-click      — Toggle PiP overlay
-
-LAYOUT MODES:
-  Single Screen     — Grid layout (Columns × Rows) on target monitor
-  Multi-Monitor     — One window per physical monitor
-
-PIP (PICTURE-IN-PICTURE):
-  Live preview of background EQ windows
-  Ctrl+Drag to reposition
-  Auto-hides when fewer than 2 clients
-
-CPU AFFINITY:
-  Active client  → P-cores (high priority)
-  Background     → E-cores (normal priority)
-  Auto-applies on window switch (250ms check)
-
-CONFIG:
-  eqswitch-config.json (alongside exe)
-  Auto-backup on save (keeps last 10)
-";
-    }
-
-    // ─── File Operations ──────────────────────────────────────────
-
-    /// <summary>
-    /// Open an EQ log file. Shows a picker if multiple characters exist,
-    /// otherwise opens the Logs folder in the EQ directory.
-    /// </summary>
-    private void OpenLogFile()
-    {
-        var logsDir = Path.Combine(_config.EQPath, "Logs");
-        if (!Directory.Exists(logsDir))
-        {
-            ShowBalloon("Logs folder not found");
-            return;
-        }
-
-        // Find log files matching eqlog_*_*.txt pattern
-        var logFiles = Directory.GetFiles(logsDir, "eqlog_*.txt")
-            .OrderByDescending(File.GetLastWriteTime)
-            .ToArray();
-
-        if (logFiles.Length == 0)
-        {
-            // Just open the folder
-            Process.Start("explorer.exe", logsDir);
-            return;
-        }
-
-        if (logFiles.Length == 1)
-        {
-            OpenInNotepad(logFiles[0]);
-            return;
-        }
-
-        // Multiple logs — show picker with most recent files
-        var menu = new ContextMenuStrip();
-        foreach (var logFile in logFiles.Take(10))
-        {
-            var name = Path.GetFileNameWithoutExtension(logFile);
-            var lastWrite = File.GetLastWriteTime(logFile);
-            var path = logFile; // capture
-            menu.Items.Add($"{name} ({lastWrite:g})", null, (_, _) => OpenInNotepad(path));
-        }
-        if (logFiles.Length > 10)
-            menu.Items.Add($"({logFiles.Length - 10} more — open folder)", null, (_, _) =>
-                Process.Start("explorer.exe", logsDir));
-
-        menu.Show(Cursor.Position);
-    }
-
-    /// <summary>
-    /// Open eqclient.ini in the default text editor.
-    /// </summary>
-    private void OpenEqClientIni()
-    {
-        var iniPath = Path.Combine(_config.EQPath, "eqclient.ini");
-        if (!File.Exists(iniPath))
-        {
-            ShowBalloon("eqclient.ini not found");
-            return;
-        }
-        OpenInNotepad(iniPath);
-    }
-
-    /// <summary>
-    /// Launch GINA from the configured path.
-    /// </summary>
-    private void OpenGina()
-    {
-        if (string.IsNullOrEmpty(_config.GinaPath) || !File.Exists(_config.GinaPath))
-        {
-            ShowBalloon("GINA path not configured or file not found.\nSet it in Settings.");
-            return;
-        }
-
-        try
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = _config.GinaPath,
-                UseShellExecute = true
-            });
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"OpenGina failed: {ex.Message}");
-            ShowBalloon($"Failed to launch GINA: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Open the notes file in the default text editor.
-    /// Creates a default notes.txt if no path configured.
-    /// </summary>
-    private void OpenNotes()
-    {
-        var notesPath = _config.NotesPath;
-
-        if (string.IsNullOrEmpty(notesPath))
-        {
-            // Default: notes.txt alongside the exe
-            notesPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "eqswitch-notes.txt");
-            _config.NotesPath = notesPath;
-            ConfigManager.Save(_config);
-        }
-
-        if (!File.Exists(notesPath))
-        {
-            try
-            {
-                File.WriteAllText(notesPath, "# EQSwitch Notes\n\n");
-                Debug.WriteLine($"Created notes file: {notesPath}");
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"OpenNotes: failed to create {notesPath} — {ex.Message}");
-                ShowBalloon($"Failed to create notes file: {ex.Message}");
-                return;
-            }
-        }
-
-        OpenInNotepad(notesPath);
-    }
-
-    /// <summary>
-    /// If run-at-startup is enabled, ensure the registry path matches the current exe location.
-    /// </summary>
-    private void ValidateStartupRegistryPath()
-    {
-        if (!_config.RunAtStartup) return;
-        try
-        {
-            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
-                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", writable: false);
-            var registeredPath = key?.GetValue("EQSwitch") as string;
-            var currentPath = $"\"{Application.ExecutablePath}\"";
-            if (registeredPath != null && !registeredPath.Equals(currentPath, StringComparison.OrdinalIgnoreCase))
-            {
-                Debug.WriteLine($"Startup: registry path stale ({registeredPath}), updating to {currentPath}");
-                SetRunAtStartup(true);
-            }
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"ValidateStartupRegistryPath failed: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Add or remove EQSwitch from Windows startup via Registry.
-    /// </summary>
-    private static void SetRunAtStartup(bool enable)
-    {
-        try
-        {
-            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
-                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", writable: true);
-            if (key == null) return;
-
-            if (enable)
-            {
-                var exePath = Application.ExecutablePath;
-                key.SetValue("EQSwitch", $"\"{exePath}\"");
-                Debug.WriteLine($"Startup: added registry entry for {exePath}");
-            }
-            else
-            {
-                key.DeleteValue("EQSwitch", throwOnMissingValue: false);
-                Debug.WriteLine("Startup: removed registry entry");
-            }
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"SetRunAtStartup failed: {ex.Message}");
-        }
-    }
-
-    private static void OpenUrl(string url)
-    {
-        try
-        {
-            Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"OpenUrl failed for {url}: {ex.Message}");
-        }
-    }
-
-    private static void OpenInNotepad(string path)
-    {
-        try
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = path,
-                UseShellExecute = true // Opens with default text editor
-            });
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"OpenInNotepad failed for {path}: {ex.Message}");
-        }
-    }
 
     // ─── Config Reload ─────────────────────────────────────────────
 
@@ -940,59 +668,6 @@ CONFIG:
         );
         _processManagerForm.FormClosed += (_, _) => _processManagerForm = null;
         _processManagerForm.Show();
-    }
-
-    private void CreateDesktopShortcut()
-    {
-        try
-        {
-            var desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-            var shortcutPath = Path.Combine(desktopPath, "EQSwitch.lnk");
-
-            if (File.Exists(shortcutPath))
-            {
-                ShowBalloon("Desktop shortcut already exists");
-                return;
-            }
-
-            // Use WScript.Shell COM object to create shortcut
-            var shellType = Type.GetTypeFromProgID("WScript.Shell");
-            if (shellType == null)
-            {
-                ShowBalloon("Failed to create shortcut — WScript.Shell not available");
-                return;
-            }
-
-            dynamic shell = Activator.CreateInstance(shellType)!;
-            try
-            {
-                dynamic shortcut = shell.CreateShortcut(shortcutPath);
-                try
-                {
-                    shortcut.TargetPath = Application.ExecutablePath;
-                    shortcut.WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory;
-                    shortcut.Description = "EQSwitch — EverQuest Window Manager";
-                    shortcut.IconLocation = Application.ExecutablePath + ",0";
-                    shortcut.Save();
-                }
-                finally
-                {
-                    System.Runtime.InteropServices.Marshal.FinalReleaseComObject(shortcut);
-                }
-            }
-            finally
-            {
-                System.Runtime.InteropServices.Marshal.FinalReleaseComObject(shell);
-            }
-
-            Debug.WriteLine($"Desktop shortcut created: {shortcutPath}");
-            ShowBalloon("Desktop shortcut created");
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"CreateDesktopShortcut failed: {ex.Message}");
-            ShowBalloon($"Failed to create shortcut: {ex.Message}");
-        }
     }
 
     private void Shutdown()
