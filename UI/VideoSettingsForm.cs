@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using EQSwitch.Config;
 
 namespace EQSwitch.UI;
@@ -147,7 +148,7 @@ public class VideoSettingsForm : Form
 
         try
         {
-            var lines = File.ReadAllLines(_iniPath);
+            var lines = File.ReadAllLines(_iniPath, Encoding.Default);
             bool inVideoMode = false;
 
             foreach (var line in lines)
@@ -214,7 +215,7 @@ public class VideoSettingsForm : Form
                 return;
             }
 
-            var lines = File.ReadAllLines(_iniPath).ToList();
+            var lines = File.ReadAllLines(_iniPath, Encoding.Default).ToList();
             int sectionStart = -1;
             int sectionEnd = lines.Count;
 
@@ -269,7 +270,7 @@ public class VideoSettingsForm : Form
                     lines.Add($"{kv.Key}={kv.Value}");
             }
 
-            File.WriteAllLines(_iniPath, lines);
+            File.WriteAllLines(_iniPath, lines, Encoding.Default);
             Debug.WriteLine("VideoSettings: saved to eqclient.ini");
         }
         catch (Exception ex)
