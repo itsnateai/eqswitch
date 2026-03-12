@@ -727,7 +727,7 @@ SetMenuItemsBold(A_TrayMenu.Handle, ["Launch Client", "Launch Both"])
 ; =========================================================
 FixWindows(*) {
     global FIX_MODE, TARGET_MONITOR, TOOLTIP_MS, g_multiMonState
-    global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
+    global FIX_TOP_OFFSET
     winList := GetVisibleEqWindows()
     if (winList.Length = 0) {
         ShowTip("No EverQuest windows found!")
@@ -2185,12 +2185,6 @@ UpdatePiPBorder() {
     g_pipBorderGuis[2].Show("x" (px - BW) " y" (py + ph) " w" (pw + 2*BW) " h" BW " NoActivate")
     g_pipBorderGuis[3].Show("x" (px - BW) " y" py " w" BW " h" ph " NoActivate")
     g_pipBorderGuis[4].Show("x" (px + pw) " y" py " w" BW " h" ph " NoActivate")
-}
-
-HidePiPBorder() {
-    global g_pipBorderGuis
-    for bar in g_pipBorderGuis
-        try bar.Show("Hide")
 }
 
 DestroyPiPBorder() {
