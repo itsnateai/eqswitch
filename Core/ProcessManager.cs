@@ -99,6 +99,7 @@ public class ProcessManager : IDisposable
                 }
 
                 // Refresh window titles (character may have logged in)
+                bool titleChanged = false;
                 foreach (var client in _clients)
                 {
                     var newTitle = GetWindowTitle(client.WindowHandle);
@@ -107,10 +108,11 @@ public class ProcessManager : IDisposable
                         client.WindowTitle = newTitle;
                         client.ResolveCharacterName();
                         MatchCharacterProfile(client);
+                        titleChanged = true;
                     }
                 }
 
-                if (dead.Count > 0 || eqProcesses.Length != knownPids.Count)
+                if (dead.Count > 0 || eqProcesses.Length != knownPids.Count || titleChanged)
                     ClientListChanged?.Invoke(this, EventArgs.Empty);
             }
         }

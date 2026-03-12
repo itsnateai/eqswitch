@@ -132,6 +132,19 @@ On first run, EQSwitch checks for `eqswitch.cfg` alongside the exe and automatic
 | `DllCall("dwmapi\DwmRegister...")` | `DwmRegisterThumbnail` P/Invoke |
 | Compiled via Ahk2Exe | `dotnet publish` single-file |
 
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| **Hotkeys not working** | Run EQSwitch as Administrator. Some games need elevated privileges for global hotkeys to reach them. |
+| **Antivirus flags the exe** | Single-file .NET publish is sometimes flagged by heuristic scanners. Add an exclusion for `EQSwitch.exe` or build from source. The exe has 0/70 detections on VirusTotal. |
+| **EQ path not detected** | On first run, EQSwitch looks for `eqgame.exe` in the configured path. Use Settings → Paths to set your EQ installation directory. |
+| **PiP overlay not showing** | PiP requires at least 2 EQ clients running. Middle-click the tray icon to toggle. Check Settings → PiP for size/opacity. |
+| **CPU affinity not applying** | EQ resets its own affinity shortly after launch. EQSwitch retries 3 times at 2-second intervals. Use tray menu → Force Apply Affinity to re-apply manually. |
+| **Window arrangement looks wrong** | Check Settings → Layout for grid columns/rows and monitor selection. Use Alt+G to re-arrange. TopOffset setting adjusts for taskbar height. |
+| **Config lost after moving exe** | Config is stored as `eqswitch-config.json` next to the exe. Move them together. Backups are in the `backups/` subfolder. |
+| **`]` key not typing in other apps** | Fixed in v2.1.1. Update to the latest release. The `]` key is only captured when EQ clients are running. |
+
 ## License
 
 [MIT](LICENSE)

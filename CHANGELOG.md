@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **P2-02**: Context menu client labels now update when window titles change (character login detected on poll)
+
+---
+
+## v2.1.1 — Post-Release Audit Fixes (2026-03-12)
+
+### Fixed
+- **P0-01**: Hook callback dispatched async via SynchronizationContext.Post() — prevents Windows killing the LL hook on slow callbacks
+- **P0-02**: Global switch key `]` no longer swallowed when zero EQ clients running (requireClients guard + cached PID check)
+- **P0-03**: PiP overlay Ctrl+drag works — replaced WS_EX_TRANSPARENT with dynamic WM_NCHITTEST (HTTRANSPARENT default, HTCLIENT when Ctrl held)
+- **P0-04**: eqclient.ini read/write uses ANSI encoding instead of UTF-8 to prevent corruption
+- **P1-01**: Eliminated Process.GetProcessById() in hook callback — cached PID HashSet with GetWindowThreadProcessId
+- **P1-02**: Screen.PrimaryScreen null-safe fallback for headless/RDP disconnect
+- **P1-03**: All eqclient.ini file operations use Encoding.Default consistently
+- **P1-04**: Triple-click tray detection resets timestamp on every click
+- **P1-05**: Run-at-startup registry path validated on launch — auto-corrects if exe moved
+- **P1-06**: LaunchManager timers cancelled on config reload and shutdown
+- **P1-07**: Minimum 500ms enforced between staggered launches
+- **P1-08**: ContextMenuStrip disposed in Shutdown path
+- **P1-09**: Previous custom icon disposed on LoadIcon reload
+
+---
+
 ## v2.1.0 — Deferred Features (2026-03-11)
 
 ### Added
