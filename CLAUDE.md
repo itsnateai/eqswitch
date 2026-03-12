@@ -102,6 +102,6 @@ All keys live in `[EQSwitch]` section. Defaults in parentheses:
 
 ## Status
 
-**v2.1 — Final release (shipped 2026-03-11)**
+**v2.2 — Final release (shipped 2026-03-12)**
 
-All audit items resolved. See FINAL_REPORT.md and AUDIT_TASKS.md for details.
+All audit items resolved. Tracking files cleared. See FINAL_REPORT.md for summary.
