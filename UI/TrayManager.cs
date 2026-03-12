@@ -30,6 +30,13 @@ public class TrayManager : IDisposable
     // PiP overlay
     private PipOverlay? _pipOverlay;
 
+    // Process Manager (single-instance)
+    private ProcessManagerForm? _processManagerForm;
+
+    // Triple-click detection
+    private int _trayClickCount;
+    private long _trayFirstClickTick;
+
     public TrayManager(AppConfig config, ProcessManager processManager)
     {
         _config = config;
@@ -396,11 +403,11 @@ public class TrayManager : IDisposable
         _contextMenu.Items.Add(_clientsMenu);
 
         _contextMenu.Items.Add(new ToolStripSeparator());
-        _contextMenu.Items.Add("Process Info", null, (_, _) =>
+        _contextMenu.Items.Add("Process Manager", null, (_, _) => ShowProcessManager());
+        _contextMenu.Items.Add("Force Apply Affinity", null, (_, _) =>
         {
-            var info = AffinityManager.GetDiagnosticInfo(_processManager.Clients);
-            Debug.WriteLine($"--- Process Diagnostics ---\n{info}");
-            ShowBalloon(info.Length > 200 ? info[..200] + "..." : info);
+            _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient());
+            ShowBalloon("Affinity rules re-applied to all clients");
         });
         _contextMenu.Items.Add(new ToolStripSeparator());
 
@@ -434,6 +441,7 @@ public class TrayManager : IDisposable
             ConfigManager.Save(_config);
         };
         _contextMenu.Items.Add(startupItem);
+        _contextMenu.Items.Add("Create Desktop Shortcut", null, (_, _) => CreateDesktopShortcut());
 
         // Links submenu
         var linksMenu = new ToolStripMenuItem("Links");
@@ -536,6 +544,25 @@ public class TrayManager : IDisposable
         if (e.Button == MouseButtons.Middle)
         {
             TogglePip();
+        }
+        else if (e.Button == MouseButtons.Left)
+        {
+            // Triple-click detection (500ms window)
+            long now = Environment.TickCount64;
+            if (now - _trayFirstClickTick > 500)
+            {
+                _trayClickCount = 1;
+                _trayFirstClickTick = now;
+            }
+            else
+            {
+                _trayClickCount++;
+                if (_trayClickCount >= 3)
+                {
+                    _trayClickCount = 0;
+                    OnArrangeWindows();
+                }
+            }
         }
     }
 
@@ -826,6 +853,14 @@ CONFIG:
         _config.Launch.NumClients = newConfig.Launch.NumClients;
         _config.Launch.LaunchDelayMs = newConfig.Launch.LaunchDelayMs;
         _config.Launch.FixDelayMs = newConfig.Launch.FixDelayMs;
+        _config.Pip.Enabled = newConfig.Pip.Enabled;
+        _config.Pip.SizePreset = newConfig.Pip.SizePreset;
+        _config.Pip.CustomWidth = newConfig.Pip.CustomWidth;
+        _config.Pip.CustomHeight = newConfig.Pip.CustomHeight;
+        _config.Pip.Opacity = newConfig.Pip.Opacity;
+        _config.Pip.ShowBorder = newConfig.Pip.ShowBorder;
+        _config.Pip.BorderColor = newConfig.Pip.BorderColor;
+        _config.Pip.MaxWindows = newConfig.Pip.MaxWindows;
         _config.GinaPath = newConfig.GinaPath;
         _config.NotesPath = newConfig.NotesPath;
         _config.Characters = newConfig.Characters;
@@ -848,6 +883,62 @@ CONFIG:
 
         Debug.WriteLine("Config reloaded and applied");
         ShowBalloon("Settings applied");
+    }
+
+    private void ShowProcessManager()
+    {
+        if (_processManagerForm != null && !_processManagerForm.IsDisposed)
+        {
+            _processManagerForm.BringToFront();
+            return;
+        }
+
+        _processManagerForm = new ProcessManagerForm(
+            () => _processManager.Clients,
+            () => _processManager.GetActiveClient(),
+            () => _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient())
+        );
+        _processManagerForm.FormClosed += (_, _) => _processManagerForm = null;
+        _processManagerForm.Show();
+    }
+
+    private void CreateDesktopShortcut()
+    {
+        try
+        {
+            var desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+            var shortcutPath = Path.Combine(desktopPath, "EQSwitch.lnk");
+
+            if (File.Exists(shortcutPath))
+            {
+                ShowBalloon("Desktop shortcut already exists");
+                return;
+            }
+
+            // Use WScript.Shell COM object to create shortcut
+            var shellType = Type.GetTypeFromProgID("WScript.Shell");
+            if (shellType == null)
+            {
+                ShowBalloon("Failed to create shortcut — WScript.Shell not available");
+                return;
+            }
+
+            dynamic shell = Activator.CreateInstance(shellType)!;
+            dynamic shortcut = shell.CreateShortcut(shortcutPath);
+            shortcut.TargetPath = Application.ExecutablePath;
+            shortcut.WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory;
+            shortcut.Description = "EQSwitch — EverQuest Window Manager";
+            shortcut.IconLocation = Application.ExecutablePath + ",0";
+            shortcut.Save();
+
+            Debug.WriteLine($"Desktop shortcut created: {shortcutPath}");
+            ShowBalloon("Desktop shortcut created");
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"CreateDesktopShortcut failed: {ex.Message}");
+            ShowBalloon($"Failed to create shortcut: {ex.Message}");
+        }
     }
 
     private void Shutdown()

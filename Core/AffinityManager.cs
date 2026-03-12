@@ -30,6 +30,15 @@ public class AffinityManager
     }
 
     /// <summary>
+    /// Force re-apply affinity rules to all clients, ignoring the "unchanged" optimization.
+    /// </summary>
+    public void ForceApplyAffinityRules(IReadOnlyList<EQClient> clients, EQClient? activeClient)
+    {
+        _lastActiveClient = null; // reset cache to force re-apply
+        ApplyAffinityRules(clients, activeClient);
+    }
+
+    /// <summary>
     /// Apply affinity and priority rules: active client gets P-cores + higher priority,
     /// background clients get E-cores + normal priority.
     /// Call this whenever the foreground window changes.

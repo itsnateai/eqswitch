@@ -38,10 +38,10 @@ Port of EQSwitch v2.1 (AHK v2) to C# (.NET 8 WinForms).
 - [x] Active client → P-cores (0xFF), background → E-cores (0xFF00)
 - [x] Per-character affinity override
 - [x] Affinity re-apply on launch (with retry — EQ resets it)
-- [ ] Process Manager GUI (ListView: PID, Title, Priority, Affinity)
+- [x] Process Manager GUI (ListView: PID, Title, Priority, Affinity)
 - [x] Core count detection (GetProcessAffinityMask + Environment.ProcessorCount)
-- [ ] "All" / "None" quick-select for core checkboxes
-- [ ] Force Apply button
+- [x] "All" / "None" quick-select for core checkboxes
+- [x] Force Apply button (Process Manager + tray menu)
 - [x] Diagnostic tray menu item showing current affinity masks
 - [x] Timer-based foreground tracking (250ms) for automatic affinity switching
 - [x] Affinity/priority reset to defaults on shutdown
@@ -86,11 +86,10 @@ Port of EQSwitch v2.1 (AHK v2) to C# (.NET 8 WinForms).
 - [x] Save/Apply/Close buttons with config persistence
 - [x] Settings menu item in tray (single-instance window)
 - [x] Dark theme (matching FirstRunDialog style)
-- [ ] PiP settings tab (deferred to M8)
+- [x] PiP settings tab (size, opacity, border, max windows)
 - [x] Paths section — Gina, Notes (done in M10)
-- [ ] Character Backup section (deferred to M12)
-- [ ] Tray behavior settings (deferred to M11)
-- [ ] Desktop shortcut creation (deferred to M11)
+- [x] Character Backup section (export/import in Characters tab)
+- [x] Desktop shortcut creation (tray menu item)
 
 ## Milestone 8: Picture-in-Picture (PiP) Overlay
 - [x] DWM thumbnail registration (DwmRegisterThumbnail)
@@ -128,7 +127,7 @@ Port of EQSwitch v2.1 (AHK v2) to C# (.NET 8 WinForms).
 ## Milestone 11: Tray Behaviors + Polish
 - [x] Double-click tray: launch one EQ client
 - [x] Middle-click tray: toggle PiP overlay
-- [ ] Triple-click detection with cooldown (deferred — low priority)
+- [x] Triple-click detection with cooldown (500ms window → arrange windows)
 - [x] Run at Windows startup (Registry-based HKCU\Run)
 - [x] Help window (scrollable, resizable, Consolas monospace, full hotkey reference)
 - [x] Tray menu hotkey suffixes (tab-separated display on Fix Windows, Launch items)
