@@ -15,6 +15,7 @@ public class LaunchManager
     private bool _launchActive;
     private long _lastLaunchTime;
     private readonly List<int> _launchedPids = new();
+    private readonly List<System.Windows.Forms.Timer> _activeTimers = new();
 
     /// <summary>Fires after each individual client is launched (with PID).</summary>
     public event EventHandler<int>? ClientLaunched;
@@ -92,14 +93,17 @@ public class LaunchManager
 
         if (launched < total)
         {
-            // Schedule next launch after delay
-            var timer = new System.Windows.Forms.Timer { Interval = _config.Launch.LaunchDelayMs };
+            // Schedule next launch after delay (minimum 500ms to prevent overlapping)
+            var delay = Math.Max(_config.Launch.LaunchDelayMs, 500);
+            var timer = new System.Windows.Forms.Timer { Interval = delay };
             timer.Tick += (_, _) =>
             {
                 timer.Stop();
+                _activeTimers.Remove(timer);
                 timer.Dispose();
-                LaunchNext(launched, total);
+                if (_launchActive) LaunchNext(launched, total);
             };
+            _activeTimers.Add(timer);
             timer.Start();
         }
         else
@@ -118,6 +122,7 @@ public class LaunchManager
         fixTimer.Tick += (_, _) =>
         {
             fixTimer.Stop();
+            _activeTimers.Remove(fixTimer);
             fixTimer.Dispose();
 
             _launchActive = false;
@@ -127,7 +132,24 @@ public class LaunchManager
             LaunchSequenceComplete?.Invoke(this, EventArgs.Empty);
             Debug.WriteLine("LaunchAll: sequence complete");
         };
+        _activeTimers.Add(fixTimer);
         fixTimer.Start();
+    }
+
+    /// <summary>
+    /// Cancel any in-flight launch sequence and dispose all pending timers.
+    /// Call this on config reload or shutdown.
+    /// </summary>
+    public void CancelLaunch()
+    {
+        _launchActive = false;
+        foreach (var timer in _activeTimers)
+        {
+            timer.Stop();
+            timer.Dispose();
+        }
+        _activeTimers.Clear();
+        _launchedPids.Clear();
     }
 
     private int StartEQProcess()

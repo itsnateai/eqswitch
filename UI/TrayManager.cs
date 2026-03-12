@@ -96,6 +96,7 @@ public class TrayManager : IDisposable
         _processManager.StartPolling();
         RegisterHotkeys();
         StartAffinityTimer();
+        ValidateStartupRegistryPath();
 
         // Log core detection at startup
         var (cores, sysMask) = AffinityManager.DetectCores();
@@ -553,21 +554,22 @@ public class TrayManager : IDisposable
         }
         else if (e.Button == MouseButtons.Left)
         {
-            // Triple-click detection (500ms window)
+            // Triple-click detection: each click must be within 500ms of the previous
             long now = Environment.TickCount64;
             if (now - _trayFirstClickTick > 500)
             {
                 _trayClickCount = 1;
-                _trayFirstClickTick = now;
             }
             else
             {
                 _trayClickCount++;
-                if (_trayClickCount >= 3)
-                {
-                    _trayClickCount = 0;
-                    OnArrangeWindows();
-                }
+            }
+            _trayFirstClickTick = now;
+
+            if (_trayClickCount >= 3)
+            {
+                _trayClickCount = 0;
+                OnArrangeWindows();
             }
         }
     }
@@ -765,6 +767,30 @@ CONFIG:
     }
 
     /// <summary>
+    /// If run-at-startup is enabled, ensure the registry path matches the current exe location.
+    /// </summary>
+    private void ValidateStartupRegistryPath()
+    {
+        if (!_config.RunAtStartup) return;
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", writable: false);
+            var registeredPath = key?.GetValue("EQSwitch") as string;
+            var currentPath = $"\"{Application.ExecutablePath}\"";
+            if (registeredPath != null && !registeredPath.Equals(currentPath, StringComparison.OrdinalIgnoreCase))
+            {
+                Debug.WriteLine($"Startup: registry path stale ({registeredPath}), updating to {currentPath}");
+                SetRunAtStartup(true);
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"ValidateStartupRegistryPath failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
     /// Add or remove EQSwitch from Windows startup via Registry.
     /// </summary>
     private static void SetRunAtStartup(bool enable)
@@ -872,6 +898,9 @@ CONFIG:
         _config.NotesPath = newConfig.NotesPath;
         _config.Characters = newConfig.Characters;
 
+        // Cancel any in-flight launch sequence before reload
+        _launchManager.CancelLaunch();
+
         // Re-register hotkeys if they changed
         _hotkeyManager.UnregisterAll();
         _keyboardHook.Reset();
@@ -969,25 +998,46 @@ CONFIG:
     private void Shutdown()
     {
         _affinityTimer?.Stop();
+        _affinityTimer?.Dispose();
         _retryTimer?.Stop();
+        _retryTimer?.Dispose();
+        _launchManager.CancelLaunch();
         _pipOverlay?.Dispose();
         _pipOverlay = null;
         _affinityManager.ResetAllAffinities(_processManager.Clients);
         _hotkeyManager.Dispose();
         _keyboardHook.Dispose();
         _processManager.StopPolling();
+        _contextMenu?.Dispose();
         _trayIcon!.Visible = false;
+        _trayIcon.Dispose();
         Application.Exit();
     }
 
-    private static Icon LoadIcon()
+    private Icon LoadIcon()
     {
+        // Dispose previous custom icon to prevent handle leak on reload
+        var oldIcon = _trayIcon?.Icon;
+
         var iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "eqswitch.ico");
+        Icon newIcon;
         if (File.Exists(iconPath))
         {
-            try { return new Icon(iconPath); } catch { }
+            try { newIcon = new Icon(iconPath); }
+            catch { newIcon = SystemIcons.Application; }
         }
-        return SystemIcons.Application;
+        else
+        {
+            newIcon = SystemIcons.Application;
+        }
+
+        // Only dispose if it was a custom icon (not a system icon)
+        if (oldIcon != null && oldIcon != SystemIcons.Application)
+        {
+            try { oldIcon.Dispose(); } catch { }
+        }
+
+        return newIcon;
     }
 
     public void Dispose()

@@ -45,7 +45,8 @@ public class PipOverlay : Form
         Size = new Size(w + (config.Pip.ShowBorder ? 4 : 0), (h + gap) * maxWin);
 
         // Default position: top-right corner
-        var screen = Screen.PrimaryScreen!.WorkingArea;
+        var screen = (Screen.PrimaryScreen ?? Screen.AllScreens.FirstOrDefault())?.WorkingArea
+                     ?? new Rectangle(0, 0, 1920, 1080);
         Location = new Point(screen.Right - Width - 10, screen.Top + 10);
 
         // Restore saved position if available
