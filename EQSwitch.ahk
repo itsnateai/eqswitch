@@ -214,7 +214,7 @@ LoadConfig() {
     global FIX_MODE, TARGET_MONITOR, STARTUP_ENABLED, MULTIMON_HOTKEY, MULTIMON_ENABLED
     global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, FOCUS_HOTKEY, TRIPLECLICK_LAUNCH
     global PROCESS_PRIORITY, CPU_AFFINITY
-    global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
+    global FIX_TOP_OFFSET
     global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY, PIP_X, PIP_Y
     global BORDER_COLOR, PIP_BORDER_ENABLED
 
@@ -288,7 +288,6 @@ LoadConfig() {
     PROCESS_PRIORITY   := ReadKey("PROCESS_PRIORITY",   "Normal")
     CPU_AFFINITY       := ReadKey("CPU_AFFINITY",        "")
     FIX_TOP_OFFSET     := ReadKey("FIX_TOP_OFFSET",      "0")
-    FIX_BOTTOM_OFFSET  := ReadKey("FIX_BOTTOM_OFFSET",   "0")
     PIP_WIDTH          := ReadKey("PIP_WIDTH",            "320")
     PIP_HEIGHT         := ReadKey("PIP_HEIGHT",           "180")
     PIP_OPACITY        := ReadKey("PIP_OPACITY",          "200")
@@ -305,7 +304,7 @@ SaveConfig() {
     global FIX_MODE, TARGET_MONITOR, STARTUP_ENABLED, MULTIMON_HOTKEY, MULTIMON_ENABLED
     global LAUNCH_ONE_HOTKEY, LAUNCH_ALL_HOTKEY, FOCUS_HOTKEY, TRIPLECLICK_LAUNCH
     global PROCESS_PRIORITY, CPU_AFFINITY
-    global FIX_TOP_OFFSET, FIX_BOTTOM_OFFSET
+    global FIX_TOP_OFFSET
     global PIP_WIDTH, PIP_HEIGHT, PIP_OPACITY, PIP_X, PIP_Y
     global BORDER_COLOR, PIP_BORDER_ENABLED
     IniWrite(EQ_EXE,           CFG_FILE, "EQSwitch", "EQ_EXE")
@@ -332,7 +331,6 @@ SaveConfig() {
     IniWrite(PROCESS_PRIORITY, CFG_FILE, "EQSwitch", "PROCESS_PRIORITY")
     IniWrite(CPU_AFFINITY, CFG_FILE, "EQSwitch", "CPU_AFFINITY")
     IniWrite(FIX_TOP_OFFSET, CFG_FILE, "EQSwitch", "FIX_TOP_OFFSET")
-    IniWrite(FIX_BOTTOM_OFFSET, CFG_FILE, "EQSwitch", "FIX_BOTTOM_OFFSET")
     IniWrite(PIP_WIDTH, CFG_FILE, "EQSwitch", "PIP_WIDTH")
     IniWrite(PIP_HEIGHT, CFG_FILE, "EQSwitch", "PIP_HEIGHT")
     IniWrite(PIP_OPACITY, CFG_FILE, "EQSwitch", "PIP_OPACITY")
@@ -589,6 +587,7 @@ A_TrayMenu.Delete()
 OnMessage(0x404, TrayClick)
 g_dblClickPending := false  ; true while waiting to see if a 3rd click follows
 g_dblClickTimer   := ""
+g_dblClickUpIgnore := false
 g_midClickCount := 0
 g_midClickTimer := ""
 TrayClick(wParam, lParam, *) {

@@ -16,7 +16,7 @@ MSYS_NO_PATHCONV=1 "X:/_Projects/_tools/Ahk/Ahk2Exe.exe" /in eqswitch.ahk /out e
 ## Key Files
 | File | Purpose |
 |------|---------|
-| eqswitch.ahk | Main source (~2,646 lines) |
+| EQSwitch.ahk | Main source (~2,640 lines) |
 | eqswitch.ico | Tray/exe icon (embedded via @Ahk2Exe-AddResource) |
 | eqswitch.cfg | User config (gitignored, INI format) |
 
