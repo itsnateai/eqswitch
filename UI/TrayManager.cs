@@ -848,6 +848,7 @@ CONFIG:
         _config.Hotkeys.LaunchOne = newConfig.Hotkeys.LaunchOne;
         _config.Hotkeys.LaunchAll = newConfig.Hotkeys.LaunchAll;
         _config.Hotkeys.MultiMonitorEnabled = newConfig.Hotkeys.MultiMonitorEnabled;
+        _config.Hotkeys.DirectSwitchKeys = newConfig.Hotkeys.DirectSwitchKeys;
         _config.Launch.ExeName = newConfig.Launch.ExeName;
         _config.Launch.Arguments = newConfig.Launch.Arguments;
         _config.Launch.NumClients = newConfig.Launch.NumClients;
@@ -872,7 +873,11 @@ CONFIG:
 
         // Restart or stop affinity timer based on new config
         _affinityTimer?.Stop();
+        _affinityTimer?.Dispose();
+        _affinityTimer = null;
         _retryTimer?.Stop();
+        _retryTimer?.Dispose();
+        _retryTimer = null;
         if (_config.Affinity.Enabled)
         {
             StartAffinityTimer();
@@ -924,12 +929,26 @@ CONFIG:
             }
 
             dynamic shell = Activator.CreateInstance(shellType)!;
-            dynamic shortcut = shell.CreateShortcut(shortcutPath);
-            shortcut.TargetPath = Application.ExecutablePath;
-            shortcut.WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory;
-            shortcut.Description = "EQSwitch — EverQuest Window Manager";
-            shortcut.IconLocation = Application.ExecutablePath + ",0";
-            shortcut.Save();
+            try
+            {
+                dynamic shortcut = shell.CreateShortcut(shortcutPath);
+                try
+                {
+                    shortcut.TargetPath = Application.ExecutablePath;
+                    shortcut.WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory;
+                    shortcut.Description = "EQSwitch — EverQuest Window Manager";
+                    shortcut.IconLocation = Application.ExecutablePath + ",0";
+                    shortcut.Save();
+                }
+                finally
+                {
+                    System.Runtime.InteropServices.Marshal.FinalReleaseComObject(shortcut);
+                }
+            }
+            finally
+            {
+                System.Runtime.InteropServices.Marshal.FinalReleaseComObject(shell);
+            }
 
             Debug.WriteLine($"Desktop shortcut created: {shortcutPath}");
             ShowBalloon("Desktop shortcut created");

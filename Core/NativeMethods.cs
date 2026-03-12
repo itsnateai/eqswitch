@@ -22,11 +22,11 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr GetForegroundWindow();
 
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+    [DllImport("user32.dll", SetLastError = true, EntryPoint = "GetWindowLongPtrW")]
+    public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+    [DllImport("user32.dll", SetLastError = true, EntryPoint = "SetWindowLongPtrW")]
+    public static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
 
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
@@ -120,9 +120,9 @@ internal static class NativeMethods
 
     public const int GWL_STYLE = -16;
     public const int GWL_EXSTYLE = -20;
-    public const int WS_CAPTION = 0x00C00000;
-    public const int WS_THICKFRAME = 0x00040000;
-    public const int WS_BORDER = 0x00800000;
+    public const long WS_CAPTION = 0x00C00000;
+    public const long WS_THICKFRAME = 0x00040000;
+    public const long WS_BORDER = 0x00800000;
 
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOSIZE = 0x0001;

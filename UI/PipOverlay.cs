@@ -229,6 +229,8 @@ public class PipOverlay : Form
             _config.Pip.SavedPositions.Add(new[] { Location.X, Location.Y });
         else
             _config.Pip.SavedPositions[0] = new[] { Location.X, Location.Y };
+
+        ConfigManager.Save(_config);
     }
 
     protected override void Dispose(bool disposing)

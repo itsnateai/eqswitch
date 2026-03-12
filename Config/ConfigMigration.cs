@@ -23,8 +23,8 @@ public static class ConfigMigration
 
         try
         {
-            // AHK uses UTF-16LE
-            var lines = File.ReadAllLines(cfgPath, Encoding.Unicode);
+            // AHK's IniWrite uses system default encoding (typically ANSI/Windows-1252)
+            var lines = File.ReadAllLines(cfgPath, Encoding.Default);
             var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             bool inSection = false;

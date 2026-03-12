@@ -53,9 +53,10 @@ public class ProcessManager : IDisposable
     /// </summary>
     public void RefreshClients()
     {
+        Process[]? eqProcesses = null;
         try
         {
-            var eqProcesses = Process.GetProcessesByName(_config.EQProcessName);
+            eqProcesses = Process.GetProcessesByName(_config.EQProcessName);
             var currentPids = new HashSet<int>(eqProcesses.Select(p => p.Id));
 
             lock (_lock)
@@ -116,6 +117,13 @@ public class ProcessManager : IDisposable
         catch (Exception ex)
         {
             Debug.WriteLine($"RefreshClients error: {ex.Message}");
+        }
+        finally
+        {
+            // Dispose all Process objects to release OS handles
+            if (eqProcesses != null)
+                foreach (var p in eqProcesses)
+                    p.Dispose();
         }
     }
 
