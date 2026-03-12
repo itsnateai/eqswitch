@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using EQSwitch.Config;
 using EQSwitch.Core;
 using EQSwitch.Models;
@@ -7,6 +6,11 @@ namespace EQSwitch.UI;
 
 public class TrayManager : IDisposable
 {
+    // ─── Constants ───────────────────────────────────────────────────
+    private const int MultiMonToggleDebounceMs = 500;
+    private const int AffinityPollIntervalMs = 250;
+    private const int TripleClickWindowMs = 500;
+
     private readonly AppConfig _config;
     private readonly ProcessManager _processManager;
     private readonly WindowManager _windowManager;
@@ -100,7 +104,7 @@ public class TrayManager : IDisposable
 
         // Log core detection at startup
         var (cores, sysMask) = AffinityManager.DetectCores();
-        Debug.WriteLine($"Startup: {cores} cores detected, system mask 0x{sysMask:X}");
+        FileLogger.Info($"Startup: {cores} cores detected, system mask 0x{sysMask:X}");
 
         ShowBalloon("EQSwitch started. Watching for EQ clients...");
     }
@@ -147,7 +151,7 @@ public class TrayManager : IDisposable
             if (id > 0) registered++; else failed++;
         }
 
-        Debug.WriteLine($"RegisterHotKey: {registered} registered, {failed} failed");
+        FileLogger.Info($"RegisterHotKey: {registered} registered, {failed} failed");
 
         // Low-level keyboard hook for single-key hotkeys
         if (_keyboardHook.Install())
@@ -159,7 +163,7 @@ public class TrayManager : IDisposable
                 if (vk != 0)
                 {
                     _keyboardHook.Register(vk, OnSwitchKey, _config.EQProcessName);
-                    Debug.WriteLine($"Hook: SwitchKey '{hk.SwitchKey}' (VK 0x{vk:X2}) — EQ-only");
+                    FileLogger.Info($"Hook: SwitchKey '{hk.SwitchKey}' (VK 0x{vk:X2}) — EQ-only");
                 }
             }
 
@@ -170,13 +174,13 @@ public class TrayManager : IDisposable
                 if (vk != 0)
                 {
                     _keyboardHook.Register(vk, OnGlobalSwitchKey, requireClients: true);
-                    Debug.WriteLine($"Hook: GlobalSwitchKey '{hk.GlobalSwitchKey}' (VK 0x{vk:X2}) — global (requires clients)");
+                    FileLogger.Info($"Hook: GlobalSwitchKey '{hk.GlobalSwitchKey}' (VK 0x{vk:X2}) — global (requires clients)");
                 }
             }
         }
         else
         {
-            Debug.WriteLine("WARNING: Keyboard hook install failed — SwitchKey and GlobalSwitchKey disabled");
+            FileLogger.Warn("Keyboard hook install failed — SwitchKey and GlobalSwitchKey disabled");
         }
     }
 
@@ -191,11 +195,11 @@ public class TrayManager : IDisposable
         if (client != null)
         {
             _windowManager.SwitchToClient(client);
-            Debug.WriteLine($"Direct switch to slot {slot + 1}: {client}");
+            FileLogger.Info($"Direct switch to slot {slot + 1}: {client}");
         }
         else
         {
-            Debug.WriteLine($"Direct switch: no client in slot {slot + 1}");
+            FileLogger.Info($"Direct switch: no client in slot {slot + 1}");
         }
     }
 
@@ -209,13 +213,13 @@ public class TrayManager : IDisposable
         var clients = _processManager.Clients;
         if (clients.Count < 2)
         {
-            Debug.WriteLine("SwitchKey: fewer than 2 clients, nothing to cycle");
+            FileLogger.Info("SwitchKey: fewer than 2 clients, nothing to cycle");
             return;
         }
 
         var next = _windowManager.CycleNext(clients, current);
         if (next != null)
-            Debug.WriteLine($"SwitchKey: cycled to {next}");
+            FileLogger.Info($"SwitchKey: cycled to {next}");
     }
 
     /// <summary>
@@ -230,7 +234,7 @@ public class TrayManager : IDisposable
 
         if (clients.Count == 0)
         {
-            Debug.WriteLine("GlobalSwitchKey: no clients detected");
+            FileLogger.Info("GlobalSwitchKey: no clients detected");
             return;
         }
 
@@ -239,14 +243,14 @@ public class TrayManager : IDisposable
             // EQ is focused — cycle to next
             var next = _windowManager.CycleNext(clients, current);
             if (next != null)
-                Debug.WriteLine($"GlobalSwitchKey: cycled to {next}");
+                FileLogger.Info($"GlobalSwitchKey: cycled to {next}");
         }
         else
         {
             // EQ is NOT focused — bring first client to front
             var first = clients[0];
             _windowManager.SwitchToClient(first);
-            Debug.WriteLine($"GlobalSwitchKey: focused {first}");
+            FileLogger.Info($"GlobalSwitchKey: focused {first}");
         }
     }
 
@@ -258,12 +262,12 @@ public class TrayManager : IDisposable
         var clients = _processManager.Clients;
         if (clients.Count == 0)
         {
-            Debug.WriteLine("ArrangeWindows: no clients to arrange");
+            FileLogger.Info("ArrangeWindows: no clients to arrange");
             return;
         }
 
         _windowManager.ArrangeWindows(clients);
-        Debug.WriteLine($"ArrangeWindows: arranged {clients.Count} client(s)");
+        FileLogger.Info($"ArrangeWindows: arranged {clients.Count} client(s)");
         ShowBalloon($"Arranged {clients.Count} window(s) in grid");
     }
 
@@ -275,13 +279,12 @@ public class TrayManager : IDisposable
     {
         if (!_config.Hotkeys.MultiMonitorEnabled)
         {
-            Debug.WriteLine("ToggleMultiMonitor: disabled in config");
+            FileLogger.Info("ToggleMultiMonitor: disabled in config");
             return;
         }
 
-        // 500ms debounce
         long now = Environment.TickCount64;
-        if (now - _lastMultiMonToggle < 500)
+        if (now - _lastMultiMonToggle < MultiMonToggleDebounceMs)
             return;
         _lastMultiMonToggle = now;
 
@@ -290,7 +293,7 @@ public class TrayManager : IDisposable
         _config.Layout.Mode = isMulti ? "single" : "multimonitor";
 
         string label = isMulti ? "Single Screen" : "Multi-Monitor";
-        Debug.WriteLine($"ToggleMultiMonitor: switched to {label}");
+        FileLogger.Info($"ToggleMultiMonitor: switched to {label}");
         ShowBalloon($"Layout: {label}");
 
         // Save the mode change
@@ -324,8 +327,7 @@ public class TrayManager : IDisposable
     {
         if (!_config.Affinity.Enabled) return;
 
-        // 250ms timer to check foreground window and apply affinity rules
-        _affinityTimer = new System.Windows.Forms.Timer { Interval = 250 };
+        _affinityTimer = new System.Windows.Forms.Timer { Interval = AffinityPollIntervalMs };
         _affinityTimer.Tick += (_, _) =>
         {
             var active = _processManager.GetActiveClient();
@@ -361,7 +363,7 @@ public class TrayManager : IDisposable
         };
         _retryTimer.Start();
 
-        Debug.WriteLine("Affinity timers started (250ms check, retry every " +
+        FileLogger.Info("Affinity timers started (250ms check, retry every " +
             $"{_config.Affinity.LaunchRetryDelayMs}ms)");
     }
 
@@ -554,9 +556,8 @@ public class TrayManager : IDisposable
         }
         else if (e.Button == MouseButtons.Left)
         {
-            // Triple-click detection: each click must be within 500ms of the previous
             long now = Environment.TickCount64;
-            if (now - _trayFirstClickTick > 500)
+            if (now - _trayFirstClickTick > TripleClickWindowMs)
             {
                 _trayClickCount = 1;
             }
@@ -649,7 +650,7 @@ public class TrayManager : IDisposable
         // Update polling interval
         _processManager.UpdatePollingInterval(_config.PollingIntervalMs);
 
-        Debug.WriteLine("Config reloaded and applied");
+        FileLogger.Info("Config reloaded and applied");
         ShowBalloon("Settings applied");
     }
 
@@ -721,6 +722,7 @@ public class TrayManager : IDisposable
         _affinityTimer?.Dispose();
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
+        _launchManager.Dispose();
         _pipOverlay?.Dispose();
         _hotkeyManager.Dispose();
         _keyboardHook.Dispose();

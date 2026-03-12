@@ -7,7 +7,7 @@
     <ApplicationIcon>eqswitch.ico</ApplicationIcon>
     <AssemblyName>EQSwitch</AssemblyName>
     <RootNamespace>EQSwitch</RootNamespace>
-    <Version>2.1.0</Version>
+    <Version>2.2.0</Version>
     <Description>EverQuest Multiboxing Window Manager for Shards of Dalaya</Description>
 
     <!-- Single-file portable publish settings -->
@@ -23,7 +23,17 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="EQSwitch.Tests\**" />
+    <Content Remove="EQSwitch.Tests\**" />
+    <None Remove="EQSwitch.Tests\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Include="eqswitch.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="EQSwitch.Tests" />
   </ItemGroup>
 
 </Project>

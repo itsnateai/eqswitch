@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 using EQSwitch.Config;
@@ -50,10 +51,17 @@ public class ProcessManager : IDisposable
 
     /// <summary>
     /// Scan for EQ processes and update the client list.
+    /// Events are fired outside the lock to prevent deadlocks.
     /// </summary>
     public void RefreshClients()
     {
         Process[]? eqProcesses = null;
+
+        // Collect events to fire outside the lock
+        var lostClients = new List<EQClient>();
+        var discoveredClients = new List<EQClient>();
+        bool listChanged = false;
+
         try
         {
             eqProcesses = Process.GetProcessesByName(_config.EQProcessName);
@@ -66,7 +74,7 @@ public class ProcessManager : IDisposable
                 foreach (var client in dead)
                 {
                     _clients.Remove(client);
-                    ClientLost?.Invoke(this, client);
+                    lostClients.Add(client);
                 }
 
                 // Discover new clients
@@ -88,14 +96,19 @@ public class ProcessManager : IDisposable
                             SlotIndex = _clients.Count
                         };
                         client.ResolveCharacterName();
-
-                        // Match to character profile if possible
                         MatchCharacterProfile(client);
 
                         _clients.Add(client);
-                        ClientDiscovered?.Invoke(this, client);
+                        discoveredClients.Add(client);
                     }
-                    catch { /* Process may have exited between enumeration and access */ }
+                    catch (InvalidOperationException)
+                    {
+                        // Process exited between enumeration and access — expected
+                    }
+                    catch (Win32Exception ex)
+                    {
+                        FileLogger.Warn($"Access denied for process {proc.Id}: {ex.Message}");
+                    }
                 }
 
                 // Refresh window titles (character may have logged in)
@@ -112,21 +125,35 @@ public class ProcessManager : IDisposable
                     }
                 }
 
-                if (dead.Count > 0 || eqProcesses.Length != knownPids.Count || titleChanged)
-                    ClientListChanged?.Invoke(this, EventArgs.Empty);
+                listChanged = lostClients.Count > 0 || discoveredClients.Count > 0 || titleChanged;
             }
+        }
+        catch (InvalidOperationException)
+        {
+            // Process collection changed during enumeration — retry next tick
+        }
+        catch (Win32Exception ex)
+        {
+            FileLogger.Warn($"RefreshClients Win32 error: {ex.Message}");
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"RefreshClients error: {ex.Message}");
+            FileLogger.Error("RefreshClients unexpected error", ex);
         }
         finally
         {
-            // Dispose all Process objects to release OS handles
             if (eqProcesses != null)
                 foreach (var p in eqProcesses)
                     p.Dispose();
         }
+
+        // Fire events OUTSIDE the lock to prevent deadlocks
+        foreach (var client in lostClients)
+            ClientLost?.Invoke(this, client);
+        foreach (var client in discoveredClients)
+            ClientDiscovered?.Invoke(this, client);
+        if (listChanged)
+            ClientListChanged?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>
@@ -160,15 +187,13 @@ public class ProcessManager : IDisposable
             c => c.Name.Equals(client.CharacterName, StringComparison.OrdinalIgnoreCase));
 
         if (profile != null)
-        {
             client.SlotIndex = profile.SlotIndex;
-        }
     }
 
     private static string GetWindowTitle(IntPtr hwnd)
     {
         int len = NativeMethods.GetWindowTextLength(hwnd);
-        if (len == 0) return "";
+        if (len <= 0) return "";
 
         var sb = new StringBuilder(len + 1);
         NativeMethods.GetWindowText(hwnd, sb, sb.Capacity);

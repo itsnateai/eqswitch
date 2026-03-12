@@ -26,6 +26,8 @@ static class Program
             return;
         }
 
+        FileLogger.Initialize();
+
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
@@ -71,6 +73,7 @@ static class Program
         }
         catch (Exception ex)
         {
+            FileLogger.Error("Fatal error", ex);
             MessageBox.Show(
                 $"EQSwitch encountered a fatal error:\n\n{ex.Message}",
                 "EQSwitch Error",
@@ -79,6 +82,7 @@ static class Program
         }
         finally
         {
+            FileLogger.Shutdown();
             _mutex?.ReleaseMutex();
             _mutex?.Dispose();
         }

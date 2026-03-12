@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using EQSwitch.Config;
 using EQSwitch.Models;
 
@@ -6,15 +5,17 @@ namespace EQSwitch.Core;
 
 /// <summary>
 /// Handles window positioning, switching, arrangement, and style manipulation.
-/// All Win32 calls go through NativeMethods — no raw DllImport here.
+/// Win32 calls go through IWindowsApi for testability.
 /// </summary>
 public class WindowManager
 {
     private readonly AppConfig _config;
+    private readonly IWindowsApi _api;
 
-    public WindowManager(AppConfig config)
+    public WindowManager(AppConfig config, IWindowsApi? api = null)
     {
         _config = config;
+        _api = api ?? new WindowsApi();
     }
 
     // ─── Focus Switching ──────────────────────────────────────────
@@ -25,24 +26,24 @@ public class WindowManager
     /// </summary>
     public bool SwitchToClient(EQClient client)
     {
-        if (!NativeMethods.IsWindow(client.WindowHandle))
+        if (!_api.IsWindow(client.WindowHandle))
             return false;
 
-        if (NativeMethods.IsHungAppWindow(client.WindowHandle))
+        if (_api.IsHungAppWindow(client.WindowHandle))
         {
-            Debug.WriteLine($"SwitchToClient: skipping hung window {client}");
+            FileLogger.Info($"SwitchToClient: skipping hung window {client}");
             return false;
         }
 
         try
         {
-            NativeMethods.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
-            NativeMethods.SetForegroundWindow(client.WindowHandle);
+            _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+            _api.SetForegroundWindow(client.WindowHandle);
             return true;
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"SwitchToClient failed: {ex.Message}");
+            FileLogger.Error($"SwitchToClient failed", ex);
             return false;
         }
     }
@@ -120,10 +121,10 @@ public class WindowManager
         for (int i = 0; i < clients.Count && i < cols * rows; i++)
         {
             var client = clients[i];
-            if (!NativeMethods.IsWindow(client.WindowHandle)) continue;
-            if (NativeMethods.IsHungAppWindow(client.WindowHandle))
+            if (!_api.IsWindow(client.WindowHandle)) continue;
+            if (_api.IsHungAppWindow(client.WindowHandle))
             {
-                Debug.WriteLine($"ArrangeWindows: skipping hung window {client}");
+                FileLogger.Info($"ArrangeWindows: skipping hung window {client}");
                 continue;
             }
 
@@ -133,19 +134,19 @@ public class WindowManager
             int y = monitor.Top + (row * cellHeight) + yOffset;
 
             // Restore if minimized
-            NativeMethods.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+            _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
             if (layout.RemoveTitleBars)
                 RemoveTitleBar(client.WindowHandle);
 
-            NativeMethods.SetWindowPos(
+            _api.SetWindowPos(
                 client.WindowHandle,
                 IntPtr.Zero,
                 x, y, cellWidth, cellHeight,
                 NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW | NativeMethods.SWP_FRAMECHANGED);
         }
 
-        Debug.WriteLine($"ArrangeSingleScreen: {clients.Count} window(s) in {cols}x{rows} grid");
+        FileLogger.Info($"ArrangeSingleScreen: {clients.Count} window(s) in {cols}x{rows} grid");
     }
 
     /// <summary>
@@ -155,7 +156,7 @@ public class WindowManager
     /// </summary>
     private void ArrangeMultiMonitor(IReadOnlyList<EQClient> clients)
     {
-        var monitors = GetAllMonitors();
+        var monitors = _api.GetAllMonitorWorkAreas();
         if (monitors.Count == 0) return;
 
         int yOffset = _config.Layout.TopOffset;
@@ -163,29 +164,29 @@ public class WindowManager
         for (int i = 0; i < clients.Count; i++)
         {
             var client = clients[i];
-            if (!NativeMethods.IsWindow(client.WindowHandle)) continue;
-            if (NativeMethods.IsHungAppWindow(client.WindowHandle))
+            if (!_api.IsWindow(client.WindowHandle)) continue;
+            if (_api.IsHungAppWindow(client.WindowHandle))
             {
-                Debug.WriteLine($"ArrangeMultiMonitor: skipping hung window {client}");
+                FileLogger.Info($"ArrangeMultiMonitor: skipping hung window {client}");
                 continue;
             }
 
             // Cycle through monitors: window 0 → monitor 0, window 1 → monitor 1, etc.
             var mon = monitors[i % monitors.Count];
 
-            NativeMethods.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+            _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
             if (_config.Layout.RemoveTitleBars)
                 RemoveTitleBar(client.WindowHandle);
 
-            NativeMethods.SetWindowPos(
+            _api.SetWindowPos(
                 client.WindowHandle,
                 IntPtr.Zero,
                 mon.Left, mon.Top + yOffset, mon.Width, mon.Height,
                 NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW | NativeMethods.SWP_FRAMECHANGED);
         }
 
-        Debug.WriteLine($"ArrangeMultiMonitor: {clients.Count} window(s) across {monitors.Count} monitor(s)");
+        FileLogger.Info($"ArrangeMultiMonitor: {clients.Count} window(s) across {monitors.Count} monitor(s)");
     }
 
     /// <summary>
@@ -199,29 +200,29 @@ public class WindowManager
         // Check for hung windows — abort if any are unresponsive
         foreach (var client in clients)
         {
-            if (NativeMethods.IsHungAppWindow(client.WindowHandle))
+            if (_api.IsHungAppWindow(client.WindowHandle))
             {
-                Debug.WriteLine($"SwapWindows: aborting — hung window {client}");
+                FileLogger.Info($"SwapWindows: aborting — hung window {client}");
                 return;
             }
         }
 
         // Capture current positions
-        var positions = new List<NativeMethods.RECT>();
+        var positions = new List<WinRect>();
         foreach (var client in clients)
         {
-            if (!NativeMethods.IsWindow(client.WindowHandle))
+            if (!_api.IsWindow(client.WindowHandle))
             {
-                Debug.WriteLine($"SwapWindows: window gone for {client}");
+                FileLogger.Info($"SwapWindows: window gone for {client}");
                 return;
             }
-            NativeMethods.GetWindowRect(client.WindowHandle, out var rect);
+            _api.GetWindowRect(client.WindowHandle, out var rect);
             positions.Add(rect);
         }
 
         // Restore all windows first (un-maximize)
         foreach (var client in clients)
-            NativeMethods.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+            _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
         // Rotate: each window moves to the next window's position
         for (int i = 0; i < clients.Count; i++)
@@ -229,7 +230,7 @@ public class WindowManager
             int nextIdx = (i + 1) % clients.Count;
             var nextPos = positions[nextIdx];
 
-            NativeMethods.SetWindowPos(
+            _api.SetWindowPos(
                 clients[i].WindowHandle,
                 IntPtr.Zero,
                 nextPos.Left, nextPos.Top,
@@ -237,7 +238,7 @@ public class WindowManager
                 NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW);
         }
 
-        Debug.WriteLine($"SwapWindows: rotated {clients.Count} window positions");
+        FileLogger.Info($"SwapWindows: rotated {clients.Count} window positions");
     }
 
     // ─── Title Bar Management ─────────────────────────────────────
@@ -247,12 +248,12 @@ public class WindowManager
     /// </summary>
     public void RemoveTitleBar(IntPtr hwnd)
     {
-        long style = NativeMethods.GetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE).ToInt64();
+        long style = _api.GetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE).ToInt64();
         style &= ~NativeMethods.WS_CAPTION;
         style &= ~NativeMethods.WS_THICKFRAME;
-        NativeMethods.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, (IntPtr)style);
+        _api.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, (IntPtr)style);
 
-        NativeMethods.SetWindowPos(
+        _api.SetWindowPos(
             hwnd, IntPtr.Zero, 0, 0, 0, 0,
             NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE |
             NativeMethods.SWP_NOZORDER | NativeMethods.SWP_FRAMECHANGED);
@@ -263,12 +264,12 @@ public class WindowManager
     /// </summary>
     public void RestoreTitleBar(IntPtr hwnd)
     {
-        long style = NativeMethods.GetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE).ToInt64();
+        long style = _api.GetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE).ToInt64();
         style |= NativeMethods.WS_CAPTION;
         style |= NativeMethods.WS_THICKFRAME;
-        NativeMethods.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, (IntPtr)style);
+        _api.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, (IntPtr)style);
 
-        NativeMethods.SetWindowPos(
+        _api.SetWindowPos(
             hwnd, IntPtr.Zero, 0, 0, 0, 0,
             NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE |
             NativeMethods.SWP_NOZORDER | NativeMethods.SWP_FRAMECHANGED);
@@ -280,32 +281,10 @@ public class WindowManager
     /// Get the work area of the target monitor (for single-screen mode).
     /// Falls back to monitor 0 if target doesn't exist.
     /// </summary>
-    private NativeMethods.RECT GetTargetMonitor()
+    private WinRect GetTargetMonitor()
     {
-        var monitors = GetAllMonitors();
+        var monitors = _api.GetAllMonitorWorkAreas();
         int targetIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, Math.Max(0, monitors.Count - 1));
-        return monitors.Count > 0 ? monitors[targetIdx] : new NativeMethods.RECT { Right = 1920, Bottom = 1080 };
-    }
-
-    /// <summary>
-    /// Enumerate all connected monitors and return their work areas (excludes taskbar).
-    /// </summary>
-    private static List<NativeMethods.RECT> GetAllMonitors()
-    {
-        var monitors = new List<NativeMethods.RECT>();
-
-        NativeMethods.EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero,
-            (IntPtr hMonitor, IntPtr hdc, ref NativeMethods.RECT rect, IntPtr data) =>
-            {
-                var info = new NativeMethods.MONITORINFO
-                {
-                    cbSize = System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.MONITORINFO>()
-                };
-                NativeMethods.GetMonitorInfo(hMonitor, ref info);
-                monitors.Add(info.rcWork);
-                return true;
-            }, IntPtr.Zero);
-
-        return monitors;
+        return monitors.Count > 0 ? monitors[targetIdx] : new WinRect { Right = 1920, Bottom = 1080 };
     }
 }
