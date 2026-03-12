@@ -1,7 +1,7 @@
-# EQSwitch v2.1.0 — Claude Code Context
+# EQSwitch v2.2.0 — Claude Code Context
 
 ## What This Is
-C# (.NET 8 WinForms) port of EQSwitch, an EverQuest multiboxing window manager originally written in AHK v2. Targets the Shards of Dalaya emulator community. v2.1.0 — all features complete, audited, released on GitHub. 22 files, ~4,840 lines.
+C# (.NET 8 WinForms) port of EQSwitch, an EverQuest multiboxing window manager originally written in AHK v2. Targets the Shards of Dalaya emulator community. v2.2.0 — production hardened with logging, validation, tests. ~26 files, ~5,500 lines.
 
 **Repo**: `itsnateai/eqswitch-port` (private) | **Branch**: master
 
@@ -125,7 +125,8 @@ Settings uses a pending/staged approach:
 - AHK config uses `Encoding.Default` (ANSI), not UTF-16.
 - `eqclient.ini` also uses ANSI encoding — writing UTF-8 can corrupt it.
 
-## Audit Status (v2.1.0)
+## Audit Status (v2.2.0)
+- **v2.2.0 production hardening:** FileLogger, concurrency fixes, input validation, 79 unit tests
 - **v2 deep audit (2026-03-12):** 28 verified findings (P0:4, P1:9, P2:8, P3:4, P4:3)
 - **Critical P0s:** LL hook callback blocking (kills hook permanently), `]` key swallowed globally, PiP Ctrl+drag broken by WS_EX_TRANSPARENT, eqclient.ini UTF-8 corruption
 - **Previous v1 audit:** 33 items, 12 fixed — those fixes remain valid
@@ -134,7 +135,7 @@ Settings uses a pending/staged approach:
 ## Conventions
 - All Win32 calls go through `NativeMethods.cs` — never scatter DllImport.
 - Config is portable JSON alongside the exe, not in AppData.
-- Use `Debug.WriteLine` for diagnostic logging, `ShowBalloon()` for user-facing messages.
+- Use `FileLogger.Info/Warn/Error()` for diagnostic logging, `ShowBalloon()` for user-facing messages.
 - Graceful degradation: if a Win32 call fails, log it and continue, don't crash.
 - Process objects: always `using var proc = ...` to prevent handle leaks.
 - Single-file publish for portability. No installer needed.
@@ -143,8 +144,12 @@ Settings uses a pending/staged approach:
 ```
 eqswitch-port/
   Program.cs                    # Entry point, mutex, migration
-  EQSwitch.csproj               # .NET 8 WinForms, v2.1.0
+  EQSwitch.csproj               # .NET 8 WinForms, v2.2.0
+  EQSwitch.sln                  # Solution with main + test projects
   Core/
+    FileLogger.cs                # Persistent file logging (Info/Warn/Error)
+    IWindowsApi.cs               # Testable Win32 interface + WinRect struct
+    WindowsApi.cs                # Production IWindowsApi implementation
     NativeMethods.cs             # All P/Invoke (224 lines)
     ProcessManager.cs            # EQ process detection
     WindowManager.cs             # Window positioning & arrangement

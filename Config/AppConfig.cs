@@ -39,6 +39,35 @@ public class AppConfig
     public bool MinimizeToTray { get; set; } = true;
     public bool RunAtStartup { get; set; } = false;
     public int PollingIntervalMs { get; set; } = 500;
+
+    /// <summary>
+    /// Clamp all numeric values to safe ranges. Call after deserialization
+    /// or before applying settings from the GUI.
+    /// </summary>
+    public void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(EQProcessName)) EQProcessName = "eqgame";
+        PollingIntervalMs = Math.Clamp(PollingIntervalMs, 100, 10000);
+
+        Layout.Columns = Math.Clamp(Layout.Columns, 1, 4);
+        Layout.Rows = Math.Clamp(Layout.Rows, 1, 4);
+        Layout.TargetMonitor = Math.Clamp(Layout.TargetMonitor, 0, 8);
+        Layout.TopOffset = Math.Clamp(Layout.TopOffset, -200, 200);
+
+        if (Affinity.ActiveMask <= 0) Affinity.ActiveMask = 0xFF;
+        if (Affinity.BackgroundMask <= 0) Affinity.BackgroundMask = 0xFF00;
+        Affinity.LaunchRetryCount = Math.Clamp(Affinity.LaunchRetryCount, 0, 20);
+        Affinity.LaunchRetryDelayMs = Math.Clamp(Affinity.LaunchRetryDelayMs, 500, 30000);
+
+        Launch.NumClients = Math.Clamp(Launch.NumClients, 1, 8);
+        Launch.LaunchDelayMs = Math.Clamp(Launch.LaunchDelayMs, 500, 30000);
+        Launch.FixDelayMs = Math.Clamp(Launch.FixDelayMs, 1000, 120000);
+
+        Pip.Opacity = Math.Clamp(Pip.Opacity, (byte)10, (byte)255);
+        Pip.MaxWindows = Math.Clamp(Pip.MaxWindows, 1, 3);
+        Pip.CustomWidth = Math.Clamp(Pip.CustomWidth, 100, 1920);
+        Pip.CustomHeight = Math.Clamp(Pip.CustomHeight, 75, 1080);
+    }
 }
 
 public class WindowLayout

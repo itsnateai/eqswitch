@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using EQSwitch.Config;
 using EQSwitch.Models;
 
@@ -86,7 +85,7 @@ public class AffinityManager
     {
         if (!_config.Affinity.Enabled) return;
         _retryCounters[client.ProcessId] = _config.Affinity.LaunchRetryCount;
-        Debug.WriteLine($"Affinity retry scheduled for {client} ({_config.Affinity.LaunchRetryCount} attempts)");
+        FileLogger.Info($"Affinity retry scheduled for {client} ({_config.Affinity.LaunchRetryCount} attempts)");
     }
 
     /// <summary>
@@ -100,7 +99,8 @@ public class AffinityManager
         bool applied = false;
         var completed = new List<int>();
 
-        foreach (var (pid, remaining) in _retryCounters)
+        // Snapshot keys to avoid modifying the dictionary during enumeration
+        foreach (var (pid, remaining) in _retryCounters.ToList())
         {
             var client = clients.FirstOrDefault(c => c.ProcessId == pid);
             if (client == null)
@@ -117,7 +117,7 @@ public class AffinityManager
 
             if (success)
             {
-                Debug.WriteLine($"Affinity retry applied for {client} (attempt {_config.Affinity.LaunchRetryCount - remaining + 1})");
+                FileLogger.Info($"Affinity retry applied for {client} (attempt {_config.Affinity.LaunchRetryCount - remaining + 1})");
                 applied = true;
             }
 
@@ -178,18 +178,18 @@ public class AffinityManager
 
             if (hProcess == IntPtr.Zero)
             {
-                Debug.WriteLine($"Failed to open process {processId} for affinity change");
+                FileLogger.Warn($"Failed to open process {processId} for affinity change");
                 return false;
             }
 
             bool result = NativeMethods.SetProcessAffinityMask(hProcess, (IntPtr)affinityMask);
             if (!result)
-                Debug.WriteLine($"SetProcessAffinityMask failed for PID {processId}");
+                FileLogger.Warn($"SetProcessAffinityMask failed for PID {processId}");
             return result;
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"Affinity error for PID {processId}: {ex.Message}");
+            FileLogger.Error($"Affinity error for PID {processId}", ex);
             return false;
         }
         finally
@@ -211,18 +211,18 @@ public class AffinityManager
 
             if (hProcess == IntPtr.Zero)
             {
-                Debug.WriteLine($"Failed to open process {processId} for priority change");
+                FileLogger.Warn($"Failed to open process {processId} for priority change");
                 return false;
             }
 
             bool result = NativeMethods.SetPriorityClass(hProcess, priorityClass);
             if (!result)
-                Debug.WriteLine($"SetPriorityClass failed for PID {processId}");
+                FileLogger.Warn($"SetPriorityClass failed for PID {processId}");
             return result;
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"Priority error for PID {processId}: {ex.Message}");
+            FileLogger.Error($"Priority error for PID {processId}", ex);
             return false;
         }
         finally
@@ -307,7 +307,7 @@ public class AffinityManager
                 NativeMethods.CloseHandle(hProcess);
         }
 
-        Debug.WriteLine($"Core detection: {coreCount} cores, system mask 0x{systemMask:X}");
+        FileLogger.Info($"Core detection: {coreCount} cores, system mask 0x{systemMask:X}");
         return (coreCount, systemMask);
     }
 

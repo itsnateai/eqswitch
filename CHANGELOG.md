@@ -1,9 +1,30 @@
 # Changelog
 
-## [Unreleased]
+## v2.2.0 — Production Hardening (2026-03-12)
+
+### Added
+- **Persistent file logging** (`Core/FileLogger.cs`): Info/Warn/Error with timestamp, 1MB rotation, thread-safe
+- **Input validation** (`AppConfig.Validate()`): Clamps all numeric config fields to safe ranges on load and save
+- **IWindowsApi interface** (`Core/IWindowsApi.cs`): Abstraction layer for Win32 calls, enables unit testing
+- **79 unit tests** across 7 test files: AppConfig, WindowManager, AffinityManager, ConfigManager, ConfigMigration, HotkeyManager, EQClient
+- **Solution file** (`EQSwitch.sln`): Main project + xUnit test project with Moq
 
 ### Fixed
-- **P2-02**: Context menu client labels now update when window titles change (character login detected on poll)
+- **P2-02**: Context menu client labels now update when window titles change
+- **Concurrency**: KeyboardHookManager uses `ImmutableHashSet<int>` (lock-free) instead of `HashSet<int>` with lock
+- **Concurrency**: ProcessManager fires events outside lock block, uses specific exception catches
+- **Concurrency**: AffinityManager snapshots retry counters before iterating
+- **Resource leak**: LaunchManager implements IDisposable, cancels launches on dispose
+- **Resource leak**: ProcessManagerForm stops refresh timer in Dispose()
+- **Backup pruning**: ConfigManager sorts by file write time instead of filename string
+- **Hotkey ID overflow**: `_nextId` resets to 1 on `UnregisterAll()` (P4-01)
+- **Exception hardening**: DWM HRESULT mapped to readable messages in PipOverlay
+- **Exception hardening**: VideoSettingsForm retries file I/O (2x, 500ms)
+- **Magic numbers**: Named constants replace all magic numbers across 6 files
+
+### Changed
+- All diagnostic logging migrated from `Debug.WriteLine` to `FileLogger`
+- WindowManager and AffinityManager accept optional `IWindowsApi` for dependency injection
 
 ---
 

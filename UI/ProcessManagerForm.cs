@@ -10,6 +10,8 @@ namespace EQSwitch.UI;
 /// </summary>
 public class ProcessManagerForm : Form
 {
+    private const int RefreshIntervalMs = 1000;
+
     private static readonly Color BgDark = Color.FromArgb(30, 30, 30);
     private static readonly Color BgMedium = Color.FromArgb(45, 45, 45);
     private static readonly Color FgWhite = Color.White;
@@ -119,8 +121,7 @@ public class ProcessManagerForm : Form
 
         Controls.AddRange(new Control[] { btnRefresh, btnForceApply, btnClose });
 
-        // Auto-refresh timer (1 second)
-        _refreshTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+        _refreshTimer = new System.Windows.Forms.Timer { Interval = RefreshIntervalMs };
         _refreshTimer.Tick += (_, _) => RefreshList();
         _refreshTimer.Start();
 

@@ -30,7 +30,7 @@ public class HotkeyManager : IDisposable
     {
         if (!TryParseHotkey(hotkeyString, out uint modifiers, out uint vk))
         {
-            System.Diagnostics.Debug.WriteLine($"Failed to parse hotkey: {hotkeyString}");
+            Core.FileLogger.Warn($"Failed to parse hotkey: {hotkeyString}");
             return -1;
         }
 
@@ -42,7 +42,7 @@ public class HotkeyManager : IDisposable
         bool result = NativeMethods.RegisterHotKey(_messageWindow.Handle, id, modifiers, vk);
         if (!result)
         {
-            System.Diagnostics.Debug.WriteLine($"RegisterHotKey failed for: {hotkeyString}");
+            Core.FileLogger.Warn($"RegisterHotKey failed for: {hotkeyString}");
             return -1;
         }
 
@@ -69,6 +69,7 @@ public class HotkeyManager : IDisposable
             NativeMethods.UnregisterHotKey(_messageWindow.Handle, id);
         }
         _hotkeyActions.Clear();
+        _nextId = 1;
     }
 
     internal void OnHotkeyPressed(int id)
@@ -81,7 +82,7 @@ public class HotkeyManager : IDisposable
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Hotkey callback error (ID {id}): {ex.Message}");
+                Core.FileLogger.Error($"Hotkey callback error (ID {id})", ex);
             }
         }
     }

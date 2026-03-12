@@ -1,6 +1,6 @@
-using System.Diagnostics;
 using System.Text;
 using EQSwitch.Config;
+using EQSwitch.Core;
 
 namespace EQSwitch.UI;
 
@@ -141,7 +141,7 @@ public class VideoSettingsForm : Form
     {
         if (!File.Exists(_iniPath))
         {
-            Debug.WriteLine($"VideoSettings: eqclient.ini not found at {_iniPath}");
+            FileLogger.Info($"VideoSettings: eqclient.ini not found at {_iniPath}");
             _cboPreset.SelectedIndex = 0;
             return;
         }
@@ -196,7 +196,7 @@ public class VideoSettingsForm : Form
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"VideoSettings: load error — {ex.Message}");
+            FileLogger.Error("VideoSettings: load error", ex);
             _cboPreset.SelectedIndex = 0;
         }
     }
@@ -211,7 +211,7 @@ public class VideoSettingsForm : Form
 
             if (!File.Exists(_iniPath))
             {
-                Debug.WriteLine($"VideoSettings: cannot save — {_iniPath} not found");
+                FileLogger.Info($"VideoSettings: cannot save — {_iniPath} not found");
                 return;
             }
 
@@ -270,13 +270,33 @@ public class VideoSettingsForm : Form
                     lines.Add($"{kv.Key}={kv.Value}");
             }
 
-            File.WriteAllLines(_iniPath, lines, Encoding.Default);
-            Debug.WriteLine("VideoSettings: saved to eqclient.ini");
+            WriteWithRetry(_iniPath, lines);
+            FileLogger.Info("VideoSettings: saved to eqclient.ini");
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"VideoSettings: save error — {ex.Message}");
+            FileLogger.Error("VideoSettings: save error", ex);
             MessageBox.Show($"Failed to save: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    /// <summary>
+    /// Write file with retry — EQ may hold a lock on eqclient.ini briefly.
+    /// </summary>
+    private static void WriteWithRetry(string path, List<string> lines, int maxRetries = 2, int delayMs = 500)
+    {
+        for (int attempt = 0; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                File.WriteAllLines(path, lines, Encoding.Default);
+                return;
+            }
+            catch (IOException) when (attempt < maxRetries)
+            {
+                FileLogger.Warn($"VideoSettings: file locked, retry {attempt + 1}/{maxRetries}");
+                Thread.Sleep(delayMs);
+            }
         }
     }
 

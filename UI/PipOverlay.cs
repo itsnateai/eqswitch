@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using EQSwitch.Config;
 using EQSwitch.Core;
 using EQSwitch.Models;
@@ -18,6 +17,8 @@ namespace EQSwitch.UI;
 /// </summary>
 public class PipOverlay : Form
 {
+    private const int RefreshIntervalMs = 500;
+
     private readonly AppConfig _config;
     private readonly List<IntPtr> _thumbnailIds = new();
     private readonly List<IntPtr> _sourceWindows = new();
@@ -62,8 +63,7 @@ public class PipOverlay : Form
         MouseMove += OnMouseMove;
         MouseUp += OnMouseUp;
 
-        // 500ms refresh timer to update thumbnail sources
-        _refreshTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        _refreshTimer = new System.Windows.Forms.Timer { Interval = RefreshIntervalMs };
         _refreshTimer.Tick += (_, _) => RefreshIfNeeded();
         _refreshTimer.Start();
     }
@@ -153,7 +153,7 @@ public class PipOverlay : Form
             int hr = NativeMethods.DwmRegisterThumbnail(Handle, srcHwnd, out IntPtr thumbId);
             if (hr != 0)
             {
-                Debug.WriteLine($"PiP: DwmRegisterThumbnail failed (0x{hr:X}) for {backgrounds[i]}");
+                FileLogger.Warn($"PiP: DwmRegisterThumbnail failed ({MapDwmError(hr)}) for {backgrounds[i]}");
                 continue;
             }
 
@@ -181,7 +181,7 @@ public class PipOverlay : Form
             _thumbnailIds.Add(thumbId);
             _sourceWindows.Add(srcHwnd);
 
-            Debug.WriteLine($"PiP: registered thumbnail for {backgrounds[i]}");
+            FileLogger.Info($"PiP: registered thumbnail for {backgrounds[i]}");
         }
 
         // Resize the overlay to fit actual number of thumbnails
@@ -213,6 +213,14 @@ public class PipOverlay : Form
         _thumbnailIds.Clear();
         _sourceWindows.Clear();
     }
+
+    private static string MapDwmError(int hr) => unchecked((uint)hr) switch
+    {
+        0x80263001 => "DWM_E_COMPOSITIONDISABLED",
+        0x80070006 => "E_HANDLE (invalid handle)",
+        0x80070057 => "E_INVALIDARG",
+        _ => $"0x{hr:X}"
+    };
 
     // ─── Ctrl+Drag ────────────────────────────────────────────────
 

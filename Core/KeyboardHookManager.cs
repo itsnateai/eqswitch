@@ -1,4 +1,4 @@
-using System.Diagnostics;
+using System.Collections.Immutable;
 using System.Runtime.InteropServices;
 
 namespace EQSwitch.Core;
@@ -26,9 +26,8 @@ public class KeyboardHookManager : IDisposable
     private SynchronizationContext? _syncContext;
     private bool _disposed;
 
-    // Cached PID set for process filter checks — updated externally
-    private readonly HashSet<int> _filteredPids = new();
-    private readonly object _pidLock = new();
+    // Lock-free PID set for process filter checks — swapped atomically
+    private volatile ImmutableHashSet<int> _filteredPids = ImmutableHashSet<int>.Empty;
 
     public KeyboardHookManager()
     {
@@ -44,32 +43,33 @@ public class KeyboardHookManager : IDisposable
         if (_hookId != IntPtr.Zero) return true; // Already installed
 
         _syncContext = SynchronizationContext.Current;
+        if (_syncContext == null)
+        {
+            FileLogger.Error("KeyboardHookManager.Install() called without a SynchronizationContext — must be called from the UI thread");
+            throw new InvalidOperationException("KeyboardHookManager.Install() must be called from the UI thread");
+        }
 
         var hMod = NativeMethods.GetModuleHandle(null);
         _hookId = NativeMethods.SetWindowsHookEx(NativeMethods.WH_KEYBOARD_LL, _hookProc, hMod, 0);
 
         if (_hookId == IntPtr.Zero)
         {
-            Debug.WriteLine($"SetWindowsHookEx failed: {Marshal.GetLastWin32Error()}");
+            FileLogger.Error($"SetWindowsHookEx failed with error {Marshal.GetLastWin32Error()}");
             return false;
         }
 
-        Debug.WriteLine("Low-level keyboard hook installed");
+        FileLogger.Info("Low-level keyboard hook installed");
         return true;
     }
 
     /// <summary>
     /// Update the cached set of PIDs for process-filtered bindings.
     /// Call this from ProcessManager when client list changes.
+    /// Lock-free: atomically swaps the immutable set.
     /// </summary>
     public void UpdateFilteredPids(IEnumerable<int> pids)
     {
-        lock (_pidLock)
-        {
-            _filteredPids.Clear();
-            foreach (var pid in pids)
-                _filteredPids.Add(pid);
-        }
+        _filteredPids = pids.ToImmutableHashSet();
     }
 
     /// <summary>
@@ -82,7 +82,7 @@ public class KeyboardHookManager : IDisposable
     public void Register(uint vkCode, Action callback, string? processFilter = null, bool requireClients = false)
     {
         _bindings[vkCode] = new HookBinding(callback, processFilter, requireClients);
-        Debug.WriteLine($"Hook registered: VK 0x{vkCode:X2}" +
+        FileLogger.Info($"Hook registered: VK 0x{vkCode:X2}" +
             (processFilter != null ? $" (filter: {processFilter})" : " (global)") +
             (requireClients ? " (requires clients)" : ""));
     }
@@ -104,37 +104,23 @@ public class KeyboardHookManager : IDisposable
             if (_bindings.TryGetValue(hookStruct.vkCode, out var binding))
             {
                 // Don't swallow the key if no EQ clients are running
-                if (binding.RequireClients)
-                {
-                    lock (_pidLock)
-                    {
-                        if (_filteredPids.Count == 0)
-                            return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
-                    }
-                }
+                if (binding.RequireClients && _filteredPids.IsEmpty)
+                    return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
 
                 // Check process filter using cached PIDs (no Process.GetProcessById — fast)
-                if (binding.ProcessFilter != null)
-                {
-                    if (!IsForegroundFiltered())
-                    {
-                        return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
-                    }
-                }
+                if (binding.ProcessFilter != null && !IsForegroundFiltered())
+                    return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
 
                 // Post callback to UI thread asynchronously — return immediately
                 // to avoid blocking the hook (Windows kills hooks that take >300ms)
-                if (_syncContext != null)
+                _syncContext?.Post(_ =>
                 {
-                    _syncContext.Post(_ =>
+                    try { binding.Callback.Invoke(); }
+                    catch (Exception ex)
                     {
-                        try { binding.Callback.Invoke(); }
-                        catch (Exception ex)
-                        {
-                            Debug.WriteLine($"Hook callback error (VK 0x{hookStruct.vkCode:X2}): {ex.Message}");
-                        }
-                    }, null);
-                }
+                        FileLogger.Error($"Hook callback error (VK 0x{hookStruct.vkCode:X2})", ex);
+                    }
+                }, null);
 
                 // Swallow the key — don't pass to the focused application
                 return (IntPtr)1;
@@ -146,7 +132,8 @@ public class KeyboardHookManager : IDisposable
 
     /// <summary>
     /// Check if the foreground window belongs to a filtered process using cached PIDs.
-    /// No Process.GetProcessById — just GetWindowThreadProcessId + HashSet lookup.
+    /// No Process.GetProcessById — just GetWindowThreadProcessId + ImmutableHashSet lookup.
+    /// Lock-free: reads the volatile reference to the immutable set.
     /// </summary>
     private bool IsForegroundFiltered()
     {
@@ -154,10 +141,7 @@ public class KeyboardHookManager : IDisposable
         if (hwnd == IntPtr.Zero) return false;
 
         NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
-        lock (_pidLock)
-        {
-            return _filteredPids.Contains((int)pid);
-        }
+        return _filteredPids.Contains((int)pid);
     }
 
     /// <summary>

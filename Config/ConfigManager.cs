@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using EQSwitch.Core;
 
 namespace EQSwitch.Config;
 
@@ -22,6 +23,7 @@ public static class ConfigManager
 
     /// <summary>
     /// Load config from disk. Returns defaults if file doesn't exist or is corrupt.
+    /// Validates all values after loading.
     /// </summary>
     public static AppConfig Load()
     {
@@ -31,13 +33,15 @@ public static class ConfigManager
                 return new AppConfig();
 
             var json = File.ReadAllText(ConfigPath);
-            return JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? new AppConfig();
+            var config = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? new AppConfig();
+            config.Validate();
+            return config;
         }
         catch (Exception ex)
         {
             // Config is corrupt — back it up and start fresh
             TryBackupCorruptConfig();
-            System.Diagnostics.Debug.WriteLine($"Config load failed, using defaults: {ex.Message}");
+            FileLogger.Error("Config load failed, using defaults", ex);
             return new AppConfig();
         }
     }
@@ -58,14 +62,14 @@ public static class ConfigManager
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Config save failed: {ex.Message}");
+            FileLogger.Error("Config save failed", ex);
             throw; // Let caller decide how to handle
         }
     }
 
     /// <summary>
     /// Create a timestamped backup of the current config.
-    /// Keeps the last 10 backups to avoid filling disk.
+    /// Keeps the last 10 backups sorted by write time to avoid filling disk.
     /// </summary>
     public static void CreateBackup()
     {
@@ -79,9 +83,9 @@ public static class ConfigManager
             var backupPath = Path.Combine(BackupDir, $"eqswitch-config_{timestamp}.json");
             File.Copy(ConfigPath, backupPath, overwrite: true);
 
-            // Prune old backups (keep last 10)
+            // Prune old backups (keep last 10 by write time — robust against filename changes)
             var backups = Directory.GetFiles(BackupDir, "eqswitch-config_*.json")
-                .OrderByDescending(f => f)
+                .OrderByDescending(f => File.GetLastWriteTimeUtc(f))
                 .Skip(10);
 
             foreach (var old in backups)
@@ -91,7 +95,7 @@ public static class ConfigManager
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Backup failed: {ex.Message}");
+            FileLogger.Warn($"Backup failed: {ex.Message}");
         }
     }
 
@@ -122,6 +126,7 @@ public static class ConfigManager
             Directory.CreateDirectory(BackupDir);
             var corruptPath = Path.Combine(BackupDir, $"CORRUPT_{DateTime.Now:yyyyMMdd_HHmmss}.json");
             File.Move(ConfigPath, corruptPath);
+            FileLogger.Warn($"Corrupt config backed up to {corruptPath}");
         }
         catch { /* best effort */ }
     }
