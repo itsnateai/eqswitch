@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Text.Json;
 using EQSwitch.Config;
+using EQSwitch.Core;
 
 namespace EQSwitch.UI;
 
@@ -62,6 +64,19 @@ public class SettingsForm : Form
     private TextBox _txtGinaPath = null!;
     private TextBox _txtNotesPath = null!;
 
+    // ─── PiP tab controls
+    private CheckBox _chkPipEnabled = null!;
+    private ComboBox _cboPipSize = null!;
+    private NumericUpDown _nudPipWidth = null!;
+    private NumericUpDown _nudPipHeight = null!;
+    private NumericUpDown _nudPipOpacity = null!;
+    private CheckBox _chkPipBorder = null!;
+    private ComboBox _cboPipBorderColor = null!;
+    private NumericUpDown _nudPipMaxWindows = null!;
+
+    // ─── Characters tab controls
+    private ListView _charListView = null!;
+
     public SettingsForm(AppConfig config, Action<AppConfig> onApply)
     {
         _config = config;
@@ -91,7 +106,9 @@ public class SettingsForm : Form
         tabs.TabPages.Add(BuildLayoutTab());
         tabs.TabPages.Add(BuildAffinityTab());
         tabs.TabPages.Add(BuildLaunchTab());
+        tabs.TabPages.Add(BuildPipTab());
         tabs.TabPages.Add(BuildPathsTab());
+        tabs.TabPages.Add(BuildCharactersTab());
 
         // Button panel at bottom
         var buttonPanel = new Panel
@@ -231,6 +248,26 @@ public class SettingsForm : Form
         AddLabel(page, "Background Priority:", 230, y - 22);
         _cboBackgroundPriority = AddComboBox(page, 230, y, 150, priorities);
 
+        // All / Clear buttons for masks
+        var btnAllCores = MakeButton("All Cores", BgMedium, 300, 72);
+        btnAllCores.Size = new Size(80, 26);
+        btnAllCores.Click += (_, _) =>
+        {
+            var (_, sysMask) = AffinityManager.DetectCores();
+            _txtActiveMask.Text = sysMask.ToString("X");
+            _txtBackgroundMask.Text = sysMask.ToString("X");
+        };
+        page.Controls.Add(btnAllCores);
+
+        var btnClearCores = MakeButton("Clear", BgMedium, 390, 72);
+        btnClearCores.Size = new Size(60, 26);
+        btnClearCores.Click += (_, _) =>
+        {
+            _txtActiveMask.Text = "1";
+            _txtBackgroundMask.Text = "1";
+        };
+        page.Controls.Add(btnClearCores);
+
         AddLabel(page, "Launch Retry Count:", 15, y += 40);
         _nudRetryCount = AddNumeric(page, 15, y += 22, 80, 3, 0, 10);
 
@@ -300,6 +337,159 @@ public class SettingsForm : Form
         return page;
     }
 
+    private TabPage BuildPipTab()
+    {
+        var page = MakeTabPage("PiP");
+        int y = 15;
+
+        _chkPipEnabled = AddCheckBox(page, "Enable PiP Overlay", 15, y);
+
+        AddLabel(page, "Size Preset:", 15, y += 35);
+        _cboPipSize = AddComboBox(page, 15, y += 22, 150, new[] { "Small", "Medium", "Large", "XL", "XXL", "Custom" });
+        _cboPipSize.SelectedIndexChanged += (_, _) =>
+        {
+            bool isCustom = _cboPipSize.SelectedItem?.ToString() == "Custom";
+            _nudPipWidth.Enabled = isCustom;
+            _nudPipHeight.Enabled = isCustom;
+        };
+
+        AddLabel(page, "Custom Width:", 200, y - 22);
+        _nudPipWidth = AddNumeric(page, 200, y, 80, 320, 100, 1920);
+        _nudPipWidth.Enabled = false;
+
+        AddLabel(page, "Custom Height:", 310, y - 22);
+        _nudPipHeight = AddNumeric(page, 310, y, 80, 240, 100, 1080);
+        _nudPipHeight.Enabled = false;
+
+        AddLabel(page, "Opacity (0-255):", 15, y += 40);
+        _nudPipOpacity = AddNumeric(page, 15, y += 22, 80, 200, 0, 255);
+
+        _chkPipBorder = AddCheckBox(page, "Show Border", 200, y);
+        _chkPipBorder.CheckedChanged += (_, _) =>
+        {
+            _cboPipBorderColor.Enabled = _chkPipBorder.Checked;
+        };
+
+        AddLabel(page, "Border Color:", 15, y += 40);
+        _cboPipBorderColor = AddComboBox(page, 15, y += 22, 120, new[] { "Green", "Blue", "Red", "Black" });
+
+        AddLabel(page, "Max PiP Windows:", 200, y - 22);
+        _nudPipMaxWindows = AddNumeric(page, 200, y, 60, 3, 1, 3);
+
+        return page;
+    }
+
+    private TabPage BuildCharactersTab()
+    {
+        var page = MakeTabPage("Characters");
+        int y = 15;
+
+        _charListView = new ListView
+        {
+            Location = new Point(15, y),
+            Size = new Size(440, 250),
+            View = View.Details,
+            FullRowSelect = true,
+            GridLines = true,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = FgWhite,
+            BorderStyle = BorderStyle.FixedSingle,
+            HeaderStyle = ColumnHeaderStyle.Nonclickable
+        };
+        _charListView.Columns.Add("Name", 130);
+        _charListView.Columns.Add("Class", 100);
+        _charListView.Columns.Add("Slot", 50);
+        _charListView.Columns.Add("Affinity", 100);
+        page.Controls.Add(_charListView);
+
+        var btnExport = MakeButton("Export...", BgMedium, 15, 275);
+        btnExport.Size = new Size(90, 30);
+        btnExport.Click += (_, _) => ExportCharacters();
+        page.Controls.Add(btnExport);
+
+        var btnImport = MakeButton("Import...", BgMedium, 115, 275);
+        btnImport.Size = new Size(90, 30);
+        btnImport.Click += (_, _) => ImportCharacters();
+        page.Controls.Add(btnImport);
+
+        AddHint(page, "Export/Import character profiles as JSON files", 220, 283);
+
+        return page;
+    }
+
+    private void ExportCharacters()
+    {
+        if (_config.Characters.Count == 0)
+        {
+            MessageBox.Show("No character profiles to export.", "Export", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var sfd = new SaveFileDialog
+        {
+            Title = "Export Character Profiles",
+            Filter = "JSON Files|*.json",
+            FileName = "eqswitch-characters.json"
+        };
+
+        if (sfd.ShowDialog() == DialogResult.OK)
+        {
+            try
+            {
+                var json = JsonSerializer.Serialize(_config.Characters, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(sfd.FileName, json);
+                Debug.WriteLine($"Exported {_config.Characters.Count} characters to {sfd.FileName}");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Export failed: {ex.Message}");
+                MessageBox.Show($"Export failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+    }
+
+    private void ImportCharacters()
+    {
+        using var ofd = new OpenFileDialog
+        {
+            Title = "Import Character Profiles",
+            Filter = "JSON Files|*.json"
+        };
+
+        if (ofd.ShowDialog() == DialogResult.OK)
+        {
+            try
+            {
+                var json = File.ReadAllText(ofd.FileName);
+                var imported = JsonSerializer.Deserialize<List<CharacterProfile>>(json);
+                if (imported != null && imported.Count > 0)
+                {
+                    _config.Characters = imported;
+                    RefreshCharacterList();
+                    Debug.WriteLine($"Imported {imported.Count} characters from {ofd.FileName}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Import failed: {ex.Message}");
+                MessageBox.Show($"Import failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+    }
+
+    private void RefreshCharacterList()
+    {
+        _charListView.Items.Clear();
+        foreach (var c in _config.Characters)
+        {
+            var item = new ListViewItem(c.Name);
+            item.SubItems.Add(c.Class);
+            item.SubItems.Add((c.SlotIndex + 1).ToString());
+            item.SubItems.Add(c.AffinityOverride.HasValue ? $"0x{c.AffinityOverride.Value:X}" : "(default)");
+            _charListView.Items.Add(item);
+        }
+    }
+
     // ─── Config I/O ───────────────────────────────────────────────
 
     private void PopulateFromConfig()
@@ -345,6 +535,22 @@ public class SettingsForm : Form
         // Paths
         _txtGinaPath.Text = _config.GinaPath;
         _txtNotesPath.Text = _config.NotesPath;
+
+        // PiP
+        _chkPipEnabled.Checked = _config.Pip.Enabled;
+        _cboPipSize.SelectedItem = _config.Pip.SizePreset;
+        _nudPipWidth.Value = Math.Clamp(_config.Pip.CustomWidth, 100, 1920);
+        _nudPipHeight.Value = Math.Clamp(_config.Pip.CustomHeight, 100, 1080);
+        _nudPipOpacity.Value = _config.Pip.Opacity;
+        _chkPipBorder.Checked = _config.Pip.ShowBorder;
+        _cboPipBorderColor.SelectedItem = _config.Pip.BorderColor;
+        _nudPipMaxWindows.Value = Math.Clamp(_config.Pip.MaxWindows, 1, 3);
+        _nudPipWidth.Enabled = _config.Pip.SizePreset == "Custom";
+        _nudPipHeight.Enabled = _config.Pip.SizePreset == "Custom";
+        _cboPipBorderColor.Enabled = _config.Pip.ShowBorder;
+
+        // Characters
+        RefreshCharacterList();
     }
 
     private void ApplySettings()
@@ -392,6 +598,18 @@ public class SettingsForm : Form
                 NumClients = (int)_nudNumClients.Value,
                 LaunchDelayMs = (int)_nudLaunchDelay.Value,
                 FixDelayMs = (int)_nudFixDelay.Value
+            },
+            Pip = new PipConfig
+            {
+                Enabled = _chkPipEnabled.Checked,
+                SizePreset = _cboPipSize.SelectedItem?.ToString() ?? "Medium",
+                CustomWidth = (int)_nudPipWidth.Value,
+                CustomHeight = (int)_nudPipHeight.Value,
+                Opacity = (byte)_nudPipOpacity.Value,
+                ShowBorder = _chkPipBorder.Checked,
+                BorderColor = _cboPipBorderColor.SelectedItem?.ToString() ?? "Green",
+                MaxWindows = (int)_nudPipMaxWindows.Value,
+                SavedPositions = _config.Pip.SavedPositions // preserve existing positions
             },
             GinaPath = _txtGinaPath.Text.Trim(),
             NotesPath = _txtNotesPath.Text.Trim(),

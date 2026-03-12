@@ -1,5 +1,23 @@
 # Changelog
 
+## v2.1.0 — Deferred Features (2026-03-11)
+
+### Added
+- **Process Manager GUI**: Live view of all EQ clients with PID, character name, priority, and affinity mask. Auto-refreshes every second. Includes Force Apply button.
+- **PiP Settings tab**: Configure PiP size preset, custom dimensions, opacity, border color, and max windows from Settings GUI
+- **Characters tab**: View character profiles with Export/Import buttons for JSON backup
+- **All Cores / Clear buttons**: Quick-select on Affinity tab to set masks to system max or minimum
+- **Force Apply Affinity**: Tray menu item to re-apply affinity rules to all clients immediately
+- **Triple-click tray**: Triple-click the tray icon within 500ms to arrange all windows
+- **Desktop shortcut**: Create Desktop Shortcut menu item via WScript.Shell COM
+
+### Changed
+- "Process Info" balloon replaced with full Process Manager window
+- PiP config now persists through Settings GUI (was only configurable via JSON)
+- ReloadConfig now includes PiP settings for hot-reload
+
+---
+
 ## v2.0.0 — C# Port (2026-03-11)
 
 Complete rewrite from AutoHotkey v2 to C# (.NET 8 WinForms).
@@ -31,5 +49,4 @@ Complete rewrite from AutoHotkey v2 to C# (.NET 8 WinForms).
 
 ### Removed
 - AutoHotkey dependency
-- Triple-click tray detection (deferred — low usage)
 - Flash suppress / auto-minimize (superseded by PiP + affinity management)
