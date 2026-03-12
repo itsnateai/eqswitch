@@ -1,21 +1,33 @@
-# EQSwitch v2.0 — C# Port
+# EQSwitch v2.1.0 — C# Port
 
 EverQuest multiboxing window manager for Shards of Dalaya.
 Ported from AHK v2 to C# (.NET 8) for better VirusTotal compatibility, type safety, and debuggability.
 
+## Download
+
+**[Download EQSwitch.exe (latest release)](https://github.com/itsnateai/eqswitch-port/releases/latest)**
+
+1. Download `EQSwitch.exe` from the latest release
+2. Place it in any folder (Desktop, EQ folder, wherever you like)
+3. Run it — no installation needed
+
+Self-contained portable exe. No .NET runtime required. No installer. Just run it.
+
+> Migrating from the AHK version? Place `EQSwitch.exe` next to your old `eqswitch.cfg` and it will auto-import your settings on first run.
+
 ## Why the Port?
 
-- **VirusTotal**: AHK-compiled `.exe` files trigger false positives from heuristic scanners. .NET single-file publish uses Microsoft's toolchain and virtually never gets flagged.
+- **VirusTotal**: AHK-compiled `.exe` files trigger false positives from heuristic scanners. .NET single-file publish uses Microsoft's toolchain and gets 0/70 detections.
 - **Type Safety**: No more INI type comparison bugs or stale COM pointers.
 - **Debugging**: Real breakpoints, call stacks, and exception handling instead of ToolTip feedback.
 - **Same Portability**: Still compiles to a single `.exe` with no installer.
 
 ## Requirements
 
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) (for building)
-- Windows 10/11 (runtime)
+- Windows 10/11
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) (only needed for building from source)
 
-## Build
+## Build from Source
 
 ```bash
 # Debug build (for development)
@@ -34,7 +46,7 @@ dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 - **CPU Affinity**: Active client on P-cores, background on E-cores (Intel hybrid CPU optimized)
 - **PiP Overlay**: Live DWM thumbnail previews of background clients (click-through, Ctrl+drag to move)
 - **Launching**: Staggered multi-client launch with auto-arrange after initialization
-- **Settings GUI**: 6-tab dark-themed settings (General, Hotkeys, Layout, Affinity, Launch, Paths)
+- **Settings GUI**: 8-tab dark-themed settings (General, Hotkeys, Layout, Affinity, Launch, PiP, Paths, Characters)
 - **Video Settings**: Read/write eqclient.ini resolution and windowed mode
 - **File Operations**: Quick access to log files, eqclient.ini, GINA, and notes
 - **Run at Startup**: Registry-based Windows startup toggle
@@ -119,3 +131,7 @@ On first run, EQSwitch checks for `eqswitch.cfg` alongside the exe and automatic
 | `ToolTip` | `BalloonTipText` notifications |
 | `DllCall("dwmapi\DwmRegister...")` | `DwmRegisterThumbnail` P/Invoke |
 | Compiled via Ahk2Exe | `dotnet publish` single-file |
+
+## License
+
+[MIT](LICENSE)
