@@ -17,6 +17,16 @@ obj/
 ## OS
 Thumbs.db
 .DS_Store
+Desktop.ini
+$RECYCLE.BIN/
+
+## Editor temp files
+*.swo
+*.swp
+*~
+
+## JetBrains
+.idea/
 
 ## EQSwitch runtime files
 eqswitch-config.json
