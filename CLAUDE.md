@@ -125,12 +125,11 @@ Settings uses a pending/staged approach:
 - AHK config uses `Encoding.Default` (ANSI), not UTF-16.
 - `eqclient.ini` also uses ANSI encoding — writing UTF-8 can corrupt it.
 
-## Audit Status (v2.2.0)
-- **v2.2.0 production hardening:** FileLogger, concurrency fixes, input validation, 79 unit tests
-- **v2 deep audit (2026-03-12):** 28 verified findings (P0:4, P1:9, P2:8, P3:4, P4:3)
-- **Critical P0s:** LL hook callback blocking (kills hook permanently), `]` key swallowed globally, PiP Ctrl+drag broken by WS_EX_TRANSPARENT, eqclient.ini UTF-8 corruption
-- **Previous v1 audit:** 33 items, 12 fixed — those fixes remain valid
-- Full details in `AUDIT_TASKS.md`
+## Status
+
+**v2.2.0 — Final release (shipped 2026-03-12)**
+
+All audit items resolved (22/28 fixed, 6 feature ideas deferred). Tracking files cleared. See FINAL_REPORT.md for summary.
 
 ## Conventions
 - All Win32 calls go through `NativeMethods.cs` — never scatter DllImport.
