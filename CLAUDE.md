@@ -1,7 +1,7 @@
-# EQSwitch v2.2.0 — Claude Code Context
+# EQSwitch v2.3.0-dev — Claude Code Context
 
 ## What This Is
-C# (.NET 8 WinForms) port of EQSwitch, an EverQuest multiboxing window manager originally written in AHK v2. Targets the Shards of Dalaya emulator community. v2.2.0 — production hardened with logging, validation, tests. ~26 files, ~5,500 lines.
+C# (.NET 8 WinForms) port of EQSwitch, an EverQuest multiboxing window manager originally written in AHK v2. Targets the Shards of Dalaya emulator community. v2.3.0-dev — adding background FPS throttling and borderless fullscreen. ~27 files, ~5,700 lines.
 
 **Repo**: `itsnateai/eqswitch-port` (private) | **Branch**: master
 
@@ -39,6 +39,7 @@ dotnet restore
 | **AffinityManager.cs** | CPU affinity + process priority for P-core/E-core optimization | Opens process with PROCESS_SET_INFORMATION + PROCESS_QUERY_INFORMATION. Sets active client to P-cores (default mask 0xFF), background to E-cores (0xFF00). ForceApplyAffinityRules() for manual re-apply from Process Manager UI. Retry logic for post-launch (EQ resets affinity on startup). |
 | **HotkeyManager.cs** | Global hotkeys via RegisterHotKey | Hidden message-only NativeWindow (`HWND_MESSAGE` parent = IntPtr(-3)). MOD_NOREPEAT on all hotkeys. Parses "Modifier+Key" format strings. `ResolveVK()` public static helper for KeyboardHookManager. |
 | **KeyboardHookManager.cs** | Low-level keyboard hook for single-key hotkeys | WH_KEYBOARD_LL for keys without modifiers (backslash, bracket). Context-sensitive: optional process filter (only fires when EQ focused). Swallows matched keys (returns 1). IsForegroundProcess uses `using var proc` to prevent handle leaks. |
+| **ThrottleManager.cs** | Background FPS throttling via process suspension | Uses `NtSuspendProcess`/`NtResumeProcess` to duty-cycle background EQ clients. Two alternating timers: suspend phase + resume phase. Active client is never throttled. All processes resumed on shutdown (fail-safe). Config: ThrottlePercent (0-90%), CycleIntervalMs (50-1000ms). |
 | **LaunchManager.cs** | Staggered EQ client launching | Launches `eqgame.exe patchme` from configured EQ path. Configurable delay between launches (default 3s) and post-launch arrange delay (15s). |
 
 ### Config Layer (`Config/`)
@@ -127,9 +128,16 @@ Settings uses a pending/staged approach:
 
 ## Status
 
-**v2.2.0 — Final release (shipped 2026-03-12)**
+**v2.3.0-dev — In development**
 
-All audit items resolved (22/28 fixed, 6 feature ideas deferred). Tracking files cleared. See FINAL_REPORT.md for summary.
+v2.2.0 shipped 2026-03-12. Now adding:
+- [x] P2-04: Background FPS throttling (NtSuspendProcess/NtResumeProcess duty cycle)
+- [~] P2-03: Borderless fullscreen mode (research/planning)
+- [ ] P2-05: Interactive PiP (deferred)
+
+Removed from roadmap: P2-06 (layout presets), P4-02 (focus-follow-mouse), P4-03 (PiP zoom-on-hover).
+
+See ROADMAP.md for details.
 
 ## Conventions
 - All Win32 calls go through `NativeMethods.cs` — never scatter DllImport.
@@ -155,6 +163,7 @@ eqswitch-port/
     AffinityManager.cs           # CPU affinity management
     HotkeyManager.cs             # RegisterHotKey wrapper
     KeyboardHookManager.cs       # Low-level keyboard hook
+    ThrottleManager.cs           # Background FPS throttling (suspend/resume)
     LaunchManager.cs             # Staggered EQ launching
   Config/
     AppConfig.cs                 # JSON config model (225 lines)
@@ -172,4 +181,4 @@ eqswitch-port/
 ```
 
 ## Features Summary
-Window switching (hotkeys + keyboard hook), grid/multi-monitor arrangement, CPU affinity P-core/E-core, PiP DWM thumbnails, staggered launch, 8-tab settings GUI, eqclient.ini editor, config migration from AHK, character profiles with export/import, process manager, desktop shortcut creation, run-at-startup registry entry.
+Window switching (hotkeys + keyboard hook), grid/multi-monitor arrangement, CPU affinity P-core/E-core, background FPS throttling (process suspension), PiP DWM thumbnails, staggered launch, 8-tab settings GUI, eqclient.ini editor, config migration from AHK, character profiles with export/import, process manager, desktop shortcut creation, run-at-startup registry entry.

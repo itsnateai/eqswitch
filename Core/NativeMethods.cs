@@ -231,4 +231,14 @@ internal static class NativeMethods
     public static extern short GetAsyncKeyState(int vKey);
 
     public const int VK_CONTROL = 0x11;
+
+    // ─── Process Suspension (Background FPS Throttling) ──────────────
+
+    [DllImport("ntdll.dll", SetLastError = true)]
+    public static extern int NtSuspendProcess(IntPtr processHandle);
+
+    [DllImport("ntdll.dll", SetLastError = true)]
+    public static extern int NtResumeProcess(IntPtr processHandle);
+
+    public const uint PROCESS_SUSPEND_RESUME = 0x0800;
 }

@@ -66,6 +66,11 @@ public class SettingsForm : Form
     private ComboBox _cboPipBorderColor = null!;
     private NumericUpDown _nudPipMaxWindows = null!;
 
+    // ─── Throttle controls (on Affinity tab)
+    private CheckBox _chkThrottleEnabled = null!;
+    private NumericUpDown _nudThrottlePercent = null!;
+    private NumericUpDown _nudThrottleCycle = null!;
+
     // ─── Characters tab controls
     private ListView _charListView = null!;
     private List<CharacterProfile> _pendingCharacters = null!;
@@ -267,6 +272,19 @@ public class SettingsForm : Form
 
         DarkTheme.AddLabel(page, "Retry Delay (ms):", 200, y - 22);
         _nudRetryDelay = DarkTheme.AddNumeric(page, 200, y, 100, 2000, 500, 10000);
+
+        // Background FPS Throttling section
+        var separator = new Label { Text = "── Background FPS Throttling ──", ForeColor = Color.FromArgb(120, 120, 120), Location = new Point(15, y += 40), AutoSize = true };
+        page.Controls.Add(separator);
+
+        _chkThrottleEnabled = DarkTheme.AddCheckBox(page, "Enable Background Throttling", 15, y += 22);
+
+        DarkTheme.AddLabel(page, "Throttle %:", 15, y += 30);
+        _nudThrottlePercent = DarkTheme.AddNumeric(page, 15, y += 22, 80, 50, 0, 90);
+        DarkTheme.AddHint(page, "0=off, 50=half FPS, 75=quarter", 105, y + 3);
+
+        DarkTheme.AddLabel(page, "Cycle (ms):", 280, y - 22);
+        _nudThrottleCycle = DarkTheme.AddNumeric(page, 280, y, 80, 100, 50, 1000);
 
         return page;
     }
@@ -543,6 +561,11 @@ public class SettingsForm : Form
         _nudPipHeight.Enabled = _config.Pip.SizePreset == "Custom";
         _cboPipBorderColor.Enabled = _config.Pip.ShowBorder;
 
+        // Throttle
+        _chkThrottleEnabled.Checked = _config.Throttle.Enabled;
+        _nudThrottlePercent.Value = DarkTheme.ClampNud(_nudThrottlePercent, _config.Throttle.ThrottlePercent);
+        _nudThrottleCycle.Value = DarkTheme.ClampNud(_nudThrottleCycle, _config.Throttle.CycleIntervalMs);
+
         // Characters
         RefreshCharacterList();
     }
@@ -605,6 +628,12 @@ public class SettingsForm : Form
                 BorderColor = _cboPipBorderColor.SelectedItem?.ToString() ?? "Green",
                 MaxWindows = (int)_nudPipMaxWindows.Value,
                 SavedPositions = _config.Pip.SavedPositions // preserve existing positions
+            },
+            Throttle = new ThrottleConfig
+            {
+                Enabled = _chkThrottleEnabled.Checked,
+                ThrottlePercent = (int)_nudThrottlePercent.Value,
+                CycleIntervalMs = (int)_nudThrottleCycle.Value
             },
             GinaPath = _txtGinaPath.Text.Trim(),
             NotesPath = _txtNotesPath.Text.Trim(),
