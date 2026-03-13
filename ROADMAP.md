@@ -27,8 +27,8 @@ Duty-cycle background EQ processes via `NtSuspendProcess`/`NtResumeProcess` to r
 
 ---
 
-### P2-03: Borderless Fullscreen Mode `[~]`
-**Status:** Research complete, ready to implement
+### P2-03: Borderless Fullscreen Mode `[x]`
+**Status:** Implemented
 
 Make EQ fill the entire screen without true exclusive fullscreen, preserving the ability to Alt+Tab and overlay PiP windows.
 

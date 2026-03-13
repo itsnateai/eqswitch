@@ -81,6 +81,7 @@ public class WindowLayout
     public int Columns { get; set; } = 2;
     public int Rows { get; set; } = 2;
     public bool RemoveTitleBars { get; set; } = false;
+    public bool BorderlessFullscreen { get; set; } = false;
     public bool SnapToMonitor { get; set; } = true;
     public int TargetMonitor { get; set; } = 0; // 0 = primary
 

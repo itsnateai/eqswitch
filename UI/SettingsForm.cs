@@ -37,6 +37,7 @@ public class SettingsForm : Form
     private NumericUpDown _nudTopOffset = null!;
     private ComboBox _cboLayoutMode = null!;
     private CheckBox _chkRemoveTitleBars = null!;
+    private CheckBox _chkBorderlessFullscreen = null!;
 
     // ─── Affinity tab controls
     private TextBox _txtActiveMask = null!;
@@ -220,6 +221,9 @@ public class SettingsForm : Form
         _nudTopOffset = DarkTheme.AddNumeric(page, 200, y, 80, 0, -100, 200);
 
         _chkRemoveTitleBars = DarkTheme.AddCheckBox(page, "Remove Title Bars on Arrange", 15, y += 40);
+
+        _chkBorderlessFullscreen = DarkTheme.AddCheckBox(page, "Borderless Fullscreen", 15, y += 30);
+        DarkTheme.AddHint(page, "Fills screen without exclusive fullscreen — preserves Alt+Tab and PiP", 15, y + 22);
 
         return page;
     }
@@ -529,6 +533,7 @@ public class SettingsForm : Form
         _nudTargetMonitor.Value = DarkTheme.ClampNud(_nudTargetMonitor, _config.Layout.TargetMonitor);
         _nudTopOffset.Value = DarkTheme.ClampNud(_nudTopOffset, _config.Layout.TopOffset);
         _chkRemoveTitleBars.Checked = _config.Layout.RemoveTitleBars;
+        _chkBorderlessFullscreen.Checked = _config.Layout.BorderlessFullscreen;
 
         // Affinity
         _chkAffinityEnabled.Checked = _config.Affinity.Enabled;
@@ -586,7 +591,8 @@ public class SettingsForm : Form
                 Rows = (int)_nudRows.Value,
                 TargetMonitor = (int)_nudTargetMonitor.Value,
                 TopOffset = (int)_nudTopOffset.Value,
-                RemoveTitleBars = _chkRemoveTitleBars.Checked
+                RemoveTitleBars = _chkRemoveTitleBars.Checked,
+                BorderlessFullscreen = _chkBorderlessFullscreen.Checked
             },
             Affinity = new AffinityConfig
             {
