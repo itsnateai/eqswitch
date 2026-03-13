@@ -1,7 +1,7 @@
-# EQSwitch v2.3.0-dev — Claude Code Context
+# EQSwitch v2.3.0 — Claude Code Context
 
 ## What This Is
-C# (.NET 8 WinForms) port of EQSwitch, an EverQuest multiboxing window manager originally written in AHK v2. Targets the Shards of Dalaya emulator community. v2.3.0-dev — adding background FPS throttling and borderless fullscreen. ~27 files, ~5,700 lines.
+C# (.NET 8 WinForms) port of EQSwitch, an EverQuest multiboxing window manager originally written in AHK v2. Targets the Shards of Dalaya emulator community. v2.3.0 — added background FPS throttling and borderless fullscreen. ~27 files, ~5,700 lines.
 
 **Repo**: `itsnateai/eqswitch-port` (private) | **Branch**: master
 
@@ -128,15 +128,13 @@ Settings uses a pending/staged approach:
 
 ## Status
 
-**v2.3.0-dev — In development**
+**v2.3.0 — Released 2026-03-12**
 
-v2.2.0 shipped 2026-03-12. Now adding:
-- [x] P2-04: Background FPS throttling (NtSuspendProcess/NtResumeProcess duty cycle)
-- [x] P2-03: Borderless fullscreen mode (WinEQ Y+1 offset trick, rcMonitor bounds)
+New in v2.3.0:
+- P2-04: Background FPS throttling (NtSuspendProcess/NtResumeProcess duty cycle)
+- P2-03: Borderless fullscreen mode (WinEQ Y+1 offset trick, rcMonitor bounds)
 
-Removed from roadmap: P2-05 (interactive PiP), P2-06 (layout presets), P4-02 (focus-follow-mouse), P4-03 (PiP zoom-on-hover).
-
-See ROADMAP.md for details.
+No deferred features remaining. All ideas reviewed and declined 2026-03-12.
 
 ## Conventions
 - All Win32 calls go through `NativeMethods.cs` — never scatter DllImport.
@@ -150,7 +148,7 @@ See ROADMAP.md for details.
 ```
 eqswitch-port/
   Program.cs                    # Entry point, mutex, migration
-  EQSwitch.csproj               # .NET 8 WinForms, v2.2.0
+  EQSwitch.csproj               # .NET 8 WinForms, v2.3.0
   EQSwitch.sln                  # Solution with main + test projects
   Core/
     FileLogger.cs                # Persistent file logging (Info/Warn/Error)
