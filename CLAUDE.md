@@ -105,3 +105,9 @@ All keys live in `[EQSwitch]` section. Defaults in parentheses:
 **v2.2 — Final release (shipped 2026-03-12)**
 
 All audit items resolved. Tracking files cleared. See FINAL_REPORT.md for summary.
+
+**Production audit v3 (2026-03-13):** 1 P1 fix (middle-click cooldown was non-functional), 4 P3 doc fixes. See AUDIT_TASKS.md for full results.
+
+### Gotchas Discovered in v3 Audit
+- **Static locals in message handlers**: A `static` variable inside an `if` block of an `OnMessage` callback persists correctly across calls, but if the variable is only set at declaration (`static x := 0`) and never updated, the intended behavior (e.g., cooldown tracking) silently fails. Use globals when the value must be updated from a different function (e.g., a timer callback).
+- **README drift after GUI renames**: When renaming a GUI label (e.g., "Active Key" → "EQ Switch Key"), grep the README and help text for the old name — it's easy to miss stale references in docs.
