@@ -24,6 +24,9 @@ public class AppConfig
     // Launching
     public LaunchConfig Launch { get; set; } = new();
 
+    // Background FPS Throttling
+    public ThrottleConfig Throttle { get; set; } = new();
+
     // Picture-in-Picture
     public PipConfig Pip { get; set; } = new();
 
@@ -67,6 +70,9 @@ public class AppConfig
         Pip.MaxWindows = Math.Clamp(Pip.MaxWindows, 1, 3);
         Pip.CustomWidth = Math.Clamp(Pip.CustomWidth, 100, 1920);
         Pip.CustomHeight = Math.Clamp(Pip.CustomHeight, 75, 1080);
+
+        Throttle.ThrottlePercent = Math.Clamp(Throttle.ThrottlePercent, 0, 90);
+        Throttle.CycleIntervalMs = Math.Clamp(Throttle.CycleIntervalMs, 50, 1000);
     }
 }
 
@@ -75,6 +81,7 @@ public class WindowLayout
     public int Columns { get; set; } = 2;
     public int Rows { get; set; } = 2;
     public bool RemoveTitleBars { get; set; } = false;
+    public bool BorderlessFullscreen { get; set; } = false;
     public bool SnapToMonitor { get; set; } = true;
     public int TargetMonitor { get; set; } = 0; // 0 = primary
 
@@ -233,6 +240,29 @@ public class PipConfig
         "Black" => Color.Black,
         _ => Color.FromArgb(0, 255, 0)
     };
+}
+
+public class ThrottleConfig
+{
+    /// <summary>
+    /// Enable background FPS throttling via process suspension.
+    /// When enabled, background EQ clients are duty-cycled (suspended/resumed)
+    /// to reduce GPU/CPU usage.
+    /// </summary>
+    public bool Enabled { get; set; } = false;
+
+    /// <summary>
+    /// Percentage of time background processes are suspended (0-90).
+    /// Higher = more throttling = lower background FPS.
+    /// 0 = no throttling, 50 = half FPS, 75 = quarter FPS, 90 = ~10% FPS.
+    /// </summary>
+    public int ThrottlePercent { get; set; } = 50;
+
+    /// <summary>
+    /// Base cycle interval in ms for the suspend/resume duty cycle.
+    /// Lower = smoother but more overhead. Default 100ms.
+    /// </summary>
+    public int CycleIntervalMs { get; set; } = 100;
 }
 
 public class CharacterProfile

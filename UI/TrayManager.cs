@@ -17,6 +17,7 @@ public class TrayManager : IDisposable
     private readonly HotkeyManager _hotkeyManager;
     private readonly KeyboardHookManager _keyboardHook;
     private readonly AffinityManager _affinityManager;
+    private readonly ThrottleManager _throttleManager;
     private readonly LaunchManager _launchManager;
 
     private NotifyIcon? _trayIcon;
@@ -49,6 +50,7 @@ public class TrayManager : IDisposable
         _hotkeyManager = new HotkeyManager();
         _keyboardHook = new KeyboardHookManager();
         _affinityManager = new AffinityManager(config);
+        _throttleManager = new ThrottleManager(config);
         _launchManager = new LaunchManager(config, _affinityManager);
     }
 
@@ -100,6 +102,7 @@ public class TrayManager : IDisposable
         _processManager.StartPolling();
         RegisterHotkeys();
         StartAffinityTimer();
+        _throttleManager.Start();
         StartupManager.ValidateRegistryPath(_config);
 
         // Log core detection at startup
@@ -333,6 +336,7 @@ public class TrayManager : IDisposable
             var active = _processManager.GetActiveClient();
             var clients = _processManager.Clients;
             _affinityManager.ApplyAffinityRules(clients, active);
+            _throttleManager.UpdateClients(clients, active);
 
             // Update PiP sources when foreground changes
             if (_pipOverlay != null && !_pipOverlay.IsDisposed)
@@ -591,6 +595,7 @@ public class TrayManager : IDisposable
         _config.Layout.Columns = newConfig.Layout.Columns;
         _config.Layout.Rows = newConfig.Layout.Rows;
         _config.Layout.RemoveTitleBars = newConfig.Layout.RemoveTitleBars;
+        _config.Layout.BorderlessFullscreen = newConfig.Layout.BorderlessFullscreen;
         _config.Layout.SnapToMonitor = newConfig.Layout.SnapToMonitor;
         _config.Layout.TargetMonitor = newConfig.Layout.TargetMonitor;
         _config.Layout.TopOffset = newConfig.Layout.TopOffset;
@@ -623,6 +628,9 @@ public class TrayManager : IDisposable
         _config.Pip.ShowBorder = newConfig.Pip.ShowBorder;
         _config.Pip.BorderColor = newConfig.Pip.BorderColor;
         _config.Pip.MaxWindows = newConfig.Pip.MaxWindows;
+        _config.Throttle.Enabled = newConfig.Throttle.Enabled;
+        _config.Throttle.ThrottlePercent = newConfig.Throttle.ThrottlePercent;
+        _config.Throttle.CycleIntervalMs = newConfig.Throttle.CycleIntervalMs;
         _config.GinaPath = newConfig.GinaPath;
         _config.NotesPath = newConfig.NotesPath;
         _config.Characters = newConfig.Characters;
@@ -646,6 +654,10 @@ public class TrayManager : IDisposable
         {
             StartAffinityTimer();
         }
+
+        // Restart throttle manager with new settings
+        _throttleManager.Stop();
+        _throttleManager.Start();
 
         // Update polling interval
         _processManager.UpdatePollingInterval(_config.PollingIntervalMs);
@@ -678,6 +690,7 @@ public class TrayManager : IDisposable
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
         _launchManager.CancelLaunch();
+        _throttleManager.Stop();
         _pipOverlay?.Dispose();
         _pipOverlay = null;
         _affinityManager.ResetAllAffinities(_processManager.Clients);
@@ -722,6 +735,7 @@ public class TrayManager : IDisposable
         _affinityTimer?.Dispose();
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
+        _throttleManager.Dispose();
         _launchManager.Dispose();
         _pipOverlay?.Dispose();
         _hotkeyManager.Dispose();
