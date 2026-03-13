@@ -39,6 +39,7 @@ public static class FileOperations
 
         // Multiple logs — show picker with most recent files
         var menu = new ContextMenuStrip();
+        menu.Closed += (_, _) => menu.Dispose();
         foreach (var logFile in logFiles.Take(10))
         {
             var name = Path.GetFileNameWithoutExtension(logFile);
