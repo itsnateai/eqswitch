@@ -132,10 +132,9 @@ Settings uses a pending/staged approach:
 
 v2.2.0 shipped 2026-03-12. Now adding:
 - [x] P2-04: Background FPS throttling (NtSuspendProcess/NtResumeProcess duty cycle)
-- [~] P2-03: Borderless fullscreen mode (research/planning)
-- [ ] P2-05: Interactive PiP (deferred)
+- [~] P2-03: Borderless fullscreen mode (research complete, ready to implement)
 
-Removed from roadmap: P2-06 (layout presets), P4-02 (focus-follow-mouse), P4-03 (PiP zoom-on-hover).
+Removed from roadmap: P2-05 (interactive PiP), P2-06 (layout presets), P4-02 (focus-follow-mouse), P4-03 (PiP zoom-on-hover).
 
 See ROADMAP.md for details.
 
