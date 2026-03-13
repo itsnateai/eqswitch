@@ -178,7 +178,7 @@ public class LaunchManager : IDisposable
                 UseShellExecute = true
             };
 
-            var proc = Process.Start(startInfo);
+            using var proc = Process.Start(startInfo);
             if (proc == null)
             {
                 FileLogger.Warn("LaunchManager: Process.Start returned null");

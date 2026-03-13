@@ -23,6 +23,7 @@ public class TrayManager : IDisposable
     private NotifyIcon? _trayIcon;
     private ContextMenuStrip? _contextMenu;
     private ToolStripMenuItem? _clientsMenu;
+    private Font? _boldMenuFont;
 
     // Timer that checks foreground window changes and applies affinity rules
     private System.Windows.Forms.Timer? _affinityTimer;
@@ -394,11 +395,14 @@ public class TrayManager : IDisposable
         });
         _contextMenu.Items.Add(new ToolStripSeparator());
 
-        var launchOneItem = new ToolStripMenuItem($"Launch Client{HkSuffix(hk.LaunchOne)}") { Font = new Font(_contextMenu.Font, FontStyle.Bold) };
+        _boldMenuFont?.Dispose();
+        _boldMenuFont = new Font(_contextMenu.Font, FontStyle.Bold);
+
+        var launchOneItem = new ToolStripMenuItem($"Launch Client{HkSuffix(hk.LaunchOne)}") { Font = _boldMenuFont };
         launchOneItem.Click += (_, _) => OnLaunchOne();
         _contextMenu.Items.Add(launchOneItem);
 
-        var launchAllItem = new ToolStripMenuItem($"Launch All ({_config.Launch.NumClients}){HkSuffix(hk.LaunchAll)}") { Font = new Font(_contextMenu.Font, FontStyle.Bold) };
+        var launchAllItem = new ToolStripMenuItem($"Launch All ({_config.Launch.NumClients}){HkSuffix(hk.LaunchAll)}") { Font = _boldMenuFont };
         launchAllItem.Click += (_, _) => OnLaunchAll();
         _contextMenu.Items.Add(launchAllItem);
 
@@ -693,6 +697,8 @@ public class TrayManager : IDisposable
         _throttleManager.Stop();
         _pipOverlay?.Dispose();
         _pipOverlay = null;
+        _boldMenuFont?.Dispose();
+        _boldMenuFont = null;
         _affinityManager.ResetAllAffinities(_processManager.Clients);
         _hotkeyManager.Dispose();
         _keyboardHook.Dispose();
@@ -737,6 +743,7 @@ public class TrayManager : IDisposable
         _retryTimer?.Dispose();
         _throttleManager.Dispose();
         _launchManager.Dispose();
+        _boldMenuFont?.Dispose();
         _pipOverlay?.Dispose();
         _hotkeyManager.Dispose();
         _keyboardHook.Dispose();
