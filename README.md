@@ -50,7 +50,7 @@ That's it. No installer, no registry entries, nothing left behind if you delete 
 When you run EQ Switch for the first time with no config file, it will automatically open Settings and show you a welcome tooltip. **The most important thing to set is your Switch Hotkey** — it's the whole point of the program.
 
 ### Recommended setup steps:
-1. **Set your Active Key** — the key you'll press in-game to jump between windows (default: `\`)
+1. **Set your EQ Switch Key** — the key you'll press in-game to jump between windows (default: `\`)
 2. **Set your EQ Executable** — point it at your `eqgame.exe`
 3. Hit **Save**
 
@@ -60,7 +60,7 @@ Everything else is optional and can be configured later.
 
 ## ⌨ How the Window Switch Works
 
-Press your configured **Active Key** (default `\`) **while the game is the active window** and EQ Switch will instantly bring your other EQ client to the front. It cycles through all visible EQ windows in order, so it works with 2+ clients.
+Press your configured **EQ Switch Key** (default `\`) **while the game is the active window** and EQ Switch will instantly bring your other EQ client to the front. It cycles through all visible EQ windows in order, so it works with 2+ clients.
 
 The **Global Switch** hotkey (default `]`) works from anywhere — even outside the game — and pulls EQ to the front. Press it again to cycle between clients.
 
@@ -95,9 +95,9 @@ Right-click the tray icon to access everything:
 ## ⚙ Settings
 
 ### ⌨ Hotkeys
-- **Active Key** (default `\`) — switches between EQ clients when the game is focused. Cycles through all visible EQ windows
+- **EQ Switch Key** (default `\`) — switches between EQ clients when the game is focused. Cycles through all visible EQ windows
 - **Global Switch** (default `]`) — pulls EQ to the front from any app. Press again to cycle between clients
-- **Fix Mode Toggle** (`Alt+M`) — simple on/off toggle for multimonitor mode, saved to config
+- **Fix Mode Toggle** (`RAlt+M`) — simple on/off toggle for multimonitor mode, saved to config
 
 ### ⚔ EverQuest
 - **EQ Executable** — path to your `eqgame.exe` with launch arguments (default: `-patchme`)
@@ -110,7 +110,7 @@ Right-click the tray icon to access everything:
 - **Fix mode** — what happens after launch and when pressing Fix Windows:
   - `single screen` — maximizes EQ on your primary monitor
   - `multimonitor` — distributes one EQ window per monitor, maximized
-- **Target monitor** — which monitor gets the first EQ window in multimonitor mode (default: 2)
+- **Target monitor** — which monitor to use in single screen mode (default: 2)
 - **Title Bar Offset** — pushes the window down to hide the title bar behind the top edge of the screen
 
 ### 📺 Picture-in-Picture
@@ -125,7 +125,7 @@ Live preview overlay of your alt EQ windows using DWM thumbnails:
 ### 🎬 Video Settings
 Configure EQ's display settings without manually editing `eqclient.ini`:
 - **Resolution presets** — 1920x1009, 1920x1080, 1920x1200, 1920x1280, 2560x1440, 1280x720, or custom
-- **Window offsets** — X, Y, Width, Height offsets for fine-tuning window placement
+- **Window offsets** — X and Y offsets for fine-tuning window placement
 - **Windowed Mode** — toggle between windowed and fullscreen via checkbox
 - Custom values are stashed when switching presets and restored when selecting "Custom"
 
@@ -200,7 +200,7 @@ Yes. EQ Switch is an unsigned personal tool. Click *More info → Run anyway* on
 No. AutoHotkey-compiled executables are frequently flagged as false positives because the packaging technique (bundling an interpreter + script into a single exe) resembles some malware patterns. The exe is compiled with `/compress 0` to minimize detections. You can verify the source yourself or run from source directly.
 
 **Q: The switch hotkey isn't working**
-Make sure the game is the **active/focused** window when you press it — the Active Key only fires inside EQ. Use the Global Switch key (`]` by default) if you want to switch from outside the game.
+Make sure the game is the **active/focused** window when you press it — the EQ Switch Key only fires inside EQ. Use the Global Switch key (`]` by default) if you want to switch from outside the game.
 
 **Q: Can I use this with more than 2 EQ clients?**
 Yes! It cycles through all visible EQ windows in order. Just keep pressing your switch key to rotate through them.

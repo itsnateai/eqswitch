@@ -590,6 +590,7 @@ g_dblClickTimer   := ""
 g_dblClickUpIgnore := false
 g_midClickCount := 0
 g_midClickTimer := ""
+g_midCooldown   := 0
 TrayClick(wParam, lParam, *) {
     global DBLCLICK_LAUNCH, MIDCLICK_MODE, TRIPLECLICK_LAUNCH
     global g_tripleClickCooldown, g_dblClickPending, g_dblClickTimer, g_dblClickUpIgnore
@@ -634,10 +635,10 @@ TrayClick(wParam, lParam, *) {
     ; Single click = action 1, rapid triple-click = action 2
     ; 1.2s cooldown after action fires prevents double-click re-triggering
     if (lParam = 0x208) {
-        static midCooldown := 0
+        global g_midCooldown
         if (MIDCLICK_MODE = "off")
             return
-        if (now - midCooldown < 1200)
+        if (now - g_midCooldown < 1200)
             return
         g_midClickCount++
         if g_midClickTimer
@@ -648,10 +649,11 @@ TrayClick(wParam, lParam, *) {
 }
 
 MidClickResolve(*) {
-    global MIDCLICK_MODE, g_midClickCount, g_midClickTimer
+    global MIDCLICK_MODE, g_midClickCount, g_midClickTimer, g_midCooldown
     count := g_midClickCount
     g_midClickCount := 0
     g_midClickTimer := ""
+    g_midCooldown := A_TickCount
     if (count >= 2) {
         ; Triple-click action (rapid clicks land 2+ within 500ms window)
         if (MIDCLICK_MODE = "pip_notes")
@@ -1431,7 +1433,7 @@ EQ Switch Key (default: \)
 Global Switch Key (default: ])
   Pulls the last-active EQ window to the front from any application. Press repeatedly to cycle through clients. Works even when EQ isn't focused.
 
-Multi-Monitor Toggle (default: Alt+M)
+Multi-Monitor Toggle (default: RAlt+M)
   Toggles between single screen and multi-monitor window layout. Uncheck in Settings to disable.
 
 ─── LAUNCHING ───────────────────────────────
