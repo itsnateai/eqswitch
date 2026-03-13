@@ -129,25 +129,11 @@ public const uint SWP_NOOWNERZORDER = 0x0200;
 
 ---
 
-### P2-05: Interactive PiP (Click to Focus) `[ ]`
-**Status:** Deferred
-
-Currently PiP overlays are permanently click-through (`WS_EX_TRANSPARENT`). Goal: allow clicking a PiP window to switch focus to that EQ client.
-
-**Approach:**
-- Replace `WS_EX_TRANSPARENT` with `WM_NCHITTEST` override
-- Default state: click-through (return `HTTRANSPARENT`)
-- When Ctrl held or specific modifier: return `HTCLIENT` and handle click to switch
-- Use the existing `GetAsyncKeyState(VK_CONTROL)` pattern from PiP drag
-
-**Complexity:** Medium — requires careful WndProc override and state management
-
----
-
 ## Removed Items
 
 The following items from the original v2.2.0 deferred list have been removed:
 
+- ~~P2-05: Interactive PiP (click to focus)~~ — Removed (PiP is intentionally click-through; opacity already configurable)
 - ~~P2-06: Saveable layout presets~~ — Removed from roadmap
 - ~~P4-02: Focus-follow-mouse mode~~ — Removed from roadmap
 - ~~P4-03: PiP zoom-on-hover~~ — Removed from roadmap
