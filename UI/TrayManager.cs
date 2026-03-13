@@ -595,6 +595,7 @@ public class TrayManager : IDisposable
         _config.Layout.Columns = newConfig.Layout.Columns;
         _config.Layout.Rows = newConfig.Layout.Rows;
         _config.Layout.RemoveTitleBars = newConfig.Layout.RemoveTitleBars;
+        _config.Layout.BorderlessFullscreen = newConfig.Layout.BorderlessFullscreen;
         _config.Layout.SnapToMonitor = newConfig.Layout.SnapToMonitor;
         _config.Layout.TargetMonitor = newConfig.Layout.TargetMonitor;
         _config.Layout.TopOffset = newConfig.Layout.TopOffset;

@@ -28,6 +28,7 @@ public interface IWindowsApi
 
     // ─── Monitor Operations ──────────────────────────────────────────
     List<WinRect> GetAllMonitorWorkAreas();
+    List<WinRect> GetAllMonitorBounds();
 
     // ─── Process Operations ──────────────────────────────────────────
     bool SetProcessAffinity(int processId, long affinityMask);

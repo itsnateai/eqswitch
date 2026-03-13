@@ -46,7 +46,7 @@ EQSwitch is an EverQuest multiboxing window manager for the Shards of Dalaya emu
 
 ### Post-v2.2.0 (see ROADMAP.md)
 - P2-04: Background FPS throttling — **Implemented in v2.3.0-dev**
-- P2-03: Borderless fullscreen mode — **Research complete, ready to implement**
+- P2-03: Borderless fullscreen mode — **Implemented in v2.3.0-dev**
 - ~~P2-05: Interactive PiP (click to focus)~~ — Removed (PiP is intentionally click-through)
 - ~~P2-06: Saveable layout presets~~ — Removed
 - ~~P4-02: Focus-follow-mouse mode~~ — Removed
