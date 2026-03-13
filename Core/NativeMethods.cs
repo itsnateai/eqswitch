@@ -123,6 +123,14 @@ internal static class NativeMethods
     public const long WS_CAPTION = 0x00C00000;
     public const long WS_THICKFRAME = 0x00040000;
     public const long WS_BORDER = 0x00800000;
+    public const long WS_SYSMENU = 0x00080000L;
+    public const long WS_MINIMIZEBOX = 0x00020000L;
+    public const long WS_MAXIMIZEBOX = 0x00010000L;
+
+    // Extended styles for borderless fullscreen
+    public const long WS_EX_DLGMODALFRAME = 0x00000001L;
+    public const long WS_EX_CLIENTEDGE = 0x00000200L;
+    public const long WS_EX_STATICEDGE = 0x00020000L;
 
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOSIZE = 0x0001;
@@ -231,4 +239,14 @@ internal static class NativeMethods
     public static extern short GetAsyncKeyState(int vKey);
 
     public const int VK_CONTROL = 0x11;
+
+    // ─── Process Suspension (Background FPS Throttling) ──────────────
+
+    [DllImport("ntdll.dll", SetLastError = true)]
+    public static extern int NtSuspendProcess(IntPtr processHandle);
+
+    [DllImport("ntdll.dll", SetLastError = true)]
+    public static extern int NtResumeProcess(IntPtr processHandle);
+
+    public const uint PROCESS_SUSPEND_RESUME = 0x0800;
 }
