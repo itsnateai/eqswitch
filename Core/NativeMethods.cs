@@ -123,6 +123,14 @@ internal static class NativeMethods
     public const long WS_CAPTION = 0x00C00000;
     public const long WS_THICKFRAME = 0x00040000;
     public const long WS_BORDER = 0x00800000;
+    public const long WS_SYSMENU = 0x00080000L;
+    public const long WS_MINIMIZEBOX = 0x00020000L;
+    public const long WS_MAXIMIZEBOX = 0x00010000L;
+
+    // Extended styles for borderless fullscreen
+    public const long WS_EX_DLGMODALFRAME = 0x00000001L;
+    public const long WS_EX_CLIENTEDGE = 0x00000200L;
+    public const long WS_EX_STATICEDGE = 0x00020000L;
 
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOSIZE = 0x0001;

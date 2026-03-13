@@ -57,6 +57,29 @@ public class WindowsApi : IWindowsApi
         return monitors;
     }
 
+    public List<WinRect> GetAllMonitorBounds()
+    {
+        var monitors = new List<WinRect>();
+        NativeMethods.EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero,
+            (IntPtr hMonitor, IntPtr hdc, ref NativeMethods.RECT rect, IntPtr data) =>
+            {
+                var info = new NativeMethods.MONITORINFO
+                {
+                    cbSize = Marshal.SizeOf<NativeMethods.MONITORINFO>()
+                };
+                NativeMethods.GetMonitorInfo(hMonitor, ref info);
+                monitors.Add(new WinRect
+                {
+                    Left = info.rcMonitor.Left,
+                    Top = info.rcMonitor.Top,
+                    Right = info.rcMonitor.Right,
+                    Bottom = info.rcMonitor.Bottom
+                });
+                return true;
+            }, IntPtr.Zero);
+        return monitors;
+    }
+
     public bool SetProcessAffinity(int processId, long affinityMask)
         => AffinityManager.SetProcessAffinity(processId, affinityMask);
 

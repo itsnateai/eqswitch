@@ -106,14 +106,17 @@ public class WindowManager
 
     /// <summary>
     /// Single-screen mode: arrange all windows in a grid on the target monitor.
+    /// When BorderlessFullscreen is enabled, uses full monitor bounds with Y+1 offset
+    /// to cover the taskbar (WinEQ method).
     /// </summary>
     private void ArrangeSingleScreen(IReadOnlyList<EQClient> clients)
     {
-        var monitor = GetTargetMonitor();
+        bool borderless = _config.Layout.BorderlessFullscreen;
+        var monitor = GetTargetMonitor(borderless);
         var layout = _config.Layout;
         int cols = layout.Columns;
         int rows = layout.Rows;
-        int yOffset = layout.TopOffset;
+        int yOffset = borderless ? 1 : layout.TopOffset; // +1 Y offset for borderless
 
         int cellWidth = monitor.Width / cols;
         int cellHeight = monitor.Height / rows;
@@ -136,7 +139,9 @@ public class WindowManager
             // Restore if minimized
             _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
-            if (layout.RemoveTitleBars)
+            if (borderless)
+                ApplyBorderlessStyle(client.WindowHandle);
+            else if (layout.RemoveTitleBars)
                 RemoveTitleBar(client.WindowHandle);
 
             _api.SetWindowPos(
@@ -146,20 +151,23 @@ public class WindowManager
                 NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW | NativeMethods.SWP_FRAMECHANGED);
         }
 
-        FileLogger.Info($"ArrangeSingleScreen: {clients.Count} window(s) in {cols}x{rows} grid");
+        string mode = borderless ? "borderless fullscreen" : $"{cols}x{rows} grid";
+        FileLogger.Info($"ArrangeSingleScreen: {clients.Count} window(s) in {mode}");
     }
 
     /// <summary>
     /// Multi-monitor mode: distribute windows across physical monitors.
     /// Each window fills its assigned monitor. Cycles through monitors if
     /// there are more windows than screens.
+    /// When BorderlessFullscreen is enabled, uses full monitor bounds with Y+1 offset.
     /// </summary>
     private void ArrangeMultiMonitor(IReadOnlyList<EQClient> clients)
     {
-        var monitors = _api.GetAllMonitorWorkAreas();
+        bool borderless = _config.Layout.BorderlessFullscreen;
+        var monitors = borderless ? _api.GetAllMonitorBounds() : _api.GetAllMonitorWorkAreas();
         if (monitors.Count == 0) return;
 
-        int yOffset = _config.Layout.TopOffset;
+        int yOffset = borderless ? 1 : _config.Layout.TopOffset;
 
         for (int i = 0; i < clients.Count; i++)
         {
@@ -176,7 +184,9 @@ public class WindowManager
 
             _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
-            if (_config.Layout.RemoveTitleBars)
+            if (borderless)
+                ApplyBorderlessStyle(client.WindowHandle);
+            else if (_config.Layout.RemoveTitleBars)
                 RemoveTitleBar(client.WindowHandle);
 
             _api.SetWindowPos(
@@ -186,7 +196,8 @@ public class WindowManager
                 NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW | NativeMethods.SWP_FRAMECHANGED);
         }
 
-        FileLogger.Info($"ArrangeMultiMonitor: {clients.Count} window(s) across {monitors.Count} monitor(s)");
+        FileLogger.Info($"ArrangeMultiMonitor: {clients.Count} window(s) across {monitors.Count} monitor(s)" +
+            (borderless ? " (borderless)" : ""));
     }
 
     /// <summary>
@@ -241,7 +252,7 @@ public class WindowManager
         FileLogger.Info($"SwapWindows: rotated {clients.Count} window positions");
     }
 
-    // ─── Title Bar Management ─────────────────────────────────────
+    // ─── Title Bar & Borderless Management ──────────────────────────
 
     /// <summary>
     /// Remove the title bar and borders from a window.
@@ -253,6 +264,37 @@ public class WindowManager
         style &= ~NativeMethods.WS_THICKFRAME;
         _api.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, (IntPtr)style);
 
+        _api.SetWindowPos(
+            hwnd, IntPtr.Zero, 0, 0, 0, 0,
+            NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE |
+            NativeMethods.SWP_NOZORDER | NativeMethods.SWP_FRAMECHANGED);
+    }
+
+    /// <summary>
+    /// Apply full borderless style — removes all window chrome including
+    /// extended styles. Used for borderless fullscreen mode (WinEQ method).
+    /// Strips: WS_CAPTION, WS_THICKFRAME, WS_SYSMENU, WS_MINIMIZEBOX, WS_MAXIMIZEBOX
+    /// Extended: WS_EX_DLGMODALFRAME, WS_EX_CLIENTEDGE, WS_EX_STATICEDGE
+    /// </summary>
+    public void ApplyBorderlessStyle(IntPtr hwnd)
+    {
+        // Remove standard styles
+        long style = _api.GetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE).ToInt64();
+        style &= ~NativeMethods.WS_CAPTION;
+        style &= ~NativeMethods.WS_THICKFRAME;
+        style &= ~NativeMethods.WS_SYSMENU;
+        style &= ~NativeMethods.WS_MINIMIZEBOX;
+        style &= ~NativeMethods.WS_MAXIMIZEBOX;
+        _api.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, (IntPtr)style);
+
+        // Remove extended styles (border chrome remnants)
+        long exStyle = _api.GetWindowLongPtr(hwnd, NativeMethods.GWL_EXSTYLE).ToInt64();
+        exStyle &= ~NativeMethods.WS_EX_DLGMODALFRAME;
+        exStyle &= ~NativeMethods.WS_EX_CLIENTEDGE;
+        exStyle &= ~NativeMethods.WS_EX_STATICEDGE;
+        _api.SetWindowLongPtr(hwnd, NativeMethods.GWL_EXSTYLE, (IntPtr)exStyle);
+
+        // Apply style changes
         _api.SetWindowPos(
             hwnd, IntPtr.Zero, 0, 0, 0, 0,
             NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE |
@@ -278,12 +320,14 @@ public class WindowManager
     // ─── Monitor Helpers ──────────────────────────────────────────
 
     /// <summary>
-    /// Get the work area of the target monitor (for single-screen mode).
+    /// Get the target monitor area for single-screen mode.
+    /// When fullBounds is true, returns rcMonitor (includes taskbar area).
+    /// When false, returns rcWork (excludes taskbar).
     /// Falls back to monitor 0 if target doesn't exist.
     /// </summary>
-    private WinRect GetTargetMonitor()
+    private WinRect GetTargetMonitor(bool fullBounds = false)
     {
-        var monitors = _api.GetAllMonitorWorkAreas();
+        var monitors = fullBounds ? _api.GetAllMonitorBounds() : _api.GetAllMonitorWorkAreas();
         int targetIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, Math.Max(0, monitors.Count - 1));
         return monitors.Count > 0 ? monitors[targetIdx] : new WinRect { Right = 1920, Bottom = 1080 };
     }
