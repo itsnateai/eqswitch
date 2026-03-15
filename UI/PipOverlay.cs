@@ -42,8 +42,8 @@ public class PipOverlay : Form
         var maxWin = Math.Clamp(config.Pip.MaxWindows, 1, 3);
 
         // Stack PiP windows vertically with a small gap
-        int gap = config.Pip.ShowBorder ? 4 : 2;
-        Size = new Size(w + (config.Pip.ShowBorder ? 4 : 0), (h + gap) * maxWin);
+        int gap = config.Pip.ShowBorder ? 3 : 2;
+        Size = new Size(w + (config.Pip.ShowBorder ? 2 : 0), (h + gap) * maxWin);
 
         // Default position: top-right corner
         var screen = (Screen.PrimaryScreen ?? Screen.AllScreens.FirstOrDefault())?.WorkingArea
@@ -125,8 +125,8 @@ public class PipOverlay : Form
         UnregisterAll();
 
         var (w, h) = _config.Pip.GetSize();
-        int borderPad = _config.Pip.ShowBorder ? 2 : 0;
-        int gap = _config.Pip.ShowBorder ? 4 : 2;
+        int borderPad = _config.Pip.ShowBorder ? 1 : 0;
+        int gap = _config.Pip.ShowBorder ? 3 : 2;
 
         for (int i = 0; i < backgrounds.Count; i++)
         {

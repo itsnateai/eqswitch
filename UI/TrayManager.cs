@@ -45,9 +45,9 @@ public class TrayManager : IDisposable
     private System.Windows.Forms.Timer? _clickResolveTimer;
     private System.Windows.Forms.Timer? _middleClickResolveTimer;
 
-    // Track last two active clients for swap-last-two mode
-    private IntPtr _lastActiveHandle;
-    private IntPtr _previousActiveHandle;
+    // Track last two active clients for swap-last-two mode (by PID, not handle — handles can change)
+    private int _lastActivePid;
+    private int _previousActivePid;
 
     public TrayManager(AppConfig config, ProcessManager processManager)
     {
@@ -250,10 +250,10 @@ public class TrayManager : IDisposable
 
         if (_config.Hotkeys.SwitchKeyMode == "swapLast")
         {
-            // Alt+Tab style: swap to the previous active client
-            if (_previousActiveHandle != IntPtr.Zero)
+            // Alt+Tab style: swap to the previous active client (matched by PID — handles can change)
+            if (_previousActivePid != 0)
             {
-                var target = clients.FirstOrDefault(c => c.WindowHandle == _previousActiveHandle);
+                var target = clients.FirstOrDefault(c => c.ProcessId == _previousActivePid);
                 if (target != null)
                 {
                     _windowManager.SwitchToClient(target);
@@ -389,10 +389,10 @@ public class TrayManager : IDisposable
             _throttleManager.UpdateClients(clients, active);
 
             // Track last two active clients for swap-last-two mode
-            if (active != null && active.WindowHandle != _lastActiveHandle)
+            if (active != null && active.ProcessId != _lastActivePid)
             {
-                _previousActiveHandle = _lastActiveHandle;
-                _lastActiveHandle = active.WindowHandle;
+                _previousActivePid = _lastActivePid;
+                _lastActivePid = active.ProcessId;
             }
 
             // Update PiP sources when foreground changes
@@ -969,6 +969,14 @@ public class TrayManager : IDisposable
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
         _config.CtrlHoverHelp = newConfig.CtrlHoverHelp;
 
+        // Update icon if style changed
+        var iconChanged = _config.IconStyle != newConfig.IconStyle;
+        _config.IconStyle = newConfig.IconStyle;
+        if (iconChanged && _trayIcon != null)
+        {
+            _trayIcon.Icon = LoadIcon();
+        }
+
         // Cancel any in-flight launch sequence before reload
         _launchManager.CancelLaunch();
 
@@ -1047,17 +1055,33 @@ public class TrayManager : IDisposable
         Icon newIcon;
         try
         {
-            // Try embedded resource first (works in single-file publish)
-            var stream = typeof(TrayManager).Assembly.GetManifestResourceStream("EQSwitch.eqswitch.ico");
-            if (stream != null)
+            var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+
+            // Priority 1: User-provided custom .ico next to the exe
+            var customPath = Path.Combine(baseDir, "eqswitch-custom.ico");
+            if (File.Exists(customPath))
             {
-                newIcon = new Icon(stream);
+                newIcon = new Icon(customPath);
+                FileLogger.Info("Icon: loaded user-custom icon (eqswitch-custom.ico)");
             }
             else
             {
-                // Fall back to file on disk (dev/debug builds)
-                var iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "eqswitch.ico");
-                newIcon = File.Exists(iconPath) ? new Icon(iconPath) : SystemIcons.Application;
+                // Priority 2: Embedded icon based on config setting (Dark or Stone)
+                var resourceName = _config.IconStyle.Equals("Stone", StringComparison.OrdinalIgnoreCase)
+                    ? "EQSwitch.eqswitch-alt.ico"
+                    : "EQSwitch.eqswitch.ico";
+                var stream = typeof(TrayManager).Assembly.GetManifestResourceStream(resourceName);
+
+                if (stream != null)
+                {
+                    newIcon = new Icon(stream);
+                }
+                else
+                {
+                    // Priority 3: Fall back to file on disk (dev/debug builds)
+                    var iconPath = Path.Combine(baseDir, "eqswitch.ico");
+                    newIcon = File.Exists(iconPath) ? new Icon(iconPath) : SystemIcons.Application;
+                }
             }
         }
         catch

@@ -22,6 +22,7 @@ public class SettingsForm : Form
     private NumericUpDown _nudPollingInterval = null!;
     private NumericUpDown _nudTooltipDuration = null!;
     private CheckBox _chkCtrlHoverHelp = null!;
+    private ComboBox _cboIconStyle = null!;
 
     // ─── Tray Click controls (Left)
     private ComboBox _cboSingleClick = null!;
@@ -257,6 +258,12 @@ public class SettingsForm : Form
         y += 28;
         _chkCtrlHoverHelp = DarkTheme.AddCheckBox(page, "Ctrl+Hover tray icon shows hotkey help", 15, y);
 
+        // Icon style
+        y += 35;
+        DarkTheme.AddLabel(page, "Tray Icon Style:", 15, y);
+        _cboIconStyle = DarkTheme.AddComboBox(page, 130, y, 100, new[] { "Dark", "Stone" });
+        DarkTheme.AddHint(page, "Place eqswitch-custom.ico next to exe for custom icon", 240, y + 3);
+
         return page;
     }
 
@@ -316,12 +323,68 @@ public class SettingsForm : Form
         DarkTheme.AddLabel(page, "Top Offset (pixels):", 200, y - 22);
         _nudTopOffset = DarkTheme.AddNumeric(page, 200, y, 80, 0, -100, 200);
 
+        var btnIdentify = DarkTheme.MakeButton("Identify Monitors", DarkTheme.BgMedium, 200, y);
+        btnIdentify.Width = 140;
+        btnIdentify.Click += (_, _) => ShowMonitorIdentifiers();
+        page.Controls.Add(btnIdentify);
+
         _chkRemoveTitleBars = DarkTheme.AddCheckBox(page, "Remove Title Bars on Arrange", 15, y += 40);
 
         _chkBorderlessFullscreen = DarkTheme.AddCheckBox(page, "Borderless Fullscreen", 15, y += 30);
         DarkTheme.AddHint(page, "Fills screen without exclusive fullscreen — preserves Alt+Tab and PiP", 15, y + 22);
 
         return page;
+    }
+
+    private void ShowMonitorIdentifiers()
+    {
+        var screens = Screen.AllScreens.OrderBy(s => s.Bounds.Left).ToArray();
+        var overlays = new List<Form>();
+
+        for (int i = 0; i < screens.Length; i++)
+        {
+            var screen = screens[i];
+            var overlay = new Form
+            {
+                FormBorderStyle = FormBorderStyle.None,
+                BackColor = Color.FromArgb(20, 20, 25),
+                Opacity = 0.85,
+                TopMost = true,
+                ShowInTaskbar = false,
+                StartPosition = FormStartPosition.Manual,
+                Size = new Size(180, 120),
+            };
+            overlay.Location = new Point(
+                screen.Bounds.Left + (screen.Bounds.Width - overlay.Width) / 2,
+                screen.Bounds.Top + (screen.Bounds.Height - overlay.Height) / 2);
+
+            var lbl = new Label
+            {
+                Text = $"Monitor {i}",
+                Font = new Font("Segoe UI", 24, FontStyle.Bold),
+                ForeColor = Color.FromArgb(34, 180, 85),
+                BackColor = Color.Transparent,
+                AutoSize = false,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter
+            };
+            overlay.Controls.Add(lbl);
+            overlay.Show();
+            overlays.Add(overlay);
+        }
+
+        var timer = new System.Windows.Forms.Timer { Interval = 2000 };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+            foreach (var o in overlays)
+            {
+                o.Close();
+                o.Dispose();
+            }
+        };
+        timer.Start();
     }
 
     private TabPage BuildAffinityTab()
@@ -634,6 +697,7 @@ public class SettingsForm : Form
         _nudPollingInterval.Value = Math.Clamp(_config.PollingIntervalMs, (int)_nudPollingInterval.Minimum, (int)_nudPollingInterval.Maximum);
         _nudTooltipDuration.Value = Math.Clamp(_config.TooltipDurationMs, (int)_nudTooltipDuration.Minimum, (int)_nudTooltipDuration.Maximum);
         _chkCtrlHoverHelp.Checked = _config.CtrlHoverHelp;
+        _cboIconStyle.SelectedItem = _config.IconStyle;
 
         // Tray Click Actions
         _cboSingleClick.SelectedItem = _config.TrayClick.SingleClick;
@@ -713,6 +777,7 @@ public class SettingsForm : Form
             PollingIntervalMs = (int)_nudPollingInterval.Value,
             TooltipDurationMs = (int)_nudTooltipDuration.Value,
             CtrlHoverHelp = _chkCtrlHoverHelp.Checked,
+            IconStyle = _cboIconStyle.SelectedItem?.ToString() ?? "Dark",
             Layout = new WindowLayout
             {
                 Mode = _cboLayoutMode.SelectedItem?.ToString() ?? "single",
