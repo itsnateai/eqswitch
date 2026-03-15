@@ -117,10 +117,23 @@ public class ProcessManager : IDisposable
                     }
                 }
 
-                // Refresh window titles (character may have logged in)
+                // Refresh stale window handles and titles
+                // EQ can recreate its window during gameplay — the stored handle becomes invalid.
+                // Use Process.MainWindowHandle to get the fresh handle every poll cycle.
                 bool titleChanged = false;
-                foreach (var client in _clients)
+                foreach (var proc in eqProcesses)
                 {
+                    var client = _clients.FirstOrDefault(c => c.ProcessId == proc.Id);
+                    if (client == null) continue;
+
+                    // Update stale window handle from process
+                    var freshHwnd = proc.MainWindowHandle;
+                    if (freshHwnd != IntPtr.Zero && freshHwnd != client.WindowHandle)
+                    {
+                        FileLogger.Info($"RefreshClients: updated stale handle for PID {proc.Id} ({client.CharacterName}): 0x{client.WindowHandle:X} → 0x{freshHwnd:X}");
+                        client.WindowHandle = freshHwnd;
+                    }
+
                     var newTitle = GetWindowTitle(client.WindowHandle);
                     if (newTitle != client.WindowTitle)
                     {
@@ -173,9 +186,22 @@ public class ProcessManager : IDisposable
     public EQClient? GetActiveClient()
     {
         var foreground = NativeMethods.GetForegroundWindow();
+        if (foreground == IntPtr.Zero) return null;
+
+        // Get the PID of the foreground window — more reliable than matching
+        // by window handle, since EQ can recreate its window during gameplay.
+        NativeMethods.GetWindowThreadProcessId(foreground, out uint fgPid);
         lock (_lock)
         {
-            return _clients.FirstOrDefault(c => c.WindowHandle == foreground);
+            var client = _clients.FirstOrDefault(c => c.ProcessId == (int)fgPid);
+            if (client != null && client.WindowHandle != foreground)
+            {
+                // Update stale handle
+                client.WindowHandle = foreground;
+                client.WindowTitle = GetWindowTitle(foreground);
+                client.ResolveCharacterName();
+            }
+            return client;
         }
     }
 

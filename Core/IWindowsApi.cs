@@ -21,6 +21,8 @@ public interface IWindowsApi
     bool IsHungAppWindow(IntPtr hwnd);
     bool ShowWindow(IntPtr hwnd, int nCmdShow);
     bool SetForegroundWindow(IntPtr hwnd);
+    bool BringWindowToTop(IntPtr hwnd);
+    void ForceForegroundWindow(IntPtr hwnd);
     bool SetWindowPos(IntPtr hwnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
     bool GetWindowRect(IntPtr hwnd, out WinRect rect);
     IntPtr GetWindowLongPtr(IntPtr hwnd, int nIndex);

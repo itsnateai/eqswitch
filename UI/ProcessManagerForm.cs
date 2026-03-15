@@ -7,22 +7,31 @@ namespace EQSwitch.UI;
 
 /// <summary>
 /// Live process manager showing PID, character, priority, and affinity for all EQ clients.
+/// Auto-refreshes every second. Highlights active (foreground) client.
 /// </summary>
 public class ProcessManagerForm : Form
 {
     private const int RefreshIntervalMs = 1000;
 
-    private static readonly Color BgDark = Color.FromArgb(30, 30, 30);
-    private static readonly Color BgMedium = Color.FromArgb(45, 45, 45);
-    private static readonly Color FgWhite = Color.White;
-    private static readonly Color AccentGreen = Color.FromArgb(0, 120, 80);
+    private static readonly Color BgDark = Color.FromArgb(16, 16, 24);
+    private static readonly Color BgMedium = Color.FromArgb(32, 32, 48);
+    private static readonly Color BgRow = Color.FromArgb(20, 20, 32);
+    private static readonly Color BgRowAlt = Color.FromArgb(28, 28, 40);
+    private static readonly Color BgHeader = Color.FromArgb(40, 40, 64);
+    private static readonly Color BgActive = Color.FromArgb(0, 80, 40);
+    private static readonly Color FgWhite = Color.FromArgb(200, 200, 220);
+    private static readonly Color FgGray = Color.FromArgb(120, 130, 160);
+    private static readonly Color FgCyan = Color.FromArgb(100, 200, 220);
+    private static readonly Color AccentGreen = Color.FromArgb(0, 140, 60);
+    private static readonly Color GridLine = Color.FromArgb(50, 50, 80);
 
     private readonly Func<IReadOnlyList<EQClient>> _getClients;
     private readonly Func<EQClient?> _getActiveClient;
     private readonly Action _forceApply;
 
-    private ListView _listView = null!;
+    private DataGridView _grid = null!;
     private Label _systemInfoLabel = null!;
+    private Label _statusLabel = null!;
     private System.Windows.Forms.Timer _refreshTimer = null!;
 
     public ProcessManagerForm(
@@ -39,84 +48,118 @@ public class ProcessManagerForm : Form
     private void InitializeForm()
     {
         Text = "EQSwitch — Process Manager";
-        Size = new Size(560, 360);
+        Size = new Size(540, 380);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = BgDark;
         ForeColor = FgWhite;
-        Font = new Font("Segoe UI", 9);
+        Font = new Font("Consolas", 9);
 
         // System info header
         var (coreCount, systemMask) = AffinityManager.DetectCores();
         _systemInfoLabel = new Label
         {
-            Text = $"System: {coreCount} cores — Mask: 0x{systemMask:X}",
+            Text = $"[ {coreCount} cores | mask 0x{systemMask:X} ]",
             Location = new Point(15, 10),
             AutoSize = true,
-            ForeColor = Color.FromArgb(180, 180, 180),
-            Font = new Font("Segoe UI", 8.5f)
+            ForeColor = FgCyan,
+            Font = new Font("Consolas", 9)
         };
         Controls.Add(_systemInfoLabel);
 
-        // ListView
-        _listView = new ListView
+        // DataGridView — proper dark mode styling
+        _grid = new DataGridView
         {
             Location = new Point(15, 35),
-            Size = new Size(520, 230),
-            View = View.Details,
-            FullRowSelect = true,
-            GridLines = true,
-            BackColor = Color.FromArgb(50, 50, 50),
-            ForeColor = FgWhite,
-            BorderStyle = BorderStyle.FixedSingle,
-            HeaderStyle = ColumnHeaderStyle.Nonclickable
+            Size = new Size(500, 240),
+            ReadOnly = true,
+            AllowUserToAddRows = false,
+            AllowUserToDeleteRows = false,
+            AllowUserToResizeRows = false,
+            RowHeadersVisible = false,
+            SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            MultiSelect = false,
+            BorderStyle = BorderStyle.None,
+            CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
+            GridColor = GridLine,
+            BackgroundColor = BgDark,
+            DefaultCellStyle = new DataGridViewCellStyle
+            {
+                BackColor = BgRow,
+                ForeColor = FgWhite,
+                SelectionBackColor = Color.FromArgb(40, 50, 80),
+                SelectionForeColor = FgWhite,
+                Font = new Font("Consolas", 9),
+                Padding = new Padding(4, 2, 4, 2)
+            },
+            AlternatingRowsDefaultCellStyle = new DataGridViewCellStyle
+            {
+                BackColor = BgRowAlt,
+                ForeColor = FgWhite,
+                SelectionBackColor = Color.FromArgb(40, 50, 80),
+                SelectionForeColor = FgWhite
+            },
+            ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
+            {
+                BackColor = BgHeader,
+                ForeColor = FgCyan,
+                Font = new Font("Consolas", 9, FontStyle.Bold),
+                Alignment = DataGridViewContentAlignment.MiddleLeft,
+                Padding = new Padding(4, 0, 0, 0)
+            },
+            ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.Single,
+            ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
+            ColumnHeadersHeight = 28,
+            RowTemplate = { Height = 26 },
+            EnableHeadersVisualStyles = false,
+            ScrollBars = ScrollBars.Vertical
         };
 
-        _listView.Columns.Add("Slot", 50);
-        _listView.Columns.Add("PID", 70);
-        _listView.Columns.Add("Character", 150);
-        _listView.Columns.Add("Priority", 100);
-        _listView.Columns.Add("Affinity", 130);
+        _grid.Columns.Add("Slot", "Slot");
+        _grid.Columns.Add("PID", "PID");
+        _grid.Columns.Add("Character", "Character");
+        _grid.Columns.Add("Priority", "Priority");
+        _grid.Columns.Add("Affinity", "Affinity");
 
-        Controls.Add(_listView);
+        _grid.Columns["Slot"]!.Width = 45;
+        _grid.Columns["PID"]!.Width = 65;
+        _grid.Columns["Character"]!.Width = 160;
+        _grid.Columns["Priority"]!.Width = 100;
+        _grid.Columns["Affinity"]!.Width = 115;
 
-        // Button panel
-        var btnRefresh = new Button
+        foreach (DataGridViewColumn col in _grid.Columns)
         {
-            Text = "Refresh",
-            Location = new Point(15, 280),
-            Size = new Size(90, 30),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = BgMedium,
-            ForeColor = FgWhite
+            col.SortMode = DataGridViewColumnSortMode.NotSortable;
+            col.Resizable = DataGridViewTriState.False;
+        }
+
+        Controls.Add(_grid);
+
+        // Status label
+        _statusLabel = new Label
+        {
+            Text = "> no clients detected",
+            Location = new Point(15, 282),
+            AutoSize = true,
+            ForeColor = FgGray,
+            Font = new Font("Consolas", 8.5f)
         };
+        Controls.Add(_statusLabel);
+
+        // Buttons
+        var btnRefresh = CreateButton("Refresh", 15, 305, BgMedium);
         btnRefresh.Click += (_, _) => RefreshList();
 
-        var btnForceApply = new Button
-        {
-            Text = "Force Apply",
-            Location = new Point(115, 280),
-            Size = new Size(100, 30),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = AccentGreen,
-            ForeColor = FgWhite
-        };
+        var btnForceApply = CreateButton("Force Apply", 115, 305, AccentGreen);
+        btnForceApply.Size = new Size(100, 30);
         btnForceApply.Click += (_, _) =>
         {
             _forceApply();
             RefreshList();
         };
 
-        var btnClose = new Button
-        {
-            Text = "Close",
-            Location = new Point(445, 280),
-            Size = new Size(90, 30),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = BgMedium,
-            ForeColor = FgWhite
-        };
+        var btnClose = CreateButton("Close", 425, 305, BgMedium);
         btnClose.Click += (_, _) => Close();
 
         Controls.AddRange(new Control[] { btnRefresh, btnForceApply, btnClose });
@@ -135,8 +178,7 @@ public class ProcessManagerForm : Form
         var clients = _getClients();
         var active = _getActiveClient();
 
-        _listView.BeginUpdate();
-        _listView.Items.Clear();
+        _grid.Rows.Clear();
 
         foreach (var client in clients)
         {
@@ -145,22 +187,50 @@ public class ProcessManagerForm : Form
             var name = client.CharacterName ?? client.WindowTitle;
             if (string.IsNullOrEmpty(name)) name = $"Client {client.SlotIndex + 1}";
 
-            var item = new ListViewItem((client.SlotIndex + 1).ToString());
-            item.SubItems.Add(client.ProcessId.ToString());
-            item.SubItems.Add(name);
-            item.SubItems.Add(priority);
-            item.SubItems.Add($"0x{procMask:X}");
+            int rowIdx = _grid.Rows.Add(
+                (client.SlotIndex + 1).ToString(),
+                client.ProcessId.ToString(),
+                name,
+                priority,
+                $"0x{procMask:X}");
 
-            // Highlight active client
+            // Highlight active client row
             if (client == active)
             {
-                item.BackColor = Color.FromArgb(0, 60, 40);
+                var row = _grid.Rows[rowIdx];
+                foreach (DataGridViewCell cell in row.Cells)
+                {
+                    cell.Style.BackColor = BgActive;
+                    cell.Style.SelectionBackColor = BgActive;
+                }
             }
-
-            _listView.Items.Add(item);
         }
 
-        _listView.EndUpdate();
+        // Update status
+        int count = clients.Count;
+        _statusLabel.Text = count switch
+        {
+            0 => "> no clients detected",
+            1 => "> 1 client running",
+            _ => $"> {count} clients running"
+        };
+
+        // Clear selection — looks cleaner
+        _grid.ClearSelection();
+    }
+
+    private static Button CreateButton(string text, int x, int y, Color bgColor)
+    {
+        return new Button
+        {
+            Text = text,
+            Location = new Point(x, y),
+            Size = new Size(90, 30),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = bgColor,
+            ForeColor = FgWhite,
+            Cursor = Cursors.Hand
+        };
     }
 
     protected override void Dispose(bool disposing)

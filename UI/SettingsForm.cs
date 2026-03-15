@@ -20,6 +20,17 @@ public class SettingsForm : Form
     private TextBox _txtArgs = null!;
     private TextBox _txtProcessName = null!;
     private NumericUpDown _nudPollingInterval = null!;
+    private NumericUpDown _nudTooltipDuration = null!;
+    private CheckBox _chkCtrlHoverHelp = null!;
+
+    // ─── Tray Click controls (Left)
+    private ComboBox _cboSingleClick = null!;
+    private ComboBox _cboDoubleClick = null!;
+    private ComboBox _cboTripleClick = null!;
+    // ─── Tray Click controls (Middle)
+    private ComboBox _cboMiddleClick = null!;
+    private ComboBox _cboMiddleDoubleClick = null!;
+    private ComboBox _cboMiddleTripleClick = null!;
 
     // ─── Hotkeys tab controls
     private TextBox _txtSwitchKey = null!;
@@ -29,6 +40,7 @@ public class SettingsForm : Form
     private TextBox _txtLaunchOne = null!;
     private TextBox _txtLaunchAll = null!;
     private CheckBox _chkMultiMonEnabled = null!;
+    private ComboBox _cboSwitchKeyMode = null!;
 
     // ─── Layout tab controls
     private NumericUpDown _nudColumns = null!;
@@ -86,20 +98,9 @@ public class SettingsForm : Form
 
     private void InitializeForm()
     {
-        Text = "EQSwitch Settings";
-        Size = new Size(500, 480);
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false;
-        StartPosition = FormStartPosition.CenterScreen;
-        BackColor = DarkTheme.BgDark;
-        ForeColor = DarkTheme.FgWhite;
-        Font = new Font("Segoe UI", 9);
+        DarkTheme.StyleForm(this, "\u2694  EQSwitch Settings  \u2694", new Size(530, 480));
 
-        var tabs = new TabControl
-        {
-            Dock = DockStyle.Fill,
-            Padding = new Point(8, 4)
-        };
+        var tabs = DarkTheme.MakeTabControl();
 
         tabs.TabPages.Add(BuildGeneralTab());
         tabs.TabPages.Add(BuildHotkeysTab());
@@ -118,16 +119,59 @@ public class SettingsForm : Form
             BackColor = DarkTheme.BgDark
         };
 
-        var btnSave = DarkTheme.MakeButton("Save", DarkTheme.AccentGreen, 200, 10);
+        // GitHub button (left side)
+        var btnGitHub = DarkTheme.MakeButton("\uD83C\uDF10 GitHub", DarkTheme.BgMedium, 10, 10);
+        btnGitHub.Size = new Size(85, 30);
+        btnGitHub.Click += (_, _) =>
+        {
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://github.com/itsnateai/eqswitch_port") { UseShellExecute = true }); }
+            catch { }
+        };
+
+        // Reset Defaults button (small, discreet, next to GitHub)
+        var btnReset = DarkTheme.MakeButton("\u26A0 Reset", DarkTheme.BgMedium, 100, 10);
+        btnReset.Size = new Size(70, 30);
+        btnReset.ForeColor = Color.FromArgb(200, 100, 100);
+        btnReset.Click += (_, _) =>
+        {
+            var result = MessageBox.Show(
+                "\u26A0\uFE0F NUCLEAR OPTION \u26A0\uFE0F\n\n" +
+                "This will reset ALL settings to factory defaults.\n" +
+                "Your current config will be lost forever.\n\n" +
+                "Are you absolutely sure?",
+                "Reset to Defaults",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (result == DialogResult.Yes)
+            {
+                var fresh = new AppConfig { IsFirstRun = false, EQPath = _config.EQPath };
+                _onApply(fresh);
+                ConfigManager.Save(fresh);
+                Close();
+            }
+        };
+
+        // Version label
+        var lblVersion = new Label
+        {
+            Text = $"v{System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?"}",
+            Location = new Point(175, 17),
+            AutoSize = true,
+            ForeColor = DarkTheme.FgDimGray,
+            Font = new Font("Segoe UI", 8f)
+        };
+
+        var btnSave = DarkTheme.MakePrimaryButton("Save", 230, 10);
         btnSave.Click += (_, _) => { ApplySettings(); ConfigManager.Save(_config); Close(); };
 
-        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 290, 10);
+        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 320, 10);
         btnApply.Click += (_, _) => { ApplySettings(); ConfigManager.Save(_config); };
 
-        var btnClose = DarkTheme.MakeButton("Close", DarkTheme.BgMedium, 380, 10);
-        btnClose.Click += (_, _) => Close();
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 410, 10);
+        btnCancel.Click += (_, _) => Close();
 
-        buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnClose });
+        buttonPanel.Controls.AddRange(new Control[] { btnGitHub, btnReset, lblVersion, btnSave, btnApply, btnCancel });
 
         Controls.Add(tabs);
         Controls.Add(buttonPanel);
@@ -140,11 +184,11 @@ public class SettingsForm : Form
     private TabPage BuildGeneralTab()
     {
         var page = DarkTheme.MakeTabPage("General");
-        int y = 15;
+        int y = 10;
 
-        DarkTheme.AddLabel(page, "EverQuest Path:", 15, y);
-        _txtEQPath = DarkTheme.AddTextBox(page, 15, y += 22, 350);
-        var btnBrowse = DarkTheme.MakeButton("Browse...", DarkTheme.BgMedium, 375, y - 2);
+        y = DarkTheme.AddSectionHeader(page, "EverQuest Path", 15, y);
+        _txtEQPath = DarkTheme.AddTextBox(page, 15, y, 350);
+        var btnBrowse = DarkTheme.MakeButton("Browse...", DarkTheme.BgMedium, 375, y);
         btnBrowse.Size = new Size(80, 26);
         btnBrowse.Click += (_, _) =>
         {
@@ -164,6 +208,54 @@ public class SettingsForm : Form
 
         DarkTheme.AddLabel(page, "Polling Interval (ms):", 230, y - 22);
         _nudPollingInterval = DarkTheme.AddNumeric(page, 230, y, 100, 500, 100, 5000);
+        DarkTheme.AddHint(page, "How often EQSwitch checks for new/closed EQ windows", 230, y + 25);
+
+        // Tray Click Actions
+        y += 45;
+        y = DarkTheme.AddSectionHeader(page, "Tray Icon Click Actions", 15, y);
+
+        var clickActions = new[] { "None", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp" };
+
+        // Left click column
+        DarkTheme.AddLabel(page, "Left Click", 15, y);
+        DarkTheme.AddLabel(page, "Middle Click", 280, y);
+        y += 22;
+
+        DarkTheme.AddLabel(page, "Single:", 15, y + 2);
+        _cboSingleClick = DarkTheme.AddComboBox(page, 80, y, 130, clickActions);
+        DarkTheme.AddLabel(page, "Single:", 280, y + 2);
+        _cboMiddleClick = DarkTheme.AddComboBox(page, 345, y, 130, clickActions);
+
+        y += 28;
+        DarkTheme.AddLabel(page, "Double:", 15, y + 2);
+        _cboDoubleClick = DarkTheme.AddComboBox(page, 80, y, 130, clickActions);
+        DarkTheme.AddLabel(page, "Double:", 280, y + 2);
+        _cboMiddleDoubleClick = DarkTheme.AddComboBox(page, 345, y, 130, clickActions);
+
+        y += 28;
+        DarkTheme.AddLabel(page, "Triple:", 15, y + 2);
+        _cboTripleClick = DarkTheme.AddComboBox(page, 80, y, 130, clickActions);
+        DarkTheme.AddLabel(page, "Triple:", 280, y + 2);
+        _cboMiddleTripleClick = DarkTheme.AddComboBox(page, 345, y, 130, clickActions);
+
+        y += 38;
+        var btnEQClientSettings = DarkTheme.MakeButton("\uD83D\uDCDD  EQ Client Settings...", DarkTheme.BgMedium, 15, y);
+        btnEQClientSettings.Size = new Size(200, 30);
+        btnEQClientSettings.Click += (_, _) =>
+        {
+            using var form = new EQClientSettingsForm(_config);
+            form.ShowDialog();
+        };
+        page.Controls.Add(btnEQClientSettings);
+
+        // Tooltip settings
+        y += 42;
+        DarkTheme.AddLabel(page, "Tooltip Duration (ms):", 15, y);
+        _nudTooltipDuration = DarkTheme.AddNumeric(page, 180, y, 80, 3000, 1000, 10000);
+        DarkTheme.AddHint(page, "How long floating tooltips stay visible", 270, y + 3);
+
+        y += 28;
+        _chkCtrlHoverHelp = DarkTheme.AddCheckBox(page, "Ctrl+Hover tray icon shows hotkey help", 15, y);
 
         return page;
     }
@@ -177,7 +269,11 @@ public class SettingsForm : Form
         _txtSwitchKey = DarkTheme.AddTextBox(page, 15, y += 22, 120);
         DarkTheme.AddHint(page, "e.g. \\ ] [", 145, y + 3);
 
-        DarkTheme.AddLabel(page, "Global Switch Key (any app, single key):", 15, y += 40);
+        DarkTheme.AddLabel(page, "Switch Key Mode:", 250, y - 22);
+        _cboSwitchKeyMode = DarkTheme.AddComboBox(page, 250, y, 180, new[] { "swapLast", "cycleAll" });
+        DarkTheme.AddHint(page, "swapLast = Alt+Tab style, cycleAll = round-robin", 250, y + 28);
+
+        DarkTheme.AddLabel(page, "Global Switch Key (any app, single key):", 15, y += 55);
         _txtGlobalSwitchKey = DarkTheme.AddTextBox(page, 15, y += 22, 120);
 
         DarkTheme.AddLabel(page, "Arrange Windows:", 250, 15);
@@ -278,10 +374,10 @@ public class SettingsForm : Form
         _nudRetryDelay = DarkTheme.AddNumeric(page, 200, y, 100, 2000, 500, 10000);
 
         // Background FPS Throttling section
-        var separator = new Label { Text = "── Background FPS Throttling ──", ForeColor = Color.FromArgb(120, 120, 120), Location = new Point(15, y += 40), AutoSize = true };
-        page.Controls.Add(separator);
+        y += 40;
+        y = DarkTheme.AddSectionHeader(page, "Background FPS Throttling", 15, y);
 
-        _chkThrottleEnabled = DarkTheme.AddCheckBox(page, "Enable Background Throttling", 15, y += 22);
+        _chkThrottleEnabled = DarkTheme.AddCheckBox(page, "Enable Background Throttling", 15, y);
 
         DarkTheme.AddLabel(page, "Throttle %:", 15, y += 30);
         _nudThrottlePercent = DarkTheme.AddNumeric(page, 15, y += 22, 80, 50, 0, 90);
@@ -493,6 +589,8 @@ public class SettingsForm : Form
         }
     }
 
+    private Label? _charEmptyHint;
+
     private void RefreshCharacterList()
     {
         _charListView.Items.Clear();
@@ -504,6 +602,24 @@ public class SettingsForm : Form
             item.SubItems.Add(c.AffinityOverride.HasValue ? $"0x{c.AffinityOverride.Value:X}" : "(default)");
             _charListView.Items.Add(item);
         }
+
+        // Show/hide empty state hint
+        if (_charEmptyHint == null)
+        {
+            _charEmptyHint = new Label
+            {
+                Text = "No character profiles loaded.\nUse Import to load profiles from a JSON file.",
+                AutoSize = false,
+                Size = new Size(400, 40),
+                Location = new Point(25, 100),
+                ForeColor = Color.FromArgb(150, 150, 150),
+                BackColor = Color.FromArgb(50, 50, 50),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Segoe UI", 9, FontStyle.Italic)
+            };
+            _charListView.Controls.Add(_charEmptyHint);
+        }
+        _charEmptyHint.Visible = _pendingCharacters.Count == 0;
     }
 
     // ─── Config I/O ───────────────────────────────────────────────
@@ -516,9 +632,20 @@ public class SettingsForm : Form
         _txtArgs.Text = _config.Launch.Arguments;
         _txtProcessName.Text = _config.EQProcessName;
         _nudPollingInterval.Value = Math.Clamp(_config.PollingIntervalMs, (int)_nudPollingInterval.Minimum, (int)_nudPollingInterval.Maximum);
+        _nudTooltipDuration.Value = Math.Clamp(_config.TooltipDurationMs, (int)_nudTooltipDuration.Minimum, (int)_nudTooltipDuration.Maximum);
+        _chkCtrlHoverHelp.Checked = _config.CtrlHoverHelp;
+
+        // Tray Click Actions
+        _cboSingleClick.SelectedItem = _config.TrayClick.SingleClick;
+        _cboDoubleClick.SelectedItem = _config.TrayClick.DoubleClick;
+        _cboTripleClick.SelectedItem = _config.TrayClick.TripleClick;
+        _cboMiddleClick.SelectedItem = _config.TrayClick.MiddleClick;
+        _cboMiddleDoubleClick.SelectedItem = _config.TrayClick.MiddleDoubleClick;
+        _cboMiddleTripleClick.SelectedItem = _config.TrayClick.MiddleTripleClick;
 
         // Hotkeys
         _txtSwitchKey.Text = _config.Hotkeys.SwitchKey;
+        _cboSwitchKeyMode.SelectedItem = _config.Hotkeys.SwitchKeyMode;
         _txtGlobalSwitchKey.Text = _config.Hotkeys.GlobalSwitchKey;
         _txtArrangeWindows.Text = _config.Hotkeys.ArrangeWindows;
         _txtToggleMultiMon.Text = _config.Hotkeys.ToggleMultiMonitor;
@@ -584,6 +711,8 @@ public class SettingsForm : Form
             EQPath = _txtEQPath.Text.Trim(),
             EQProcessName = _txtProcessName.Text.Trim(),
             PollingIntervalMs = (int)_nudPollingInterval.Value,
+            TooltipDurationMs = (int)_nudTooltipDuration.Value,
+            CtrlHoverHelp = _chkCtrlHoverHelp.Checked,
             Layout = new WindowLayout
             {
                 Mode = _cboLayoutMode.SelectedItem?.ToString() ?? "single",
@@ -613,7 +742,8 @@ public class SettingsForm : Form
                 LaunchOne = _txtLaunchOne.Text.Trim(),
                 LaunchAll = _txtLaunchAll.Text.Trim(),
                 MultiMonitorEnabled = _chkMultiMonEnabled.Checked,
-                DirectSwitchKeys = _config.Hotkeys.DirectSwitchKeys
+                DirectSwitchKeys = _config.Hotkeys.DirectSwitchKeys,
+                SwitchKeyMode = _cboSwitchKeyMode.SelectedItem?.ToString() ?? "swapLast"
             },
             Launch = new LaunchConfig
             {
@@ -640,6 +770,15 @@ public class SettingsForm : Form
                 Enabled = _chkThrottleEnabled.Checked,
                 ThrottlePercent = (int)_nudThrottlePercent.Value,
                 CycleIntervalMs = (int)_nudThrottleCycle.Value
+            },
+            TrayClick = new TrayClickConfig
+            {
+                SingleClick = _cboSingleClick.SelectedItem?.ToString() ?? "None",
+                DoubleClick = _cboDoubleClick.SelectedItem?.ToString() ?? "LaunchOne",
+                TripleClick = _cboTripleClick.SelectedItem?.ToString() ?? "LaunchAll",
+                MiddleClick = _cboMiddleClick.SelectedItem?.ToString() ?? "TogglePiP",
+                MiddleDoubleClick = _cboMiddleDoubleClick.SelectedItem?.ToString() ?? "None",
+                MiddleTripleClick = _cboMiddleTripleClick.SelectedItem?.ToString() ?? "None"
             },
             GinaPath = _txtGinaPath.Text.Trim(),
             NotesPath = _txtNotesPath.Text.Trim(),
