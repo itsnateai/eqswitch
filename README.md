@@ -5,7 +5,7 @@ Ported from AHK v2 to C# (.NET 8) for better VirusTotal compatibility, type safe
 
 ## Download
 
-**[Download EQSwitch.exe (latest release)](https://github.com/itsnateai/eqswitch-port/releases/latest)**
+**[Download EQSwitch.exe (latest release)](https://github.com/itsnateai/eqswitch_port/releases/latest)**
 
 1. Download `EQSwitch.exe` from the latest release
 2. Place it in any folder (Desktop, EQ folder, wherever you like)

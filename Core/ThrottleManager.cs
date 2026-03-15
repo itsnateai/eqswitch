@@ -24,9 +24,6 @@ public class ThrottleManager : IDisposable
     // Track which PIDs are currently suspended so we can resume them on shutdown
     private readonly HashSet<int> _suspendedPids = new();
 
-    // Current state: true = background processes are suspended
-    private bool _inSuspendPhase;
-
     // Cached references updated each cycle
     private IReadOnlyList<EQClient> _clients = Array.Empty<EQClient>();
     private EQClient? _activeClient;
@@ -59,7 +56,6 @@ public class ThrottleManager : IDisposable
         _resumeTimer.Tick += (_, _) => ResumePhase();
 
         // Start with the resume phase (processes are running)
-        _inSuspendPhase = false;
         _suspendTimer.Start();
 
         FileLogger.Info($"ThrottleManager started: {_config.Throttle.ThrottlePercent}% throttle, " +
@@ -89,7 +85,6 @@ public class ThrottleManager : IDisposable
     private void SuspendPhase()
     {
         _suspendTimer?.Stop();
-        _inSuspendPhase = true;
 
         foreach (var client in _clients)
         {
@@ -110,7 +105,6 @@ public class ThrottleManager : IDisposable
     private void ResumePhase()
     {
         _resumeTimer?.Stop();
-        _inSuspendPhase = false;
 
         ResumeAllSuspended();
 
@@ -144,7 +138,6 @@ public class ThrottleManager : IDisposable
 
         // Always resume everything on stop
         ResumeAllSuspended();
-        _inSuspendPhase = false;
 
         FileLogger.Info("ThrottleManager stopped");
     }

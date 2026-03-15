@@ -39,40 +39,68 @@ public static class HelpForm
     private static string GetHelpText(AppConfig config)
     {
         var hk = config.Hotkeys;
-        return $@"EQSwitch — EverQuest Window Manager
-====================================
+        var throttle = config.Throttle;
+        var layout = config.Layout;
+        return $@"EQSwitch v2.3.0 — EverQuest Window Manager
+============================================
 
 HOTKEYS:
-  Switch Key ({hk.SwitchKey})     — Cycle to next EQ client (EQ must be focused)
-  Global Switch ({hk.GlobalSwitchKey})  — Cycle next / bring EQ to front from any app
-  {hk.ArrangeWindows}            — Arrange all windows in grid layout
-  {hk.ToggleMultiMonitor}            — Toggle single-screen / multi-monitor mode
-  Alt+1..6          — Switch directly to client by slot number
-  {(string.IsNullOrEmpty(hk.LaunchOne) ? "(not set)" : hk.LaunchOne)}           — Launch one EQ client
-  {(string.IsNullOrEmpty(hk.LaunchAll) ? "(not set)" : hk.LaunchAll)}           — Launch all configured clients
+  {hk.SwitchKey,-18} Cycle to next EQ client (EQ must be focused)
+  {hk.GlobalSwitchKey,-18} Cycle next / bring EQ to front from any app
+  {hk.ArrangeWindows,-18} Arrange all windows in grid layout
+  {hk.ToggleMultiMonitor,-18} Toggle single-screen / multi-monitor mode
+  Alt+1..6           Switch directly to client by slot number
+  {(string.IsNullOrEmpty(hk.LaunchOne) ? "(not set)" : hk.LaunchOne),-18} Launch one EQ client
+  {(string.IsNullOrEmpty(hk.LaunchAll) ? "(not set)" : hk.LaunchAll),-18} Launch all configured clients
 
 TRAY ICON:
-  Right-click       — Context menu
-  Double-click      — Launch one EQ client
-  Middle-click      — Toggle PiP overlay
+  Right-click        Context menu
+  Double-click       Launch one EQ client
+  Middle-click       Toggle PiP overlay
+  Triple-click       Force refresh (re-detect all clients)
 
 LAYOUT MODES:
-  Single Screen     — Grid layout (Columns × Rows) on target monitor
-  Multi-Monitor     — One window per physical monitor
+  Single Screen      Grid layout ({layout.Columns}x{layout.Rows}) on monitor {layout.TargetMonitor}
+  Multi-Monitor      One window per physical monitor
+  Borderless FS      {(layout.BorderlessFullscreen ? "ON" : "OFF")} — removes title bar + stretches to monitor
+
+BACKGROUND FPS THROTTLING:
+  Status: {(throttle.Enabled ? $"ON — {throttle.ThrottlePercent}% throttle" : "OFF")}
+  Suspends background EQ clients in a duty cycle to reduce
+  GPU/CPU usage. Active client is never throttled.
+  Configure in Settings → General tab.
 
 PIP (PICTURE-IN-PICTURE):
-  Live preview of background EQ windows
-  Ctrl+Drag to reposition
-  Auto-hides when fewer than 2 clients
+  Live DWM thumbnail preview of background EQ windows
+  GPU-composited (zero CPU overhead)
+  Ctrl+Drag to reposition, position saved automatically
+  Auto-hides when fewer than 2 clients running
 
 CPU AFFINITY:
-  Active client  → P-cores (high priority)
-  Background     → E-cores (normal priority)
-  Auto-applies on window switch (250ms check)
+  Active client   → P-cores (mask 0x{config.Affinity.ActiveMask:X}, {config.Affinity.ActivePriority})
+  Background      → E-cores (mask 0x{config.Affinity.BackgroundMask:X}, {config.Affinity.BackgroundPriority})
+  Auto-applies on window switch (250ms polling)
+  Retries {config.Affinity.LaunchRetryCount}x after launch (EQ resets its own affinity)
+
+LAUNCHING:
+  EQ Path: {config.EQPath}
+  Delay between launches: {config.Launch.LaunchDelayMs / 1000.0:F1}s
+  Auto-arrange after: {config.Launch.FixDelayMs / 1000.0:F0}s
 
 CONFIG:
   eqswitch-config.json (alongside exe)
-  Auto-backup on save (keeps last 10)
+  Auto-backup on save (keeps last 10 in backups/ folder)
+
+TROUBLESHOOTING:
+  Hotkeys not working?  Run as Administrator
+  PiP not showing?      Need 2+ clients running, middle-click tray
+  Affinity not sticking? Use tray menu → Force Apply Affinity
+  Config lost?          Check backups/ folder next to exe
+
+USEFUL LINKS:
+  Shards Wiki:    https://wiki.shardsofdalaya.com/wiki/Main_Page
+  Dalaya Wiki:    https://wiki.dalaya.org/
+  Fomelo Dalaya:  https://dalaya.org/fomelo/
 ";
     }
 }
