@@ -11,6 +11,37 @@ public class WindowsApi : IWindowsApi
     public bool IsHungAppWindow(IntPtr hwnd) => NativeMethods.IsHungAppWindow(hwnd);
     public bool ShowWindow(IntPtr hwnd, int nCmdShow) => NativeMethods.ShowWindow(hwnd, nCmdShow);
     public bool SetForegroundWindow(IntPtr hwnd) => NativeMethods.SetForegroundWindow(hwnd);
+    public bool BringWindowToTop(IntPtr hwnd) => NativeMethods.BringWindowToTop(hwnd);
+
+    /// <summary>
+    /// Force a window to the foreground even when our process doesn't own the foreground lock.
+    /// Uses AttachThreadInput to borrow the foreground thread's input queue, then brings the window up.
+    /// This is the standard workaround for Windows' SetForegroundWindow restrictions.
+    /// </summary>
+    public void ForceForegroundWindow(IntPtr hwnd)
+    {
+        var fgHwnd = NativeMethods.GetForegroundWindow();
+        uint currentThread = NativeMethods.GetCurrentThreadId();
+        NativeMethods.GetWindowThreadProcessId(fgHwnd, out _);
+        uint fgThread = NativeMethods.GetWindowThreadProcessId(fgHwnd, out _);
+
+        bool attached = false;
+        if (currentThread != fgThread)
+        {
+            attached = NativeMethods.AttachThreadInput(currentThread, fgThread, true);
+        }
+
+        try
+        {
+            NativeMethods.BringWindowToTop(hwnd);
+            NativeMethods.SetForegroundWindow(hwnd);
+        }
+        finally
+        {
+            if (attached)
+                NativeMethods.AttachThreadInput(currentThread, fgThread, false);
+        }
+    }
 
     public bool SetWindowPos(IntPtr hwnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags)
         => NativeMethods.SetWindowPos(hwnd, hWndInsertAfter, x, y, cx, cy, flags);

@@ -69,9 +69,9 @@ public class PipOverlay : Form
     }
 
     /// <summary>
-    /// Make the window layered and non-activating.
-    /// Click-through is handled dynamically via WndProc/WM_NCHITTEST
-    /// so that Ctrl+drag still works for repositioning.
+    /// Make the window layered, click-through, and non-activating.
+    /// WS_EX_TRANSPARENT ensures clicks pass through to windows beneath.
+    /// Ctrl+drag repositioning is handled by temporarily removing WS_EX_TRANSPARENT.
     /// </summary>
     protected override CreateParams CreateParams
     {
@@ -79,31 +79,12 @@ public class PipOverlay : Form
         {
             var cp = base.CreateParams;
             cp.ExStyle |= NativeMethods.WS_EX_LAYERED
+                        | NativeMethods.WS_EX_TRANSPARENT
                         | NativeMethods.WS_EX_TOOLWINDOW
                         | NativeMethods.WS_EX_TOPMOST
                         | NativeMethods.WS_EX_NOACTIVATE;
             return cp;
         }
-    }
-
-    /// <summary>
-    /// Selective click-through: transparent by default, but accepts clicks when Ctrl is held.
-    /// </summary>
-    protected override void WndProc(ref Message m)
-    {
-        if (m.Msg == NativeMethods.WM_NCHITTEST)
-        {
-            // If Ctrl is held, allow the click (for drag repositioning)
-            if ((NativeMethods.GetAsyncKeyState(NativeMethods.VK_CONTROL) & 0x8000) != 0)
-            {
-                m.Result = (IntPtr)NativeMethods.HTCLIENT;
-                return;
-            }
-            // Otherwise, pass clicks through to the window underneath
-            m.Result = (IntPtr)NativeMethods.HTTRANSPARENT;
-            return;
-        }
-        base.WndProc(ref m);
     }
 
     /// <summary>
@@ -191,8 +172,24 @@ public class PipOverlay : Form
         );
     }
 
+    private bool _ctrlHeld;
+
     private void RefreshIfNeeded()
     {
+        // Dynamic click-through toggle: remove WS_EX_TRANSPARENT when Ctrl is held
+        // so the overlay accepts mouse input for drag repositioning
+        bool ctrlNow = (NativeMethods.GetAsyncKeyState(NativeMethods.VK_CONTROL) & 0x8000) != 0;
+        if (ctrlNow != _ctrlHeld)
+        {
+            _ctrlHeld = ctrlNow;
+            long exStyle = NativeMethods.GetWindowLongPtr(Handle, NativeMethods.GWL_EXSTYLE).ToInt64();
+            if (ctrlNow)
+                exStyle &= ~(long)NativeMethods.WS_EX_TRANSPARENT;
+            else
+                exStyle |= NativeMethods.WS_EX_TRANSPARENT;
+            NativeMethods.SetWindowLongPtr(Handle, NativeMethods.GWL_EXSTYLE, (IntPtr)exStyle);
+        }
+
         // Check if any source windows are gone
         for (int i = _sourceWindows.Count - 1; i >= 0; i--)
         {

@@ -38,7 +38,7 @@ public class WindowManager
         try
         {
             _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
-            _api.SetForegroundWindow(client.WindowHandle);
+            _api.ForceForegroundWindow(client.WindowHandle);
             return true;
         }
         catch (Exception ex)
@@ -121,6 +121,8 @@ public class WindowManager
         int cellWidth = monitor.Width / cols;
         int cellHeight = monitor.Height / rows;
 
+        FileLogger.Info($"ArrangeSingleScreen: monitor bounds L={monitor.Left} T={monitor.Top} R={monitor.Right} B={monitor.Bottom} ({monitor.Width}x{monitor.Height}), grid {cols}x{rows}, cell {cellWidth}x{cellHeight}");
+
         for (int i = 0; i < clients.Count && i < cols * rows; i++)
         {
             var client = clients[i];
@@ -149,6 +151,8 @@ public class WindowManager
                 IntPtr.Zero,
                 x, y, cellWidth, cellHeight,
                 NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW | NativeMethods.SWP_FRAMECHANGED);
+
+            FileLogger.Info($"ArrangeSingleScreen: {client} → pos ({x},{y}) size ({cellWidth}x{cellHeight})");
         }
 
         string mode = borderless ? "borderless fullscreen" : $"{cols}x{rows} grid";

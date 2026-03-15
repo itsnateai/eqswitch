@@ -128,13 +128,68 @@ Settings uses a pending/staged approach:
 
 ## Status
 
-**v2.3.0 — Released 2026-03-12**
+**v2.4.0 — In Progress (2026-03-14)**
 
-New in v2.3.0:
+New in v2.4.0 (since v2.3.0):
+- Reorganized tray context menu into grouped submenus (Video Settings, Settings, Launcher)
+- Restored emoji/icon prefixes on all menu items (medieval theme from AHK version)
+- Dark themed context menus via custom DarkMenuRenderer
+- Configurable tray click actions (single/double/triple/middle) with delayed resolution
+- TrayClickConfig in Settings → General tab (dropdown selectors for each click type)
+- Simplified CPU Affinity submenu (removed per-core checkboxes, info labels only)
+- Custom video presets (up to 3) in Video Settings form
+- Process Manager restyled with DataGridView dark retro theme
+- FloatingTooltip for "already running" instead of MessageBox
+- First-run auto-opens Settings for new users
+
+Previous (v2.3.0):
 - P2-04: Background FPS throttling (NtSuspendProcess/NtResumeProcess duty cycle)
 - P2-03: Borderless fullscreen mode (WinEQ Y+1 offset trick, rcMonitor bounds)
 
-No deferred features remaining. All ideas reviewed and declined 2026-03-12.
+## Cloud Audit Instructions (Pre-Release)
+
+**BEASTMODE ON. #deepresearch. You are the final senior coder before release.**
+
+When Cloud runs the deep audit on this project, go beyond surface-level checks. This is a long-running tray app that users leave running for days/weeks. Activate full production audit v3 with extra focus on:
+
+### Resource Leak Hunting (Priority 1)
+- **Timer-path allocation audit**: Trace every function called from every timer callback recursively. Flag ANY object allocation in a hot path (250ms affinity timer, 500ms polling timer, throttle duty cycle timers, click resolve timer).
+- **Handle accumulation**: Every `Process` object, GDI object (`Font`, `Brush`, `Pen`), COM object must be disposed in the same scope it's created. Check `using var` on ALL Process.GetProcessesByName/GetProcessById calls.
+- **Event handler leaks**: Lambda event handlers on long-lived objects can prevent GC. Check for += without corresponding -=, especially in BuildContextMenu (called on reload).
+- **Timer dispose**: Old timers must be Stop()'d AND Dispose()'d before replacement. Check ReloadConfig flow.
+- **ContextMenuStrip rebuild**: When menu is rebuilt, old menu items and their event handlers must be cleaned up.
+
+### Syntax & Logic Errors (Priority 1)
+- **Null reference paths**: Trace every nullable field access. Especially `_trayIcon`, `_contextMenu`, `_clientsMenu`, `_pipOverlay`, `_clickResolveTimer`.
+- **Race conditions**: UI thread assumption — verify nothing touches shared state from a non-UI thread.
+- **Config serialization roundtrip**: Verify TrayClickConfig, CustomVideoPresets, and all new config classes serialize/deserialize correctly with System.Text.Json camelCase naming.
+- **Enum string matching**: TrayClickConfig uses string matching ("LaunchOne", "FixWindows", etc.) — verify every case in ExecuteTrayAction matches exactly.
+
+### 72-Hour Viability (Priority 1)
+- Run the full 72-hour viability checklist from root CLAUDE.md
+- Calculate: `(allocation size) × (frequency) × (uptime)` for every timer path
+- Verify Explorer restart recovery (TaskbarCreated message handler)
+- Verify graceful shutdown cleans up ALL timers, hooks, handles, COM objects
+
+### New Code Since v2.3.0 (Priority 2)
+- **DarkMenuRenderer**: Check for GDI object leaks in OnRender* overrides (Brush, Pen created with `using var`?)
+- **Click resolve timer**: Created/disposed on every click — verify no leak if rapid clicking
+- **FloatingTooltip**: Verify it self-disposes and doesn't accumulate windows
+- **VideoSettingsForm custom presets**: Config persistence, FIFO eviction, duplicate detection
+- **ProcessManagerForm DataGridView**: Font disposal, timer cleanup on close
+
+### Branch Hygiene (MANDATORY)
+- **BEFORE doing ANY work**: `git fetch origin && git log --oneline origin/master..HEAD` — check if you're behind remote. Pull first.
+- **EVERY session start**: Check GitHub for the latest state: `gh api repos/itsnateai/eqswitch_port/commits/master --jq '.sha'` and compare to local HEAD.
+- **NEVER work on a stale branch.** Nate pushes changes from live testing sessions. If you don't pull first, merging will suck. This is non-negotiable.
+- **Check for stacked PRs**: `gh pr list --repo itsnateai/eqswitch_port` — if there are pending PRs, review and merge them FIRST before starting new work. Cloud sometimes stacks 7+ PRs that go stale. Clean the queue before adding to it.
+- **After fixes**: Commit in small logical groups, push immediately. Don't batch 10 fixes into one mega-commit.
+
+### Upgrade Opportunities
+- Look for new .NET 8 patterns that could simplify existing code
+- Check for deprecated API usage
+- Identify any P0/P1 bugs introduced in the v2.4.0 changes
+- Fix anything you find — don't just report, fix and commit
 
 ## Conventions
 - All Win32 calls go through `NativeMethods.cs` — never scatter DllImport.

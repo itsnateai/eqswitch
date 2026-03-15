@@ -41,8 +41,9 @@ public static class HelpForm
         var hk = config.Hotkeys;
         var throttle = config.Throttle;
         var layout = config.Layout;
-        return $@"EQSwitch v2.3.0 — EverQuest Window Manager
+        return $@"EQSwitch v2.4.0 — EverQuest Window Manager
 ============================================
+GitHub: https://github.com/itsnateai/eqswitch_port
 
 HOTKEYS:
   {hk.SwitchKey,-18} Cycle to next EQ client (EQ must be focused)
@@ -55,9 +56,11 @@ HOTKEYS:
 
 TRAY ICON:
   Right-click        Context menu
-  Double-click       Launch one EQ client
-  Middle-click       Toggle PiP overlay
-  Triple-click       Force refresh (re-detect all clients)
+  Single-click       {config.TrayClick.SingleClick}
+  Double-click       {config.TrayClick.DoubleClick}
+  Triple-click       {config.TrayClick.TripleClick}
+  Middle-click       {config.TrayClick.MiddleClick}
+  (Configurable in Settings → General tab)
 
 LAYOUT MODES:
   Single Screen      Grid layout ({layout.Columns}x{layout.Rows}) on monitor {layout.TargetMonitor}
