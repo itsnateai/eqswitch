@@ -415,64 +415,172 @@ public class SettingsForm : Form
     private TabPage BuildAffinityTab()
     {
         var page = DarkTheme.MakeTabPage("Affinity");
-        int y = 15;
+        int y = 10;
 
+        // ─── CPU Affinity Section ─────────────────────────────────
         _chkAffinityEnabled = DarkTheme.AddCheckBox(page, "Enable CPU Affinity Management", 15, y);
 
-        DarkTheme.AddLabel(page, "Active Client Mask (hex):", 15, y += 35);
-        _txtActiveMask = DarkTheme.AddTextBox(page, 15, y += 22, 120);
-        DarkTheme.AddHint(page, "e.g. FF (P-cores 0-7)", 145, y + 3);
+        // Detect CPU info for display
+        var (coreCount, sysMask) = AffinityManager.DetectCores();
+        var cpuLabel = new Label
+        {
+            Text = $"CPU: {coreCount} cores detected",
+            Location = new Point(270, y + 2),
+            AutoSize = true,
+            ForeColor = DarkTheme.FgDimGray,
+            Font = new Font("Segoe UI", 8f)
+        };
+        page.Controls.Add(cpuLabel);
 
-        DarkTheme.AddLabel(page, "Background Mask (hex):", 15, y += 35);
-        _txtBackgroundMask = DarkTheme.AddTextBox(page, 15, y += 22, 120);
-        DarkTheme.AddHint(page, "e.g. FF00 (E-cores 8-15)", 145, y + 3);
+        y += 32;
+
+        // Two-column card layout for Active vs Background
+        var panelActive = new Panel
+        {
+            Location = new Point(15, y),
+            Size = new Size(225, 130),
+            BackColor = DarkTheme.BgPanel,
+            BorderStyle = BorderStyle.None
+        };
+        // Rounded border effect
+        panelActive.Paint += (_, e) =>
+        {
+            using var pen = new Pen(DarkTheme.Border, 1);
+            e.Graphics.DrawRectangle(pen, 0, 0, panelActive.Width - 1, panelActive.Height - 1);
+        };
+
+        var lblActiveTitle = new Label
+        {
+            Text = "⚔  Active Client",
+            Location = new Point(10, 8),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(100, 220, 130),
+            Font = new Font("Segoe UI Semibold", 9.5f)
+        };
+        panelActive.Controls.Add(lblActiveTitle);
+
+        var lblMaskA = new Label { Text = "Core Mask (hex):", Location = new Point(10, 38), AutoSize = true, ForeColor = DarkTheme.FgGray, Font = new Font("Segoe UI", 8.5f) };
+        panelActive.Controls.Add(lblMaskA);
+        _txtActiveMask = new TextBox
+        {
+            Location = new Point(120, 35), Size = new Size(80, 24),
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 9.5f)
+        };
+        panelActive.Controls.Add(_txtActiveMask);
+
+        var lblPriA = new Label { Text = "Priority:", Location = new Point(10, 68), AutoSize = true, ForeColor = DarkTheme.FgGray, Font = new Font("Segoe UI", 8.5f) };
+        panelActive.Controls.Add(lblPriA);
 
         var priorities = new[] { "Idle", "BelowNormal", "Normal", "AboveNormal", "High" };
+        _cboActivePriority = new ComboBox
+        {
+            Location = new Point(70, 65), Size = new Size(130, 24),
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 8.5f)
+        };
+        _cboActivePriority.Items.AddRange(priorities);
+        panelActive.Controls.Add(_cboActivePriority);
 
-        DarkTheme.AddLabel(page, "Active Priority:", 15, y += 40);
-        _cboActivePriority = DarkTheme.AddComboBox(page, 15, y += 22, 150, priorities);
+        var hintA = new Label { Text = "FF = P-cores 0-7", Location = new Point(10, 100), AutoSize = true, ForeColor = DarkTheme.FgDimGray, Font = new Font("Segoe UI", 7.5f) };
+        panelActive.Controls.Add(hintA);
+        page.Controls.Add(panelActive);
 
-        DarkTheme.AddLabel(page, "Background Priority:", 230, y - 22);
-        _cboBackgroundPriority = DarkTheme.AddComboBox(page, 230, y, 150, priorities);
+        // Background panel (right column)
+        var panelBg = new Panel
+        {
+            Location = new Point(255, y),
+            Size = new Size(225, 130),
+            BackColor = DarkTheme.BgPanel,
+            BorderStyle = BorderStyle.None
+        };
+        panelBg.Paint += (_, e) =>
+        {
+            using var pen = new Pen(DarkTheme.Border, 1);
+            e.Graphics.DrawRectangle(pen, 0, 0, panelBg.Width - 1, panelBg.Height - 1);
+        };
 
-        // All / Clear buttons for masks
-        var btnAllCores = DarkTheme.MakeButton("All Cores", DarkTheme.BgMedium, 300, 72);
-        btnAllCores.Size = new Size(80, 26);
+        var lblBgTitle = new Label
+        {
+            Text = "🛡  Background Clients",
+            Location = new Point(10, 8),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(140, 160, 220),
+            Font = new Font("Segoe UI Semibold", 9.5f)
+        };
+        panelBg.Controls.Add(lblBgTitle);
+
+        var lblMaskB = new Label { Text = "Core Mask (hex):", Location = new Point(10, 38), AutoSize = true, ForeColor = DarkTheme.FgGray, Font = new Font("Segoe UI", 8.5f) };
+        panelBg.Controls.Add(lblMaskB);
+        _txtBackgroundMask = new TextBox
+        {
+            Location = new Point(120, 35), Size = new Size(80, 24),
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 9.5f)
+        };
+        panelBg.Controls.Add(_txtBackgroundMask);
+
+        var lblPriB = new Label { Text = "Priority:", Location = new Point(10, 68), AutoSize = true, ForeColor = DarkTheme.FgGray, Font = new Font("Segoe UI", 8.5f) };
+        panelBg.Controls.Add(lblPriB);
+        _cboBackgroundPriority = new ComboBox
+        {
+            Location = new Point(70, 65), Size = new Size(130, 24),
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 8.5f)
+        };
+        _cboBackgroundPriority.Items.AddRange(priorities);
+        panelBg.Controls.Add(_cboBackgroundPriority);
+
+        var hintB = new Label { Text = "FF00 = E-cores 8-15", Location = new Point(10, 100), AutoSize = true, ForeColor = DarkTheme.FgDimGray, Font = new Font("Segoe UI", 7.5f) };
+        panelBg.Controls.Add(hintB);
+        page.Controls.Add(panelBg);
+
+        y += 140;
+
+        // Utility buttons
+        var btnAllCores = DarkTheme.MakeButton("All Cores", DarkTheme.BgMedium, 15, y);
+        btnAllCores.Size = new Size(85, 26);
         btnAllCores.Click += (_, _) =>
         {
-            var (_, sysMask) = AffinityManager.DetectCores();
             _txtActiveMask.Text = sysMask.ToString("X");
             _txtBackgroundMask.Text = sysMask.ToString("X");
         };
         page.Controls.Add(btnAllCores);
 
-        var btnClearCores = DarkTheme.MakeButton("Clear", DarkTheme.BgMedium, 390, 72);
-        btnClearCores.Size = new Size(60, 26);
-        btnClearCores.Click += (_, _) =>
+        var btnReset = DarkTheme.MakeButton("Reset Defaults", DarkTheme.BgMedium, 110, y);
+        btnReset.Size = new Size(105, 26);
+        btnReset.Click += (_, _) =>
         {
-            _txtActiveMask.Text = "1";
-            _txtBackgroundMask.Text = "1";
+            _txtActiveMask.Text = "FF";
+            _txtBackgroundMask.Text = "FF00";
+            _cboActivePriority.SelectedItem = "AboveNormal";
+            _cboBackgroundPriority.SelectedItem = "Normal";
         };
-        page.Controls.Add(btnClearCores);
+        page.Controls.Add(btnReset);
 
-        DarkTheme.AddLabel(page, "Launch Retry Count:", 15, y += 40);
-        _nudRetryCount = DarkTheme.AddNumeric(page, 15, y += 22, 80, 3, 0, 10);
+        // Retry settings (inline)
+        DarkTheme.AddLabel(page, "Retries:", 270, y + 3);
+        _nudRetryCount = DarkTheme.AddNumeric(page, 325, y, 55, 3, 0, 10);
+        DarkTheme.AddLabel(page, "Delay:", 390, y + 3);
+        _nudRetryDelay = DarkTheme.AddNumeric(page, 430, y, 55, 2000, 500, 10000);
 
-        DarkTheme.AddLabel(page, "Retry Delay (ms):", 200, y - 22);
-        _nudRetryDelay = DarkTheme.AddNumeric(page, 200, y, 100, 2000, 500, 10000);
-
-        // Background FPS Throttling section
+        // ─── Background FPS Throttling ────────────────────────────
         y += 40;
         y = DarkTheme.AddSectionHeader(page, "Background FPS Throttling", 15, y);
 
         _chkThrottleEnabled = DarkTheme.AddCheckBox(page, "Enable Background Throttling", 15, y);
+        DarkTheme.AddHint(page, "Suspends background EQ clients in cycles to reduce GPU/CPU load", 15, y + 20);
 
-        DarkTheme.AddLabel(page, "Throttle %:", 15, y += 30);
-        _nudThrottlePercent = DarkTheme.AddNumeric(page, 15, y += 22, 80, 50, 0, 90);
-        DarkTheme.AddHint(page, "0=off, 50=half FPS, 75=quarter", 105, y + 3);
+        y += 42;
+        DarkTheme.AddLabel(page, "Throttle %:", 15, y);
+        _nudThrottlePercent = DarkTheme.AddNumeric(page, 90, y, 60, 50, 0, 90);
 
-        DarkTheme.AddLabel(page, "Cycle (ms):", 280, y - 22);
-        _nudThrottleCycle = DarkTheme.AddNumeric(page, 280, y, 80, 100, 50, 1000);
+        DarkTheme.AddLabel(page, "Cycle (ms):", 170, y);
+        _nudThrottleCycle = DarkTheme.AddNumeric(page, 240, y, 60, 100, 50, 1000);
+
+        DarkTheme.AddHint(page, "50% = half FPS   75% = quarter FPS   Lower cycle = smoother", 15, y + 26);
 
         return page;
     }
