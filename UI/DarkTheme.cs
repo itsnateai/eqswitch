@@ -321,6 +321,158 @@ public static class DarkTheme
         form.Font = new Font("Segoe UI", 9f);
     }
 
+    // ─── Card Panels ────────────────────────────────────────────
+
+    /// <summary>
+    /// Create a styled card panel with emoji header, colored title, and border.
+    /// Returns the panel so controls can be added inside it.
+    /// </summary>
+    public static Panel MakeCard(Control parent, string emoji, string title, Color titleColor, int x, int y, int width, int height)
+    {
+        var panel = new Panel
+        {
+            Location = new Point(x, y),
+            Size = new Size(width, height),
+            BackColor = BgPanel,
+            BorderStyle = BorderStyle.None
+        };
+        panel.Paint += (_, e) =>
+        {
+            using var pen = new Pen(Border, 1);
+            e.Graphics.DrawRectangle(pen, 0, 0, panel.Width - 1, panel.Height - 1);
+        };
+
+        var lblTitle = new Label
+        {
+            Text = $"{emoji}  {title}",
+            Location = new Point(10, 8),
+            AutoSize = true,
+            ForeColor = titleColor,
+            Font = new Font("Segoe UI Semibold", 9.5f)
+        };
+        panel.Controls.Add(lblTitle);
+
+        parent.Controls.Add(panel);
+        return panel;
+    }
+
+    /// <summary>Card title colors — consistent palette for all tabs.</summary>
+    public static readonly Color CardGreen = Color.FromArgb(100, 220, 130);
+    public static readonly Color CardBlue = Color.FromArgb(140, 160, 220);
+    public static readonly Color CardGold = Color.FromArgb(220, 190, 100);
+    public static readonly Color CardRed = Color.FromArgb(220, 120, 120);
+    public static readonly Color CardPurple = Color.FromArgb(180, 140, 220);
+    public static readonly Color CardCyan = Color.FromArgb(100, 200, 210);
+
+    /// <summary>Add a label inside a card panel at relative position.</summary>
+    public static Label AddCardLabel(Panel card, string text, int x, int y)
+    {
+        var lbl = new Label
+        {
+            Text = text,
+            Location = new Point(x, y),
+            AutoSize = true,
+            ForeColor = FgGray,
+            Font = new Font("Segoe UI", 8.5f)
+        };
+        card.Controls.Add(lbl);
+        return lbl;
+    }
+
+    /// <summary>Add a dim hint label inside a card panel.</summary>
+    public static Label AddCardHint(Panel card, string text, int x, int y)
+    {
+        var lbl = new Label
+        {
+            Text = text,
+            Location = new Point(x, y),
+            AutoSize = true,
+            ForeColor = FgDimGray,
+            Font = new Font("Segoe UI", 7.5f)
+        };
+        card.Controls.Add(lbl);
+        return lbl;
+    }
+
+    /// <summary>Add a dark-styled TextBox inside a card panel.</summary>
+    public static TextBox AddCardTextBox(Panel card, int x, int y, int width)
+    {
+        var tb = new TextBox
+        {
+            Location = new Point(x, y),
+            Size = new Size(width, 24),
+            BackColor = BgInput,
+            ForeColor = FgWhite,
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font("Segoe UI", 9f)
+        };
+        card.Controls.Add(tb);
+        return tb;
+    }
+
+    /// <summary>Add a dark-styled ComboBox inside a card panel.</summary>
+    public static ComboBox AddCardComboBox(Panel card, int x, int y, int width, string[] items)
+    {
+        var cb = new ComboBox
+        {
+            Location = new Point(x, y),
+            Size = new Size(width, 24),
+            BackColor = BgInput,
+            ForeColor = FgWhite,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 8.5f)
+        };
+        cb.Items.AddRange(items);
+        if (cb.Items.Count > 0) cb.SelectedIndex = 0;
+        card.Controls.Add(cb);
+        return cb;
+    }
+
+    /// <summary>Add a dark-styled NumericUpDown inside a card panel.</summary>
+    public static NumericUpDown AddCardNumeric(Panel card, int x, int y, int width, decimal defaultVal, decimal min, decimal max)
+    {
+        var nud = new NumericUpDown
+        {
+            Location = new Point(x, y),
+            Size = new Size(width, 24),
+            BackColor = BgInput,
+            ForeColor = FgWhite,
+            Minimum = min,
+            Maximum = max,
+            Value = Math.Clamp(defaultVal, min, max),
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font("Segoe UI", 9f)
+        };
+        card.Controls.Add(nud);
+        return nud;
+    }
+
+    /// <summary>Add a CheckBox inside a card panel.</summary>
+    public static CheckBox AddCardCheckBox(Panel card, string text, int x, int y)
+    {
+        var cb = new CheckBox
+        {
+            Text = text,
+            Location = new Point(x, y),
+            AutoSize = true,
+            ForeColor = FgWhite,
+            Font = new Font("Segoe UI", 8.5f)
+        };
+        card.Controls.Add(cb);
+        return cb;
+    }
+
+    /// <summary>Add a styled button inside a card panel.</summary>
+    public static Button AddCardButton(Panel card, string text, int x, int y, int width = 80)
+    {
+        var btn = MakeButton(text, BgMedium, x, y);
+        btn.Size = new Size(width, 26);
+        btn.Font = new Font("Segoe UI", 8.5f);
+        card.Controls.Add(btn);
+        return btn;
+    }
+
     // ─── Helpers ─────────────────────────────────────────────────
 
     /// <summary>

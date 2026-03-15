@@ -118,7 +118,6 @@ Auto-backups are created in a `backups/` subfolder (last 10 kept).
 | `\` | Swap to last active EQ client (EQ must be focused) |
 | `]` | Global switch — cycle next / bring EQ to front |
 | Alt+1 through Alt+6 | Switch to client by slot |
-| Alt+G | Arrange all windows in grid |
 | Alt+M | Toggle single-screen / multi-monitor mode |
 
 ### Tray Icon Actions (defaults, all configurable)
