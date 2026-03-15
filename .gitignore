@@ -31,6 +31,11 @@ $RECYCLE.BIN/
 ## EQSwitch runtime files
 eqswitch-config.json
 backups/
+eqswitch-custom.ico
+eqswitch.log
+
+## Claude Code
+.claude/
 
 ## Task Management
 AUDIT_TASKS.md
