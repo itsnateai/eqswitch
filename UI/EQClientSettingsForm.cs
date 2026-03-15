@@ -357,28 +357,27 @@ public class EQClientSettingsForm : Form
 
         y += 35;
 
-        // FPS limits
+        // FPS limits — EQ's in-game slider is 0-99
         y = DarkTheme.AddSectionHeader(this, "FPS Limits", 20, y);
-        DarkTheme.AddLabel(this, "Max FPS:", 20, y + 3);
+        DarkTheme.AddLabel(this, "MaxFPS:", 20, y + 3);
         _nudMaxFPS = new NumericUpDown
         {
-            Location = new Point(100, y), Size = new Size(60, 24),
+            Location = new Point(85, y), Size = new Size(50, 24),
             BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            Minimum = 0, Maximum = 240,
-            Value = Math.Clamp(_config.EQClientIni.MaxFPS, 0, 240)
+            Minimum = 0, Maximum = 99,
+            Value = Math.Clamp(_config.EQClientIni.MaxFPS, 0, 99)
         };
-        DarkTheme.AddHint(this, "(0 = don't set)", 165, y + 3);
         Controls.Add(_nudMaxFPS);
 
-        DarkTheme.AddLabel(this, "Max BG FPS:", 20, y += 28);
+        DarkTheme.AddLabel(this, "MaxBGFPS:", 155, y + 3);
         _nudMaxBGFPS = new NumericUpDown
         {
-            Location = new Point(100, y - 3), Size = new Size(60, 24),
+            Location = new Point(235, y), Size = new Size(50, 24),
             BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            Minimum = 0, Maximum = 240,
-            Value = Math.Clamp(_config.EQClientIni.MaxBGFPS, 0, 240)
+            Minimum = 0, Maximum = 99,
+            Value = Math.Clamp(_config.EQClientIni.MaxBGFPS, 0, 99)
         };
-        DarkTheme.AddHint(this, "(0 = don't set)", 165, y);
+        DarkTheme.AddHint(this, "(0 = don't set)", 290, y + 3);
         Controls.Add(_nudMaxBGFPS);
 
         // Clip planes (all grouped together)
@@ -623,11 +622,11 @@ public class EQClientSettingsForm : Form
                             break;
                         case "maxfps":
                             if (int.TryParse(val, out int fps))
-                                _nudMaxFPS.Value = Math.Clamp(fps, 0, 240);
+                                _nudMaxFPS.Value = Math.Clamp(fps, 0, 99);
                             break;
                         case "maxbgfps":
                             if (int.TryParse(val, out int bgfps))
-                                _nudMaxBGFPS.Value = Math.Clamp(bgfps, 0, 240);
+                                _nudMaxBGFPS.Value = Math.Clamp(bgfps, 0, 99);
                             break;
                         case "shadowclipplane":
                             if (int.TryParse(val, out int scp))

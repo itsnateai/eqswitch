@@ -46,8 +46,8 @@ public class EQVideoModeForm : Form
 
         int y = 12;
         y = DarkTheme.AddSectionHeader(this, "\uD83D\uDCFA  [VideoMode] Settings", 15, y);
-        DarkTheme.AddHint(this, "Advanced video mode settings from eqclient.ini.\nOnly changed values are written on Save.", 15, y);
-        y += 40;
+        DarkTheme.AddHint(this, "Advanced video mode settings from eqclient.ini.\nOnly changed values are written on Save.\nChanges take effect on next EQ launch — not running clients.", 15, y);
+        y += 52;
 
         foreach (var (key, label, def, min, max) in VideoSettings)
         {
