@@ -29,7 +29,7 @@ public class ConfigMigrationTests
             var config = new AppConfig();
             Assert.Equal(@"\", config.Hotkeys.SwitchKey);
             Assert.Equal("]", config.Hotkeys.GlobalSwitchKey);
-            Assert.Equal("Alt+G", config.Hotkeys.ArrangeWindows);
+            Assert.Equal("", config.Hotkeys.ArrangeWindows);
             Assert.Equal("Alt+M", config.Hotkeys.ToggleMultiMonitor);
         }
         finally

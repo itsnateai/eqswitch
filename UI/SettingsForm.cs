@@ -6,8 +6,8 @@ using EQSwitch.Core;
 namespace EQSwitch.UI;
 
 /// <summary>
-/// Settings GUI with tabbed layout. Dark theme matching EQSwitch aesthetic.
-/// Replaces AHK's vertically-stacked settings panel with a proper TabControl.
+/// Settings GUI with tabbed layout. Dark medieval purple theme with card panels.
+/// Each section uses emoji-titled card panels for visual clarity and grouping.
 /// </summary>
 public class SettingsForm : Form
 {
@@ -186,88 +186,85 @@ public class SettingsForm : Form
     private TabPage BuildGeneralTab()
     {
         var page = DarkTheme.MakeTabPage("General");
-        int y = 10;
+        int y = 8;
 
-        y = DarkTheme.AddSectionHeader(page, "EverQuest Path", 15, y);
-        _txtEQPath = DarkTheme.AddTextBox(page, 15, y, 280);
-        var btnBrowse = DarkTheme.MakeButton("Browse...", DarkTheme.BgMedium, 305, y);
-        btnBrowse.Size = new Size(75, 26);
+        // ─── EverQuest Setup card ────────────────────────────────
+        var cardEQ = DarkTheme.MakeCard(page, "⚔", "EverQuest Setup", DarkTheme.CardGreen, 10, y, 480, 105);
+
+        DarkTheme.AddCardLabel(cardEQ, "EQ Path:", 10, 32);
+        _txtEQPath = DarkTheme.AddCardTextBox(cardEQ, 70, 30, 240);
+        var btnBrowse = DarkTheme.AddCardButton(cardEQ, "Browse...", 320, 29, 75);
         btnBrowse.Click += (_, _) =>
         {
             using var fbd = new FolderBrowserDialog { Description = "Select EverQuest folder", InitialDirectory = _txtEQPath.Text };
             if (fbd.ShowDialog() == DialogResult.OK) _txtEQPath.Text = fbd.SelectedPath;
         };
-        page.Controls.Add(btnBrowse);
 
-        DarkTheme.AddLabel(page, "Exe Name:", 15, y += 35);
-        _txtExeName = DarkTheme.AddTextBox(page, 90, y, 100);
+        DarkTheme.AddCardLabel(cardEQ, "Exe:", 10, 60);
+        _txtExeName = DarkTheme.AddCardTextBox(cardEQ, 40, 58, 90);
+        DarkTheme.AddCardLabel(cardEQ, "Args:", 140, 60);
+        _txtArgs = DarkTheme.AddCardTextBox(cardEQ, 175, 58, 90);
+        DarkTheme.AddCardLabel(cardEQ, "Switch:", 280, 60);
+        _txtSwitchKeyGeneral = new TextBox
+        {
+            Location = new Point(330, 58), Size = new Size(50, 24),
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 9f),
+            ShortcutsEnabled = false
+        };
+        _txtSwitchKeyGeneral.KeyDown += HotkeyBoxKeyDown;
+        cardEQ.Controls.Add(_txtSwitchKeyGeneral);
 
-        DarkTheme.AddLabel(page, "Args:", 200, y);
-        _txtArgs = DarkTheme.AddTextBox(page, 240, y, 100);
+        DarkTheme.AddCardLabel(cardEQ, "Process:", 10, 82);
+        _txtProcessName = DarkTheme.AddCardTextBox(cardEQ, 65, 80, 90);
+        DarkTheme.AddCardLabel(cardEQ, "Poll (ms):", 170, 82);
+        _nudPollingInterval = DarkTheme.AddCardNumeric(cardEQ, 235, 80, 70, 500, 100, 5000);
 
-        DarkTheme.AddLabel(page, "Switch Key:", 355, y);
-        _txtSwitchKeyGeneral = DarkTheme.AddHotkeyBox(page, 430, y, 50);
-        DarkTheme.AddHint(page, "e.g. \\ ]", 430, y + 25);
+        y += 112;
 
-        DarkTheme.AddLabel(page, "Process Name:", 15, y += 35);
-        _txtProcessName = DarkTheme.AddTextBox(page, 105, y, 100);
-
-        DarkTheme.AddLabel(page, "Polling (ms):", 220, y);
-        _nudPollingInterval = DarkTheme.AddNumeric(page, 305, y, 80, 500, 100, 5000);
-
-        // Tray Click Actions
-        y += 45;
-        y = DarkTheme.AddSectionHeader(page, "Tray Icon Click Actions", 15, y);
+        // ─── Tray Click Actions card ─────────────────────────────
+        var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 115);
 
         var clickActions = new[] { "None", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp" };
 
-        // Left click column
-        DarkTheme.AddLabel(page, "Left Click", 15, y);
-        DarkTheme.AddLabel(page, "Middle Click", 280, y);
-        y += 22;
+        DarkTheme.AddCardLabel(cardTray, "Left Click", 10, 30);
+        DarkTheme.AddCardLabel(cardTray, "Middle Click", 250, 30);
 
-        DarkTheme.AddLabel(page, "Single:", 15, y + 2);
-        _cboSingleClick = DarkTheme.AddComboBox(page, 80, y, 130, clickActions);
-        DarkTheme.AddLabel(page, "Single:", 280, y + 2);
-        _cboMiddleClick = DarkTheme.AddComboBox(page, 345, y, 130, clickActions);
+        DarkTheme.AddCardLabel(cardTray, "1×", 10, 52);
+        _cboSingleClick = DarkTheme.AddCardComboBox(cardTray, 30, 50, 120, clickActions);
+        DarkTheme.AddCardLabel(cardTray, "1×", 250, 52);
+        _cboMiddleClick = DarkTheme.AddCardComboBox(cardTray, 270, 50, 120, clickActions);
 
-        y += 28;
-        DarkTheme.AddLabel(page, "Double:", 15, y + 2);
-        _cboDoubleClick = DarkTheme.AddComboBox(page, 80, y, 130, clickActions);
-        DarkTheme.AddLabel(page, "Double:", 280, y + 2);
-        _cboMiddleDoubleClick = DarkTheme.AddComboBox(page, 345, y, 130, clickActions);
+        DarkTheme.AddCardLabel(cardTray, "2×", 155, 52);
+        _cboDoubleClick = DarkTheme.AddCardComboBox(cardTray, 175, 50, 65, clickActions);
+        DarkTheme.AddCardLabel(cardTray, "2×", 395, 52);
+        _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 415, 50, 55, clickActions);
 
-        y += 28;
-        DarkTheme.AddLabel(page, "Triple:", 15, y + 2);
-        _cboTripleClick = DarkTheme.AddComboBox(page, 80, y, 130, clickActions);
-        DarkTheme.AddLabel(page, "Triple:", 280, y + 2);
-        _cboMiddleTripleClick = DarkTheme.AddComboBox(page, 345, y, 130, clickActions);
+        DarkTheme.AddCardLabel(cardTray, "3×", 10, 80);
+        _cboTripleClick = DarkTheme.AddCardComboBox(cardTray, 30, 78, 120, clickActions);
+        DarkTheme.AddCardLabel(cardTray, "3×", 250, 80);
+        _cboMiddleTripleClick = DarkTheme.AddCardComboBox(cardTray, 270, 78, 120, clickActions);
 
-        y += 38;
-        var btnEQClientSettings = DarkTheme.MakeButton("\uD83D\uDCDD  EQ Client Settings...", DarkTheme.BgMedium, 15, y);
-        btnEQClientSettings.Size = new Size(200, 30);
-        btnEQClientSettings.Click += (_, _) =>
+        y += 122;
+
+        // ─── Preferences card ────────────────────────────────────
+        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 115);
+
+        var btnEQSettings = DarkTheme.AddCardButton(cardPrefs, "\uD83D\uDCDD EQ Client Settings...", 10, 30, 180);
+        btnEQSettings.Click += (_, _) =>
         {
             using var form = new EQClientSettingsForm(_config);
             form.ShowDialog();
         };
-        page.Controls.Add(btnEQClientSettings);
 
-        // Tooltip settings
-        y += 42;
-        DarkTheme.AddLabel(page, "Tooltip Duration (ms):", 15, y);
-        _nudTooltipDuration = DarkTheme.AddNumeric(page, 180, y, 80, 3000, 1000, 10000);
-        DarkTheme.AddHint(page, "How long floating tooltips stay visible", 270, y + 3);
+        DarkTheme.AddCardLabel(cardPrefs, "Tooltip (ms):", 210, 33);
+        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardPrefs, 300, 31, 70, 1500, 500, 10000);
 
-        y += 28;
-        _chkCtrlHoverHelp = DarkTheme.AddCheckBox(page, "Ctrl+Hover tray icon shows hotkey help", 15, y);
+        _chkCtrlHoverHelp = DarkTheme.AddCardCheckBox(cardPrefs, "Ctrl+Hover shows hotkey help", 10, 60);
 
-        // Custom icon
-        y += 35;
-        DarkTheme.AddLabel(page, "Tray Icon:", 15, y);
-        _txtCustomIconPath = DarkTheme.AddTextBox(page, 90, y, 240);
-        var btnBrowseIcon = DarkTheme.MakeButton("Browse...", DarkTheme.BgMedium, 340, y);
-        btnBrowseIcon.Width = 75;
+        DarkTheme.AddCardLabel(cardPrefs, "Tray Icon:", 10, 88);
+        _txtCustomIconPath = DarkTheme.AddCardTextBox(cardPrefs, 80, 86, 230);
+        var btnBrowseIcon = DarkTheme.AddCardButton(cardPrefs, "Browse...", 320, 85, 75);
         btnBrowseIcon.Click += (_, _) =>
         {
             using var dlg = new OpenFileDialog
@@ -279,8 +276,7 @@ public class SettingsForm : Form
             if (dlg.ShowDialog() == DialogResult.OK)
                 _txtCustomIconPath.Text = dlg.FileName;
         };
-        page.Controls.Add(btnBrowseIcon);
-        DarkTheme.AddHint(page, "Leave blank for default icon", 15, y + 26);
+        DarkTheme.AddCardHint(cardPrefs, "blank = default icon", 400, 90);
 
         return page;
     }
@@ -288,34 +284,92 @@ public class SettingsForm : Form
     private TabPage BuildHotkeysTab()
     {
         var page = DarkTheme.MakeTabPage("Hotkeys");
-        int y = 15;
+        int y = 8;
 
-        DarkTheme.AddLabel(page, "Switch Key (EQ-only):", 15, y);
-        _txtSwitchKey = DarkTheme.AddHotkeyBox(page, 160, y, 60);
-        DarkTheme.AddHint(page, "e.g. \\ ] [", 230, y + 3);
+        // ─── Window Switching card ───────────────────────────────
+        var cardSwitch = DarkTheme.MakeCard(page, "⚔", "Window Switching", DarkTheme.CardGreen, 10, y, 480, 100);
 
-        DarkTheme.AddLabel(page, "Mode:", 310, y);
-        _cboSwitchKeyMode = DarkTheme.AddComboBox(page, 355, y, 120, new[] { "swapLast", "cycleAll" });
+        DarkTheme.AddCardLabel(cardSwitch, "Switch Key (EQ-only):", 10, 35);
+        _txtSwitchKey = new TextBox
+        {
+            Location = new Point(155, 33), Size = new Size(60, 24),
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 9f),
+            ShortcutsEnabled = false
+        };
+        _txtSwitchKey.KeyDown += HotkeyBoxKeyDown;
+        cardSwitch.Controls.Add(_txtSwitchKey);
 
-        DarkTheme.AddLabel(page, "Global Switch Key:", 15, y += 35);
-        _txtGlobalSwitchKey = DarkTheme.AddHotkeyBox(page, 160, y, 60);
-        DarkTheme.AddHint(page, "Works from any app", 230, y + 3);
+        DarkTheme.AddCardLabel(cardSwitch, "Mode:", 230, 35);
+        _cboSwitchKeyMode = DarkTheme.AddCardComboBox(cardSwitch, 270, 33, 120, new[] { "swapLast", "cycleAll" });
 
-        DarkTheme.AddLabel(page, "Arrange Windows:", 15, y += 35);
-        _txtArrangeWindows = DarkTheme.AddHotkeyBox(page, 160, y, 80);
-        DarkTheme.AddHint(page, "e.g. Alt+G", 250, y + 3);
+        DarkTheme.AddCardLabel(cardSwitch, "Global Switch Key:", 10, 65);
+        _txtGlobalSwitchKey = new TextBox
+        {
+            Location = new Point(155, 63), Size = new Size(60, 24),
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 9f),
+            ShortcutsEnabled = false
+        };
+        _txtGlobalSwitchKey.KeyDown += HotkeyBoxKeyDown;
+        cardSwitch.Controls.Add(_txtGlobalSwitchKey);
+        DarkTheme.AddCardHint(cardSwitch, "Works from any app", 225, 67);
 
-        DarkTheme.AddLabel(page, "Toggle Multi-Mon:", 15, y += 35);
-        _txtToggleMultiMon = DarkTheme.AddHotkeyBox(page, 160, y, 80);
-        _chkMultiMonEnabled = DarkTheme.AddCheckBox(page, "Enabled", 260, y - 2);
+        y += 108;
 
-        DarkTheme.AddLabel(page, "Launch One:", 15, y += 35);
-        _txtLaunchOne = DarkTheme.AddHotkeyBox(page, 160, y, 80);
+        // ─── Actions card ────────────────────────────────────────
+        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 105);
 
-        DarkTheme.AddLabel(page, "Launch All:", 270, y);
-        _txtLaunchAll = DarkTheme.AddHotkeyBox(page, 355, y, 80);
+        DarkTheme.AddCardLabel(cardActions, "Arrange Windows:", 10, 35);
+        _txtArrangeWindows = new TextBox
+        {
+            Location = new Point(130, 33), Size = new Size(70, 24),
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 9f),
+            ShortcutsEnabled = false
+        };
+        _txtArrangeWindows.KeyDown += HotkeyBoxKeyDown;
+        cardActions.Controls.Add(_txtArrangeWindows);
+        DarkTheme.AddCardHint(cardActions, "optional", 208, 37);
 
-        DarkTheme.AddHint(page, "Leave blank to disable. Press key combo to capture", 15, y + 30);
+        DarkTheme.AddCardLabel(cardActions, "Toggle Multi-Mon:", 260, 35);
+        _txtToggleMultiMon = new TextBox
+        {
+            Location = new Point(380, 33), Size = new Size(70, 24),
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 9f),
+            ShortcutsEnabled = false
+        };
+        _txtToggleMultiMon.KeyDown += HotkeyBoxKeyDown;
+        cardActions.Controls.Add(_txtToggleMultiMon);
+
+        _chkMultiMonEnabled = DarkTheme.AddCardCheckBox(cardActions, "Multi-Mon enabled", 260, 60);
+
+        DarkTheme.AddCardLabel(cardActions, "Launch One:", 10, 67);
+        _txtLaunchOne = new TextBox
+        {
+            Location = new Point(90, 65), Size = new Size(70, 24),
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 9f),
+            ShortcutsEnabled = false
+        };
+        _txtLaunchOne.KeyDown += HotkeyBoxKeyDown;
+        cardActions.Controls.Add(_txtLaunchOne);
+
+        DarkTheme.AddCardLabel(cardActions, "Launch All:", 170, 67);
+        _txtLaunchAll = new TextBox
+        {
+            Location = new Point(245, 65), Size = new Size(70, 24),
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 9f),
+            ShortcutsEnabled = false
+        };
+        _txtLaunchAll.KeyDown += HotkeyBoxKeyDown;
+        cardActions.Controls.Add(_txtLaunchAll);
+
+        y += 113;
+
+        DarkTheme.AddHint(page, "Press key combo to capture. Leave blank to disable. Backspace/Delete to clear.", 15, y);
 
         return page;
     }
@@ -323,18 +377,28 @@ public class SettingsForm : Form
     private TabPage BuildLayoutTab()
     {
         var page = DarkTheme.MakeTabPage("Layout");
-        int y = 15;
+        int y = 8;
 
-        DarkTheme.AddLabel(page, "Monitor Layout Mode:", 15, y);
-        _cboLayoutMode = DarkTheme.AddComboBox(page, 15, y += 22, 150, new[] { "single", "multimonitor" });
+        // ─── Grid Layout card ────────────────────────────────────
+        var cardGrid = DarkTheme.MakeCard(page, "📐", "Grid Layout", DarkTheme.CardGold, 10, y, 480, 100);
 
-        DarkTheme.AddLabel(page, "Grid Columns:", 200, 15);
-        _nudColumns = DarkTheme.AddNumeric(page, 200, 37, 80, 2, 1, 4);
+        DarkTheme.AddCardLabel(cardGrid, "Mode:", 10, 35);
+        _cboLayoutMode = DarkTheme.AddCardComboBox(cardGrid, 50, 33, 130, new[] { "single", "multimonitor" });
 
-        DarkTheme.AddLabel(page, "Grid Rows:", 310, 15);
-        _nudRows = DarkTheme.AddNumeric(page, 310, 37, 80, 2, 1, 4);
+        DarkTheme.AddCardLabel(cardGrid, "Columns:", 200, 35);
+        _nudColumns = DarkTheme.AddCardNumeric(cardGrid, 260, 33, 55, 2, 1, 4);
 
-        DarkTheme.AddLabel(page, "Target Monitor:", 15, y += 40);
+        DarkTheme.AddCardLabel(cardGrid, "Rows:", 330, 35);
+        _nudRows = DarkTheme.AddCardNumeric(cardGrid, 370, 33, 55, 2, 1, 4);
+
+        DarkTheme.AddCardHint(cardGrid, "Grid divides the monitor into columns × rows for window placement", 10, 65);
+
+        y += 108;
+
+        // ─── Monitor card ────────────────────────────────────────
+        var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 100);
+
+        DarkTheme.AddCardLabel(cardMon, "Target Monitor:", 10, 35);
         var screens = Screen.AllScreens.OrderBy(s => s.Bounds.Left).ToArray();
         var monitorItems = new string[screens.Length];
         for (int i = 0; i < screens.Length; i++)
@@ -343,20 +407,23 @@ public class SettingsForm : Form
             var primary = s.Primary ? " (primary)" : "";
             monitorItems[i] = $"{i}: {s.Bounds.Width}x{s.Bounds.Height}{primary}";
         }
-        _cboTargetMonitor = DarkTheme.AddComboBox(page, 15, y += 22, 200, monitorItems);
+        _cboTargetMonitor = DarkTheme.AddCardComboBox(cardMon, 120, 33, 170, monitorItems);
 
-        DarkTheme.AddLabel(page, "Top Offset (px):", 230, y - 22);
-        _nudTopOffset = DarkTheme.AddNumeric(page, 230, y, 80, 0, -100, 200);
-
-        var btnIdentify = DarkTheme.MakeButton("Identify", DarkTheme.BgMedium, 330, y);
-        btnIdentify.Width = 80;
+        var btnIdentify = DarkTheme.AddCardButton(cardMon, "🔍 Identify", 300, 32, 90);
         btnIdentify.Click += (_, _) => ShowMonitorIdentifiers();
-        page.Controls.Add(btnIdentify);
 
-        _chkRemoveTitleBars = DarkTheme.AddCheckBox(page, "Remove Title Bars on Arrange", 15, y += 40);
+        DarkTheme.AddCardLabel(cardMon, "Top Offset (px):", 10, 67);
+        _nudTopOffset = DarkTheme.AddCardNumeric(cardMon, 120, 65, 70, 0, -100, 200);
+        DarkTheme.AddCardHint(cardMon, "Offset from monitor top edge (for taskbar)", 200, 69);
 
-        _chkBorderlessFullscreen = DarkTheme.AddCheckBox(page, "Borderless Fullscreen", 15, y += 30);
-        DarkTheme.AddHint(page, "Fills screen without exclusive fullscreen — preserves Alt+Tab and PiP", 15, y + 22);
+        y += 108;
+
+        // ─── Window Style card ───────────────────────────────────
+        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 90);
+
+        _chkRemoveTitleBars = DarkTheme.AddCardCheckBox(cardStyle, "Remove Title Bars on Arrange", 10, 34);
+        _chkBorderlessFullscreen = DarkTheme.AddCardCheckBox(cardStyle, "Borderless Fullscreen", 10, 58);
+        DarkTheme.AddCardHint(cardStyle, "Fills screen without exclusive fullscreen — preserves Alt+Tab and PiP", 230, 60);
 
         return page;
     }
@@ -415,12 +482,11 @@ public class SettingsForm : Form
     private TabPage BuildAffinityTab()
     {
         var page = DarkTheme.MakeTabPage("Affinity");
-        int y = 10;
+        int y = 8;
 
-        // ─── CPU Affinity Section ─────────────────────────────────
+        // ─── CPU Affinity header ─────────────────────────────────
         _chkAffinityEnabled = DarkTheme.AddCheckBox(page, "Enable CPU Affinity Management", 15, y);
 
-        // Detect CPU info for display
         var (coreCount, sysMask) = AffinityManager.DetectCores();
         var cpuLabel = new Label
         {
@@ -431,113 +497,34 @@ public class SettingsForm : Form
             Font = new Font("Segoe UI", 8f)
         };
         page.Controls.Add(cpuLabel);
+        y += 30;
 
-        y += 32;
+        // ─── Active Client card ──────────────────────────────────
+        var panelActive = DarkTheme.MakeCard(page, "⚔", "Active Client", DarkTheme.CardGreen, 10, y, 230, 130);
 
-        // Two-column card layout for Active vs Background
-        var panelActive = new Panel
-        {
-            Location = new Point(15, y),
-            Size = new Size(225, 130),
-            BackColor = DarkTheme.BgPanel,
-            BorderStyle = BorderStyle.None
-        };
-        // Rounded border effect
-        panelActive.Paint += (_, e) =>
-        {
-            using var pen = new Pen(DarkTheme.Border, 1);
-            e.Graphics.DrawRectangle(pen, 0, 0, panelActive.Width - 1, panelActive.Height - 1);
-        };
+        DarkTheme.AddCardLabel(panelActive, "Core Mask (hex):", 10, 38);
+        _txtActiveMask = DarkTheme.AddCardTextBox(panelActive, 125, 36, 80);
+        _txtActiveMask.Font = new Font("Consolas", 9.5f);
 
-        var lblActiveTitle = new Label
-        {
-            Text = "⚔  Active Client",
-            Location = new Point(10, 8),
-            AutoSize = true,
-            ForeColor = Color.FromArgb(100, 220, 130),
-            Font = new Font("Segoe UI Semibold", 9.5f)
-        };
-        panelActive.Controls.Add(lblActiveTitle);
-
-        var lblMaskA = new Label { Text = "Core Mask (hex):", Location = new Point(10, 38), AutoSize = true, ForeColor = DarkTheme.FgGray, Font = new Font("Segoe UI", 8.5f) };
-        panelActive.Controls.Add(lblMaskA);
-        _txtActiveMask = new TextBox
-        {
-            Location = new Point(120, 35), Size = new Size(80, 24),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 9.5f)
-        };
-        panelActive.Controls.Add(_txtActiveMask);
-
-        var lblPriA = new Label { Text = "Priority:", Location = new Point(10, 68), AutoSize = true, ForeColor = DarkTheme.FgGray, Font = new Font("Segoe UI", 8.5f) };
-        panelActive.Controls.Add(lblPriA);
-
+        DarkTheme.AddCardLabel(panelActive, "Priority:", 10, 68);
         var priorities = new[] { "Idle", "BelowNormal", "Normal", "AboveNormal", "High" };
-        _cboActivePriority = new ComboBox
-        {
-            Location = new Point(70, 65), Size = new Size(130, 24),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 8.5f)
-        };
-        _cboActivePriority.Items.AddRange(priorities);
-        panelActive.Controls.Add(_cboActivePriority);
+        _cboActivePriority = DarkTheme.AddCardComboBox(panelActive, 70, 66, 130, priorities);
 
-        var hintA = new Label { Text = "FF = P-cores 0-7", Location = new Point(10, 100), AutoSize = true, ForeColor = DarkTheme.FgDimGray, Font = new Font("Segoe UI", 7.5f) };
-        panelActive.Controls.Add(hintA);
-        page.Controls.Add(panelActive);
+        DarkTheme.AddCardHint(panelActive, "FF = P-cores 0-7", 10, 100);
 
-        // Background panel (right column)
-        var panelBg = new Panel
-        {
-            Location = new Point(255, y),
-            Size = new Size(225, 130),
-            BackColor = DarkTheme.BgPanel,
-            BorderStyle = BorderStyle.None
-        };
-        panelBg.Paint += (_, e) =>
-        {
-            using var pen = new Pen(DarkTheme.Border, 1);
-            e.Graphics.DrawRectangle(pen, 0, 0, panelBg.Width - 1, panelBg.Height - 1);
-        };
+        // ─── Background Clients card ─────────────────────────────
+        var panelBg = DarkTheme.MakeCard(page, "🛡", "Background Clients", DarkTheme.CardBlue, 250, y, 230, 130);
 
-        var lblBgTitle = new Label
-        {
-            Text = "🛡  Background Clients",
-            Location = new Point(10, 8),
-            AutoSize = true,
-            ForeColor = Color.FromArgb(140, 160, 220),
-            Font = new Font("Segoe UI Semibold", 9.5f)
-        };
-        panelBg.Controls.Add(lblBgTitle);
+        DarkTheme.AddCardLabel(panelBg, "Core Mask (hex):", 10, 38);
+        _txtBackgroundMask = DarkTheme.AddCardTextBox(panelBg, 125, 36, 80);
+        _txtBackgroundMask.Font = new Font("Consolas", 9.5f);
 
-        var lblMaskB = new Label { Text = "Core Mask (hex):", Location = new Point(10, 38), AutoSize = true, ForeColor = DarkTheme.FgGray, Font = new Font("Segoe UI", 8.5f) };
-        panelBg.Controls.Add(lblMaskB);
-        _txtBackgroundMask = new TextBox
-        {
-            Location = new Point(120, 35), Size = new Size(80, 24),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 9.5f)
-        };
-        panelBg.Controls.Add(_txtBackgroundMask);
+        DarkTheme.AddCardLabel(panelBg, "Priority:", 10, 68);
+        _cboBackgroundPriority = DarkTheme.AddCardComboBox(panelBg, 70, 66, 130, priorities);
 
-        var lblPriB = new Label { Text = "Priority:", Location = new Point(10, 68), AutoSize = true, ForeColor = DarkTheme.FgGray, Font = new Font("Segoe UI", 8.5f) };
-        panelBg.Controls.Add(lblPriB);
-        _cboBackgroundPriority = new ComboBox
-        {
-            Location = new Point(70, 65), Size = new Size(130, 24),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 8.5f)
-        };
-        _cboBackgroundPriority.Items.AddRange(priorities);
-        panelBg.Controls.Add(_cboBackgroundPriority);
+        DarkTheme.AddCardHint(panelBg, "FF00 = E-cores 8-15", 10, 100);
 
-        var hintB = new Label { Text = "FF00 = E-cores 8-15", Location = new Point(10, 100), AutoSize = true, ForeColor = DarkTheme.FgDimGray, Font = new Font("Segoe UI", 7.5f) };
-        panelBg.Controls.Add(hintB);
-        page.Controls.Add(panelBg);
-
-        y += 140;
+        y += 138;
 
         // Utility buttons
         var btnAllCores = DarkTheme.MakeButton("All Cores", DarkTheme.BgMedium, 15, y);
@@ -549,38 +536,37 @@ public class SettingsForm : Form
         };
         page.Controls.Add(btnAllCores);
 
-        var btnReset = DarkTheme.MakeButton("Reset Defaults", DarkTheme.BgMedium, 110, y);
-        btnReset.Size = new Size(105, 26);
-        btnReset.Click += (_, _) =>
+        var btnResetAff = DarkTheme.MakeButton("Reset Defaults", DarkTheme.BgMedium, 110, y);
+        btnResetAff.Size = new Size(105, 26);
+        btnResetAff.Click += (_, _) =>
         {
             _txtActiveMask.Text = "FF";
             _txtBackgroundMask.Text = "FF00";
             _cboActivePriority.SelectedItem = "AboveNormal";
             _cboBackgroundPriority.SelectedItem = "Normal";
         };
-        page.Controls.Add(btnReset);
+        page.Controls.Add(btnResetAff);
 
-        // Retry settings (inline)
         DarkTheme.AddLabel(page, "Retries:", 270, y + 3);
         _nudRetryCount = DarkTheme.AddNumeric(page, 325, y, 55, 3, 0, 10);
         DarkTheme.AddLabel(page, "Delay:", 390, y + 3);
         _nudRetryDelay = DarkTheme.AddNumeric(page, 430, y, 55, 2000, 500, 10000);
 
-        // ─── Background FPS Throttling ────────────────────────────
-        y += 40;
-        y = DarkTheme.AddSectionHeader(page, "Background FPS Throttling", 15, y);
+        y += 38;
 
-        _chkThrottleEnabled = DarkTheme.AddCheckBox(page, "Enable Background Throttling", 15, y);
-        DarkTheme.AddHint(page, "Suspends background EQ clients in cycles to reduce GPU/CPU load", 15, y + 20);
+        // ─── Background FPS Throttling card ──────────────────────
+        var cardThrottle = DarkTheme.MakeCard(page, "⏱", "Background FPS Throttling", DarkTheme.CardCyan, 10, y, 480, 105);
 
-        y += 42;
-        DarkTheme.AddLabel(page, "Throttle %:", 15, y);
-        _nudThrottlePercent = DarkTheme.AddNumeric(page, 90, y, 60, 50, 0, 90);
+        _chkThrottleEnabled = DarkTheme.AddCardCheckBox(cardThrottle, "Enable Background Throttling", 10, 32);
+        DarkTheme.AddCardHint(cardThrottle, "Suspends background EQ clients in cycles to reduce GPU/CPU load", 230, 35);
 
-        DarkTheme.AddLabel(page, "Cycle (ms):", 170, y);
-        _nudThrottleCycle = DarkTheme.AddNumeric(page, 240, y, 60, 100, 50, 1000);
+        DarkTheme.AddCardLabel(cardThrottle, "Throttle %:", 10, 62);
+        _nudThrottlePercent = DarkTheme.AddCardNumeric(cardThrottle, 85, 60, 55, 50, 0, 90);
 
-        DarkTheme.AddHint(page, "50% = half FPS   75% = quarter FPS   Lower cycle = smoother", 15, y + 26);
+        DarkTheme.AddCardLabel(cardThrottle, "Cycle (ms):", 155, 62);
+        _nudThrottleCycle = DarkTheme.AddCardNumeric(cardThrottle, 225, 60, 55, 100, 50, 1000);
+
+        DarkTheme.AddCardHint(cardThrottle, "50% = half FPS   75% = quarter FPS   Lower cycle = smoother", 10, 85);
 
         return page;
     }
@@ -588,17 +574,21 @@ public class SettingsForm : Form
     private TabPage BuildLaunchTab()
     {
         var page = DarkTheme.MakeTabPage("Launch");
-        int y = 15;
+        int y = 8;
 
-        DarkTheme.AddLabel(page, "Number of Clients (Launch All):", 15, y);
-        _nudNumClients = DarkTheme.AddNumeric(page, 15, y += 22, 80, 2, 1, 8);
+        // ─── Launch Settings card ────────────────────────────────
+        var cardLaunch = DarkTheme.MakeCard(page, "🚀", "Launch Settings", DarkTheme.CardGreen, 10, y, 480, 145);
 
-        DarkTheme.AddLabel(page, "Delay Between Launches (ms):", 15, y += 40);
-        _nudLaunchDelay = DarkTheme.AddNumeric(page, 15, y += 22, 100, 3000, 500, 30000);
+        DarkTheme.AddCardLabel(cardLaunch, "Number of Clients (Launch All):", 10, 35);
+        _nudNumClients = DarkTheme.AddCardNumeric(cardLaunch, 230, 33, 65, 2, 1, 8);
 
-        DarkTheme.AddLabel(page, "Window Fix Delay (ms):", 15, y += 40);
-        _nudFixDelay = DarkTheme.AddNumeric(page, 15, y += 22, 100, 15000, 1000, 60000);
-        DarkTheme.AddHint(page, "Wait time after all clients launched before arranging windows", 125, y + 3);
+        DarkTheme.AddCardLabel(cardLaunch, "Delay Between Launches (ms):", 10, 65);
+        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardLaunch, 230, 63, 80, 3000, 500, 30000);
+
+        DarkTheme.AddCardLabel(cardLaunch, "Window Fix Delay (ms):", 10, 95);
+        _nudFixDelay = DarkTheme.AddCardNumeric(cardLaunch, 230, 93, 80, 15000, 1000, 60000);
+
+        DarkTheme.AddCardHint(cardLaunch, "Wait time after all clients launched before arranging windows", 10, 120);
 
         return page;
     }
@@ -606,12 +596,14 @@ public class SettingsForm : Form
     private TabPage BuildPathsTab()
     {
         var page = DarkTheme.MakeTabPage("Paths");
-        int y = 15;
+        int y = 8;
 
-        DarkTheme.AddLabel(page, "GINA Path:", 15, y);
-        _txtGinaPath = DarkTheme.AddTextBox(page, 15, y += 22, 330);
-        var btnBrowseGina = DarkTheme.MakeButton("Browse...", DarkTheme.BgMedium, 355, y - 2);
-        btnBrowseGina.Size = new Size(80, 26);
+        // ─── External Tools card ─────────────────────────────────
+        var cardPaths = DarkTheme.MakeCard(page, "📁", "External Tools", DarkTheme.CardGold, 10, y, 480, 155);
+
+        DarkTheme.AddCardLabel(cardPaths, "GINA Path:", 10, 35);
+        _txtGinaPath = DarkTheme.AddCardTextBox(cardPaths, 80, 33, 280);
+        var btnBrowseGina = DarkTheme.AddCardButton(cardPaths, "Browse...", 370, 32, 75);
         btnBrowseGina.Click += (_, _) =>
         {
             using var ofd = new OpenFileDialog
@@ -622,12 +614,10 @@ public class SettingsForm : Form
             };
             if (ofd.ShowDialog() == DialogResult.OK) _txtGinaPath.Text = ofd.FileName;
         };
-        page.Controls.Add(btnBrowseGina);
 
-        DarkTheme.AddLabel(page, "Notes File:", 15, y += 45);
-        _txtNotesPath = DarkTheme.AddTextBox(page, 15, y += 22, 330);
-        var btnBrowseNotes = DarkTheme.MakeButton("Browse...", DarkTheme.BgMedium, 355, y - 2);
-        btnBrowseNotes.Size = new Size(80, 26);
+        DarkTheme.AddCardLabel(cardPaths, "Notes File:", 10, 70);
+        _txtNotesPath = DarkTheme.AddCardTextBox(cardPaths, 80, 68, 280);
+        var btnBrowseNotes = DarkTheme.AddCardButton(cardPaths, "Browse...", 370, 67, 75);
         btnBrowseNotes.Click += (_, _) =>
         {
             using var ofd = new OpenFileDialog
@@ -638,9 +628,8 @@ public class SettingsForm : Form
             };
             if (ofd.ShowDialog() == DialogResult.OK) _txtNotesPath.Text = ofd.FileName;
         };
-        page.Controls.Add(btnBrowseNotes);
 
-        DarkTheme.AddHint(page, "Leave blank for defaults. GINA launches the app; Notes opens a text file.", 15, y + 40);
+        DarkTheme.AddCardHint(cardPaths, "Leave blank for defaults. GINA launches the app; Notes opens a text file.", 10, 105);
 
         return page;
     }
@@ -648,12 +637,15 @@ public class SettingsForm : Form
     private TabPage BuildPipTab()
     {
         var page = DarkTheme.MakeTabPage("PiP");
-        int y = 15;
+        int y = 8;
 
-        _chkPipEnabled = DarkTheme.AddCheckBox(page, "Enable PiP Overlay", 15, y);
+        // ─── PiP Overlay card ────────────────────────────────────
+        var cardPip = DarkTheme.MakeCard(page, "👁", "PiP Overlay", DarkTheme.CardCyan, 10, y, 480, 105);
 
-        DarkTheme.AddLabel(page, "Size Preset:", 15, y += 35);
-        _cboPipSize = DarkTheme.AddComboBox(page, 15, y += 22, 150, new[] { "Small", "Medium", "Large", "XL", "XXL", "Custom" });
+        _chkPipEnabled = DarkTheme.AddCardCheckBox(cardPip, "Enable PiP Overlay", 10, 32);
+
+        DarkTheme.AddCardLabel(cardPip, "Size Preset:", 10, 60);
+        _cboPipSize = DarkTheme.AddCardComboBox(cardPip, 90, 58, 110, new[] { "Small", "Medium", "Large", "XL", "XXL", "Custom" });
         _cboPipSize.SelectedIndexChanged += (_, _) =>
         {
             bool isCustom = _cboPipSize.SelectedItem?.ToString() == "Custom";
@@ -661,28 +653,37 @@ public class SettingsForm : Form
             _nudPipHeight.Enabled = isCustom;
         };
 
-        DarkTheme.AddLabel(page, "Custom Width:", 200, y - 22);
-        _nudPipWidth = DarkTheme.AddNumeric(page, 200, y, 80, 320, 100, 1920);
+        DarkTheme.AddCardLabel(cardPip, "W:", 220, 60);
+        _nudPipWidth = DarkTheme.AddCardNumeric(cardPip, 240, 58, 65, 320, 100, 1920);
         _nudPipWidth.Enabled = false;
 
-        DarkTheme.AddLabel(page, "Custom Height:", 310, y - 22);
-        _nudPipHeight = DarkTheme.AddNumeric(page, 310, y, 80, 240, 100, 1080);
+        DarkTheme.AddCardLabel(cardPip, "H:", 315, 60);
+        _nudPipHeight = DarkTheme.AddCardNumeric(cardPip, 335, 58, 65, 240, 100, 1080);
         _nudPipHeight.Enabled = false;
 
-        DarkTheme.AddLabel(page, "Opacity (0-255):", 15, y += 40);
-        _nudPipOpacity = DarkTheme.AddNumeric(page, 15, y += 22, 80, 200, 0, 255);
+        DarkTheme.AddCardLabel(cardPip, "Max:", 410, 60);
+        _nudPipMaxWindows = DarkTheme.AddCardNumeric(cardPip, 445, 58, 25, 3, 1, 3);
 
-        _chkPipBorder = DarkTheme.AddCheckBox(page, "Show Border", 200, y);
+        DarkTheme.AddCardHint(cardPip, "DWM thumbnail — zero CPU, GPU composited", 220, 35);
+
+        y += 113;
+
+        // ─── Appearance card ─────────────────────────────────────
+        var cardLook = DarkTheme.MakeCard(page, "🎨", "Appearance", DarkTheme.CardPurple, 10, y, 480, 95);
+
+        DarkTheme.AddCardLabel(cardLook, "Opacity (0-255):", 10, 35);
+        _nudPipOpacity = DarkTheme.AddCardNumeric(cardLook, 120, 33, 60, 245, 0, 255);
+
+        _chkPipBorder = DarkTheme.AddCardCheckBox(cardLook, "Show Border", 200, 34);
         _chkPipBorder.CheckedChanged += (_, _) =>
         {
             _cboPipBorderColor.Enabled = _chkPipBorder.Checked;
         };
 
-        DarkTheme.AddLabel(page, "Border Color:", 15, y += 40);
-        _cboPipBorderColor = DarkTheme.AddComboBox(page, 15, y += 22, 120, new[] { "Green", "Blue", "Red", "Black" });
+        DarkTheme.AddCardLabel(cardLook, "Color:", 310, 35);
+        _cboPipBorderColor = DarkTheme.AddCardComboBox(cardLook, 350, 33, 90, new[] { "Green", "Blue", "Red", "Black" });
 
-        DarkTheme.AddLabel(page, "Max PiP Windows:", 200, y - 22);
-        _nudPipMaxWindows = DarkTheme.AddNumeric(page, 200, y, 60, 3, 1, 3);
+        DarkTheme.AddCardHint(cardLook, "245 = near-opaque. Border highlights active PiP on hover.", 10, 65);
 
         return page;
     }
@@ -690,16 +691,19 @@ public class SettingsForm : Form
     private TabPage BuildCharactersTab()
     {
         var page = DarkTheme.MakeTabPage("Characters");
-        int y = 15;
+        int y = 8;
+
+        // ─── Character Profiles card ─────────────────────────────
+        var cardChars = DarkTheme.MakeCard(page, "🧙", "Character Profiles", DarkTheme.CardPurple, 10, y, 480, 320);
 
         _charListView = new ListView
         {
-            Location = new Point(15, y),
-            Size = new Size(440, 250),
+            Location = new Point(10, 32),
+            Size = new Size(460, 240),
             View = View.Details,
             FullRowSelect = true,
             GridLines = true,
-            BackColor = Color.FromArgb(50, 50, 50),
+            BackColor = DarkTheme.BgInput,
             ForeColor = DarkTheme.FgWhite,
             BorderStyle = BorderStyle.FixedSingle,
             HeaderStyle = ColumnHeaderStyle.Nonclickable
@@ -708,19 +712,15 @@ public class SettingsForm : Form
         _charListView.Columns.Add("Class", 100);
         _charListView.Columns.Add("Slot", 50);
         _charListView.Columns.Add("Affinity", 100);
-        page.Controls.Add(_charListView);
+        cardChars.Controls.Add(_charListView);
 
-        var btnExport = DarkTheme.MakeButton("Export...", DarkTheme.BgMedium, 15, 275);
-        btnExport.Size = new Size(90, 30);
+        var btnExport = DarkTheme.AddCardButton(cardChars, "📤 Export...", 10, 280, 100);
         btnExport.Click += (_, _) => ExportCharacters();
-        page.Controls.Add(btnExport);
 
-        var btnImport = DarkTheme.MakeButton("Import...", DarkTheme.BgMedium, 115, 275);
-        btnImport.Size = new Size(90, 30);
+        var btnImport = DarkTheme.AddCardButton(cardChars, "📥 Import...", 120, 280, 100);
         btnImport.Click += (_, _) => ImportCharacters();
-        page.Controls.Add(btnImport);
 
-        DarkTheme.AddHint(page, "Export/Import character profiles as JSON files", 220, 283);
+        DarkTheme.AddCardHint(cardChars, "Export/Import character profiles as JSON files", 230, 286);
 
         return page;
     }
@@ -808,14 +808,52 @@ public class SettingsForm : Form
                 AutoSize = false,
                 Size = new Size(400, 40),
                 Location = new Point(25, 100),
-                ForeColor = Color.FromArgb(150, 150, 150),
-                BackColor = Color.FromArgb(50, 50, 50),
+                ForeColor = DarkTheme.FgDimGray,
+                BackColor = DarkTheme.BgInput,
                 TextAlign = ContentAlignment.MiddleCenter,
                 Font = new Font("Segoe UI", 9, FontStyle.Italic)
             };
             _charListView.Controls.Add(_charEmptyHint);
         }
         _charEmptyHint.Visible = _pendingCharacters.Count == 0;
+    }
+
+    // ─── Shared Hotkey Handler ──────────────────────────────────
+
+    /// <summary>
+    /// Shared KeyDown handler for all hotkey TextBoxes. Suppresses beep,
+    /// captures modifier+key combos, formats as "Ctrl+Alt+K" strings.
+    /// </summary>
+    private void HotkeyBoxKeyDown(object? sender, KeyEventArgs e)
+    {
+        e.SuppressKeyPress = true;
+
+        // Ignore standalone modifiers
+        if (e.KeyCode is Keys.ShiftKey or Keys.ControlKey or Keys.Menu or Keys.LMenu or Keys.RMenu
+            or Keys.LShiftKey or Keys.RShiftKey or Keys.LControlKey or Keys.RControlKey)
+            return;
+
+        // Delete/Backspace clears the field
+        if (e.KeyCode is Keys.Delete or Keys.Back && !e.Control && !e.Alt && !e.Shift)
+        {
+            if (sender is TextBox tb) tb.Text = "";
+            return;
+        }
+
+        var parts = new List<string>();
+        if (e.Control) parts.Add("Ctrl");
+        if (e.Alt) parts.Add("Alt");
+        if (e.Shift) parts.Add("Shift");
+
+        string keyName = e.KeyCode switch
+        {
+            Keys.OemPipe or Keys.OemBackslash => "\\",
+            Keys.OemCloseBrackets => "]",
+            Keys.OemOpenBrackets => "[",
+            _ => e.KeyCode.ToString()
+        };
+        parts.Add(keyName);
+        if (sender is TextBox box) box.Text = string.Join("+", parts);
     }
 
     // ─── Config I/O ───────────────────────────────────────────────
