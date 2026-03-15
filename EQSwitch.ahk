@@ -2634,7 +2634,7 @@ LaunchBoth(*) {
     ; Async launch: each client launched via timer, UI stays responsive
     DoNextLaunch() {
         launchIdx++
-        ToolTip("🎮 Launching client " launchIdx " of " count "...")
+        ShowTip("🎮 Launching client " launchIdx " of " count "...", 5000)
         try {
             Run('"' launchExe '" ' launchArgs, eqDir, , &newPid)
             pids.Push(newPid)
@@ -2650,7 +2650,7 @@ LaunchBoth(*) {
             ApplyLaunchSettings()
             ; Re-apply after 10s — EQ may reset affinity during its startup sequence
             SetTimer(ApplyLaunchSettings, -10000)
-            ToolTip("🎮 Waiting for windows to settle...")
+            ShowTip("🎮 All clients launched!", 3000)
             SetTimer(DoFinalize, -fixWait)
         }
     }
@@ -2659,7 +2659,7 @@ LaunchBoth(*) {
         global g_launchActive, FIX_MODE
         ; Only auto-arrange in multimonitor mode — single screen lets EQ use eqclient.ini positioning
         if (launchFixMode = "multimonitor") {
-            ToolTip("🪟 Arranging windows...")
+            ShowTip("🪟 Arranging windows...", 3000)
             savedMode := FIX_MODE
             FIX_MODE := launchFixMode
             FixWindows()
