@@ -2,6 +2,16 @@
 
 All notable changes to EQ Switch are documented here.
 
+## v2.3 — 2026-03-15
+
+### New Features
+- **Reset Defaults button** in Video Settings GUI — resets resolution to 1920×1009, offsets to 0, WindowedMode on, cleans stale .tmp files
+- **Reset Defaults button** in Process Manager GUI — resets priority to Normal, affinity to all cores
+
+### Bug Fixes
+- **Minimized windows recovered** — SwitchWindow and FocusEQ hotkeys now WinRestore minimized EQ windows before activating them, preventing stuck-in-taskbar issues
+- **Sticky tooltips** — launch flow tooltips ("Launching client...", "Waiting for windows to settle...") no longer stay on screen forever; switched to auto-dismissing ShowTip
+
 ## v2.2 — 2026-03-12
 
 ### Fixed

@@ -24,7 +24,7 @@ AppCleanup(reason, code) {
     return 0  ; allow exit
 }
 
-g_version        := "2.2"
+g_version        := "2.3"
 CFG_FILE         := A_ScriptDir "\eqswitch.cfg"
 EQ_TITLE         := "ahk_exe eqgame.exe"
 SETTINGS_OPEN    := false
