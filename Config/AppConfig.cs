@@ -33,15 +33,38 @@ public class AppConfig
     // Characters
     public List<CharacterProfile> Characters { get; set; } = new();
 
+    // Video
+    public List<string> CustomVideoPresets { get; set; } = new();
+
     // Paths
     public string GinaPath { get; set; } = "";
     public string NotesPath { get; set; } = "";
+
+    // Tray Click Actions
+    public TrayClickConfig TrayClick { get; set; } = new();
 
     // Misc
     public bool ShowTooltipErrors { get; set; } = true;
     public bool MinimizeToTray { get; set; } = true;
     public bool RunAtStartup { get; set; } = false;
     public int PollingIntervalMs { get; set; } = 500;
+
+    /// <summary>Duration in ms for floating tooltips (default 3000ms).</summary>
+    public int TooltipDurationMs { get; set; } = 3000;
+
+    /// <summary>Show help tooltip when Ctrl+hovering the tray icon.</summary>
+    public bool CtrlHoverHelp { get; set; } = true;
+
+    /// <summary>
+    /// When true, sets Log=FALSE in eqclient.ini [Defaults] section.
+    /// Prevents EQ from writing large log files to disk.
+    /// </summary>
+    public bool DisableEQLog { get; set; } = false;
+
+    /// <summary>
+    /// Persistent eqclient.ini overrides — applied on every save/launch.
+    /// </summary>
+    public EQClientIniConfig EQClientIni { get; set; } = new();
 
     /// <summary>
     /// Clamp all numeric values to safe ranges. Call after deserialization
@@ -174,6 +197,11 @@ public class HotkeyConfig
     public string LaunchAll { get; set; } = "";
 
     public bool MultiMonitorEnabled { get; set; } = false;
+
+    /// <summary>
+    /// Switch key behavior: "swapLast" (Alt+Tab style, swap between last two) or "cycleAll" (round-robin).
+    /// </summary>
+    public string SwitchKeyMode { get; set; } = "swapLast";
 }
 
 public class LaunchConfig
@@ -265,6 +293,40 @@ public class ThrottleConfig
     public int CycleIntervalMs { get; set; } = 100;
 }
 
+public class TrayClickConfig
+{
+    /// <summary>
+    /// Action for single left-click on tray icon.
+    /// Values: "None", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp"
+    /// </summary>
+    public string SingleClick { get; set; } = "None";
+
+    /// <summary>
+    /// Action for double left-click on tray icon.
+    /// </summary>
+    public string DoubleClick { get; set; } = "LaunchOne";
+
+    /// <summary>
+    /// Action for triple left-click on tray icon.
+    /// </summary>
+    public string TripleClick { get; set; } = "LaunchAll";
+
+    /// <summary>
+    /// Action for single middle-click on tray icon.
+    /// </summary>
+    public string MiddleClick { get; set; } = "TogglePiP";
+
+    /// <summary>
+    /// Action for double middle-click on tray icon.
+    /// </summary>
+    public string MiddleDoubleClick { get; set; } = "None";
+
+    /// <summary>
+    /// Action for triple middle-click on tray icon.
+    /// </summary>
+    public string MiddleTripleClick { get; set; } = "None";
+}
+
 public class CharacterProfile
 {
     public string Name { get; set; } = "";
@@ -280,4 +342,146 @@ public class CharacterProfile
 
     [JsonIgnore]
     public string DisplayName => string.IsNullOrEmpty(Class) ? Name : $"{Name} ({Class})";
+}
+
+/// <summary>
+/// Persistent eqclient.ini overrides.
+/// When a setting is enabled here, EQSwitch enforces it in eqclient.ini on save.
+/// </summary>
+public class EQClientIniConfig
+{
+    /// <summary>Disable all EQ sound (Sound=FALSE in [Defaults]).</summary>
+    public bool DisableSound { get; set; } = false;
+
+    /// <summary>Disable music (Music=0 in [Defaults]). 0 = off, 1 = on.</summary>
+    public bool DisableMusic { get; set; } = false;
+
+    /// <summary>Sound volume (SoundVolume in [Defaults]). 0 = mute, range 0-100. -1 = don't override.</summary>
+    public int SoundVolume { get; set; } = -1;
+
+    /// <summary>Disable environment sounds (EnvSounds=0 in [Defaults]).</summary>
+    public bool DisableEnvSounds { get; set; } = false;
+
+    /// <summary>Disable combat music (CombatMusic=0 in [Defaults]).</summary>
+    public bool DisableCombatMusic { get; set; } = false;
+
+    /// <summary>Disable Windows auto-ducking of EQ audio (AllowAutoDuck=0 in [Defaults]).</summary>
+    public bool DisableAutoDuck { get; set; } = false;
+
+    /// <summary>Set sky update interval in ms (SkyUpdateInterval=60000 in [Defaults]).</summary>
+    public bool SlowSkyUpdates { get; set; } = false;
+
+    /// <summary>Disable sky rendering (Sky=0 in [Defaults]). Performance boost.</summary>
+    public bool DisableSky { get; set; } = false;
+
+    /// <summary>Enable persistent bard songs (BardSongs=1 in [Defaults]).</summary>
+    public bool BardSongs { get; set; } = false;
+
+    /// <summary>Enable bard songs on pets (BardSongsOnPets=1 in [Defaults]).</summary>
+    public bool BardSongsOnPets { get; set; } = false;
+
+    /// <summary>Shadow clip plane distance (ShadowClipPlane in [Defaults]). 0 = don't override.</summary>
+    public int ShadowClipPlane { get; set; } = 0;
+
+    /// <summary>Actor clip plane distance (ActorClipPlane in [Defaults]). 0 = don't override.</summary>
+    public int ActorClipPlane { get; set; } = 0;
+
+    /// <summary>Auto-attack when assisting (AttackOnAssist=TRUE in [Defaults]).</summary>
+    public bool AttackOnAssist { get; set; } = false;
+
+    /// <summary>Show inspect message (ShowInspectMessage=TRUE in [Defaults]).</summary>
+    public bool ShowInspectMessage { get; set; } = false;
+
+    /// <summary>Show grass (ShowGrass=TRUE in [Defaults]).</summary>
+    public bool ShowGrass { get; set; } = false;
+
+    /// <summary>Show ping bar / network stats (NetStat=TRUE in [Defaults]).</summary>
+    public bool NetStat { get; set; } = false;
+
+    /// <summary>Auto-update tracking window position (TrackAutoUpdate=TRUE in [Defaults]).</summary>
+    public bool TrackAutoUpdate { get; set; } = false;
+
+    /// <summary>Target Group Buff (TargetGroupBuff=1 in [Defaults]).</summary>
+    public bool TargetGroupBuff { get; set; } = false;
+
+    /// <summary>Disable mip-mapping (MipMapping=FALSE in [Defaults]).</summary>
+    public bool DisableMipMapping { get; set; } = false;
+
+    /// <summary>Enable texture cache (TextureCache=TRUE in [Defaults]).</summary>
+    public bool TextureCache { get; set; } = false;
+
+    /// <summary>Use D3D texture compression (UseD3DTextureCompression=TRUE in [Defaults]).</summary>
+    public bool UseD3DTextureCompression { get; set; } = false;
+
+    /// <summary>Disable dynamic lights (ShowDynamicLights=FALSE in [Defaults]).</summary>
+    public bool DisableDynamicLights { get; set; } = false;
+
+    /// <summary>Use lit batches (UseLitBatches=TRUE in [Defaults]).</summary>
+    public bool UseLitBatches { get; set; } = false;
+
+    /// <summary>Disable inspect others (InspectOthers=FALSE in [Defaults]).</summary>
+    public bool DisableInspectOthers { get; set; } = false;
+
+    /// <summary>Anonymous mode (Anonymous=1 in [Defaults]).</summary>
+    public bool Anonymous { get; set; } = false;
+
+    /// <summary>Clip plane distance (ClipPlane in [Defaults]). 0 = don't override.</summary>
+    public int ClipPlane { get; set; } = 0;
+
+    /// <summary>Mouse sensitivity (MouseSensitivity in [Defaults]). -1 = don't override.</summary>
+    public int MouseSensitivity { get; set; } = -1;
+
+    /// <summary>Disable loot all confirmation (LootAllConfirm=0 in [Defaults]).</summary>
+    public bool DisableLootAllConfirm { get; set; } = false;
+
+    /// <summary>Confirm raid invites (RaidInviteConfirm=1 in [Defaults]).</summary>
+    public bool RaidInviteConfirm { get; set; } = false;
+
+    /// <summary>Disable AA confirmation dialog (AANoConfirm=0 in [Defaults]).</summary>
+    public bool AANoConfirm { get; set; } = false;
+
+    /// <summary>Disable chat server (ChatServerPort=0 in [Defaults]). Disables the built-in chat channel server.</summary>
+    public bool DisableChatServer { get; set; } = false;
+
+    /// <summary>Force windowed mode (WindowedMode=TRUE in [VideoMode]).</summary>
+    public bool ForceWindowedMode { get; set; } = false;
+
+    /// <summary>Max foreground FPS (MaxFPS in [Defaults]). 0 = don't override.</summary>
+    public int MaxFPS { get; set; } = 0;
+
+    /// <summary>Max background FPS (MaxBGFPS in [Defaults]). 0 = don't override.</summary>
+    public int MaxBGFPS { get; set; } = 0;
+
+    /// <summary>
+    /// Luclin model overrides. Key = INI key name, Value = TRUE/FALSE.
+    /// Stored in [Defaults] section of eqclient.ini.
+    /// </summary>
+    public Dictionary<string, bool> ModelOverrides { get; set; } = new();
+
+    /// <summary>
+    /// Chat spam filter overrides. Key = INI key name (e.g. "BadWord", "Spam"),
+    /// Value = 0 or 1. Stored in [Defaults] section of eqclient.ini.
+    /// </summary>
+    public Dictionary<string, int> ChatSpamOverrides { get; set; } = new();
+
+    /// <summary>
+    /// Particle/opacity overrides. Key = INI key name, Value = string representation.
+    /// Stored in [Defaults] section of eqclient.ini.
+    /// Floats stored as "0.000000" format, ints as "1", bools as "true"/"false".
+    /// </summary>
+    public Dictionary<string, string> ParticleOverrides { get; set; } = new();
+
+    /// <summary>
+    /// Video mode overrides. Key = INI key name, Value = string representation.
+    /// Stored in [VideoMode] section of eqclient.ini.
+    /// </summary>
+    public Dictionary<string, string> VideoModeOverrides { get; set; } = new();
+
+    /// <summary>
+    /// Tracks which main-form settings the user has explicitly saved.
+    /// EnforceOverrides only writes keys in this set — prevents clobbering
+    /// manual INI edits for settings the user never touched in EQSwitch.
+    /// Empty on fresh install = nothing enforced until first Save.
+    /// </summary>
+    public HashSet<string> ConfiguredKeys { get; set; } = new();
 }

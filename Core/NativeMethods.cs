@@ -87,6 +87,17 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr GetModuleHandle(string? lpModuleName);
 
+    // ─── Focus Helpers ────────────────────────────────────────────
+
+    [DllImport("user32.dll")]
+    public static extern bool BringWindowToTop(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetCurrentThreadId();
+
     // ─── Window State ──────────────────────────────────────────────
 
     [DllImport("user32.dll")]

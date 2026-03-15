@@ -9,7 +9,7 @@ public class TrayManager : IDisposable
     // ─── Constants ───────────────────────────────────────────────────
     private const int MultiMonToggleDebounceMs = 500;
     private const int AffinityPollIntervalMs = 250;
-    private const int TripleClickWindowMs = 500;
+    private const int ClickResolveDelayMs = 350; // Wait this long after last click to resolve action
 
     private readonly AppConfig _config;
     private readonly ProcessManager _processManager;
@@ -39,9 +39,15 @@ public class TrayManager : IDisposable
     // Process Manager (single-instance)
     private ProcessManagerForm? _processManagerForm;
 
-    // Triple-click detection
+    // Tray click detection (single/double/triple with delayed resolution)
     private int _trayClickCount;
-    private long _trayFirstClickTick;
+    private int _trayMiddleClickCount;
+    private System.Windows.Forms.Timer? _clickResolveTimer;
+    private System.Windows.Forms.Timer? _middleClickResolveTimer;
+
+    // Track last two active clients for swap-last-two mode
+    private IntPtr _lastActiveHandle;
+    private IntPtr _previousActiveHandle;
 
     public TrayManager(AppConfig config, ProcessManager processManager)
     {
@@ -64,11 +70,16 @@ public class TrayManager : IDisposable
             Visible = true
         };
 
-        // Tray click events
+        // Tray click events — delayed resolution for clean single/double/triple
         _trayIcon.MouseClick += OnTrayMouseClick;
-        _trayIcon.MouseDoubleClick += (_, e) =>
+
+        // Ctrl+hover help — event-driven, zero CPU when not hovering
+        _trayIcon.MouseMove += (_, e) =>
         {
-            if (e.Button == MouseButtons.Left) OnLaunchOne();
+            if (_config.CtrlHoverHelp && (Control.ModifierKeys & Keys.Control) != 0)
+            {
+                ShowHelpTooltip();
+            }
         };
 
         BuildContextMenu();
@@ -112,6 +123,21 @@ public class TrayManager : IDisposable
         FileLogger.Info($"Startup: {cores} cores detected, system mask 0x{sysMask:X}");
 
         ShowBalloon("EQSwitch started. Watching for EQ clients...");
+    }
+
+    /// <summary>
+    /// Opens Settings form after a short delay. Called from Program.cs on first run.
+    /// </summary>
+    public void OpenSettingsAfterDelay(int delayMs = 1500)
+    {
+        var timer = new System.Windows.Forms.Timer { Interval = delayMs };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+            ShowSettings();
+        };
+        timer.Start();
     }
 
     // ─── Hotkey Registration ─────────────────────────────────────────
@@ -209,7 +235,7 @@ public class TrayManager : IDisposable
     }
 
     /// <summary>
-    /// Switch Key ('\'):  Cycle to the next EQ client.
+    /// Switch Key ('\'):  Swap between last two clients (default) or cycle all.
     /// Only fires when an EQ window is already focused (enforced by KeyboardHookManager filter).
     /// </summary>
     private void OnSwitchKey()
@@ -218,13 +244,35 @@ public class TrayManager : IDisposable
         var clients = _processManager.Clients;
         if (clients.Count < 2)
         {
-            FileLogger.Info("SwitchKey: fewer than 2 clients, nothing to cycle");
+            FileLogger.Info("SwitchKey: fewer than 2 clients, nothing to switch");
             return;
         }
 
-        var next = _windowManager.CycleNext(clients, current);
-        if (next != null)
-            FileLogger.Info($"SwitchKey: cycled to {next}");
+        if (_config.Hotkeys.SwitchKeyMode == "swapLast")
+        {
+            // Alt+Tab style: swap to the previous active client
+            if (_previousActiveHandle != IntPtr.Zero)
+            {
+                var target = clients.FirstOrDefault(c => c.WindowHandle == _previousActiveHandle);
+                if (target != null)
+                {
+                    _windowManager.SwitchToClient(target);
+                    FileLogger.Info($"SwitchKey: swapped to last active {target}");
+                    return;
+                }
+            }
+            // Fallback to cycle if no previous client tracked
+            var next = _windowManager.CycleNext(clients, current);
+            if (next != null)
+                FileLogger.Info($"SwitchKey: cycled (no previous tracked) to {next}");
+        }
+        else
+        {
+            // Cycle through all clients round-robin
+            var next = _windowManager.CycleNext(clients, current);
+            if (next != null)
+                FileLogger.Info($"SwitchKey: cycled to {next}");
+        }
     }
 
     /// <summary>
@@ -340,6 +388,13 @@ public class TrayManager : IDisposable
             _affinityManager.ApplyAffinityRules(clients, active);
             _throttleManager.UpdateClients(clients, active);
 
+            // Track last two active clients for swap-last-two mode
+            if (active != null && active.WindowHandle != _lastActiveHandle)
+            {
+                _previousActiveHandle = _lastActiveHandle;
+                _lastActiveHandle = active.WindowHandle;
+            }
+
             // Update PiP sources when foreground changes
             if (_pipOverlay != null && !_pipOverlay.IsDisposed)
             {
@@ -378,12 +433,41 @@ public class TrayManager : IDisposable
     private void BuildContextMenu()
     {
         _contextMenu = new ContextMenuStrip();
+        _contextMenu.Renderer = new DarkMenuRenderer();
 
         var hk = _config.Hotkeys;
         string HkSuffix(string key) => string.IsNullOrEmpty(key) ? "" : $"\t{key}";
 
-        _contextMenu.Items.Add($"Fix Windows{HkSuffix(hk.ArrangeWindows)}", null, (_, _) => OnArrangeWindows());
-        _contextMenu.Items.Add("Swap Windows", null, (_, _) =>
+        _boldMenuFont?.Dispose();
+        _boldMenuFont = new Font(_contextMenu.Font, FontStyle.Bold);
+
+        // Title bar
+        var titleItem = new ToolStripMenuItem("\u2694  EQ Switch v2.3.0  \u2694") { Enabled = false, Font = _boldMenuFont };
+        _contextMenu.Items.Add(titleItem);
+        _contextMenu.Items.Add(new ToolStripSeparator());
+
+        var launchOneItem = new ToolStripMenuItem($"\u2694  Launch Client{HkSuffix(hk.LaunchOne)}") { Font = _boldMenuFont };
+        launchOneItem.Click += (_, _) => OnLaunchOne();
+        _contextMenu.Items.Add(launchOneItem);
+
+        var launchAllItem = new ToolStripMenuItem($"\uD83C\uDFAE  Launch All ({_config.Launch.NumClients}){HkSuffix(hk.LaunchAll)}") { Font = _boldMenuFont };
+        launchAllItem.Click += (_, _) => OnLaunchAll();
+        _contextMenu.Items.Add(launchAllItem);
+
+        _contextMenu.Items.Add(new ToolStripSeparator());
+
+        _clientsMenu = new ToolStripMenuItem("\uD83D\uDC64  Clients");
+        _clientsMenu.DropDownItems.Add("(scanning...)");
+        _contextMenu.Items.Add(_clientsMenu);
+
+        _contextMenu.Items.Add(new ToolStripSeparator());
+
+        _contextMenu.Items.Add("\u26A1  Process Manager", null, (_, _) => ShowProcessManager());
+
+        // Video Settings submenu
+        var videoMenu = new ToolStripMenuItem("\uD83D\uDCFA  Video Settings");
+        videoMenu.DropDownItems.Add($"\uD83E\uDE9F  Fix Windows{HkSuffix(hk.ArrangeWindows)}", null, (_, _) => OnArrangeWindows());
+        videoMenu.DropDownItems.Add("\uD83D\uDD04  Swap Windows", null, (_, _) =>
         {
             var clients = _processManager.Clients;
             if (clients.Count < 2)
@@ -394,60 +478,115 @@ public class TrayManager : IDisposable
             _windowManager.SwapWindows(clients);
             ShowBalloon($"Swapped {clients.Count} window positions");
         });
-        _contextMenu.Items.Add(new ToolStripSeparator());
-
-        _boldMenuFont?.Dispose();
-        _boldMenuFont = new Font(_contextMenu.Font, FontStyle.Bold);
-
-        var launchOneItem = new ToolStripMenuItem($"Launch Client{HkSuffix(hk.LaunchOne)}") { Font = _boldMenuFont };
-        launchOneItem.Click += (_, _) => OnLaunchOne();
-        _contextMenu.Items.Add(launchOneItem);
-
-        var launchAllItem = new ToolStripMenuItem($"Launch All ({_config.Launch.NumClients}){HkSuffix(hk.LaunchAll)}") { Font = _boldMenuFont };
-        launchAllItem.Click += (_, _) => OnLaunchAll();
-        _contextMenu.Items.Add(launchAllItem);
-
-        _contextMenu.Items.Add(new ToolStripSeparator());
-        _contextMenu.Items.Add("Toggle PiP", null, (_, _) => TogglePip());
-        _contextMenu.Items.Add("Refresh Clients", null, (_, _) =>
-        {
-            _processManager.RefreshClients();
-            ShowBalloon($"Found {_processManager.ClientCount} EQ client(s)");
-        });
-        _contextMenu.Items.Add(new ToolStripSeparator());
-
-        _clientsMenu = new ToolStripMenuItem("Clients");
-        _clientsMenu.DropDownItems.Add("(scanning...)");
-        _contextMenu.Items.Add(_clientsMenu);
-
-        _contextMenu.Items.Add(new ToolStripSeparator());
-        _contextMenu.Items.Add("Process Manager", null, (_, _) => ShowProcessManager());
-        _contextMenu.Items.Add("Force Apply Affinity", null, (_, _) =>
-        {
-            _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient());
-            ShowBalloon("Affinity rules re-applied to all clients");
-        });
-        _contextMenu.Items.Add(new ToolStripSeparator());
-
-        // Files submenu
-        var filesMenu = new ToolStripMenuItem("Files");
-        filesMenu.DropDownItems.Add("Open Log File...", null, (_, _) => FileOperations.OpenLogFile(_config, ShowBalloon));
-        filesMenu.DropDownItems.Add("Open eqclient.ini", null, (_, _) => FileOperations.OpenEqClientIni(_config, ShowBalloon));
-        filesMenu.DropDownItems.Add(new ToolStripSeparator());
-        filesMenu.DropDownItems.Add("Open GINA", null, (_, _) => FileOperations.OpenGina(_config, ShowBalloon));
-        filesMenu.DropDownItems.Add("Open Notes", null, (_, _) => FileOperations.OpenNotes(_config, ShowBalloon));
-        _contextMenu.Items.Add(filesMenu);
-
-        _contextMenu.Items.Add("Settings", null, (_, _) => ShowSettings());
-        _contextMenu.Items.Add("Video Settings", null, (_, _) =>
+        videoMenu.DropDownItems.Add("\uD83D\uDCFA  Toggle PiP", null, (_, _) => TogglePip());
+        videoMenu.DropDownItems.Add(new ToolStripSeparator());
+        videoMenu.DropDownItems.Add("\uD83D\uDCDD  Edit eqclient.ini...", null, (_, _) =>
         {
             using var form = new VideoSettingsForm(_config);
             form.ShowDialog();
         });
+        _contextMenu.Items.Add(videoMenu);
+
+        // CPU Affinity submenu
+        var (coreCount, _) = AffinityManager.DetectCores();
+        var affinityMenu = new ToolStripMenuItem("\uD83E\uDDE0  CPU Affinity");
+        var affinityEnabledItem = new ToolStripMenuItem(_config.Affinity.Enabled ? "\u2705  Enabled" : "\u2B1C  Disabled")
+        {
+            Checked = _config.Affinity.Enabled,
+            CheckOnClick = true
+        };
+        affinityEnabledItem.CheckedChanged += (_, _) =>
+        {
+            _config.Affinity.Enabled = affinityEnabledItem.Checked;
+            affinityEnabledItem.Text = affinityEnabledItem.Checked ? "\u2705  Enabled" : "\u2B1C  Disabled";
+            ConfigManager.Save(_config);
+            if (affinityEnabledItem.Checked)
+            {
+                _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient());
+                ShowBalloon("CPU affinity enabled");
+            }
+            else
+            {
+                ShowBalloon("CPU affinity disabled");
+            }
+        };
+        affinityMenu.DropDownItems.Add(affinityEnabledItem);
+        affinityMenu.DropDownItems.Add(new ToolStripSeparator());
+
+        // Active priority selector
+        var activePriorityMenu = new ToolStripMenuItem("Active Priority");
+        foreach (var priority in new[] { "High", "AboveNormal", "Normal" })
+        {
+            var p = priority;
+            var item = new ToolStripMenuItem(p)
+            {
+                Checked = _config.Affinity.ActivePriority.Equals(p, StringComparison.OrdinalIgnoreCase)
+            };
+            item.Click += (sender, _) =>
+            {
+                // Update checkmarks
+                foreach (ToolStripMenuItem sibling in activePriorityMenu.DropDownItems)
+                    sibling.Checked = false;
+                ((ToolStripMenuItem)sender!).Checked = true;
+
+                _config.Affinity.ActivePriority = p;
+                ConfigManager.Save(_config);
+                _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient());
+                ShowBalloon($"Active priority: {p}");
+            };
+            activePriorityMenu.DropDownItems.Add(item);
+        }
+        affinityMenu.DropDownItems.Add(activePriorityMenu);
+
+        // Background priority selector
+        var bgPriorityMenu = new ToolStripMenuItem("Background Priority");
+        foreach (var priority in new[] { "Normal", "BelowNormal", "Idle" })
+        {
+            var p = priority;
+            var item = new ToolStripMenuItem(p)
+            {
+                Checked = _config.Affinity.BackgroundPriority.Equals(p, StringComparison.OrdinalIgnoreCase)
+            };
+            item.Click += (sender, _) =>
+            {
+                // Update checkmarks
+                foreach (ToolStripMenuItem sibling in bgPriorityMenu.DropDownItems)
+                    sibling.Checked = false;
+                ((ToolStripMenuItem)sender!).Checked = true;
+
+                _config.Affinity.BackgroundPriority = p;
+                ConfigManager.Save(_config);
+                _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient());
+                ShowBalloon($"Background priority: {p}");
+            };
+            bgPriorityMenu.DropDownItems.Add(item);
+        }
+        affinityMenu.DropDownItems.Add(bgPriorityMenu);
+
+        affinityMenu.DropDownItems.Add(new ToolStripSeparator());
+
+        // Info labels showing current masks (edit in Settings → Affinity tab)
+        var activeMaskLabel = new ToolStripMenuItem($"Active Cores: 0x{_config.Affinity.ActiveMask:X}") { Enabled = false };
+        var bgMaskLabel = new ToolStripMenuItem($"Background Cores: 0x{_config.Affinity.BackgroundMask:X}") { Enabled = false };
+        affinityMenu.DropDownItems.Add(activeMaskLabel);
+        affinityMenu.DropDownItems.Add(bgMaskLabel);
+
+        affinityMenu.DropDownItems.Add(new ToolStripSeparator());
+        affinityMenu.DropDownItems.Add("Force Re-Apply", null, (_, _) =>
+        {
+            _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient());
+            ShowBalloon("Affinity rules re-applied to all clients");
+        });
+        _contextMenu.Items.Add(affinityMenu);
+
         _contextMenu.Items.Add(new ToolStripSeparator());
 
-        // Run at startup toggle
-        var startupItem = new ToolStripMenuItem("Run at Startup")
+        // Settings submenu
+        var settingsMenu = new ToolStripMenuItem("\u2699  Settings");
+        settingsMenu.DropDownItems.Add("\u2753  Help", null, (_, _) => HelpForm.Show(_config));
+        settingsMenu.DropDownItems.Add(new ToolStripSeparator());
+        settingsMenu.DropDownItems.Add("Create Desktop Shortcut", null, (_, _) => StartupManager.CreateDesktopShortcut(ShowBalloon));
+        var startupItem = new ToolStripMenuItem(_config.RunAtStartup ? "\u2705  Run at Startup" : "\u2B1C  Run at Startup")
         {
             Checked = _config.RunAtStartup,
             CheckOnClick = true
@@ -455,22 +594,32 @@ public class TrayManager : IDisposable
         startupItem.CheckedChanged += (_, _) =>
         {
             _config.RunAtStartup = startupItem.Checked;
+            startupItem.Text = startupItem.Checked ? "\u2705  Run at Startup" : "\u2B1C  Run at Startup";
             StartupManager.SetRunAtStartup(startupItem.Checked);
             ConfigManager.Save(_config);
         };
-        _contextMenu.Items.Add(startupItem);
-        _contextMenu.Items.Add("Create Desktop Shortcut", null, (_, _) => StartupManager.CreateDesktopShortcut(ShowBalloon));
+        settingsMenu.DropDownItems.Add(startupItem);
+        settingsMenu.DropDownItems.Add(new ToolStripSeparator());
+        settingsMenu.DropDownItems.Add("\u2699  Settings...", null, (_, _) => ShowSettings());
+        _contextMenu.Items.Add(settingsMenu);
 
-        // Links submenu
-        var linksMenu = new ToolStripMenuItem("Links");
-        linksMenu.DropDownItems.Add("Shards Wiki", null, (_, _) => FileOperations.OpenUrl("https://wiki.shardsofdalaya.com/wiki/Main_Page"));
-        linksMenu.DropDownItems.Add("Dalaya Wiki", null, (_, _) => FileOperations.OpenUrl("https://wiki.dalaya.org/"));
-        linksMenu.DropDownItems.Add("Fomelo Dalaya", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/fomelo/"));
-        _contextMenu.Items.Add(linksMenu);
+        // Launcher submenu (files + links)
+        var launcherMenu = new ToolStripMenuItem("\uD83D\uDCC2  Launcher");
+        var linksMenu = new ToolStripMenuItem("\uD83C\uDF10  Links");
+        linksMenu.DropDownItems.Add("\uD83D\uDDE1  Shards Wiki", null, (_, _) => FileOperations.OpenUrl("https://wiki.shardsofdalaya.com/wiki/Main_Page"));
+        linksMenu.DropDownItems.Add("\uD83D\uDCD6  Dalaya Wiki", null, (_, _) => FileOperations.OpenUrl("https://wiki.dalaya.org/"));
+        linksMenu.DropDownItems.Add("\uD83C\uDFC6  Fomelo Dalaya", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/fomelo/"));
+        launcherMenu.DropDownItems.Add(linksMenu);
+        launcherMenu.DropDownItems.Add(new ToolStripSeparator());
+        launcherMenu.DropDownItems.Add("\uD83D\uDCDC  Open Log File...", null, (_, _) => FileOperations.OpenLogFile(_config, ShowBalloon));
+        launcherMenu.DropDownItems.Add("\uD83D\uDCC4  Open eqclient.ini", null, (_, _) => FileOperations.OpenEqClientIni(_config, ShowBalloon));
+        launcherMenu.DropDownItems.Add(new ToolStripSeparator());
+        launcherMenu.DropDownItems.Add("\uD83C\uDFAF  Open GINA", null, (_, _) => FileOperations.OpenGina(_config, ShowBalloon));
+        launcherMenu.DropDownItems.Add("\uD83D\uDCDD  Open Notes", null, (_, _) => FileOperations.OpenNotes(_config, ShowBalloon));
+        _contextMenu.Items.Add(launcherMenu);
 
-        _contextMenu.Items.Add("Help", null, (_, _) => HelpForm.Show(_config));
         _contextMenu.Items.Add(new ToolStripSeparator());
-        _contextMenu.Items.Add("Exit", null, (_, _) => Shutdown());
+        _contextMenu.Items.Add("\u2716  Exit", null, (_, _) => Shutdown());
 
         _trayIcon!.ContextMenuStrip = _contextMenu;
     }
@@ -485,6 +634,12 @@ public class TrayManager : IDisposable
         if (clients.Count == 0)
         {
             _clientsMenu.DropDownItems.Add("(no clients detected)");
+            _clientsMenu.DropDownItems.Add(new ToolStripSeparator());
+            _clientsMenu.DropDownItems.Add("\uD83D\uDD04  Refresh", null, (_, _) =>
+            {
+                _processManager.RefreshClients();
+                ShowBalloon($"Found {_processManager.ClientCount} EQ client(s)");
+            });
             return;
         }
 
@@ -495,6 +650,14 @@ public class TrayManager : IDisposable
             item.Click += (_, _) => _windowManager.SwitchToClient(c);
             _clientsMenu.DropDownItems.Add(item);
         }
+
+        // Separator + Refresh at bottom
+        _clientsMenu.DropDownItems.Add(new ToolStripSeparator());
+        _clientsMenu.DropDownItems.Add("\uD83D\uDD04  Refresh", null, (_, _) =>
+        {
+            _processManager.RefreshClients();
+            ShowBalloon($"Found {_processManager.ClientCount} EQ client(s)");
+        });
     }
 
     private void UpdateTrayText()
@@ -538,10 +701,91 @@ public class TrayManager : IDisposable
         {
             t.Stop();
             t.Dispose();
-            FloatingTooltip.Show(message);
+            FloatingTooltip.Show(message, _config.TooltipDurationMs);
         };
         t.Start();
     }
+
+    /// <summary>
+    /// Show a rich help tooltip displaying all configured hotkeys and click actions.
+    /// </summary>
+    private void ShowHelpTooltip()
+    {
+        var hk = _config.Hotkeys;
+        var tc = _config.TrayClick;
+        var lines = new List<string>();
+
+        lines.Add("⚔  EQSwitch Hotkeys & Actions  ⚔");
+        lines.Add("─────────────────────────────");
+
+        // Keyboard hotkeys
+        lines.Add("");
+        lines.Add("⌨  KEYBOARD");
+        if (!string.IsNullOrEmpty(hk.SwitchKey))
+            lines.Add($"  [{hk.SwitchKey}]  Switch client ({(hk.SwitchKeyMode == "swapLast" ? "swap last two" : "cycle all")})");
+        if (!string.IsNullOrEmpty(hk.GlobalSwitchKey))
+            lines.Add($"  [{hk.GlobalSwitchKey}]  Global switch (focus EQ / cycle)");
+        if (!string.IsNullOrEmpty(hk.ArrangeWindows))
+            lines.Add($"  [{hk.ArrangeWindows}]  Arrange windows in grid");
+        if (!string.IsNullOrEmpty(hk.ToggleMultiMonitor))
+            lines.Add($"  [{hk.ToggleMultiMonitor}]  Toggle multi-monitor");
+        if (!string.IsNullOrEmpty(hk.LaunchOne))
+            lines.Add($"  [{hk.LaunchOne}]  Launch one client");
+        if (!string.IsNullOrEmpty(hk.LaunchAll))
+            lines.Add($"  [{hk.LaunchAll}]  Launch all clients");
+
+        // Direct switch keys
+        for (int i = 0; i < hk.DirectSwitchKeys.Count; i++)
+        {
+            if (!string.IsNullOrEmpty(hk.DirectSwitchKeys[i]))
+                lines.Add($"  [{hk.DirectSwitchKeys[i]}]  Switch to client {i + 1}");
+        }
+
+        // Tray click actions
+        lines.Add("");
+        lines.Add("🖱  TRAY CLICKS");
+        AddClickLine(lines, "Left single", tc.SingleClick);
+        AddClickLine(lines, "Left double", tc.DoubleClick);
+        AddClickLine(lines, "Left triple", tc.TripleClick);
+        AddClickLine(lines, "Middle single", tc.MiddleClick);
+        AddClickLine(lines, "Middle double", tc.MiddleDoubleClick);
+        AddClickLine(lines, "Middle triple", tc.MiddleTripleClick);
+
+        // Status
+        lines.Add("");
+        lines.Add($"📊  {_processManager.ClientCount} client(s) detected");
+        if (_config.Affinity.Enabled)
+            lines.Add("⚙  CPU affinity: ON");
+        if (_config.Throttle.Enabled)
+            lines.Add($"⚡  Throttle: {_config.Throttle.ThrottlePercent}%");
+
+        var t = new System.Windows.Forms.Timer { Interval = 50 };
+        t.Tick += (_, _) =>
+        {
+            t.Stop();
+            t.Dispose();
+            FloatingTooltip.Show(string.Join("\n", lines), _config.TooltipDurationMs * 2);
+        };
+        t.Start();
+    }
+
+    private static void AddClickLine(List<string> lines, string label, string action)
+    {
+        if (action != "None" && !string.IsNullOrEmpty(action))
+            lines.Add($"  {label}: {FormatActionName(action)}");
+    }
+
+    private static string FormatActionName(string action) => action switch
+    {
+        "FixWindows" => "Arrange windows",
+        "SwapWindows" => "Swap positions",
+        "TogglePiP" => "Toggle PiP",
+        "LaunchOne" => "Launch one",
+        "LaunchAll" => "Launch all",
+        "Settings" => "Open settings",
+        "ShowHelp" => "Show this help",
+        _ => action
+    };
 
     private SettingsForm? _settingsForm;
 
@@ -568,26 +812,95 @@ public class TrayManager : IDisposable
     {
         if (e.Button == MouseButtons.Middle)
         {
-            TogglePip();
-        }
-        else if (e.Button == MouseButtons.Left)
-        {
-            long now = Environment.TickCount64;
-            if (now - _trayFirstClickTick > TripleClickWindowMs)
-            {
-                _trayClickCount = 1;
-            }
-            else
-            {
-                _trayClickCount++;
-            }
-            _trayFirstClickTick = now;
+            _trayMiddleClickCount++;
 
-            if (_trayClickCount >= 3)
+            _middleClickResolveTimer?.Stop();
+            _middleClickResolveTimer?.Dispose();
+            _middleClickResolveTimer = new System.Windows.Forms.Timer { Interval = ClickResolveDelayMs };
+            _middleClickResolveTimer.Tick += (_, _) =>
             {
-                _trayClickCount = 0;
+                _middleClickResolveTimer!.Stop();
+                _middleClickResolveTimer.Dispose();
+                _middleClickResolveTimer = null;
+
+                int clicks = _trayMiddleClickCount;
+                _trayMiddleClickCount = 0;
+
+                string action = clicks switch
+                {
+                    1 => _config.TrayClick.MiddleClick,
+                    2 => _config.TrayClick.MiddleDoubleClick,
+                    _ => _config.TrayClick.MiddleTripleClick
+                };
+                ExecuteTrayAction(action);
+            };
+            _middleClickResolveTimer.Start();
+            return;
+        }
+
+        if (e.Button != MouseButtons.Left) return;
+
+        _trayClickCount++;
+
+        // Reset/restart the resolve timer on each click
+        _clickResolveTimer?.Stop();
+        _clickResolveTimer?.Dispose();
+        _clickResolveTimer = new System.Windows.Forms.Timer { Interval = ClickResolveDelayMs };
+        _clickResolveTimer.Tick += (_, _) =>
+        {
+            _clickResolveTimer!.Stop();
+            _clickResolveTimer.Dispose();
+            _clickResolveTimer = null;
+
+            int clicks = _trayClickCount;
+            _trayClickCount = 0;
+
+            string action = clicks switch
+            {
+                1 => _config.TrayClick.SingleClick,
+                2 => _config.TrayClick.DoubleClick,
+                _ => _config.TrayClick.TripleClick // 3+
+            };
+            ExecuteTrayAction(action);
+        };
+        _clickResolveTimer.Start();
+    }
+
+    private void ExecuteTrayAction(string action)
+    {
+        switch (action)
+        {
+            case "FixWindows":
                 OnArrangeWindows();
-            }
+                break;
+            case "SwapWindows":
+                var clients = _processManager.Clients;
+                if (clients.Count < 2) { ShowBalloon("Need 2+ windows to swap"); return; }
+                _windowManager.SwapWindows(clients);
+                ShowBalloon($"Swapped {clients.Count} window positions");
+                break;
+            case "TogglePiP":
+                TogglePip();
+                break;
+            case "LaunchOne":
+                OnLaunchOne();
+                break;
+            case "LaunchAll":
+                OnLaunchAll();
+                break;
+            case "Settings":
+                ShowSettings();
+                break;
+            case "RefreshClients":
+                _processManager.RefreshClients();
+                ShowBalloon($"Found {_processManager.ClientCount} EQ client(s)");
+                break;
+            case "ShowHelp":
+                ShowHelpTooltip();
+                break;
+            case "None":
+            default:
+                break;
         }
     }
 
@@ -627,6 +940,7 @@ public class TrayManager : IDisposable
         _config.Hotkeys.LaunchAll = newConfig.Hotkeys.LaunchAll;
         _config.Hotkeys.MultiMonitorEnabled = newConfig.Hotkeys.MultiMonitorEnabled;
         _config.Hotkeys.DirectSwitchKeys = newConfig.Hotkeys.DirectSwitchKeys;
+        _config.Hotkeys.SwitchKeyMode = newConfig.Hotkeys.SwitchKeyMode;
         _config.Launch.ExeName = newConfig.Launch.ExeName;
         _config.Launch.Arguments = newConfig.Launch.Arguments;
         _config.Launch.NumClients = newConfig.Launch.NumClients;
@@ -643,9 +957,17 @@ public class TrayManager : IDisposable
         _config.Throttle.Enabled = newConfig.Throttle.Enabled;
         _config.Throttle.ThrottlePercent = newConfig.Throttle.ThrottlePercent;
         _config.Throttle.CycleIntervalMs = newConfig.Throttle.CycleIntervalMs;
+        _config.TrayClick.SingleClick = newConfig.TrayClick.SingleClick;
+        _config.TrayClick.DoubleClick = newConfig.TrayClick.DoubleClick;
+        _config.TrayClick.TripleClick = newConfig.TrayClick.TripleClick;
+        _config.TrayClick.MiddleClick = newConfig.TrayClick.MiddleClick;
+        _config.TrayClick.MiddleDoubleClick = newConfig.TrayClick.MiddleDoubleClick;
+        _config.TrayClick.MiddleTripleClick = newConfig.TrayClick.MiddleTripleClick;
         _config.GinaPath = newConfig.GinaPath;
         _config.NotesPath = newConfig.NotesPath;
         _config.Characters = newConfig.Characters;
+        _config.TooltipDurationMs = newConfig.TooltipDurationMs;
+        _config.CtrlHoverHelp = newConfig.CtrlHoverHelp;
 
         // Cancel any in-flight launch sequence before reload
         _launchManager.CancelLaunch();
@@ -760,6 +1082,10 @@ public class TrayManager : IDisposable
         _retryTimer?.Dispose();
         _throttleManager.Dispose();
         _launchManager.Dispose();
+        _clickResolveTimer?.Stop();
+        _clickResolveTimer?.Dispose();
+        _middleClickResolveTimer?.Stop();
+        _middleClickResolveTimer?.Dispose();
         _boldMenuFont?.Dispose();
         _pipOverlay?.Dispose();
         _hotkeyManager.Dispose();
@@ -767,5 +1093,105 @@ public class TrayManager : IDisposable
         _trayIcon?.Dispose();
         _contextMenu?.Dispose();
         _processManager.Dispose();
+    }
+}
+
+/// <summary>
+/// Dark-themed renderer for ContextMenuStrip. Matches the app's dark UI.
+/// </summary>
+internal class DarkMenuRenderer : ToolStripProfessionalRenderer
+{
+    private static readonly Color MenuBg = Color.FromArgb(38, 38, 42);
+    private static readonly Color MenuBorder = Color.FromArgb(70, 70, 78);
+    private static readonly Color ItemHover = Color.FromArgb(60, 63, 75);
+    private static readonly Color ItemText = Color.FromArgb(240, 240, 240);
+    private static readonly Color DisabledText = Color.FromArgb(140, 140, 150);
+    private static readonly Color SepColor = Color.FromArgb(65, 65, 72);
+    private static readonly Color CheckBg = Color.FromArgb(0, 120, 70);
+    private static readonly Color MarginBg = Color.FromArgb(42, 42, 46);
+
+    public DarkMenuRenderer() : base(new DarkColorTable()) { }
+
+    protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+    {
+        var g = e.Graphics;
+        var rect = new Rectangle(Point.Empty, e.Item.Size);
+
+        if (e.Item.Selected && e.Item.Enabled)
+        {
+            using var brush = new SolidBrush(ItemHover);
+            g.FillRectangle(brush, rect);
+            using var pen = new Pen(MenuBorder);
+            g.DrawRectangle(pen, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
+        }
+        else
+        {
+            using var brush = new SolidBrush(MenuBg);
+            g.FillRectangle(brush, rect);
+        }
+
+        e.Item.ForeColor = e.Item.Enabled ? ItemText : DisabledText;
+    }
+
+    protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+    {
+        var g = e.Graphics;
+        int y = e.Item.Height / 2;
+        using var pen = new Pen(SepColor);
+        g.DrawLine(pen, 28, y, e.Item.Width - 4, y);
+    }
+
+    protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
+    {
+        using var brush = new SolidBrush(MenuBg);
+        e.Graphics.FillRectangle(brush, e.AffectedBounds);
+    }
+
+    protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
+    {
+        using var pen = new Pen(MenuBorder);
+        var r = e.AffectedBounds;
+        e.Graphics.DrawRectangle(pen, r.X, r.Y, r.Width - 1, r.Height - 1);
+    }
+
+    protected override void OnRenderImageMargin(ToolStripRenderEventArgs e)
+    {
+        using var brush = new SolidBrush(MarginBg);
+        e.Graphics.FillRectangle(brush, e.AffectedBounds);
+    }
+
+    protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
+    {
+        var g = e.Graphics;
+        var rect = e.ImageRectangle;
+        rect.Inflate(2, 2);
+        using var brush = new SolidBrush(CheckBg);
+        g.FillRectangle(brush, rect);
+        // Draw checkmark
+        using var pen = new Pen(Color.White, 2);
+        int x = rect.X + 3;
+        int y = rect.Y + rect.Height / 2;
+        g.DrawLines(pen, new[] {
+            new Point(x, y), new Point(x + 3, y + 3), new Point(x + 9, y - 3)
+        });
+    }
+
+    private class DarkColorTable : ProfessionalColorTable
+    {
+        public override Color MenuBorder => Color.FromArgb(70, 70, 78);
+        public override Color MenuItemBorder => Color.FromArgb(70, 70, 78);
+        public override Color MenuItemSelected => Color.FromArgb(60, 63, 75);
+        public override Color MenuStripGradientBegin => Color.FromArgb(38, 38, 42);
+        public override Color MenuStripGradientEnd => Color.FromArgb(38, 38, 42);
+        public override Color MenuItemSelectedGradientBegin => Color.FromArgb(60, 63, 75);
+        public override Color MenuItemSelectedGradientEnd => Color.FromArgb(60, 63, 75);
+        public override Color MenuItemPressedGradientBegin => Color.FromArgb(50, 52, 60);
+        public override Color MenuItemPressedGradientEnd => Color.FromArgb(50, 52, 60);
+        public override Color ImageMarginGradientBegin => Color.FromArgb(42, 42, 46);
+        public override Color ImageMarginGradientMiddle => Color.FromArgb(42, 42, 46);
+        public override Color ImageMarginGradientEnd => Color.FromArgb(42, 42, 46);
+        public override Color SeparatorDark => Color.FromArgb(65, 65, 72);
+        public override Color SeparatorLight => Color.FromArgb(65, 65, 72);
+        public override Color ToolStripDropDownBackground => Color.FromArgb(38, 38, 42);
     }
 }

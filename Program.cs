@@ -18,11 +18,11 @@ static class Program
 
         if (!createdNew)
         {
-            MessageBox.Show(
-                "EQSwitch is already running.\nCheck your system tray.",
-                "EQSwitch",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            FloatingTooltip.Show("EQSwitch is already running. Check your system tray.", 4000);
+            // Brief delay so tooltip is visible before process exits
+            Thread.Sleep(4200);
             return;
         }
 
@@ -61,6 +61,9 @@ static class Program
                 }
             }
 
+            bool isNewUser = config.IsFirstRun == false && config.PollingIntervalMs == 500
+                && string.IsNullOrEmpty(config.GinaPath) && config.Characters.Count == 0;
+
             var processManager = new ProcessManager(config);
             var trayApp = new TrayManager(config, processManager);
 
@@ -68,6 +71,10 @@ static class Program
             Application.ApplicationExit += (_, _) => trayApp.Dispose();
 
             trayApp.Initialize();
+
+            // Auto-open Settings on first run so new users can configure
+            if (isNewUser)
+                trayApp.OpenSettingsAfterDelay();
 
             Application.Run();
         }
