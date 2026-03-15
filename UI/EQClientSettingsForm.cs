@@ -901,6 +901,7 @@ public class EQClientSettingsForm : Form
                 Set("Defaults", "SkyUpdateInterval", "60000");
 
             Set("VideoMode", "WindowedMode", config.EQClientIni.ForceWindowedMode ? "TRUE" : "FALSE");
+            Set("VideoMode", "Maximized", "0");
 
             if (config.EQClientIni.MaxFPS > 0)
                 Set("Defaults", "MaxFPS", config.EQClientIni.MaxFPS.ToString());
