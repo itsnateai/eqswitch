@@ -15,6 +15,7 @@
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <PublishReadyToRun>true</PublishReadyToRun>
 
     <!-- Suppress WinForms trim warnings -->
     <EnableTrimAnalyzer>false</EnableTrimAnalyzer>

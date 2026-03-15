@@ -1063,8 +1063,8 @@ public class TrayManager : IDisposable
             }
             else
             {
-                // Priority 2: Default embedded Stone icon (eqswitch-alt.ico)
-                var stream = typeof(TrayManager).Assembly.GetManifestResourceStream("EQSwitch.eqswitch-alt.ico");
+                // Priority 2: Default embedded Stone icon (eqswitch.ico — the primary embedded icon)
+                var stream = typeof(TrayManager).Assembly.GetManifestResourceStream("EQSwitch.eqswitch.ico");
                 if (stream != null)
                 {
                     newIcon = new Icon(stream, 32, 32);
