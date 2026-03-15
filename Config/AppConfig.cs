@@ -191,7 +191,7 @@ public class HotkeyConfig
     public List<string> DirectSwitchKeys { get; set; } = new() { "Alt+1", "Alt+2", "Alt+3", "Alt+4", "Alt+5", "Alt+6" };
 
     /// <summary>Arrange all EQ windows in a grid layout.</summary>
-    public string ArrangeWindows { get; set; } = "Alt+G";
+    public string ArrangeWindows { get; set; } = "";
 
     /// <summary>Toggle single-screen / multi-monitor mode.</summary>
     public string ToggleMultiMonitor { get; set; } = "Alt+M";
