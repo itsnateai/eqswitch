@@ -751,8 +751,7 @@ public class EQClientSettingsForm : Form
             SetIniValue(lines, "Defaults", "Anonymous", _chkAnonymous.Checked ? "1" : "0");
             SetIniValue(lines, "Defaults", "RaidInviteConfirm", _chkRaidInviteConfirm.Checked ? "1" : "0");
             SetIniValue(lines, "Defaults", "AANoConfirm", _chkAANoConfirm.Checked ? "0" : "1");
-            if (_chkDisableChatServer.Checked)
-                SetIniValue(lines, "Defaults", "ChatServerPort", "0");
+            SetIniValue(lines, "Defaults", "ChatServerPort", _chkDisableChatServer.Checked ? "0" : "7003");
             SetIniValue(lines, "Defaults", "LootAllConfirm", _chkDisableLootAllConfirm.Checked ? "0" : "1");
 
             if ((int)_nudClipPlane.Value > 0)
@@ -890,8 +889,7 @@ public class EQClientSettingsForm : Form
             Set("Defaults", "Anonymous", config.EQClientIni.Anonymous ? "1" : "0");
             Set("Defaults", "RaidInviteConfirm", config.EQClientIni.RaidInviteConfirm ? "1" : "0");
             Set("Defaults", "AANoConfirm", config.EQClientIni.AANoConfirm ? "0" : "1");
-            if (config.EQClientIni.DisableChatServer)
-                Set("Defaults", "ChatServerPort", "0");
+            Set("Defaults", "ChatServerPort", config.EQClientIni.DisableChatServer ? "0" : "7003");
             Set("Defaults", "LootAllConfirm", config.EQClientIni.DisableLootAllConfirm ? "0" : "1");
 
             if (config.EQClientIni.ClipPlane > 0)
@@ -921,6 +919,7 @@ public class EQClientSettingsForm : Form
                 Set("Defaults", "Log", "FALSE");
 
             // Enforce sub-form overrides (dictionary-based — already only write what user saved)
+            EQModelsForm.EnforceOverrides(config, lines);
             EQChatSpamForm.EnforceOverrides(config, lines);
             EQParticlesForm.EnforceOverrides(config, lines);
             EQVideoModeForm.EnforceOverrides(config, lines);
