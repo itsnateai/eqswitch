@@ -430,6 +430,11 @@ SwitchWindow(*) {
         }
     }
 
+    ; Restore if minimized before activating — prevents stuck-minimized windows
+    try {
+        if (WinGetMinMax("ahk_id " visible[nextIndex]) = -1)
+            WinRestore("ahk_id " visible[nextIndex])
+    }
     try WinActivate("ahk_id " visible[nextIndex])
 }
 
@@ -455,7 +460,11 @@ FocusEQ(*) {
         SwitchWindow()
         return
     }
-    ; No EQ focused — bring the first one to front
+    ; No EQ focused — restore if minimized, then bring to front
+    try {
+        if (WinGetMinMax("ahk_id " visible[1]) = -1)
+            WinRestore("ahk_id " visible[1])
+    }
     try WinActivate("ahk_id " visible[1])
 }
 
