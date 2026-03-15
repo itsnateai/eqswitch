@@ -94,7 +94,7 @@ public static class FileOperations
 
         if (string.IsNullOrEmpty(notesPath))
         {
-            notesPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "eqswitch-notes.txt");
+            notesPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "eqnotes.txt");
             config.NotesPath = notesPath;
             ConfigManager.Save(config);
         }

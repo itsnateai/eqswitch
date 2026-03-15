@@ -294,4 +294,14 @@ public class EQModelsForm : Form
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
+
+    /// <summary>
+    /// Static helper: enforce all model overrides in eqclient.ini.
+    /// Called by EnforceOverrides in EQClientSettingsForm.
+    /// </summary>
+    public static void EnforceOverrides(AppConfig config, List<string> lines)
+    {
+        foreach (var (key, value) in config.EQClientIni.ModelOverrides)
+            EQClientSettingsForm.SetIniValue(lines, "Defaults", key, value ? "TRUE" : "FALSE");
+    }
 }
