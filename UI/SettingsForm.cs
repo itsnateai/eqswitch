@@ -22,7 +22,8 @@ public class SettingsForm : Form
     private NumericUpDown _nudPollingInterval = null!;
     private NumericUpDown _nudTooltipDuration = null!;
     private CheckBox _chkCtrlHoverHelp = null!;
-    private ComboBox _cboIconStyle = null!;
+    private TextBox _txtCustomIconPath = null!;
+    private TextBox _txtSwitchKeyGeneral = null!;
 
     // ─── Tray Click controls (Left)
     private ComboBox _cboSingleClick = null!;
@@ -46,7 +47,7 @@ public class SettingsForm : Form
     // ─── Layout tab controls
     private NumericUpDown _nudColumns = null!;
     private NumericUpDown _nudRows = null!;
-    private NumericUpDown _nudTargetMonitor = null!;
+    private ComboBox _cboTargetMonitor = null!;
     private NumericUpDown _nudTopOffset = null!;
     private ComboBox _cboLayoutMode = null!;
     private CheckBox _chkRemoveTitleBars = null!;
@@ -99,7 +100,7 @@ public class SettingsForm : Form
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "\u2694  EQSwitch Settings  \u2694", new Size(530, 480));
+        DarkTheme.StyleForm(this, "\u2694  EQSwitch Settings  \u2694", new Size(530, 580));
 
         var tabs = DarkTheme.MakeTabControl();
 
@@ -188,9 +189,9 @@ public class SettingsForm : Form
         int y = 10;
 
         y = DarkTheme.AddSectionHeader(page, "EverQuest Path", 15, y);
-        _txtEQPath = DarkTheme.AddTextBox(page, 15, y, 350);
-        var btnBrowse = DarkTheme.MakeButton("Browse...", DarkTheme.BgMedium, 375, y);
-        btnBrowse.Size = new Size(80, 26);
+        _txtEQPath = DarkTheme.AddTextBox(page, 15, y, 280);
+        var btnBrowse = DarkTheme.MakeButton("Browse...", DarkTheme.BgMedium, 305, y);
+        btnBrowse.Size = new Size(75, 26);
         btnBrowse.Click += (_, _) =>
         {
             using var fbd = new FolderBrowserDialog { Description = "Select EverQuest folder", InitialDirectory = _txtEQPath.Text };
@@ -198,18 +199,21 @@ public class SettingsForm : Form
         };
         page.Controls.Add(btnBrowse);
 
-        DarkTheme.AddLabel(page, "Executable Name:", 15, y += 35);
-        _txtExeName = DarkTheme.AddTextBox(page, 15, y += 22, 200);
+        DarkTheme.AddLabel(page, "Exe Name:", 15, y += 35);
+        _txtExeName = DarkTheme.AddTextBox(page, 90, y, 100);
 
-        DarkTheme.AddLabel(page, "Launch Arguments:", 230, y - 22);
-        _txtArgs = DarkTheme.AddTextBox(page, 230, y, 225);
+        DarkTheme.AddLabel(page, "Args:", 200, y);
+        _txtArgs = DarkTheme.AddTextBox(page, 240, y, 100);
 
-        DarkTheme.AddLabel(page, "Process Name (for detection):", 15, y += 35);
-        _txtProcessName = DarkTheme.AddTextBox(page, 15, y += 22, 200);
+        DarkTheme.AddLabel(page, "Switch Key:", 355, y);
+        _txtSwitchKeyGeneral = DarkTheme.AddHotkeyBox(page, 430, y, 50);
+        DarkTheme.AddHint(page, "e.g. \\ ]", 430, y + 25);
 
-        DarkTheme.AddLabel(page, "Polling Interval (ms):", 230, y - 22);
-        _nudPollingInterval = DarkTheme.AddNumeric(page, 230, y, 100, 500, 100, 5000);
-        DarkTheme.AddHint(page, "How often EQSwitch checks for new/closed EQ windows", 230, y + 25);
+        DarkTheme.AddLabel(page, "Process Name:", 15, y += 35);
+        _txtProcessName = DarkTheme.AddTextBox(page, 105, y, 100);
+
+        DarkTheme.AddLabel(page, "Polling (ms):", 220, y);
+        _nudPollingInterval = DarkTheme.AddNumeric(page, 305, y, 80, 500, 100, 5000);
 
         // Tray Click Actions
         y += 45;
@@ -258,11 +262,25 @@ public class SettingsForm : Form
         y += 28;
         _chkCtrlHoverHelp = DarkTheme.AddCheckBox(page, "Ctrl+Hover tray icon shows hotkey help", 15, y);
 
-        // Icon style
+        // Custom icon
         y += 35;
-        DarkTheme.AddLabel(page, "Tray Icon Style:", 15, y);
-        _cboIconStyle = DarkTheme.AddComboBox(page, 130, y, 100, new[] { "Dark", "Stone" });
-        DarkTheme.AddHint(page, "Place eqswitch-custom.ico next to exe for custom icon", 240, y + 3);
+        DarkTheme.AddLabel(page, "Tray Icon:", 15, y);
+        _txtCustomIconPath = DarkTheme.AddTextBox(page, 90, y, 240);
+        var btnBrowseIcon = DarkTheme.MakeButton("Browse...", DarkTheme.BgMedium, 340, y);
+        btnBrowseIcon.Width = 75;
+        btnBrowseIcon.Click += (_, _) =>
+        {
+            using var dlg = new OpenFileDialog
+            {
+                Title = "Select Tray Icon",
+                Filter = "Icon Files (*.ico)|*.ico",
+                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures)
+            };
+            if (dlg.ShowDialog() == DialogResult.OK)
+                _txtCustomIconPath.Text = dlg.FileName;
+        };
+        page.Controls.Add(btnBrowseIcon);
+        DarkTheme.AddHint(page, "Leave blank for default icon", 15, y + 26);
 
         return page;
     }
@@ -272,33 +290,32 @@ public class SettingsForm : Form
         var page = DarkTheme.MakeTabPage("Hotkeys");
         int y = 15;
 
-        DarkTheme.AddLabel(page, "Switch Key (EQ-only, single key):", 15, y);
-        _txtSwitchKey = DarkTheme.AddTextBox(page, 15, y += 22, 120);
-        DarkTheme.AddHint(page, "e.g. \\ ] [", 145, y + 3);
+        DarkTheme.AddLabel(page, "Switch Key (EQ-only):", 15, y);
+        _txtSwitchKey = DarkTheme.AddHotkeyBox(page, 160, y, 60);
+        DarkTheme.AddHint(page, "e.g. \\ ] [", 230, y + 3);
 
-        DarkTheme.AddLabel(page, "Switch Key Mode:", 250, y - 22);
-        _cboSwitchKeyMode = DarkTheme.AddComboBox(page, 250, y, 180, new[] { "swapLast", "cycleAll" });
-        DarkTheme.AddHint(page, "swapLast = Alt+Tab style, cycleAll = round-robin", 250, y + 28);
+        DarkTheme.AddLabel(page, "Mode:", 310, y);
+        _cboSwitchKeyMode = DarkTheme.AddComboBox(page, 355, y, 120, new[] { "swapLast", "cycleAll" });
 
-        DarkTheme.AddLabel(page, "Global Switch Key (any app, single key):", 15, y += 55);
-        _txtGlobalSwitchKey = DarkTheme.AddTextBox(page, 15, y += 22, 120);
+        DarkTheme.AddLabel(page, "Global Switch Key:", 15, y += 35);
+        _txtGlobalSwitchKey = DarkTheme.AddHotkeyBox(page, 160, y, 60);
+        DarkTheme.AddHint(page, "Works from any app", 230, y + 3);
 
-        DarkTheme.AddLabel(page, "Arrange Windows:", 250, 15);
-        _txtArrangeWindows = DarkTheme.AddTextBox(page, 250, 37, 120);
-        DarkTheme.AddHint(page, "e.g. Alt+G", 380, 40);
+        DarkTheme.AddLabel(page, "Arrange Windows:", 15, y += 35);
+        _txtArrangeWindows = DarkTheme.AddHotkeyBox(page, 160, y, 80);
+        DarkTheme.AddHint(page, "e.g. Alt+G", 250, y + 3);
 
-        DarkTheme.AddLabel(page, "Toggle Multi-Monitor:", 250, 77);
-        _txtToggleMultiMon = DarkTheme.AddTextBox(page, 250, 99, 120);
+        DarkTheme.AddLabel(page, "Toggle Multi-Mon:", 15, y += 35);
+        _txtToggleMultiMon = DarkTheme.AddHotkeyBox(page, 160, y, 80);
+        _chkMultiMonEnabled = DarkTheme.AddCheckBox(page, "Enabled", 260, y - 2);
 
-        _chkMultiMonEnabled = DarkTheme.AddCheckBox(page, "Multi-Monitor Hotkey Enabled", 250, 130);
+        DarkTheme.AddLabel(page, "Launch One:", 15, y += 35);
+        _txtLaunchOne = DarkTheme.AddHotkeyBox(page, 160, y, 80);
 
-        DarkTheme.AddLabel(page, "Launch One:", 15, y += 40);
-        _txtLaunchOne = DarkTheme.AddTextBox(page, 15, y += 22, 120);
+        DarkTheme.AddLabel(page, "Launch All:", 270, y);
+        _txtLaunchAll = DarkTheme.AddHotkeyBox(page, 355, y, 80);
 
-        DarkTheme.AddLabel(page, "Launch All:", 250, y - 22);
-        _txtLaunchAll = DarkTheme.AddTextBox(page, 250, y, 120);
-
-        DarkTheme.AddHint(page, "Leave blank to disable. Format: Alt+Key, Ctrl+Key", 15, y + 35);
+        DarkTheme.AddHint(page, "Leave blank to disable. Press key combo to capture", 15, y + 30);
 
         return page;
     }
@@ -308,7 +325,7 @@ public class SettingsForm : Form
         var page = DarkTheme.MakeTabPage("Layout");
         int y = 15;
 
-        DarkTheme.AddLabel(page, "Layout Mode:", 15, y);
+        DarkTheme.AddLabel(page, "Monitor Layout Mode:", 15, y);
         _cboLayoutMode = DarkTheme.AddComboBox(page, 15, y += 22, 150, new[] { "single", "multimonitor" });
 
         DarkTheme.AddLabel(page, "Grid Columns:", 200, 15);
@@ -317,14 +334,22 @@ public class SettingsForm : Form
         DarkTheme.AddLabel(page, "Grid Rows:", 310, 15);
         _nudRows = DarkTheme.AddNumeric(page, 310, 37, 80, 2, 1, 4);
 
-        DarkTheme.AddLabel(page, "Target Monitor (0 = primary):", 15, y += 40);
-        _nudTargetMonitor = DarkTheme.AddNumeric(page, 15, y += 22, 80, 0, 0, 8);
+        DarkTheme.AddLabel(page, "Target Monitor:", 15, y += 40);
+        var screens = Screen.AllScreens.OrderBy(s => s.Bounds.Left).ToArray();
+        var monitorItems = new string[screens.Length];
+        for (int i = 0; i < screens.Length; i++)
+        {
+            var s = screens[i];
+            var primary = s.Primary ? " (primary)" : "";
+            monitorItems[i] = $"{i}: {s.Bounds.Width}x{s.Bounds.Height}{primary}";
+        }
+        _cboTargetMonitor = DarkTheme.AddComboBox(page, 15, y += 22, 200, monitorItems);
 
-        DarkTheme.AddLabel(page, "Top Offset (pixels):", 200, y - 22);
-        _nudTopOffset = DarkTheme.AddNumeric(page, 200, y, 80, 0, -100, 200);
+        DarkTheme.AddLabel(page, "Top Offset (px):", 230, y - 22);
+        _nudTopOffset = DarkTheme.AddNumeric(page, 230, y, 80, 0, -100, 200);
 
-        var btnIdentify = DarkTheme.MakeButton("Identify Monitors", DarkTheme.BgMedium, 200, y);
-        btnIdentify.Width = 140;
+        var btnIdentify = DarkTheme.MakeButton("Identify", DarkTheme.BgMedium, 330, y);
+        btnIdentify.Width = 80;
         btnIdentify.Click += (_, _) => ShowMonitorIdentifiers();
         page.Controls.Add(btnIdentify);
 
@@ -697,7 +722,7 @@ public class SettingsForm : Form
         _nudPollingInterval.Value = Math.Clamp(_config.PollingIntervalMs, (int)_nudPollingInterval.Minimum, (int)_nudPollingInterval.Maximum);
         _nudTooltipDuration.Value = Math.Clamp(_config.TooltipDurationMs, (int)_nudTooltipDuration.Minimum, (int)_nudTooltipDuration.Maximum);
         _chkCtrlHoverHelp.Checked = _config.CtrlHoverHelp;
-        _cboIconStyle.SelectedItem = _config.IconStyle;
+        _txtCustomIconPath.Text = _config.CustomIconPath;
 
         // Tray Click Actions
         _cboSingleClick.SelectedItem = _config.TrayClick.SingleClick;
@@ -708,6 +733,7 @@ public class SettingsForm : Form
         _cboMiddleTripleClick.SelectedItem = _config.TrayClick.MiddleTripleClick;
 
         // Hotkeys
+        _txtSwitchKeyGeneral.Text = _config.Hotkeys.SwitchKey;
         _txtSwitchKey.Text = _config.Hotkeys.SwitchKey;
         _cboSwitchKeyMode.SelectedItem = _config.Hotkeys.SwitchKeyMode;
         _txtGlobalSwitchKey.Text = _config.Hotkeys.GlobalSwitchKey;
@@ -721,7 +747,8 @@ public class SettingsForm : Form
         _cboLayoutMode.SelectedItem = _config.Layout.Mode;
         _nudColumns.Value = DarkTheme.ClampNud(_nudColumns, _config.Layout.Columns);
         _nudRows.Value = DarkTheme.ClampNud(_nudRows, _config.Layout.Rows);
-        _nudTargetMonitor.Value = DarkTheme.ClampNud(_nudTargetMonitor, _config.Layout.TargetMonitor);
+        var targetIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, _cboTargetMonitor.Items.Count - 1);
+        _cboTargetMonitor.SelectedIndex = targetIdx;
         _nudTopOffset.Value = DarkTheme.ClampNud(_nudTopOffset, _config.Layout.TopOffset);
         _chkRemoveTitleBars.Checked = _config.Layout.RemoveTitleBars;
         _chkBorderlessFullscreen.Checked = _config.Layout.BorderlessFullscreen;
@@ -777,13 +804,13 @@ public class SettingsForm : Form
             PollingIntervalMs = (int)_nudPollingInterval.Value,
             TooltipDurationMs = (int)_nudTooltipDuration.Value,
             CtrlHoverHelp = _chkCtrlHoverHelp.Checked,
-            IconStyle = _cboIconStyle.SelectedItem?.ToString() ?? "Dark",
+            CustomIconPath = _txtCustomIconPath.Text.Trim(),
             Layout = new WindowLayout
             {
                 Mode = _cboLayoutMode.SelectedItem?.ToString() ?? "single",
                 Columns = (int)_nudColumns.Value,
                 Rows = (int)_nudRows.Value,
-                TargetMonitor = (int)_nudTargetMonitor.Value,
+                TargetMonitor = _cboTargetMonitor.SelectedIndex >= 0 ? _cboTargetMonitor.SelectedIndex : 0,
                 TopOffset = (int)_nudTopOffset.Value,
                 RemoveTitleBars = _chkRemoveTitleBars.Checked,
                 BorderlessFullscreen = _chkBorderlessFullscreen.Checked
@@ -800,7 +827,10 @@ public class SettingsForm : Form
             },
             Hotkeys = new HotkeyConfig
             {
-                SwitchKey = _txtSwitchKey.Text.Trim(),
+                // General tab switch key takes priority if user edited it there
+                SwitchKey = !string.IsNullOrEmpty(_txtSwitchKeyGeneral.Text.Trim())
+                    ? _txtSwitchKeyGeneral.Text.Trim()
+                    : _txtSwitchKey.Text.Trim(),
                 GlobalSwitchKey = _txtGlobalSwitchKey.Text.Trim(),
                 ArrangeWindows = _txtArrangeWindows.Text.Trim(),
                 ToggleMultiMonitor = _txtToggleMultiMon.Text.Trim(),
