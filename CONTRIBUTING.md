@@ -4,7 +4,7 @@ Thanks for your interest in contributing to EQSwitch!
 
 ## Reporting Bugs
 
-1. Check existing [issues](https://github.com/itsnateai/eqswitch-port/issues) first
+1. Check existing [issues](https://github.com/itsnateai/eqswitch_port/issues) first
 2. Include your Windows version, .NET version (if building from source), and EQ server
 3. Describe what you expected vs what happened
 4. Include steps to reproduce
@@ -13,8 +13,8 @@ Thanks for your interest in contributing to EQSwitch!
 
 ```bash
 # Clone
-git clone https://github.com/itsnateai/eqswitch-port.git
-cd eqswitch-port
+git clone https://github.com/itsnateai/eqswitch_port.git
+cd eqswitch_port
 
 # Debug build
 dotnet build

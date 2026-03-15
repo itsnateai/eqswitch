@@ -104,7 +104,8 @@ public class TrayManager : IDisposable
         RegisterHotkeys();
         StartAffinityTimer();
         _throttleManager.Start();
-        StartupManager.ValidateRegistryPath(_config);
+        StartupManager.MigrateFromRegistry();
+        StartupManager.ValidateStartupPath(_config);
 
         // Log core detection at startup
         var (cores, sysMask) = AffinityManager.DetectCores();
@@ -462,9 +463,9 @@ public class TrayManager : IDisposable
 
         // Links submenu
         var linksMenu = new ToolStripMenuItem("Links");
-        linksMenu.DropDownItems.Add("Dalaya Wiki", null, (_, _) => FileOperations.OpenUrl("http://wiki.shardsofdalaya.com"));
-        linksMenu.DropDownItems.Add("Shards Wiki", null, (_, _) => FileOperations.OpenUrl("https://shards.wiki"));
-        linksMenu.DropDownItems.Add("Fomelo", null, (_, _) => FileOperations.OpenUrl("http://fomelo.shardsofdalaya.com"));
+        linksMenu.DropDownItems.Add("Shards Wiki", null, (_, _) => FileOperations.OpenUrl("https://wiki.shardsofdalaya.com/wiki/Main_Page"));
+        linksMenu.DropDownItems.Add("Dalaya Wiki", null, (_, _) => FileOperations.OpenUrl("https://wiki.dalaya.org/"));
+        linksMenu.DropDownItems.Add("Fomelo Dalaya", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/fomelo/"));
         _contextMenu.Items.Add(linksMenu);
 
         _contextMenu.Items.Add("Help", null, (_, _) => HelpForm.Show(_config));
@@ -529,10 +530,17 @@ public class TrayManager : IDisposable
 
     private void ShowBalloon(string message)
     {
-        if (_trayIcon == null) return;
-        _trayIcon.BalloonTipTitle = "EQSwitch";
-        _trayIcon.BalloonTipText = message;
-        _trayIcon.ShowBalloonTip(2000);
+        // Defer to next message loop iteration so context menu handlers
+        // fully complete before we create the tooltip window.
+        // Short timer avoids disposed-object crashes from synchronous Show.
+        var t = new System.Windows.Forms.Timer { Interval = 50 };
+        t.Tick += (_, _) =>
+        {
+            t.Stop();
+            t.Dispose();
+            FloatingTooltip.Show(message);
+        };
+        t.Start();
     }
 
     private SettingsForm? _settingsForm;
@@ -714,14 +722,23 @@ public class TrayManager : IDisposable
         // Dispose previous custom icon to prevent handle leak on reload
         var oldIcon = _trayIcon?.Icon;
 
-        var iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "eqswitch.ico");
         Icon newIcon;
-        if (File.Exists(iconPath))
+        try
         {
-            try { newIcon = new Icon(iconPath); }
-            catch { newIcon = SystemIcons.Application; }
+            // Try embedded resource first (works in single-file publish)
+            var stream = typeof(TrayManager).Assembly.GetManifestResourceStream("EQSwitch.eqswitch.ico");
+            if (stream != null)
+            {
+                newIcon = new Icon(stream);
+            }
+            else
+            {
+                // Fall back to file on disk (dev/debug builds)
+                var iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "eqswitch.ico");
+                newIcon = File.Exists(iconPath) ? new Icon(iconPath) : SystemIcons.Application;
+            }
         }
-        else
+        catch
         {
             newIcon = SystemIcons.Application;
         }
