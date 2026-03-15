@@ -2314,6 +2314,16 @@ OpenProcessManager(*) {
     pm.AddButton("xm y+4 w70 h26 Default", "Save").OnEvent("Click", SaveAndClosePM)
     pm.AddButton("x+6 yp w70 h26", "Apply").OnEvent("Click", ApplyPM)
     pm.AddButton("x+6 yp w70 h26", "Close").OnEvent("Click", (*) => (g_pmOpen := false, pm.Destroy()))
+    pm.AddButton("x+6 yp w110 h26", "Reset Defaults").OnEvent("Click", ResetPMDefaults)
+
+    ResetPMDefaults(*) {
+        ; Reset priority to Normal
+        priorityCombo.Choose(1)
+        ; Reset affinity to all cores (uncheck all = use all)
+        for chk in coreChecks
+            chk.Value := 0
+        ShowTip("🔄 Reset to defaults — click Save or Apply to write changes")
+    }
 
     ApplyPM(*) {
         global CPU_AFFINITY, PROCESS_PRIORITY
@@ -2469,6 +2479,24 @@ OpenVideoModeEditor(*) {
     vm.AddButton("xm y+6 w80 h28 Default", "Save").OnEvent("Click", SaveAndCloseVM)
     vm.AddButton("x+8 yp w80 h28", "Apply").OnEvent("Click", ApplyVM)
     vm.AddButton("x+8 yp w80 h28", "Close").OnEvent("Click", (*) => (g_vmOpen := false, vm.Destroy()))
+    vm.AddButton("x+8 yp w110 h28", "Reset Defaults").OnEvent("Click", ResetVMDefaults)
+
+    ResetVMDefaults(*) {
+        ; Reset fields to safe defaults
+        vmWW.Value := 1920
+        vmWH.Value := 1009
+        vmXOff.Value := 0
+        vmYOff.Value := 0
+        vmWindowedMode.Value := 1
+        vmTitleBar.Value := 0
+        resPresetCombo.Choose(1)  ; "1920×1009" preset
+        ; Clean up stale .tmp file if present
+        tmpPath := iniPath ".tmp"
+        if FileExist(tmpPath) {
+            try FileDelete(tmpPath)
+        }
+        ShowTip("🔄 Reset to safe defaults — click Save or Apply to write changes")
+    }
 
     ApplyVM(*) {
         global FIX_TOP_OFFSET
