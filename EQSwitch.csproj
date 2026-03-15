@@ -7,7 +7,7 @@
     <ApplicationIcon>eqswitch.ico</ApplicationIcon>
     <AssemblyName>EQSwitch</AssemblyName>
     <RootNamespace>EQSwitch</RootNamespace>
-    <Version>2.3.0</Version>
+    <Version>2.4.0</Version>
     <Description>EverQuest Multiboxing Window Manager for Shards of Dalaya</Description>
 
     <!-- Single-file portable publish settings -->
@@ -30,6 +30,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="eqswitch.ico" LogicalName="EQSwitch.eqswitch.ico" />
+    <EmbeddedResource Include="eqswitch-alt.ico" LogicalName="EQSwitch.eqswitch-alt.ico" />
   </ItemGroup>
 
   <ItemGroup>

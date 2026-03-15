@@ -9,7 +9,6 @@ namespace EQSwitch.UI;
 /// EQ uses DirectInput scan codes for keybindings (KEYMAPPING_*=code).
 /// Large values encode modifier flags in upper bits:
 ///   0x10000000 = Shift, 0x20000000 = Ctrl, 0x40000000 = Alt
-/// Work in progress — allows viewing and editing known keybindings.
 /// </summary>
 public class EQKeymapsForm : Form
 {
@@ -19,18 +18,27 @@ public class EQKeymapsForm : Form
     private readonly Dictionary<string, Label> _keyLabels = new();
     private readonly Dictionary<string, long> _initialValues = new();
 
-    // Known EQ key mappings with display names and default codes
-    private static readonly (string Key, string Label, long DefaultCode)[] KeyMappings =
+    // Grouped key mappings: (IniKey, DisplayLabel, DefaultCode)
+    private static readonly (string Header, (string Key, string Label, long DefaultCode)[] Entries)[] Groups =
     {
-        ("KEYMAPPING_TARGETNPC_2", "Target NPC (Alt)", 209),
-        ("KEYMAPPING_TOGGLETWOTARGETS_1", "Toggle Two Targets", 82),
-        ("KEYMAPPING_TOGGLETWOTARGETS_2", "Toggle Two Targets (Alt)", 0),
-        ("KEYMAPPING_CMD_CLIPBOARD_PASTE_1", "Clipboard Paste", 536870959),
-        ("KEYMAPPING_CYCLENPCTARGETS_2", "Cycle NPC Targets (Alt)", 79),
-        ("KEYMAPPING_POTION_SLOT_3_1", "Potion Slot 3", 0),
-        ("KEYMAPPING_AUTOPRIM_2", "Auto-Primary (Alt)", 211),
-        ("KEYMAPPING_CONSIDER_2", "Consider (Alt)", 83),
-        ("KEYMAPPING_CMD_TOGGLE_AUDIO_TRIGGER_WINDOW_1", "Toggle Audio Triggers", 268435486),
+        ("⚔  Targeting", new[]
+        {
+            ("KEYMAPPING_TARGETNPC_2", "Target NPC (Alt)", 209L),
+            ("KEYMAPPING_CONSIDER_2", "Consider (Alt)", 83L),
+            ("KEYMAPPING_CYCLENPCTARGETS_2", "Cycle NPC Targets (Alt)", 79L),
+            ("KEYMAPPING_TOGGLETWOTARGETS_1", "Toggle Two Targets", 82L),
+            ("KEYMAPPING_TOGGLETWOTARGETS_2", "Toggle Two Targets (Alt)", 0L),
+        }),
+        ("\uD83D\uDEE1  Combat & Items", new[]
+        {
+            ("KEYMAPPING_AUTOPRIM_2", "Auto-Primary (Alt)", 211L),
+            ("KEYMAPPING_POTION_SLOT_3_1", "Potion Slot 3", 0L),
+        }),
+        ("\uD83D\uDD27  Utility", new[]
+        {
+            ("KEYMAPPING_CMD_CLIPBOARD_PASTE_1", "Clipboard Paste", 536870959L),
+            ("KEYMAPPING_CMD_TOGGLE_AUDIO_TRIGGER_WINDOW_1", "Audio Triggers", 268435486L),
+        }),
     };
 
     // EQ modifier flags (encoded in upper bits of the key code)
@@ -87,56 +95,78 @@ public class EQKeymapsForm : Form
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 Key Mappings (WIP)", new Size(500, 450));
+        DarkTheme.StyleForm(this, "EQSwitch \u2014 Key Mappings", new Size(480, 520));
         StartPosition = FormStartPosition.CenterParent;
         AutoScroll = true;
 
         int y = 12;
         y = DarkTheme.AddSectionHeader(this, "\u2328  EQ Key Mappings", 15, y);
-        DarkTheme.AddHint(this, "DirectInput scan codes from eqclient.ini [Defaults].\nModifiers: Shift=+268M, Ctrl=+537M, Alt=+1074M.\nValues read from INI on open. Only changed values are written.", 15, y);
-        y += 50;
+        DarkTheme.AddHint(this, "Reads current bindings from eqclient.ini.\nEdit the scan code \u2014 the key name updates live.", 15, y);
+        y += 35;
 
-        foreach (var (key, label, def) in KeyMappings)
+        foreach (var (header, entries) in Groups)
         {
-            DarkTheme.AddLabel(this, label + ":", 15, y + 3);
-
-            var nud = new NumericUpDown
+            // Group header
+            var groupLabel = new Label
             {
-                Location = new Point(220, y), Size = new Size(120, 24),
-                BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-                Minimum = 0, Maximum = 2000000000,
-                Value = def
+                Text = header,
+                Location = new Point(15, y),
+                AutoSize = true,
+                ForeColor = DarkTheme.AccentBar,
+                Font = new Font("Segoe UI Semibold", 9)
             };
-            Controls.Add(nud);
-            _nudValues[key] = nud;
+            Controls.Add(groupLabel);
+            y += 22;
 
-            var keyLabel = new Label
+            foreach (var (key, label, def) in entries)
             {
-                Text = GetKeyName(def),
-                Location = new Point(345, y + 3),
-                Size = new Size(140, 16),
-                ForeColor = DarkTheme.FgGray,
-                Font = new Font("Segoe UI", 8, FontStyle.Italic)
-            };
-            Controls.Add(keyLabel);
-            _keyLabels[key] = keyLabel;
+                // Action label (left)
+                DarkTheme.AddLabel(this, label, 30, y + 3);
 
-            // Update label when value changes
-            var lbl = keyLabel;
-            nud.ValueChanged += (_, _) => lbl.Text = GetKeyName((long)nud.Value);
+                // Decoded key name (prominent, right-aligned before the numeric)
+                var keyLabel = new Label
+                {
+                    Text = GetKeyName(def),
+                    Location = new Point(210, y + 3),
+                    Size = new Size(130, 16),
+                    ForeColor = DarkTheme.FgWhite,
+                    TextAlign = ContentAlignment.MiddleRight,
+                    Font = new Font("Consolas", 9)
+                };
+                Controls.Add(keyLabel);
+                _keyLabels[key] = keyLabel;
 
-            y += 28;
+                // Scan code numeric (small, secondary)
+                var nud = new NumericUpDown
+                {
+                    Location = new Point(350, y), Size = new Size(100, 24),
+                    BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgGray,
+                    Minimum = 0, Maximum = 2000000000,
+                    Value = def,
+                    Font = new Font("Consolas", 8)
+                };
+                Controls.Add(nud);
+                _nudValues[key] = nud;
+
+                // Live update decoded label
+                var lbl = keyLabel;
+                nud.ValueChanged += (_, _) => lbl.Text = GetKeyName((long)nud.Value);
+
+                y += 26;
+            }
+
+            y += 8; // gap between groups
         }
 
-        y += 20;
+        y += 10;
 
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 100, y);
+        var btnSave = DarkTheme.MakePrimaryButton("Save", 80, y);
         btnSave.Click += (_, _) => { SaveSettings(); Close(); };
 
-        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 190, y);
+        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 170, y);
         btnApply.Click += (_, _) => { SaveSettings(); };
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 280, y);
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 260, y);
         btnCancel.Click += (_, _) => Close();
 
         Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });

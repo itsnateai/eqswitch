@@ -43,6 +43,12 @@ public class AppConfig
     // Tray Click Actions
     public TrayClickConfig TrayClick { get; set; } = new();
 
+    /// <summary>
+    /// Tray icon style: "Dark" (default, black bg) or "Stone" (lighter stone bg).
+    /// If a custom "eqswitch-custom.ico" exists next to the exe, it takes priority.
+    /// </summary>
+    public string IconStyle { get; set; } = "Dark";
+
     // Misc
     public bool ShowTooltipErrors { get; set; } = true;
     public bool MinimizeToTray { get; set; } = true;
@@ -236,7 +242,7 @@ public class PipConfig
     public int CustomHeight { get; set; } = 240;
 
     /// <summary>Opacity (0-255). 255 = fully opaque.</summary>
-    public byte Opacity { get; set; } = 200;
+    public byte Opacity { get; set; } = 245;
 
     /// <summary>Show colored border around PiP windows.</summary>
     public bool ShowBorder { get; set; } = true;
@@ -262,11 +268,11 @@ public class PipConfig
 
     public Color GetBorderColor() => BorderColor switch
     {
-        "Green" => Color.FromArgb(0, 255, 0),
-        "Blue" => Color.FromArgb(0, 128, 255),
-        "Red" => Color.FromArgb(255, 0, 0),
+        "Green" => Color.FromArgb(34, 180, 85),
+        "Blue" => Color.FromArgb(60, 140, 230),
+        "Red" => Color.FromArgb(220, 50, 50),
         "Black" => Color.Black,
-        _ => Color.FromArgb(0, 255, 0)
+        _ => Color.FromArgb(34, 180, 85)
     };
 }
 

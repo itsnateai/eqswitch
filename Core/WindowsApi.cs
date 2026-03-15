@@ -85,6 +85,8 @@ public class WindowsApi : IWindowsApi
                 });
                 return true;
             }, IntPtr.Zero);
+        // Sort left-to-right so monitor 0 is always the leftmost physical screen
+        monitors.Sort((a, b) => a.Left.CompareTo(b.Left));
         return monitors;
     }
 
@@ -108,6 +110,8 @@ public class WindowsApi : IWindowsApi
                 });
                 return true;
             }, IntPtr.Zero);
+        // Sort left-to-right so monitor 0 is always the leftmost physical screen
+        monitors.Sort((a, b) => a.Left.CompareTo(b.Left));
         return monitors;
     }
 
