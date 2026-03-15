@@ -3,7 +3,7 @@
 ## What This Is
 C# (.NET 8 WinForms) port of EQSwitch, an EverQuest multiboxing window manager originally written in AHK v2. Targets the Shards of Dalaya emulator community. v2.3.0 — added background FPS throttling and borderless fullscreen. ~27 files, ~5,700 lines.
 
-**Repo**: `itsnateai/eqswitch-port` (private) | **Branch**: master
+**Repo**: `itsnateai/eqswitch_port` (private) | **Branch**: master
 
 ## Build Commands
 ```bash
@@ -146,7 +146,7 @@ No deferred features remaining. All ideas reviewed and declined 2026-03-12.
 
 ## File Layout
 ```
-eqswitch-port/
+eqswitch_port/
   Program.cs                    # Entry point, mutex, migration
   EQSwitch.csproj               # .NET 8 WinForms, v2.3.0
   EQSwitch.sln                  # Solution with main + test projects

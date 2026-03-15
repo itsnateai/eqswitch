@@ -17,6 +17,12 @@ public class ProcessManager : IDisposable
     private readonly List<EQClient> _clients = new();
     private readonly object _lock = new();
 
+    /// <summary>
+    /// Idle polling interval when no EQ clients are running (ms).
+    /// 5 seconds is plenty — EQ is launched externally, no rush to detect.
+    /// </summary>
+    private const int IdlePollingMs = 5000;
+
     public event EventHandler<EQClient>? ClientDiscovered;
     public event EventHandler<EQClient>? ClientLost;
     public event EventHandler? ClientListChanged;
@@ -154,6 +160,11 @@ public class ProcessManager : IDisposable
             ClientDiscovered?.Invoke(this, client);
         if (listChanged)
             ClientListChanged?.Invoke(this, EventArgs.Empty);
+
+        // Adaptive polling: slow down when idle, speed up when clients exist
+        int targetInterval = ClientCount > 0 ? _config.PollingIntervalMs : IdlePollingMs;
+        if (_pollTimer.Interval != targetInterval)
+            _pollTimer.Interval = targetInterval;
     }
 
     /// <summary>

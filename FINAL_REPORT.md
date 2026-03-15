@@ -3,7 +3,7 @@
 > **Version:** 2.2.0
 > **Ship Date:** 2026-03-12
 > **Stack:** C# / .NET 8 WinForms / Win32 P/Invoke
-> **Repo:** https://github.com/itsnateai/eqswitch-port (private)
+> **Repo:** https://github.com/itsnateai/eqswitch_port (private)
 
 ---
 
@@ -59,7 +59,7 @@ EQSwitch is an EverQuest multiboxing window manager for the Shards of Dalaya emu
 | Total commits | 15 |
 | Branches | master |
 | Tags | v2.1.0, v2.2.0 |
-| Remote | https://github.com/itsnateai/eqswitch-port.git |
+| Remote | https://github.com/itsnateai/eqswitch_port.git |
 
 ## Version History
 
