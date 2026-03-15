@@ -44,10 +44,10 @@ public class AppConfig
     public TrayClickConfig TrayClick { get; set; } = new();
 
     /// <summary>
-    /// Tray icon style: "Dark" (default, black bg) or "Stone" (lighter stone bg).
-    /// If a custom "eqswitch-custom.ico" exists next to the exe, it takes priority.
+    /// Custom tray icon path. Empty = use built-in Stone icon (default).
+    /// Users can browse to any .ico file on their system.
     /// </summary>
-    public string IconStyle { get; set; } = "Dark";
+    public string CustomIconPath { get; set; } = "";
 
     // Misc
     public bool ShowTooltipErrors { get; set; } = true;
@@ -55,8 +55,8 @@ public class AppConfig
     public bool RunAtStartup { get; set; } = false;
     public int PollingIntervalMs { get; set; } = 500;
 
-    /// <summary>Duration in ms for floating tooltips (default 3000ms).</summary>
-    public int TooltipDurationMs { get; set; } = 3000;
+    /// <summary>Duration in ms for floating tooltips (default 1500ms).</summary>
+    public int TooltipDurationMs { get; set; } = 1500;
 
     /// <summary>Show help tooltip when Ctrl+hovering the tray icon.</summary>
     public bool CtrlHoverHelp { get; set; } = true;

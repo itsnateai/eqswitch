@@ -969,9 +969,9 @@ public class TrayManager : IDisposable
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
         _config.CtrlHoverHelp = newConfig.CtrlHoverHelp;
 
-        // Update icon if style changed
-        var iconChanged = _config.IconStyle != newConfig.IconStyle;
-        _config.IconStyle = newConfig.IconStyle;
+        // Update icon if path changed
+        var iconChanged = _config.CustomIconPath != newConfig.CustomIconPath;
+        _config.CustomIconPath = newConfig.CustomIconPath;
         if (iconChanged && _trayIcon != null)
         {
             _trayIcon.Icon = LoadIcon();
@@ -1055,32 +1055,28 @@ public class TrayManager : IDisposable
         Icon newIcon;
         try
         {
-            var baseDir = AppDomain.CurrentDomain.BaseDirectory;
-
-            // Priority 1: User-provided custom .ico next to the exe
-            var customPath = Path.Combine(baseDir, "eqswitch-custom.ico");
-            if (File.Exists(customPath))
+            // Priority 1: User-selected custom icon path from settings
+            if (!string.IsNullOrEmpty(_config.CustomIconPath) && File.Exists(_config.CustomIconPath))
             {
-                newIcon = new Icon(customPath);
-                FileLogger.Info("Icon: loaded user-custom icon (eqswitch-custom.ico)");
+                newIcon = new Icon(_config.CustomIconPath, 32, 32);
+                FileLogger.Info($"Icon: loaded custom icon from {_config.CustomIconPath}");
             }
             else
             {
-                // Priority 2: Embedded icon based on config setting (Dark or Stone)
-                var resourceName = _config.IconStyle.Equals("Stone", StringComparison.OrdinalIgnoreCase)
-                    ? "EQSwitch.eqswitch-alt.ico"
-                    : "EQSwitch.eqswitch.ico";
-                var stream = typeof(TrayManager).Assembly.GetManifestResourceStream(resourceName);
-
+                // Priority 2: Default embedded Stone icon (eqswitch-alt.ico)
+                var stream = typeof(TrayManager).Assembly.GetManifestResourceStream("EQSwitch.eqswitch-alt.ico");
                 if (stream != null)
                 {
-                    newIcon = new Icon(stream);
+                    newIcon = new Icon(stream, 32, 32);
                 }
                 else
                 {
                     // Priority 3: Fall back to file on disk (dev/debug builds)
-                    var iconPath = Path.Combine(baseDir, "eqswitch.ico");
-                    newIcon = File.Exists(iconPath) ? new Icon(iconPath) : SystemIcons.Application;
+                    var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                    var iconPath = Path.Combine(baseDir, "eqswitch-alt.ico");
+                    if (!File.Exists(iconPath))
+                        iconPath = Path.Combine(baseDir, "eqswitch.ico");
+                    newIcon = File.Exists(iconPath) ? new Icon(iconPath, 32, 32) : SystemIcons.Application;
                 }
             }
         }

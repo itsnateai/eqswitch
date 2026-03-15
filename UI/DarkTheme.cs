@@ -6,21 +6,21 @@ namespace EQSwitch.UI;
 /// </summary>
 public static class DarkTheme
 {
-    // ─── Color Palette ───────────────────────────────────────────
-    public static readonly Color BgDark = Color.FromArgb(24, 24, 28);
-    public static readonly Color BgMedium = Color.FromArgb(36, 36, 42);
-    public static readonly Color BgInput = Color.FromArgb(44, 44, 52);
-    public static readonly Color BgHover = Color.FromArgb(55, 55, 65);
-    public static readonly Color BgPanel = Color.FromArgb(30, 30, 36);
-    public static readonly Color FgWhite = Color.FromArgb(230, 230, 235);
-    public static readonly Color FgGray = Color.FromArgb(140, 140, 155);
-    public static readonly Color FgDimGray = Color.FromArgb(100, 100, 115);
+    // ─── Color Palette (medieval purple tones) ─────────────────
+    public static readonly Color BgDark = Color.FromArgb(32, 28, 42);
+    public static readonly Color BgMedium = Color.FromArgb(44, 38, 56);
+    public static readonly Color BgInput = Color.FromArgb(52, 46, 66);
+    public static readonly Color BgHover = Color.FromArgb(64, 56, 78);
+    public static readonly Color BgPanel = Color.FromArgb(38, 33, 48);
+    public static readonly Color FgWhite = Color.FromArgb(235, 232, 240);
+    public static readonly Color FgGray = Color.FromArgb(160, 150, 175);
+    public static readonly Color FgDimGray = Color.FromArgb(120, 112, 135);
     public static readonly Color AccentGreen = Color.FromArgb(0, 140, 80);
     public static readonly Color AccentGreenHover = Color.FromArgb(0, 170, 100);
-    public static readonly Color Border = Color.FromArgb(55, 55, 65);
-    public static readonly Color TabActive = Color.FromArgb(44, 44, 52);
-    public static readonly Color TabInactive = Color.FromArgb(30, 30, 36);
-    public static readonly Color TabHoverBg = Color.FromArgb(40, 40, 48);
+    public static readonly Color Border = Color.FromArgb(64, 56, 78);
+    public static readonly Color TabActive = Color.FromArgb(52, 46, 66);
+    public static readonly Color TabInactive = Color.FromArgb(38, 33, 48);
+    public static readonly Color TabHoverBg = Color.FromArgb(48, 42, 60);
     public static readonly Color AccentBar = Color.FromArgb(0, 140, 80);
 
     // ─── Tab Control ─────────────────────────────────────────────
@@ -166,6 +166,51 @@ public static class DarkTheme
             ForeColor = FgWhite,
             BorderStyle = BorderStyle.FixedSingle,
             Font = new Font("Segoe UI", 9f)
+        };
+        parent.Controls.Add(tb);
+        return tb;
+    }
+
+    /// <summary>
+    /// TextBox for hotkey input that suppresses system beep on modifier keys.
+    /// Captures key combos like Alt+G, Ctrl+Shift+F1, or single keys like \ and ].
+    /// </summary>
+    public static TextBox AddHotkeyBox(Control parent, int x, int y, int width)
+    {
+        var tb = new TextBox
+        {
+            Location = new Point(x, y),
+            Size = new Size(width, 26),
+            BackColor = BgInput,
+            ForeColor = FgWhite,
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font("Segoe UI", 9f),
+            ShortcutsEnabled = false
+        };
+        tb.KeyDown += (_, e) =>
+        {
+            e.SuppressKeyPress = true; // Suppress beep on all keypresses
+
+            // Ignore standalone modifiers
+            if (e.KeyCode is Keys.ShiftKey or Keys.ControlKey or Keys.Menu or Keys.LMenu or Keys.RMenu
+                or Keys.LShiftKey or Keys.RShiftKey or Keys.LControlKey or Keys.RControlKey)
+                return;
+
+            // Build combo string
+            var parts = new List<string>();
+            if (e.Control) parts.Add("Ctrl");
+            if (e.Alt) parts.Add("Alt");
+            if (e.Shift) parts.Add("Shift");
+
+            string keyName = e.KeyCode switch
+            {
+                Keys.OemPipe or Keys.OemBackslash => "\\",
+                Keys.OemCloseBrackets => "]",
+                Keys.OemOpenBrackets => "[",
+                _ => e.KeyCode.ToString()
+            };
+            parts.Add(keyName);
+            tb.Text = string.Join("+", parts);
         };
         parent.Controls.Add(tb);
         return tb;
