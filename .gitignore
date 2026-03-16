@@ -37,3 +37,4 @@ $RECYCLE.BIN/
 *.orig
 *.rej
 ASSUMPTIONS.md
+eqclient.ini
