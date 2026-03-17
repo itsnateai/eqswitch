@@ -2,6 +2,11 @@
 
 All notable changes to EQ Switch are documented here.
 
+## v2.4 — 2026-03-17
+
+### New Features
+- **MaxFPS / MaxBGFPS controls** in Video Settings GUI — Edit+UpDown (0-99), writes to eqclient.ini `[Defaults]` section. 0 = no override. Matches C# port behavior.
+
 ## v2.3 — 2026-03-15
 
 ### New Features

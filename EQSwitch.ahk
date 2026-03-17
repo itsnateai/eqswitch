@@ -24,7 +24,7 @@ AppCleanup(reason, code) {
     return 0  ; allow exit
 }
 
-g_version        := "2.3"
+g_version        := "2.4"
 CFG_FILE         := A_ScriptDir "\eqswitch.cfg"
 EQ_TITLE         := "ahk_exe eqgame.exe"
 SETTINGS_OPEN    := false
@@ -2484,6 +2484,32 @@ OpenVideoModeEditor(*) {
     vmTitleBar := vm.AddEdit("x+4 yp-2 w45 Number", FIX_TOP_OFFSET)
     vm.AddText("x+4 yp+2", "px")
 
+    ; --- FPS Limits ---
+    vm.AddText("xm y+10 w400 h1 0x10")
+    vm.SetFont("s10 Bold", "Segoe UI")
+    vm.AddText("xm y+6 w400 c0xAA3300", "🎮  FPS Limits")
+    vm.SetFont("s9", "Segoe UI")
+
+    ReadFPS(key, def) {
+        try return Integer(IniRead(iniPath, "Defaults", key))
+        catch
+            return def
+    }
+    curMaxFPS   := ReadFPS("MaxFPS",   0)
+    curMaxBGFPS := ReadFPS("MaxBGFPS", 0)
+
+    vm.AddText("xm y+6", "MaxFPS:")
+    vmMaxFPS := vm.AddEdit("x+4 yp-2 w50 Number", curMaxFPS > 0 ? curMaxFPS : "")
+    vm.AddUpDown("Range0-99", curMaxFPS)
+    vm.AddText("x+4 yp+2 cGray", "(0-99)")
+
+    vm.AddText("x+14 yp", "MaxBGFPS:")
+    vmMaxBGFPS := vm.AddEdit("x+4 yp-2 w50 Number", curMaxBGFPS > 0 ? curMaxBGFPS : "")
+    vm.AddUpDown("Range0-99", curMaxBGFPS)
+    vm.AddText("x+4 yp+2 cGray", "(0-99)")
+
+    vm.AddText("xm y+3 cGray w400", "0 = no override. EQ must restart for changes to take effect.")
+
     vm.AddText("xm y+10 w400 h1 0x10")
     vm.AddButton("xm y+6 w80 h28 Default", "Save").OnEvent("Click", SaveAndCloseVM)
     vm.AddButton("x+8 yp w80 h28", "Apply").OnEvent("Click", ApplyVM)
@@ -2498,6 +2524,8 @@ OpenVideoModeEditor(*) {
         vmYOff.Value := 0
         vmWindowedMode.Value := 1
         vmTitleBar.Value := 0
+        vmMaxFPS.Value := ""
+        vmMaxBGFPS.Value := ""
         resPresetCombo.Choose(1)  ; "1920×1009" preset
         ; Clean up stale .tmp file if present
         tmpPath := iniPath ".tmp"
@@ -2519,6 +2547,15 @@ OpenVideoModeEditor(*) {
             ; Save title bar offset to EQSwitch config
             FIX_TOP_OFFSET := vmTitleBar.Value
             IniWrite(FIX_TOP_OFFSET, CFG_FILE, "EQSwitch", "FIX_TOP_OFFSET")
+            ; FPS limits — write to [Defaults] (same section as C# port)
+            fpsVal := 0
+            try fpsVal := Integer(vmMaxFPS.Value)
+            bgfpsVal := 0
+            try bgfpsVal := Integer(vmMaxBGFPS.Value)
+            if (fpsVal > 0)
+                IniWrite(fpsVal, iniPath, "Defaults", "MaxFPS")
+            if (bgfpsVal > 0)
+                IniWrite(bgfpsVal, iniPath, "Defaults", "MaxBGFPS")
             ShowTip("🖥 Video settings saved — toggle window mode or use Fix Windows to apply")
         } catch as err {
             ShowTip("⚠ Failed to save: " err.Message, 5000)

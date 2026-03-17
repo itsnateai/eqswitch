@@ -10,7 +10,7 @@ EQ Switch is a Windows tray utility for EverQuest multi-boxing. Single AHK v2 sc
 
 ## Build
 ```bash
-MSYS_NO_PATHCONV=1 "X:/_Projects/_tools/Ahk/Ahk2Exe.exe" /in eqswitch.ahk /out eqswitch.exe /icon eqswitch.ico /compress 0 /silent
+MSYS_NO_PATHCONV=1 "X:/_Projects/_.claude/_tools/Ahk/Ahk2Exe.exe" /in eqswitch.ahk /out eqswitch.exe /icon eqswitch.ico /compress 0 /silent
 ```
 `/compress 0` is required — compressed AHK executables trigger Windows Defender false positives.
 
@@ -102,7 +102,7 @@ All keys live in `[EQSwitch]` section. Defaults in parentheses:
 
 ## Status
 
-**v2.2 — Final release (shipped 2026-03-12)**
+**v2.4 — Current release (2026-03-17)**
 
 All audit items resolved. Tracking files cleared. See FINAL_REPORT.md for summary.
 
