@@ -1,7 +1,7 @@
-# EQSwitch v2.3.0 — Claude Code Context
+# EQSwitch v2.5.0 — Claude Code Context
 
 ## What This Is
-C# (.NET 8 WinForms) port of EQSwitch, an EverQuest multiboxing window manager originally written in AHK v2. Targets the Shards of Dalaya emulator community. v2.3.0 — added background FPS throttling and borderless fullscreen. ~27 files, ~5,700 lines.
+C# (.NET 8 WinForms) port of EQSwitch, an EverQuest multiboxing window manager originally written in AHK v2. Targets the Shards of Dalaya emulator community. v2.5.0 — quality of life improvements in progress. ~27 files, ~5,700 lines.
 
 **Repo**: `itsnateai/eqswitch_port` (private) | **Branch**: master
 
@@ -128,23 +128,22 @@ Settings uses a pending/staged approach:
 
 ## Status
 
-**v2.4.0 — In Progress (2026-03-14)**
+**v2.5.0 — In Progress (Quality of Life)**
 
-New in v2.4.0 (since v2.3.0):
+New in v2.5.0:
+- Reset Defaults button in Video Settings form
+
+Released in v2.4.0 (2026-03-14):
 - Reorganized tray context menu into grouped submenus (Video Settings, Settings, Launcher)
-- Restored emoji/icon prefixes on all menu items (medieval theme from AHK version)
-- Dark themed context menus via custom DarkMenuRenderer
-- Configurable tray click actions (single/double/triple/middle) with delayed resolution
-- TrayClickConfig in Settings → General tab (dropdown selectors for each click type)
-- Simplified CPU Affinity submenu (removed per-core checkboxes, info labels only)
-- Custom video presets (up to 3) in Video Settings form
-- Process Manager restyled with DataGridView dark retro theme
-- FloatingTooltip for "already running" instead of MessageBox
-- First-run auto-opens Settings for new users
+- Emoji/icon prefixes on all menu items (medieval theme)
+- Dark themed context menus (DarkMenuRenderer)
+- Configurable tray click actions with delayed resolution
+- Custom video presets (up to 3), Process Manager dark restyle
+- FloatingTooltip, first-run auto-opens Settings
 
-Previous (v2.3.0):
-- P2-04: Background FPS throttling (NtSuspendProcess/NtResumeProcess duty cycle)
-- P2-03: Borderless fullscreen mode (WinEQ Y+1 offset trick, rcMonitor bounds)
+Released in v2.3.0:
+- Background FPS throttling (NtSuspendProcess/NtResumeProcess duty cycle)
+- Borderless fullscreen mode (WinEQ Y+1 offset trick)
 
 ## Cloud Audit Instructions (Pre-Release)
 
@@ -203,7 +202,7 @@ When Cloud runs the deep audit on this project, go beyond surface-level checks. 
 ```
 eqswitch_port/
   Program.cs                    # Entry point, mutex, migration
-  EQSwitch.csproj               # .NET 8 WinForms, v2.3.0
+  EQSwitch.csproj               # .NET 8 WinForms, v2.5.0
   EQSwitch.sln                  # Solution with main + test projects
   Core/
     FileLogger.cs                # Persistent file logging (Info/Warn/Error)
