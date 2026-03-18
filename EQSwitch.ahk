@@ -359,8 +359,8 @@ if isFirstRun {
 }
 
 FirstRunWelcome(*) {
-    ShowTip("EQ Switch loaded — right-click the tray icon to get started ⚔", 5000)
-    SetTimer(OpenSettings, -2000)
+    ShowTip("EQ Switch loaded — opening Settings ⚔", 2000)
+    SetTimer(OpenSettings, -2500)
 }
 
 ; =========================================================
@@ -409,19 +409,23 @@ SwitchWindow(*) {
     if (g_multiMonState > 0 && visible.Length >= 2) {
         ; Read all current positions
         positions := []
+        validIds := []
         for id in visible {
+            if IsHungWindow(id)
+                continue
             try {
                 WinGetPos(&x, &y, &w, &h, "ahk_id " id)
                 positions.Push({x: x, y: y, w: w, h: h})
-            } catch {
-                positions.Push({x: 0, y: 0, w: 0, h: 0})
+                validIds.Push(id)
             }
         }
+        if (validIds.Length < 2)
+            return  ; not enough responsive windows to rotate
         ; Rotate positions: each window moves to the next window's position
-        count := visible.Length
+        count := validIds.Length
         Loop count {
             nextPos := positions[Mod(A_Index, count) + 1]
-            id := visible[A_Index]
+            id := validIds[A_Index]
             try {
                 if (WinGetMinMax("ahk_id " id) = 1)
                     WinRestore("ahk_id " id)
@@ -965,28 +969,12 @@ OpenNotes(*) {
             NOTES_FILE := defaultPath
             SaveConfig()
         } else {
-            ; First-run: ask the user
-            result := MsgBox(
-                "No notes file configured.`n`n" .
-                "Yes — pick an existing .txt file`n" .
-                "No — create notes.txt in the EQ Switch folder`n" .
-                "Cancel — do nothing",
-                "EQ Switch — Notes Setup", "YesNoCancel Icon?")
-            if (result = "Yes") {
-                f := FileSelect(, , "Select your notes .txt file", "Text Files (*.txt)")
-                if (f = "")
-                    return
-                notesPath  := f
-                NOTES_FILE := f
-                SaveConfig()
-            } else if (result = "No") {
-                notesPath  := defaultPath
-                FileAppend("== EQ Notes ==`n`n", notesPath)
-                NOTES_FILE := defaultPath
-                SaveConfig()
-            } else {
-                return
-            }
+            ; First-run: auto-create notes.txt in the EQ Switch folder
+            notesPath  := defaultPath
+            FileAppend("== EQ Notes ==`n`n", notesPath)
+            NOTES_FILE := defaultPath
+            SaveConfig()
+            ShowTip("📝 Created notes.txt — change path in Settings if needed", 5000)
         }
     }
 
@@ -1511,7 +1499,7 @@ EQ's CPUAffinity1-6 in eqclient.ini are per-character core preferences (max 6). 
 Backs up and restores character UI layout and keybind files.
 
 • Server — your EQ server name (for file paths).
-• Char — type or pick a recent character (saved on Apply).
+• Char — type or pick a recent character (saved on Backup).
 • Backup — copies config files to Desktop.
 • Restore — copies them back (overwrites existing).
 
@@ -2270,7 +2258,14 @@ OpenProcessManager(*) {
     ForceApplyAll(*) {
         ; Read current UI state, not just saved config — same logic as ApplyPM
         ApplyPM()
-        ShowTip("⚡ Settings forced on all running EQ processes!")
+        ; Check if there were actually processes to apply to
+        eqCount := 0
+        for id in WinGetList("ahk_exe eqgame.exe")
+            eqCount++
+        if (eqCount > 0)
+            ShowTip("⚡ Settings applied to " eqCount " running EQ process(es)!")
+        else
+            ShowTip("⚡ Settings saved — will apply on next EQ launch")
     }
 
     ; ── Process Priority ──
@@ -2554,8 +2549,12 @@ OpenVideoModeEditor(*) {
             try bgfpsVal := Integer(vmMaxBGFPS.Value)
             if (fpsVal > 0)
                 IniWrite(fpsVal, iniPath, "Defaults", "MaxFPS")
+            else
+                try IniDelete(iniPath, "Defaults", "MaxFPS")
             if (bgfpsVal > 0)
                 IniWrite(bgfpsVal, iniPath, "Defaults", "MaxBGFPS")
+            else
+                try IniDelete(iniPath, "Defaults", "MaxBGFPS")
             ShowTip("🖥 Video settings saved — toggle window mode or use Fix Windows to apply")
         } catch as err {
             ShowTip("⚠ Failed to save: " err.Message, 5000)
@@ -2590,8 +2589,10 @@ LaunchOne(*) {
         return
     }
     ; Debounce: ignore rapid double-clicks within 3 seconds
-    if (A_TickCount - lastLaunch < 3000)
+    if (A_TickCount - lastLaunch < 3000) {
+        ShowTip("⚠ Please wait — launch cooldown", 1500)
         return
+    }
     lastLaunch := A_TickCount
     if !FileExist(EQ_EXE) {
         ShowTip("⚠ EQ executable not found — check Settings")
@@ -2694,16 +2695,19 @@ LaunchBoth(*) {
 
     DoFinalize() {
         global g_launchActive, FIX_MODE
-        ; Only auto-arrange in multimonitor mode — single screen lets EQ use eqclient.ini positioning
-        if (launchFixMode = "multimonitor") {
-            ShowTip("🪟 Arranging windows...", 3000)
-            savedMode := FIX_MODE
-            FIX_MODE := launchFixMode
-            FixWindows()
-            FIX_MODE := savedMode
+        try {
+            ; Only auto-arrange in multimonitor mode — single screen lets EQ use eqclient.ini positioning
+            if (launchFixMode = "multimonitor") {
+                ShowTip("🪟 Arranging windows...", 3000)
+                savedMode := FIX_MODE
+                FIX_MODE := launchFixMode
+                FixWindows()
+                FIX_MODE := savedMode
+            }
+            ShowTip("✅ Ready to play!")
+        } finally {
+            g_launchActive := false
         }
-        g_launchActive := false
-        ShowTip("✅ Ready to play!")
     }
 
     DoNextLaunch()

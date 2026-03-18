@@ -17,11 +17,10 @@ MSYS_NO_PATHCONV=1 "X:/_Projects/_.claude/_tools/Ahk/Ahk2Exe.exe" /in eqswitch.a
 ## Key Files
 | File | Purpose |
 |------|---------|
-| EQSwitch.ahk | Main source (~2,640 lines) |
+| EQSwitch.ahk | Main source (~2,720 lines) |
 | eqswitch.ico | Tray/exe icon (embedded via @Ahk2Exe-AddResource) |
 | eqswitch.cfg | User config (gitignored, INI format) |
-| CHANGELOG.md | Full version history v1.0 — v2.0 |
-| FINAL_REPORT.md | Project summary and audit results |
+| CHANGELOG.md | Full version history v1.0 — v2.4 |
 
 ## Architecture
 
@@ -104,7 +103,7 @@ All keys live in `[EQSwitch]` section. Defaults in parentheses:
 
 **v2.4 — Current release (2026-03-17)**
 
-All audit items resolved. Tracking files cleared. See FINAL_REPORT.md for summary.
+All audit items resolved. See CHANGELOG.md for full version history.
 
 **Production audit v3 (2026-03-13):** 1 P1 fix (middle-click cooldown was non-functional), 4 P3 doc fixes. See AUDIT_TASKS.md for full results.
 
