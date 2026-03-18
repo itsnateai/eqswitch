@@ -46,7 +46,7 @@ public class VideoSettingsForm : Form
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 Video Settings", new Size(420, 440));
+        DarkTheme.StyleForm(this, "EQSwitch \u2014 Video Settings", new Size(460, 440));
 
         int y = 15;
 
@@ -104,19 +104,22 @@ public class VideoSettingsForm : Form
 
         // Buttons
         y += 20;
-        var btnBackup = DarkTheme.MakeButton("\uD83D\uDCBE Backup", DarkTheme.BgMedium, 20, y);
+        var btnBackup = DarkTheme.MakeButton("\uD83D\uDCBE Backup", DarkTheme.BgMedium, 15, y);
         btnBackup.Click += (_, _) => BackupIni();
 
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 120, y);
+        var btnReset = DarkTheme.MakeButton("\uD83D\uDD04 Reset", DarkTheme.BgMedium, 100, y);
+        btnReset.Click += (_, _) => ResetDefaults();
+
+        var btnSave = DarkTheme.MakePrimaryButton("Save", 185, y);
         btnSave.Click += (_, _) => { SaveToIni(); Close(); };
 
-        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 210, y);
+        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 270, y);
         btnApply.Click += (_, _) => { SaveToIni(); };
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 300, y);
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 355, y);
         btnCancel.Click += (_, _) => Close();
 
-        Controls.AddRange(new Control[] { btnBackup, btnSave, btnApply, btnCancel });
+        Controls.AddRange(new Control[] { btnBackup, btnReset, btnSave, btnApply, btnCancel });
     }
 
     private void LoadFromIni()
@@ -197,6 +200,20 @@ public class VideoSettingsForm : Form
             FileLogger.Error("VideoSettings: load error", ex);
             _cboPreset.SelectedIndex = 0;
         }
+    }
+
+    /// <summary>
+    /// Reset form controls to safe EQ defaults (matches AHK version ResetVMDefaults).
+    /// Does not write to disk — user must click Save or Apply to persist.
+    /// </summary>
+    private void ResetDefaults()
+    {
+        _cboPreset.SelectedIndex = 0; // "1920x1080 (Full HD)" — triggers width/height update via event
+        _nudOffsetX.Value = 0;
+        _nudOffsetY.Value = 0;
+        _chkWindowed.Checked = true;
+        _chkDisableLog.Checked = false;
+        _nudTopOffset.Value = 0;
     }
 
     private void BackupIni()
