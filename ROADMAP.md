@@ -131,7 +131,7 @@ public const uint SWP_NOOWNERZORDER = 0x0200;
 
 ## v2.5 — Quality of Life
 
-- [ ] Reset Defaults button in Video Settings form
+- [x] Reset Defaults button in Video Settings form
 - [ ] Reset Defaults button in Process Manager form
 - [ ] Per-client CPU affinity — assign different core sets to each EQ client
 - [ ] Per-client process priority — e.g. main=High, alt=Normal
