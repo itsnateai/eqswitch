@@ -1,5 +1,37 @@
 # Changelog
 
+## v2.5.0 — Quality of Life (in progress)
+
+### Added
+- **Reset Defaults button in Video Settings form** — resets Width/Height (1920×1080), offsets (0,0), Windowed Mode (on), Disable Log (off), Title Bar Offset (0). Matches AHK v2.4 `ResetVMDefaults`. Requires Save or Apply to write to disk.
+
+---
+
+## v2.4.0 — Tray UX Overhaul (2026-03-14)
+
+### Added
+- **Configurable tray click actions** — Settings → General tab lets users bind single/double/triple/middle-click to specific actions (Launch One, Fix Windows, Open Settings, etc.)
+- **Custom video presets** — Save up to 3 custom resolutions in Video Settings (FIFO eviction, duplicates skipped)
+- **Dark-themed context menus** — `DarkMenuRenderer` applies dark background/foreground to all tray menu items
+- **FloatingTooltip** — replaces `MessageBox.Show` "already running" popup with a non-blocking floating tooltip
+
+### Changed
+- **Tray context menu reorganized** into grouped submenus (Video Settings, Settings, Launcher)
+- **Medieval emoji/icon prefixes** restored on all tray menu items (matches AHK v2.4 style)
+- **CPU Affinity submenu simplified** — removed per-core checkboxes, shows info labels only
+- **Process Manager** restyled with dark DataGridView theme
+- **First-run** now auto-opens Settings instead of requiring manual navigation
+
+---
+
+## v2.3.0 — Performance & Fullscreen (2026-03-13)
+
+### Added
+- **Background FPS throttling** (`Core/ThrottleManager.cs`) — duty-cycles background EQ clients via `NtSuspendProcess`/`NtResumeProcess`. Configurable throttle percent (0-90%) and cycle interval. Active client is never throttled. Settings on Affinity tab.
+- **Borderless fullscreen mode** — WinEQ Y+1 offset trick: strips window decorations and positions at `(monitor.Left, monitor.Top+1)` using `rcMonitor` bounds. Preserves Alt+Tab and PiP window overlay. Checkbox on Layout tab.
+
+---
+
 ## v2.2.0 — Production Hardening (2026-03-12)
 
 ### Added
