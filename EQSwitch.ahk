@@ -42,6 +42,8 @@ g_multiMonState  := 0  ; updated after LoadConfig if FIX_MODE = multimonitor
 g_launchOneLabel := "⚔  Launch Client"
 g_launchAllLabel := "🎮  Launch Both"
 g_tripleClickCooldown := 0
+g_sessionStart   := A_TickCount
+g_switchCount    := 0
 g_launchActive   := false
 g_pmOpen         := false
 
@@ -346,9 +348,13 @@ if (FIX_MODE = "multimonitor")
 
 ; Keep the tray tooltip in sync with the active switch key
 UpdateTrayTip() {
-    global EQ_HOTKEY, g_version
+    global EQ_HOTKEY, g_version, g_sessionStart, g_switchCount
     keyDisplay := (EQ_HOTKEY != "") ? EQ_HOTKEY : "none"
-    A_IconTip  := "EQ Switch v" g_version "  |  Switch key: " keyDisplay
+    elapsed := (A_TickCount - g_sessionStart) // 60000  ; minutes
+    hours := elapsed // 60
+    mins := Mod(elapsed, 60)
+    timeStr := (hours > 0) ? hours "h " mins "m" : mins "m"
+    A_IconTip := "EQ Switch v" g_version "  |  Key: " keyDisplay "  |  " timeStr ", " g_switchCount " switches"
 }
 UpdateTrayTip()
 
@@ -440,6 +446,8 @@ SwitchWindow(*) {
             WinRestore("ahk_id " visible[nextIndex])
     }
     try WinActivate("ahk_id " visible[nextIndex])
+    g_switchCount++
+    UpdateTrayTip()
 }
 
 BindHotkey(EQ_HOTKEY)
@@ -1478,6 +1486,7 @@ EQ only re-reads these values when you toggle window mode (windowed to fullscree
 
 Shows a live thumbnail of inactive EQ windows as a floating overlay.
 
+• Ctrl+click to switch to that window.
 • Ctrl+drag to reposition (position is saved).
 • Click-through enabled — clicks pass to EQ underneath.
 • Size presets: Small, Medium, Large, XL, XXL, or Custom.
@@ -1576,7 +1585,7 @@ OpenSettings(*) {
 
     g := Gui("+AlwaysOnTop", "⚔ EQ Switch v" g_version " — Options")
     g.OnEvent("Close",   CleanupSettings)   ; X button / Alt-F4
-    g.OnEvent("Escape",  CleanupSettings)   ; Escape key
+    g.OnEvent("Escape",  (*) => (CleanupSettings(), g.Destroy()))  ; Escape key
     g.SetFont("s9", "Segoe UI")
     g.MarginX := 14
     g.MarginY := 10
@@ -1826,17 +1835,38 @@ PiPHitTest(wParam, lParam, msg, hwnd) {
     }
 }
 PiPCtrlWatch(*) {
-    global g_pipGui, g_pipEnabled
+    global g_pipGui, g_pipEnabled, g_pipAltWindows, PIP_HEIGHT
     if (!g_pipEnabled || !g_pipGui)
         return
     pipHwnd := g_pipGui.Hwnd
     static wasCtrl := false
+    static ctrlPosX := 0, ctrlPosY := 0
     isCtrl := GetKeyState("Ctrl", "P")
     if (isCtrl && !wasCtrl) {
         ; Remove WS_EX_TRANSPARENT so PiP receives mouse input
         exStyle := WinGetExStyle("ahk_id " pipHwnd)
         WinSetExStyle(exStyle & ~0x20, "ahk_id " pipHwnd)
+        ; Save PiP position to detect click vs drag on release
+        try WinGetPos(&ctrlPosX, &ctrlPosY, , , "ahk_id " pipHwnd)
     } else if (!isCtrl && wasCtrl) {
+        ; Check if PiP was clicked without moving (click-to-switch)
+        try {
+            WinGetPos(&newX, &newY, , , "ahk_id " pipHwnd)
+            if (newX = ctrlPosX && newY = ctrlPosY && g_pipAltWindows.Length > 0) {
+                ; PiP didn't move — treat as click-to-switch
+                ; Determine which thumbnail by cursor Y relative to PiP
+                CoordMode("Mouse", "Screen")
+                MouseGetPos(&mx, &my)
+                relY := my - newY
+                thumbIdx := (relY >= 0) ? Min(relY // (PIP_HEIGHT + 4) + 1, g_pipAltWindows.Length) : 1
+                targetId := g_pipAltWindows[thumbIdx]
+                try {
+                    if (WinGetMinMax("ahk_id " targetId) = -1)
+                        WinRestore("ahk_id " targetId)
+                    WinActivate("ahk_id " targetId)
+                }
+            }
+        }
         ; Restore WS_EX_TRANSPARENT for click-through
         exStyle := WinGetExStyle("ahk_id " pipHwnd)
         WinSetExStyle(exStyle | 0x20, "ahk_id " pipHwnd)
@@ -2046,6 +2076,10 @@ RefreshPiP(*) {
 SwapPiPSources(visible, activeID) {
     global g_pipGui, g_pipThumbnails, g_pipLastActive
     global PIP_WIDTH, PIP_HEIGHT
+    static rebuilding := false
+    if rebuilding
+        return
+
 
     ; Find non-active EQ windows (max 3)
     altWindows := []
@@ -2061,8 +2095,13 @@ SwapPiPSources(visible, activeID) {
 
     ; If alt window count changed, need full rebuild for GUI resize
     if (altWindows.Length != g_pipThumbnails.Length) {
-        DestroyPiP()
-        CreatePiP()
+        rebuilding := true
+        try {
+            DestroyPiP()
+            CreatePiP()
+        } finally {
+            rebuilding := false
+        }
         return
     }
 
