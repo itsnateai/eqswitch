@@ -1,5 +1,7 @@
 # ⚔ EQ Switch
 
+> **Note:** This is the original AutoHotkey v2 version of EQSwitch. A full-featured C# (.NET 8) rewrite — **[EQSwitch C# Edition](../eqswitch_port)** — is now the actively developed successor. It adds background FPS throttling, borderless fullscreen, DWM PiP thumbnails, per-client affinity overrides, character profiles, dark theme settings GUI, and more. New users should start there.
+
 **EQ Switch** is a lightweight Windows tray utility for **EQ** that lets you instantly flip between multiple game clients with a single keypress — plus a suite of tools for managing your multibox session.
 
 > Built with AutoHotkey v2. No installation required. Single `.exe`, no system footprint.
