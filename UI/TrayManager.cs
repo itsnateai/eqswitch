@@ -446,6 +446,8 @@ public class TrayManager : IDisposable
 
     private void BuildContextMenu()
     {
+        // Dispose old menu and all its items before rebuilding (prevents leak if called multiple times)
+        _contextMenu?.Dispose();
         _contextMenu = new ContextMenuStrip();
         _contextMenu.Renderer = new DarkMenuRenderer();
 
@@ -1004,6 +1006,10 @@ public class TrayManager : IDisposable
         _hotkeyManager.UnregisterAll();
         _keyboardHook.Reset();
         RegisterHotkeys();
+
+        // Rebuild context menu so hotkey labels and client count reflect new config
+        BuildContextMenu();
+        UpdateClientMenu();
 
         // Restart or stop affinity timer based on new config
         _affinityTimer?.Stop();
