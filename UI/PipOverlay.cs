@@ -93,52 +93,59 @@ public class PipOverlay : Form
     /// </summary>
     public void UpdateSources(IReadOnlyList<EQClient> clients, EQClient? activeClient)
     {
-        // Get background windows (exclude the active one)
-        var backgrounds = clients
-            .Where(c => c != activeClient && NativeMethods.IsWindow(c.WindowHandle))
-            .Take(_config.Pip.MaxWindows)
-            .ToList();
+        // Fast path: check if sources changed WITHOUT allocating a list first.
+        // This fires on every foreground change across the desktop (event-driven hook),
+        // so avoiding allocation on the common no-change path matters.
+        int maxWin = _config.Pip.MaxWindows;
+        int bgCount = 0;
+        bool changed = false;
 
-        if (backgrounds.Count == 0)
+        foreach (var c in clients)
+        {
+            if (c == activeClient || !NativeMethods.IsWindow(c.WindowHandle)) continue;
+            if (bgCount < maxWin)
+            {
+                // Compare against current source windows as we go
+                if (!changed && (bgCount >= _sourceWindows.Count || c.WindowHandle != _sourceWindows[bgCount]))
+                    changed = true;
+                bgCount++;
+            }
+            else break;
+        }
+
+        // Count mismatch means sources changed
+        if (bgCount != _sourceWindows.Count) changed = true;
+
+        if (bgCount == 0)
         {
             UnregisterAll();
             return;
         }
 
-        // Check if sources changed
-        bool changed = backgrounds.Count != _sourceWindows.Count;
-        if (!changed)
-        {
-            for (int i = 0; i < backgrounds.Count; i++)
-            {
-                if (backgrounds[i].WindowHandle != _sourceWindows[i])
-                {
-                    changed = true;
-                    break;
-                }
-            }
-        }
-
         if (!changed) return;
 
-        // Rebuild thumbnails
+        // Rebuild thumbnails — only now do we need the actual window handles
         UnregisterAll();
 
         var (w, h) = _config.Pip.GetSize();
         int borderPad = _config.Pip.ShowBorder ? 1 : 0;
         int gap = _config.Pip.ShowBorder ? 3 : 2;
+        int idx = 0;
 
-        for (int i = 0; i < backgrounds.Count; i++)
+        foreach (var client in clients)
         {
-            var srcHwnd = backgrounds[i].WindowHandle;
+            if (client == activeClient || !NativeMethods.IsWindow(client.WindowHandle)) continue;
+            if (idx >= maxWin) break;
+
+            var srcHwnd = client.WindowHandle;
             int hr = NativeMethods.DwmRegisterThumbnail(Handle, srcHwnd, out IntPtr thumbId);
             if (hr != 0)
             {
-                FileLogger.Warn($"PiP: DwmRegisterThumbnail failed ({MapDwmError(hr)}) for {backgrounds[i]}");
+                FileLogger.Warn($"PiP: DwmRegisterThumbnail failed ({MapDwmError(hr)}) for {client}");
                 continue;
             }
 
-            int yPos = i * (h + gap) + borderPad;
+            int yPos = idx * (h + gap) + borderPad;
 
             var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
             {
@@ -162,7 +169,8 @@ public class PipOverlay : Form
             _thumbnailIds.Add(thumbId);
             _sourceWindows.Add(srcHwnd);
 
-            FileLogger.Info($"PiP: registered thumbnail for {backgrounds[i]}");
+            FileLogger.Info($"PiP: registered thumbnail for {client}");
+            idx++;
         }
 
         // Resize the overlay to fit actual number of thumbnails
@@ -210,6 +218,12 @@ public class PipOverlay : Form
         _thumbnailIds.Clear();
         _sourceWindows.Clear();
     }
+
+    /// <summary>
+    /// PIDs of the source windows currently being thumbnailed.
+    /// Used by ThrottleManager to exempt these from suspension.
+    /// </summary>
+    public IReadOnlyList<IntPtr> SourceWindows => _sourceWindows;
 
     private static string MapDwmError(int hr) => unchecked((uint)hr) switch
     {

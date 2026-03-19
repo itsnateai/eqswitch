@@ -17,11 +17,17 @@ public class ProcessManager : IDisposable
     private readonly List<EQClient> _clients = new();
     private readonly object _lock = new();
 
+    // Copy-on-write snapshot: only rebuilt when _clients changes.
+    // Avoids allocating a new List on every .Clients access (250ms affinity timer = 1M+ reads/72h).
+    private IReadOnlyList<EQClient> _snapshot = Array.Empty<EQClient>();
+
     /// <summary>
     /// Idle polling interval when no EQ clients are running (ms).
     /// 5 seconds is plenty — EQ is launched externally, no rush to detect.
     /// </summary>
     private const int IdlePollingMs = 5000;
+
+    private bool _isRefreshing;
 
     public event EventHandler<EQClient>? ClientDiscovered;
     public event EventHandler<EQClient>? ClientLost;
@@ -29,12 +35,21 @@ public class ProcessManager : IDisposable
 
     public IReadOnlyList<EQClient> Clients
     {
-        get { lock (_lock) return _clients.ToList().AsReadOnly(); }
+        get { lock (_lock) return _snapshot; }
     }
 
     public int ClientCount
     {
         get { lock (_lock) return _clients.Count; }
+    }
+
+    /// <summary>
+    /// Rebuild the copy-on-write snapshot. Call inside the lock after any mutation of _clients.
+    /// Uses ToArray() (single allocation) instead of ToList().AsReadOnly() (two allocations).
+    /// </summary>
+    private void InvalidateSnapshot()
+    {
+        _snapshot = _clients.ToArray();
     }
 
     public ProcessManager(AppConfig config)
@@ -61,33 +76,49 @@ public class ProcessManager : IDisposable
     /// </summary>
     public void RefreshClients()
     {
+        // Guard against re-entrancy (e.g. manual call while timer tick is mid-flight)
+        if (_isRefreshing) return;
+        _isRefreshing = true;
+
         Process[]? eqProcesses = null;
 
-        // Collect events to fire outside the lock
-        var lostClients = new List<EQClient>();
-        var discoveredClients = new List<EQClient>();
+        // Collect events to fire outside the lock (lazy-init to avoid allocation on quiet polls)
+        List<EQClient>? lostClients = null;
+        List<EQClient>? discoveredClients = null;
         bool listChanged = false;
 
         try
         {
             eqProcesses = Process.GetProcessesByName(_config.EQProcessName);
-            var currentPids = new HashSet<int>(eqProcesses.Select(p => p.Id));
 
             lock (_lock)
             {
-                // Remove dead clients
-                var dead = _clients.Where(c => !currentPids.Contains(c.ProcessId) || !c.IsProcessAlive()).ToList();
-                foreach (var client in dead)
+                // Remove dead clients — iterate backward to avoid index shifting.
+                // Linear scan of eqProcesses (typically 1-6) is faster than HashSet for small N.
+                for (int i = _clients.Count - 1; i >= 0; i--)
                 {
-                    _clients.Remove(client);
-                    lostClients.Add(client);
+                    var client = _clients[i];
+                    bool foundInProcesses = false;
+                    for (int j = 0; j < eqProcesses.Length; j++)
+                    {
+                        if (eqProcesses[j].Id == client.ProcessId) { foundInProcesses = true; break; }
+                    }
+                    if (!foundInProcesses || !client.IsProcessAlive())
+                    {
+                        _clients.RemoveAt(i);
+                        (lostClients ??= new List<EQClient>()).Add(client);
+                    }
                 }
 
-                // Discover new clients
-                var knownPids = new HashSet<int>(_clients.Select(c => c.ProcessId));
+                // Discover new clients — linear scan of _clients (typically 1-6)
                 foreach (var proc in eqProcesses)
                 {
-                    if (knownPids.Contains(proc.Id)) continue;
+                    bool alreadyKnown = false;
+                    for (int k = 0; k < _clients.Count; k++)
+                    {
+                        if (_clients[k].ProcessId == proc.Id) { alreadyKnown = true; break; }
+                    }
+                    if (alreadyKnown) continue;
 
                     try
                     {
@@ -105,7 +136,7 @@ public class ProcessManager : IDisposable
                         MatchCharacterProfile(client);
 
                         _clients.Add(client);
-                        discoveredClients.Add(client);
+                        (discoveredClients ??= new List<EQClient>()).Add(client);
                     }
                     catch (InvalidOperationException)
                     {
@@ -123,7 +154,11 @@ public class ProcessManager : IDisposable
                 bool titleChanged = false;
                 foreach (var proc in eqProcesses)
                 {
-                    var client = _clients.FirstOrDefault(c => c.ProcessId == proc.Id);
+                    EQClient? client = null;
+                    for (int k = 0; k < _clients.Count; k++)
+                    {
+                        if (_clients[k].ProcessId == proc.Id) { client = _clients[k]; break; }
+                    }
                     if (client == null) continue;
 
                     // Update stale window handle from process
@@ -144,7 +179,11 @@ public class ProcessManager : IDisposable
                     }
                 }
 
-                listChanged = lostClients.Count > 0 || discoveredClients.Count > 0 || titleChanged;
+                listChanged = lostClients != null || discoveredClients != null || titleChanged;
+
+                // Rebuild snapshot only when list actually changed
+                if (listChanged)
+                    InvalidateSnapshot();
             }
         }
         catch (InvalidOperationException)
@@ -164,13 +203,16 @@ public class ProcessManager : IDisposable
             if (eqProcesses != null)
                 foreach (var p in eqProcesses)
                     p.Dispose();
+            _isRefreshing = false;
         }
 
         // Fire events OUTSIDE the lock to prevent deadlocks
-        foreach (var client in lostClients)
-            ClientLost?.Invoke(this, client);
-        foreach (var client in discoveredClients)
-            ClientDiscovered?.Invoke(this, client);
+        if (lostClients != null)
+            foreach (var client in lostClients)
+                ClientLost?.Invoke(this, client);
+        if (discoveredClients != null)
+            foreach (var client in discoveredClients)
+                ClientDiscovered?.Invoke(this, client);
         if (listChanged)
             ClientListChanged?.Invoke(this, EventArgs.Empty);
 
@@ -193,7 +235,11 @@ public class ProcessManager : IDisposable
         NativeMethods.GetWindowThreadProcessId(foreground, out uint fgPid);
         lock (_lock)
         {
-            var client = _clients.FirstOrDefault(c => c.ProcessId == (int)fgPid);
+            EQClient? client = null;
+            for (int i = 0; i < _clients.Count; i++)
+            {
+                if (_clients[i].ProcessId == (int)fgPid) { client = _clients[i]; break; }
+            }
             if (client != null && client.WindowHandle != foreground)
             {
                 // Update stale handle
@@ -212,7 +258,11 @@ public class ProcessManager : IDisposable
     {
         lock (_lock)
         {
-            return _clients.FirstOrDefault(c => c.SlotIndex == slot);
+            for (int i = 0; i < _clients.Count; i++)
+            {
+                if (_clients[i].SlotIndex == slot) return _clients[i];
+            }
+            return null;
         }
     }
 
@@ -220,19 +270,29 @@ public class ProcessManager : IDisposable
     {
         if (string.IsNullOrEmpty(client.CharacterName)) return;
 
-        var profile = _config.Characters.FirstOrDefault(
-            c => c.Name.Equals(client.CharacterName, StringComparison.OrdinalIgnoreCase));
-
-        if (profile != null)
-            client.SlotIndex = profile.SlotIndex;
+        var characters = _config.Characters;
+        for (int i = 0; i < characters.Count; i++)
+        {
+            if (characters[i].Name.Equals(client.CharacterName, StringComparison.OrdinalIgnoreCase))
+            {
+                client.SlotIndex = characters[i].SlotIndex;
+                return;
+            }
+        }
     }
+
+    // Reuse StringBuilder across calls to avoid allocating one every 500ms per window.
+    // Over 72h with 4 windows: 4 × 2/sec × 259,200s = ~2M allocations avoided.
+    [ThreadStatic] private static StringBuilder? t_titleBuffer;
 
     private static string GetWindowTitle(IntPtr hwnd)
     {
         int len = NativeMethods.GetWindowTextLength(hwnd);
         if (len <= 0) return "";
 
-        var sb = new StringBuilder(len + 1);
+        var sb = t_titleBuffer ??= new StringBuilder(256);
+        sb.Clear();
+        if (sb.Capacity < len + 1) sb.Capacity = len + 1;
         NativeMethods.GetWindowText(hwnd, sb, sb.Capacity);
         return sb.ToString();
     }

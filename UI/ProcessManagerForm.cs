@@ -13,17 +13,18 @@ public class ProcessManagerForm : Form
 {
     private const int RefreshIntervalMs = 1000;
 
-    private static readonly Color BgDark = Color.FromArgb(16, 16, 24);
-    private static readonly Color BgMedium = Color.FromArgb(32, 32, 48);
-    private static readonly Color BgRow = Color.FromArgb(20, 20, 32);
-    private static readonly Color BgRowAlt = Color.FromArgb(28, 28, 40);
-    private static readonly Color BgHeader = Color.FromArgb(40, 40, 64);
-    private static readonly Color BgActive = Color.FromArgb(0, 80, 40);
-    private static readonly Color FgWhite = Color.FromArgb(200, 200, 220);
-    private static readonly Color FgGray = Color.FromArgb(120, 130, 160);
-    private static readonly Color FgCyan = Color.FromArgb(100, 200, 220);
-    private static readonly Color AccentGreen = Color.FromArgb(0, 140, 60);
-    private static readonly Color GridLine = Color.FromArgb(50, 50, 80);
+    // Unified with DarkTheme palette
+    private static readonly Color BgDark = DarkTheme.BgDark;
+    private static readonly Color BgMedium = DarkTheme.BgMedium;
+    private static readonly Color BgRow = DarkTheme.BgDark;
+    private static readonly Color BgRowAlt = DarkTheme.BgPanel;
+    private static readonly Color BgHeader = DarkTheme.BgInput;
+    private static readonly Color BgActive = DarkTheme.AccentGreen;
+    private static readonly Color FgWhite = DarkTheme.FgWhite;
+    private static readonly Color FgGray = DarkTheme.FgGray;
+    private static readonly Color FgCyan = DarkTheme.CardCyan;
+    private static readonly Color AccentGreen = DarkTheme.AccentGreen;
+    private static readonly Color GridLine = DarkTheme.Border;
 
     private readonly Func<IReadOnlyList<EQClient>> _getClients;
     private readonly Func<EQClient?> _getActiveClient;
@@ -33,6 +34,7 @@ public class ProcessManagerForm : Form
     private Label _systemInfoLabel = null!;
     private Label _statusLabel = null!;
     private System.Windows.Forms.Timer _refreshTimer = null!;
+    private bool _isRefreshing;
 
     public ProcessManagerForm(
         Func<IReadOnlyList<EQClient>> getClients,
@@ -175,48 +177,57 @@ public class ProcessManagerForm : Form
 
     private void RefreshList()
     {
-        var clients = _getClients();
-        var active = _getActiveClient();
-
-        _grid.Rows.Clear();
-
-        foreach (var client in clients)
+        if (_isRefreshing) return;
+        _isRefreshing = true;
+        try
         {
-            var (procMask, _) = AffinityManager.GetProcessAffinity(client.ProcessId);
-            var priority = AffinityManager.GetProcessPriorityName(client.ProcessId);
-            var name = client.CharacterName ?? client.WindowTitle;
-            if (string.IsNullOrEmpty(name)) name = $"Client {client.SlotIndex + 1}";
+            var clients = _getClients();
+            var active = _getActiveClient();
 
-            int rowIdx = _grid.Rows.Add(
-                (client.SlotIndex + 1).ToString(),
-                client.ProcessId.ToString(),
-                name,
-                priority,
-                $"0x{procMask:X}");
+            _grid.Rows.Clear();
 
-            // Highlight active client row
-            if (client == active)
+            foreach (var client in clients)
             {
-                var row = _grid.Rows[rowIdx];
-                foreach (DataGridViewCell cell in row.Cells)
+                var (procMask, _) = AffinityManager.GetProcessAffinity(client.ProcessId);
+                var priority = AffinityManager.GetProcessPriorityName(client.ProcessId);
+                var name = client.CharacterName ?? client.WindowTitle;
+                if (string.IsNullOrEmpty(name)) name = $"Client {client.SlotIndex + 1}";
+
+                int rowIdx = _grid.Rows.Add(
+                    (client.SlotIndex + 1).ToString(),
+                    client.ProcessId.ToString(),
+                    name,
+                    priority,
+                    $"0x{procMask:X}");
+
+                // Highlight active client row
+                if (client == active)
                 {
-                    cell.Style.BackColor = BgActive;
-                    cell.Style.SelectionBackColor = BgActive;
+                    var row = _grid.Rows[rowIdx];
+                    foreach (DataGridViewCell cell in row.Cells)
+                    {
+                        cell.Style.BackColor = BgActive;
+                        cell.Style.SelectionBackColor = BgActive;
+                    }
                 }
             }
+
+            // Update status
+            int count = clients.Count;
+            _statusLabel.Text = count switch
+            {
+                0 => "> no clients detected",
+                1 => "> 1 client running",
+                _ => $"> {count} clients running"
+            };
+
+            // Clear selection — looks cleaner
+            _grid.ClearSelection();
         }
-
-        // Update status
-        int count = clients.Count;
-        _statusLabel.Text = count switch
+        finally
         {
-            0 => "> no clients detected",
-            1 => "> 1 client running",
-            _ => $"> {count} clients running"
-        };
-
-        // Clear selection — looks cleaner
-        _grid.ClearSelection();
+            _isRefreshing = false;
+        }
     }
 
     private static Button CreateButton(string text, int x, int y, Color bgColor)
@@ -239,6 +250,14 @@ public class ProcessManagerForm : Form
         {
             _refreshTimer?.Stop();
             _refreshTimer?.Dispose();
+            // Dispose the form-level Font (set in InitializeForm)
+            Font?.Dispose();
+            // Dispose Fonts in DataGridView cell styles — not cleaned up by base.Dispose
+            _grid?.DefaultCellStyle?.Font?.Dispose();
+            _grid?.ColumnHeadersDefaultCellStyle?.Font?.Dispose();
+            // Dispose label fonts created inline
+            _systemInfoLabel?.Font?.Dispose();
+            _statusLabel?.Font?.Dispose();
         }
         base.Dispose(disposing);
     }

@@ -14,6 +14,10 @@ public class SettingsForm : Form
     private readonly AppConfig _config;
     private readonly Action<AppConfig> _onApply;
 
+    // Track monitor identifier overlays to prevent stacking on rapid clicks
+    private List<Form>? _monitorOverlays;
+    private System.Windows.Forms.Timer? _monitorOverlayTimer;
+
     // ─── General tab controls
     private TextBox _txtEQPath = null!;
     private TextBox _txtExeName = null!;
@@ -423,15 +427,18 @@ public class SettingsForm : Form
 
         _chkRemoveTitleBars = DarkTheme.AddCardCheckBox(cardStyle, "Remove Title Bars on Arrange", 10, 34);
         _chkBorderlessFullscreen = DarkTheme.AddCardCheckBox(cardStyle, "Borderless Fullscreen", 10, 58);
-        DarkTheme.AddCardHint(cardStyle, "Fills screen without exclusive fullscreen — preserves Alt+Tab and PiP", 230, 60);
+        DarkTheme.AddCardHint(cardStyle, "Strips chrome, Y+1 offset — auto-enforces WindowedMode in eqclient.ini on launch", 230, 60);
 
         return page;
     }
 
     private void ShowMonitorIdentifiers()
     {
+        // Dismiss any existing overlays before creating new ones (prevents stacking on rapid clicks)
+        DismissMonitorOverlays();
+
         var screens = Screen.AllScreens.OrderBy(s => s.Bounds.Left).ToArray();
-        var overlays = new List<Form>();
+        _monitorOverlays = new List<Form>();
 
         for (int i = 0; i < screens.Length; i++)
         {
@@ -462,21 +469,32 @@ public class SettingsForm : Form
             };
             overlay.Controls.Add(lbl);
             overlay.Show();
-            overlays.Add(overlay);
+            _monitorOverlays.Add(overlay);
         }
 
-        var timer = new System.Windows.Forms.Timer { Interval = 2000 };
-        timer.Tick += (_, _) =>
+        _monitorOverlayTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+        _monitorOverlayTimer.Tick += (_, _) => DismissMonitorOverlays();
+        _monitorOverlayTimer.Start();
+    }
+
+    private void DismissMonitorOverlays()
+    {
+        _monitorOverlayTimer?.Stop();
+        _monitorOverlayTimer?.Dispose();
+        _monitorOverlayTimer = null;
+
+        if (_monitorOverlays != null)
         {
-            timer.Stop();
-            timer.Dispose();
-            foreach (var o in overlays)
+            foreach (var o in _monitorOverlays)
             {
+                // Dispose fonts on child controls — Form.Dispose doesn't do this
+                foreach (Control c in o.Controls)
+                    c.Font?.Dispose();
                 o.Close();
                 o.Dispose();
             }
-        };
-        timer.Start();
+            _monitorOverlays = null;
+        }
     }
 
     private TabPage BuildAffinityTab()
@@ -1038,4 +1056,24 @@ public class SettingsForm : Form
         return fallback;
     }
 
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            DismissMonitorOverlays();
+            _charEmptyHint?.Font?.Dispose();
+            // Dispose inline Font objects on hotkey TextBoxes and other controls
+            // that were created with new Font() — base.Dispose doesn't clean these up
+            DisposeControlFonts(_txtSwitchKeyGeneral, _txtSwitchKey, _txtGlobalSwitchKey,
+                _txtArrangeWindows, _txtToggleMultiMon, _txtLaunchOne, _txtLaunchAll,
+                _txtActiveMask, _txtBackgroundMask);
+        }
+        base.Dispose(disposing);
+    }
+
+    private static void DisposeControlFonts(params Control?[] controls)
+    {
+        foreach (var c in controls)
+            c?.Font?.Dispose();
+    }
 }

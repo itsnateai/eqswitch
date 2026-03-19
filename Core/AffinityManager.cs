@@ -55,14 +55,13 @@ public class AffinityManager
         {
             bool isActive = client == activeClient;
 
-            // Check for per-character affinity override
-            var profile = _config.Characters.FirstOrDefault(
-                c => c.Name.Equals(client.CharacterName ?? "", StringComparison.OrdinalIgnoreCase));
+            // Check for per-character affinity override (loop avoids closure allocation)
+            var affinityOverride = FindCharacterAffinityOverride(client.CharacterName);
 
             long mask;
-            if (profile?.AffinityOverride != null)
+            if (affinityOverride != null)
             {
-                mask = profile.AffinityOverride.Value;
+                mask = affinityOverride.Value;
             }
             else
             {
@@ -97,22 +96,27 @@ public class AffinityManager
         if (_retryCounters.Count == 0) return false;
 
         bool applied = false;
-        var completed = new List<int>();
+        List<int>? completed = null;
+        List<KeyValuePair<int, int>>? updates = null;
 
-        // Snapshot keys to avoid modifying the dictionary during enumeration
-        foreach (var (pid, remaining) in _retryCounters.ToList())
+        // Iterate without modifying — collect changes to apply after
+        foreach (var kvp in _retryCounters)
         {
-            var client = clients.FirstOrDefault(c => c.ProcessId == pid);
+            int pid = kvp.Key;
+            int remaining = kvp.Value;
+
+            EQClient? client = null;
+            for (int i = 0; i < clients.Count; i++)
+            {
+                if (clients[i].ProcessId == pid) { client = clients[i]; break; }
+            }
             if (client == null)
             {
-                completed.Add(pid);
+                (completed ??= new List<int>()).Add(pid);
                 continue;
             }
 
-            var profile = _config.Characters.FirstOrDefault(
-                c => c.Name.Equals(client.CharacterName ?? "", StringComparison.OrdinalIgnoreCase));
-
-            long mask = profile?.AffinityOverride ?? _config.Affinity.BackgroundMask;
+            long mask = FindCharacterAffinityOverride(client.CharacterName) ?? _config.Affinity.BackgroundMask;
             bool success = SetProcessAffinity(pid, mask);
 
             if (success)
@@ -122,15 +126,35 @@ public class AffinityManager
             }
 
             if (remaining <= 1)
-                completed.Add(pid);
+                (completed ??= new List<int>()).Add(pid);
             else
-                _retryCounters[pid] = remaining - 1;
+                (updates ??= new List<KeyValuePair<int, int>>()).Add(new(pid, remaining - 1));
         }
 
-        foreach (var pid in completed)
-            _retryCounters.Remove(pid);
+        // Apply deferred mutations
+        if (updates != null)
+            for (int i = 0; i < updates.Count; i++)
+                _retryCounters[updates[i].Key] = updates[i].Value;
+        if (completed != null)
+            for (int i = 0; i < completed.Count; i++)
+                _retryCounters.Remove(completed[i]);
 
         return applied;
+    }
+
+    /// <summary>
+    /// Look up per-character affinity override without allocating a closure.
+    /// </summary>
+    private long? FindCharacterAffinityOverride(string? characterName)
+    {
+        if (string.IsNullOrEmpty(characterName)) return null;
+        var characters = _config.Characters;
+        for (int i = 0; i < characters.Count; i++)
+        {
+            if (characters[i].Name.Equals(characterName, StringComparison.OrdinalIgnoreCase))
+                return characters[i].AffinityOverride;
+        }
+        return null;
     }
 
     /// <summary>

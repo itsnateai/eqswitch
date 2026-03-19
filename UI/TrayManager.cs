@@ -25,10 +25,23 @@ public class TrayManager : IDisposable
     private ToolStripMenuItem? _clientsMenu;
     private Font? _boldMenuFont;
 
-    // Timer that checks foreground window changes and applies affinity rules
-    private System.Windows.Forms.Timer? _affinityTimer;
+    // Hidden window to receive TaskbarCreated message (explorer.exe restart recovery)
+    private TaskbarMessageWindow? _taskbarMessageWindow;
+
+    // Event-driven foreground change detection (replaces polling timer)
+    private IntPtr _foregroundHook;
+    private NativeMethods.WinEventDelegate? _foregroundHookProc; // prevent GC collection
     // Timer for affinity retry attempts on newly launched clients
     private System.Windows.Forms.Timer? _retryTimer;
+
+    // Debounce foreground changes — rapid Alt+Tab through windows fires dozens of
+    // WinEvent callbacks per second. We only need to react once things settle.
+    private System.Windows.Forms.Timer? _foregroundDebounceTimer;
+    private const int ForegroundDebounceMs = 50;
+
+    // Cached exempt PIDs for throttle — avoids List<int> allocation on every foreground change.
+    // Only rebuilt when PiP source windows actually change.
+    private int[] _cachedExemptPids = Array.Empty<int>();
 
     // Debounce timestamp for multi-monitor toggle (500ms)
     private long _lastMultiMonToggle;
@@ -44,6 +57,9 @@ public class TrayManager : IDisposable
     private int _trayMiddleClickCount;
     private System.Windows.Forms.Timer? _clickResolveTimer;
     private System.Windows.Forms.Timer? _middleClickResolveTimer;
+
+    // Incremental arrange during launch — debounced so rapid discoveries don't thrash
+    private System.Windows.Forms.Timer? _incrementalArrangeTimer;
 
     // Track last two active clients for swap-last-two mode (by PID, not handle — handles can change)
     private int _lastActivePid;
@@ -82,6 +98,17 @@ public class TrayManager : IDisposable
             }
         };
 
+        // Listen for TaskbarCreated to recover tray icon after explorer.exe restarts
+        _taskbarMessageWindow = new TaskbarMessageWindow(() =>
+        {
+            if (_trayIcon != null)
+            {
+                _trayIcon.Visible = false;
+                _trayIcon.Visible = true;
+                FileLogger.Info("Explorer restarted — tray icon re-registered");
+            }
+        });
+
         BuildContextMenu();
 
         _processManager.ClientListChanged += (_, _) =>
@@ -95,6 +122,10 @@ public class TrayManager : IDisposable
         {
             ShowBalloon($"Discovered: {c}");
             _affinityManager.ScheduleRetry(c);
+            // During a launch sequence, arrange incrementally so each client
+            // lands on its correct monitor as soon as it's detected.
+            if (_launchManager.IsLaunching)
+                ScheduleIncrementalArrange();
         };
         _processManager.ClientLost += (_, c) =>
         {
@@ -105,7 +136,7 @@ public class TrayManager : IDisposable
         _launchManager.ProgressUpdate += (_, msg) => ShowBalloon(msg);
         _launchManager.LaunchSequenceComplete += (_, _) =>
         {
-            // Arrange windows after all clients launched
+            // Final arrange after all clients launched (safety net)
             var clients = _processManager.Clients;
             if (clients.Count > 0)
                 _windowManager.ArrangeWindows(clients);
@@ -113,7 +144,8 @@ public class TrayManager : IDisposable
 
         _processManager.StartPolling();
         RegisterHotkeys();
-        StartAffinityTimer();
+        StartForegroundHook();
+        StartRetryTimer();
         _throttleManager.Start();
         StartupManager.MigrateFromRegistry();
         StartupManager.ValidateStartupPath(_config);
@@ -253,7 +285,11 @@ public class TrayManager : IDisposable
             // Alt+Tab style: swap to the previous active client (matched by PID — handles can change)
             if (_previousActivePid != 0)
             {
-                var target = clients.FirstOrDefault(c => c.ProcessId == _previousActivePid);
+                EQClient? target = null;
+                for (int i = 0; i < clients.Count; i++)
+                {
+                    if (clients[i].ProcessId == _previousActivePid) { target = clients[i]; break; }
+                }
                 if (target != null)
                 {
                     _windowManager.SwitchToClient(target);
@@ -325,6 +361,37 @@ public class TrayManager : IDisposable
     }
 
     /// <summary>
+    /// Schedule a debounced incremental arrange during launch sequences.
+    /// Waits 2s after the last client discovery to give EQ time to create its
+    /// window, then arranges all current clients. If another client is discovered
+    /// before the timer fires, the timer resets (debounce).
+    /// </summary>
+    private void ScheduleIncrementalArrange()
+    {
+        const int arrangeDelayMs = 2000;
+
+        if (_incrementalArrangeTimer == null)
+        {
+            _incrementalArrangeTimer = new System.Windows.Forms.Timer { Interval = arrangeDelayMs };
+            _incrementalArrangeTimer.Tick += (_, _) =>
+            {
+                _incrementalArrangeTimer!.Stop();
+                var clients = _processManager.Clients;
+                if (clients.Count > 0)
+                {
+                    _windowManager.ArrangeWindows(clients);
+                    FileLogger.Info($"Incremental arrange: positioned {clients.Count} client(s) during launch");
+                }
+            };
+        }
+        else
+        {
+            _incrementalArrangeTimer.Stop();
+        }
+        _incrementalArrangeTimer.Start();
+    }
+
+    /// <summary>
     /// Alt+M: Toggle multi-monitor / single-screen layout mode.
     /// 500ms debounce to prevent rapid re-triggering while windows are moving.
     /// </summary>
@@ -376,42 +443,178 @@ public class TrayManager : IDisposable
 
     // ─── Affinity Management ────────────────────────────────────────
 
-    private void StartAffinityTimer()
+    /// <summary>
+    /// Install a WinEvent hook for EVENT_SYSTEM_FOREGROUND.
+    /// Fires instantly when any window becomes foreground — zero latency vs. polling.
+    /// The callback runs on the UI thread (WINEVENT_OUTOFCONTEXT requires a message pump).
+    /// </summary>
+    private void StartForegroundHook()
+    {
+        // Guard against double-start (would leak the previous hook handle)
+        if (_foregroundHook != IntPtr.Zero) return;
+
+        // Store delegate as a field to prevent GC collection (same pattern as keyboard hook)
+        _foregroundHookProc = OnForegroundChanged;
+        _foregroundHook = NativeMethods.SetWinEventHook(
+            NativeMethods.EVENT_SYSTEM_FOREGROUND,
+            NativeMethods.EVENT_SYSTEM_FOREGROUND,
+            IntPtr.Zero,
+            _foregroundHookProc,
+            0, 0, // all processes, all threads
+            NativeMethods.WINEVENT_OUTOFCONTEXT);
+            // Note: NOT using WINEVENT_SKIPOWNPROCESS — we need events when
+            // EQSwitch windows gain focus so throttle/PiP correctly detect that
+            // no EQ client is active (GetActiveClient returns null).
+
+        if (_foregroundHook == IntPtr.Zero)
+        {
+            FileLogger.Warn("SetWinEventHook failed — falling back to polling timer");
+            StartForegroundHookFallback();
+            return;
+        }
+
+        FileLogger.Info("Foreground event hook installed (instant detection)");
+    }
+
+    /// <summary>
+    /// Fallback polling timer in case SetWinEventHook fails (shouldn't happen, but defensive).
+    /// </summary>
+    private System.Windows.Forms.Timer? _affinityFallbackTimer;
+    private void StartForegroundHookFallback()
+    {
+        _affinityFallbackTimer = new System.Windows.Forms.Timer { Interval = AffinityPollIntervalMs };
+        _affinityFallbackTimer.Tick += (_, _) => OnForegroundChangedCore();
+        _affinityFallbackTimer.Start();
+        FileLogger.Warn($"Foreground polling fallback started ({AffinityPollIntervalMs}ms)");
+    }
+
+    /// <summary>
+    /// WinEvent callback — fires on the UI thread when any window becomes foreground.
+    /// Debounced to avoid doing expensive work (affinity, PiP, throttle) on every
+    /// intermediate window during rapid Alt+Tab cycling.
+    /// </summary>
+    private void OnForegroundChanged(
+        IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+    {
+        try
+        {
+            if (_foregroundDebounceTimer == null)
+            {
+                _foregroundDebounceTimer = new System.Windows.Forms.Timer { Interval = ForegroundDebounceMs };
+                _foregroundDebounceTimer.Tick += (_, _) =>
+                {
+                    _foregroundDebounceTimer.Stop();
+                    try { OnForegroundChangedCore(); }
+                    catch (Exception ex2) { FileLogger.Error("Foreground hook callback error", ex2); }
+                };
+            }
+            // Reset timer on each event — only fires after input settles
+            _foregroundDebounceTimer.Stop();
+            _foregroundDebounceTimer.Start();
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Error("Foreground hook callback error", ex);
+        }
+    }
+
+    /// <summary>
+    /// Core logic for foreground change — shared by event hook and fallback timer.
+    /// </summary>
+    private void OnForegroundChangedCore()
+    {
+        var active = _processManager.GetActiveClient();
+        var clients = _processManager.Clients;
+
+        if (_config.Affinity.Enabled)
+        {
+            _affinityManager.ApplyAffinityRules(clients, active);
+        }
+
+        _throttleManager.UpdateClients(clients, active);
+
+        // Track last two active clients for swap-last-two mode
+        if (active != null && active.ProcessId != _lastActivePid)
+        {
+            _previousActivePid = _lastActivePid;
+            _lastActivePid = active.ProcessId;
+        }
+
+        // Update PiP sources when foreground changes
+        if (_pipOverlay != null && !_pipOverlay.IsDisposed)
+        {
+            if (clients.Count < 2)
+            {
+                _pipOverlay.Close();
+                _pipOverlay.Dispose();
+                _pipOverlay = null;
+                _cachedExemptPids = Array.Empty<int>();
+                _throttleManager.SetExemptPids(_cachedExemptPids);
+            }
+            else
+            {
+                _pipOverlay.UpdateSources(clients, active);
+
+                // Exempt PiP source processes from throttling — suspending them
+                // freezes DWM thumbnails, making PiP go black during suspend phase
+                UpdateThrottleExemptions(clients);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Tell ThrottleManager which PIDs are PiP sources so it won't suspend them.
+    /// </summary>
+    private void UpdateThrottleExemptions(IReadOnlyList<EQClient> clients)
+    {
+        if (_pipOverlay == null || _pipOverlay.IsDisposed)
+        {
+            if (_cachedExemptPids.Length > 0)
+            {
+                _cachedExemptPids = Array.Empty<int>();
+                _throttleManager.SetExemptPids(_cachedExemptPids);
+            }
+            return;
+        }
+
+        // Build the new exempt PID set. Max 3 PiP windows = tiny array (12 bytes),
+        // so always building it is cheaper than a two-phase check with index alignment issues.
+        var sourceWindows = _pipOverlay.SourceWindows;
+        int count = 0;
+        // Stack-style: fill from index 0, skip stale handles that don't match any client
+        var pids = new int[sourceWindows.Count];
+        foreach (var hwnd in sourceWindows)
+        {
+            for (int i = 0; i < clients.Count; i++)
+            {
+                if (clients[i].WindowHandle == hwnd)
+                {
+                    pids[count++] = clients[i].ProcessId;
+                    break;
+                }
+            }
+        }
+
+        // Fast path: skip SetExemptPids if the result matches cache (common case)
+        if (count == _cachedExemptPids.Length)
+        {
+            bool same = true;
+            for (int i = 0; i < count; i++)
+            {
+                if (pids[i] != _cachedExemptPids[i]) { same = false; break; }
+            }
+            if (same) return;
+        }
+
+        // Changed — trim trailing slots from stale handles, update cache
+        _cachedExemptPids = count == pids.Length ? pids : pids[..count];
+        _throttleManager.SetExemptPids(_cachedExemptPids);
+    }
+
+    private void StartRetryTimer()
     {
         if (!_config.Affinity.Enabled) return;
-
-        _affinityTimer = new System.Windows.Forms.Timer { Interval = AffinityPollIntervalMs };
-        _affinityTimer.Tick += (_, _) =>
-        {
-            var active = _processManager.GetActiveClient();
-            var clients = _processManager.Clients;
-            _affinityManager.ApplyAffinityRules(clients, active);
-            _throttleManager.UpdateClients(clients, active);
-
-            // Track last two active clients for swap-last-two mode
-            if (active != null && active.ProcessId != _lastActivePid)
-            {
-                _previousActivePid = _lastActivePid;
-                _lastActivePid = active.ProcessId;
-            }
-
-            // Update PiP sources when foreground changes
-            if (_pipOverlay != null && !_pipOverlay.IsDisposed)
-            {
-                if (clients.Count < 2)
-                {
-                    // Auto-destroy PiP when fewer than 2 windows
-                    _pipOverlay.Close();
-                    _pipOverlay.Dispose();
-                    _pipOverlay = null;
-                }
-                else
-                {
-                    _pipOverlay.UpdateSources(clients, active);
-                }
-            }
-        };
-        _affinityTimer.Start();
 
         // Retry timer runs at the configured interval (default 2s)
         _retryTimer = new System.Windows.Forms.Timer
@@ -424,14 +627,15 @@ public class TrayManager : IDisposable
         };
         _retryTimer.Start();
 
-        FileLogger.Info("Affinity timers started (250ms check, retry every " +
-            $"{_config.Affinity.LaunchRetryDelayMs}ms)");
+        FileLogger.Info($"Affinity retry timer started (every {_config.Affinity.LaunchRetryDelayMs}ms)");
     }
 
     // ─── Tray UI ─────────────────────────────────────────────────────
 
     private void BuildContextMenu()
     {
+        // Dispose old menu and all its items before rebuilding (prevents leak if called multiple times)
+        _contextMenu?.Dispose();
         _contextMenu = new ContextMenuStrip();
         _contextMenu.Renderer = new DarkMenuRenderer();
 
@@ -442,7 +646,7 @@ public class TrayManager : IDisposable
         _boldMenuFont = new Font(_contextMenu.Font, FontStyle.Bold);
 
         // Title bar
-        var titleItem = new ToolStripMenuItem("\u2694  EQ Switch v2.3.0  \u2694") { Enabled = false, Font = _boldMenuFont };
+        var titleItem = new ToolStripMenuItem("\u2694  EQ Switch v2.5.0  \u2694") { Enabled = false, Font = _boldMenuFont };
         _contextMenu.Items.Add(titleItem);
         _contextMenu.Items.Add(new ToolStripSeparator());
 
@@ -502,11 +706,20 @@ public class TrayManager : IDisposable
             ConfigManager.Save(_config);
             if (affinityEnabledItem.Checked)
             {
+                // Restart retry timer (foreground hook stays active regardless — it also drives throttle/PiP)
+                _retryTimer?.Stop();
+                _retryTimer?.Dispose();
+                StartRetryTimer();
                 _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient());
                 ShowBalloon("CPU affinity enabled");
             }
             else
             {
+                // Stop retry timer (foreground hook stays active for throttle/PiP)
+                _retryTimer?.Stop();
+                _retryTimer?.Dispose();
+                _retryTimer = null;
+                _affinityManager.ResetAllAffinities(_processManager.Clients);
                 ShowBalloon("CPU affinity disabled");
             }
         };
@@ -628,7 +841,13 @@ public class TrayManager : IDisposable
     {
         if (_clientsMenu == null) return;
 
-        _clientsMenu.DropDownItems.Clear();
+        // Dispose old menu items to prevent GDI/memory leaks (called on every client change)
+        for (int i = _clientsMenu.DropDownItems.Count - 1; i >= 0; i--)
+        {
+            var item = _clientsMenu.DropDownItems[i];
+            _clientsMenu.DropDownItems.RemoveAt(i);
+            item.Dispose();
+        }
 
         var clients = _processManager.Clients;
         if (clients.Count == 0)
@@ -674,6 +893,8 @@ public class TrayManager : IDisposable
             _pipOverlay.Close();
             _pipOverlay.Dispose();
             _pipOverlay = null;
+            _cachedExemptPids = Array.Empty<int>();
+            _throttleManager.SetExemptPids(_cachedExemptPids);
             ShowBalloon("PiP overlay hidden");
             return;
         }
@@ -688,22 +909,42 @@ public class TrayManager : IDisposable
         _pipOverlay = new PipOverlay(_config);
         _pipOverlay.Show();
         _pipOverlay.UpdateSources(clients, _processManager.GetActiveClient());
+        UpdateThrottleExemptions(clients);
         ShowBalloon("PiP overlay shown");
+    }
+
+    // Reusable deferred timer for ShowBalloon/ShowHelpTooltip — avoids allocating
+    // a new Timer + closure on every call. Queued message overwrites any pending one.
+    private System.Windows.Forms.Timer? _deferTimer;
+    private Action? _deferredAction;
+
+    private void DeferToNextTick(Action action)
+    {
+        _deferredAction = action;
+        if (_deferTimer == null)
+        {
+            _deferTimer = new System.Windows.Forms.Timer { Interval = 50 };
+            _deferTimer.Tick += OnDeferTimerTick;
+        }
+        else
+        {
+            _deferTimer.Stop();
+        }
+        _deferTimer.Start();
+    }
+
+    private void OnDeferTimerTick(object? sender, EventArgs e)
+    {
+        _deferTimer!.Stop();
+        _deferredAction?.Invoke();
+        _deferredAction = null;
     }
 
     private void ShowBalloon(string message)
     {
         // Defer to next message loop iteration so context menu handlers
         // fully complete before we create the tooltip window.
-        // Short timer avoids disposed-object crashes from synchronous Show.
-        var t = new System.Windows.Forms.Timer { Interval = 50 };
-        t.Tick += (_, _) =>
-        {
-            t.Stop();
-            t.Dispose();
-            FloatingTooltip.Show(message, _config.TooltipDurationMs);
-        };
-        t.Start();
+        DeferToNextTick(() => FloatingTooltip.Show(message, _config.TooltipDurationMs));
     }
 
     /// <summary>
@@ -759,14 +1000,8 @@ public class TrayManager : IDisposable
         if (_config.Throttle.Enabled)
             lines.Add($"⚡  Throttle: {_config.Throttle.ThrottlePercent}%");
 
-        var t = new System.Windows.Forms.Timer { Interval = 50 };
-        t.Tick += (_, _) =>
-        {
-            t.Stop();
-            t.Dispose();
-            FloatingTooltip.Show(string.Join("\n", lines), _config.TooltipDurationMs * 2);
-        };
-        t.Start();
+        var helpText = string.Join("\n", lines);
+        DeferToNextTick(() => FloatingTooltip.Show(helpText, _config.TooltipDurationMs * 2));
     }
 
     private static void AddClickLine(List<string> lines, string label, string action)
@@ -813,57 +1048,64 @@ public class TrayManager : IDisposable
         if (e.Button == MouseButtons.Middle)
         {
             _trayMiddleClickCount++;
-
-            _middleClickResolveTimer?.Stop();
-            _middleClickResolveTimer?.Dispose();
-            _middleClickResolveTimer = new System.Windows.Forms.Timer { Interval = ClickResolveDelayMs };
-            _middleClickResolveTimer.Tick += (_, _) =>
-            {
-                _middleClickResolveTimer!.Stop();
-                _middleClickResolveTimer.Dispose();
-                _middleClickResolveTimer = null;
-
-                int clicks = _trayMiddleClickCount;
-                _trayMiddleClickCount = 0;
-
-                string action = clicks switch
-                {
-                    1 => _config.TrayClick.MiddleClick,
-                    2 => _config.TrayClick.MiddleDoubleClick,
-                    _ => _config.TrayClick.MiddleTripleClick
-                };
-                ExecuteTrayAction(action);
-            };
-            _middleClickResolveTimer.Start();
+            EnsureClickTimer(ref _middleClickResolveTimer, OnMiddleClickResolved);
             return;
         }
 
         if (e.Button != MouseButtons.Left) return;
 
         _trayClickCount++;
+        EnsureClickTimer(ref _clickResolveTimer, OnLeftClickResolved);
+    }
 
-        // Reset/restart the resolve timer on each click
-        _clickResolveTimer?.Stop();
-        _clickResolveTimer?.Dispose();
-        _clickResolveTimer = new System.Windows.Forms.Timer { Interval = ClickResolveDelayMs };
-        _clickResolveTimer.Tick += (_, _) =>
+    /// <summary>
+    /// Create click resolve timer once, then just restart on subsequent clicks.
+    /// Avoids allocating a new Timer + event handler on every click.
+    /// </summary>
+    private void EnsureClickTimer(ref System.Windows.Forms.Timer? timer, EventHandler handler)
+    {
+        if (timer == null)
         {
-            _clickResolveTimer!.Stop();
-            _clickResolveTimer.Dispose();
-            _clickResolveTimer = null;
+            timer = new System.Windows.Forms.Timer { Interval = ClickResolveDelayMs };
+            timer.Tick += handler;
+        }
+        else
+        {
+            timer.Stop();
+        }
+        timer.Start();
+    }
 
-            int clicks = _trayClickCount;
-            _trayClickCount = 0;
+    private void OnLeftClickResolved(object? sender, EventArgs e)
+    {
+        _clickResolveTimer!.Stop();
 
-            string action = clicks switch
-            {
-                1 => _config.TrayClick.SingleClick,
-                2 => _config.TrayClick.DoubleClick,
-                _ => _config.TrayClick.TripleClick // 3+
-            };
-            ExecuteTrayAction(action);
+        int clicks = _trayClickCount;
+        _trayClickCount = 0;
+
+        string action = clicks switch
+        {
+            1 => _config.TrayClick.SingleClick,
+            2 => _config.TrayClick.DoubleClick,
+            _ => _config.TrayClick.TripleClick // 3+
         };
-        _clickResolveTimer.Start();
+        ExecuteTrayAction(action);
+    }
+
+    private void OnMiddleClickResolved(object? sender, EventArgs e)
+    {
+        _middleClickResolveTimer!.Stop();
+
+        int clicks = _trayMiddleClickCount;
+        _trayMiddleClickCount = 0;
+
+        string action = clicks switch
+        {
+            1 => _config.TrayClick.MiddleClick,
+            2 => _config.TrayClick.MiddleDoubleClick,
+            _ => _config.TrayClick.MiddleTripleClick
+        };
+        ExecuteTrayAction(action);
     }
 
     private void ExecuteTrayAction(string action)
@@ -968,6 +1210,12 @@ public class TrayManager : IDisposable
         _config.Characters = newConfig.Characters;
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
         _config.CtrlHoverHelp = newConfig.CtrlHoverHelp;
+        _config.ShowTooltipErrors = newConfig.ShowTooltipErrors;
+        _config.MinimizeToTray = newConfig.MinimizeToTray;
+        _config.RunAtStartup = newConfig.RunAtStartup;
+        _config.DisableEQLog = newConfig.DisableEQLog;
+        _config.CustomVideoPresets = newConfig.CustomVideoPresets;
+        _config.EQClientIni = newConfig.EQClientIni;
 
         // Update icon if path changed
         var iconChanged = _config.CustomIconPath != newConfig.CustomIconPath;
@@ -985,17 +1233,17 @@ public class TrayManager : IDisposable
         _keyboardHook.Reset();
         RegisterHotkeys();
 
-        // Restart or stop affinity timer based on new config
-        _affinityTimer?.Stop();
-        _affinityTimer?.Dispose();
-        _affinityTimer = null;
+        // Rebuild context menu so hotkey labels and client count reflect new config
+        BuildContextMenu();
+        UpdateClientMenu();
+
+        // Re-install foreground hook (in case it was lost) and restart retry timer
+        StopForegroundHook();
+        StartForegroundHook();
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
         _retryTimer = null;
-        if (_config.Affinity.Enabled)
-        {
-            StartAffinityTimer();
-        }
+        StartRetryTimer();
 
         // Restart throttle manager with new settings
         _throttleManager.Stop();
@@ -1025,10 +1273,25 @@ public class TrayManager : IDisposable
         _processManagerForm.Show();
     }
 
+    private void StopForegroundHook()
+    {
+        if (_foregroundHook != IntPtr.Zero)
+        {
+            NativeMethods.UnhookWinEvent(_foregroundHook);
+            _foregroundHook = IntPtr.Zero;
+        }
+        _foregroundHookProc = null;
+        _foregroundDebounceTimer?.Stop();
+        _foregroundDebounceTimer?.Dispose();
+        _foregroundDebounceTimer = null;
+        _affinityFallbackTimer?.Stop();
+        _affinityFallbackTimer?.Dispose();
+        _affinityFallbackTimer = null;
+    }
+
     private void Shutdown()
     {
-        _affinityTimer?.Stop();
-        _affinityTimer?.Dispose();
+        StopForegroundHook();
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
         _launchManager.CancelLaunch();
@@ -1042,8 +1305,11 @@ public class TrayManager : IDisposable
         _keyboardHook.Dispose();
         _processManager.StopPolling();
         _contextMenu?.Dispose();
-        _trayIcon!.Visible = false;
-        _trayIcon.Dispose();
+        if (_trayIcon != null)
+        {
+            _trayIcon.Visible = false;
+            _trayIcon.Dispose();
+        }
         Application.Exit();
     }
 
@@ -1096,8 +1362,7 @@ public class TrayManager : IDisposable
 
     public void Dispose()
     {
-        _affinityTimer?.Stop();
-        _affinityTimer?.Dispose();
+        StopForegroundHook();
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
         _throttleManager.Dispose();
@@ -1106,13 +1371,46 @@ public class TrayManager : IDisposable
         _clickResolveTimer?.Dispose();
         _middleClickResolveTimer?.Stop();
         _middleClickResolveTimer?.Dispose();
+        _incrementalArrangeTimer?.Stop();
+        _incrementalArrangeTimer?.Dispose();
+        _deferTimer?.Stop();
+        _deferTimer?.Dispose();
+        _foregroundDebounceTimer?.Stop();
+        _foregroundDebounceTimer?.Dispose();
         _boldMenuFont?.Dispose();
         _pipOverlay?.Dispose();
         _hotkeyManager.Dispose();
         _keyboardHook.Dispose();
+        _taskbarMessageWindow?.DestroyHandle();
         _trayIcon?.Dispose();
         _contextMenu?.Dispose();
         _processManager.Dispose();
+    }
+}
+
+/// <summary>
+/// Hidden message-only window that listens for TaskbarCreated.
+/// When explorer.exe restarts, Windows broadcasts this message so tray apps can re-register.
+/// </summary>
+internal class TaskbarMessageWindow : NativeWindow
+{
+    private static readonly uint WM_TASKBARCREATED = NativeMethods.RegisterWindowMessageW("TaskbarCreated");
+    private readonly Action _onTaskbarCreated;
+
+    public TaskbarMessageWindow(Action onTaskbarCreated)
+    {
+        _onTaskbarCreated = onTaskbarCreated;
+        var cp = new CreateParams { Parent = new IntPtr(-3) }; // HWND_MESSAGE
+        CreateHandle(cp);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (WM_TASKBARCREATED != 0 && m.Msg == (int)WM_TASKBARCREATED)
+        {
+            _onTaskbarCreated();
+        }
+        base.WndProc(ref m);
     }
 }
 
@@ -1121,14 +1419,15 @@ public class TrayManager : IDisposable
 /// </summary>
 internal class DarkMenuRenderer : ToolStripProfessionalRenderer
 {
-    private static readonly Color MenuBg = Color.FromArgb(38, 38, 42);
-    private static readonly Color MenuBorder = Color.FromArgb(70, 70, 78);
-    private static readonly Color ItemHover = Color.FromArgb(60, 63, 75);
-    private static readonly Color ItemText = Color.FromArgb(240, 240, 240);
-    private static readonly Color DisabledText = Color.FromArgb(140, 140, 150);
-    private static readonly Color SepColor = Color.FromArgb(65, 65, 72);
-    private static readonly Color CheckBg = Color.FromArgb(0, 120, 70);
-    private static readonly Color MarginBg = Color.FromArgb(42, 42, 46);
+    // Unified with DarkTheme palette (medieval purple tones)
+    private static readonly Color MenuBg = DarkTheme.BgDark;           // (32, 28, 42)
+    private static readonly Color MenuBorder = DarkTheme.Border;       // (64, 56, 78)
+    private static readonly Color ItemHover = DarkTheme.BgHover;       // (64, 56, 78)
+    private static readonly Color ItemText = DarkTheme.FgWhite;        // (235, 232, 240)
+    private static readonly Color DisabledText = DarkTheme.FgDimGray;  // (120, 112, 135)
+    private static readonly Color SepColor = DarkTheme.Border;         // (64, 56, 78)
+    private static readonly Color CheckBg = DarkTheme.AccentGreen;     // (0, 140, 80)
+    private static readonly Color MarginBg = DarkTheme.BgPanel;        // (38, 33, 48)
 
     public DarkMenuRenderer() : base(new DarkColorTable()) { }
 
@@ -1198,20 +1497,20 @@ internal class DarkMenuRenderer : ToolStripProfessionalRenderer
 
     private class DarkColorTable : ProfessionalColorTable
     {
-        public override Color MenuBorder => Color.FromArgb(70, 70, 78);
-        public override Color MenuItemBorder => Color.FromArgb(70, 70, 78);
-        public override Color MenuItemSelected => Color.FromArgb(60, 63, 75);
-        public override Color MenuStripGradientBegin => Color.FromArgb(38, 38, 42);
-        public override Color MenuStripGradientEnd => Color.FromArgb(38, 38, 42);
-        public override Color MenuItemSelectedGradientBegin => Color.FromArgb(60, 63, 75);
-        public override Color MenuItemSelectedGradientEnd => Color.FromArgb(60, 63, 75);
-        public override Color MenuItemPressedGradientBegin => Color.FromArgb(50, 52, 60);
-        public override Color MenuItemPressedGradientEnd => Color.FromArgb(50, 52, 60);
-        public override Color ImageMarginGradientBegin => Color.FromArgb(42, 42, 46);
-        public override Color ImageMarginGradientMiddle => Color.FromArgb(42, 42, 46);
-        public override Color ImageMarginGradientEnd => Color.FromArgb(42, 42, 46);
-        public override Color SeparatorDark => Color.FromArgb(65, 65, 72);
-        public override Color SeparatorLight => Color.FromArgb(65, 65, 72);
-        public override Color ToolStripDropDownBackground => Color.FromArgb(38, 38, 42);
+        public override Color MenuBorder => DarkTheme.Border;
+        public override Color MenuItemBorder => DarkTheme.Border;
+        public override Color MenuItemSelected => DarkTheme.BgHover;
+        public override Color MenuStripGradientBegin => DarkTheme.BgDark;
+        public override Color MenuStripGradientEnd => DarkTheme.BgDark;
+        public override Color MenuItemSelectedGradientBegin => DarkTheme.BgHover;
+        public override Color MenuItemSelectedGradientEnd => DarkTheme.BgHover;
+        public override Color MenuItemPressedGradientBegin => DarkTheme.BgMedium;
+        public override Color MenuItemPressedGradientEnd => DarkTheme.BgMedium;
+        public override Color ImageMarginGradientBegin => DarkTheme.BgPanel;
+        public override Color ImageMarginGradientMiddle => DarkTheme.BgPanel;
+        public override Color ImageMarginGradientEnd => DarkTheme.BgPanel;
+        public override Color SeparatorDark => DarkTheme.Border;
+        public override Color SeparatorLight => DarkTheme.Border;
+        public override Color ToolStripDropDownBackground => DarkTheme.BgDark;
     }
 }

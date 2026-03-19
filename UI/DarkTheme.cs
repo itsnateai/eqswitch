@@ -69,11 +69,11 @@ public static class DarkTheme
         // Tab text
         var textColor = isSelected ? FgWhite : FgGray;
         using var textBrush = new SolidBrush(textColor);
-        var font = isSelected
+        using var font = isSelected
             ? new Font("Segoe UI", 8.5f, FontStyle.Bold)
             : new Font("Segoe UI", 8.5f, FontStyle.Regular);
 
-        var sf = new StringFormat
+        using var sf = new StringFormat
         {
             Alignment = StringAlignment.Center,
             LineAlignment = StringAlignment.Center
@@ -81,7 +81,6 @@ public static class DarkTheme
 
         var textRect = new Rectangle(bounds.X, bounds.Y + (isSelected ? 2 : 0), bounds.Width, bounds.Height);
         e.Graphics.DrawString(tabPage.Text, font, textBrush, textRect, sf);
-        font.Dispose();
     }
 
     public static TabPage MakeTabPage(string title)
