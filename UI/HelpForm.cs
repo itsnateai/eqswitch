@@ -21,6 +21,7 @@ public static class HelpForm
             MinimizeBox = false
         };
 
+        var rtbFont = new Font("Consolas", 10);
         var rtb = new RichTextBox
         {
             Dock = DockStyle.Fill,
@@ -28,11 +29,17 @@ public static class HelpForm
             BackColor = Color.FromArgb(30, 30, 30),
             ForeColor = Color.White,
             BorderStyle = BorderStyle.None,
-            Font = new Font("Consolas", 10),
+            Font = rtbFont,
             Text = GetHelpText(config)
         };
 
         helpForm.Controls.Add(rtb);
+        // Dispose fonts when the form closes — Form.Dispose doesn't clean up child control fonts
+        helpForm.FormClosed += (_, _) =>
+        {
+            helpForm.Font?.Dispose();
+            rtbFont.Dispose();
+        };
         helpForm.Show();
     }
 
