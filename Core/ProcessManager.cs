@@ -17,11 +17,17 @@ public class ProcessManager : IDisposable
     private readonly List<EQClient> _clients = new();
     private readonly object _lock = new();
 
+    // Copy-on-write snapshot: only rebuilt when _clients changes.
+    // Avoids allocating a new List on every .Clients access (250ms affinity timer = 1M+ reads/72h).
+    private IReadOnlyList<EQClient> _snapshot = Array.Empty<EQClient>();
+
     /// <summary>
     /// Idle polling interval when no EQ clients are running (ms).
     /// 5 seconds is plenty — EQ is launched externally, no rush to detect.
     /// </summary>
     private const int IdlePollingMs = 5000;
+
+    private bool _isRefreshing;
 
     public event EventHandler<EQClient>? ClientDiscovered;
     public event EventHandler<EQClient>? ClientLost;
@@ -29,12 +35,20 @@ public class ProcessManager : IDisposable
 
     public IReadOnlyList<EQClient> Clients
     {
-        get { lock (_lock) return _clients.ToList().AsReadOnly(); }
+        get { lock (_lock) return _snapshot; }
     }
 
     public int ClientCount
     {
         get { lock (_lock) return _clients.Count; }
+    }
+
+    /// <summary>
+    /// Rebuild the copy-on-write snapshot. Call inside the lock after any mutation of _clients.
+    /// </summary>
+    private void InvalidateSnapshot()
+    {
+        _snapshot = _clients.ToList().AsReadOnly();
     }
 
     public ProcessManager(AppConfig config)
@@ -61,6 +75,10 @@ public class ProcessManager : IDisposable
     /// </summary>
     public void RefreshClients()
     {
+        // Guard against re-entrancy (e.g. manual call while timer tick is mid-flight)
+        if (_isRefreshing) return;
+        _isRefreshing = true;
+
         Process[]? eqProcesses = null;
 
         // Collect events to fire outside the lock
@@ -145,6 +163,10 @@ public class ProcessManager : IDisposable
                 }
 
                 listChanged = lostClients.Count > 0 || discoveredClients.Count > 0 || titleChanged;
+
+                // Rebuild snapshot only when list actually changed
+                if (listChanged)
+                    InvalidateSnapshot();
             }
         }
         catch (InvalidOperationException)
@@ -164,6 +186,7 @@ public class ProcessManager : IDisposable
             if (eqProcesses != null)
                 foreach (var p in eqProcesses)
                     p.Dispose();
+            _isRefreshing = false;
         }
 
         // Fire events OUTSIDE the lock to prevent deadlocks

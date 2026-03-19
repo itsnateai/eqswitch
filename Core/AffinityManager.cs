@@ -100,8 +100,9 @@ public class AffinityManager
         var completed = new List<int>();
 
         // Snapshot keys to avoid modifying the dictionary during enumeration
-        foreach (var (pid, remaining) in _retryCounters.ToList())
+        foreach (var pid in _retryCounters.Keys.ToArray())
         {
+            int remaining = _retryCounters[pid];
             var client = clients.FirstOrDefault(c => c.ProcessId == pid);
             if (client == null)
             {
