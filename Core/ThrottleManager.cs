@@ -28,6 +28,9 @@ public class ThrottleManager : IDisposable
     private IReadOnlyList<EQClient> _clients = Array.Empty<EQClient>();
     private EQClient? _activeClient;
 
+    // PIDs exempt from throttling (e.g. PiP sources — suspending them freezes DWM thumbnails)
+    private readonly HashSet<int> _exemptPids = new();
+
     public ThrottleManager(AppConfig config)
     {
         _config = config;
@@ -80,6 +83,17 @@ public class ThrottleManager : IDisposable
     }
 
     /// <summary>
+    /// Set PIDs that should be exempt from throttling (e.g. PiP sources).
+    /// Suspending PiP source processes freezes their DWM thumbnails.
+    /// </summary>
+    public void SetExemptPids(IEnumerable<int> pids)
+    {
+        _exemptPids.Clear();
+        foreach (var pid in pids)
+            _exemptPids.Add(pid);
+    }
+
+    /// <summary>
     /// Suspend all background EQ processes.
     /// </summary>
     private void SuspendPhase()
@@ -88,8 +102,9 @@ public class ThrottleManager : IDisposable
 
         foreach (var client in _clients)
         {
-            // Never suspend the active client
+            // Never suspend the active client or PiP sources
             if (client == _activeClient) continue;
+            if (_exemptPids.Contains(client.ProcessId)) continue;
             if (_suspendedPids.Contains(client.ProcessId)) continue;
 
             if (SuspendProcess(client.ProcessId))
