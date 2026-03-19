@@ -48,6 +48,10 @@ public static class DarkTheme
         return tabs;
     }
 
+    // Cached fonts for tab rendering — avoids GDI allocation on every paint
+    private static readonly Font TabFontBold = new("Segoe UI", 8.5f, FontStyle.Bold);
+    private static readonly Font TabFontNormal = new("Segoe UI", 8.5f, FontStyle.Regular);
+
     private static void DrawTab(object? sender, DrawItemEventArgs e)
     {
         if (sender is not TabControl tabs) return;
@@ -66,14 +70,12 @@ public static class DarkTheme
             e.Graphics.FillRectangle(accentBrush, bounds.Left + 2, bounds.Top, bounds.Width - 4, 3);
         }
 
-        // Tab text
+        // Tab text — use cached fonts to avoid GDI handle churn
         var textColor = isSelected ? FgWhite : FgGray;
         using var textBrush = new SolidBrush(textColor);
-        var font = isSelected
-            ? new Font("Segoe UI", 8.5f, FontStyle.Bold)
-            : new Font("Segoe UI", 8.5f, FontStyle.Regular);
+        var font = isSelected ? TabFontBold : TabFontNormal;
 
-        var sf = new StringFormat
+        using var sf = new StringFormat
         {
             Alignment = StringAlignment.Center,
             LineAlignment = StringAlignment.Center
@@ -81,7 +83,6 @@ public static class DarkTheme
 
         var textRect = new Rectangle(bounds.X, bounds.Y + (isSelected ? 2 : 0), bounds.Width, bounds.Height);
         e.Graphics.DrawString(tabPage.Text, font, textBrush, textRect, sf);
-        font.Dispose();
     }
 
     public static TabPage MakeTabPage(string title)

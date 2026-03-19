@@ -383,8 +383,8 @@ public class TrayManager : IDisposable
         _affinityTimer = new System.Windows.Forms.Timer { Interval = AffinityPollIntervalMs };
         _affinityTimer.Tick += (_, _) =>
         {
+            var clients = _processManager.Clients; // snapshot once per tick
             var active = _processManager.GetActiveClient();
-            var clients = _processManager.Clients;
             _affinityManager.ApplyAffinityRules(clients, active);
             _throttleManager.UpdateClients(clients, active);
 
@@ -442,7 +442,8 @@ public class TrayManager : IDisposable
         _boldMenuFont = new Font(_contextMenu.Font, FontStyle.Bold);
 
         // Title bar
-        var titleItem = new ToolStripMenuItem("\u2694  EQ Switch v2.3.0  \u2694") { Enabled = false, Font = _boldMenuFont };
+        var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?";
+        var titleItem = new ToolStripMenuItem($"\u2694  EQ Switch v{version}  \u2694") { Enabled = false, Font = _boldMenuFont };
         _contextMenu.Items.Add(titleItem);
         _contextMenu.Items.Add(new ToolStripSeparator());
 

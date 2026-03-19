@@ -504,7 +504,8 @@ public class SettingsForm : Form
 
         DarkTheme.AddCardLabel(panelActive, "Core Mask (hex):", 10, 38);
         _txtActiveMask = DarkTheme.AddCardTextBox(panelActive, 125, 36, 80);
-        _txtActiveMask.Font = new Font("Consolas", 9.5f);
+        var monoFont = new Font("Consolas", 9.5f);
+        _txtActiveMask.Font = monoFont;
 
         DarkTheme.AddCardLabel(panelActive, "Priority:", 10, 68);
         var priorities = new[] { "Idle", "BelowNormal", "Normal", "AboveNormal", "High" };
@@ -517,7 +518,7 @@ public class SettingsForm : Form
 
         DarkTheme.AddCardLabel(panelBg, "Core Mask (hex):", 10, 38);
         _txtBackgroundMask = DarkTheme.AddCardTextBox(panelBg, 125, 36, 80);
-        _txtBackgroundMask.Font = new Font("Consolas", 9.5f);
+        _txtBackgroundMask.Font = monoFont; // reuse same font instance
 
         DarkTheme.AddCardLabel(panelBg, "Priority:", 10, 68);
         _cboBackgroundPriority = DarkTheme.AddCardComboBox(panelBg, 70, 66, 130, priorities);
