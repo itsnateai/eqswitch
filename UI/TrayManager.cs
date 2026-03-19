@@ -1177,14 +1177,15 @@ internal class TaskbarMessageWindow : NativeWindow
 /// </summary>
 internal class DarkMenuRenderer : ToolStripProfessionalRenderer
 {
-    private static readonly Color MenuBg = Color.FromArgb(38, 38, 42);
-    private static readonly Color MenuBorder = Color.FromArgb(70, 70, 78);
-    private static readonly Color ItemHover = Color.FromArgb(60, 63, 75);
-    private static readonly Color ItemText = Color.FromArgb(240, 240, 240);
-    private static readonly Color DisabledText = Color.FromArgb(140, 140, 150);
-    private static readonly Color SepColor = Color.FromArgb(65, 65, 72);
-    private static readonly Color CheckBg = Color.FromArgb(0, 120, 70);
-    private static readonly Color MarginBg = Color.FromArgb(42, 42, 46);
+    // Unified with DarkTheme palette (medieval purple tones)
+    private static readonly Color MenuBg = DarkTheme.BgDark;           // (32, 28, 42)
+    private static readonly Color MenuBorder = DarkTheme.Border;       // (64, 56, 78)
+    private static readonly Color ItemHover = DarkTheme.BgHover;       // (64, 56, 78)
+    private static readonly Color ItemText = DarkTheme.FgWhite;        // (235, 232, 240)
+    private static readonly Color DisabledText = DarkTheme.FgDimGray;  // (120, 112, 135)
+    private static readonly Color SepColor = DarkTheme.Border;         // (64, 56, 78)
+    private static readonly Color CheckBg = DarkTheme.AccentGreen;     // (0, 140, 80)
+    private static readonly Color MarginBg = DarkTheme.BgPanel;        // (38, 33, 48)
 
     public DarkMenuRenderer() : base(new DarkColorTable()) { }
 
@@ -1254,20 +1255,20 @@ internal class DarkMenuRenderer : ToolStripProfessionalRenderer
 
     private class DarkColorTable : ProfessionalColorTable
     {
-        public override Color MenuBorder => Color.FromArgb(70, 70, 78);
-        public override Color MenuItemBorder => Color.FromArgb(70, 70, 78);
-        public override Color MenuItemSelected => Color.FromArgb(60, 63, 75);
-        public override Color MenuStripGradientBegin => Color.FromArgb(38, 38, 42);
-        public override Color MenuStripGradientEnd => Color.FromArgb(38, 38, 42);
-        public override Color MenuItemSelectedGradientBegin => Color.FromArgb(60, 63, 75);
-        public override Color MenuItemSelectedGradientEnd => Color.FromArgb(60, 63, 75);
-        public override Color MenuItemPressedGradientBegin => Color.FromArgb(50, 52, 60);
-        public override Color MenuItemPressedGradientEnd => Color.FromArgb(50, 52, 60);
-        public override Color ImageMarginGradientBegin => Color.FromArgb(42, 42, 46);
-        public override Color ImageMarginGradientMiddle => Color.FromArgb(42, 42, 46);
-        public override Color ImageMarginGradientEnd => Color.FromArgb(42, 42, 46);
-        public override Color SeparatorDark => Color.FromArgb(65, 65, 72);
-        public override Color SeparatorLight => Color.FromArgb(65, 65, 72);
-        public override Color ToolStripDropDownBackground => Color.FromArgb(38, 38, 42);
+        public override Color MenuBorder => DarkTheme.Border;
+        public override Color MenuItemBorder => DarkTheme.Border;
+        public override Color MenuItemSelected => DarkTheme.BgHover;
+        public override Color MenuStripGradientBegin => DarkTheme.BgDark;
+        public override Color MenuStripGradientEnd => DarkTheme.BgDark;
+        public override Color MenuItemSelectedGradientBegin => DarkTheme.BgHover;
+        public override Color MenuItemSelectedGradientEnd => DarkTheme.BgHover;
+        public override Color MenuItemPressedGradientBegin => DarkTheme.BgMedium;
+        public override Color MenuItemPressedGradientEnd => DarkTheme.BgMedium;
+        public override Color ImageMarginGradientBegin => DarkTheme.BgPanel;
+        public override Color ImageMarginGradientMiddle => DarkTheme.BgPanel;
+        public override Color ImageMarginGradientEnd => DarkTheme.BgPanel;
+        public override Color SeparatorDark => DarkTheme.Border;
+        public override Color SeparatorLight => DarkTheme.Border;
+        public override Color ToolStripDropDownBackground => DarkTheme.BgDark;
     }
 }
