@@ -1062,7 +1062,18 @@ public class SettingsForm : Form
         {
             DismissMonitorOverlays();
             _charEmptyHint?.Font?.Dispose();
+            // Dispose inline Font objects on hotkey TextBoxes and other controls
+            // that were created with new Font() — base.Dispose doesn't clean these up
+            DisposeControlFonts(_txtSwitchKeyGeneral, _txtSwitchKey, _txtGlobalSwitchKey,
+                _txtArrangeWindows, _txtToggleMultiMon, _txtLaunchOne, _txtLaunchAll,
+                _txtActiveMask, _txtBackgroundMask);
         }
         base.Dispose(disposing);
+    }
+
+    private static void DisposeControlFonts(params Control?[] controls)
+    {
+        foreach (var c in controls)
+            c?.Font?.Dispose();
     }
 }

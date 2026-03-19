@@ -22,7 +22,6 @@ public class WindowsApi : IWindowsApi
     {
         var fgHwnd = NativeMethods.GetForegroundWindow();
         uint currentThread = NativeMethods.GetCurrentThreadId();
-        NativeMethods.GetWindowThreadProcessId(fgHwnd, out _);
         uint fgThread = NativeMethods.GetWindowThreadProcessId(fgHwnd, out _);
 
         bool attached = false;
