@@ -578,52 +578,37 @@ public class TrayManager : IDisposable
             return;
         }
 
+        // Build the new exempt PID set. Max 3 PiP windows = tiny array (12 bytes),
+        // so always building it is cheaper than a two-phase check with index alignment issues.
         var sourceWindows = _pipOverlay.SourceWindows;
-
-        // Fast path: check if the exempt set actually changed before allocating.
-        // This fires on every debounced foreground change, but PiP sources only change
-        // when clients are added/removed — so the common case is "no change".
-        bool changed = sourceWindows.Count != _cachedExemptPids.Length;
-        if (!changed)
-        {
-            int idx = 0;
-            foreach (var hwnd in sourceWindows)
-            {
-                int pid = 0;
-                for (int i = 0; i < clients.Count; i++)
-                {
-                    if (clients[i].WindowHandle == hwnd)
-                    {
-                        pid = clients[i].ProcessId;
-                        break;
-                    }
-                }
-                if (idx >= _cachedExemptPids.Length || pid != _cachedExemptPids[idx])
-                {
-                    changed = true;
-                    break;
-                }
-                idx++;
-            }
-        }
-
-        if (!changed) return;
-
-        // Rebuild — only allocates when PiP sources actually change
-        var exemptPids = new int[sourceWindows.Count];
-        int pos = 0;
+        int count = 0;
+        // Stack-style: fill from index 0, skip stale handles that don't match any client
+        var pids = new int[sourceWindows.Count];
         foreach (var hwnd in sourceWindows)
         {
             for (int i = 0; i < clients.Count; i++)
             {
                 if (clients[i].WindowHandle == hwnd)
                 {
-                    exemptPids[pos++] = clients[i].ProcessId;
+                    pids[count++] = clients[i].ProcessId;
                     break;
                 }
             }
         }
-        _cachedExemptPids = exemptPids;
+
+        // Fast path: skip SetExemptPids if the result matches cache (common case)
+        if (count == _cachedExemptPids.Length)
+        {
+            bool same = true;
+            for (int i = 0; i < count; i++)
+            {
+                if (pids[i] != _cachedExemptPids[i]) { same = false; break; }
+            }
+            if (same) return;
+        }
+
+        // Changed — trim trailing slots from stale handles, update cache
+        _cachedExemptPids = count == pids.Length ? pids : pids[..count];
         _throttleManager.SetExemptPids(_cachedExemptPids);
     }
 
