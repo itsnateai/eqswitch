@@ -45,10 +45,11 @@ public class ProcessManager : IDisposable
 
     /// <summary>
     /// Rebuild the copy-on-write snapshot. Call inside the lock after any mutation of _clients.
+    /// Uses ToArray() (single allocation) instead of ToList().AsReadOnly() (two allocations).
     /// </summary>
     private void InvalidateSnapshot()
     {
-        _snapshot = _clients.ToList().AsReadOnly();
+        _snapshot = _clients.ToArray();
     }
 
     public ProcessManager(AppConfig config)
