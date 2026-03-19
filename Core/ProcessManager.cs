@@ -280,12 +280,18 @@ public class ProcessManager : IDisposable
         }
     }
 
+    // Reuse StringBuilder across calls to avoid allocating one every 500ms per window.
+    // Over 72h with 4 windows: 4 × 2/sec × 259,200s = ~2M allocations avoided.
+    [ThreadStatic] private static StringBuilder? t_titleBuffer;
+
     private static string GetWindowTitle(IntPtr hwnd)
     {
         int len = NativeMethods.GetWindowTextLength(hwnd);
         if (len <= 0) return "";
 
-        var sb = new StringBuilder(len + 1);
+        var sb = t_titleBuffer ??= new StringBuilder(256);
+        sb.Clear();
+        if (sb.Capacity < len + 1) sb.Capacity = len + 1;
         NativeMethods.GetWindowText(hwnd, sb, sb.Capacity);
         return sb.ToString();
     }
