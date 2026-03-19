@@ -49,6 +49,9 @@ public class TrayManager : IDisposable
     private System.Windows.Forms.Timer? _clickResolveTimer;
     private System.Windows.Forms.Timer? _middleClickResolveTimer;
 
+    // Incremental arrange during launch — debounced so rapid discoveries don't thrash
+    private System.Windows.Forms.Timer? _incrementalArrangeTimer;
+
     // Track last two active clients for swap-last-two mode (by PID, not handle — handles can change)
     private int _lastActivePid;
     private int _previousActivePid;
@@ -110,6 +113,10 @@ public class TrayManager : IDisposable
         {
             ShowBalloon($"Discovered: {c}");
             _affinityManager.ScheduleRetry(c);
+            // During a launch sequence, arrange incrementally so each client
+            // lands on its correct monitor as soon as it's detected.
+            if (_launchManager.IsLaunching)
+                ScheduleIncrementalArrange();
         };
         _processManager.ClientLost += (_, c) =>
         {
@@ -120,7 +127,7 @@ public class TrayManager : IDisposable
         _launchManager.ProgressUpdate += (_, msg) => ShowBalloon(msg);
         _launchManager.LaunchSequenceComplete += (_, _) =>
         {
-            // Arrange windows after all clients launched
+            // Final arrange after all clients launched (safety net)
             var clients = _processManager.Clients;
             if (clients.Count > 0)
                 _windowManager.ArrangeWindows(clients);
@@ -342,6 +349,37 @@ public class TrayManager : IDisposable
         _windowManager.ArrangeWindows(clients);
         FileLogger.Info($"ArrangeWindows: arranged {clients.Count} client(s)");
         ShowBalloon($"Arranged {clients.Count} window(s) in grid");
+    }
+
+    /// <summary>
+    /// Schedule a debounced incremental arrange during launch sequences.
+    /// Waits 2s after the last client discovery to give EQ time to create its
+    /// window, then arranges all current clients. If another client is discovered
+    /// before the timer fires, the timer resets (debounce).
+    /// </summary>
+    private void ScheduleIncrementalArrange()
+    {
+        const int arrangeDelayMs = 2000;
+
+        if (_incrementalArrangeTimer == null)
+        {
+            _incrementalArrangeTimer = new System.Windows.Forms.Timer { Interval = arrangeDelayMs };
+            _incrementalArrangeTimer.Tick += (_, _) =>
+            {
+                _incrementalArrangeTimer!.Stop();
+                var clients = _processManager.Clients;
+                if (clients.Count > 0)
+                {
+                    _windowManager.ArrangeWindows(clients);
+                    FileLogger.Info($"Incremental arrange: positioned {clients.Count} client(s) during launch");
+                }
+            };
+        }
+        else
+        {
+            _incrementalArrangeTimer.Stop();
+        }
+        _incrementalArrangeTimer.Start();
     }
 
     /// <summary>
@@ -1251,6 +1289,8 @@ public class TrayManager : IDisposable
         _clickResolveTimer?.Dispose();
         _middleClickResolveTimer?.Stop();
         _middleClickResolveTimer?.Dispose();
+        _incrementalArrangeTimer?.Stop();
+        _incrementalArrangeTimer?.Dispose();
         _deferTimer?.Stop();
         _deferTimer?.Dispose();
         _boldMenuFont?.Dispose();
