@@ -124,22 +124,47 @@ Things to watch:
 ### PiP + Throttle Interaction
 ThrottleManager suspends background EQ processes via `NtSuspendProcess`. Suspended processes can't render, so DWM thumbnails go black. PiP source PIDs are passed to `ThrottleManager.SetExemptPids()` so they keep running. **When adding new features that interact with background clients, check whether they conflict with throttle suspension.**
 
+### Window Handle Staleness
+- EQ can recreate its window during gameplay. Between `IsWindow()` check and the actual `SetWindowPos`/`GetWindowLongPtr` call, the handle can go stale. All Win32 calls on window handles should **tolerate silent failure** — check return values but don't crash.
+- ProcessManager refreshes `MainWindowHandle` every polling cycle, but code that captures a handle from the client list snapshot might use a stale one. This is by design (polling is good enough), but **never cache window handles across timer ticks**.
+- Process handles from `OpenProcess()` can also go stale if the process exits between the client list snapshot and the affinity/priority call. `SetProcessAffinity`/`SetProcessPriority` log warnings and return false — this is expected, not a bug.
+
 ### Affinity Quirks
 - EQ resets its own CPU affinity shortly after launch. The retry mechanism (3 retries at 2s intervals) re-applies after launch.
 - Mask values are hex bitmasks. A mask of 0xFF = cores 0-7 (P-cores on 12th gen Intel). 0xFF00 = cores 8-15 (E-cores).
 - `ForceApplyAffinityRules()` exists for the Process Manager UI's "Force Apply" button.
+- `ParsePriorityClass` uses `ToLowerInvariant()` — priority strings in config must match the expected set ("Normal", "AboveNormal", "High", etc.). Unknown values silently fall through to `NORMAL_PRIORITY_CLASS`. If adding new priority options, update both the parser and the Settings form dropdown.
+
+### Hotkey Reload Gap
+- During config reload, hotkeys are unregistered then re-registered. There's a brief window (milliseconds) where hotkeys don't work. This is by design — the alternative (register new before unregister old) risks conflicts if the same key combo is reused.
+- If `RegisterHotKey` fails for one key (e.g., another app grabbed it), the others still register. Partial registration is logged but not surfaced to the user. Check `eqswitch.log` if hotkeys stop working.
+
+### Throttle State Machine
+- ThrottleManager uses two alternating timers (suspend timer → resume timer → suspend timer...). If one timer fails to start or is disposed mid-cycle, processes can be left suspended permanently. The `Stop()` method always calls `ResumeAllSuspended()` as a fail-safe.
+- **Never dispose ThrottleManager without calling Stop() first.** The `Dispose()` method calls `Stop()`, but if you bypass it (e.g., setting the field to null), suspended processes stay frozen until EQSwitch exits or the process is killed.
 
 ### PiP (DWM Thumbnails)
 - DWM thumbnails are GPU-composited — essentially zero CPU overhead unlike screen capture.
 - Click-through via `WS_EX_TRANSPARENT | WS_EX_LAYERED`.
 - Must call `DwmUnregisterThumbnail` on dispose or the thumbnail leaks.
 - Position persists to config via `ConfigManager.Save()` on drag end.
+- `SetWindowPos` with `SWP_FRAMECHANGED` on an already-borderless window can cause a brief visual flicker. The style should be set via `SetWindowLongPtr` first, then `SetWindowPos` applied once. Don't call both repeatedly in a loop.
+
+### Config Serialization Edge Cases
+- `System.Text.Json` with camelCase naming: property names in JSON are camelCase, C# properties are PascalCase. When hand-editing `eqswitch-config.json`, use camelCase or the value is silently ignored.
+- Null collections: If `eqswitch-config.json` contains `"characters": null` instead of `"characters": []`, deserialization produces a null list. `Validate()` should catch this, but **always null-check collection properties** when adding new config consumers.
+- `ConfigManager.Save()` is coalesced (250ms delay). If the app crashes before the timer fires, the last save is lost. For critical config changes (first-run setup, migration), call `ConfigManager.FlushSave()` to write immediately.
+
+### ProcessManager Snapshot Consistency
+- `ProcessManager.Clients` returns a copy-on-write snapshot (`IReadOnlyList<EQClient>`). The snapshot is rebuilt when clients are added/removed or titles change.
+- **The EQClient objects inside the snapshot are mutable.** `CharacterName` can change between polling cycles when a player logs in (title changes from "EverQuest" to "EverQuest - CharName"). Code that captures a client reference may see a stale `CharacterName` for up to one polling interval (500ms). This is acceptable — don't add locking to fix it.
 
 ### EQ-specific
 - Process name is configurable but defaults to `eqgame` (matches `eqgame.exe`).
 - Window title format: `"EverQuest"` at login, `"EverQuest - CharName"` once logged in. Character name resolution splits on `" - "`.
 - AHK config uses `Encoding.Default` (ANSI), not UTF-16.
 - `eqclient.ini` also uses ANSI encoding — writing UTF-8 can corrupt it.
+- Borderless fullscreen requires `WindowedMode=TRUE` in eqclient.ini. LaunchManager enforces this automatically before each launch when borderless is enabled. Without it, EQ takes exclusive DirectX fullscreen and triggers gamma errors.
 
 ## Status
 
