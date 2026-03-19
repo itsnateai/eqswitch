@@ -43,6 +43,7 @@ static class Program
                 {
                     config = migrated;
                     ConfigManager.Save(config);
+                    ConfigManager.FlushSave(); // Critical: write immediately — coalesced timer may not fire before crash
                     MessageBox.Show(
                         "Imported settings from eqswitch.cfg (AHK version).\nCheck Settings to verify everything looks right.",
                         "EQSwitch — Migration",
@@ -58,6 +59,7 @@ static class Program
                     config.EQPath = dialog.SelectedEQPath;
                     config.IsFirstRun = false;
                     ConfigManager.Save(config);
+                    ConfigManager.FlushSave(); // Critical: write immediately — coalesced timer may not fire before crash
                 }
             }
 
