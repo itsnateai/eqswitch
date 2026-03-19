@@ -13,17 +13,18 @@ public class ProcessManagerForm : Form
 {
     private const int RefreshIntervalMs = 1000;
 
-    private static readonly Color BgDark = Color.FromArgb(16, 16, 24);
-    private static readonly Color BgMedium = Color.FromArgb(32, 32, 48);
-    private static readonly Color BgRow = Color.FromArgb(20, 20, 32);
-    private static readonly Color BgRowAlt = Color.FromArgb(28, 28, 40);
-    private static readonly Color BgHeader = Color.FromArgb(40, 40, 64);
-    private static readonly Color BgActive = Color.FromArgb(0, 80, 40);
-    private static readonly Color FgWhite = Color.FromArgb(200, 200, 220);
-    private static readonly Color FgGray = Color.FromArgb(120, 130, 160);
-    private static readonly Color FgCyan = Color.FromArgb(100, 200, 220);
-    private static readonly Color AccentGreen = Color.FromArgb(0, 140, 60);
-    private static readonly Color GridLine = Color.FromArgb(50, 50, 80);
+    // Unified with DarkTheme palette
+    private static readonly Color BgDark = DarkTheme.BgDark;
+    private static readonly Color BgMedium = DarkTheme.BgMedium;
+    private static readonly Color BgRow = DarkTheme.BgDark;
+    private static readonly Color BgRowAlt = DarkTheme.BgPanel;
+    private static readonly Color BgHeader = DarkTheme.BgInput;
+    private static readonly Color BgActive = DarkTheme.AccentGreen;
+    private static readonly Color FgWhite = DarkTheme.FgWhite;
+    private static readonly Color FgGray = DarkTheme.FgGray;
+    private static readonly Color FgCyan = DarkTheme.CardCyan;
+    private static readonly Color AccentGreen = DarkTheme.AccentGreen;
+    private static readonly Color GridLine = DarkTheme.Border;
 
     private readonly Func<IReadOnlyList<EQClient>> _getClients;
     private readonly Func<EQClient?> _getActiveClient;
