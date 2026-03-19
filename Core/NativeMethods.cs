@@ -251,6 +251,29 @@ internal static class NativeMethods
 
     public const int VK_CONTROL = 0x11;
 
+    // ─── WinEvent Hook (Foreground Change Detection) ───────────────────
+
+    public delegate void WinEventDelegate(
+        IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetWinEventHook(
+        uint eventMin, uint eventMax, IntPtr hmodWinEventProc,
+        WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+    [DllImport("user32.dll")]
+    public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+    public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+    public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
+
+    // ─── Shell Notifications ──────────────────────────────────────────
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint RegisterWindowMessageW(string lpString);
+
     // ─── Process Suspension (Background FPS Throttling) ──────────────
 
     [DllImport("ntdll.dll", SetLastError = true)]

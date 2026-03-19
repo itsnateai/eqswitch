@@ -46,14 +46,46 @@ public static class ConfigManager
         }
     }
 
+    // Coalescing save — rapid Save() calls (e.g. PiP drag, repeated toggles)
+    // are batched into a single write after a short delay. This prevents
+    // blocking the UI thread with synchronous file I/O on every interaction.
+    private static System.Windows.Forms.Timer? _saveTimer;
+    private static AppConfig? _pendingSave;
+
     /// <summary>
-    /// Save config to disk. Creates a timestamped backup first.
+    /// Save config to disk. Coalesces rapid calls — the actual write happens
+    /// after a 250ms quiet period so rapid toggles don't stall the UI.
     /// </summary>
     public static void Save(AppConfig config)
     {
+        _pendingSave = config;
+
+        if (_saveTimer == null)
+        {
+            _saveTimer = new System.Windows.Forms.Timer { Interval = 250 };
+            _saveTimer.Tick += (_, _) => FlushSave();
+        }
+
+        // Reset the timer on each call to coalesce rapid saves
+        _saveTimer.Stop();
+        _saveTimer.Start();
+    }
+
+    /// <summary>
+    /// Flush any pending save immediately. Call on shutdown to ensure config is persisted.
+    /// Guards against lost saves: if Save() is called during the write, the new pending
+    /// config is detected and re-queued after the write completes.
+    /// </summary>
+    public static void FlushSave()
+    {
+        _saveTimer?.Stop();
+
+        var config = _pendingSave;
+        _pendingSave = null;
+        if (config == null) return;
+
         try
         {
-            // Backup existing config before overwriting
             if (File.Exists(ConfigPath))
                 CreateBackup();
 
@@ -63,7 +95,13 @@ public static class ConfigManager
         catch (Exception ex)
         {
             FileLogger.Error("Config save failed", ex);
-            throw; // Let caller decide how to handle
+        }
+
+        // If Save() was called during the write, re-queue so it's not lost.
+        if (_pendingSave != null)
+        {
+            _saveTimer?.Stop();
+            _saveTimer?.Start();
         }
     }
 
