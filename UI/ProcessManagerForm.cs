@@ -34,6 +34,7 @@ public class ProcessManagerForm : Form
     private Label _systemInfoLabel = null!;
     private Label _statusLabel = null!;
     private System.Windows.Forms.Timer _refreshTimer = null!;
+    private bool _isRefreshing;
 
     public ProcessManagerForm(
         Func<IReadOnlyList<EQClient>> getClients,
@@ -176,48 +177,57 @@ public class ProcessManagerForm : Form
 
     private void RefreshList()
     {
-        var clients = _getClients();
-        var active = _getActiveClient();
-
-        _grid.Rows.Clear();
-
-        foreach (var client in clients)
+        if (_isRefreshing) return;
+        _isRefreshing = true;
+        try
         {
-            var (procMask, _) = AffinityManager.GetProcessAffinity(client.ProcessId);
-            var priority = AffinityManager.GetProcessPriorityName(client.ProcessId);
-            var name = client.CharacterName ?? client.WindowTitle;
-            if (string.IsNullOrEmpty(name)) name = $"Client {client.SlotIndex + 1}";
+            var clients = _getClients();
+            var active = _getActiveClient();
 
-            int rowIdx = _grid.Rows.Add(
-                (client.SlotIndex + 1).ToString(),
-                client.ProcessId.ToString(),
-                name,
-                priority,
-                $"0x{procMask:X}");
+            _grid.Rows.Clear();
 
-            // Highlight active client row
-            if (client == active)
+            foreach (var client in clients)
             {
-                var row = _grid.Rows[rowIdx];
-                foreach (DataGridViewCell cell in row.Cells)
+                var (procMask, _) = AffinityManager.GetProcessAffinity(client.ProcessId);
+                var priority = AffinityManager.GetProcessPriorityName(client.ProcessId);
+                var name = client.CharacterName ?? client.WindowTitle;
+                if (string.IsNullOrEmpty(name)) name = $"Client {client.SlotIndex + 1}";
+
+                int rowIdx = _grid.Rows.Add(
+                    (client.SlotIndex + 1).ToString(),
+                    client.ProcessId.ToString(),
+                    name,
+                    priority,
+                    $"0x{procMask:X}");
+
+                // Highlight active client row
+                if (client == active)
                 {
-                    cell.Style.BackColor = BgActive;
-                    cell.Style.SelectionBackColor = BgActive;
+                    var row = _grid.Rows[rowIdx];
+                    foreach (DataGridViewCell cell in row.Cells)
+                    {
+                        cell.Style.BackColor = BgActive;
+                        cell.Style.SelectionBackColor = BgActive;
+                    }
                 }
             }
+
+            // Update status
+            int count = clients.Count;
+            _statusLabel.Text = count switch
+            {
+                0 => "> no clients detected",
+                1 => "> 1 client running",
+                _ => $"> {count} clients running"
+            };
+
+            // Clear selection — looks cleaner
+            _grid.ClearSelection();
         }
-
-        // Update status
-        int count = clients.Count;
-        _statusLabel.Text = count switch
+        finally
         {
-            0 => "> no clients detected",
-            1 => "> 1 client running",
-            _ => $"> {count} clients running"
-        };
-
-        // Clear selection — looks cleaner
-        _grid.ClearSelection();
+            _isRefreshing = false;
+        }
     }
 
     private static Button CreateButton(string text, int x, int y, Color bgColor)
