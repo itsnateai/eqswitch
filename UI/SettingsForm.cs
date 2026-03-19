@@ -487,6 +487,9 @@ public class SettingsForm : Form
         {
             foreach (var o in _monitorOverlays)
             {
+                // Dispose fonts on child controls — Form.Dispose doesn't do this
+                foreach (Control c in o.Controls)
+                    c.Font?.Dispose();
                 o.Close();
                 o.Dispose();
             }
@@ -1053,4 +1056,13 @@ public class SettingsForm : Form
         return fallback;
     }
 
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            DismissMonitorOverlays();
+            _charEmptyHint?.Font?.Dispose();
+        }
+        base.Dispose(disposing);
+    }
 }
