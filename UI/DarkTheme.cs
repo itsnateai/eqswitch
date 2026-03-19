@@ -23,6 +23,10 @@ public static class DarkTheme
     public static readonly Color TabHoverBg = Color.FromArgb(48, 42, 60);
     public static readonly Color AccentBar = Color.FromArgb(0, 140, 80);
 
+    // ─── Cached Fonts (avoid allocations in render methods) ──────
+    private static readonly Font TabFontBold = new("Segoe UI", 8.5f, FontStyle.Bold);
+    private static readonly Font TabFontRegular = new("Segoe UI", 8.5f, FontStyle.Regular);
+
     // ─── Tab Control ─────────────────────────────────────────────
 
     /// <summary>
@@ -66,12 +70,10 @@ public static class DarkTheme
             e.Graphics.FillRectangle(accentBrush, bounds.Left + 2, bounds.Top, bounds.Width - 4, 3);
         }
 
-        // Tab text
+        // Tab text — use cached static fonts to avoid GDI allocations per draw
         var textColor = isSelected ? FgWhite : FgGray;
         using var textBrush = new SolidBrush(textColor);
-        using var font = isSelected
-            ? new Font("Segoe UI", 8.5f, FontStyle.Bold)
-            : new Font("Segoe UI", 8.5f, FontStyle.Regular);
+        var font = isSelected ? TabFontBold : TabFontRegular;
 
         using var sf = new StringFormat
         {
@@ -154,66 +156,6 @@ public static class DarkTheme
     }
 
     // ─── Text Inputs ─────────────────────────────────────────────
-
-    public static TextBox AddTextBox(Control parent, int x, int y, int width)
-    {
-        var tb = new TextBox
-        {
-            Location = new Point(x, y),
-            Size = new Size(width, 26),
-            BackColor = BgInput,
-            ForeColor = FgWhite,
-            BorderStyle = BorderStyle.FixedSingle,
-            Font = new Font("Segoe UI", 9f)
-        };
-        parent.Controls.Add(tb);
-        return tb;
-    }
-
-    /// <summary>
-    /// TextBox for hotkey input that suppresses system beep on modifier keys.
-    /// Captures key combos like Alt+G, Ctrl+Shift+F1, or single keys like \ and ].
-    /// </summary>
-    public static TextBox AddHotkeyBox(Control parent, int x, int y, int width)
-    {
-        var tb = new TextBox
-        {
-            Location = new Point(x, y),
-            Size = new Size(width, 26),
-            BackColor = BgInput,
-            ForeColor = FgWhite,
-            BorderStyle = BorderStyle.FixedSingle,
-            Font = new Font("Segoe UI", 9f),
-            ShortcutsEnabled = false
-        };
-        tb.KeyDown += (_, e) =>
-        {
-            e.SuppressKeyPress = true; // Suppress beep on all keypresses
-
-            // Ignore standalone modifiers
-            if (e.KeyCode is Keys.ShiftKey or Keys.ControlKey or Keys.Menu or Keys.LMenu or Keys.RMenu
-                or Keys.LShiftKey or Keys.RShiftKey or Keys.LControlKey or Keys.RControlKey)
-                return;
-
-            // Build combo string
-            var parts = new List<string>();
-            if (e.Control) parts.Add("Ctrl");
-            if (e.Alt) parts.Add("Alt");
-            if (e.Shift) parts.Add("Shift");
-
-            string keyName = e.KeyCode switch
-            {
-                Keys.OemPipe or Keys.OemBackslash => "\\",
-                Keys.OemCloseBrackets => "]",
-                Keys.OemOpenBrackets => "[",
-                _ => e.KeyCode.ToString()
-            };
-            parts.Add(keyName);
-            tb.Text = string.Join("+", parts);
-        };
-        parent.Controls.Add(tb);
-        return tb;
-    }
 
     public static NumericUpDown AddNumeric(Control parent, int x, int y, int width, decimal defaultVal, decimal min, decimal max)
     {

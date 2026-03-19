@@ -197,7 +197,16 @@ public class LaunchManager : IDisposable
     {
         try
         {
-            var exePath = Path.Combine(_config.EQPath, _config.Launch.ExeName);
+            // Validate exe name doesn't contain path traversal sequences
+            var exeName = _config.Launch.ExeName;
+            if (exeName.Contains("..") || exeName.Contains('/') || exeName.Contains('\\'))
+            {
+                FileLogger.Error($"LaunchManager: exe name contains invalid path characters: {exeName}");
+                ProgressUpdate?.Invoke(this, "Error: invalid exe name");
+                return -1;
+            }
+
+            var exePath = Path.Combine(_config.EQPath, exeName);
             if (!File.Exists(exePath))
             {
                 FileLogger.Error($"LaunchManager: exe not found at {exePath}");
