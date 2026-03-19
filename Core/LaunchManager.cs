@@ -17,6 +17,9 @@ public class LaunchManager : IDisposable
 
     private bool _launchActive;
     private long _lastLaunchTime;
+
+    /// <summary>True while a LaunchAll sequence is in progress (used by TrayManager for incremental arrange).</summary>
+    public bool IsLaunching => _launchActive;
     private readonly List<int> _launchedPids = new();
     private readonly List<System.Windows.Forms.Timer> _activeTimers = new();
 
