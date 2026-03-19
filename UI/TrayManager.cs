@@ -25,6 +25,9 @@ public class TrayManager : IDisposable
     private ToolStripMenuItem? _clientsMenu;
     private Font? _boldMenuFont;
 
+    // Hidden window to receive TaskbarCreated message (explorer.exe restart recovery)
+    private TaskbarMessageWindow? _taskbarMessageWindow;
+
     // Timer that checks foreground window changes and applies affinity rules
     private System.Windows.Forms.Timer? _affinityTimer;
     // Timer for affinity retry attempts on newly launched clients
@@ -81,6 +84,17 @@ public class TrayManager : IDisposable
                 ShowHelpTooltip();
             }
         };
+
+        // Listen for TaskbarCreated to recover tray icon after explorer.exe restarts
+        _taskbarMessageWindow = new TaskbarMessageWindow(() =>
+        {
+            if (_trayIcon != null)
+            {
+                _trayIcon.Visible = false;
+                _trayIcon.Visible = true;
+                FileLogger.Info("Explorer restarted — tray icon re-registered");
+            }
+        });
 
         BuildContextMenu();
 
@@ -442,7 +456,7 @@ public class TrayManager : IDisposable
         _boldMenuFont = new Font(_contextMenu.Font, FontStyle.Bold);
 
         // Title bar
-        var titleItem = new ToolStripMenuItem("\u2694  EQ Switch v2.3.0  \u2694") { Enabled = false, Font = _boldMenuFont };
+        var titleItem = new ToolStripMenuItem("\u2694  EQ Switch v2.5.0  \u2694") { Enabled = false, Font = _boldMenuFont };
         _contextMenu.Items.Add(titleItem);
         _contextMenu.Items.Add(new ToolStripSeparator());
 
@@ -628,7 +642,13 @@ public class TrayManager : IDisposable
     {
         if (_clientsMenu == null) return;
 
-        _clientsMenu.DropDownItems.Clear();
+        // Dispose old menu items to prevent GDI/memory leaks (called on every client change)
+        for (int i = _clientsMenu.DropDownItems.Count - 1; i >= 0; i--)
+        {
+            var item = _clientsMenu.DropDownItems[i];
+            _clientsMenu.DropDownItems.RemoveAt(i);
+            item.Dispose();
+        }
 
         var clients = _processManager.Clients;
         if (clients.Count == 0)
@@ -1042,8 +1062,11 @@ public class TrayManager : IDisposable
         _keyboardHook.Dispose();
         _processManager.StopPolling();
         _contextMenu?.Dispose();
-        _trayIcon!.Visible = false;
-        _trayIcon.Dispose();
+        if (_trayIcon != null)
+        {
+            _trayIcon.Visible = false;
+            _trayIcon.Dispose();
+        }
         Application.Exit();
     }
 
@@ -1110,9 +1133,36 @@ public class TrayManager : IDisposable
         _pipOverlay?.Dispose();
         _hotkeyManager.Dispose();
         _keyboardHook.Dispose();
+        _taskbarMessageWindow?.DestroyHandle();
         _trayIcon?.Dispose();
         _contextMenu?.Dispose();
         _processManager.Dispose();
+    }
+}
+
+/// <summary>
+/// Hidden message-only window that listens for TaskbarCreated.
+/// When explorer.exe restarts, Windows broadcasts this message so tray apps can re-register.
+/// </summary>
+internal class TaskbarMessageWindow : NativeWindow
+{
+    private static readonly uint WM_TASKBARCREATED = NativeMethods.RegisterWindowMessageW("TaskbarCreated");
+    private readonly Action _onTaskbarCreated;
+
+    public TaskbarMessageWindow(Action onTaskbarCreated)
+    {
+        _onTaskbarCreated = onTaskbarCreated;
+        var cp = new CreateParams { Parent = new IntPtr(-3) }; // HWND_MESSAGE
+        CreateHandle(cp);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (WM_TASKBARCREATED != 0 && m.Msg == (int)WM_TASKBARCREATED)
+        {
+            _onTaskbarCreated();
+        }
+        base.WndProc(ref m);
     }
 }
 

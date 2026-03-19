@@ -14,6 +14,10 @@ public class SettingsForm : Form
     private readonly AppConfig _config;
     private readonly Action<AppConfig> _onApply;
 
+    // Track monitor identifier overlays to prevent stacking on rapid clicks
+    private List<Form>? _monitorOverlays;
+    private System.Windows.Forms.Timer? _monitorOverlayTimer;
+
     // ─── General tab controls
     private TextBox _txtEQPath = null!;
     private TextBox _txtExeName = null!;
@@ -430,8 +434,11 @@ public class SettingsForm : Form
 
     private void ShowMonitorIdentifiers()
     {
+        // Dismiss any existing overlays before creating new ones (prevents stacking on rapid clicks)
+        DismissMonitorOverlays();
+
         var screens = Screen.AllScreens.OrderBy(s => s.Bounds.Left).ToArray();
-        var overlays = new List<Form>();
+        _monitorOverlays = new List<Form>();
 
         for (int i = 0; i < screens.Length; i++)
         {
@@ -462,21 +469,29 @@ public class SettingsForm : Form
             };
             overlay.Controls.Add(lbl);
             overlay.Show();
-            overlays.Add(overlay);
+            _monitorOverlays.Add(overlay);
         }
 
-        var timer = new System.Windows.Forms.Timer { Interval = 2000 };
-        timer.Tick += (_, _) =>
+        _monitorOverlayTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+        _monitorOverlayTimer.Tick += (_, _) => DismissMonitorOverlays();
+        _monitorOverlayTimer.Start();
+    }
+
+    private void DismissMonitorOverlays()
+    {
+        _monitorOverlayTimer?.Stop();
+        _monitorOverlayTimer?.Dispose();
+        _monitorOverlayTimer = null;
+
+        if (_monitorOverlays != null)
         {
-            timer.Stop();
-            timer.Dispose();
-            foreach (var o in overlays)
+            foreach (var o in _monitorOverlays)
             {
                 o.Close();
                 o.Dispose();
             }
-        };
-        timer.Start();
+            _monitorOverlays = null;
+        }
     }
 
     private TabPage BuildAffinityTab()
