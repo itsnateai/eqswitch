@@ -109,6 +109,21 @@ Settings uses a pending/staged approach:
 - `SettingsChanged` event tells TrayManager to reload
 - **Never modify `_config` directly in the Settings form** (the character import bug was exactly this)
 
+### UI Thread Responsiveness Rules
+This is a single-threaded WinForms app. Everything runs on the UI thread. Two patterns protect responsiveness:
+
+1. **Debounce high-frequency callbacks.** `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` fires on *every* window focus change across the entire desktop — not just EQ windows. Without debounce, rapid Alt+Tab triggers expensive affinity re-apply + PiP rebuild + throttle update dozens of times per second. The `_foregroundDebounceTimer` (50ms) ensures we only do work once input settles. **Any new WinEvent or system hook callback must be debounced.**
+
+2. **Coalesce file I/O.** `ConfigManager.Save()` uses a 250ms coalescing timer — rapid calls (PiP drag, toggle clicks) batch into one write. The actual I/O (JSON serialize + backup rotation + file write) only happens after a quiet period. `FlushSave()` on shutdown ensures nothing is lost. **Never add synchronous file I/O to a timer callback or event handler.**
+
+Things to watch:
+- `GetProcessesByName()` in the 500ms polling timer is inherently slow (~10-30ms). Don't add more work to that path.
+- Any `OpenProcess()` + Win32 call per-client in a loop (affinity, throttle) scales linearly with client count. Keep these behind the debounce.
+- `DwmRegisterThumbnail`/`DwmUpdateThumbnailProperties` are DWM compositor calls — not free. PipOverlay.UpdateSources() has an early-exit "no change" fast path to avoid unnecessary re-registration.
+
+### PiP + Throttle Interaction
+ThrottleManager suspends background EQ processes via `NtSuspendProcess`. Suspended processes can't render, so DWM thumbnails go black. PiP source PIDs are passed to `ThrottleManager.SetExemptPids()` so they keep running. **When adding new features that interact with background clients, check whether they conflict with throttle suspension.**
+
 ### Affinity Quirks
 - EQ resets its own CPU affinity shortly after launch. The retry mechanism (3 retries at 2s intervals) re-applies after launch.
 - Mask values are hex bitmasks. A mask of 0xFF = cores 0-7 (P-cores on 12th gen Intel). 0xFF00 = cores 8-15 (E-cores).
