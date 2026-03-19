@@ -36,6 +36,9 @@ public class TrayManager : IDisposable
     // PiP overlay
     private PipOverlay? _pipOverlay;
 
+    // Hidden window to receive TaskbarCreated message (Explorer restart recovery)
+    private TaskbarRecoveryWindow? _taskbarRecovery;
+
     // Process Manager (single-instance)
     private ProcessManagerForm? _processManagerForm;
 
@@ -81,6 +84,9 @@ public class TrayManager : IDisposable
                 ShowHelpTooltip();
             }
         };
+
+        // Explorer restart recovery — re-show tray icon if Explorer crashes
+        _taskbarRecovery = new TaskbarRecoveryWindow(this);
 
         BuildContextMenu();
 
@@ -1111,9 +1117,53 @@ public class TrayManager : IDisposable
         _pipOverlay?.Dispose();
         _hotkeyManager.Dispose();
         _keyboardHook.Dispose();
+        _taskbarRecovery?.DestroyHandle();
         _trayIcon?.Dispose();
         _contextMenu?.Dispose();
         _processManager.Dispose();
+    }
+
+    /// <summary>
+    /// Restores the tray icon after Explorer restarts.
+    /// Called by TaskbarRecoveryWindow when it receives the TaskbarCreated message.
+    /// </summary>
+    internal void RestoreTrayIcon()
+    {
+        if (_trayIcon == null) return;
+        _trayIcon.Visible = false;
+        _trayIcon.Visible = true;
+        FileLogger.Info("Explorer restarted — tray icon restored");
+    }
+}
+
+/// <summary>
+/// Hidden message-only window that listens for the "TaskbarCreated" shell message.
+/// When Windows Explorer crashes and restarts, it broadcasts this message.
+/// We respond by re-showing the NotifyIcon (which otherwise disappears permanently).
+/// </summary>
+internal class TaskbarRecoveryWindow : NativeWindow
+{
+    private static readonly uint WM_TASKBARCREATED = NativeMethods.RegisterWindowMessage("TaskbarCreated");
+    private readonly TrayManager _manager;
+
+    public TaskbarRecoveryWindow(TrayManager manager)
+    {
+        _manager = manager;
+        var cp = new CreateParams
+        {
+            Caption = "EQSwitch_TaskbarRecovery",
+            Parent = new IntPtr(-3) // HWND_MESSAGE — message-only, no visible UI
+        };
+        CreateHandle(cp);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (WM_TASKBARCREATED != 0 && m.Msg == WM_TASKBARCREATED)
+        {
+            _manager.RestoreTrayIcon();
+        }
+        base.WndProc(ref m);
     }
 }
 

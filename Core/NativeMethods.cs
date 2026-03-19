@@ -127,6 +127,11 @@ internal static class NativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
 
+    // ─── Shell Messages ────────────────────────────────────────────
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern uint RegisterWindowMessage(string lpString);
+
     // ─── Constants ──────────────────────────────────────────────────
 
     public const int GWL_STYLE = -16;
