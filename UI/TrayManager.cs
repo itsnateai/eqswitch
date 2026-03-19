@@ -269,7 +269,11 @@ public class TrayManager : IDisposable
             // Alt+Tab style: swap to the previous active client (matched by PID — handles can change)
             if (_previousActivePid != 0)
             {
-                var target = clients.FirstOrDefault(c => c.ProcessId == _previousActivePid);
+                EQClient? target = null;
+                for (int i = 0; i < clients.Count; i++)
+                {
+                    if (clients[i].ProcessId == _previousActivePid) { target = clients[i]; break; }
+                }
                 if (target != null)
                 {
                     _windowManager.SwitchToClient(target);
@@ -792,19 +796,38 @@ public class TrayManager : IDisposable
         ShowBalloon("PiP overlay shown");
     }
 
+    // Reusable deferred timer for ShowBalloon/ShowHelpTooltip — avoids allocating
+    // a new Timer + closure on every call. Queued message overwrites any pending one.
+    private System.Windows.Forms.Timer? _deferTimer;
+    private Action? _deferredAction;
+
+    private void DeferToNextTick(Action action)
+    {
+        _deferredAction = action;
+        if (_deferTimer == null)
+        {
+            _deferTimer = new System.Windows.Forms.Timer { Interval = 50 };
+            _deferTimer.Tick += OnDeferTimerTick;
+        }
+        else
+        {
+            _deferTimer.Stop();
+        }
+        _deferTimer.Start();
+    }
+
+    private void OnDeferTimerTick(object? sender, EventArgs e)
+    {
+        _deferTimer!.Stop();
+        _deferredAction?.Invoke();
+        _deferredAction = null;
+    }
+
     private void ShowBalloon(string message)
     {
         // Defer to next message loop iteration so context menu handlers
         // fully complete before we create the tooltip window.
-        // Short timer avoids disposed-object crashes from synchronous Show.
-        var t = new System.Windows.Forms.Timer { Interval = 50 };
-        t.Tick += (_, _) =>
-        {
-            t.Stop();
-            t.Dispose();
-            FloatingTooltip.Show(message, _config.TooltipDurationMs);
-        };
-        t.Start();
+        DeferToNextTick(() => FloatingTooltip.Show(message, _config.TooltipDurationMs));
     }
 
     /// <summary>
@@ -860,14 +883,8 @@ public class TrayManager : IDisposable
         if (_config.Throttle.Enabled)
             lines.Add($"⚡  Throttle: {_config.Throttle.ThrottlePercent}%");
 
-        var t = new System.Windows.Forms.Timer { Interval = 50 };
-        t.Tick += (_, _) =>
-        {
-            t.Stop();
-            t.Dispose();
-            FloatingTooltip.Show(string.Join("\n", lines), _config.TooltipDurationMs * 2);
-        };
-        t.Start();
+        var helpText = string.Join("\n", lines);
+        DeferToNextTick(() => FloatingTooltip.Show(helpText, _config.TooltipDurationMs * 2));
     }
 
     private static void AddClickLine(List<string> lines, string label, string action)
@@ -914,57 +931,64 @@ public class TrayManager : IDisposable
         if (e.Button == MouseButtons.Middle)
         {
             _trayMiddleClickCount++;
-
-            _middleClickResolveTimer?.Stop();
-            _middleClickResolveTimer?.Dispose();
-            _middleClickResolveTimer = new System.Windows.Forms.Timer { Interval = ClickResolveDelayMs };
-            _middleClickResolveTimer.Tick += (_, _) =>
-            {
-                _middleClickResolveTimer!.Stop();
-                _middleClickResolveTimer.Dispose();
-                _middleClickResolveTimer = null;
-
-                int clicks = _trayMiddleClickCount;
-                _trayMiddleClickCount = 0;
-
-                string action = clicks switch
-                {
-                    1 => _config.TrayClick.MiddleClick,
-                    2 => _config.TrayClick.MiddleDoubleClick,
-                    _ => _config.TrayClick.MiddleTripleClick
-                };
-                ExecuteTrayAction(action);
-            };
-            _middleClickResolveTimer.Start();
+            EnsureClickTimer(ref _middleClickResolveTimer, OnMiddleClickResolved);
             return;
         }
 
         if (e.Button != MouseButtons.Left) return;
 
         _trayClickCount++;
+        EnsureClickTimer(ref _clickResolveTimer, OnLeftClickResolved);
+    }
 
-        // Reset/restart the resolve timer on each click
-        _clickResolveTimer?.Stop();
-        _clickResolveTimer?.Dispose();
-        _clickResolveTimer = new System.Windows.Forms.Timer { Interval = ClickResolveDelayMs };
-        _clickResolveTimer.Tick += (_, _) =>
+    /// <summary>
+    /// Create click resolve timer once, then just restart on subsequent clicks.
+    /// Avoids allocating a new Timer + event handler on every click.
+    /// </summary>
+    private void EnsureClickTimer(ref System.Windows.Forms.Timer? timer, EventHandler handler)
+    {
+        if (timer == null)
         {
-            _clickResolveTimer!.Stop();
-            _clickResolveTimer.Dispose();
-            _clickResolveTimer = null;
+            timer = new System.Windows.Forms.Timer { Interval = ClickResolveDelayMs };
+            timer.Tick += handler;
+        }
+        else
+        {
+            timer.Stop();
+        }
+        timer.Start();
+    }
 
-            int clicks = _trayClickCount;
-            _trayClickCount = 0;
+    private void OnLeftClickResolved(object? sender, EventArgs e)
+    {
+        _clickResolveTimer!.Stop();
 
-            string action = clicks switch
-            {
-                1 => _config.TrayClick.SingleClick,
-                2 => _config.TrayClick.DoubleClick,
-                _ => _config.TrayClick.TripleClick // 3+
-            };
-            ExecuteTrayAction(action);
+        int clicks = _trayClickCount;
+        _trayClickCount = 0;
+
+        string action = clicks switch
+        {
+            1 => _config.TrayClick.SingleClick,
+            2 => _config.TrayClick.DoubleClick,
+            _ => _config.TrayClick.TripleClick // 3+
         };
-        _clickResolveTimer.Start();
+        ExecuteTrayAction(action);
+    }
+
+    private void OnMiddleClickResolved(object? sender, EventArgs e)
+    {
+        _middleClickResolveTimer!.Stop();
+
+        int clicks = _trayMiddleClickCount;
+        _trayMiddleClickCount = 0;
+
+        string action = clicks switch
+        {
+            1 => _config.TrayClick.MiddleClick,
+            2 => _config.TrayClick.MiddleDoubleClick,
+            _ => _config.TrayClick.MiddleTripleClick
+        };
+        ExecuteTrayAction(action);
     }
 
     private void ExecuteTrayAction(string action)
@@ -1227,6 +1251,8 @@ public class TrayManager : IDisposable
         _clickResolveTimer?.Dispose();
         _middleClickResolveTimer?.Stop();
         _middleClickResolveTimer?.Dispose();
+        _deferTimer?.Stop();
+        _deferTimer?.Dispose();
         _boldMenuFont?.Dispose();
         _pipOverlay?.Dispose();
         _hotkeyManager.Dispose();
