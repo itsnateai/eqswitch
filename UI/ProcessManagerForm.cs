@@ -240,6 +240,9 @@ public class ProcessManagerForm : Form
         {
             _refreshTimer?.Stop();
             _refreshTimer?.Dispose();
+            // Dispose Fonts in DataGridView cell styles — not cleaned up by base.Dispose
+            _grid?.DefaultCellStyle?.Font?.Dispose();
+            _grid?.ColumnHeadersDefaultCellStyle?.Font?.Dispose();
         }
         base.Dispose(disposing);
     }
