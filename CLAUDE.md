@@ -74,8 +74,8 @@ Matches the original AHK philosophy: one exe, drag anywhere, runs. No installer,
 1. **RegisterHotKey** (HotkeyManager) — For modifier-based hotkeys like Alt+1, Alt+G, Alt+M. Requires a hidden window to receive WM_HOTKEY. Uses MOD_NOREPEAT.
 2. **SetWindowsHookEx WH_KEYBOARD_LL** (KeyboardHookManager) — For single keys without modifiers (backslash `\`, close bracket `]`). Can be context-sensitive (only fire when EQ is focused) or global. This is how the original AHK version worked.
 
-### Why Timer-based Affinity?
-No clean Win32 event for "foreground window changed to my monitored process." A 250ms timer polling `GetForegroundWindow()` is simple, reliable, and low-overhead. The AHK version did the same thing.
+### Event-Driven Affinity (SetWinEventHook)
+Uses `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` for instant foreground change detection — zero latency vs. the old 250ms polling timer. The callback runs on the UI thread via `WINEVENT_OUTOFCONTEXT` (requires a message pump, which WinForms provides). Delegate stored as a field to prevent GC collection. Falls back to 250ms polling if the hook fails to install.
 
 ### Message-only Window Pattern
 `HotkeyMessageWindow` uses `Parent = new IntPtr(-3)` (HWND_MESSAGE) to create a window that receives messages but is never visible. No mystery window flashes.

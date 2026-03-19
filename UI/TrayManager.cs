@@ -28,8 +28,9 @@ public class TrayManager : IDisposable
     // Hidden window to receive TaskbarCreated message (explorer.exe restart recovery)
     private TaskbarMessageWindow? _taskbarMessageWindow;
 
-    // Timer that checks foreground window changes and applies affinity rules
-    private System.Windows.Forms.Timer? _affinityTimer;
+    // Event-driven foreground change detection (replaces polling timer)
+    private IntPtr _foregroundHook;
+    private NativeMethods.WinEventDelegate? _foregroundHookProc; // prevent GC collection
     // Timer for affinity retry attempts on newly launched clients
     private System.Windows.Forms.Timer? _retryTimer;
 
@@ -127,7 +128,8 @@ public class TrayManager : IDisposable
 
         _processManager.StartPolling();
         RegisterHotkeys();
-        StartAffinityTimer();
+        StartForegroundHook();
+        StartRetryTimer();
         _throttleManager.Start();
         StartupManager.MigrateFromRegistry();
         StartupManager.ValidateStartupPath(_config);
@@ -390,42 +392,96 @@ public class TrayManager : IDisposable
 
     // ─── Affinity Management ────────────────────────────────────────
 
-    private void StartAffinityTimer()
+    /// <summary>
+    /// Install a WinEvent hook for EVENT_SYSTEM_FOREGROUND.
+    /// Fires instantly when any window becomes foreground — zero latency vs. polling.
+    /// The callback runs on the UI thread (WINEVENT_OUTOFCONTEXT requires a message pump).
+    /// </summary>
+    private void StartForegroundHook()
+    {
+        // Store delegate as a field to prevent GC collection (same pattern as keyboard hook)
+        _foregroundHookProc = OnForegroundChanged;
+        _foregroundHook = NativeMethods.SetWinEventHook(
+            NativeMethods.EVENT_SYSTEM_FOREGROUND,
+            NativeMethods.EVENT_SYSTEM_FOREGROUND,
+            IntPtr.Zero,
+            _foregroundHookProc,
+            0, 0, // all processes, all threads
+            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+
+        if (_foregroundHook == IntPtr.Zero)
+        {
+            FileLogger.Warn("SetWinEventHook failed — falling back to polling timer");
+            StartForegroundHookFallback();
+            return;
+        }
+
+        FileLogger.Info("Foreground event hook installed (instant detection)");
+    }
+
+    /// <summary>
+    /// Fallback polling timer in case SetWinEventHook fails (shouldn't happen, but defensive).
+    /// </summary>
+    private System.Windows.Forms.Timer? _affinityFallbackTimer;
+    private void StartForegroundHookFallback()
+    {
+        _affinityFallbackTimer = new System.Windows.Forms.Timer { Interval = AffinityPollIntervalMs };
+        _affinityFallbackTimer.Tick += (_, _) => OnForegroundChangedCore();
+        _affinityFallbackTimer.Start();
+        FileLogger.Warn($"Foreground polling fallback started ({AffinityPollIntervalMs}ms)");
+    }
+
+    /// <summary>
+    /// WinEvent callback — fires on the UI thread when any window becomes foreground.
+    /// </summary>
+    private void OnForegroundChanged(
+        IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
+        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+    {
+        OnForegroundChangedCore();
+    }
+
+    /// <summary>
+    /// Core logic for foreground change — shared by event hook and fallback timer.
+    /// </summary>
+    private void OnForegroundChangedCore()
+    {
+        var active = _processManager.GetActiveClient();
+        var clients = _processManager.Clients;
+
+        if (_config.Affinity.Enabled)
+        {
+            _affinityManager.ApplyAffinityRules(clients, active);
+        }
+
+        _throttleManager.UpdateClients(clients, active);
+
+        // Track last two active clients for swap-last-two mode
+        if (active != null && active.ProcessId != _lastActivePid)
+        {
+            _previousActivePid = _lastActivePid;
+            _lastActivePid = active.ProcessId;
+        }
+
+        // Update PiP sources when foreground changes
+        if (_pipOverlay != null && !_pipOverlay.IsDisposed)
+        {
+            if (clients.Count < 2)
+            {
+                _pipOverlay.Close();
+                _pipOverlay.Dispose();
+                _pipOverlay = null;
+            }
+            else
+            {
+                _pipOverlay.UpdateSources(clients, active);
+            }
+        }
+    }
+
+    private void StartRetryTimer()
     {
         if (!_config.Affinity.Enabled) return;
-
-        _affinityTimer = new System.Windows.Forms.Timer { Interval = AffinityPollIntervalMs };
-        _affinityTimer.Tick += (_, _) =>
-        {
-            var active = _processManager.GetActiveClient();
-            var clients = _processManager.Clients;
-            _affinityManager.ApplyAffinityRules(clients, active);
-            _throttleManager.UpdateClients(clients, active);
-
-            // Track last two active clients for swap-last-two mode
-            if (active != null && active.ProcessId != _lastActivePid)
-            {
-                _previousActivePid = _lastActivePid;
-                _lastActivePid = active.ProcessId;
-            }
-
-            // Update PiP sources when foreground changes
-            if (_pipOverlay != null && !_pipOverlay.IsDisposed)
-            {
-                if (clients.Count < 2)
-                {
-                    // Auto-destroy PiP when fewer than 2 windows
-                    _pipOverlay.Close();
-                    _pipOverlay.Dispose();
-                    _pipOverlay = null;
-                }
-                else
-                {
-                    _pipOverlay.UpdateSources(clients, active);
-                }
-            }
-        };
-        _affinityTimer.Start();
 
         // Retry timer runs at the configured interval (default 2s)
         _retryTimer = new System.Windows.Forms.Timer
@@ -438,8 +494,7 @@ public class TrayManager : IDisposable
         };
         _retryTimer.Start();
 
-        FileLogger.Info("Affinity timers started (250ms check, retry every " +
-            $"{_config.Affinity.LaunchRetryDelayMs}ms)");
+        FileLogger.Info($"Affinity retry timer started (every {_config.Affinity.LaunchRetryDelayMs}ms)");
     }
 
     // ─── Tray UI ─────────────────────────────────────────────────────
@@ -518,21 +573,16 @@ public class TrayManager : IDisposable
             ConfigManager.Save(_config);
             if (affinityEnabledItem.Checked)
             {
-                // Start timer so affinity rules keep applying on foreground changes
-                _affinityTimer?.Stop();
-                _affinityTimer?.Dispose();
+                // Restart retry timer (foreground hook stays active regardless — it also drives throttle/PiP)
                 _retryTimer?.Stop();
                 _retryTimer?.Dispose();
-                StartAffinityTimer();
+                StartRetryTimer();
                 _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient());
                 ShowBalloon("CPU affinity enabled");
             }
             else
             {
-                // Stop the timer — no point polling when disabled
-                _affinityTimer?.Stop();
-                _affinityTimer?.Dispose();
-                _affinityTimer = null;
+                // Stop retry timer (foreground hook stays active for throttle/PiP)
                 _retryTimer?.Stop();
                 _retryTimer?.Dispose();
                 _retryTimer = null;
@@ -1031,17 +1081,13 @@ public class TrayManager : IDisposable
         BuildContextMenu();
         UpdateClientMenu();
 
-        // Restart or stop affinity timer based on new config
-        _affinityTimer?.Stop();
-        _affinityTimer?.Dispose();
-        _affinityTimer = null;
+        // Re-install foreground hook (in case it was lost) and restart retry timer
+        StopForegroundHook();
+        StartForegroundHook();
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
         _retryTimer = null;
-        if (_config.Affinity.Enabled)
-        {
-            StartAffinityTimer();
-        }
+        StartRetryTimer();
 
         // Restart throttle manager with new settings
         _throttleManager.Stop();
@@ -1071,10 +1117,22 @@ public class TrayManager : IDisposable
         _processManagerForm.Show();
     }
 
+    private void StopForegroundHook()
+    {
+        if (_foregroundHook != IntPtr.Zero)
+        {
+            NativeMethods.UnhookWinEvent(_foregroundHook);
+            _foregroundHook = IntPtr.Zero;
+        }
+        _foregroundHookProc = null;
+        _affinityFallbackTimer?.Stop();
+        _affinityFallbackTimer?.Dispose();
+        _affinityFallbackTimer = null;
+    }
+
     private void Shutdown()
     {
-        _affinityTimer?.Stop();
-        _affinityTimer?.Dispose();
+        StopForegroundHook();
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
         _launchManager.CancelLaunch();
@@ -1145,8 +1203,7 @@ public class TrayManager : IDisposable
 
     public void Dispose()
     {
-        _affinityTimer?.Stop();
-        _affinityTimer?.Dispose();
+        StopForegroundHook();
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
         _throttleManager.Dispose();
