@@ -1,3 +1,4 @@
+using System.Reflection;
 using EQSwitch.Config;
 using EQSwitch.Core;
 using EQSwitch.Models;
@@ -646,7 +647,8 @@ public class TrayManager : IDisposable
         _boldMenuFont = new Font(_contextMenu.Font, FontStyle.Bold);
 
         // Title bar
-        var titleItem = new ToolStripMenuItem("\u2694  EQ Switch v2.5.0  \u2694") { Enabled = false, Font = _boldMenuFont };
+        var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
+        var titleItem = new ToolStripMenuItem($"\u2694  EQ Switch v{version}  \u2694") { Enabled = false, Font = _boldMenuFont };
         _contextMenu.Items.Add(titleItem);
         _contextMenu.Items.Add(new ToolStripSeparator());
 

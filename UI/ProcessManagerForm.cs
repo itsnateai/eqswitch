@@ -170,7 +170,11 @@ public class ProcessManagerForm : Form
         _refreshTimer.Tick += (_, _) => RefreshList();
         _refreshTimer.Start();
 
-        FormClosed += (_, _) => _refreshTimer.Stop();
+        FormClosed += (_, _) =>
+        {
+            _refreshTimer.Stop();
+            _refreshTimer.Dispose();
+        };
 
         RefreshList();
     }
