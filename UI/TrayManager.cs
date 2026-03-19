@@ -1118,37 +1118,46 @@ public class TrayManager : IDisposable
 }
 
 /// <summary>
-/// Dark-themed renderer for ContextMenuStrip. Matches the app's dark UI.
+/// Dark-themed renderer for ContextMenuStrip.
+/// Uses the same medieval purple palette as DarkTheme (Settings/Help forms).
+/// All GDI objects cached as static fields — zero allocations per render call.
 /// </summary>
 internal class DarkMenuRenderer : ToolStripProfessionalRenderer
 {
-    private static readonly Color MenuBg = Color.FromArgb(38, 38, 42);
-    private static readonly Color MenuBorder = Color.FromArgb(70, 70, 78);
-    private static readonly Color ItemHover = Color.FromArgb(60, 63, 75);
-    private static readonly Color ItemText = Color.FromArgb(240, 240, 240);
-    private static readonly Color DisabledText = Color.FromArgb(140, 140, 150);
-    private static readonly Color SepColor = Color.FromArgb(65, 65, 72);
-    private static readonly Color CheckBg = Color.FromArgb(0, 120, 70);
-    private static readonly Color MarginBg = Color.FromArgb(42, 42, 46);
+    // Unified palette from DarkTheme — purple-tinted grays instead of neutral grays
+    private static readonly Color MenuBg = DarkTheme.BgDark;              // RGB(32, 28, 42)
+    private static readonly Color MenuBorder = DarkTheme.Border;           // RGB(64, 56, 78)
+    private static readonly Color ItemHover = DarkTheme.BgHover;           // RGB(64, 56, 78)
+    private static readonly Color ItemText = DarkTheme.FgWhite;            // RGB(235, 232, 240)
+    private static readonly Color DisabledText = DarkTheme.FgDimGray;      // RGB(120, 112, 135)
+    private static readonly Color SepColor = DarkTheme.Border;             // RGB(64, 56, 78)
+    private static readonly Color CheckBg = DarkTheme.AccentGreen;         // RGB(0, 140, 80)
+    private static readonly Color MarginBg = DarkTheme.BgPanel;            // RGB(38, 33, 48)
+    private static readonly Color PressedBg = DarkTheme.BgMedium;          // RGB(44, 38, 56)
+
+    // Cached GDI objects — eliminates Brush/Pen allocation on every render
+    private static readonly SolidBrush BrushMenuBg = new(MenuBg);
+    private static readonly SolidBrush BrushHover = new(ItemHover);
+    private static readonly SolidBrush BrushMargin = new(MarginBg);
+    private static readonly SolidBrush BrushCheck = new(CheckBg);
+    private static readonly Pen PenBorder = new(MenuBorder);
+    private static readonly Pen PenSep = new(SepColor);
+    private static readonly Pen PenCheck = new(Color.White, 2);
 
     public DarkMenuRenderer() : base(new DarkColorTable()) { }
 
     protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
     {
-        var g = e.Graphics;
         var rect = new Rectangle(Point.Empty, e.Item.Size);
 
         if (e.Item.Selected && e.Item.Enabled)
         {
-            using var brush = new SolidBrush(ItemHover);
-            g.FillRectangle(brush, rect);
-            using var pen = new Pen(MenuBorder);
-            g.DrawRectangle(pen, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
+            e.Graphics.FillRectangle(BrushHover, rect);
+            e.Graphics.DrawRectangle(PenBorder, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
         }
         else
         {
-            using var brush = new SolidBrush(MenuBg);
-            g.FillRectangle(brush, rect);
+            e.Graphics.FillRectangle(BrushMenuBg, rect);
         }
 
         e.Item.ForeColor = e.Item.Enabled ? ItemText : DisabledText;
@@ -1156,63 +1165,54 @@ internal class DarkMenuRenderer : ToolStripProfessionalRenderer
 
     protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
     {
-        var g = e.Graphics;
         int y = e.Item.Height / 2;
-        using var pen = new Pen(SepColor);
-        g.DrawLine(pen, 28, y, e.Item.Width - 4, y);
+        e.Graphics.DrawLine(PenSep, 28, y, e.Item.Width - 4, y);
     }
 
     protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
     {
-        using var brush = new SolidBrush(MenuBg);
-        e.Graphics.FillRectangle(brush, e.AffectedBounds);
+        e.Graphics.FillRectangle(BrushMenuBg, e.AffectedBounds);
     }
 
     protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
     {
-        using var pen = new Pen(MenuBorder);
         var r = e.AffectedBounds;
-        e.Graphics.DrawRectangle(pen, r.X, r.Y, r.Width - 1, r.Height - 1);
+        e.Graphics.DrawRectangle(PenBorder, r.X, r.Y, r.Width - 1, r.Height - 1);
     }
 
     protected override void OnRenderImageMargin(ToolStripRenderEventArgs e)
     {
-        using var brush = new SolidBrush(MarginBg);
-        e.Graphics.FillRectangle(brush, e.AffectedBounds);
+        e.Graphics.FillRectangle(BrushMargin, e.AffectedBounds);
     }
 
     protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
     {
-        var g = e.Graphics;
         var rect = e.ImageRectangle;
         rect.Inflate(2, 2);
-        using var brush = new SolidBrush(CheckBg);
-        g.FillRectangle(brush, rect);
-        // Draw checkmark
-        using var pen = new Pen(Color.White, 2);
+        e.Graphics.FillRectangle(BrushCheck, rect);
         int x = rect.X + 3;
         int y = rect.Y + rect.Height / 2;
-        g.DrawLines(pen, new[] {
+        e.Graphics.DrawLines(PenCheck, new[] {
             new Point(x, y), new Point(x + 3, y + 3), new Point(x + 9, y - 3)
         });
     }
 
     private class DarkColorTable : ProfessionalColorTable
     {
-        public override Color MenuBorder => Color.FromArgb(70, 70, 78);
-        public override Color MenuItemBorder => Color.FromArgb(70, 70, 78);
-        public override Color MenuItemSelected => Color.FromArgb(60, 63, 75);
-        public override Color MenuStripGradientBegin => Color.FromArgb(38, 38, 42);
-        public override Color MenuStripGradientEnd => Color.FromArgb(38, 38, 42);
-        public override Color MenuItemSelectedGradientBegin => Color.FromArgb(60, 63, 75);
-        public override Color MenuItemSelectedGradientEnd => Color.FromArgb(60, 63, 75);
-        public override Color MenuItemPressedGradientBegin => Color.FromArgb(50, 52, 60);
-        public override Color MenuItemPressedGradientEnd => Color.FromArgb(50, 52, 60);
-        public override Color ImageMarginGradientBegin => Color.FromArgb(42, 42, 46);
-        public override Color ImageMarginGradientMiddle => Color.FromArgb(42, 42, 46);
-        public override Color ImageMarginGradientEnd => Color.FromArgb(42, 42, 46);
-        public override Color SeparatorDark => Color.FromArgb(65, 65, 72);
-        public override Color SeparatorLight => Color.FromArgb(65, 65, 72);
-        public override Color ToolStripDropDownBackground => Color.FromArgb(38, 38, 42);
+        public override Color MenuBorder => DarkTheme.Border;
+        public override Color MenuItemBorder => DarkTheme.Border;
+        public override Color MenuItemSelected => DarkTheme.BgHover;
+        public override Color MenuStripGradientBegin => DarkTheme.BgDark;
+        public override Color MenuStripGradientEnd => DarkTheme.BgDark;
+        public override Color MenuItemSelectedGradientBegin => DarkTheme.BgHover;
+        public override Color MenuItemSelectedGradientEnd => DarkTheme.BgHover;
+        public override Color MenuItemPressedGradientBegin => DarkTheme.BgMedium;
+        public override Color MenuItemPressedGradientEnd => DarkTheme.BgMedium;
+        public override Color ImageMarginGradientBegin => DarkTheme.BgPanel;
+        public override Color ImageMarginGradientMiddle => DarkTheme.BgPanel;
+        public override Color ImageMarginGradientEnd => DarkTheme.BgPanel;
+        public override Color SeparatorDark => DarkTheme.Border;
+        public override Color SeparatorLight => DarkTheme.Border;
+        public override Color ToolStripDropDownBackground => DarkTheme.BgDark;
     }
 }

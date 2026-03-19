@@ -92,25 +92,39 @@ public class AffinityManager
     /// Process pending retry attempts. Call this from a timer tick.
     /// Returns true if any retries were applied.
     /// </summary>
+    // Reusable buffers for ProcessRetries — avoids List<int> allocation on every 2s tick
+    private readonly List<int> _completedBuffer = new();
+    private readonly List<KeyValuePair<int, int>> _retrySnapshot = new();
+
     public bool ProcessRetries(IReadOnlyList<EQClient> clients)
     {
         if (_retryCounters.Count == 0) return false;
 
         bool applied = false;
-        var completed = new List<int>();
+        _completedBuffer.Clear();
 
-        // Snapshot keys to avoid modifying the dictionary during enumeration
-        foreach (var (pid, remaining) in _retryCounters.ToList())
+        // Snapshot into reusable buffer to avoid modifying dictionary during enumeration
+        _retrySnapshot.Clear();
+        foreach (var kv in _retryCounters)
+            _retrySnapshot.Add(kv);
+
+        foreach (var (pid, remaining) in _retrySnapshot)
         {
-            var client = clients.FirstOrDefault(c => c.ProcessId == pid);
+            EQClient? client = null;
+            for (int i = 0; i < clients.Count; i++)
+                if (clients[i].ProcessId == pid) { client = clients[i]; break; }
+
             if (client == null)
             {
-                completed.Add(pid);
+                _completedBuffer.Add(pid);
                 continue;
             }
 
-            var profile = _config.Characters.FirstOrDefault(
-                c => c.Name.Equals(client.CharacterName ?? "", StringComparison.OrdinalIgnoreCase));
+            CharacterProfile? profile = null;
+            var chars = _config.Characters;
+            for (int i = 0; i < chars.Count; i++)
+                if (chars[i].Name.Equals(client.CharacterName ?? "", StringComparison.OrdinalIgnoreCase))
+                    { profile = chars[i]; break; }
 
             long mask = profile?.AffinityOverride ?? _config.Affinity.BackgroundMask;
             bool success = SetProcessAffinity(pid, mask);
@@ -122,12 +136,12 @@ public class AffinityManager
             }
 
             if (remaining <= 1)
-                completed.Add(pid);
+                _completedBuffer.Add(pid);
             else
                 _retryCounters[pid] = remaining - 1;
         }
 
-        foreach (var pid in completed)
+        foreach (var pid in _completedBuffer)
             _retryCounters.Remove(pid);
 
         return applied;

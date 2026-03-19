@@ -48,9 +48,19 @@ public static class DarkTheme
         return tabs;
     }
 
-    // Cached fonts for tab rendering — avoids GDI allocation on every paint
+    // Cached GDI objects for tab rendering — zero allocations per paint event
     private static readonly Font TabFontBold = new("Segoe UI", 8.5f, FontStyle.Bold);
     private static readonly Font TabFontNormal = new("Segoe UI", 8.5f, FontStyle.Regular);
+    private static readonly SolidBrush TabBrushActive = new(TabActive);
+    private static readonly SolidBrush TabBrushInactive = new(TabInactive);
+    private static readonly SolidBrush TabBrushAccent = new(AccentBar);
+    private static readonly SolidBrush TabBrushTextWhite = new(FgWhite);
+    private static readonly SolidBrush TabBrushTextGray = new(FgGray);
+    private static readonly StringFormat TabStringFormat = new()
+    {
+        Alignment = StringAlignment.Center,
+        LineAlignment = StringAlignment.Center
+    };
 
     private static void DrawTab(object? sender, DrawItemEventArgs e)
     {
@@ -60,29 +70,16 @@ public static class DarkTheme
         var bounds = tabs.GetTabRect(e.Index);
         var tabPage = tabs.TabPages[e.Index];
 
-        using var bgBrush = new SolidBrush(isSelected ? TabActive : TabInactive);
-        e.Graphics.FillRectangle(bgBrush, bounds);
+        e.Graphics.FillRectangle(isSelected ? TabBrushActive : TabBrushInactive, bounds);
 
-        // Green accent bar on selected tab
         if (isSelected)
-        {
-            using var accentBrush = new SolidBrush(AccentBar);
-            e.Graphics.FillRectangle(accentBrush, bounds.Left + 2, bounds.Top, bounds.Width - 4, 3);
-        }
-
-        // Tab text — use cached fonts to avoid GDI handle churn
-        var textColor = isSelected ? FgWhite : FgGray;
-        using var textBrush = new SolidBrush(textColor);
-        var font = isSelected ? TabFontBold : TabFontNormal;
-
-        using var sf = new StringFormat
-        {
-            Alignment = StringAlignment.Center,
-            LineAlignment = StringAlignment.Center
-        };
+            e.Graphics.FillRectangle(TabBrushAccent, bounds.Left + 2, bounds.Top, bounds.Width - 4, 3);
 
         var textRect = new Rectangle(bounds.X, bounds.Y + (isSelected ? 2 : 0), bounds.Width, bounds.Height);
-        e.Graphics.DrawString(tabPage.Text, font, textBrush, textRect, sf);
+        e.Graphics.DrawString(tabPage.Text,
+            isSelected ? TabFontBold : TabFontNormal,
+            isSelected ? TabBrushTextWhite : TabBrushTextGray,
+            textRect, TabStringFormat);
     }
 
     public static TabPage MakeTabPage(string title)

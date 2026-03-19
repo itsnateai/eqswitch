@@ -17,6 +17,14 @@ public class ProcessManager : IDisposable
     private readonly List<EQClient> _clients = new();
     private readonly object _lock = new();
 
+    // Cached snapshot — rebuilt only when the client list actually changes.
+    // Eliminates ~345,600 ToList() allocations/day from the 250ms affinity timer.
+    private IReadOnlyList<EQClient> _cachedSnapshot = Array.Empty<EQClient>();
+
+    // Re-entrancy guard — prevents overlapping RefreshClients calls if a tick
+    // fires while a previous call is still processing (e.g., GetProcessesByName hangs).
+    private bool _refreshing;
+
     /// <summary>
     /// Idle polling interval when no EQ clients are running (ms).
     /// 5 seconds is plenty — EQ is launched externally, no rush to detect.
@@ -27,9 +35,14 @@ public class ProcessManager : IDisposable
     public event EventHandler<EQClient>? ClientLost;
     public event EventHandler? ClientListChanged;
 
+    /// <summary>
+    /// Thread-safe snapshot of the current client list.
+    /// Returns a cached copy that is only rebuilt when the list changes.
+    /// Safe to hold references — the snapshot is immutable.
+    /// </summary>
     public IReadOnlyList<EQClient> Clients
     {
-        get { lock (_lock) return _clients.ToList().AsReadOnly(); }
+        get { lock (_lock) return _cachedSnapshot; }
     }
 
     public int ClientCount
@@ -61,6 +74,12 @@ public class ProcessManager : IDisposable
     /// </summary>
     public void RefreshClients()
     {
+        // Re-entrancy guard — skip if a previous call hasn't completed.
+        // WinForms Timer fires on the UI thread so this shouldn't happen,
+        // but guards against manual RefreshClients() calls during a tick.
+        if (_refreshing) return;
+        _refreshing = true;
+
         Process[]? eqProcesses = null;
 
         // Collect events to fire outside the lock
@@ -71,20 +90,27 @@ public class ProcessManager : IDisposable
         try
         {
             eqProcesses = Process.GetProcessesByName(_config.EQProcessName);
-            var currentPids = new HashSet<int>(eqProcesses.Select(p => p.Id));
+            var currentPids = new HashSet<int>(eqProcesses.Length);
+            foreach (var p in eqProcesses)
+                currentPids.Add(p.Id);
 
             lock (_lock)
             {
-                // Remove dead clients
-                var dead = _clients.Where(c => !currentPids.Contains(c.ProcessId) || !c.IsProcessAlive()).ToList();
-                foreach (var client in dead)
+                // Remove dead clients — iterate backwards to avoid index shifting
+                for (int i = _clients.Count - 1; i >= 0; i--)
                 {
-                    _clients.Remove(client);
-                    lostClients.Add(client);
+                    var c = _clients[i];
+                    if (!currentPids.Contains(c.ProcessId) || !c.IsProcessAlive())
+                    {
+                        _clients.RemoveAt(i);
+                        lostClients.Add(c);
+                    }
                 }
 
                 // Discover new clients
-                var knownPids = new HashSet<int>(_clients.Select(c => c.ProcessId));
+                var knownPids = new HashSet<int>(_clients.Count);
+                foreach (var c in _clients)
+                    knownPids.Add(c.ProcessId);
                 foreach (var proc in eqProcesses)
                 {
                     if (knownPids.Contains(proc.Id)) continue;
@@ -123,7 +149,9 @@ public class ProcessManager : IDisposable
                 bool titleChanged = false;
                 foreach (var proc in eqProcesses)
                 {
-                    var client = _clients.FirstOrDefault(c => c.ProcessId == proc.Id);
+                    EQClient? client = null;
+                    for (int i = 0; i < _clients.Count; i++)
+                        if (_clients[i].ProcessId == proc.Id) { client = _clients[i]; break; }
                     if (client == null) continue;
 
                     // Update stale window handle from process
@@ -145,6 +173,10 @@ public class ProcessManager : IDisposable
                 }
 
                 listChanged = lostClients.Count > 0 || discoveredClients.Count > 0 || titleChanged;
+
+                // Rebuild snapshot only when something changed
+                if (listChanged)
+                    _cachedSnapshot = _clients.ToList().AsReadOnly();
             }
         }
         catch (InvalidOperationException)
@@ -164,6 +196,7 @@ public class ProcessManager : IDisposable
             if (eqProcesses != null)
                 foreach (var p in eqProcesses)
                     p.Dispose();
+            _refreshing = false;
         }
 
         // Fire events OUTSIDE the lock to prevent deadlocks
