@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.5.0 — Quality of Life (in progress)
+## v2.5.0 — Quality of Life (2026-03-18)
 
 ### Added
 - **Reset Defaults button in Video Settings form** — resets Width/Height (1920×1080), offsets (0,0), Windowed Mode (on), Disable Log (off), Title Bar Offset (0). Matches AHK v2.4 `ResetVMDefaults`. Requires Save or Apply to write to disk.
