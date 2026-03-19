@@ -101,5 +101,16 @@ public static class FloatingTooltip
         }
 
         protected override bool ShowWithoutActivation => true;
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                // Dispose Font objects on child controls — base.Dispose doesn't do this
+                foreach (Control c in Controls)
+                    c.Font?.Dispose();
+            }
+            base.Dispose(disposing);
+        }
     }
 }
