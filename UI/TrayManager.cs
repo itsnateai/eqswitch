@@ -399,6 +399,9 @@ public class TrayManager : IDisposable
     /// </summary>
     private void StartForegroundHook()
     {
+        // Guard against double-start (would leak the previous hook handle)
+        if (_foregroundHook != IntPtr.Zero) return;
+
         // Store delegate as a field to prevent GC collection (same pattern as keyboard hook)
         _foregroundHookProc = OnForegroundChanged;
         _foregroundHook = NativeMethods.SetWinEventHook(
@@ -407,7 +410,10 @@ public class TrayManager : IDisposable
             IntPtr.Zero,
             _foregroundHookProc,
             0, 0, // all processes, all threads
-            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+            NativeMethods.WINEVENT_OUTOFCONTEXT);
+            // Note: NOT using WINEVENT_SKIPOWNPROCESS — we need events when
+            // EQSwitch windows gain focus so throttle/PiP correctly detect that
+            // no EQ client is active (GetActiveClient returns null).
 
         if (_foregroundHook == IntPtr.Zero)
         {
@@ -438,7 +444,16 @@ public class TrayManager : IDisposable
         IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
         int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
     {
-        OnForegroundChangedCore();
+        try
+        {
+            OnForegroundChangedCore();
+        }
+        catch (Exception ex)
+        {
+            // WinEvent callbacks may not be wrapped by the WinForms message loop exception handler.
+            // An unhandled exception here could crash the app — log and swallow.
+            FileLogger.Error("Foreground hook callback error", ex);
+        }
     }
 
     /// <summary>
