@@ -73,6 +73,8 @@ public static class ConfigManager
 
     /// <summary>
     /// Flush any pending save immediately. Call on shutdown to ensure config is persisted.
+    /// Guards against lost saves: if Save() is called during the write, the new pending
+    /// config is detected and re-queued after the write completes.
     /// </summary>
     public static void FlushSave()
     {
@@ -93,6 +95,13 @@ public static class ConfigManager
         catch (Exception ex)
         {
             FileLogger.Error("Config save failed", ex);
+        }
+
+        // If Save() was called during the write, re-queue so it's not lost.
+        if (_pendingSave != null)
+        {
+            _saveTimer?.Stop();
+            _saveTimer?.Start();
         }
     }
 

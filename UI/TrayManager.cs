@@ -39,6 +39,10 @@ public class TrayManager : IDisposable
     private System.Windows.Forms.Timer? _foregroundDebounceTimer;
     private const int ForegroundDebounceMs = 50;
 
+    // Cached exempt PIDs for throttle — avoids List<int> allocation on every foreground change.
+    // Only rebuilt when PiP source windows actually change.
+    private int[] _cachedExemptPids = Array.Empty<int>();
+
     // Debounce timestamp for multi-monitor toggle (500ms)
     private long _lastMultiMonToggle;
 
@@ -545,7 +549,8 @@ public class TrayManager : IDisposable
                 _pipOverlay.Close();
                 _pipOverlay.Dispose();
                 _pipOverlay = null;
-                _throttleManager.SetExemptPids(Array.Empty<int>());
+                _cachedExemptPids = Array.Empty<int>();
+                _throttleManager.SetExemptPids(_cachedExemptPids);
             }
             else
             {
@@ -565,24 +570,61 @@ public class TrayManager : IDisposable
     {
         if (_pipOverlay == null || _pipOverlay.IsDisposed)
         {
-            _throttleManager.SetExemptPids(Array.Empty<int>());
+            if (_cachedExemptPids.Length > 0)
+            {
+                _cachedExemptPids = Array.Empty<int>();
+                _throttleManager.SetExemptPids(_cachedExemptPids);
+            }
             return;
         }
 
         var sourceWindows = _pipOverlay.SourceWindows;
-        var exemptPids = new List<int>(sourceWindows.Count);
+
+        // Fast path: check if the exempt set actually changed before allocating.
+        // This fires on every debounced foreground change, but PiP sources only change
+        // when clients are added/removed — so the common case is "no change".
+        bool changed = sourceWindows.Count != _cachedExemptPids.Length;
+        if (!changed)
+        {
+            int idx = 0;
+            foreach (var hwnd in sourceWindows)
+            {
+                int pid = 0;
+                for (int i = 0; i < clients.Count; i++)
+                {
+                    if (clients[i].WindowHandle == hwnd)
+                    {
+                        pid = clients[i].ProcessId;
+                        break;
+                    }
+                }
+                if (idx >= _cachedExemptPids.Length || pid != _cachedExemptPids[idx])
+                {
+                    changed = true;
+                    break;
+                }
+                idx++;
+            }
+        }
+
+        if (!changed) return;
+
+        // Rebuild — only allocates when PiP sources actually change
+        var exemptPids = new int[sourceWindows.Count];
+        int pos = 0;
         foreach (var hwnd in sourceWindows)
         {
             for (int i = 0; i < clients.Count; i++)
             {
                 if (clients[i].WindowHandle == hwnd)
                 {
-                    exemptPids.Add(clients[i].ProcessId);
+                    exemptPids[pos++] = clients[i].ProcessId;
                     break;
                 }
             }
         }
-        _throttleManager.SetExemptPids(exemptPids);
+        _cachedExemptPids = exemptPids;
+        _throttleManager.SetExemptPids(_cachedExemptPids);
     }
 
     private void StartRetryTimer()
@@ -866,7 +908,8 @@ public class TrayManager : IDisposable
             _pipOverlay.Close();
             _pipOverlay.Dispose();
             _pipOverlay = null;
-            _throttleManager.SetExemptPids(Array.Empty<int>());
+            _cachedExemptPids = Array.Empty<int>();
+            _throttleManager.SetExemptPids(_cachedExemptPids);
             ShowBalloon("PiP overlay hidden");
             return;
         }
