@@ -41,7 +41,7 @@ public static class HelpForm
         var hk = config.Hotkeys;
         var throttle = config.Throttle;
         var layout = config.Layout;
-        return $@"EQSwitch v2.4.0 — EverQuest Window Manager
+        return $@"EQSwitch v2.5.0 — EverQuest Window Manager
 ============================================
 GitHub: https://github.com/itsnateai/eqswitch_port
 

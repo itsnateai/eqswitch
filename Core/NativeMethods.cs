@@ -251,6 +251,11 @@ internal static class NativeMethods
 
     public const int VK_CONTROL = 0x11;
 
+    // ─── Shell Notifications ──────────────────────────────────────────
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint RegisterWindowMessageW(string lpString);
+
     // ─── Process Suspension (Background FPS Throttling) ──────────────
 
     [DllImport("ntdll.dll", SetLastError = true)]
