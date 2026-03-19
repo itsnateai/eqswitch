@@ -1,7 +1,7 @@
 # EQSwitch v2.5.0 — Claude Code Context
 
 ## What This Is
-C# (.NET 8 WinForms) port of EQSwitch, an EverQuest multiboxing window manager originally written in AHK v2. Targets the Shards of Dalaya emulator community. v2.5.0 — quality of life improvements in progress. ~27 files, ~5,700 lines.
+C# (.NET 8 WinForms) port of EQSwitch, an EverQuest multiboxing window manager originally written in AHK v2. Targets the Shards of Dalaya emulator community. ~33 production files, ~10,900 lines.
 
 **Repo**: `itsnateai/eqswitch_port` (private) | **Branch**: master
 
@@ -33,7 +33,7 @@ dotnet restore
 ### Core Layer (`Core/`)
 | File | Purpose | Key Nuances |
 |------|---------|-------------|
-| **NativeMethods.cs** | All Win32 P/Invoke declarations | **THE** single source for all DllImport. Never scatter DllImport elsewhere. Uses 64-bit safe `GetWindowLongPtrW`/`SetWindowLongPtrW` (not the 32-bit GetWindowLong). WS_* constants are `long` not `int`. |
+| **NativeMethods.cs** (268 lines) | All Win32 P/Invoke declarations | **THE** single source for all DllImport. Never scatter DllImport elsewhere. Uses 64-bit safe `GetWindowLongPtrW`/`SetWindowLongPtrW` (not the 32-bit GetWindowLong). WS_* constants are `long` not `int`. |
 | **ProcessManager.cs** | Polls for `eqgame.exe`, fires events on client discovery/loss | Timer-based (configurable, default 500ms). Process[] from GetProcessesByName disposed in finally block. Events fire under lock but safe due to single-thread (UI thread only — breaks if ever moved off-thread). |
 | **WindowManager.cs** | Window positioning, grid arrangement, title bar removal | Uses `GetWindowLongPtr` for style manipulation. EnumDisplayMonitors for multi-monitor support. Grid layout: `(columns x rows)` on target monitor. Multi-monitor mode: one client per monitor. TopOffset config for taskbar/bezel adjustment. |
 | **AffinityManager.cs** | CPU affinity + process priority for P-core/E-core optimization | Opens process with PROCESS_SET_INFORMATION + PROCESS_QUERY_INFORMATION. Sets active client to P-cores (default mask 0xFF), background to E-cores (0xFF00). ForceApplyAffinityRules() for manual re-apply from Process Manager UI. Retry logic for post-launch (EQ resets affinity on startup). |
@@ -52,11 +52,16 @@ dotnet restore
 ### UI Layer (`UI/`)
 | File | Purpose | Key Nuances |
 |------|---------|-------------|
-| **TrayManager.cs** (982 lines) | Main orchestration hub | System tray icon, context menu, triple-click detection for "secret" manual refresh. Owns all managers (ProcessManager, WindowManager, AffinityManager, HotkeyManager, KeyboardHookManager, LaunchManager). Config reload: stops timers → disposes old timers → re-registers hotkeys → restarts timers. COM cleanup in CreateDesktopShortcut with `Marshal.FinalReleaseComObject`. |
-| **SettingsForm.cs** (734 lines) | 8-tab dark settings GUI | Tabs: General, Hotkeys, Layout, Affinity, Launch, PiP, Paths, Characters. Dark theme: BackColor `#2D2D30`, ForeColor `#F1F1F1`. Uses `_pendingCharacters` field to stage character imports (not applied until Save). ClampNud helper for safe NumericUpDown population. ApplySettings builds new AppConfig and fires `SettingsChanged` event. |
-| **ProcessManagerForm.cs** | Live process manager with auto-refresh | DataGridView with auto-refresh timer. Force Apply button re-applies affinity rules. Uses delegate injection for affinity actions. |
+| **TrayManager.cs** (1268 lines) | Main orchestration hub | System tray icon, context menu, configurable tray click actions with delayed resolution. Owns all managers. Config reload: stops timers → disposes old timers → re-registers hotkeys → restarts timers. Explorer restart recovery via TaskbarCreated message. Re-entrancy guard on timer callbacks. |
+| **SettingsForm.cs** (1042 lines) | 8-tab dark settings GUI | Tabs: General, Hotkeys, Layout, Affinity, Launch, PiP, Paths, Characters. Dark theme via `DarkTheme` helper. Uses `_pendingCharacters` field to stage character imports (not applied until Save). ClampNud helper for safe NumericUpDown population. ApplySettings builds new AppConfig and fires `SettingsChanged` event. |
+| **ProcessManagerForm.cs** | Live process manager with auto-refresh | DataGridView with auto-refresh timer. Force Apply button re-applies affinity rules. Dark themed. |
 | **PipOverlay.cs** | DWM thumbnail PiP overlays | Uses `DwmRegisterThumbnail`/`DwmUpdateThumbnailProperties` for live window thumbnails (zero CPU — GPU composited). Draggable, click-through (`WS_EX_TRANSPARENT`). Position saved to config on drag end. Configurable size presets, opacity, border color. Max 3 PiP windows. |
-| **VideoSettingsForm.cs** | eqclient.ini editor | Reads/writes EQ's settings file. Organized by category. Watch encoding: EQ uses ANSI, not UTF-8. |
+| **VideoSettingsForm.cs** | eqclient.ini editor | Reads/writes EQ's settings file. Organized by category with sub-forms (EQVideoModeForm, EQModelsForm, EQParticlesForm, EQChatSpamForm, EQKeymapsForm, EQClientSettingsForm). Custom video presets (up to 3, FIFO eviction). Reset Defaults button. ANSI encoding — not UTF-8. |
+| **DarkTheme.cs** | Unified dark theme helper | Static cached brushes/colors for `#2D2D30` / `#F1F1F1` theme. DarkMenuRenderer for context menus. Prevents GDI object leaks via shared static fields. |
+| **FloatingTooltip.cs** | Animated tooltip overlay | Self-disposing tooltip window used for tray feedback. |
+| **HelpForm.cs** | About/help dialog | Shows version (dynamic from Assembly), hotkey reference. |
+| **FileOperations.cs** | File I/O helpers | Desktop shortcut creation (COM cleanup with `Marshal.FinalReleaseComObject`), startup registry management. |
+| **StartupManager.cs** | Run-at-startup registry | Manages HKCU Run key for auto-start on login. |
 | **FirstRunDialog.cs** | One-time EQ path setup | Folder browser dialog for selecting EQ installation directory. |
 
 ### Models (`Models/`)
@@ -128,10 +133,18 @@ Settings uses a pending/staged approach:
 
 ## Status
 
-**v2.5.0 — In Progress (Quality of Life)**
+**v2.5.0 — Released (2026-03-19)**
 
 New in v2.5.0:
 - Reset Defaults button in Video Settings form
+- Full production security audit (all P1 issues resolved)
+- Hot-path allocation reduction (70 MB/day → 5 MB/day for 72-hour uptime)
+- Explorer restart recovery (TaskbarCreated message handler)
+- Re-entrancy guards on timer callbacks
+- Unified dark theme via cached static GDI objects (DarkTheme.cs)
+- Dynamic version strings from Assembly metadata
+- Path traversal validation on configurable process name
+- Dead code cleanup
 
 Released in v2.4.0 (2026-03-14):
 - Reorganized tray context menu into grouped submenus (Video Settings, Settings, Launcher)
@@ -145,50 +158,12 @@ Released in v2.3.0:
 - Background FPS throttling (NtSuspendProcess/NtResumeProcess duty cycle)
 - Borderless fullscreen mode (WinEQ Y+1 offset trick)
 
-## Cloud Audit Instructions (Pre-Release)
-
-**BEASTMODE ON. #deepresearch. You are the final senior coder before release.**
-
-When Cloud runs the deep audit on this project, go beyond surface-level checks. This is a long-running tray app that users leave running for days/weeks. Activate full production audit v3 with extra focus on:
-
-### Resource Leak Hunting (Priority 1)
-- **Timer-path allocation audit**: Trace every function called from every timer callback recursively. Flag ANY object allocation in a hot path (250ms affinity timer, 500ms polling timer, throttle duty cycle timers, click resolve timer).
-- **Handle accumulation**: Every `Process` object, GDI object (`Font`, `Brush`, `Pen`), COM object must be disposed in the same scope it's created. Check `using var` on ALL Process.GetProcessesByName/GetProcessById calls.
-- **Event handler leaks**: Lambda event handlers on long-lived objects can prevent GC. Check for += without corresponding -=, especially in BuildContextMenu (called on reload).
-- **Timer dispose**: Old timers must be Stop()'d AND Dispose()'d before replacement. Check ReloadConfig flow.
-- **ContextMenuStrip rebuild**: When menu is rebuilt, old menu items and their event handlers must be cleaned up.
-
-### Syntax & Logic Errors (Priority 1)
-- **Null reference paths**: Trace every nullable field access. Especially `_trayIcon`, `_contextMenu`, `_clientsMenu`, `_pipOverlay`, `_clickResolveTimer`.
-- **Race conditions**: UI thread assumption — verify nothing touches shared state from a non-UI thread.
-- **Config serialization roundtrip**: Verify TrayClickConfig, CustomVideoPresets, and all new config classes serialize/deserialize correctly with System.Text.Json camelCase naming.
-- **Enum string matching**: TrayClickConfig uses string matching ("LaunchOne", "FixWindows", etc.) — verify every case in ExecuteTrayAction matches exactly.
-
-### 72-Hour Viability (Priority 1)
-- Run the full 72-hour viability checklist from root CLAUDE.md
-- Calculate: `(allocation size) × (frequency) × (uptime)` for every timer path
-- Verify Explorer restart recovery (TaskbarCreated message handler)
-- Verify graceful shutdown cleans up ALL timers, hooks, handles, COM objects
-
-### New Code Since v2.3.0 (Priority 2)
-- **DarkMenuRenderer**: Check for GDI object leaks in OnRender* overrides (Brush, Pen created with `using var`?)
-- **Click resolve timer**: Created/disposed on every click — verify no leak if rapid clicking
-- **FloatingTooltip**: Verify it self-disposes and doesn't accumulate windows
-- **VideoSettingsForm custom presets**: Config persistence, FIFO eviction, duplicate detection
-- **ProcessManagerForm DataGridView**: Font disposal, timer cleanup on close
-
-### Branch Hygiene (MANDATORY)
+## Branch Hygiene (MANDATORY)
 - **BEFORE doing ANY work**: `git fetch origin && git log --oneline origin/master..HEAD` — check if you're behind remote. Pull first.
-- **EVERY session start**: Check GitHub for the latest state: `gh api repos/itsnateai/eqswitch_port/commits/master --jq '.sha'` and compare to local HEAD.
+- **EVERY session start**: Check GitHub for the latest state and compare to local HEAD.
 - **NEVER work on a stale branch.** Nate pushes changes from live testing sessions. If you don't pull first, merging will suck. This is non-negotiable.
-- **Check for stacked PRs**: `gh pr list --repo itsnateai/eqswitch_port` — if there are pending PRs, review and merge them FIRST before starting new work. Cloud sometimes stacks 7+ PRs that go stale. Clean the queue before adding to it.
+- **Check for stacked PRs**: `gh pr list --repo itsnateai/eqswitch_port` — if there are pending PRs, review and merge them FIRST before starting new work.
 - **After fixes**: Commit in small logical groups, push immediately. Don't batch 10 fixes into one mega-commit.
-
-### Upgrade Opportunities
-- Look for new .NET 8 patterns that could simplify existing code
-- Check for deprecated API usage
-- Identify any P0/P1 bugs introduced in the v2.4.0 changes
-- Fix anything you find — don't just report, fix and commit
 
 ## Conventions
 - All Win32 calls go through `NativeMethods.cs` — never scatter DllImport.
@@ -208,7 +183,7 @@ eqswitch_port/
     FileLogger.cs                # Persistent file logging (Info/Warn/Error)
     IWindowsApi.cs               # Testable Win32 interface + WinRect struct
     WindowsApi.cs                # Production IWindowsApi implementation
-    NativeMethods.cs             # All P/Invoke (224 lines)
+    NativeMethods.cs             # All P/Invoke (268 lines)
     ProcessManager.cs            # EQ process detection
     WindowManager.cs             # Window positioning & arrangement
     AffinityManager.cs           # CPU affinity management
@@ -217,18 +192,30 @@ eqswitch_port/
     ThrottleManager.cs           # Background FPS throttling (suspend/resume)
     LaunchManager.cs             # Staggered EQ launching
   Config/
-    AppConfig.cs                 # JSON config model (225 lines)
+    AppConfig.cs                 # JSON config model (493 lines)
     ConfigManager.cs             # Load/save with backup rotation
     ConfigMigration.cs           # AHK config importer
   Models/
     EQClient.cs                  # Running EQ client model
   UI/
-    TrayManager.cs               # Main orchestration (982 lines)
-    SettingsForm.cs              # 8-tab dark settings GUI (734 lines)
+    TrayManager.cs               # Main orchestration (1268 lines)
+    SettingsForm.cs              # 8-tab dark settings GUI (1042 lines)
+    DarkTheme.cs                 # Unified dark theme + DarkMenuRenderer
     ProcessManagerForm.cs        # Live process manager
     PipOverlay.cs                # DWM thumbnail PiP overlay
-    VideoSettingsForm.cs         # eqclient.ini editor
+    VideoSettingsForm.cs         # eqclient.ini editor (master form)
+    EQVideoModeForm.cs           # Video mode sub-form
+    EQModelsForm.cs              # Models/distance sub-form
+    EQParticlesForm.cs           # Particles sub-form
+    EQChatSpamForm.cs            # Chat spam filter sub-form
+    EQKeymapsForm.cs             # Keymaps sub-form
+    EQClientSettingsForm.cs      # Client settings sub-form
+    FloatingTooltip.cs           # Animated tooltip overlay
+    HelpForm.cs                  # About/help dialog
+    FileOperations.cs            # File I/O helpers (shortcuts, etc.)
+    StartupManager.cs            # Run-at-startup registry management
     FirstRunDialog.cs            # First-run EQ path picker
+  EQSwitch.Tests/                # Unit test project (xUnit)
 ```
 
 ## Features Summary
