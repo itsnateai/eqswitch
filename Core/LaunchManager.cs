@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using EQSwitch.Config;
 
 namespace EQSwitch.Core;
@@ -51,6 +52,8 @@ public class LaunchManager : IDisposable
         }
         _lastLaunchTime = now;
 
+        EnforceWindowedModeIfBorderless();
+        UI.EQClientSettingsForm.EnforceOverrides(_config);
         int pid = StartEQProcess();
         if (pid > 0)
         {
@@ -75,6 +78,8 @@ public class LaunchManager : IDisposable
         _launchActive = true;
         _launchedPids.Clear();
 
+        EnforceWindowedModeIfBorderless();
+        UI.EQClientSettingsForm.EnforceOverrides(_config);
         FileLogger.Info($"LaunchAll: starting {count} client(s)");
         ProgressUpdate?.Invoke(this, $"Launching {count} client(s)...");
 
@@ -159,6 +164,33 @@ public class LaunchManager : IDisposable
     public void Dispose()
     {
         CancelLaunch();
+    }
+
+    /// <summary>
+    /// Ensure eqclient.ini has WindowedMode=TRUE when borderless fullscreen is enabled.
+    /// EQ must launch in windowed mode first — EQSwitch then strips the chrome and
+    /// stretches it to cover the screen. Without this, EQ takes exclusive DirectX
+    /// fullscreen and triggers gamma errors.
+    /// </summary>
+    private void EnforceWindowedModeIfBorderless()
+    {
+        if (!_config.Layout.BorderlessFullscreen) return;
+
+        var iniPath = Path.Combine(_config.EQPath, "eqclient.ini");
+        if (!File.Exists(iniPath)) return;
+
+        try
+        {
+            var lines = File.ReadAllLines(iniPath, Encoding.Default).ToList();
+            UI.EQClientSettingsForm.SetIniValue(lines, "VideoMode", "WindowedMode", "TRUE");
+            UI.EQClientSettingsForm.SetIniValue(lines, "VideoMode", "Maximized", "0");
+            File.WriteAllLines(iniPath, lines, Encoding.Default);
+            FileLogger.Info("LaunchManager: enforced WindowedMode=TRUE for borderless fullscreen");
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Warn($"LaunchManager: failed to enforce windowed mode: {ex.Message}");
+        }
     }
 
     private int StartEQProcess()

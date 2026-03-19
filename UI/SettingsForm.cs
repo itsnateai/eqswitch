@@ -427,7 +427,7 @@ public class SettingsForm : Form
 
         _chkRemoveTitleBars = DarkTheme.AddCardCheckBox(cardStyle, "Remove Title Bars on Arrange", 10, 34);
         _chkBorderlessFullscreen = DarkTheme.AddCardCheckBox(cardStyle, "Borderless Fullscreen", 10, 58);
-        DarkTheme.AddCardHint(cardStyle, "Fills screen without exclusive fullscreen — preserves Alt+Tab and PiP", 230, 60);
+        DarkTheme.AddCardHint(cardStyle, "Strips chrome, Y+1 offset — auto-enforces WindowedMode in eqclient.ini on launch", 230, 60);
 
         return page;
     }
