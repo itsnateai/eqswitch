@@ -528,12 +528,44 @@ public class TrayManager : IDisposable
                 _pipOverlay.Close();
                 _pipOverlay.Dispose();
                 _pipOverlay = null;
+                _throttleManager.SetExemptPids(Array.Empty<int>());
             }
             else
             {
                 _pipOverlay.UpdateSources(clients, active);
+
+                // Exempt PiP source processes from throttling — suspending them
+                // freezes DWM thumbnails, making PiP go black during suspend phase
+                UpdateThrottleExemptions(clients);
             }
         }
+    }
+
+    /// <summary>
+    /// Tell ThrottleManager which PIDs are PiP sources so it won't suspend them.
+    /// </summary>
+    private void UpdateThrottleExemptions(IReadOnlyList<EQClient> clients)
+    {
+        if (_pipOverlay == null || _pipOverlay.IsDisposed)
+        {
+            _throttleManager.SetExemptPids(Array.Empty<int>());
+            return;
+        }
+
+        var sourceWindows = _pipOverlay.SourceWindows;
+        var exemptPids = new List<int>(sourceWindows.Count);
+        foreach (var hwnd in sourceWindows)
+        {
+            for (int i = 0; i < clients.Count; i++)
+            {
+                if (clients[i].WindowHandle == hwnd)
+                {
+                    exemptPids.Add(clients[i].ProcessId);
+                    break;
+                }
+            }
+        }
+        _throttleManager.SetExemptPids(exemptPids);
     }
 
     private void StartRetryTimer()
@@ -817,6 +849,7 @@ public class TrayManager : IDisposable
             _pipOverlay.Close();
             _pipOverlay.Dispose();
             _pipOverlay = null;
+            _throttleManager.SetExemptPids(Array.Empty<int>());
             ShowBalloon("PiP overlay hidden");
             return;
         }
@@ -831,6 +864,7 @@ public class TrayManager : IDisposable
         _pipOverlay = new PipOverlay(_config);
         _pipOverlay.Show();
         _pipOverlay.UpdateSources(clients, _processManager.GetActiveClient());
+        UpdateThrottleExemptions(clients);
         ShowBalloon("PiP overlay shown");
     }
 

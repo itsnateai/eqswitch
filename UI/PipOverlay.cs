@@ -219,6 +219,12 @@ public class PipOverlay : Form
         _sourceWindows.Clear();
     }
 
+    /// <summary>
+    /// PIDs of the source windows currently being thumbnailed.
+    /// Used by ThrottleManager to exempt these from suspension.
+    /// </summary>
+    public IReadOnlyList<IntPtr> SourceWindows => _sourceWindows;
+
     private static string MapDwmError(int hr) => unchecked((uint)hr) switch
     {
         0x80263001 => "DWM_E_COMPOSITIONDISABLED",
