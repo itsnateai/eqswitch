@@ -34,6 +34,11 @@ public class TrayManager : IDisposable
     // Timer for affinity retry attempts on newly launched clients
     private System.Windows.Forms.Timer? _retryTimer;
 
+    // Debounce foreground changes — rapid Alt+Tab through windows fires dozens of
+    // WinEvent callbacks per second. We only need to react once things settle.
+    private System.Windows.Forms.Timer? _foregroundDebounceTimer;
+    private const int ForegroundDebounceMs = 50;
+
     // Debounce timestamp for multi-monitor toggle (500ms)
     private long _lastMultiMonToggle;
 
@@ -481,6 +486,8 @@ public class TrayManager : IDisposable
 
     /// <summary>
     /// WinEvent callback — fires on the UI thread when any window becomes foreground.
+    /// Debounced to avoid doing expensive work (affinity, PiP, throttle) on every
+    /// intermediate window during rapid Alt+Tab cycling.
     /// </summary>
     private void OnForegroundChanged(
         IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
@@ -488,12 +495,22 @@ public class TrayManager : IDisposable
     {
         try
         {
-            OnForegroundChangedCore();
+            if (_foregroundDebounceTimer == null)
+            {
+                _foregroundDebounceTimer = new System.Windows.Forms.Timer { Interval = ForegroundDebounceMs };
+                _foregroundDebounceTimer.Tick += (_, _) =>
+                {
+                    _foregroundDebounceTimer.Stop();
+                    try { OnForegroundChangedCore(); }
+                    catch (Exception ex2) { FileLogger.Error("Foreground hook callback error", ex2); }
+                };
+            }
+            // Reset timer on each event — only fires after input settles
+            _foregroundDebounceTimer.Stop();
+            _foregroundDebounceTimer.Start();
         }
         catch (Exception ex)
         {
-            // WinEvent callbacks may not be wrapped by the WinForms message loop exception handler.
-            // An unhandled exception here could crash the app — log and swallow.
             FileLogger.Error("Foreground hook callback error", ex);
         }
     }
@@ -1236,6 +1253,9 @@ public class TrayManager : IDisposable
             _foregroundHook = IntPtr.Zero;
         }
         _foregroundHookProc = null;
+        _foregroundDebounceTimer?.Stop();
+        _foregroundDebounceTimer?.Dispose();
+        _foregroundDebounceTimer = null;
         _affinityFallbackTimer?.Stop();
         _affinityFallbackTimer?.Dispose();
         _affinityFallbackTimer = null;
@@ -1327,6 +1347,8 @@ public class TrayManager : IDisposable
         _incrementalArrangeTimer?.Dispose();
         _deferTimer?.Stop();
         _deferTimer?.Dispose();
+        _foregroundDebounceTimer?.Stop();
+        _foregroundDebounceTimer?.Dispose();
         _boldMenuFont?.Dispose();
         _pipOverlay?.Dispose();
         _hotkeyManager.Dispose();

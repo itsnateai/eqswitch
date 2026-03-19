@@ -89,6 +89,7 @@ static class Program
         }
         finally
         {
+            ConfigManager.FlushSave();
             FileLogger.Shutdown();
             _mutex?.ReleaseMutex();
             _mutex?.Dispose();
