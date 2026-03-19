@@ -518,11 +518,25 @@ public class TrayManager : IDisposable
             ConfigManager.Save(_config);
             if (affinityEnabledItem.Checked)
             {
+                // Start timer so affinity rules keep applying on foreground changes
+                _affinityTimer?.Stop();
+                _affinityTimer?.Dispose();
+                _retryTimer?.Stop();
+                _retryTimer?.Dispose();
+                StartAffinityTimer();
                 _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient());
                 ShowBalloon("CPU affinity enabled");
             }
             else
             {
+                // Stop the timer — no point polling when disabled
+                _affinityTimer?.Stop();
+                _affinityTimer?.Dispose();
+                _affinityTimer = null;
+                _retryTimer?.Stop();
+                _retryTimer?.Dispose();
+                _retryTimer = null;
+                _affinityManager.ResetAllAffinities(_processManager.Clients);
                 ShowBalloon("CPU affinity disabled");
             }
         };
@@ -990,6 +1004,12 @@ public class TrayManager : IDisposable
         _config.Characters = newConfig.Characters;
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
         _config.CtrlHoverHelp = newConfig.CtrlHoverHelp;
+        _config.ShowTooltipErrors = newConfig.ShowTooltipErrors;
+        _config.MinimizeToTray = newConfig.MinimizeToTray;
+        _config.RunAtStartup = newConfig.RunAtStartup;
+        _config.DisableEQLog = newConfig.DisableEQLog;
+        _config.CustomVideoPresets = newConfig.CustomVideoPresets;
+        _config.EQClientIni = newConfig.EQClientIni;
 
         // Update icon if path changed
         var iconChanged = _config.CustomIconPath != newConfig.CustomIconPath;
