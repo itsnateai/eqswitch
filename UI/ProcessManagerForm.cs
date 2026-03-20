@@ -29,6 +29,7 @@ public class ProcessManagerForm : Form
     private readonly Func<IReadOnlyList<EQClient>> _getClients;
     private readonly Func<EQClient?> _getActiveClient;
     private readonly Action _forceApply;
+    private readonly AppConfig _config;
 
     private DataGridView _grid = null!;
     private Label _systemInfoLabel = null!;
@@ -39,11 +40,13 @@ public class ProcessManagerForm : Form
     public ProcessManagerForm(
         Func<IReadOnlyList<EQClient>> getClients,
         Func<EQClient?> getActiveClient,
-        Action forceApply)
+        Action forceApply,
+        AppConfig config)
     {
         _getClients = getClients;
         _getActiveClient = getActiveClient;
         _forceApply = forceApply;
+        _config = config;
         InitializeForm();
     }
 
@@ -123,12 +126,14 @@ public class ProcessManagerForm : Form
         _grid.Columns.Add("Character", "Character");
         _grid.Columns.Add("Priority", "Priority");
         _grid.Columns.Add("Affinity", "Affinity");
+        _grid.Columns.Add("Source", "Source");
 
-        _grid.Columns["Slot"]!.Width = 45;
-        _grid.Columns["PID"]!.Width = 65;
-        _grid.Columns["Character"]!.Width = 160;
-        _grid.Columns["Priority"]!.Width = 100;
-        _grid.Columns["Affinity"]!.Width = 115;
+        _grid.Columns["Slot"]!.Width = 40;
+        _grid.Columns["PID"]!.Width = 55;
+        _grid.Columns["Character"]!.Width = 130;
+        _grid.Columns["Priority"]!.Width = 90;
+        _grid.Columns["Affinity"]!.Width = 90;
+        _grid.Columns["Source"]!.Width = 80;
 
         foreach (DataGridViewColumn col in _grid.Columns)
         {
@@ -197,12 +202,36 @@ public class ProcessManagerForm : Form
                 var name = client.CharacterName ?? client.WindowTitle;
                 if (string.IsNullOrEmpty(name)) name = $"Client {client.SlotIndex + 1}";
 
+                // Check if this client has per-character overrides
+                var hasAffinityOvr = false;
+                var hasPriorityOvr = false;
+                if (!string.IsNullOrEmpty(client.CharacterName))
+                {
+                    foreach (var cp in _config.Characters)
+                    {
+                        if (cp.Name.Equals(client.CharacterName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            hasAffinityOvr = cp.AffinityOverride.HasValue;
+                            hasPriorityOvr = cp.PriorityOverride != null;
+                            break;
+                        }
+                    }
+                }
+                var source = (hasAffinityOvr || hasPriorityOvr) ? "Custom" : "Global";
+
                 int rowIdx = _grid.Rows.Add(
                     (client.SlotIndex + 1).ToString(),
                     client.ProcessId.ToString(),
                     name,
                     priority,
-                    $"0x{procMask:X}");
+                    $"0x{procMask:X}",
+                    source);
+
+                // Color the Source cell for custom overrides
+                if (hasAffinityOvr || hasPriorityOvr)
+                {
+                    _grid.Rows[rowIdx].Cells["Source"].Style.ForeColor = FgCyan;
+                }
 
                 // Highlight active client row
                 if (client == active)

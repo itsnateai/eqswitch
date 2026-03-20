@@ -346,6 +346,12 @@ public class CharacterProfile
     /// </summary>
     public long? AffinityOverride { get; set; } = null;
 
+    /// <summary>
+    /// Optional per-character priority override.
+    /// Null = use global priority settings. Values: "Normal", "AboveNormal", "High".
+    /// </summary>
+    public string? PriorityOverride { get; set; } = null;
+
     [JsonIgnore]
     public string DisplayName => string.IsNullOrEmpty(Class) ? Name : $"{Name} ({Class})";
 }
