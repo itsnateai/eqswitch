@@ -70,8 +70,9 @@ public class AffinityManager
 
             SetProcessAffinity(client.ProcessId, mask);
 
-            // Set process priority
-            var priority = isActive ? _config.Affinity.ActivePriority : _config.Affinity.BackgroundPriority;
+            // Set process priority (per-character override takes precedence)
+            var priorityOverride = FindCharacterPriorityOverride(client.CharacterName);
+            var priority = priorityOverride ?? (isActive ? _config.Affinity.ActivePriority : _config.Affinity.BackgroundPriority);
             SetProcessPriority(client.ProcessId, priority);
         }
     }
@@ -119,6 +120,11 @@ public class AffinityManager
             long mask = FindCharacterAffinityOverride(client.CharacterName) ?? _config.Affinity.BackgroundMask;
             bool success = SetProcessAffinity(pid, mask);
 
+            // Apply per-character priority override during retries too
+            var priorityOverride = FindCharacterPriorityOverride(client.CharacterName);
+            var retryPriority = priorityOverride ?? _config.Affinity.BackgroundPriority;
+            SetProcessPriority(pid, retryPriority);
+
             if (success)
             {
                 FileLogger.Info($"Affinity retry applied for {client} (attempt {_config.Affinity.LaunchRetryCount - remaining + 1})");
@@ -153,6 +159,21 @@ public class AffinityManager
         {
             if (characters[i].Name.Equals(characterName, StringComparison.OrdinalIgnoreCase))
                 return characters[i].AffinityOverride;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Look up per-character priority override without allocating a closure.
+    /// </summary>
+    private string? FindCharacterPriorityOverride(string? characterName)
+    {
+        if (string.IsNullOrEmpty(characterName)) return null;
+        var characters = _config.Characters;
+        for (int i = 0; i < characters.Count; i++)
+        {
+            if (characters[i].Name.Equals(characterName, StringComparison.OrdinalIgnoreCase))
+                return characters[i].PriorityOverride;
         }
         return null;
     }

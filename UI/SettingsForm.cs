@@ -726,21 +726,40 @@ public class SettingsForm : Form
             BorderStyle = BorderStyle.FixedSingle,
             HeaderStyle = ColumnHeaderStyle.Nonclickable
         };
-        _charListView.Columns.Add("Name", 130);
-        _charListView.Columns.Add("Class", 100);
-        _charListView.Columns.Add("Slot", 50);
-        _charListView.Columns.Add("Affinity", 100);
+        _charListView.Columns.Add("Name", 110);
+        _charListView.Columns.Add("Class", 80);
+        _charListView.Columns.Add("Slot", 40);
+        _charListView.Columns.Add("Affinity", 90);
+        _charListView.Columns.Add("Priority", 90);
+        _charListView.DoubleClick += (_, _) => EditSelectedCharacter();
         cardChars.Controls.Add(_charListView);
 
-        var btnExport = DarkTheme.AddCardButton(cardChars, "📤 Export...", 10, 280, 100);
+        var btnEdit = DarkTheme.AddCardButton(cardChars, "✏️ Edit", 10, 280, 80);
+        btnEdit.Click += (_, _) => EditSelectedCharacter();
+
+        var btnExport = DarkTheme.AddCardButton(cardChars, "📤 Export", 100, 280, 80);
         btnExport.Click += (_, _) => ExportCharacters();
 
-        var btnImport = DarkTheme.AddCardButton(cardChars, "📥 Import...", 120, 280, 100);
+        var btnImport = DarkTheme.AddCardButton(cardChars, "📥 Import", 190, 280, 80);
         btnImport.Click += (_, _) => ImportCharacters();
 
-        DarkTheme.AddCardHint(cardChars, "Export/Import character profiles as JSON files", 230, 286);
+        DarkTheme.AddCardHint(cardChars, "Double-click a character to edit overrides", 280, 286);
 
         return page;
+    }
+
+    private void EditSelectedCharacter()
+    {
+        if (_charListView.SelectedIndices.Count == 0) return;
+        int idx = _charListView.SelectedIndices[0];
+        if (idx < 0 || idx >= _pendingCharacters.Count) return;
+
+        var c = _pendingCharacters[idx];
+        using var dlg = new CharacterEditDialog(c);
+        if (dlg.ShowDialog(this) == DialogResult.OK)
+        {
+            RefreshCharacterList();
+        }
     }
 
     private void ExportCharacters()
@@ -814,6 +833,7 @@ public class SettingsForm : Form
             item.SubItems.Add(c.Class);
             item.SubItems.Add((c.SlotIndex + 1).ToString());
             item.SubItems.Add(c.AffinityOverride.HasValue ? $"0x{c.AffinityOverride.Value:X}" : "(default)");
+            item.SubItems.Add(c.PriorityOverride ?? "(default)");
             _charListView.Items.Add(item);
         }
 

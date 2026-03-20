@@ -1269,7 +1269,8 @@ public class TrayManager : IDisposable
         _processManagerForm = new ProcessManagerForm(
             () => _processManager.Clients,
             () => _processManager.GetActiveClient(),
-            () => _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient())
+            () => _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient()),
+            _config
         );
         _processManagerForm.FormClosed += (_, _) => _processManagerForm = null;
         _processManagerForm.Show();
