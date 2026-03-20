@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.5.0 — Quality of Life (2026-03-20)
+## v2.6.0 — Per-Character Overrides (2026-03-20)
 
 ### Added
 - **Per-character CPU affinity** — assign different core masks to individual characters. Characters with `AffinityOverride` use their custom mask instead of the global active/background masks.
