@@ -10,8 +10,8 @@ A system tray utility for managing multiple EverQuest clients — window switchi
 
 | File | Size | Notes |
 |------|------|-------|
-| **EQSwitch.exe** | ~260 KB | Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) |
-| **EQSwitch-standalone.exe** | ~171 MB | No runtime needed, click and go |
+| **EQSwitch.exe** | ~171 MB | Self-contained — no runtime needed, click and go |
+| **EQSwitch-fd.exe** | ~790 KB | Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) |
 
 Place in any folder and run — no installation needed. Config is stored as `eqswitch-config.json` next to the exe.
 
