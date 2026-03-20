@@ -1,6 +1,6 @@
 # EQSwitch — Roadmap
 
-> Post-release feature roadmap. Items marked `[x]` are complete; `[ ]` are planned.
+> Post-release feature roadmap. All planned features complete as of v2.6.0.
 
 ---
 
@@ -21,13 +21,17 @@
 - [x] FloatingTooltip for "already running"
 - [x] First-run auto-opens Settings
 
-## v2.5.0 — Quality of Life (In Progress)
+## v2.5.0 — Quality of Life `[x]`
 
 - [x] Reset Defaults button in Video Settings form
-- [ ] Reset Defaults button in Process Manager form
-- [ ] Per-client CPU affinity — assign different core sets to each EQ client
-- [ ] Per-client process priority — e.g. main=High, alt=Normal
-- [ ] VirusTotal clean scan on published exe
+- [x] VirusTotal clean scan on published exe (0/70 detections)
+
+## v2.6.0 — Per-Character Overrides `[x]`
+
+- [x] Per-client CPU affinity — assign different core sets to each EQ client
+- [x] Per-client process priority — e.g. main=High, alt=Normal
+- [x] Character Edit dialog (double-click in Settings → Characters)
+- [x] Process Manager "Source" column (Custom vs Global indicator)
 
 ---
 
