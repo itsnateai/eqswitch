@@ -2,6 +2,11 @@
 
 All notable changes to EQ Switch are documented here.
 
+## v2.4.1 — 2026-03-21
+
+### Bug Fixes
+- **Explorer restart recovery** — tray icon now re-registers automatically when Windows Explorer crashes or restarts (TaskbarCreated message handler)
+
 ## v2.4 — 2026-03-17
 
 ### New Features

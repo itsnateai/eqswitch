@@ -24,7 +24,7 @@ AppCleanup(reason, code) {
     return 0  ; allow exit
 }
 
-g_version        := "2.4"
+g_version        := "2.4.1"
 CFG_FILE         := A_ScriptDir "\eqswitch.cfg"
 EQ_TITLE         := "ahk_exe eqgame.exe"
 SETTINGS_OPEN    := false
@@ -603,6 +603,19 @@ if FileExist(iconPath)
 else if A_IsCompiled
     try TraySetIcon(A_ScriptFullPath, -160, true)
 A_IconTip := "EQ Switch"
+
+; Explorer restart recovery — re-register tray icon when taskbar is recreated
+g_WM_TASKBARCREATED := DllCall("RegisterWindowMessage", "Str", "TaskbarCreated", "UInt")
+OnMessage(g_WM_TASKBARCREATED, TaskbarRecovered)
+TaskbarRecovered(wParam, lParam, msg, hwnd) {
+    iconPath := A_ScriptDir "\eqswitch.ico"
+    if FileExist(iconPath) {
+        try TraySetIcon(iconPath)
+    } else if A_IsCompiled {
+        try TraySetIcon(A_ScriptFullPath, -160, true)
+    }
+    A_IconTip := "EQ Switch"
+}
 
 A_TrayMenu.Delete()
 OnMessage(0x404, TrayClick)
