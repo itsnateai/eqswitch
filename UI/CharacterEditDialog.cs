@@ -1,20 +1,22 @@
 using EQSwitch.Config;
+using EQSwitch.Core;
 
 namespace EQSwitch.UI;
 
 /// <summary>
-/// Dialog for editing per-character affinity and priority overrides.
-/// Modifies the CharacterProfile in-place on OK.
+/// Dialog for editing per-slot affinity and priority overrides.
+/// Core checkboxes for affinity (no hex), priority dropdown.
 /// </summary>
 public class CharacterEditDialog : Form
 {
     private readonly CharacterProfile _character;
-    private TextBox _txtAffinity = null!;
     private ComboBox _cboPriority = null!;
     private CheckBox _chkAffinityOverride = null!;
     private CheckBox _chkPriorityOverride = null!;
+    private CheckBox[] _coreChecks = null!;
+    private Label _lblMask = null!;
 
-    private static readonly string[] PriorityOptions = { "Normal", "AboveNormal", "High" };
+    private static readonly string[] PriorityOptions = { "High", "AboveNormal", "Normal", "BelowNormal" };
 
     public CharacterEditDialog(CharacterProfile character)
     {
@@ -24,8 +26,10 @@ public class CharacterEditDialog : Form
 
     private void InitializeComponents()
     {
-        Text = $"Edit — {_character.Name}";
-        Size = new Size(340, 280);
+        var (coreCount, _) = AffinityManager.DetectCores();
+
+        Text = $"Edit — Slot {_character.SlotIndex + 1}";
+        Size = new Size(520, 300);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -36,10 +40,10 @@ public class CharacterEditDialog : Form
 
         int y = 15;
 
-        // Character info (read-only)
+        // Slot info
         var lblInfo = new Label
         {
-            Text = $"{_character.Name}" + (string.IsNullOrEmpty(_character.Class) ? "" : $" ({_character.Class})") + $" — Slot {_character.SlotIndex + 1}",
+            Text = $"Slot {_character.SlotIndex + 1}" + (string.IsNullOrEmpty(_character.Name) ? "" : $"  —  {_character.Name}"),
             Location = new Point(15, y),
             AutoSize = true,
             ForeColor = DarkTheme.CardCyan,
@@ -57,30 +61,44 @@ public class CharacterEditDialog : Form
             Checked = _character.AffinityOverride.HasValue,
             ForeColor = DarkTheme.FgWhite
         };
-        _chkAffinityOverride.CheckedChanged += (_, _) => _txtAffinity.Enabled = _chkAffinityOverride.Checked;
+        _chkAffinityOverride.CheckedChanged += (_, _) => SetCoresEnabled(_chkAffinityOverride.Checked);
         Controls.Add(_chkAffinityOverride);
+
+        _lblMask = new Label
+        {
+            Text = _character.AffinityOverride.HasValue ? $"0x{_character.AffinityOverride.Value:X}" : "",
+            Location = new Point(200, y + 2),
+            AutoSize = true,
+            ForeColor = DarkTheme.FgDimGray,
+            Font = new Font("Consolas", 8.5f)
+        };
+        Controls.Add(_lblMask);
         y += 28;
 
-        var lblMask = new Label { Text = "Mask (hex):", Location = new Point(30, y + 3), AutoSize = true, ForeColor = DarkTheme.FgGray };
-        Controls.Add(lblMask);
-
-        _txtAffinity = new TextBox
+        // Core checkboxes
+        long currentMask = _character.AffinityOverride ?? 0xFF;
+        bool enabled = _character.AffinityOverride.HasValue;
+        _coreChecks = new CheckBox[coreCount];
+        int perRow = Math.Min(coreCount, 20);
+        int checkW = Math.Min(24, (480 - 30) / perRow);
+        for (int i = 0; i < coreCount; i++)
         {
-            Text = _character.AffinityOverride.HasValue ? _character.AffinityOverride.Value.ToString("X") : "FF",
-            Location = new Point(110, y),
-            Size = new Size(100, 25),
-            BackColor = DarkTheme.BgInput,
-            ForeColor = DarkTheme.FgWhite,
-            BorderStyle = BorderStyle.FixedSingle,
-            Font = new Font("Consolas", 10),
-            Enabled = _character.AffinityOverride.HasValue,
-            CharacterCasing = CharacterCasing.Upper
-        };
-        Controls.Add(_txtAffinity);
-
-        var lblHex = new Label { Text = "0x", Location = new Point(95, y + 3), AutoSize = true, ForeColor = DarkTheme.FgDimGray };
-        Controls.Add(lblHex);
-        y += 40;
+            var chk = new CheckBox
+            {
+                Text = i.ToString(),
+                Location = new Point(30 + (i % perRow) * checkW, y + (i / perRow) * 22),
+                Size = new Size(checkW, 20),
+                ForeColor = i < 8 ? DarkTheme.CardGreen : DarkTheme.CardBlue,
+                Font = new Font("Consolas", 7.5f),
+                BackColor = Color.Transparent,
+                Checked = (currentMask & (1L << i)) != 0,
+                Enabled = enabled
+            };
+            chk.CheckedChanged += (_, _) => UpdateMaskLabel();
+            Controls.Add(chk);
+            _coreChecks[i] = chk;
+        }
+        y += 30 + ((coreCount - 1) / perRow) * 22;
 
         // ─── Priority Override ───────────────────────────────
         _chkPriorityOverride = new CheckBox
@@ -100,7 +118,7 @@ public class CharacterEditDialog : Form
 
         _cboPriority = new ComboBox
         {
-            Location = new Point(110, y),
+            Location = new Point(100, y),
             Size = new Size(130, 25),
             DropDownStyle = ComboBoxStyle.DropDownList,
             BackColor = DarkTheme.BgInput,
@@ -117,7 +135,7 @@ public class CharacterEditDialog : Form
         var btnSave = new Button
         {
             Text = "Save",
-            Location = new Point(130, y),
+            Location = new Point(310, y),
             Size = new Size(85, 32),
             FlatStyle = FlatStyle.Flat,
             BackColor = DarkTheme.AccentGreen,
@@ -126,12 +144,14 @@ public class CharacterEditDialog : Form
         };
         btnSave.Click += (_, _) =>
         {
-            // Validate affinity mask
             if (_chkAffinityOverride.Checked)
             {
-                if (!long.TryParse(_txtAffinity.Text.Trim(), System.Globalization.NumberStyles.HexNumber, null, out long mask) || mask <= 0)
+                long mask = 0;
+                for (int i = 0; i < _coreChecks.Length; i++)
+                    if (_coreChecks[i].Checked) mask |= 1L << i;
+                if (mask == 0)
                 {
-                    MessageBox.Show("Invalid hex mask. Use values like FF, FF00, FFFF.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show("Select at least one core.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
                 _character.AffinityOverride = mask;
@@ -151,7 +171,7 @@ public class CharacterEditDialog : Form
         var btnCancel = new Button
         {
             Text = "Cancel",
-            Location = new Point(225, y),
+            Location = new Point(405, y),
             Size = new Size(85, 32),
             FlatStyle = FlatStyle.Flat,
             BackColor = DarkTheme.BgMedium,
@@ -162,5 +182,19 @@ public class CharacterEditDialog : Form
 
         AcceptButton = btnSave;
         CancelButton = btnCancel;
+    }
+
+    private void SetCoresEnabled(bool enabled)
+    {
+        for (int i = 0; i < _coreChecks.Length; i++)
+            _coreChecks[i].Enabled = enabled;
+    }
+
+    private void UpdateMaskLabel()
+    {
+        long mask = 0;
+        for (int i = 0; i < _coreChecks.Length; i++)
+            if (_coreChecks[i].Checked) mask |= 1L << i;
+        _lblMask.Text = mask > 0 ? $"0x{mask:X}" : "";
     }
 }

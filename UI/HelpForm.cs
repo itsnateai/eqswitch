@@ -50,6 +50,10 @@ public static class HelpForm
         var throttle = config.Throttle;
         var layout = config.Layout;
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
+        var directKeys = hk.DirectSwitchKeys.Count > 0
+            ? $"{hk.DirectSwitchKeys[0]}..{hk.DirectSwitchKeys[^1]}"
+            : "(not set)";
+
         return $@"EQSwitch v{version} — EverQuest Window Manager
 ============================================
 GitHub: https://github.com/itsnateai/eqswitch_port
@@ -57,9 +61,9 @@ GitHub: https://github.com/itsnateai/eqswitch_port
 HOTKEYS:
   {hk.SwitchKey,-18} Cycle to next EQ client (EQ must be focused)
   {hk.GlobalSwitchKey,-18} Cycle next / bring EQ to front from any app
-  {hk.ArrangeWindows,-18} Arrange all windows in grid layout
-  {hk.ToggleMultiMonitor,-18} Toggle single-screen / multi-monitor mode
-  Alt+1..6           Switch directly to client by slot number
+  {(string.IsNullOrEmpty(hk.ArrangeWindows) ? "(not set)" : hk.ArrangeWindows),-18} Arrange all windows in grid layout
+  {(string.IsNullOrEmpty(hk.ToggleMultiMonitor) ? "(not set)" : hk.ToggleMultiMonitor),-18} Toggle single-screen / multi-monitor mode
+  {directKeys,-18} Switch directly to client by slot number
   {(string.IsNullOrEmpty(hk.LaunchOne) ? "(not set)" : hk.LaunchOne),-18} Launch one EQ client
   {(string.IsNullOrEmpty(hk.LaunchAll) ? "(not set)" : hk.LaunchAll),-18} Launch all configured clients
 
@@ -91,8 +95,21 @@ PIP (PICTURE-IN-PICTURE):
 CPU AFFINITY:
   Active client   → P-cores (mask 0x{config.Affinity.ActiveMask:X}, {config.Affinity.ActivePriority})
   Background      → E-cores (mask 0x{config.Affinity.BackgroundMask:X}, {config.Affinity.BackgroundPriority})
-  Auto-applies on window switch (250ms polling)
+  Auto-applies instantly on window switch (event-driven)
   Retries {config.Affinity.LaunchRetryCount}x after launch (EQ resets its own affinity)
+  Per-character overrides: Settings → Characters → double-click
+
+CHARACTER PROFILES:
+  Assign custom affinity masks and priority per character
+  Import/export character lists as JSON
+  Configure in Settings → Characters tab
+
+VIDEO SETTINGS:
+  Edit eqclient.ini from Launcher → Video Settings
+  Manages resolution, windowed mode, particles, models, etc.
+
+CUSTOM TRAY ICON:
+  Set a custom .ico file in Settings → Paths tab
 
 LAUNCHING:
   EQ Path: {config.EQPath}
@@ -104,15 +121,17 @@ CONFIG:
   Auto-backup on save (keeps last 10 in backups/ folder)
 
 TROUBLESHOOTING:
-  Hotkeys not working?  Run as Administrator
-  PiP not showing?      Need 2+ clients running, middle-click tray
-  Affinity not sticking? Use tray menu → Force Apply Affinity
-  Config lost?          Check backups/ folder next to exe
+  Hotkeys not working?   Run as Administrator
+  PiP not showing?       Need 2+ clients running
+  Affinity not sticking? Tray → Affinity → Force Re-Apply
+  Config lost?           Check backups/ folder next to exe
 
 USEFUL LINKS:
+  Dalaya:         https://dalaya.org/
   Shards Wiki:    https://wiki.shardsofdalaya.com/wiki/Main_Page
   Dalaya Wiki:    https://wiki.dalaya.org/
-  Fomelo Dalaya:  https://dalaya.org/fomelo/
+  Fomelo:         https://dalaya.org/fomelo/
+  Listsold:       https://dalaya.org/listsold.php
 ";
     }
 }

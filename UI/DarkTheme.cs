@@ -23,9 +23,22 @@ public static class DarkTheme
     public static readonly Color TabHoverBg = Color.FromArgb(48, 42, 60);
     public static readonly Color AccentBar = Color.FromArgb(0, 140, 80);
 
+    // ─── Tab Colors (one per tab for visual identity) ───────────
+    private static readonly Color[] TabAccents =
+    {
+        Color.FromArgb(100, 220, 130),  // General — green
+        Color.FromArgb(220, 190, 100),  // Hotkeys — gold
+        Color.FromArgb(140, 160, 220),  // Layout — blue
+        Color.FromArgb(220, 120, 120),  // Affinity — red
+        Color.FromArgb(100, 200, 210),  // Launch — cyan
+        Color.FromArgb(180, 140, 220),  // PiP — purple
+        Color.FromArgb(220, 180, 140),  // Paths — warm
+        Color.FromArgb(160, 220, 180),  // Characters — mint
+    };
+
     // ─── Cached Fonts (avoid allocations in render methods) ──────
-    private static readonly Font TabFontBold = new("Segoe UI", 8.5f, FontStyle.Bold);
-    private static readonly Font TabFontRegular = new("Segoe UI", 8.5f, FontStyle.Regular);
+    private static readonly Font TabFontBold = new("Consolas", 9f, FontStyle.Bold);
+    private static readonly Font TabFontRegular = new("Consolas", 8.5f, FontStyle.Regular);
 
     // ─── Tab Control ─────────────────────────────────────────────
 
@@ -59,19 +72,24 @@ public static class DarkTheme
         bool isSelected = e.Index == tabs.SelectedIndex;
         var bounds = tabs.GetTabRect(e.Index);
         var tabPage = tabs.TabPages[e.Index];
+        var accent = e.Index < TabAccents.Length ? TabAccents[e.Index] : AccentBar;
 
-        using var bgBrush = new SolidBrush(isSelected ? TabActive : TabInactive);
+        // Background — selected gets a subtle tinted fill
+        var bgColor = isSelected
+            ? Color.FromArgb(accent.R / 8 + 30, accent.G / 8 + 26, accent.B / 8 + 38)
+            : TabInactive;
+        using var bgBrush = new SolidBrush(bgColor);
         e.Graphics.FillRectangle(bgBrush, bounds);
 
-        // Green accent bar on selected tab
+        // Colored accent bar on selected tab (per-tab color)
         if (isSelected)
         {
-            using var accentBrush = new SolidBrush(AccentBar);
+            using var accentBrush = new SolidBrush(accent);
             e.Graphics.FillRectangle(accentBrush, bounds.Left + 2, bounds.Top, bounds.Width - 4, 3);
         }
 
-        // Tab text — use cached static fonts to avoid GDI allocations per draw
-        var textColor = isSelected ? FgWhite : FgGray;
+        // Tab text — selected uses the tab's accent color, unselected is dim
+        var textColor = isSelected ? accent : FgGray;
         using var textBrush = new SolidBrush(textColor);
         var font = isSelected ? TabFontBold : TabFontRegular;
 
@@ -335,7 +353,7 @@ public static class DarkTheme
         return lbl;
     }
 
-    /// <summary>Add a dark-styled TextBox inside a card panel.</summary>
+    /// <summary>Add a dark-styled TextBox inside a card panel with proper borders.</summary>
     public static TextBox AddCardTextBox(Panel card, int x, int y, int width)
     {
         var tb = new TextBox
@@ -348,6 +366,7 @@ public static class DarkTheme
             Font = new Font("Segoe UI", 9f)
         };
         card.Controls.Add(tb);
+        WrapWithBorder(tb);
         return tb;
     }
 
@@ -370,7 +389,7 @@ public static class DarkTheme
         return cb;
     }
 
-    /// <summary>Add a dark-styled NumericUpDown inside a card panel.</summary>
+    /// <summary>Add a dark-styled NumericUpDown inside a card panel with proper borders.</summary>
     public static NumericUpDown AddCardNumeric(Panel card, int x, int y, int width, decimal defaultVal, decimal min, decimal max)
     {
         var nud = new NumericUpDown
@@ -386,6 +405,7 @@ public static class DarkTheme
             Font = new Font("Segoe UI", 9f)
         };
         card.Controls.Add(nud);
+        WrapWithBorder(nud);
         return nud;
     }
 
@@ -412,6 +432,37 @@ public static class DarkTheme
         btn.Font = new Font("Segoe UI", 8.5f);
         card.Controls.Add(btn);
         return btn;
+    }
+
+    // ─── Input Border Fix ──────────────────────────────────────
+    // WinForms FixedSingle border on dark backgrounds loses the left edge.
+    // This wraps any control in a 1px border panel for consistent borders.
+
+    /// <summary>
+    /// Wrap a control in a 1px border panel so all edges render correctly on dark backgrounds.
+    /// The control is resized to fill the panel interior. Call AFTER adding to parent.
+    /// </summary>
+    public static void WrapWithBorder(Control control)
+    {
+        var parent = control.Parent;
+        if (parent == null) return;
+
+        var wrapper = new Panel
+        {
+            Location = new Point(control.Left - 1, control.Top - 1),
+            Size = new Size(control.Width + 2, control.Height + 2),
+            BackColor = Border
+        };
+
+        // Remove the control's own border — the wrapper panel provides it
+        if (control is TextBoxBase tb) tb.BorderStyle = BorderStyle.None;
+        else if (control is NumericUpDown nud) nud.BorderStyle = BorderStyle.None;
+        control.Location = new Point(1, 1);
+        control.Size = new Size(wrapper.Width - 2, wrapper.Height - 2);
+
+        parent.Controls.Remove(control);
+        wrapper.Controls.Add(control);
+        parent.Controls.Add(wrapper);
     }
 
     // ─── Helpers ─────────────────────────────────────────────────
