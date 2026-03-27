@@ -52,6 +52,7 @@ public class TrayManager : IDisposable
 
     // Process Manager (single-instance)
     private ProcessManagerForm? _processManagerForm;
+    private ToolStripMenuItem? _affinityEnabledItem;
 
     // Tray click detection (single/double/triple with delayed resolution)
     private int _trayClickCount;
@@ -686,7 +687,7 @@ public class TrayManager : IDisposable
         });
         videoMenu.DropDownItems.Add("\uD83D\uDCFA  Toggle PiP", null, (_, _) => TogglePip());
         videoMenu.DropDownItems.Add(new ToolStripSeparator());
-        videoMenu.DropDownItems.Add("\uD83D\uDCDD  Edit eqclient.ini...", null, (_, _) =>
+        videoMenu.DropDownItems.Add("\uD83D\uDCDD  Video Settings...", null, (_, _) =>
         {
             using var form = new VideoSettingsForm(_config);
             form.ShowDialog();
@@ -696,41 +697,22 @@ public class TrayManager : IDisposable
         // CPU Affinity submenu
         var (coreCount, _) = AffinityManager.DetectCores();
         var affinityMenu = new ToolStripMenuItem("\uD83E\uDDE0  CPU Affinity");
-        var affinityEnabledItem = new ToolStripMenuItem(_config.Affinity.Enabled ? "\u2705  Enabled" : "\u2B1C  Disabled")
+        _affinityEnabledItem = new ToolStripMenuItem(_config.Affinity.Enabled ? "\u2705  Enabled" : "\u2B1C  Disabled")
         {
             Checked = _config.Affinity.Enabled,
             CheckOnClick = true
         };
-        affinityEnabledItem.CheckedChanged += (_, _) =>
+        _affinityEnabledItem.CheckedChanged += (_, _) =>
         {
-            _config.Affinity.Enabled = affinityEnabledItem.Checked;
-            affinityEnabledItem.Text = affinityEnabledItem.Checked ? "\u2705  Enabled" : "\u2B1C  Disabled";
-            ConfigManager.Save(_config);
-            if (affinityEnabledItem.Checked)
-            {
-                // Restart retry timer (foreground hook stays active regardless — it also drives throttle/PiP)
-                _retryTimer?.Stop();
-                _retryTimer?.Dispose();
-                StartRetryTimer();
-                _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient());
-                ShowBalloon("CPU affinity enabled");
-            }
-            else
-            {
-                // Stop retry timer (foreground hook stays active for throttle/PiP)
-                _retryTimer?.Stop();
-                _retryTimer?.Dispose();
-                _retryTimer = null;
-                _affinityManager.ResetAllAffinities(_processManager.Clients);
-                ShowBalloon("CPU affinity disabled");
-            }
+            _affinityEnabledItem.Text = _affinityEnabledItem.Checked ? "\u2705  Enabled" : "\u2B1C  Disabled";
+            SetAffinityEnabled(_affinityEnabledItem.Checked);
         };
-        affinityMenu.DropDownItems.Add(affinityEnabledItem);
+        affinityMenu.DropDownItems.Add(_affinityEnabledItem);
         affinityMenu.DropDownItems.Add(new ToolStripSeparator());
 
         // Active priority selector
         var activePriorityMenu = new ToolStripMenuItem("Active Priority");
-        foreach (var priority in new[] { "High", "AboveNormal", "Normal" })
+        foreach (var priority in new[] { "High", "AboveNormal", "Normal", "BelowNormal" })
         {
             var p = priority;
             var item = new ToolStripMenuItem(p)
@@ -755,7 +737,7 @@ public class TrayManager : IDisposable
 
         // Background priority selector
         var bgPriorityMenu = new ToolStripMenuItem("Background Priority");
-        foreach (var priority in new[] { "Normal", "BelowNormal", "Idle" })
+        foreach (var priority in new[] { "High", "AboveNormal", "Normal", "BelowNormal" })
         {
             var p = priority;
             var item = new ToolStripMenuItem(p)
@@ -778,20 +760,6 @@ public class TrayManager : IDisposable
         }
         affinityMenu.DropDownItems.Add(bgPriorityMenu);
 
-        affinityMenu.DropDownItems.Add(new ToolStripSeparator());
-
-        // Info labels showing current masks (edit in Settings → Affinity tab)
-        var activeMaskLabel = new ToolStripMenuItem($"Active Cores: 0x{_config.Affinity.ActiveMask:X}") { Enabled = false };
-        var bgMaskLabel = new ToolStripMenuItem($"Background Cores: 0x{_config.Affinity.BackgroundMask:X}") { Enabled = false };
-        affinityMenu.DropDownItems.Add(activeMaskLabel);
-        affinityMenu.DropDownItems.Add(bgMaskLabel);
-
-        affinityMenu.DropDownItems.Add(new ToolStripSeparator());
-        affinityMenu.DropDownItems.Add("Force Re-Apply", null, (_, _) =>
-        {
-            _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient());
-            ShowBalloon("Affinity rules re-applied to all clients");
-        });
         _contextMenu.Items.Add(affinityMenu);
 
         _contextMenu.Items.Add(new ToolStripSeparator());
@@ -821,13 +789,16 @@ public class TrayManager : IDisposable
         // Launcher submenu (files + links)
         var launcherMenu = new ToolStripMenuItem("\uD83D\uDCC2  Launcher");
         var linksMenu = new ToolStripMenuItem("\uD83C\uDF10  Links");
+        linksMenu.DropDownItems.Add("\uD83C\uDFE0  Dalaya", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/"));
+        linksMenu.DropDownItems.Add(new ToolStripSeparator());
         linksMenu.DropDownItems.Add("\uD83D\uDDE1  Shards Wiki", null, (_, _) => FileOperations.OpenUrl("https://wiki.shardsofdalaya.com/wiki/Main_Page"));
         linksMenu.DropDownItems.Add("\uD83D\uDCD6  Dalaya Wiki", null, (_, _) => FileOperations.OpenUrl("https://wiki.dalaya.org/"));
         linksMenu.DropDownItems.Add("\uD83C\uDFC6  Fomelo Dalaya", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/fomelo/"));
-        launcherMenu.DropDownItems.Add(linksMenu);
-        launcherMenu.DropDownItems.Add(new ToolStripSeparator());
+        linksMenu.DropDownItems.Add("\uD83D\uDCDC  Dalaya Listsold", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/listsold.php"));
         launcherMenu.DropDownItems.Add("\uD83D\uDCDC  Open Log File...", null, (_, _) => FileOperations.OpenLogFile(_config, ShowBalloon));
         launcherMenu.DropDownItems.Add("\uD83D\uDCC4  Open eqclient.ini", null, (_, _) => FileOperations.OpenEqClientIni(_config, ShowBalloon));
+        launcherMenu.DropDownItems.Add(new ToolStripSeparator());
+        launcherMenu.DropDownItems.Add(linksMenu);
         launcherMenu.DropDownItems.Add(new ToolStripSeparator());
         launcherMenu.DropDownItems.Add("\uD83C\uDFAF  Open GINA", null, (_, _) => FileOperations.OpenGina(_config, ShowBalloon));
         launcherMenu.DropDownItems.Add("\uD83D\uDCDD  Open Notes", null, (_, _) => FileOperations.OpenNotes(_config, ShowBalloon));
@@ -1023,6 +994,36 @@ public class TrayManager : IDisposable
         "ShowHelp" => "Show this help",
         _ => action
     };
+
+    private void SetAffinityEnabled(bool enabled)
+    {
+        _config.Affinity.Enabled = enabled;
+        ConfigManager.Save(_config);
+
+        // Sync tray menu checkbox
+        if (_affinityEnabledItem != null)
+        {
+            _affinityEnabledItem.Checked = enabled;
+            _affinityEnabledItem.Text = enabled ? "\u2705  Enabled" : "\u2B1C  Disabled";
+        }
+
+        if (enabled)
+        {
+            _retryTimer?.Stop();
+            _retryTimer?.Dispose();
+            StartRetryTimer();
+            _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient());
+            ShowBalloon("CPU affinity enabled");
+        }
+        else
+        {
+            _retryTimer?.Stop();
+            _retryTimer?.Dispose();
+            _retryTimer = null;
+            _affinityManager.ResetAllAffinities(_processManager.Clients);
+            ShowBalloon("CPU affinity disabled");
+        }
+    }
 
     private SettingsForm? _settingsForm;
 
@@ -1270,6 +1271,7 @@ public class TrayManager : IDisposable
             () => _processManager.Clients,
             () => _processManager.GetActiveClient(),
             () => _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient()),
+            SetAffinityEnabled,
             _config
         );
         _processManagerForm.FormClosed += (_, _) => _processManagerForm = null;

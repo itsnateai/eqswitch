@@ -55,8 +55,9 @@ public class AffinityManager
         {
             bool isActive = client == activeClient;
 
-            // Check for per-character affinity override (loop avoids closure allocation)
-            var affinityOverride = FindCharacterAffinityOverride(client.CharacterName);
+            // Check for per-slot override first, then per-character name
+            var affinityOverride = FindSlotAffinityOverride(client.SlotIndex)
+                                ?? FindCharacterAffinityOverride(client.CharacterName);
 
             long mask;
             if (affinityOverride != null)
@@ -70,8 +71,9 @@ public class AffinityManager
 
             SetProcessAffinity(client.ProcessId, mask);
 
-            // Set process priority (per-character override takes precedence)
-            var priorityOverride = FindCharacterPriorityOverride(client.CharacterName);
+            // Set process priority (per-slot override → per-character name → global)
+            var priorityOverride = FindSlotPriorityOverride(client.SlotIndex)
+                                ?? FindCharacterPriorityOverride(client.CharacterName);
             var priority = priorityOverride ?? (isActive ? _config.Affinity.ActivePriority : _config.Affinity.BackgroundPriority);
             SetProcessPriority(client.ProcessId, priority);
         }
@@ -117,11 +119,14 @@ public class AffinityManager
                 continue;
             }
 
-            long mask = FindCharacterAffinityOverride(client.CharacterName) ?? _config.Affinity.BackgroundMask;
+            long mask = FindSlotAffinityOverride(client.SlotIndex)
+                     ?? FindCharacterAffinityOverride(client.CharacterName)
+                     ?? _config.Affinity.BackgroundMask;
             bool success = SetProcessAffinity(pid, mask);
 
-            // Apply per-character priority override during retries too
-            var priorityOverride = FindCharacterPriorityOverride(client.CharacterName);
+            // Apply per-slot/character priority override during retries too
+            var priorityOverride = FindSlotPriorityOverride(client.SlotIndex)
+                                ?? FindCharacterPriorityOverride(client.CharacterName);
             var retryPriority = priorityOverride ?? _config.Affinity.BackgroundPriority;
             SetProcessPriority(pid, retryPriority);
 
@@ -146,6 +151,34 @@ public class AffinityManager
                 _retryCounters.Remove(completed[i]);
 
         return applied;
+    }
+
+    /// <summary>
+    /// Look up per-slot affinity override.
+    /// </summary>
+    private long? FindSlotAffinityOverride(int slotIndex)
+    {
+        var characters = _config.Characters;
+        for (int i = 0; i < characters.Count; i++)
+        {
+            if (characters[i].SlotIndex == slotIndex && characters[i].AffinityOverride.HasValue)
+                return characters[i].AffinityOverride;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Look up per-slot priority override.
+    /// </summary>
+    private string? FindSlotPriorityOverride(int slotIndex)
+    {
+        var characters = _config.Characters;
+        for (int i = 0; i < characters.Count; i++)
+        {
+            if (characters[i].SlotIndex == slotIndex && characters[i].PriorityOverride != null)
+                return characters[i].PriorityOverride;
+        }
+        return null;
     }
 
     /// <summary>

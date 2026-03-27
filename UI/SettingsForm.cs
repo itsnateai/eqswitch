@@ -232,22 +232,22 @@ public class SettingsForm : Form
         var clickActions = new[] { "None", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp" };
 
         DarkTheme.AddCardLabel(cardTray, "Left Click", 10, 30);
-        DarkTheme.AddCardLabel(cardTray, "Middle Click", 250, 30);
+        DarkTheme.AddCardLabel(cardTray, "Middle Click", 245, 30);
 
         DarkTheme.AddCardLabel(cardTray, "1×", 10, 52);
-        _cboSingleClick = DarkTheme.AddCardComboBox(cardTray, 30, 50, 120, clickActions);
-        DarkTheme.AddCardLabel(cardTray, "1×", 250, 52);
-        _cboMiddleClick = DarkTheme.AddCardComboBox(cardTray, 270, 50, 120, clickActions);
+        _cboSingleClick = DarkTheme.AddCardComboBox(cardTray, 30, 50, 100, clickActions);
+        DarkTheme.AddCardLabel(cardTray, "2×", 135, 52);
+        _cboDoubleClick = DarkTheme.AddCardComboBox(cardTray, 155, 50, 100, clickActions);
 
-        DarkTheme.AddCardLabel(cardTray, "2×", 155, 52);
-        _cboDoubleClick = DarkTheme.AddCardComboBox(cardTray, 175, 50, 65, clickActions);
-        DarkTheme.AddCardLabel(cardTray, "2×", 395, 52);
-        _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 415, 50, 55, clickActions);
+        DarkTheme.AddCardLabel(cardTray, "1×", 245, 52);
+        _cboMiddleClick = DarkTheme.AddCardComboBox(cardTray, 265, 50, 100, clickActions);
+        DarkTheme.AddCardLabel(cardTray, "2×", 370, 52);
+        _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 390, 50, 80, clickActions);
 
         DarkTheme.AddCardLabel(cardTray, "3×", 10, 80);
-        _cboTripleClick = DarkTheme.AddCardComboBox(cardTray, 30, 78, 120, clickActions);
-        DarkTheme.AddCardLabel(cardTray, "3×", 250, 80);
-        _cboMiddleTripleClick = DarkTheme.AddCardComboBox(cardTray, 270, 78, 120, clickActions);
+        _cboTripleClick = DarkTheme.AddCardComboBox(cardTray, 30, 78, 100, clickActions);
+        DarkTheme.AddCardLabel(cardTray, "3×", 245, 80);
+        _cboMiddleTripleClick = DarkTheme.AddCardComboBox(cardTray, 265, 78, 100, clickActions);
 
         y += 122;
 
@@ -525,7 +525,7 @@ public class SettingsForm : Form
         _txtActiveMask.Font = new Font("Consolas", 9.5f);
 
         DarkTheme.AddCardLabel(panelActive, "Priority:", 10, 68);
-        var priorities = new[] { "Idle", "BelowNormal", "Normal", "AboveNormal", "High" };
+        var priorities = new[] { "BelowNormal", "Normal", "AboveNormal", "High" };
         _cboActivePriority = DarkTheme.AddCardComboBox(panelActive, 70, 66, 130, priorities);
 
         DarkTheme.AddCardHint(panelActive, "FF = P-cores 0-7", 10, 100);

@@ -95,7 +95,7 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
 
-    [DllImport("user32.dll")]
+    [DllImport("kernel32.dll")]
     public static extern uint GetCurrentThreadId();
 
     // ─── Window State ──────────────────────────────────────────────
