@@ -47,7 +47,6 @@ public static class HelpForm
     private static string GetHelpText(AppConfig config)
     {
         var hk = config.Hotkeys;
-        var throttle = config.Throttle;
         var layout = config.Layout;
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
         var directKeys = hk.DirectSwitchKeys.Count > 0
@@ -80,27 +79,19 @@ LAYOUT MODES:
   Multi-Monitor      One window per physical monitor
   Borderless FS      {(layout.BorderlessFullscreen ? "ON" : "OFF")} — removes title bar + stretches to monitor
 
-BACKGROUND FPS THROTTLING:
-  Status: {(throttle.Enabled ? $"ON — {throttle.ThrottlePercent}% throttle" : "OFF")}
-  Suspends background EQ clients in a duty cycle to reduce
-  GPU/CPU usage. Active client is never throttled.
-  Configure in Settings → General tab.
-
 PIP (PICTURE-IN-PICTURE):
   Live DWM thumbnail preview of background EQ windows
   GPU-composited (zero CPU overhead)
   Ctrl+Drag to reposition, position saved automatically
   Auto-hides when fewer than 2 clients running
 
-CPU AFFINITY:
-  Active client   → P-cores (mask 0x{config.Affinity.ActiveMask:X}, {config.Affinity.ActivePriority})
-  Background      → E-cores (mask 0x{config.Affinity.BackgroundMask:X}, {config.Affinity.BackgroundPriority})
-  Auto-applies instantly on window switch (event-driven)
-  Retries {config.Affinity.LaunchRetryCount}x after launch (EQ resets its own affinity)
-  Per-character overrides: Settings → Characters → double-click
+CPU AFFINITY & PRIORITY:
+  Core assignment via eqclient.ini CPUAffinity0-5 (6 slots)
+  Priority: {config.Affinity.ActivePriority} (all clients)
+  Configure in Process Manager (tray menu)
 
 CHARACTER PROFILES:
-  Assign custom affinity masks and priority per character
+  Assign custom priority per character
   Import/export character lists as JSON
   Configure in Settings → Characters tab
 

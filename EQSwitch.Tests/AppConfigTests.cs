@@ -17,14 +17,13 @@ public class AppConfigTests
         Assert.Equal(2, config.Layout.Rows);
         Assert.Equal(0, config.Layout.TargetMonitor);
         Assert.Equal(0, config.Layout.TopOffset);
-        Assert.Equal(0xFF, config.Affinity.ActiveMask);
-        Assert.Equal(0xFF00, config.Affinity.BackgroundMask);
+        Assert.Equal("High", config.Affinity.ActivePriority);
         Assert.Equal(3, config.Affinity.LaunchRetryCount);
         Assert.Equal(2000, config.Affinity.LaunchRetryDelayMs);
         Assert.Equal(2, config.Launch.NumClients);
         Assert.Equal(3000, config.Launch.LaunchDelayMs);
         Assert.Equal(15000, config.Launch.FixDelayMs);
-        Assert.Equal(200, config.Pip.Opacity);
+        Assert.Equal(245, config.Pip.Opacity);
         Assert.Equal(3, config.Pip.MaxWindows);
         Assert.Equal(320, config.Pip.CustomWidth);
         Assert.Equal(240, config.Pip.CustomHeight);
@@ -86,14 +85,12 @@ public class AppConfigTests
     }
 
     [Fact]
-    public void Validate_ResetsZeroAffinityMasks()
+    public void Validate_KeepsAffinityDefaults()
     {
         var config = new AppConfig();
-        config.Affinity.ActiveMask = 0;
-        config.Affinity.BackgroundMask = -1;
         config.Validate();
-        Assert.Equal(0xFF, config.Affinity.ActiveMask);
-        Assert.Equal(0xFF00, config.Affinity.BackgroundMask);
+        Assert.Equal("High", config.Affinity.ActivePriority);
+        Assert.Equal("High", config.Affinity.BackgroundPriority);
     }
 
     [Fact]
@@ -176,13 +173,13 @@ public class AppConfigTests
         var pip = new PipConfig();
 
         pip.BorderColor = "Green";
-        Assert.Equal(Color.FromArgb(0, 255, 0), pip.GetBorderColor());
+        Assert.Equal(Color.FromArgb(34, 180, 85), pip.GetBorderColor());
 
         pip.BorderColor = "Blue";
-        Assert.Equal(Color.FromArgb(0, 128, 255), pip.GetBorderColor());
+        Assert.Equal(Color.FromArgb(60, 140, 230), pip.GetBorderColor());
 
         pip.BorderColor = "Red";
-        Assert.Equal(Color.FromArgb(255, 0, 0), pip.GetBorderColor());
+        Assert.Equal(Color.FromArgb(220, 50, 50), pip.GetBorderColor());
 
         pip.BorderColor = "Black";
         Assert.Equal(Color.Black, pip.GetBorderColor());
@@ -192,7 +189,7 @@ public class AppConfigTests
     public void PipConfig_GetBorderColor_UnknownDefaultsToGreen()
     {
         var pip = new PipConfig { BorderColor = "Purple" };
-        Assert.Equal(Color.FromArgb(0, 255, 0), pip.GetBorderColor());
+        Assert.Equal(Color.FromArgb(34, 180, 85), pip.GetBorderColor());
     }
 
     [Fact]

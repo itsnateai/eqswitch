@@ -18,7 +18,6 @@ public class TrayManager : IDisposable
     private readonly HotkeyManager _hotkeyManager;
     private readonly KeyboardHookManager _keyboardHook;
     private readonly AffinityManager _affinityManager;
-    private readonly ThrottleManager _throttleManager;
     private readonly LaunchManager _launchManager;
 
     private NotifyIcon? _trayIcon;
@@ -40,10 +39,6 @@ public class TrayManager : IDisposable
     private System.Windows.Forms.Timer? _foregroundDebounceTimer;
     private const int ForegroundDebounceMs = 50;
 
-    // Cached exempt PIDs for throttle — avoids List<int> allocation on every foreground change.
-    // Only rebuilt when PiP source windows actually change.
-    private int[] _cachedExemptPids = Array.Empty<int>();
-
     // Debounce timestamp for multi-monitor toggle (500ms)
     private long _lastMultiMonToggle;
 
@@ -52,7 +47,6 @@ public class TrayManager : IDisposable
 
     // Process Manager (single-instance)
     private ProcessManagerForm? _processManagerForm;
-    private ToolStripMenuItem? _affinityEnabledItem;
 
     // Tray click detection (single/double/triple with delayed resolution)
     private int _trayClickCount;
@@ -75,7 +69,6 @@ public class TrayManager : IDisposable
         _hotkeyManager = new HotkeyManager();
         _keyboardHook = new KeyboardHookManager();
         _affinityManager = new AffinityManager(config);
-        _throttleManager = new ThrottleManager(config);
         _launchManager = new LaunchManager(config, _affinityManager);
     }
 
@@ -148,7 +141,6 @@ public class TrayManager : IDisposable
         RegisterHotkeys();
         StartForegroundHook();
         StartRetryTimer();
-        _throttleManager.Start();
         StartupManager.MigrateFromRegistry();
         StartupManager.ValidateStartupPath(_config);
 
@@ -465,7 +457,7 @@ public class TrayManager : IDisposable
             0, 0, // all processes, all threads
             NativeMethods.WINEVENT_OUTOFCONTEXT);
             // Note: NOT using WINEVENT_SKIPOWNPROCESS — we need events when
-            // EQSwitch windows gain focus so throttle/PiP correctly detect that
+            // EQSwitch windows gain focus so PiP correctly detects that
             // no EQ client is active (GetActiveClient returns null).
 
         if (_foregroundHook == IntPtr.Zero)
@@ -492,7 +484,7 @@ public class TrayManager : IDisposable
 
     /// <summary>
     /// WinEvent callback — fires on the UI thread when any window becomes foreground.
-    /// Debounced to avoid doing expensive work (affinity, PiP, throttle) on every
+    /// Debounced to avoid doing expensive work (affinity, PiP) on every
     /// intermediate window during rapid Alt+Tab cycling.
     /// </summary>
     private void OnForegroundChanged(
@@ -534,8 +526,6 @@ public class TrayManager : IDisposable
             _affinityManager.ApplyAffinityRules(clients, active);
         }
 
-        _throttleManager.UpdateClients(clients, active);
-
         // Track last two active clients for swap-last-two mode
         if (active != null && active.ProcessId != _lastActivePid)
         {
@@ -551,67 +541,12 @@ public class TrayManager : IDisposable
                 _pipOverlay.Close();
                 _pipOverlay.Dispose();
                 _pipOverlay = null;
-                _cachedExemptPids = Array.Empty<int>();
-                _throttleManager.SetExemptPids(_cachedExemptPids);
             }
             else
             {
                 _pipOverlay.UpdateSources(clients, active);
-
-                // Exempt PiP source processes from throttling — suspending them
-                // freezes DWM thumbnails, making PiP go black during suspend phase
-                UpdateThrottleExemptions(clients);
             }
         }
-    }
-
-    /// <summary>
-    /// Tell ThrottleManager which PIDs are PiP sources so it won't suspend them.
-    /// </summary>
-    private void UpdateThrottleExemptions(IReadOnlyList<EQClient> clients)
-    {
-        if (_pipOverlay == null || _pipOverlay.IsDisposed)
-        {
-            if (_cachedExemptPids.Length > 0)
-            {
-                _cachedExemptPids = Array.Empty<int>();
-                _throttleManager.SetExemptPids(_cachedExemptPids);
-            }
-            return;
-        }
-
-        // Build the new exempt PID set. Max 3 PiP windows = tiny array (12 bytes),
-        // so always building it is cheaper than a two-phase check with index alignment issues.
-        var sourceWindows = _pipOverlay.SourceWindows;
-        int count = 0;
-        // Stack-style: fill from index 0, skip stale handles that don't match any client
-        var pids = new int[sourceWindows.Count];
-        foreach (var hwnd in sourceWindows)
-        {
-            for (int i = 0; i < clients.Count; i++)
-            {
-                if (clients[i].WindowHandle == hwnd)
-                {
-                    pids[count++] = clients[i].ProcessId;
-                    break;
-                }
-            }
-        }
-
-        // Fast path: skip SetExemptPids if the result matches cache (common case)
-        if (count == _cachedExemptPids.Length)
-        {
-            bool same = true;
-            for (int i = 0; i < count; i++)
-            {
-                if (pids[i] != _cachedExemptPids[i]) { same = false; break; }
-            }
-            if (same) return;
-        }
-
-        // Changed — trim trailing slots from stale handles, update cache
-        _cachedExemptPids = count == pids.Length ? pids : pids[..count];
-        _throttleManager.SetExemptPids(_cachedExemptPids);
     }
 
     private void StartRetryTimer()
@@ -672,7 +607,7 @@ public class TrayManager : IDisposable
         _contextMenu.Items.Add("\u26A1  Process Manager", null, (_, _) => ShowProcessManager());
 
         // Video Settings submenu
-        var videoMenu = new ToolStripMenuItem("\uD83D\uDCFA  Video Settings");
+        var videoMenu = new ToolStripMenuItem("\uD83D\uDCFA  Video Settings") { DropDownDirection = ToolStripDropDownDirection.AboveRight };
         videoMenu.DropDownItems.Add($"\uD83E\uDE9F  Fix Windows{HkSuffix(hk.ArrangeWindows)}", null, (_, _) => OnArrangeWindows());
         videoMenu.DropDownItems.Add("\uD83D\uDD04  Swap Windows", null, (_, _) =>
         {
@@ -694,78 +629,10 @@ public class TrayManager : IDisposable
         });
         _contextMenu.Items.Add(videoMenu);
 
-        // CPU Affinity submenu
-        var (coreCount, _) = AffinityManager.DetectCores();
-        var affinityMenu = new ToolStripMenuItem("\uD83E\uDDE0  CPU Affinity");
-        _affinityEnabledItem = new ToolStripMenuItem(_config.Affinity.Enabled ? "\u2705  Enabled" : "\u2B1C  Disabled")
-        {
-            Checked = _config.Affinity.Enabled,
-            CheckOnClick = true
-        };
-        _affinityEnabledItem.CheckedChanged += (_, _) =>
-        {
-            _affinityEnabledItem.Text = _affinityEnabledItem.Checked ? "\u2705  Enabled" : "\u2B1C  Disabled";
-            SetAffinityEnabled(_affinityEnabledItem.Checked);
-        };
-        affinityMenu.DropDownItems.Add(_affinityEnabledItem);
-        affinityMenu.DropDownItems.Add(new ToolStripSeparator());
-
-        // Active priority selector
-        var activePriorityMenu = new ToolStripMenuItem("Active Priority");
-        foreach (var priority in new[] { "High", "AboveNormal", "Normal", "BelowNormal" })
-        {
-            var p = priority;
-            var item = new ToolStripMenuItem(p)
-            {
-                Checked = _config.Affinity.ActivePriority.Equals(p, StringComparison.OrdinalIgnoreCase)
-            };
-            item.Click += (sender, _) =>
-            {
-                // Update checkmarks
-                foreach (ToolStripMenuItem sibling in activePriorityMenu.DropDownItems)
-                    sibling.Checked = false;
-                ((ToolStripMenuItem)sender!).Checked = true;
-
-                _config.Affinity.ActivePriority = p;
-                ConfigManager.Save(_config);
-                _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient());
-                ShowBalloon($"Active priority: {p}");
-            };
-            activePriorityMenu.DropDownItems.Add(item);
-        }
-        affinityMenu.DropDownItems.Add(activePriorityMenu);
-
-        // Background priority selector
-        var bgPriorityMenu = new ToolStripMenuItem("Background Priority");
-        foreach (var priority in new[] { "High", "AboveNormal", "Normal", "BelowNormal" })
-        {
-            var p = priority;
-            var item = new ToolStripMenuItem(p)
-            {
-                Checked = _config.Affinity.BackgroundPriority.Equals(p, StringComparison.OrdinalIgnoreCase)
-            };
-            item.Click += (sender, _) =>
-            {
-                // Update checkmarks
-                foreach (ToolStripMenuItem sibling in bgPriorityMenu.DropDownItems)
-                    sibling.Checked = false;
-                ((ToolStripMenuItem)sender!).Checked = true;
-
-                _config.Affinity.BackgroundPriority = p;
-                ConfigManager.Save(_config);
-                _affinityManager.ForceApplyAffinityRules(_processManager.Clients, _processManager.GetActiveClient());
-                ShowBalloon($"Background priority: {p}");
-            };
-            bgPriorityMenu.DropDownItems.Add(item);
-        }
-        affinityMenu.DropDownItems.Add(bgPriorityMenu);
-
-        _contextMenu.Items.Add(affinityMenu);
-
         _contextMenu.Items.Add(new ToolStripSeparator());
 
         // Settings submenu
-        var settingsMenu = new ToolStripMenuItem("\u2699  Settings");
+        var settingsMenu = new ToolStripMenuItem("\u2699  Settings") { DropDownDirection = ToolStripDropDownDirection.AboveRight };
         settingsMenu.DropDownItems.Add("\u2753  Help", null, (_, _) => HelpForm.Show(_config));
         settingsMenu.DropDownItems.Add(new ToolStripSeparator());
         settingsMenu.DropDownItems.Add("Create Desktop Shortcut", null, (_, _) => StartupManager.CreateDesktopShortcut(ShowBalloon));
@@ -787,7 +654,7 @@ public class TrayManager : IDisposable
         _contextMenu.Items.Add(settingsMenu);
 
         // Launcher submenu (files + links)
-        var launcherMenu = new ToolStripMenuItem("\uD83D\uDCC2  Launcher");
+        var launcherMenu = new ToolStripMenuItem("\uD83D\uDCC2  Launcher") { DropDownDirection = ToolStripDropDownDirection.AboveRight };
         var linksMenu = new ToolStripMenuItem("\uD83C\uDF10  Links");
         linksMenu.DropDownItems.Add("\uD83C\uDFE0  Dalaya", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/"));
         linksMenu.DropDownItems.Add(new ToolStripSeparator());
@@ -866,8 +733,6 @@ public class TrayManager : IDisposable
             _pipOverlay.Close();
             _pipOverlay.Dispose();
             _pipOverlay = null;
-            _cachedExemptPids = Array.Empty<int>();
-            _throttleManager.SetExemptPids(_cachedExemptPids);
             ShowBalloon("PiP overlay hidden");
             return;
         }
@@ -882,7 +747,6 @@ public class TrayManager : IDisposable
         _pipOverlay = new PipOverlay(_config);
         _pipOverlay.Show();
         _pipOverlay.UpdateSources(clients, _processManager.GetActiveClient());
-        UpdateThrottleExemptions(clients);
         ShowBalloon("PiP overlay shown");
     }
 
@@ -970,9 +834,6 @@ public class TrayManager : IDisposable
         lines.Add($"📊  {_processManager.ClientCount} client(s) detected");
         if (_config.Affinity.Enabled)
             lines.Add("⚙  CPU affinity: ON");
-        if (_config.Throttle.Enabled)
-            lines.Add($"⚡  Throttle: {_config.Throttle.ThrottlePercent}%");
-
         var helpText = string.Join("\n", lines);
         DeferToNextTick(() => FloatingTooltip.Show(helpText, _config.TooltipDurationMs * 2));
     }
@@ -1000,12 +861,7 @@ public class TrayManager : IDisposable
         _config.Affinity.Enabled = enabled;
         ConfigManager.Save(_config);
 
-        // Sync tray menu checkbox
-        if (_affinityEnabledItem != null)
-        {
-            _affinityEnabledItem.Checked = enabled;
-            _affinityEnabledItem.Text = enabled ? "\u2705  Enabled" : "\u2B1C  Disabled";
-        }
+
 
         if (enabled)
         {
@@ -1020,7 +876,6 @@ public class TrayManager : IDisposable
             _retryTimer?.Stop();
             _retryTimer?.Dispose();
             _retryTimer = null;
-            _affinityManager.ResetAllAffinities(_processManager.Clients);
             ShowBalloon("CPU affinity disabled");
         }
     }
@@ -1171,8 +1026,6 @@ public class TrayManager : IDisposable
         _config.Layout.TopOffset = newConfig.Layout.TopOffset;
         _config.Layout.Mode = newConfig.Layout.Mode;
         _config.Affinity.Enabled = newConfig.Affinity.Enabled;
-        _config.Affinity.ActiveMask = newConfig.Affinity.ActiveMask;
-        _config.Affinity.BackgroundMask = newConfig.Affinity.BackgroundMask;
         _config.Affinity.ActivePriority = newConfig.Affinity.ActivePriority;
         _config.Affinity.BackgroundPriority = newConfig.Affinity.BackgroundPriority;
         _config.Affinity.LaunchRetryCount = newConfig.Affinity.LaunchRetryCount;
@@ -1199,9 +1052,6 @@ public class TrayManager : IDisposable
         _config.Pip.ShowBorder = newConfig.Pip.ShowBorder;
         _config.Pip.BorderColor = newConfig.Pip.BorderColor;
         _config.Pip.MaxWindows = newConfig.Pip.MaxWindows;
-        _config.Throttle.Enabled = newConfig.Throttle.Enabled;
-        _config.Throttle.ThrottlePercent = newConfig.Throttle.ThrottlePercent;
-        _config.Throttle.CycleIntervalMs = newConfig.Throttle.CycleIntervalMs;
         _config.TrayClick.SingleClick = newConfig.TrayClick.SingleClick;
         _config.TrayClick.DoubleClick = newConfig.TrayClick.DoubleClick;
         _config.TrayClick.TripleClick = newConfig.TrayClick.TripleClick;
@@ -1247,10 +1097,6 @@ public class TrayManager : IDisposable
         _retryTimer?.Dispose();
         _retryTimer = null;
         StartRetryTimer();
-
-        // Restart throttle manager with new settings
-        _throttleManager.Stop();
-        _throttleManager.Start();
 
         // Update polling interval
         _processManager.UpdatePollingInterval(_config.PollingIntervalMs);
@@ -1300,12 +1146,10 @@ public class TrayManager : IDisposable
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
         _launchManager.CancelLaunch();
-        _throttleManager.Stop();
         _pipOverlay?.Dispose();
         _pipOverlay = null;
         _boldMenuFont?.Dispose();
         _boldMenuFont = null;
-        _affinityManager.ResetAllAffinities(_processManager.Clients);
         _hotkeyManager.Dispose();
         _keyboardHook.Dispose();
         _processManager.StopPolling();
@@ -1370,7 +1214,6 @@ public class TrayManager : IDisposable
         StopForegroundHook();
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
-        _throttleManager.Dispose();
         _launchManager.Dispose();
         _clickResolveTimer?.Stop();
         _clickResolveTimer?.Dispose();

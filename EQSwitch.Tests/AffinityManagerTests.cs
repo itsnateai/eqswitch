@@ -128,45 +128,21 @@ public class AffinityManagerTests
     // ─── Character Overrides ────────────────────────────────────────
 
     [Fact]
-    public void ApplyAffinityRules_PerCharacterOverride_UsesOverrideMask()
+    public void ApplyAffinityRules_PerCharacterPriorityOverride_ExercisesPath()
     {
         var config = new AppConfig();
         config.Affinity.Enabled = true;
-        config.Affinity.ActiveMask = 0xFF;
-        config.Affinity.BackgroundMask = 0xFF00;
         config.Characters.Add(new CharacterProfile
         {
             Name = "TestChar",
-            AffinityOverride = 0xF0F0
+            PriorityOverride = "AboveNormal"
         });
 
         var mgr = new AffinityManager(config);
         var active = MakeClient(0, "OtherChar", pid: 100);
         var overridden = MakeClient(1, "TestChar", pid: 200);
 
-        // This will try to apply affinity - the call itself exercises the override path
-        // We can't easily verify without IWindowsApi on AffinityManager, but at least
-        // it exercises the code path without crashing
+        // Exercises the priority override path without crashing
         mgr.ApplyAffinityRules(new[] { active, overridden }, active);
-    }
-
-    // ─── GetDiagnosticInfo ──────────────────────────────────────────
-
-    [Fact]
-    public void GetDiagnosticInfo_EmptyClients_ReturnsMessage()
-    {
-        var result = AffinityManager.GetDiagnosticInfo(Array.Empty<EQClient>());
-        Assert.Equal("No EQ clients detected", result);
-    }
-
-    [Fact]
-    public void GetDiagnosticInfo_WithClients_ContainsInfo()
-    {
-        var clients = new[] { MakeClient(0, "TestChar", pid: 12345) };
-        var result = AffinityManager.GetDiagnosticInfo(clients);
-
-        Assert.Contains("System:", result);
-        Assert.Contains("TestChar", result);
-        Assert.Contains("12345", result);
     }
 }

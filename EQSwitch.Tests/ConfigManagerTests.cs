@@ -14,7 +14,7 @@ public class ConfigManagerTests
             EQPath = @"D:\Games\EQ",
             PollingIntervalMs = 750,
             Layout = new WindowLayout { Columns = 3, Rows = 2, TopOffset = 25 },
-            Affinity = new AffinityConfig { ActiveMask = 0xF, BackgroundMask = 0xF0 }
+            Affinity = new AffinityConfig { ActivePriority = "High" }
         };
 
         var options = new JsonSerializerOptions
@@ -31,8 +31,7 @@ public class ConfigManagerTests
         Assert.Equal(original.Layout.Columns, restored.Layout.Columns);
         Assert.Equal(original.Layout.Rows, restored.Layout.Rows);
         Assert.Equal(original.Layout.TopOffset, restored.Layout.TopOffset);
-        Assert.Equal(original.Affinity.ActiveMask, restored.Affinity.ActiveMask);
-        Assert.Equal(original.Affinity.BackgroundMask, restored.Affinity.BackgroundMask);
+        Assert.Equal(original.Affinity.ActivePriority, restored.Affinity.ActivePriority);
     }
 
     [Fact]
@@ -44,7 +43,7 @@ public class ConfigManagerTests
             Name = "Gandalf",
             Class = "Wizard",
             SlotIndex = 0,
-            AffinityOverride = 0xABCD
+            PriorityOverride = "High"
         });
 
         var options = new JsonSerializerOptions
@@ -59,14 +58,14 @@ public class ConfigManagerTests
         Assert.Single(restored.Characters);
         Assert.Equal("Gandalf", restored.Characters[0].Name);
         Assert.Equal("Wizard", restored.Characters[0].Class);
-        Assert.Equal(0xABCD, restored.Characters[0].AffinityOverride);
+        Assert.Equal("High", restored.Characters[0].PriorityOverride);
     }
 
     [Fact]
-    public void AppConfig_NullAffinityOverride_NotSerialized()
+    public void AppConfig_NullPriorityOverride_NotSerialized()
     {
         var config = new AppConfig();
-        config.Characters.Add(new CharacterProfile { Name = "Test", AffinityOverride = null });
+        config.Characters.Add(new CharacterProfile { Name = "Test", PriorityOverride = null });
 
         var options = new JsonSerializerOptions
         {

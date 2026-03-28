@@ -144,7 +144,7 @@ public class WindowManagerTests
 
         Assert.True(wm.SwitchToClient(client));
         api.Verify(a => a.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE), Times.Once);
-        api.Verify(a => a.SetForegroundWindow(client.WindowHandle), Times.Once);
+        api.Verify(a => a.ForceForegroundWindow(client.WindowHandle), Times.Once);
     }
 
     // ─── ArrangeWindows (Grid Math) ─────────────────────────────────
