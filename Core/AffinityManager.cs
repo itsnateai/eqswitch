@@ -101,12 +101,16 @@ public class AffinityManager
             {
                 FileLogger.Info($"Priority retry applied for {client} (attempt {_config.Affinity.LaunchRetryCount - remaining + 1})");
                 applied = true;
-            }
-
-            if (remaining <= 1)
                 (completed ??= new List<int>()).Add(pid);
+            }
+            else if (remaining <= 1)
+            {
+                (completed ??= new List<int>()).Add(pid);
+            }
             else
+            {
                 (updates ??= new List<KeyValuePair<int, int>>()).Add(new(pid, remaining - 1));
+            }
         }
 
         if (updates != null)

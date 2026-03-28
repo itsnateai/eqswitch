@@ -135,6 +135,26 @@ public class AppConfigTests
     }
 
     [Fact]
+    public void Validate_RecreatesNullNestedObjects()
+    {
+        var config = new AppConfig();
+        // Simulate corrupt JSON that nulled nested objects
+        config.Layout = null!;
+        config.Affinity = null!;
+        config.Launch = null!;
+        config.Pip = null!;
+        config.Characters = null!;
+
+        config.Validate();
+
+        Assert.NotNull(config.Layout);
+        Assert.NotNull(config.Affinity);
+        Assert.NotNull(config.Launch);
+        Assert.NotNull(config.Pip);
+        Assert.NotNull(config.Characters);
+    }
+
+    [Fact]
     public void PipConfig_GetSize_Presets()
     {
         var pip = new PipConfig();

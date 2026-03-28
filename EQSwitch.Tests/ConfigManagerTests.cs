@@ -75,7 +75,8 @@ public class ConfigManagerTests
         };
 
         var json = JsonSerializer.Serialize(config, options);
-        Assert.DoesNotContain("affinityOverride", json);
+        // priorityOverride is null by default, and WhenWritingNull skips it
+        Assert.DoesNotContain("priorityOverride", json);
     }
 
     [Fact]

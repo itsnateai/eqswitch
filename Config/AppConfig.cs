@@ -80,6 +80,16 @@ public class AppConfig
         if (string.IsNullOrWhiteSpace(EQProcessName)) EQProcessName = "eqgame";
         PollingIntervalMs = Math.Clamp(PollingIntervalMs, 100, 10000);
 
+        // Guard against null nested objects from corrupt/hand-edited JSON
+        Layout ??= new();
+        Affinity ??= new();
+        Launch ??= new();
+        Pip ??= new();
+        Hotkeys ??= new();
+        TrayClick ??= new();
+        EQClientIni ??= new();
+        Characters ??= new();
+
         Layout.Columns = Math.Clamp(Layout.Columns, 1, 4);
         Layout.Rows = Math.Clamp(Layout.Rows, 1, 4);
         Layout.TargetMonitor = Math.Clamp(Layout.TargetMonitor, 0, 8);
@@ -96,7 +106,6 @@ public class AppConfig
         Pip.MaxWindows = Math.Clamp(Pip.MaxWindows, 1, 3);
         Pip.CustomWidth = Math.Clamp(Pip.CustomWidth, 100, 1920);
         Pip.CustomHeight = Math.Clamp(Pip.CustomHeight, 75, 1080);
-
     }
 }
 
