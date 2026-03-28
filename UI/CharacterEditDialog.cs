@@ -88,16 +88,8 @@ public class CharacterEditDialog : Form
         y += 70;
 
         // ─── Buttons ─────────────────────────────────────────
-        var btnSave = new Button
-        {
-            Text = "Save",
-            Location = new Point(200, y),
-            Size = new Size(85, 32),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = DarkTheme.AccentGreen,
-            ForeColor = DarkTheme.FgWhite,
-            DialogResult = DialogResult.None
-        };
+        var btnSave = DarkTheme.MakePrimaryButton("Save", 200, y);
+        btnSave.Size = new Size(85, 32);
         btnSave.Click += (_, _) =>
         {
             _character.PriorityOverride = _chkPriorityOverride.Checked ? _cboPriority.SelectedItem?.ToString() : null;
@@ -106,16 +98,9 @@ public class CharacterEditDialog : Form
         };
         Controls.Add(btnSave);
 
-        var btnCancel = new Button
-        {
-            Text = "Cancel",
-            Location = new Point(295, y),
-            Size = new Size(85, 32),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = DarkTheme.BgMedium,
-            ForeColor = DarkTheme.FgWhite,
-            DialogResult = DialogResult.Cancel
-        };
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 295, y);
+        btnCancel.Size = new Size(85, 32);
+        btnCancel.DialogResult = DialogResult.Cancel;
         Controls.Add(btnCancel);
 
         AcceptButton = btnSave;

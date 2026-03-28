@@ -137,15 +137,9 @@ public class EQKeymapsForm : Form
                 _keyLabels[key] = keyLabel;
 
                 // Scan code numeric (small, secondary)
-                var nud = new NumericUpDown
-                {
-                    Location = new Point(350, y), Size = new Size(100, 24),
-                    BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgGray,
-                    Minimum = 0, Maximum = 2000000000,
-                    Value = def,
-                    Font = new Font("Consolas", 8)
-                };
-                Controls.Add(nud);
+                var nud = DarkTheme.AddNumeric(this, 350, y, 100, def, 0, 2000000000);
+                nud.ForeColor = DarkTheme.FgGray;
+                nud.Font = new Font("Consolas", 8);
                 _nudValues[key] = nud;
 
                 // Live update decoded label

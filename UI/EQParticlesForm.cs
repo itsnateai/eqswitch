@@ -145,14 +145,9 @@ public class EQParticlesForm : Form
         foreach (var (key, label, def) in ClipSettings)
         {
             DarkTheme.AddLabel(this, label + ":", 15, y + 3);
-            var nud = new NumericUpDown
-            {
-                Location = new Point(200, y), Size = new Size(70, 24),
-                BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-                Minimum = 0, Maximum = 999, DecimalPlaces = 1, Increment = 0.5m,
-                Value = def
-            };
-            Controls.Add(nud);
+            var nud = DarkTheme.AddNumeric(this, 200, y, 70, def, 0, 999);
+            nud.DecimalPlaces = 1;
+            nud.Increment = 0.5m;
             _numerics[key] = nud;
             y += 28;
         }
@@ -160,14 +155,7 @@ public class EQParticlesForm : Form
         foreach (var (key, label, def) in FilterSettings)
         {
             DarkTheme.AddLabel(this, label + ":", 15, y + 3);
-            var nud = new NumericUpDown
-            {
-                Location = new Point(200, y), Size = new Size(70, 24),
-                BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-                Minimum = 0, Maximum = 999,
-                Value = def
-            };
-            Controls.Add(nud);
+            var nud = DarkTheme.AddNumeric(this, 200, y, 70, def, 0, 999);
             _numerics[key] = nud;
             y += 28;
         }
@@ -177,24 +165,12 @@ public class EQParticlesForm : Form
         y += 5;
 
         DarkTheme.AddLabel(this, "FogScale:", 15, y + 3);
-        _nudFogScale = new NumericUpDown
-        {
-            Location = new Point(200, y), Size = new Size(80, 24),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            Minimum = 0, Maximum = 100, DecimalPlaces = 2, Increment = 0.1m,
-            Value = 2.80m
-        };
-        Controls.Add(_nudFogScale);
+        _nudFogScale = DarkTheme.AddNumeric(this, 200, y, 80, 2.80m, 0, 100);
+        _nudFogScale.DecimalPlaces = 2;
+        _nudFogScale.Increment = 0.1m;
 
         DarkTheme.AddLabel(this, "LODBias:", 15, y += 28);
-        _nudLODBias = new NumericUpDown
-        {
-            Location = new Point(200, y - 3), Size = new Size(80, 24),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            Minimum = 0, Maximum = 100,
-            Value = 10
-        };
-        Controls.Add(_nudLODBias);
+        _nudLODBias = DarkTheme.AddNumeric(this, 200, y - 3, 80, 10, 0, 100);
 
         _chkSameResolution = new CheckBox
         {

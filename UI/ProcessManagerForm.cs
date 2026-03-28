@@ -100,8 +100,12 @@ public class ProcessManagerForm : Form
         };
         headerPanel.Paint += (_, e) =>
         {
+            var g = e.Graphics;
             using var pen = new Pen(DarkTheme.Border, 1);
-            e.Graphics.DrawRectangle(pen, 0, 0, headerPanel.Width - 1, headerPanel.Height - 1);
+            g.DrawRectangle(pen, 0, 0, headerPanel.Width - 1, headerPanel.Height - 1);
+            // Accent left-bar matching card visual language
+            using var accentBrush = new SolidBrush(DarkTheme.CardCyan);
+            g.FillRectangle(accentBrush, 0, 0, 3, headerPanel.Height);
         };
 
         var lblHeader = new Label
