@@ -107,11 +107,9 @@ public static class ConfigMigration
             // Affinity
             if (values.TryGetValue("CPU_AFFINITY", out var affinity) && !string.IsNullOrEmpty(affinity))
             {
+                // Legacy AHK used a bitmask — just enable affinity, cores managed via eqclient.ini now
                 if (long.TryParse(affinity, out long mask) && mask > 0)
-                {
-                    config.Affinity.ActiveMask = mask;
                     config.Affinity.Enabled = true;
-                }
             }
 
             if (values.TryGetValue("PROCESS_PRIORITY", out var priority))

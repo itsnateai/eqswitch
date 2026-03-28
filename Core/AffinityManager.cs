@@ -4,23 +4,17 @@ using EQSwitch.Models;
 namespace EQSwitch.Core;
 
 /// <summary>
-/// Manages CPU affinity and process priority for EQ clients.
-///
-/// Key concept: Active (foreground) client gets P-cores for best framerate,
-/// background clients get E-cores to save resources.
-///
-/// On Intel 12th+ gen hybrid architectures:
-///   P-cores (performance) = lower-numbered cores (e.g. 0-7)
-///   E-cores (efficiency)  = higher-numbered cores (e.g. 8-15)
-///
-/// Affinity masks are bitmasks: 0xFF = cores 0-7, 0xFF00 = cores 8-15
+/// Manages process priority for EQ clients.
+/// CPU core assignment is handled by eqclient.ini's CPUAffinity0-5 fields,
+/// written by the Process Manager UI. This class only handles Windows priority
+/// (High/AboveNormal/Normal) which has no ini equivalent.
 /// </summary>
 public class AffinityManager
 {
     private readonly AppConfig _config;
     private EQClient? _lastActiveClient;
 
-    // Track clients that need affinity retries (EQ resets affinity on startup)
+    // Track clients that need priority retries (EQ may reset priority on startup)
     private readonly Dictionary<int, int> _retryCounters = new(); // PID -> retries remaining
 
     public AffinityManager(AppConfig config)
@@ -29,18 +23,16 @@ public class AffinityManager
     }
 
     /// <summary>
-    /// Force re-apply affinity rules to all clients, ignoring the "unchanged" optimization.
+    /// Force re-apply priority rules to all clients.
     /// </summary>
     public void ForceApplyAffinityRules(IReadOnlyList<EQClient> clients, EQClient? activeClient)
     {
-        _lastActiveClient = null; // reset cache to force re-apply
+        _lastActiveClient = null;
         ApplyAffinityRules(clients, activeClient);
     }
 
     /// <summary>
-    /// Apply affinity and priority rules: active client gets P-cores + higher priority,
-    /// background clients get E-cores + normal priority.
-    /// Call this whenever the foreground window changes.
+    /// Apply priority rules to all EQ clients.
     /// </summary>
     public void ApplyAffinityRules(IReadOnlyList<EQClient> clients, EQClient? activeClient)
     {
@@ -55,23 +47,7 @@ public class AffinityManager
         {
             bool isActive = client == activeClient;
 
-            // Check for per-slot override first, then per-character name
-            var affinityOverride = FindSlotAffinityOverride(client.SlotIndex)
-                                ?? FindCharacterAffinityOverride(client.CharacterName);
-
-            long mask;
-            if (affinityOverride != null)
-            {
-                mask = affinityOverride.Value;
-            }
-            else
-            {
-                mask = isActive ? _config.Affinity.ActiveMask : _config.Affinity.BackgroundMask;
-            }
-
-            SetProcessAffinity(client.ProcessId, mask);
-
-            // Set process priority (per-slot override → per-character name → global)
+            // Priority: per-slot override → per-character override → global
             var priorityOverride = FindSlotPriorityOverride(client.SlotIndex)
                                 ?? FindCharacterPriorityOverride(client.CharacterName);
             var priority = priorityOverride ?? (isActive ? _config.Affinity.ActivePriority : _config.Affinity.BackgroundPriority);
@@ -80,19 +56,17 @@ public class AffinityManager
     }
 
     /// <summary>
-    /// Schedule affinity retries for a newly discovered client.
-    /// EQ resets its affinity shortly after startup, so we need to re-apply.
+    /// Schedule priority retries for a newly discovered client.
     /// </summary>
     public void ScheduleRetry(EQClient client)
     {
         if (!_config.Affinity.Enabled) return;
         _retryCounters[client.ProcessId] = _config.Affinity.LaunchRetryCount;
-        FileLogger.Info($"Affinity retry scheduled for {client} ({_config.Affinity.LaunchRetryCount} attempts)");
+        FileLogger.Info($"Priority retry scheduled for {client} ({_config.Affinity.LaunchRetryCount} attempts)");
     }
 
     /// <summary>
     /// Process pending retry attempts. Call this from a timer tick.
-    /// Returns true if any retries were applied.
     /// </summary>
     public bool ProcessRetries(IReadOnlyList<EQClient> clients)
     {
@@ -102,7 +76,6 @@ public class AffinityManager
         List<int>? completed = null;
         List<KeyValuePair<int, int>>? updates = null;
 
-        // Iterate without modifying — collect changes to apply after
         foreach (var kvp in _retryCounters)
         {
             int pid = kvp.Key;
@@ -119,20 +92,14 @@ public class AffinityManager
                 continue;
             }
 
-            long mask = FindSlotAffinityOverride(client.SlotIndex)
-                     ?? FindCharacterAffinityOverride(client.CharacterName)
-                     ?? _config.Affinity.BackgroundMask;
-            bool success = SetProcessAffinity(pid, mask);
-
-            // Apply per-slot/character priority override during retries too
             var priorityOverride = FindSlotPriorityOverride(client.SlotIndex)
                                 ?? FindCharacterPriorityOverride(client.CharacterName);
             var retryPriority = priorityOverride ?? _config.Affinity.BackgroundPriority;
-            SetProcessPriority(pid, retryPriority);
+            bool success = SetProcessPriority(pid, retryPriority);
 
             if (success)
             {
-                FileLogger.Info($"Affinity retry applied for {client} (attempt {_config.Affinity.LaunchRetryCount - remaining + 1})");
+                FileLogger.Info($"Priority retry applied for {client} (attempt {_config.Affinity.LaunchRetryCount - remaining + 1})");
                 applied = true;
             }
 
@@ -142,7 +109,6 @@ public class AffinityManager
                 (updates ??= new List<KeyValuePair<int, int>>()).Add(new(pid, remaining - 1));
         }
 
-        // Apply deferred mutations
         if (updates != null)
             for (int i = 0; i < updates.Count; i++)
                 _retryCounters[updates[i].Key] = updates[i].Value;
@@ -153,23 +119,6 @@ public class AffinityManager
         return applied;
     }
 
-    /// <summary>
-    /// Look up per-slot affinity override.
-    /// </summary>
-    private long? FindSlotAffinityOverride(int slotIndex)
-    {
-        var characters = _config.Characters;
-        for (int i = 0; i < characters.Count; i++)
-        {
-            if (characters[i].SlotIndex == slotIndex && characters[i].AffinityOverride.HasValue)
-                return characters[i].AffinityOverride;
-        }
-        return null;
-    }
-
-    /// <summary>
-    /// Look up per-slot priority override.
-    /// </summary>
     private string? FindSlotPriorityOverride(int slotIndex)
     {
         var characters = _config.Characters;
@@ -181,24 +130,6 @@ public class AffinityManager
         return null;
     }
 
-    /// <summary>
-    /// Look up per-character affinity override without allocating a closure.
-    /// </summary>
-    private long? FindCharacterAffinityOverride(string? characterName)
-    {
-        if (string.IsNullOrEmpty(characterName)) return null;
-        var characters = _config.Characters;
-        for (int i = 0; i < characters.Count; i++)
-        {
-            if (characters[i].Name.Equals(characterName, StringComparison.OrdinalIgnoreCase))
-                return characters[i].AffinityOverride;
-        }
-        return null;
-    }
-
-    /// <summary>
-    /// Look up per-character priority override without allocating a closure.
-    /// </summary>
     private string? FindCharacterPriorityOverride(string? characterName)
     {
         if (string.IsNullOrEmpty(characterName)) return null;
@@ -211,71 +142,9 @@ public class AffinityManager
         return null;
     }
 
-    /// <summary>
-    /// Remove retry tracking for a lost client.
-    /// </summary>
-    public void CancelRetry(int processId)
-    {
-        _retryCounters.Remove(processId);
-    }
+    public void CancelRetry(int processId) => _retryCounters.Remove(processId);
 
-    /// <summary>
-    /// Build a diagnostic string showing affinity/priority for all clients.
-    /// </summary>
-    public static string GetDiagnosticInfo(IReadOnlyList<EQClient> clients)
-    {
-        if (clients.Count == 0) return "No EQ clients detected";
-
-        var lines = new List<string>();
-        var (coreCount, systemMask) = DetectCores();
-        lines.Add($"System: {coreCount} cores (mask 0x{systemMask:X})");
-        lines.Add("");
-
-        foreach (var client in clients)
-        {
-            var (procMask, _) = GetProcessAffinity(client.ProcessId);
-            var priority = GetProcessPriorityName(client.ProcessId);
-            var name = client.CharacterName ?? $"Client {client.SlotIndex + 1}";
-            lines.Add($"[{client.SlotIndex + 1}] {name} (PID {client.ProcessId})");
-            lines.Add($"    Affinity: 0x{procMask:X}  Priority: {priority}");
-        }
-
-        return string.Join(Environment.NewLine, lines);
-    }
-
-    // ─── Static helpers ──────────────────────────────────────────────
-
-    public static bool SetProcessAffinity(int processId, long affinityMask)
-    {
-        IntPtr hProcess = IntPtr.Zero;
-        try
-        {
-            hProcess = NativeMethods.OpenProcess(
-                NativeMethods.PROCESS_SET_INFORMATION | NativeMethods.PROCESS_QUERY_INFORMATION,
-                false, processId);
-
-            if (hProcess == IntPtr.Zero)
-            {
-                FileLogger.Warn($"Failed to open process {processId} for affinity change");
-                return false;
-            }
-
-            bool result = NativeMethods.SetProcessAffinityMask(hProcess, (IntPtr)affinityMask);
-            if (!result)
-                FileLogger.Warn($"SetProcessAffinityMask failed for PID {processId}");
-            return result;
-        }
-        catch (Exception ex)
-        {
-            FileLogger.Error($"Affinity error for PID {processId}", ex);
-            return false;
-        }
-        finally
-        {
-            if (hProcess != IntPtr.Zero)
-                NativeMethods.CloseHandle(hProcess);
-        }
-    }
+    // ─── Static helpers (read-only display + priority setting) ────────
 
     public static bool SetProcessPriority(int processId, string priorityName)
     {
@@ -385,25 +254,7 @@ public class AffinityManager
                 NativeMethods.CloseHandle(hProcess);
         }
 
-        FileLogger.Info($"Core detection: {coreCount} cores, system mask 0x{systemMask:X}");
         return (coreCount, systemMask);
-    }
-
-    /// <summary>
-    /// Reset all clients to use all available cores and normal priority.
-    /// Call this on shutdown to clean up.
-    /// </summary>
-    public void ResetAllAffinities(IReadOnlyList<EQClient> clients)
-    {
-        if (clients.Count == 0) return;
-
-        var (_, systemMask) = DetectCores();
-
-        foreach (var client in clients)
-        {
-            SetProcessAffinity(client.ProcessId, systemMask);
-            SetProcessPriority(client.ProcessId, "Normal");
-        }
     }
 
     private static uint ParsePriorityClass(string name) => name.ToLowerInvariant() switch

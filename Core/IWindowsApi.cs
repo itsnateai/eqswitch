@@ -33,7 +33,6 @@ public interface IWindowsApi
     List<WinRect> GetAllMonitorBounds();
 
     // ─── Process Operations ──────────────────────────────────────────
-    bool SetProcessAffinity(int processId, long affinityMask);
     bool SetProcessPriority(int processId, uint priorityClass);
     (long processMask, long systemMask) GetProcessAffinity(int processId);
     uint GetProcessPriorityClass(int processId);

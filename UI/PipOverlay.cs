@@ -221,7 +221,7 @@ public class PipOverlay : Form
 
     /// <summary>
     /// PIDs of the source windows currently being thumbnailed.
-    /// Used by ThrottleManager to exempt these from suspension.
+    /// Handles of the source windows currently being thumbnailed.
     /// </summary>
     public IReadOnlyList<IntPtr> SourceWindows => _sourceWindows;
 

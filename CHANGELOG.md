@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.7.0 — Process Manager Consolidation (2026-03-28)
+
+### Added
+- **Consolidated Process Manager** — 3 clear cards: Windows Priority, Core Assignment, FPS Limits
+- **INI-based Core Assignment** — 6 NumericUpDown slot pickers for CPUAffinity0-5, writes directly to eqclient.ini
+- **Ghost FPS label** — shows current eqclient.ini MaxFPS/MaxBGFPS values alongside the editor
+
+### Changed
+- **FPS defaults** changed to 80/80 (was 0 = unlimited, which crashes EQ)
+- **Priority defaults** changed to High/High (prevents virtual desktop crashes + enables autofollow)
+- **Settings "Affinity" tab renamed to "Performance"** — stripped to enable toggle + retry settings
+- **Submenu directions** — Video Settings, Settings, Launcher all open upward (AboveRight)
+- **CharacterEditDialog simplified** — priority override only (core assignment now global via eqclient.ini)
+
+### Removed
+- **ThrottleManager** — process suspension was causing "Suspended" in Task Manager
+- **CPU Affinity submenu** from tray menu — Process Manager is the one-stop shop
+- **Per-character AffinityOverride** — replaced by global eqclient.ini CPUAffinity0-5 slots
+
+---
+
 ## v2.6.0 — Per-Character Overrides (2026-03-20)
 
 ### Added

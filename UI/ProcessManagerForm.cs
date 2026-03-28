@@ -5,15 +5,17 @@ using EQSwitch.Models;
 namespace EQSwitch.UI;
 
 /// <summary>
-/// Live process manager showing PID, character, priority, and affinity for all EQ clients.
-/// Priority column is an inline dropdown — change it per-process directly in the grid.
-/// Core checkboxes in the control card let you toggle individual CPU cores per-process.
+/// Consolidated process manager with three clear settings sections:
+/// 1. Windows Priority — keeps EQ from getting starved (prevents VD crashes, enables autofollow)
+/// 2. Core Assignment — spreads EQ across cores so it doesn't single-thread on core 0
+/// 3. FPS Limits — MaxFPS / MaxBGFPS from eqclient.ini
+/// Plus the live process grid for per-process overrides.
 /// </summary>
 public class ProcessManagerForm : Form
 {
     private const int RefreshIntervalMs = 2000;
-    private const int FormW = 560;
-    private const int GridW = 520;
+    private const int FormW = 600;
+    private const int GridW = 560;
     private const int Pad = 15;
 
     private static readonly string[] Priorities = { "High", "AboveNormal", "Normal", "BelowNormal" };
@@ -26,18 +28,30 @@ public class ProcessManagerForm : Form
 
     private DataGridView _grid = null!;
     private Label _statusLabel = null!;
-    private Label _lblSelectedName = null!;
     private CheckBox _chkAffinityEnabled = null!;
-    private CheckBox[] _coreChecks = null!;
-    private Label _lblMask = null!;
     private ToolTip _tooltip = null!;
     private System.Windows.Forms.Timer _refreshTimer = null!;
     private bool _isRefreshing;
-    private bool _suppressCoreApply;
     private bool _forceNextRefresh;
+
+    // Card 1: Priority
+    private ComboBox _cboPriority = null!;
+
+    // Card 2: Core Assignment (6 slots matching eqclient.ini CPUAffinity0-5)
+    private NumericUpDown[] _slotPickers = null!;
+
+    // Card 3: FPS
+    private NumericUpDown _nudMaxFPS = null!;
+    private NumericUpDown _nudMaxBGFPS = null!;
 
     // Track selected PID across refreshes so selection survives auto-refresh
     private int _selectedPid;
+
+    // Snapshot of config at form open — for Reset
+    private readonly string _initialPriority;
+    private readonly int[] _initialSlots;
+    private readonly int _initialMaxFPS;
+    private readonly int _initialMaxBGFPS;
 
     public ProcessManagerForm(
         Func<IReadOnlyList<EQClient>> getClients,
@@ -51,13 +65,19 @@ public class ProcessManagerForm : Form
         _forceApply = forceApply;
         _toggleAffinity = toggleAffinity;
         _config = config;
+
+        // Snapshot current config for Reset
+        _initialPriority = config.Affinity.ActivePriority;
+        _initialSlots = (int[])config.EQClientIni.CPUAffinitySlots.Clone();
+        _initialMaxFPS = config.EQClientIni.MaxFPS;
+        _initialMaxBGFPS = config.EQClientIni.MaxBGFPS;
+
         InitializeForm();
     }
 
     private void InitializeForm()
     {
         Text = "EQSwitch — Process Manager";
-        Size = new Size(FormW, 550);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -68,10 +88,10 @@ public class ProcessManagerForm : Form
 
         _tooltip = new ToolTip { InitialDelay = 300, ReshowDelay = 200 };
 
+        var (coreCount, systemMask) = AffinityManager.DetectCores();
         int y = 10;
 
         // ─── Header bar ──────────────────────────────────────────
-        var (coreCount, systemMask) = AffinityManager.DetectCores();
         var headerPanel = new Panel
         {
             Location = new Point(Pad, y),
@@ -115,11 +135,154 @@ public class ProcessManagerForm : Form
         Controls.Add(headerPanel);
         y += 38;
 
-        // ─── Process grid (Priority column is an inline dropdown) ─
-        _grid = new DataGridView
+        // ─── Process grid ────────────────────────────────────────
+        _grid = BuildProcessGrid(y);
+        Controls.Add(_grid);
+        y += 168;
+
+        // ─── Status bar ──────────────────────────────────────────
+        _statusLabel = new Label
+        {
+            Text = "No clients detected",
+            Location = new Point(Pad + 2, y),
+            AutoSize = true,
+            ForeColor = DarkTheme.FgDimGray,
+            Font = new Font("Consolas", 8.25f)
+        };
+        Controls.Add(_statusLabel);
+        y += 22;
+
+        // ─── Card 1: Windows Priority ────────────────────────────
+        var cardPriority = DarkTheme.MakeCard(this, "\u26A1", "Windows Priority", DarkTheme.CardGold, Pad, y, GridW, 65);
+
+        DarkTheme.AddCardLabel(cardPriority, "All EQ Clients:", 10, 32);
+        _cboPriority = DarkTheme.AddCardComboBox(cardPriority, 115, 30, 120, Priorities);
+        _cboPriority.SelectedItem = _config.Affinity.ActivePriority;
+
+        DarkTheme.AddCardHint(cardPriority, "High = prevents virtual desktop crashes + enables autofollow", 250, 34);
+
+        y += 73;
+
+        // ─── Card 2: Core Assignment ─────────────────────────────
+        // 6 slots matching eqclient.ini CPUAffinity0-5
+        var cardCores = DarkTheme.MakeCard(this, "\uD83E\uDDE0", "Core Assignment", DarkTheme.CardCyan, Pad, y, GridW, 90);
+
+        var slots = _config.EQClientIni.CPUAffinitySlots;
+        _slotPickers = new NumericUpDown[6];
+        for (int i = 0; i < 6; i++)
+        {
+            int col = i % 3;
+            int row = i / 3;
+            int lx = 10 + col * 180;
+            int ly = 30 + row * 28;
+
+            DarkTheme.AddCardLabel(cardCores, $"Slot {i}:", lx, ly + 2);
+            int coreVal = i < slots.Length ? Math.Clamp(slots[i], 0, coreCount - 1) : i;
+            _slotPickers[i] = DarkTheme.AddCardNumeric(cardCores, lx + 45, ly, 55, coreVal, 0, coreCount - 1);
+            _tooltip.SetToolTip(_slotPickers[i], $"CPUAffinity{i} in eqclient.ini — physical core number");
+        }
+
+        DarkTheme.AddCardHint(cardCores, $"6 EQ thread slots  |  {coreCount} cores available (0 = first core)", 10, 70);
+
+        y += 98;
+
+        // ─── Card 3: FPS Limits ──────────────────────────────────
+        var cardFps = DarkTheme.MakeCard(this, "\uD83C\uDFAE", "FPS Limits", DarkTheme.CardGreen, Pad, y, GridW, 85);
+
+        DarkTheme.AddCardLabel(cardFps, "Active FPS:", 10, 32);
+        _nudMaxFPS = DarkTheme.AddCardNumeric(cardFps, 85, 30, 55, Math.Clamp(_config.EQClientIni.MaxFPS, 0, 999), 0, 999);
+
+        DarkTheme.AddCardLabel(cardFps, "Background FPS:", 165, 32);
+        _nudMaxBGFPS = DarkTheme.AddCardNumeric(cardFps, 275, 30, 55, Math.Clamp(_config.EQClientIni.MaxBGFPS, 0, 999), 0, 999);
+
+        DarkTheme.AddCardHint(cardFps, "0 = unlimited  |  Default 80  |  Written to eqclient.ini on Save", 10, 56);
+
+        // Read current values from eqclient.ini and show as ghost hint
+        var (iniFps, iniBgFps) = ReadIniFpsValues();
+        var iniLabel = new Label
+        {
+            Text = "Current Settings:",
+            Location = new Point(340, 30),
+            AutoSize = true,
+            ForeColor = DarkTheme.FgDimGray,
+            Font = new Font("Segoe UI", 7.5f),
+            BackColor = Color.Transparent
+        };
+        cardFps.Controls.Add(iniLabel);
+        var iniHint = new Label
+        {
+            Text = $"eqclient.ini: MaxFPS={iniFps}  MaxBGFPS={iniBgFps}",
+            Location = new Point(340, 44),
+            AutoSize = true,
+            ForeColor = DarkTheme.FgDimGray,
+            Font = new Font("Consolas", 7.5f, FontStyle.Italic),
+            BackColor = Color.Transparent
+        };
+        cardFps.Controls.Add(iniHint);
+
+        y += 93;
+
+        // ─── Bottom buttons ──────────────────────────────────────
+        var btnSave = DarkTheme.MakePrimaryButton("Save", Pad, y);
+        btnSave.Click += (_, _) =>
+        {
+            ApplyAllSettings();
+            ConfigManager.Save(_config);
+            ConfigManager.FlushSave();
+            _forceApply();
+            Close();
+        };
+        Controls.Add(btnSave);
+
+        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, Pad + 100, y);
+        btnApply.FlatAppearance.BorderColor = DarkTheme.Border;
+        btnApply.FlatAppearance.BorderSize = 1;
+        btnApply.Click += (_, _) =>
+        {
+            ApplyAllSettings();
+            ConfigManager.Save(_config);
+            ConfigManager.FlushSave();
+            _forceApply();
+            _forceNextRefresh = true;
+            RefreshList();
+        };
+        Controls.Add(btnApply);
+
+        var btnReset = DarkTheme.MakeButton("Reset", DarkTheme.BgMedium, Pad + 200, y);
+        btnReset.FlatAppearance.BorderColor = DarkTheme.Border;
+        btnReset.FlatAppearance.BorderSize = 1;
+        btnReset.Click += (_, _) => ResetToInitial();
+        Controls.Add(btnReset);
+
+        var btnClose = DarkTheme.MakeButton("Close", DarkTheme.BgMedium, FormW - Pad - 90 - 12, y);
+        btnClose.FlatAppearance.BorderColor = DarkTheme.Border;
+        btnClose.FlatAppearance.BorderSize = 1;
+        btnClose.Click += (_, _) => Close();
+        Controls.Add(btnClose);
+
+        y += 45;
+        ClientSize = new Size(FormW - 16, y);
+
+        // ─── Timer ───────────────────────────────────────────────
+        _refreshTimer = new System.Windows.Forms.Timer { Interval = RefreshIntervalMs };
+        _refreshTimer.Tick += (_, _) => RefreshList();
+        _refreshTimer.Start();
+
+        FormClosed += (_, _) =>
+        {
+            _refreshTimer.Stop();
+            _refreshTimer.Dispose();
+        };
+
+        RefreshList();
+    }
+
+    private DataGridView BuildProcessGrid(int y)
+    {
+        var grid = new DataGridView
         {
             Location = new Point(Pad, y),
-            Size = new Size(GridW, 240),
+            Size = new Size(GridW, 160),
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
             AllowUserToResizeRows = false,
@@ -163,12 +326,11 @@ public class ProcessManagerForm : Form
             ScrollBars = ScrollBars.Vertical
         };
 
-        // Read-only text columns
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Slot", HeaderText = "#", ReadOnly = true, Width = 32 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "PID", HeaderText = "PID", ReadOnly = true, Width = 60 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Character", HeaderText = "Character", ReadOnly = true, Width = 140 });
-
-        // Priority = inline ComboBox dropdown
+        // Columns
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Slot", HeaderText = "#", ReadOnly = true, Width = 32 });
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "PID", HeaderText = "PID", ReadOnly = true, Width = 60 });
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Character", HeaderText = "Character", ReadOnly = true, Width = 140 });
+        // Priority = inline ComboBox dropdown per-process
         var priorityCol = new DataGridViewComboBoxColumn
         {
             Name = "Priority",
@@ -179,11 +341,8 @@ public class ProcessManagerForm : Form
             SortMode = DataGridViewColumnSortMode.NotSortable
         };
         priorityCol.Items.AddRange(Priorities);
-        _grid.Columns.Add(priorityCol);
-
-        // More read-only text columns
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Affinity", HeaderText = "Affinity", ReadOnly = true, Width = 80 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Source", HeaderText = "Source", ReadOnly = true, Width = 60 });
+        grid.Columns.Add(priorityCol);
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Affinity", HeaderText = "Affinity", ReadOnly = true, Width = 80 });
 
         // Kill button column
         var killCol = new DataGridViewButtonColumn
@@ -192,31 +351,31 @@ public class ProcessManagerForm : Form
             HeaderText = "Kill",
             Text = "\u2716",
             UseColumnTextForButtonValue = true,
-            Width = 32,
+            Width = 45,
             FlatStyle = FlatStyle.Flat
         };
-        _grid.Columns.Add(killCol);
+        grid.Columns.Add(killCol);
 
-        foreach (DataGridViewColumn col in _grid.Columns)
+        foreach (DataGridViewColumn col in grid.Columns)
         {
             col.SortMode = DataGridViewColumnSortMode.NotSortable;
             col.Resizable = DataGridViewTriState.False;
         }
 
         // Commit dropdown changes immediately (don't wait for focus loss)
-        _grid.CurrentCellDirtyStateChanged += (_, _) =>
+        grid.CurrentCellDirtyStateChanged += (_, _) =>
         {
-            if (_grid.IsCurrentCellDirty && _grid.CurrentCell?.OwningColumn.Name == "Priority")
-                _grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
+            if (grid.IsCurrentCellDirty && grid.CurrentCell?.OwningColumn.Name == "Priority")
+                grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
         };
 
-        // Apply priority when the dropdown value changes — both live + saved to config
-        _grid.CellValueChanged += (_, e) =>
+        // Apply priority when the dropdown value changes
+        grid.CellValueChanged += (_, e) =>
         {
             if (_isRefreshing || e.RowIndex < 0) return;
-            if (_grid.Columns[e.ColumnIndex].Name != "Priority") return;
+            if (grid.Columns[e.ColumnIndex].Name != "Priority") return;
 
-            var row = _grid.Rows[e.RowIndex];
+            var row = grid.Rows[e.RowIndex];
             if (!int.TryParse(row.Cells["PID"].Value?.ToString(), out int pid)) return;
             var priority = row.Cells["Priority"].Value?.ToString();
             if (string.IsNullOrEmpty(priority)) return;
@@ -224,35 +383,19 @@ public class ProcessManagerForm : Form
             // Apply to the live process immediately
             AffinityManager.SetProcessPriority(pid, priority);
 
-            // Persist as per-slot override
-            if (int.TryParse(row.Cells["Slot"].Value?.ToString(), out int slot))
-            {
-                int slotIdx = slot - 1; // grid shows 1-based, config is 0-based
-                var profile = _config.Characters.Find(c => c.SlotIndex == slotIdx);
-                if (profile != null)
-                {
-                    profile.PriorityOverride = priority;
-                }
-                else
-                {
-                    _config.Characters.Add(new CharacterProfile
-                    {
-                        Name = row.Cells["Character"].Value?.ToString() ?? $"Slot {slot}",
-                        SlotIndex = slotIdx,
-                        PriorityOverride = priority
-                    });
-                }
-                ConfigManager.Save(_config);
-            }
+            // Also update the global config priority
+            _config.Affinity.ActivePriority = priority;
+            _config.Affinity.BackgroundPriority = priority;
+            _cboPriority.SelectedItem = priority;
+            ConfigManager.Save(_config);
         };
 
         // Handle Kill button click
-        _grid.CellContentClick += (_, e) =>
+        grid.CellContentClick += (_, e) =>
         {
-            if (e.RowIndex < 0 || _grid.Columns[e.ColumnIndex].Name != "Kill") return;
-            var row = _grid.Rows[e.RowIndex];
+            if (e.RowIndex < 0 || grid.Columns[e.ColumnIndex].Name != "Kill") return;
+            var row = grid.Rows[e.RowIndex];
             if (!int.TryParse(row.Cells["PID"].Value?.ToString(), out int pid)) return;
-            var name = row.Cells["Character"].Value?.ToString() ?? "PID " + pid;
 
             try
             {
@@ -265,126 +408,8 @@ public class ProcessManagerForm : Form
             catch { /* process already gone */ }
         };
 
-        _grid.SelectionChanged += (_, _) => SyncCoreCheckboxes();
-        Controls.Add(_grid);
-        y += 248;
 
-        // ─── Status bar ──────────────────────────────────────────
-        _statusLabel = new Label
-        {
-            Text = "No clients detected",
-            Location = new Point(Pad + 2, y),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgDimGray,
-            Font = new Font("Consolas", 8.25f)
-        };
-        Controls.Add(_statusLabel);
-        y += 24;
-
-        // ─── Control card: core affinity ─────────────────────────
-        var cardControl = DarkTheme.MakeCard(this, "\u2694", "Core Affinity", DarkTheme.CardGold, Pad, y, GridW, 115);
-
-        DarkTheme.AddCardLabel(cardControl, "Selected:", 10, 8);
-        _lblSelectedName = new Label
-        {
-            Text = "click a row above",
-            Location = new Point(75, 8),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgDimGray,
-            Font = new Font("Consolas", 9f, FontStyle.Italic)
-        };
-        cardControl.Controls.Add(_lblSelectedName);
-
-        _lblMask = new Label
-        {
-            Text = "",
-            Location = new Point(GridW - 80, 8),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgDimGray,
-            Font = new Font("Consolas", 8.5f)
-        };
-        cardControl.Controls.Add(_lblMask);
-
-        // Core checkboxes with number labels below
-        DarkTheme.AddCardLabel(cardControl, "Cores:", 10, 38);
-        _coreChecks = new CheckBox[coreCount];
-        int coreX = 55;
-        int coreY = 34;
-        int perRow = Math.Min(coreCount, 20);
-        int checkW = Math.Max(22, (GridW - 65) / perRow);
-        for (int i = 0; i < coreCount; i++)
-        {
-            var coreType = i < 8 ? "P-core (Performance)" : "E-core (Efficiency)";
-            int cx = coreX + (i % perRow) * checkW;
-            int cy = coreY + (i / perRow) * 36;
-            var chk = new CheckBox
-            {
-                Text = "",
-                Location = new Point(cx, cy),
-                Size = new Size(checkW, 18),
-                BackColor = Color.Transparent,
-                Enabled = false
-            };
-            _tooltip.SetToolTip(chk, $"CPU {i} — {coreType}");
-            chk.CheckedChanged += (_, _) => ApplyAffinityFromCheckboxes();
-            cardControl.Controls.Add(chk);
-            _coreChecks[i] = chk;
-
-            var lbl = new Label
-            {
-                Text = i.ToString(),
-                Location = new Point(cx + 2, cy + 17),
-                Size = new Size(checkW, 13),
-                ForeColor = i < 8 ? DarkTheme.CardGreen : DarkTheme.CardBlue,
-                Font = new Font("Consolas", 7f),
-                BackColor = Color.Transparent,
-                TextAlign = ContentAlignment.TopLeft
-            };
-            cardControl.Controls.Add(lbl);
-        }
-
-        y += 125;
-
-        // ─── Bottom buttons ──────────────────────────────────────
-        var btnSave = DarkTheme.MakePrimaryButton("Save", Pad, y);
-        btnSave.Click += (_, _) =>
-        {
-            _forceApply();
-            ConfigManager.Save(_config);
-            ConfigManager.FlushSave();
-            Close();
-        };
-        Controls.Add(btnSave);
-
-        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, Pad + 100, y);
-        btnApply.FlatAppearance.BorderColor = DarkTheme.Border;
-        btnApply.FlatAppearance.BorderSize = 1;
-        btnApply.Click += (_, _) =>
-        {
-            _forceApply();
-            ConfigManager.Save(_config);
-            ConfigManager.FlushSave();
-        };
-        Controls.Add(btnApply);
-
-        var btnClose = DarkTheme.MakeButton("Close", DarkTheme.BgMedium, FormW - Pad - 90 - 12, y);
-        btnClose.FlatAppearance.BorderColor = DarkTheme.Border;
-        btnClose.FlatAppearance.BorderSize = 1;
-        btnClose.Click += (_, _) => Close();
-        Controls.Add(btnClose);
-
-        // ─── Timer ───────────────────────────────────────────────
-        _refreshTimer = new System.Windows.Forms.Timer { Interval = RefreshIntervalMs };
-        _refreshTimer.Tick += (_, _) => RefreshList();
-        _refreshTimer.Start();
-
-        FormClosed += (_, _) =>
-        {
-            _refreshTimer.Stop();
-            _refreshTimer.Dispose();
-        };
-
-        RefreshList();
+        return grid;
     }
 
     private void RefreshList()
@@ -407,33 +432,12 @@ public class ProcessManagerForm : Form
                 var name = client.CharacterName ?? client.WindowTitle;
                 if (string.IsNullOrEmpty(name)) name = $"Client {client.SlotIndex + 1}";
 
-                // Check per-character overrides
-                var hasAffinityOvr = false;
-                var hasPriorityOvr = false;
-                if (!string.IsNullOrEmpty(client.CharacterName))
-                {
-                    foreach (var cp in _config.Characters)
-                    {
-                        if (cp.Name.Equals(client.CharacterName, StringComparison.OrdinalIgnoreCase))
-                        {
-                            hasAffinityOvr = cp.AffinityOverride.HasValue;
-                            hasPriorityOvr = cp.PriorityOverride != null;
-                            break;
-                        }
-                    }
-                }
-                var source = (hasAffinityOvr || hasPriorityOvr) ? "Custom" : "Global";
-
                 int rowIdx = _grid.Rows.Add(
                     (client.SlotIndex + 1).ToString(),
                     client.ProcessId.ToString(),
                     name,
                     priority,
-                    $"0x{procMask:X}",
-                    source);
-
-                if (hasAffinityOvr || hasPriorityOvr)
-                    _grid.Rows[rowIdx].Cells["Source"].Style.ForeColor = DarkTheme.CardCyan;
+                    $"0x{procMask:X}");
 
                 if (client == active)
                 {
@@ -453,8 +457,8 @@ public class ProcessManagerForm : Form
             _statusLabel.Text = count switch
             {
                 0 => "No clients detected",
-                1 => $"1 client  |  active mask 0x{_config.Affinity.ActiveMask:X}  bg mask 0x{_config.Affinity.BackgroundMask:X}",
-                _ => $"{count} clients  |  active mask 0x{_config.Affinity.ActiveMask:X}  bg mask 0x{_config.Affinity.BackgroundMask:X}"
+                1 => $"1 client  |  priority {_config.Affinity.ActivePriority}",
+                _ => $"{count} clients  |  priority {_config.Affinity.ActivePriority}"
             };
             _statusLabel.ForeColor = count > 0 ? DarkTheme.FgGray : DarkTheme.FgDimGray;
 
@@ -478,91 +482,66 @@ public class ProcessManagerForm : Form
         }
     }
 
-    private void SyncCoreCheckboxes()
+    /// <summary>
+    /// Writes all card settings back to config and eqclient.ini.
+    /// </summary>
+    private void ApplyAllSettings()
     {
-        if (_isRefreshing) return;
+        // Card 1: Priority
+        var priority = _cboPriority.SelectedItem?.ToString() ?? "High";
+        _config.Affinity.ActivePriority = priority;
+        _config.Affinity.BackgroundPriority = priority;
 
-        if (_grid.SelectedRows.Count > 0)
+        // Card 2: Core Assignment — write slot values to config
+        for (int i = 0; i < 6; i++)
+            _config.EQClientIni.CPUAffinitySlots[i] = (int)_slotPickers[i].Value;
+
+        // Card 3: FPS
+        _config.EQClientIni.MaxFPS = (int)_nudMaxFPS.Value;
+        _config.EQClientIni.MaxBGFPS = (int)_nudMaxBGFPS.Value;
+
+        // Write FPS + CPUAffinity to eqclient.ini
+        if (!string.IsNullOrEmpty(_config.EQPath))
         {
-            var row = _grid.SelectedRows[0];
-            var name = row.Cells["Character"].Value?.ToString() ?? "?";
-
-            if (int.TryParse(row.Cells["PID"].Value?.ToString(), out int pid))
-                _selectedPid = pid;
-
-            _lblSelectedName.Text = name;
-            _lblSelectedName.ForeColor = DarkTheme.CardCyan;
-            _lblSelectedName.Font = new Font("Consolas", 9f, FontStyle.Bold);
-
-            // Sync core checkboxes
-            var (procMask, _) = AffinityManager.GetProcessAffinity(pid);
-            _suppressCoreApply = true;
-            for (int i = 0; i < _coreChecks.Length; i++)
-            {
-                _coreChecks[i].Checked = (procMask & (1L << i)) != 0;
-                _coreChecks[i].Enabled = true;
-            }
-            _suppressCoreApply = false;
-            _lblMask.Text = $"0x{procMask:X}";
-            _lblMask.ForeColor = DarkTheme.FgGray;
-        }
-        else
-        {
-            _selectedPid = 0;
-            _lblSelectedName.Text = "click a row above";
-            _lblSelectedName.ForeColor = DarkTheme.FgDimGray;
-            _lblSelectedName.Font = new Font("Consolas", 9f, FontStyle.Italic);
-            _suppressCoreApply = true;
-            for (int i = 0; i < _coreChecks.Length; i++)
-            {
-                _coreChecks[i].Checked = false;
-                _coreChecks[i].Enabled = false;
-            }
-            _suppressCoreApply = false;
-            _lblMask.Text = "";
+            try { EQClientSettingsForm.ApplyProcessManagerToIni(_config); }
+            catch { /* non-critical — will apply next launch */ }
         }
     }
 
-    private void ApplyAffinityFromCheckboxes()
+    private (string fps, string bgFps) ReadIniFpsValues()
     {
-        if (_suppressCoreApply) return;
-        if (_grid.SelectedRows.Count == 0) return;
-
-        var row = _grid.SelectedRows[0];
-        if (!int.TryParse(row.Cells["PID"].Value?.ToString(), out int pid)) return;
-
-        long mask = 0;
-        for (int i = 0; i < _coreChecks.Length; i++)
+        try
         {
-            if (_coreChecks[i].Checked)
-                mask |= 1L << i;
-        }
-        if (mask == 0) return;
+            var iniPath = Path.Combine(_config.EQPath, "eqclient.ini");
+            if (!File.Exists(iniPath)) return ("?", "?");
 
-        AffinityManager.SetProcessAffinity(pid, mask);
-        row.Cells["Affinity"].Value = $"0x{mask:X}";
-        _lblMask.Text = $"0x{mask:X}";
-
-        // Persist as per-slot override
-        if (int.TryParse(row.Cells["Slot"].Value?.ToString(), out int slot))
-        {
-            int slotIdx = slot - 1;
-            var profile = _config.Characters.Find(c => c.SlotIndex == slotIdx);
-            if (profile != null)
+            var lines = File.ReadAllLines(iniPath, System.Text.Encoding.Default);
+            string fps = "not set", bgFps = "not set";
+            foreach (var line in lines)
             {
-                profile.AffinityOverride = mask;
+                var trimmed = line.Trim();
+                if (trimmed.StartsWith("MaxFPS=", StringComparison.OrdinalIgnoreCase))
+                    fps = trimmed.Split('=')[1].Trim();
+                else if (trimmed.StartsWith("MaxBGFPS=", StringComparison.OrdinalIgnoreCase))
+                    bgFps = trimmed.Split('=')[1].Trim();
             }
-            else
-            {
-                _config.Characters.Add(new CharacterProfile
-                {
-                    Name = row.Cells["Character"].Value?.ToString() ?? $"Slot {slot}",
-                    SlotIndex = slotIdx,
-                    AffinityOverride = mask
-                });
-            }
-            ConfigManager.Save(_config);
+            return (fps, bgFps);
         }
+        catch { return ("?", "?"); }
+    }
+
+    private void ResetToInitial()
+    {
+        // Priority
+        _cboPriority.SelectedItem = _initialPriority;
+
+        // Core slots
+        for (int i = 0; i < 6; i++)
+            _slotPickers[i].Value = i < _initialSlots.Length ? _initialSlots[i] : i;
+
+        // FPS
+        _nudMaxFPS.Value = Math.Clamp(_initialMaxFPS, 0, 999);
+        _nudMaxBGFPS.Value = Math.Clamp(_initialMaxBGFPS, 0, 999);
     }
 
     protected override void Dispose(bool disposing)

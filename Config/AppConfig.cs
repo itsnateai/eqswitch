@@ -25,7 +25,6 @@ public class AppConfig
     public LaunchConfig Launch { get; set; } = new();
 
     // Background FPS Throttling
-    public ThrottleConfig Throttle { get; set; } = new();
 
     // Picture-in-Picture
     public PipConfig Pip { get; set; } = new();
@@ -86,8 +85,6 @@ public class AppConfig
         Layout.TargetMonitor = Math.Clamp(Layout.TargetMonitor, 0, 8);
         Layout.TopOffset = Math.Clamp(Layout.TopOffset, -200, 200);
 
-        if (Affinity.ActiveMask <= 0) Affinity.ActiveMask = 0xFF;
-        if (Affinity.BackgroundMask <= 0) Affinity.BackgroundMask = 0xFF00;
         Affinity.LaunchRetryCount = Math.Clamp(Affinity.LaunchRetryCount, 0, 20);
         Affinity.LaunchRetryDelayMs = Math.Clamp(Affinity.LaunchRetryDelayMs, 500, 30000);
 
@@ -100,8 +97,6 @@ public class AppConfig
         Pip.CustomWidth = Math.Clamp(Pip.CustomWidth, 100, 1920);
         Pip.CustomHeight = Math.Clamp(Pip.CustomHeight, 75, 1080);
 
-        Throttle.ThrottlePercent = Math.Clamp(Throttle.ThrottlePercent, 0, 90);
-        Throttle.CycleIntervalMs = Math.Clamp(Throttle.CycleIntervalMs, 50, 1000);
     }
 }
 
@@ -131,31 +126,18 @@ public class AffinityConfig
     public bool Enabled { get; set; } = true;
 
     /// <summary>
-    /// Bitmask for the active/foreground EQ client.
-    /// Default: P-cores on a 12th+ gen Intel (cores 0-7 = 0xFF)
+    /// Process priority for all EQ clients.
+    /// High required to prevent virtual desktop crashes and keep autofollow working.
     /// </summary>
-    public long ActiveMask { get; set; } = 0xFF;
+    public string ActivePriority { get; set; } = "High";
 
     /// <summary>
-    /// Bitmask for background EQ clients.
-    /// Default: E-cores on a 12th+ gen Intel (cores 8-15 = 0xFF00)
+    /// Process priority for background EQ clients (kept in sync with ActivePriority).
     /// </summary>
-    public long BackgroundMask { get; set; } = 0xFF00;
+    public string BackgroundPriority { get; set; } = "High";
 
     /// <summary>
-    /// Process priority for the active EQ client.
-    /// Values: "Normal", "AboveNormal", "High"
-    /// </summary>
-    public string ActivePriority { get; set; } = "AboveNormal";
-
-    /// <summary>
-    /// Process priority for background EQ clients.
-    /// </summary>
-    public string BackgroundPriority { get; set; } = "Normal";
-
-    /// <summary>
-    /// Number of retry attempts when applying affinity to a newly launched client.
-    /// EQ resets its affinity shortly after startup, so we re-apply.
+    /// Number of retry attempts when applying priority to a newly launched client.
     /// </summary>
     public int LaunchRetryCount { get; set; } = 3;
 
@@ -276,29 +258,6 @@ public class PipConfig
     };
 }
 
-public class ThrottleConfig
-{
-    /// <summary>
-    /// Enable background FPS throttling via process suspension.
-    /// When enabled, background EQ clients are duty-cycled (suspended/resumed)
-    /// to reduce GPU/CPU usage.
-    /// </summary>
-    public bool Enabled { get; set; } = false;
-
-    /// <summary>
-    /// Percentage of time background processes are suspended (0-90).
-    /// Higher = more throttling = lower background FPS.
-    /// 0 = no throttling, 50 = half FPS, 75 = quarter FPS, 90 = ~10% FPS.
-    /// </summary>
-    public int ThrottlePercent { get; set; } = 50;
-
-    /// <summary>
-    /// Base cycle interval in ms for the suspend/resume duty cycle.
-    /// Lower = smoother but more overhead. Default 100ms.
-    /// </summary>
-    public int CycleIntervalMs { get; set; } = 100;
-}
-
 public class TrayClickConfig
 {
     /// <summary>
@@ -339,12 +298,6 @@ public class CharacterProfile
     public string Class { get; set; } = "";
     public string Notes { get; set; } = "";
     public int SlotIndex { get; set; } = 0;
-
-    /// <summary>
-    /// Optional per-character affinity override.
-    /// Null = use global affinity settings.
-    /// </summary>
-    public long? AffinityOverride { get; set; } = null;
 
     /// <summary>
     /// Optional per-character priority override.
@@ -458,11 +411,11 @@ public class EQClientIniConfig
     /// <summary>Force windowed mode (WindowedMode=TRUE in [VideoMode]).</summary>
     public bool ForceWindowedMode { get; set; } = false;
 
-    /// <summary>Max foreground FPS (MaxFPS in [Defaults]). 0 = don't override.</summary>
-    public int MaxFPS { get; set; } = 0;
+    /// <summary>Max foreground FPS (MaxFPS in [Defaults]). Default 80.</summary>
+    public int MaxFPS { get; set; } = 80;
 
-    /// <summary>Max background FPS (MaxBGFPS in [Defaults]). 0 = don't override.</summary>
-    public int MaxBGFPS { get; set; } = 0;
+    /// <summary>Max background FPS (MaxBGFPS in [Defaults]). Default 80.</summary>
+    public int MaxBGFPS { get; set; } = 80;
 
     /// <summary>
     /// Luclin model overrides. Key = INI key name, Value = TRUE/FALSE.
@@ -496,4 +449,10 @@ public class EQClientIniConfig
     /// Empty on fresh install = nothing enforced until first Save.
     /// </summary>
     public HashSet<string> ConfiguredKeys { get; set; } = new();
+
+    /// <summary>
+    /// CPU core assignments for EQ's 6 affinity slots (CPUAffinity0-5 in eqclient.ini).
+    /// Each value is a physical core number (0-based). Default: cores 1,2,3,1,2,3 (skip core 0 for OS).
+    /// </summary>
+    public int[] CPUAffinitySlots { get; set; } = { 1, 2, 3, 1, 2, 3 };
 }

@@ -114,9 +114,6 @@ public class WindowsApi : IWindowsApi
         return monitors;
     }
 
-    public bool SetProcessAffinity(int processId, long affinityMask)
-        => AffinityManager.SetProcessAffinity(processId, affinityMask);
-
     public bool SetProcessPriority(int processId, uint priorityClass)
     {
         IntPtr hProcess = IntPtr.Zero;

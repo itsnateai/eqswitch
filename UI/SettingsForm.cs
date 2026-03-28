@@ -57,11 +57,7 @@ public class SettingsForm : Form
     private CheckBox _chkRemoveTitleBars = null!;
     private CheckBox _chkBorderlessFullscreen = null!;
 
-    // ─── Affinity tab controls
-    private TextBox _txtActiveMask = null!;
-    private TextBox _txtBackgroundMask = null!;
-    private ComboBox _cboActivePriority = null!;
-    private ComboBox _cboBackgroundPriority = null!;
+    // ─── Performance tab controls
     private CheckBox _chkAffinityEnabled = null!;
     private NumericUpDown _nudRetryCount = null!;
     private NumericUpDown _nudRetryDelay = null!;
@@ -85,10 +81,6 @@ public class SettingsForm : Form
     private ComboBox _cboPipBorderColor = null!;
     private NumericUpDown _nudPipMaxWindows = null!;
 
-    // ─── Throttle controls (on Affinity tab)
-    private CheckBox _chkThrottleEnabled = null!;
-    private NumericUpDown _nudThrottlePercent = null!;
-    private NumericUpDown _nudThrottleCycle = null!;
 
     // ─── Characters tab controls
     private ListView _charListView = null!;
@@ -111,7 +103,7 @@ public class SettingsForm : Form
         tabs.TabPages.Add(BuildGeneralTab());
         tabs.TabPages.Add(BuildHotkeysTab());
         tabs.TabPages.Add(BuildLayoutTab());
-        tabs.TabPages.Add(BuildAffinityTab());
+        tabs.TabPages.Add(BuildPerformanceTab());
         tabs.TabPages.Add(BuildLaunchTab());
         tabs.TabPages.Add(BuildPipTab());
         tabs.TabPages.Add(BuildPathsTab());
@@ -497,94 +489,32 @@ public class SettingsForm : Form
         }
     }
 
-    private TabPage BuildAffinityTab()
+    private TabPage BuildPerformanceTab()
     {
-        var page = DarkTheme.MakeTabPage("Affinity");
+        var page = DarkTheme.MakeTabPage("Performance");
         int y = 8;
 
-        // ─── CPU Affinity header ─────────────────────────────────
-        _chkAffinityEnabled = DarkTheme.AddCheckBox(page, "Enable CPU Affinity Management", 15, y);
-
-        var (coreCount, sysMask) = AffinityManager.DetectCores();
-        var cpuLabel = new Label
+        // ─── Info label pointing to Process Manager ──────────────
+        var lblInfo = new Label
         {
-            Text = $"CPU: {coreCount} cores detected",
-            Location = new Point(270, y + 2),
+            Text = "CPU affinity, priority, and FPS limits are now in the Process Manager (tray menu).",
+            Location = new Point(15, y),
             AutoSize = true,
             ForeColor = DarkTheme.FgDimGray,
-            Font = new Font("Segoe UI", 8f)
+            Font = new Font("Segoe UI", 8.5f, FontStyle.Italic)
         };
-        page.Controls.Add(cpuLabel);
-        y += 30;
+        page.Controls.Add(lblInfo);
+        y += 28;
 
-        // ─── Active Client card ──────────────────────────────────
-        var panelActive = DarkTheme.MakeCard(page, "⚔", "Active Client", DarkTheme.CardGreen, 10, y, 230, 130);
+        // ─── Affinity Retry Settings ─────────────────────────────
+        var cardRetry = DarkTheme.MakeCard(page, "\uD83D\uDD04", "Affinity Retry", DarkTheme.CardGold, 10, y, 480, 70);
 
-        DarkTheme.AddCardLabel(panelActive, "Core Mask (hex):", 10, 38);
-        _txtActiveMask = DarkTheme.AddCardTextBox(panelActive, 125, 36, 80);
-        _txtActiveMask.Font = new Font("Consolas", 9.5f);
+        _chkAffinityEnabled = DarkTheme.AddCardCheckBox(cardRetry, "Enable CPU Affinity Management", 10, 32);
 
-        DarkTheme.AddCardLabel(panelActive, "Priority:", 10, 68);
-        var priorities = new[] { "BelowNormal", "Normal", "AboveNormal", "High" };
-        _cboActivePriority = DarkTheme.AddCardComboBox(panelActive, 70, 66, 130, priorities);
-
-        DarkTheme.AddCardHint(panelActive, "FF = P-cores 0-7", 10, 100);
-
-        // ─── Background Clients card ─────────────────────────────
-        var panelBg = DarkTheme.MakeCard(page, "🛡", "Background Clients", DarkTheme.CardBlue, 250, y, 230, 130);
-
-        DarkTheme.AddCardLabel(panelBg, "Core Mask (hex):", 10, 38);
-        _txtBackgroundMask = DarkTheme.AddCardTextBox(panelBg, 125, 36, 80);
-        _txtBackgroundMask.Font = new Font("Consolas", 9.5f);
-
-        DarkTheme.AddCardLabel(panelBg, "Priority:", 10, 68);
-        _cboBackgroundPriority = DarkTheme.AddCardComboBox(panelBg, 70, 66, 130, priorities);
-
-        DarkTheme.AddCardHint(panelBg, "FF00 = E-cores 8-15", 10, 100);
-
-        y += 138;
-
-        // Utility buttons
-        var btnAllCores = DarkTheme.MakeButton("All Cores", DarkTheme.BgMedium, 15, y);
-        btnAllCores.Size = new Size(85, 26);
-        btnAllCores.Click += (_, _) =>
-        {
-            _txtActiveMask.Text = sysMask.ToString("X");
-            _txtBackgroundMask.Text = sysMask.ToString("X");
-        };
-        page.Controls.Add(btnAllCores);
-
-        var btnResetAff = DarkTheme.MakeButton("Reset Defaults", DarkTheme.BgMedium, 110, y);
-        btnResetAff.Size = new Size(105, 26);
-        btnResetAff.Click += (_, _) =>
-        {
-            _txtActiveMask.Text = "FF";
-            _txtBackgroundMask.Text = "FF00";
-            _cboActivePriority.SelectedItem = "AboveNormal";
-            _cboBackgroundPriority.SelectedItem = "Normal";
-        };
-        page.Controls.Add(btnResetAff);
-
-        DarkTheme.AddLabel(page, "Retries:", 270, y + 3);
-        _nudRetryCount = DarkTheme.AddNumeric(page, 325, y, 55, 3, 0, 10);
-        DarkTheme.AddLabel(page, "Delay:", 390, y + 3);
-        _nudRetryDelay = DarkTheme.AddNumeric(page, 430, y, 55, 2000, 500, 10000);
-
-        y += 38;
-
-        // ─── Background FPS Throttling card ──────────────────────
-        var cardThrottle = DarkTheme.MakeCard(page, "⏱", "Background FPS Throttling", DarkTheme.CardCyan, 10, y, 480, 105);
-
-        _chkThrottleEnabled = DarkTheme.AddCardCheckBox(cardThrottle, "Enable Background Throttling", 10, 32);
-        DarkTheme.AddCardHint(cardThrottle, "Suspends background EQ clients in cycles to reduce GPU/CPU load", 230, 35);
-
-        DarkTheme.AddCardLabel(cardThrottle, "Throttle %:", 10, 62);
-        _nudThrottlePercent = DarkTheme.AddCardNumeric(cardThrottle, 85, 60, 55, 50, 0, 90);
-
-        DarkTheme.AddCardLabel(cardThrottle, "Cycle (ms):", 155, 62);
-        _nudThrottleCycle = DarkTheme.AddCardNumeric(cardThrottle, 225, 60, 55, 100, 50, 1000);
-
-        DarkTheme.AddCardHint(cardThrottle, "50% = half FPS   75% = quarter FPS   Lower cycle = smoother", 10, 85);
+        DarkTheme.AddCardLabel(cardRetry, "Retries:", 270, 34);
+        _nudRetryCount = DarkTheme.AddCardNumeric(cardRetry, 325, 32, 55, 3, 0, 10);
+        DarkTheme.AddCardLabel(cardRetry, "Delay:", 390, 34);
+        _nudRetryDelay = DarkTheme.AddCardNumeric(cardRetry, 430, 32, 55, 2000, 500, 10000);
 
         return page;
     }
@@ -729,7 +659,6 @@ public class SettingsForm : Form
         _charListView.Columns.Add("Name", 110);
         _charListView.Columns.Add("Class", 80);
         _charListView.Columns.Add("Slot", 40);
-        _charListView.Columns.Add("Affinity", 90);
         _charListView.Columns.Add("Priority", 90);
         _charListView.DoubleClick += (_, _) => EditSelectedCharacter();
         cardChars.Controls.Add(_charListView);
@@ -832,7 +761,6 @@ public class SettingsForm : Form
             var item = new ListViewItem(c.Name);
             item.SubItems.Add(c.Class);
             item.SubItems.Add((c.SlotIndex + 1).ToString());
-            item.SubItems.Add(c.AffinityOverride.HasValue ? $"0x{c.AffinityOverride.Value:X}" : "(default)");
             item.SubItems.Add(c.PriorityOverride ?? "(default)");
             _charListView.Items.Add(item);
         }
@@ -937,12 +865,8 @@ public class SettingsForm : Form
         _chkRemoveTitleBars.Checked = _config.Layout.RemoveTitleBars;
         _chkBorderlessFullscreen.Checked = _config.Layout.BorderlessFullscreen;
 
-        // Affinity
+        // Performance
         _chkAffinityEnabled.Checked = _config.Affinity.Enabled;
-        _txtActiveMask.Text = _config.Affinity.ActiveMask.ToString("X");
-        _txtBackgroundMask.Text = _config.Affinity.BackgroundMask.ToString("X");
-        _cboActivePriority.SelectedItem = _config.Affinity.ActivePriority;
-        _cboBackgroundPriority.SelectedItem = _config.Affinity.BackgroundPriority;
         _nudRetryCount.Value = DarkTheme.ClampNud(_nudRetryCount, _config.Affinity.LaunchRetryCount);
         _nudRetryDelay.Value = DarkTheme.ClampNud(_nudRetryDelay, _config.Affinity.LaunchRetryDelayMs);
 
@@ -968,10 +892,6 @@ public class SettingsForm : Form
         _nudPipHeight.Enabled = _config.Pip.SizePreset == "Custom";
         _cboPipBorderColor.Enabled = _config.Pip.ShowBorder;
 
-        // Throttle
-        _chkThrottleEnabled.Checked = _config.Throttle.Enabled;
-        _nudThrottlePercent.Value = DarkTheme.ClampNud(_nudThrottlePercent, _config.Throttle.ThrottlePercent);
-        _nudThrottleCycle.Value = DarkTheme.ClampNud(_nudThrottleCycle, _config.Throttle.CycleIntervalMs);
 
         // Characters
         RefreshCharacterList();
@@ -1002,10 +922,8 @@ public class SettingsForm : Form
             Affinity = new AffinityConfig
             {
                 Enabled = _chkAffinityEnabled.Checked,
-                ActiveMask = ParseHexMask(_txtActiveMask.Text, _config.Affinity.ActiveMask),
-                BackgroundMask = ParseHexMask(_txtBackgroundMask.Text, _config.Affinity.BackgroundMask),
-                ActivePriority = _cboActivePriority.SelectedItem?.ToString() ?? "AboveNormal",
-                BackgroundPriority = _cboBackgroundPriority.SelectedItem?.ToString() ?? "Normal",
+                ActivePriority = _config.Affinity.ActivePriority,
+                BackgroundPriority = _config.Affinity.BackgroundPriority,
                 LaunchRetryCount = (int)_nudRetryCount.Value,
                 LaunchRetryDelayMs = (int)_nudRetryDelay.Value
             },
@@ -1044,12 +962,6 @@ public class SettingsForm : Form
                 MaxWindows = (int)_nudPipMaxWindows.Value,
                 SavedPositions = _config.Pip.SavedPositions // preserve existing positions
             },
-            Throttle = new ThrottleConfig
-            {
-                Enabled = _chkThrottleEnabled.Checked,
-                ThrottlePercent = (int)_nudThrottlePercent.Value,
-                CycleIntervalMs = (int)_nudThrottleCycle.Value
-            },
             TrayClick = new TrayClickConfig
             {
                 SingleClick = _cboSingleClick.SelectedItem?.ToString() ?? "None",
@@ -1068,13 +980,7 @@ public class SettingsForm : Form
         Debug.WriteLine("Settings applied");
     }
 
-    private static long ParseHexMask(string hex, long fallback)
-    {
-        hex = hex.Trim().TrimStart('0', 'x', 'X');
-        if (long.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out long result))
-            return result;
-        return fallback;
-    }
+
 
     protected override void Dispose(bool disposing)
     {
@@ -1085,8 +991,7 @@ public class SettingsForm : Form
             // Dispose inline Font objects on hotkey TextBoxes and other controls
             // that were created with new Font() — base.Dispose doesn't clean these up
             DisposeControlFonts(_txtSwitchKeyGeneral, _txtSwitchKey, _txtGlobalSwitchKey,
-                _txtArrangeWindows, _txtToggleMultiMon, _txtLaunchOne, _txtLaunchAll,
-                _txtActiveMask, _txtBackgroundMask);
+                _txtArrangeWindows, _txtToggleMultiMon, _txtLaunchOne, _txtLaunchAll);
         }
         base.Dispose(disposing);
     }

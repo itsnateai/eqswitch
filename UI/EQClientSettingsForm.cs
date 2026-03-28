@@ -932,4 +932,33 @@ public class EQClientSettingsForm : Form
             FileLogger.Error("EQClientSettings: enforce error", ex);
         }
     }
+
+    /// <summary>
+    /// Write MaxFPS/MaxBGFPS and CPUAffinity0-5 to eqclient.ini.
+    /// Called from Process Manager on Save.
+    /// </summary>
+    public static void ApplyProcessManagerToIni(AppConfig config)
+    {
+        var iniPath = Path.Combine(config.EQPath, "eqclient.ini");
+        if (!File.Exists(iniPath)) return;
+
+        var lines = File.ReadAllLines(iniPath, Encoding.Default).ToList();
+
+        // FPS
+        if (config.EQClientIni.MaxFPS > 0)
+            SetIniValue(lines, "Defaults", "MaxFPS", config.EQClientIni.MaxFPS.ToString());
+        if (config.EQClientIni.MaxBGFPS > 0)
+            SetIniValue(lines, "Defaults", "MaxBGFPS", config.EQClientIni.MaxBGFPS.ToString());
+
+        // CPU Affinity slots
+        var slots = config.EQClientIni.CPUAffinitySlots;
+        for (int i = 0; i < 6; i++)
+        {
+            int core = i < slots.Length ? slots[i] : i;
+            SetIniValue(lines, "Defaults", $"CPUAffinity{i}", core.ToString());
+        }
+
+        File.WriteAllLines(iniPath, lines, Encoding.Default);
+        FileLogger.Info($"EQClientSettings: Process Manager settings written (FPS={config.EQClientIni.MaxFPS}/{config.EQClientIni.MaxBGFPS}, Affinity=[{string.Join(",", slots)}])");
+    }
 }
