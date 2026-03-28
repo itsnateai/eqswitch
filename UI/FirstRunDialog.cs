@@ -16,14 +16,8 @@ public class FirstRunDialog : Form
 
     private void InitializeComponents()
     {
-        Text = "EQSwitch - First Run Setup";
-        Size = new Size(500, 220);
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MaximizeBox = false;
+        DarkTheme.StyleForm(this, "EQSwitch — First Run Setup", new Size(500, 220));
         MinimizeBox = false;
-        StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Color.FromArgb(30, 30, 30);
-        ForeColor = Color.White;
 
         // Welcome label
         var welcomeLabel = new Label
@@ -31,6 +25,7 @@ public class FirstRunDialog : Form
             Text = "Welcome to EQSwitch!\n\nPlease select your EverQuest installation folder:",
             Location = new Point(20, 15),
             Size = new Size(450, 60),
+            ForeColor = DarkTheme.FgWhite,
             Font = new Font("Segoe UI", 10)
         };
         Controls.Add(welcomeLabel);
@@ -42,21 +37,15 @@ public class FirstRunDialog : Form
             Location = new Point(20, 80),
             Size = new Size(350, 25),
             Font = new Font("Segoe UI", 10),
-            BackColor = Color.FromArgb(50, 50, 50),
-            ForeColor = Color.White,
+            BackColor = DarkTheme.BgInput,
+            ForeColor = DarkTheme.FgWhite,
             BorderStyle = BorderStyle.FixedSingle
         };
         Controls.Add(_pathTextBox);
 
         // Browse button
-        var browseBtn = new Button
-        {
-            Text = "Browse...",
-            Location = new Point(380, 78),
-            Size = new Size(80, 28),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(60, 60, 60)
-        };
+        var browseBtn = DarkTheme.MakeButton("Browse...", DarkTheme.BgMedium, 380, 78);
+        browseBtn.Size = new Size(80, 28);
         browseBtn.Click += (_, _) =>
         {
             using var fbd = new FolderBrowserDialog
@@ -69,16 +58,10 @@ public class FirstRunDialog : Form
         };
         Controls.Add(browseBtn);
 
-        // OK button
-        var okBtn = new Button
-        {
-            Text = "Start",
-            Location = new Point(280, 130),
-            Size = new Size(90, 35),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(0, 120, 80),
-            DialogResult = DialogResult.None // We validate first
-        };
+        // OK button (primary green)
+        var okBtn = DarkTheme.MakePrimaryButton("Start", 280, 130);
+        okBtn.Size = new Size(90, 35);
+        okBtn.DialogResult = DialogResult.None; // We validate first
         okBtn.Click += (_, _) =>
         {
             var path = _pathTextBox.Text.Trim();
@@ -106,15 +89,9 @@ public class FirstRunDialog : Form
         Controls.Add(okBtn);
 
         // Cancel button
-        var cancelBtn = new Button
-        {
-            Text = "Cancel",
-            Location = new Point(380, 130),
-            Size = new Size(80, 35),
-            FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(60, 60, 60),
-            DialogResult = DialogResult.Cancel
-        };
+        var cancelBtn = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 380, 130);
+        cancelBtn.Size = new Size(80, 35);
+        cancelBtn.DialogResult = DialogResult.Cancel;
         Controls.Add(cancelBtn);
 
         AcceptButton = okBtn;

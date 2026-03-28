@@ -129,7 +129,7 @@ public class SettingsForm : Form
         // Reset Defaults button (small, discreet, next to GitHub)
         var btnReset = DarkTheme.MakeButton("\u26A0 Reset", DarkTheme.BgMedium, 100, 10);
         btnReset.Size = new Size(70, 30);
-        btnReset.ForeColor = Color.FromArgb(200, 100, 100);
+        btnReset.ForeColor = DarkTheme.CardWarn;
         btnReset.Click += (_, _) =>
         {
             var result = MessageBox.Show(
@@ -438,7 +438,7 @@ public class SettingsForm : Form
             var overlay = new Form
             {
                 FormBorderStyle = FormBorderStyle.None,
-                BackColor = Color.FromArgb(20, 20, 25),
+                BackColor = DarkTheme.BgOverlay,
                 Opacity = 0.85,
                 TopMost = true,
                 ShowInTaskbar = false,
@@ -453,7 +453,7 @@ public class SettingsForm : Form
             {
                 Text = $"Monitor {i}",
                 Font = new Font("Segoe UI", 24, FontStyle.Bold),
-                ForeColor = Color.FromArgb(34, 180, 85),
+                ForeColor = DarkTheme.CardGreen,
                 BackColor = Color.Transparent,
                 AutoSize = false,
                 Dock = DockStyle.Fill,

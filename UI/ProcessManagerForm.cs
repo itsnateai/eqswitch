@@ -298,7 +298,7 @@ public class ProcessManagerForm : Form
             {
                 BackColor = DarkTheme.BgDark,
                 ForeColor = DarkTheme.FgWhite,
-                SelectionBackColor = Color.FromArgb(50, 44, 70),
+                SelectionBackColor = DarkTheme.GridSelection,
                 SelectionForeColor = DarkTheme.FgWhite,
                 Font = new Font("Consolas", 9),
                 Padding = new Padding(6, 3, 6, 3)
@@ -307,7 +307,7 @@ public class ProcessManagerForm : Form
             {
                 BackColor = DarkTheme.BgPanel,
                 ForeColor = DarkTheme.FgWhite,
-                SelectionBackColor = Color.FromArgb(50, 44, 70),
+                SelectionBackColor = DarkTheme.GridSelection,
                 SelectionForeColor = DarkTheme.FgWhite
             },
             ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
@@ -444,8 +444,8 @@ public class ProcessManagerForm : Form
                     var row = _grid.Rows[rowIdx];
                     foreach (DataGridViewCell cell in row.Cells)
                     {
-                        cell.Style.BackColor = Color.FromArgb(20, 80, 50);
-                        cell.Style.SelectionBackColor = Color.FromArgb(20, 80, 50);
+                        cell.Style.BackColor = DarkTheme.ActiveRowBg;
+                        cell.Style.SelectionBackColor = DarkTheme.ActiveRowBg;
                         cell.Style.ForeColor = DarkTheme.CardGreen;
                         cell.Style.SelectionForeColor = DarkTheme.CardGreen;
                     }

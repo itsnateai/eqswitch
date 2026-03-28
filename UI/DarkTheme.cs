@@ -295,10 +295,30 @@ public static class DarkTheme
             BackColor = BgPanel,
             BorderStyle = BorderStyle.None
         };
+
+        bool isHovered = false;
+        panel.MouseEnter += (_, _) => { isHovered = true; panel.Invalidate(); };
+        panel.MouseLeave += (_, _) =>
+        {
+            // Only un-hover if the mouse actually left the panel (not entered a child)
+            var pos = panel.PointToClient(Cursor.Position);
+            if (!panel.ClientRectangle.Contains(pos))
+            {
+                isHovered = false;
+                panel.Invalidate();
+            }
+        };
+
         panel.Paint += (_, e) =>
         {
-            using var pen = new Pen(Border, 1);
-            e.Graphics.DrawRectangle(pen, 0, 0, panel.Width - 1, panel.Height - 1);
+            var g = e.Graphics;
+            var borderColor = isHovered ? Lighten(titleColor, -80) : Border;
+            using var pen = new Pen(borderColor, 1);
+            g.DrawRectangle(pen, 0, 0, panel.Width - 1, panel.Height - 1);
+
+            // Accent left-bar (3px, card's title color)
+            using var accentBrush = new SolidBrush(titleColor);
+            g.FillRectangle(accentBrush, 0, 0, 3, panel.Height);
         };
 
         var lblTitle = new Label
@@ -322,6 +342,12 @@ public static class DarkTheme
     public static readonly Color CardRed = Color.FromArgb(220, 120, 120);
     public static readonly Color CardPurple = Color.FromArgb(180, 140, 220);
     public static readonly Color CardCyan = Color.FromArgb(100, 200, 210);
+    public static readonly Color CardWarn = Color.FromArgb(200, 100, 100);
+
+    // ─── Semantic Colors (specialized use cases) ──────────────
+    public static readonly Color BgOverlay = Color.FromArgb(20, 18, 28);
+    public static readonly Color GridSelection = Color.FromArgb(50, 44, 70);
+    public static readonly Color ActiveRowBg = Color.FromArgb(20, 80, 50);
 
     /// <summary>Add a label inside a card panel at relative position.</summary>
     public static Label AddCardLabel(Panel card, string text, int x, int y)
@@ -476,7 +502,7 @@ public static class DarkTheme
     /// <summary>
     /// Lighten a color by a fixed amount (clamped to 255).
     /// </summary>
-    private static Color Lighten(Color c, int amount) =>
+    public static Color Lighten(Color c, int amount) =>
         Color.FromArgb(
             c.A,
             Math.Min(c.R + amount, 255),
