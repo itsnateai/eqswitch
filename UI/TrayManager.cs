@@ -1335,7 +1335,7 @@ internal class DarkMenuRenderer : ToolStripProfessionalRenderer
         using var brush = new SolidBrush(CheckBg);
         g.FillRectangle(brush, rect);
         // Draw checkmark
-        using var pen = new Pen(Color.White, 2);
+        using var pen = new Pen(DarkTheme.FgWhite, 2);
         int x = rect.X + 3;
         int y = rect.Y + rect.Height / 2;
         g.DrawLines(pen, new[] {

@@ -76,18 +76,31 @@ public static class FloatingTooltip
             StartPosition = FormStartPosition.Manual;
             AutoSize = true;
             AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            BackColor = Color.FromArgb(50, 50, 50);
+            BackColor = DarkTheme.Border;
             Padding = new Padding(1);
 
-            Controls.Add(new Label
+            var inner = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = DarkTheme.BgPanel,
+                Padding = new Padding(0)
+            };
+            inner.Paint += (_, e) =>
+            {
+                // Accent left-bar
+                using var brush = new SolidBrush(DarkTheme.AccentGreen);
+                e.Graphics.FillRectangle(brush, 0, 0, 2, inner.Height);
+            };
+            inner.Controls.Add(new Label
             {
                 Text = message,
                 AutoSize = true,
                 Font = new Font("Segoe UI", 9),
-                ForeColor = Color.FromArgb(240, 240, 240),
-                BackColor = Color.FromArgb(50, 50, 50),
-                Padding = new Padding(8, 5, 8, 5),
+                ForeColor = DarkTheme.FgWhite,
+                BackColor = DarkTheme.BgPanel,
+                Padding = new Padding(10, 5, 8, 5),
             });
+            Controls.Add(inner);
         }
 
         protected override CreateParams CreateParams

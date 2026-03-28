@@ -10,32 +10,25 @@ public static class HelpForm
 {
     public static void Show(AppConfig config)
     {
-        var helpForm = new Form
-        {
-            Text = "EQSwitch — Help",
-            Size = new Size(520, 500),
-            StartPosition = FormStartPosition.CenterScreen,
-            BackColor = Color.FromArgb(30, 30, 30),
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 9),
-            MaximizeBox = true,
-            MinimizeBox = false
-        };
+        var helpForm = new Form();
+        DarkTheme.StyleForm(helpForm, "EQSwitch — Help", new Size(520, 500));
+        helpForm.MaximizeBox = true;
+        helpForm.MinimizeBox = false;
+        helpForm.FormBorderStyle = FormBorderStyle.Sizable;
 
         var rtbFont = new Font("Consolas", 10);
         var rtb = new RichTextBox
         {
             Dock = DockStyle.Fill,
             ReadOnly = true,
-            BackColor = Color.FromArgb(30, 30, 30),
-            ForeColor = Color.White,
+            BackColor = DarkTheme.BgDark,
+            ForeColor = DarkTheme.FgWhite,
             BorderStyle = BorderStyle.None,
             Font = rtbFont,
             Text = GetHelpText(config)
         };
 
         helpForm.Controls.Add(rtb);
-        // Dispose fonts when the form closes — Form.Dispose doesn't clean up child control fonts
         helpForm.FormClosed += (_, _) =>
         {
             helpForm.Font?.Dispose();
