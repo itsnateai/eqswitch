@@ -30,7 +30,11 @@ public static class ConfigManager
         try
         {
             if (!File.Exists(ConfigPath))
-                return new AppConfig();
+            {
+                var defaults = new AppConfig();
+                defaults.Validate();
+                return defaults;
+            }
 
             var json = File.ReadAllText(ConfigPath);
             var config = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? new AppConfig();
@@ -42,7 +46,9 @@ public static class ConfigManager
             // Config is corrupt — back it up and start fresh
             TryBackupCorruptConfig();
             FileLogger.Error("Config load failed, using defaults", ex);
-            return new AppConfig();
+            var defaults = new AppConfig();
+            defaults.Validate();
+            return defaults;
         }
     }
 
