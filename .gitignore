@@ -36,6 +36,7 @@ eqswitch.log
 
 ## Claude Code
 .claude/
+.superpowers/
 
 ## Task Management
 AUDIT_TASKS.md
