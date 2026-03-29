@@ -173,11 +173,14 @@ public class PipOverlay : Form
             idx++;
         }
 
-        // Resize the overlay to fit actual number of thumbnails
-        Size = new Size(
-            w + (borderPad * 2),
-            (h + gap) * _thumbnailIds.Count + borderPad
-        );
+        // Resize the overlay to fit actual number of thumbnails.
+        // Anchor to the BOTTOM edge so the overlay grows/shrinks upward —
+        // the bottom-most thumbnail stays in a consistent screen position.
+        int oldHeight = Height;
+        int newHeight = (h + gap) * _thumbnailIds.Count + borderPad;
+        Size = new Size(w + (borderPad * 2), newHeight);
+        if (oldHeight != newHeight)
+            Location = new Point(Location.X, Location.Y + (oldHeight - newHeight));
     }
 
     private bool _ctrlHeld;

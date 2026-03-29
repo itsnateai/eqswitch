@@ -77,6 +77,7 @@ public class ProcessManagerForm : Form
 
     private void InitializeForm()
     {
+        DarkTheme.RepairDefaultFont();
         Text = "EQSwitch — Process Manager";
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;

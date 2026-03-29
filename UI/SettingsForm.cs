@@ -70,6 +70,7 @@ public class SettingsForm : Form
     // ─── Paths tab controls
     private TextBox _txtGinaPath = null!;
     private TextBox _txtNotesPath = null!;
+    private TextBox _txtDalayaPatcherPath = null!;
 
     // ─── PiP tab controls
     private CheckBox _chkPipEnabled = null!;
@@ -547,10 +548,10 @@ public class SettingsForm : Form
         int y = 8;
 
         // ─── External Tools card ─────────────────────────────────
-        var cardPaths = DarkTheme.MakeCard(page, "📁", "External Tools", DarkTheme.CardGold, 10, y, 480, 155);
+        var cardPaths = DarkTheme.MakeCard(page, "📁", "External Tools", DarkTheme.CardGold, 10, y, 480, 190);
 
         DarkTheme.AddCardLabel(cardPaths, "GINA Path:", 10, 35);
-        _txtGinaPath = DarkTheme.AddCardTextBox(cardPaths, 80, 33, 280);
+        _txtGinaPath = DarkTheme.AddCardTextBox(cardPaths, 110, 33, 250);
         var btnBrowseGina = DarkTheme.AddCardButton(cardPaths, "Browse...", 370, 32, 75);
         btnBrowseGina.Click += (_, _) =>
         {
@@ -564,7 +565,7 @@ public class SettingsForm : Form
         };
 
         DarkTheme.AddCardLabel(cardPaths, "Notes File:", 10, 70);
-        _txtNotesPath = DarkTheme.AddCardTextBox(cardPaths, 80, 68, 280);
+        _txtNotesPath = DarkTheme.AddCardTextBox(cardPaths, 110, 68, 250);
         var btnBrowseNotes = DarkTheme.AddCardButton(cardPaths, "Browse...", 370, 67, 75);
         btnBrowseNotes.Click += (_, _) =>
         {
@@ -577,7 +578,21 @@ public class SettingsForm : Form
             if (ofd.ShowDialog() == DialogResult.OK) _txtNotesPath.Text = ofd.FileName;
         };
 
-        DarkTheme.AddCardHint(cardPaths, "Leave blank for defaults. GINA launches the app; Notes opens a text file.", 10, 105);
+        DarkTheme.AddCardLabel(cardPaths, "Dalaya Patcher:", 10, 105);
+        _txtDalayaPatcherPath = DarkTheme.AddCardTextBox(cardPaths, 110, 103, 250);
+        var btnBrowsePatcher = DarkTheme.AddCardButton(cardPaths, "Browse...", 370, 102, 75);
+        btnBrowsePatcher.Click += (_, _) =>
+        {
+            using var ofd = new OpenFileDialog
+            {
+                Title = "Select Dalaya patcher executable",
+                Filter = "Executables|*.exe|All Files|*.*",
+                InitialDirectory = Path.GetDirectoryName(_txtDalayaPatcherPath.Text) ?? ""
+            };
+            if (ofd.ShowDialog() == DialogResult.OK) _txtDalayaPatcherPath.Text = ofd.FileName;
+        };
+
+        DarkTheme.AddCardHint(cardPaths, "Leave blank for defaults. Patcher may be removed by antivirus — re-download if needed.", 10, 140);
 
         return page;
     }
@@ -878,6 +893,7 @@ public class SettingsForm : Form
         // Paths
         _txtGinaPath.Text = _config.GinaPath;
         _txtNotesPath.Text = _config.NotesPath;
+        _txtDalayaPatcherPath.Text = _config.DalayaPatcherPath;
 
         // PiP
         _chkPipEnabled.Checked = _config.Pip.Enabled;
@@ -973,6 +989,7 @@ public class SettingsForm : Form
             },
             GinaPath = _txtGinaPath.Text.Trim(),
             NotesPath = _txtNotesPath.Text.Trim(),
+            DalayaPatcherPath = _txtDalayaPatcherPath.Text.Trim(),
             Characters = _pendingCharacters
         };
 

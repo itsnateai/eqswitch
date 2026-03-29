@@ -1,3 +1,6 @@
+using System.Reflection;
+using EQSwitch.Core;
+
 namespace EQSwitch.UI;
 
 /// <summary>
@@ -6,6 +9,30 @@ namespace EQSwitch.UI;
 /// </summary>
 public static class DarkTheme
 {
+    // Cache the reflection field for Control.s_defaultFont
+    private static readonly FieldInfo? s_defaultFontField =
+        typeof(Control).GetField("s_defaultFont", BindingFlags.Static | BindingFlags.NonPublic);
+
+    /// <summary>
+    /// Check if Control.DefaultFont is still valid. If its GDI+ handle has
+    /// been invalidated (by display changes, DPI events, or GDI+ cleanup),
+    /// replace it with a fresh font. This prevents "Parameter is not valid"
+    /// crashes in control constructors (TextBox, ComboBox, DataGridView).
+    /// </summary>
+    public static void RepairDefaultFont()
+    {
+        try
+        {
+            _ = Control.DefaultFont.GetHeight();
+        }
+        catch
+        {
+            var fresh = new Font("Segoe UI", 9f);
+            s_defaultFontField?.SetValue(null, fresh);
+            FileLogger.Warn("RepairDefaultFont: replaced invalidated Control.DefaultFont");
+        }
+    }
+
     // ─── Color Palette (medieval purple tones) ─────────────────
     public static readonly Color BgDark = Color.FromArgb(32, 28, 42);
     public static readonly Color BgMedium = Color.FromArgb(44, 38, 56);
@@ -270,6 +297,7 @@ public static class DarkTheme
     /// </summary>
     public static void StyleForm(Form form, string title, Size size)
     {
+        RepairDefaultFont();
         form.Text = title;
         form.Size = size;
         form.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -505,7 +533,7 @@ public static class DarkTheme
     public static Color Lighten(Color c, int amount) =>
         Color.FromArgb(
             c.A,
-            Math.Min(c.R + amount, 255),
-            Math.Min(c.G + amount, 255),
-            Math.Min(c.B + amount, 255));
+            Math.Clamp(c.R + amount, 0, 255),
+            Math.Clamp(c.G + amount, 0, 255),
+            Math.Clamp(c.B + amount, 0, 255));
 }

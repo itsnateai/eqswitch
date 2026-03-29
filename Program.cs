@@ -28,8 +28,35 @@ static class Program
 
         FileLogger.Initialize();
 
+        Application.SetHighDpiMode(HighDpiMode.SystemAware);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
+        // Set an app-managed default font. Without this, controls use the
+        // static Control.DefaultFont (SystemFonts.DefaultFont) which gets
+        // invalidated during runtime — possibly by display change events,
+        // DPI context switches, or GDI+ cleanup in this tray-only app.
+        // Controls then throw "Parameter is not valid" on construction.
+        Application.SetDefaultFont(new Font("Segoe UI", 9f));
+
+        // Catch UI thread exceptions BEFORE WinForms tries to show ThreadExceptionDialog
+        // (which itself crashes due to GDI+ font corruption, hiding the real error)
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) =>
+        {
+            FileLogger.Error("UI thread exception (original)", e.Exception);
+            try
+            {
+                MessageBox.Show(
+                    $"EQSwitch encountered an error:\n\n{e.Exception.GetType().Name}: {e.Exception.Message}\n\n{e.Exception.StackTrace}",
+                    "EQSwitch Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+            catch
+            {
+                // If even MessageBox fails (GDI+ corruption), at least we logged it
+            }
+        };
 
         try
         {

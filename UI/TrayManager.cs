@@ -54,8 +54,6 @@ public class TrayManager : IDisposable
     private System.Windows.Forms.Timer? _clickResolveTimer;
     private System.Windows.Forms.Timer? _middleClickResolveTimer;
 
-    // Incremental arrange during launch — debounced so rapid discoveries don't thrash
-    private System.Windows.Forms.Timer? _incrementalArrangeTimer;
 
     // Track last two active clients for swap-last-two mode (by PID, not handle — handles can change)
     private int _lastActivePid;
@@ -117,10 +115,12 @@ public class TrayManager : IDisposable
         {
             ShowBalloon($"Discovered: {c}");
             _affinityManager.ScheduleRetry(c);
-            // During a launch sequence, arrange incrementally so each client
-            // lands on its correct monitor as soon as it's detected.
+            // During a launch sequence, immediately snap each window to the
+            // target monitor. This prevents Windows from placing EQ windows
+            // across monitor boundaries. The final grid arrange happens when
+            // LaunchSequenceComplete fires.
             if (_launchManager.IsLaunching)
-                ScheduleIncrementalArrange();
+                _windowManager.PositionOnTargetMonitor(c);
         };
         _processManager.ClientLost += (_, c) =>
         {
@@ -355,37 +355,6 @@ public class TrayManager : IDisposable
     }
 
     /// <summary>
-    /// Schedule a debounced incremental arrange during launch sequences.
-    /// Waits 2s after the last client discovery to give EQ time to create its
-    /// window, then arranges all current clients. If another client is discovered
-    /// before the timer fires, the timer resets (debounce).
-    /// </summary>
-    private void ScheduleIncrementalArrange()
-    {
-        const int arrangeDelayMs = 2000;
-
-        if (_incrementalArrangeTimer == null)
-        {
-            _incrementalArrangeTimer = new System.Windows.Forms.Timer { Interval = arrangeDelayMs };
-            _incrementalArrangeTimer.Tick += (_, _) =>
-            {
-                _incrementalArrangeTimer!.Stop();
-                var clients = _processManager.Clients;
-                if (clients.Count > 0)
-                {
-                    _windowManager.ArrangeWindows(clients);
-                    FileLogger.Info($"Incremental arrange: positioned {clients.Count} client(s) during launch");
-                }
-            };
-        }
-        else
-        {
-            _incrementalArrangeTimer.Stop();
-        }
-        _incrementalArrangeTimer.Start();
-    }
-
-    /// <summary>
     /// Alt+M: Toggle multi-monitor / single-screen layout mode.
     /// 500ms debounce to prevent rapid re-triggering while windows are moving.
     /// </summary>
@@ -607,7 +576,7 @@ public class TrayManager : IDisposable
         _contextMenu.Items.Add("\u26A1  Process Manager", null, (_, _) => ShowProcessManager());
 
         // Video Settings submenu
-        var videoMenu = new ToolStripMenuItem("\uD83D\uDCFA  Video Settings") { DropDownDirection = ToolStripDropDownDirection.AboveRight };
+        var videoMenu = new ToolStripMenuItem("\uD83D\uDCFA  Video Settings") { DropDownDirection = ToolStripDropDownDirection.Right };
         videoMenu.DropDownItems.Add($"\uD83E\uDE9F  Fix Windows{HkSuffix(hk.ArrangeWindows)}", null, (_, _) => OnArrangeWindows());
         videoMenu.DropDownItems.Add("\uD83D\uDD04  Swap Windows", null, (_, _) =>
         {
@@ -632,7 +601,7 @@ public class TrayManager : IDisposable
         _contextMenu.Items.Add(new ToolStripSeparator());
 
         // Settings submenu
-        var settingsMenu = new ToolStripMenuItem("\u2699  Settings") { DropDownDirection = ToolStripDropDownDirection.AboveRight };
+        var settingsMenu = new ToolStripMenuItem("\u2699  Settings") { DropDownDirection = ToolStripDropDownDirection.Right };
         settingsMenu.DropDownItems.Add("\u2753  Help", null, (_, _) => HelpForm.Show(_config));
         settingsMenu.DropDownItems.Add(new ToolStripSeparator());
         settingsMenu.DropDownItems.Add("Create Desktop Shortcut", null, (_, _) => StartupManager.CreateDesktopShortcut(ShowBalloon));
@@ -654,7 +623,7 @@ public class TrayManager : IDisposable
         _contextMenu.Items.Add(settingsMenu);
 
         // Launcher submenu (files + links)
-        var launcherMenu = new ToolStripMenuItem("\uD83D\uDCC2  Launcher") { DropDownDirection = ToolStripDropDownDirection.AboveRight };
+        var launcherMenu = new ToolStripMenuItem("\uD83D\uDCC2  Launcher") { DropDownDirection = ToolStripDropDownDirection.Right };
         var linksMenu = new ToolStripMenuItem("\uD83C\uDF10  Links");
         linksMenu.DropDownItems.Add("\uD83C\uDFE0  Dalaya", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/"));
         linksMenu.DropDownItems.Add(new ToolStripSeparator());
@@ -662,6 +631,8 @@ public class TrayManager : IDisposable
         linksMenu.DropDownItems.Add("\uD83D\uDCD6  Dalaya Wiki", null, (_, _) => FileOperations.OpenUrl("https://wiki.dalaya.org/"));
         linksMenu.DropDownItems.Add("\uD83C\uDFC6  Fomelo Dalaya", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/fomelo/"));
         linksMenu.DropDownItems.Add("\uD83D\uDCDC  Dalaya Listsold", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/listsold.php"));
+        launcherMenu.DropDownItems.Add("\uD83D\uDD27  Dalaya Patcher", null, (_, _) => FileOperations.OpenDalayaPatcher(_config, ShowBalloon));
+        launcherMenu.DropDownItems.Add(new ToolStripSeparator());
         launcherMenu.DropDownItems.Add("\uD83D\uDCDC  Open Log File...", null, (_, _) => FileOperations.OpenLogFile(_config, ShowBalloon));
         launcherMenu.DropDownItems.Add("\uD83D\uDCC4  Open eqclient.ini", null, (_, _) => FileOperations.OpenEqClientIni(_config, ShowBalloon));
         launcherMenu.DropDownItems.Add(new ToolStripSeparator());
@@ -1060,6 +1031,7 @@ public class TrayManager : IDisposable
         _config.TrayClick.MiddleTripleClick = newConfig.TrayClick.MiddleTripleClick;
         _config.GinaPath = newConfig.GinaPath;
         _config.NotesPath = newConfig.NotesPath;
+        _config.DalayaPatcherPath = newConfig.DalayaPatcherPath;
         _config.Characters = newConfig.Characters;
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
         _config.CtrlHoverHelp = newConfig.CtrlHoverHelp;
@@ -1219,8 +1191,6 @@ public class TrayManager : IDisposable
         _clickResolveTimer?.Dispose();
         _middleClickResolveTimer?.Stop();
         _middleClickResolveTimer?.Dispose();
-        _incrementalArrangeTimer?.Stop();
-        _incrementalArrangeTimer?.Dispose();
         _deferTimer?.Stop();
         _deferTimer?.Dispose();
         _foregroundDebounceTimer?.Stop();
