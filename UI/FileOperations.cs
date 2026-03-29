@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using EQSwitch.Config;
+using EQSwitch.Core;
 
 namespace EQSwitch.UI;
 
@@ -69,6 +70,41 @@ public static class FileOperations
             return;
         }
         OpenWithDefaultEditor(iniPath);
+    }
+
+    /// <summary>
+    /// Launch the Dalaya patcher. Fails silently if path is empty or exe is
+    /// missing (Windows Defender often deletes it). Only shows a balloon if
+    /// the path is configured but the file was removed.
+    /// </summary>
+    public static void OpenDalayaPatcher(AppConfig config, Action<string> showBalloon)
+    {
+        if (string.IsNullOrEmpty(config.DalayaPatcherPath))
+        {
+            showBalloon("Dalaya patcher path not set.\nConfigure it in Settings → Paths.");
+            return;
+        }
+
+        if (!File.Exists(config.DalayaPatcherPath))
+        {
+            showBalloon("Dalaya patcher not found — may have been removed by antivirus.\nRe-download or update the path in Settings.");
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = config.DalayaPatcherPath,
+                WorkingDirectory = Path.GetDirectoryName(config.DalayaPatcherPath) ?? "",
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Warn($"OpenDalayaPatcher failed: {ex.Message}");
+            showBalloon($"Failed to launch patcher: {ex.Message}");
+        }
     }
 
     public static void OpenGina(AppConfig config, Action<string> showBalloon)

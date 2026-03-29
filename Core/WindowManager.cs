@@ -321,6 +321,32 @@ public class WindowManager
             NativeMethods.SWP_NOZORDER | NativeMethods.SWP_FRAMECHANGED);
     }
 
+    // ─── Immediate Positioning ─────────────────────────────────────
+
+    /// <summary>
+    /// Immediately position a single client window on the target monitor,
+    /// filling the work area. Used during launch to snap each window to
+    /// the correct monitor as soon as it's discovered — prevents Windows
+    /// from placing it across monitor boundaries.
+    /// </summary>
+    public void PositionOnTargetMonitor(EQClient client)
+    {
+        if (!_api.IsWindow(client.WindowHandle)) return;
+
+        var monitor = GetTargetMonitor(false);
+
+        _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+
+        _api.SetWindowPos(
+            client.WindowHandle,
+            IntPtr.Zero,
+            monitor.Left, monitor.Top + _config.Layout.TopOffset,
+            monitor.Width, monitor.Height - _config.Layout.TopOffset,
+            NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW | NativeMethods.SWP_FRAMECHANGED);
+
+        FileLogger.Info($"PositionOnTargetMonitor: {client} → ({monitor.Left},{monitor.Top}) {monitor.Width}x{monitor.Height}");
+    }
+
     // ─── Monitor Helpers ──────────────────────────────────────────
 
     /// <summary>

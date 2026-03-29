@@ -37,6 +37,7 @@ public class AppConfig
 
     // Paths
     public string GinaPath { get; set; } = "";
+    public string DalayaPatcherPath { get; set; } = "";
     public string NotesPath { get; set; } = "";
 
     // Tray Click Actions
