@@ -908,6 +908,10 @@ public class EQClientSettingsForm : Form
 
             Set("VideoMode", "WindowedMode", config.EQClientIni.ForceWindowedMode ? "TRUE" : "FALSE");
             Set("VideoMode", "Maximized", "0");
+            // Enforce consistent window positioning across all clients
+            Set("Defaults", "Maximized", "0");
+            Set("Defaults", "WindowedModeXOffset", "0");
+            Set("Defaults", "WindowedModeYOffset", "0");
 
             if (config.EQClientIni.MaxFPS > 0)
             {
