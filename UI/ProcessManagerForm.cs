@@ -93,35 +93,68 @@ public class ProcessManagerForm : Form
         int y = 10;
 
         // ─── Card 1: CPU Affinity Handling ───────────────────────
-        var cardPriority = DarkTheme.MakeCard(this, "\u26A1", "CPU Affinity Handling", DarkTheme.CardGold, Pad, y, GridW, 85);
+        var cardPriority = DarkTheme.MakeCard(this, "\u26A1", "CPU Affinity Handling", DarkTheme.CardGold, Pad, y, GridW, 65);
 
         _chkAffinityEnabled = new CheckBox
         {
-            Text = "Enable CPU Affinity Handling",
-            Location = new Point(10, 30),
+            Text = "  Enable CPU Affinity Handling",
+            Location = new Point(15, 26),
             AutoSize = true,
             ForeColor = _config.Affinity.Enabled ? DarkTheme.CardGreen : DarkTheme.FgGray,
-            Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
+            Font = new Font("Segoe UI", 10f, FontStyle.Bold),
             BackColor = Color.Transparent,
-            Checked = _config.Affinity.Enabled
+            Checked = _config.Affinity.Enabled,
+            Appearance = Appearance.Normal
+        };
+        // Owner-draw a 16x16 checkbox with contrast: gray border, white checkmark
+        _chkAffinityEnabled.Paint += (sender, e) =>
+        {
+            var cb = (CheckBox)sender!;
+            var g = e.Graphics;
+            g.Clear(cb.BackColor);
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            int boxSize = 16;
+            int boxY = (cb.Height - boxSize) / 2;
+            var boxRect = new Rectangle(0, boxY, boxSize, boxSize);
+
+            // Box: dark fill with subtle border
+            using var fillBrush = new SolidBrush(cb.Checked ? Color.FromArgb(30, 70, 40) : Color.FromArgb(40, 40, 45));
+            g.FillRectangle(fillBrush, boxRect);
+            using var borderPen = new Pen(cb.Checked ? DarkTheme.CardGreen : DarkTheme.FgGray, 1.5f);
+            g.DrawRectangle(borderPen, boxRect);
+
+            // Checkmark: bright white for contrast
+            if (cb.Checked)
+            {
+                using var checkPen = new Pen(Color.White, 2f);
+                g.DrawLine(checkPen, 3, boxY + 8, 6, boxY + 12);
+                g.DrawLine(checkPen, 6, boxY + 12, 13, boxY + 4);
+            }
+
+            // Draw text
+            var textRect = new Rectangle(boxSize + 6, 0, cb.Width - boxSize - 6, cb.Height);
+            TextRenderer.DrawText(g, cb.Text, cb.Font, textRect, cb.ForeColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
         };
         _chkAffinityEnabled.CheckedChanged += (_, _) =>
         {
             _toggleAffinity(_chkAffinityEnabled.Checked);
             _chkAffinityEnabled.ForeColor = _chkAffinityEnabled.Checked
                 ? DarkTheme.CardGreen : DarkTheme.FgGray;
+            _chkAffinityEnabled.Invalidate();
         };
         cardPriority.Controls.Add(_chkAffinityEnabled);
 
-        DarkTheme.AddCardLabel(cardPriority, "Priority:", 10, 55);
+        // Priority preset — right-aligned, prominent
+        DarkTheme.AddCardLabel(cardPriority, "Priority Preset:", 320, 32);
         var priorityOptions = new[] { "None", "High", "AboveNormal", "Normal", "BelowNormal" };
-        _cboPriority = DarkTheme.AddCardComboBox(cardPriority, 70, 53, 120, priorityOptions);
+        _cboPriority = DarkTheme.AddCardComboBox(cardPriority, 420, 30, 125, priorityOptions);
         _cboPriority.SelectedItem = Priorities.Contains(_config.Affinity.ActivePriority)
             ? _config.Affinity.ActivePriority : "None";
 
-        DarkTheme.AddCardHint(cardPriority, "None = per-client in grid  |  High = prevents VD crashes + autofollow", 205, 57);
+        DarkTheme.AddCardHint(cardPriority, "None = per-client in grid  |  High = prevents VD crashes + autofollow", 10, 50);
 
-        y += 93;
+        y += 73;
 
         // ─── Process grid ────────────────────────────────────────
         _grid = BuildProcessGrid(y);
@@ -307,18 +340,7 @@ public class ProcessManagerForm : Form
         grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Slot", HeaderText = "#", ReadOnly = true, Width = 32 });
         grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "PID", HeaderText = "PID", ReadOnly = true, Width = 60 });
         grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Character", HeaderText = "Character", ReadOnly = true, Width = 140 });
-        // Priority = inline ComboBox dropdown per-process
-        var priorityCol = new DataGridViewComboBoxColumn
-        {
-            Name = "Priority",
-            HeaderText = "Priority",
-            Width = 105,
-            FlatStyle = FlatStyle.Flat,
-            DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton,
-            SortMode = DataGridViewColumnSortMode.NotSortable
-        };
-        priorityCol.Items.AddRange(Priorities);
-        grid.Columns.Add(priorityCol);
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Priority", HeaderText = "Priority", ReadOnly = true, Width = 105 });
         grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Affinity", HeaderText = "Affinity", ReadOnly = true, Width = 80 });
 
         // Kill button column
@@ -339,38 +361,7 @@ public class ProcessManagerForm : Form
             col.Resizable = DataGridViewTriState.False;
         }
 
-        // Pause refresh while editing a dropdown to prevent the grid rebuild
-        // from destroying the active combo cell mid-interaction (the "blink" bug)
-        grid.EditingControlShowing += (_, e) =>
-        {
-            _refreshTimer.Stop();
-            if (e.Control is ComboBox cb)
-                cb.DropDownClosed += (_, _) => _refreshTimer.Start();
-        };
-        grid.CellEndEdit += (_, _) => _refreshTimer.Start();
-
-        // Commit dropdown changes immediately (don't wait for focus loss)
-        grid.CurrentCellDirtyStateChanged += (_, _) =>
-        {
-            if (grid.IsCurrentCellDirty && grid.CurrentCell?.OwningColumn.Name == "Priority")
-                grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
-        };
-
-        // Apply priority when the per-row dropdown value changes.
-        // Only affects the live process — does NOT change the global setting.
-        // Use the Card 1 "All EQ Clients" combo + Save/Apply for global changes.
-        grid.CellValueChanged += (_, e) =>
-        {
-            if (_isRefreshing || e.RowIndex < 0) return;
-            if (grid.Columns[e.ColumnIndex].Name != "Priority") return;
-
-            var row = grid.Rows[e.RowIndex];
-            if (!int.TryParse(row.Cells["PID"].Value?.ToString(), out int pid)) return;
-            var priority = row.Cells["Priority"].Value?.ToString();
-            if (string.IsNullOrEmpty(priority)) return;
-
-            AffinityManager.SetProcessPriority(pid, priority);
-        };
+        // Priority is read-only — use the Preset dropdown + Apply to change
 
         // Handle Kill button click
         grid.CellContentClick += (_, e) =>
@@ -388,6 +379,13 @@ public class ProcessManagerForm : Form
                 RefreshList();
             }
             catch { /* process already gone */ }
+        };
+
+        // Suppress DataGridView error dialogs — log instead of crashing
+        grid.DataError += (_, e) =>
+        {
+            FileLogger.Warn($"Grid data error at [{e.RowIndex},{e.ColumnIndex}]: {e.Exception?.Message}");
+            e.ThrowException = false;
         };
 
 
@@ -410,7 +408,9 @@ public class ProcessManagerForm : Form
             foreach (var client in clients)
             {
                 var (procMask, _) = AffinityManager.GetProcessAffinity(client.ProcessId);
-                var priority = AffinityManager.GetProcessPriorityName(client.ProcessId);
+                var rawPriority = AffinityManager.GetProcessPriorityName(client.ProcessId);
+                // Clamp to known values so the combo cell doesn't crash on edit
+                var priority = Priorities.Contains(rawPriority) ? rawPriority : "Normal";
                 var name = client.CharacterName ?? client.WindowTitle;
                 if (string.IsNullOrEmpty(name)) name = $"Client {client.SlotIndex + 1}";
 
