@@ -577,14 +577,14 @@ public class TrayManager : IDisposable
 
         // Video Settings submenu
         var videoMenu = new ToolStripMenuItem("\uD83D\uDCFA  Video Settings") { DropDownDirection = ToolStripDropDownDirection.Right };
-        videoMenu.DropDownItems.Add($"\uD83E\uDE9F  Fix Windows{HkSuffix(hk.ArrangeWindows)}", null, (_, _) => OnArrangeWindows());
-        videoMenu.DropDownItems.Add("\uD83D\uDCFA  Toggle PiP", null, (_, _) => TogglePip());
-        videoMenu.DropDownItems.Add(new ToolStripSeparator());
         videoMenu.DropDownItems.Add("\uD83D\uDCDD  Video Settings...", null, (_, _) =>
         {
             using var form = new VideoSettingsForm(_config);
             form.ShowDialog();
         });
+        videoMenu.DropDownItems.Add(new ToolStripSeparator());
+        videoMenu.DropDownItems.Add($"\uD83E\uDE9F  Fix Windows{HkSuffix(hk.ArrangeWindows)}", null, (_, _) => OnArrangeWindows());
+        videoMenu.DropDownItems.Add("\uD83D\uDCFA  Toggle PiP", null, (_, _) => TogglePip());
         _contextMenu.Items.Add(videoMenu);
 
         _contextMenu.Items.Add(new ToolStripSeparator());
