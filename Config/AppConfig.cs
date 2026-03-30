@@ -112,8 +112,8 @@ public class AppConfig
 
 public class WindowLayout
 {
-    public int Columns { get; set; } = 2;
-    public int Rows { get; set; } = 2;
+    public int Columns { get; set; } = 1;
+    public int Rows { get; set; } = 1;
     public bool RemoveTitleBars { get; set; } = false;
     public bool BorderlessFullscreen { get; set; } = false;
     public bool SnapToMonitor { get; set; } = true;

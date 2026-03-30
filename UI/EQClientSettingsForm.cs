@@ -772,10 +772,16 @@ public class EQClientSettingsForm : Form
             SetIniValue(lines, "VideoMode", "WindowedMode", _chkForceWindowed.Checked ? "TRUE" : "FALSE");
 
             if ((int)_nudMaxFPS.Value > 0)
+            {
                 SetIniValue(lines, "Defaults", "MaxFPS", ((int)_nudMaxFPS.Value).ToString());
+                SetIniValue(lines, "Options", "MaxFPS", ((int)_nudMaxFPS.Value).ToString());
+            }
 
             if ((int)_nudMaxBGFPS.Value > 0)
+            {
                 SetIniValue(lines, "Defaults", "MaxBGFPS", ((int)_nudMaxBGFPS.Value).ToString());
+                SetIniValue(lines, "Options", "MaxBGFPS", ((int)_nudMaxBGFPS.Value).ToString());
+            }
 
             if ((int)_nudShadowClipPlane.Value > 0)
                 SetIniValue(lines, "Defaults", "ShadowClipPlane", ((int)_nudShadowClipPlane.Value).ToString());
@@ -904,10 +910,16 @@ public class EQClientSettingsForm : Form
             Set("VideoMode", "Maximized", "0");
 
             if (config.EQClientIni.MaxFPS > 0)
+            {
                 Set("Defaults", "MaxFPS", config.EQClientIni.MaxFPS.ToString());
+                Set("Options", "MaxFPS", config.EQClientIni.MaxFPS.ToString());
+            }
 
             if (config.EQClientIni.MaxBGFPS > 0)
+            {
                 Set("Defaults", "MaxBGFPS", config.EQClientIni.MaxBGFPS.ToString());
+                Set("Options", "MaxBGFPS", config.EQClientIni.MaxBGFPS.ToString());
+            }
 
             if (config.EQClientIni.ShadowClipPlane > 0)
                 Set("Defaults", "ShadowClipPlane", config.EQClientIni.ShadowClipPlane.ToString());
@@ -944,11 +956,17 @@ public class EQClientSettingsForm : Form
 
         var lines = File.ReadAllLines(iniPath, Encoding.Default).ToList();
 
-        // FPS
+        // FPS — write to both [Defaults] and [Options] since EQ reads from [Options] at runtime
         if (config.EQClientIni.MaxFPS > 0)
+        {
             SetIniValue(lines, "Defaults", "MaxFPS", config.EQClientIni.MaxFPS.ToString());
+            SetIniValue(lines, "Options", "MaxFPS", config.EQClientIni.MaxFPS.ToString());
+        }
         if (config.EQClientIni.MaxBGFPS > 0)
+        {
             SetIniValue(lines, "Defaults", "MaxBGFPS", config.EQClientIni.MaxBGFPS.ToString());
+            SetIniValue(lines, "Options", "MaxBGFPS", config.EQClientIni.MaxBGFPS.ToString());
+        }
 
         // CPU Affinity slots
         var slots = config.EQClientIni.CPUAffinitySlots;
