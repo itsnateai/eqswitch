@@ -14,7 +14,7 @@ public class AffinityManagerTests
             SlotIndex = slot,
             ProcessId = pid > 0 ? pid : (slot + 100),
             WindowHandle = new IntPtr(slot + 1000),
-            CharacterName = charName
+            WindowTitle = charName ?? "EverQuest"
         };
     }
 

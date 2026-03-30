@@ -10,7 +10,8 @@ public class TrayManager : IDisposable
     // ─── Constants ───────────────────────────────────────────────────
     private const int MultiMonToggleDebounceMs = 500;
     private const int AffinityPollIntervalMs = 250;
-    private const int ClickResolveDelayMs = 350; // Wait this long after last click to resolve action
+    // Use the system double-click time so tray clicks match the user's Windows setting
+    private static readonly int ClickResolveDelayMs = SystemInformation.DoubleClickTime + 50;
 
     private readonly AppConfig _config;
     private readonly ProcessManager _processManager;
@@ -79,8 +80,14 @@ public class TrayManager : IDisposable
             Visible = true
         };
 
-        // Tray click events — delayed resolution for clean single/double/triple
+        // Assign context menu only on right-click, remove on left/middle to prevent
+        // Windows from showing the menu and stealing focus from double-click detection
+        _trayIcon.MouseDown += (_, e) =>
+        {
+            _trayIcon.ContextMenuStrip = e.Button == MouseButtons.Right ? _contextMenu : null;
+        };
         _trayIcon.MouseClick += OnTrayMouseClick;
+        _trayIcon.MouseDoubleClick += OnTrayMouseClick; // WinForms eats the 2nd click as DoubleClick
 
         // Ctrl+hover help — event-driven, zero CPU when not hovering
         _trayIcon.MouseMove += (_, e) =>
@@ -115,11 +122,12 @@ public class TrayManager : IDisposable
         {
             ShowBalloon($"Discovered: {c}");
             _affinityManager.ScheduleRetry(c);
-            // During a launch sequence, immediately snap each window to the
-            // target monitor. This prevents Windows from placing EQ windows
-            // across monitor boundaries. The final grid arrange happens when
-            // LaunchSequenceComplete fires.
-            if (_launchManager.IsLaunching)
+            // During a launch sequence with grid layout, snap each window to the
+            // target monitor to prevent cross-monitor placement. Skip in stacked
+            // mode (1x1) — EQ opens fine on its own and moving it mid-init can
+            // cause it to minimize.
+            bool isStacked = _config.Layout.Columns == 1 && _config.Layout.Rows == 1;
+            if (_launchManager.IsLaunching && !isStacked)
                 _windowManager.PositionOnTargetMonitor(c);
         };
         _processManager.ClientLost += (_, c) =>
@@ -544,6 +552,10 @@ public class TrayManager : IDisposable
         _contextMenu?.Dispose();
         _contextMenu = new ContextMenuStrip();
         _contextMenu.Renderer = new DarkMenuRenderer();
+        _contextMenu.Closed += (_, _) =>
+        {
+            if (_clientMenuDirty) UpdateClientMenu();
+        };
 
         var hk = _config.Hotkeys;
         string HkSuffix(string key) => string.IsNullOrEmpty(key) ? "" : $"\t{key}";
@@ -583,8 +595,9 @@ public class TrayManager : IDisposable
             form.ShowDialog();
         });
         videoMenu.DropDownItems.Add(new ToolStripSeparator());
-        videoMenu.DropDownItems.Add($"\uD83E\uDE9F  Fix Windows{HkSuffix(hk.ArrangeWindows)}", null, (_, _) => OnArrangeWindows());
         videoMenu.DropDownItems.Add("\uD83D\uDCFA  Toggle PiP", null, (_, _) => TogglePip());
+        videoMenu.DropDownItems.Add(new ToolStripSeparator());
+        videoMenu.DropDownItems.Add($"\uD83E\uDE9F  Fix Windows{HkSuffix(hk.ArrangeWindows)}", null, (_, _) => OnArrangeWindows());
         _contextMenu.Items.Add(videoMenu);
 
         _contextMenu.Items.Add(new ToolStripSeparator());
@@ -634,12 +647,24 @@ public class TrayManager : IDisposable
         _contextMenu.Items.Add(new ToolStripSeparator());
         _contextMenu.Items.Add("\u2716  Exit", null, (_, _) => Shutdown());
 
-        _trayIcon!.ContextMenuStrip = _contextMenu;
+        // ContextMenuStrip is toggled on/off in MouseDown to prevent left-click
+        // from showing the menu (which steals focus and breaks double-click).
+        _trayIcon!.ContextMenuStrip = null;
     }
+
+    private bool _clientMenuDirty;
 
     private void UpdateClientMenu()
     {
         if (_clientsMenu == null) return;
+
+        // Don't rebuild while the menu is open — it causes the menu to close
+        if (_contextMenu?.Visible == true)
+        {
+            _clientMenuDirty = true;
+            return;
+        }
+        _clientMenuDirty = false;
 
         // Dispose old menu items to prevent GDI/memory leaks (called on every client change)
         for (int i = _clientsMenu.DropDownItems.Count - 1; i >= 0; i--)
@@ -688,6 +713,7 @@ public class TrayManager : IDisposable
 
     private void TogglePip()
     {
+        FileLogger.Info($"TogglePip: called, clients={_processManager.Clients.Count}, overlay={_pipOverlay != null}");
         if (_pipOverlay != null && !_pipOverlay.IsDisposed)
         {
             _pipOverlay.Close();
@@ -866,6 +892,7 @@ public class TrayManager : IDisposable
         if (e.Button == MouseButtons.Middle)
         {
             _trayMiddleClickCount++;
+            FileLogger.Info($"TrayClick: middle click #{_trayMiddleClickCount}");
             EnsureClickTimer(ref _middleClickResolveTimer, OnMiddleClickResolved);
             return;
         }
@@ -873,6 +900,7 @@ public class TrayManager : IDisposable
         if (e.Button != MouseButtons.Left) return;
 
         _trayClickCount++;
+        FileLogger.Info($"TrayClick: left click #{_trayClickCount}");
         EnsureClickTimer(ref _clickResolveTimer, OnLeftClickResolved);
     }
 
@@ -907,6 +935,7 @@ public class TrayManager : IDisposable
             2 => _config.TrayClick.DoubleClick,
             _ => _config.TrayClick.TripleClick // 3+
         };
+        FileLogger.Info($"TrayClick: resolved {clicks} left click(s) → {action}");
         ExecuteTrayAction(action);
     }
 
@@ -923,6 +952,7 @@ public class TrayManager : IDisposable
             2 => _config.TrayClick.MiddleDoubleClick,
             _ => _config.TrayClick.MiddleTripleClick
         };
+        FileLogger.Info($"TrayClick: resolved {clicks} middle click(s) → {action}");
         ExecuteTrayAction(action);
     }
 
@@ -932,14 +962,17 @@ public class TrayManager : IDisposable
         {
             case "FixWindows":
                 OnArrangeWindows();
+                ShowBalloon("Fix Windows");
                 break;
             case "TogglePiP":
                 TogglePip();
                 break;
             case "LaunchOne":
+                ShowBalloon("Launching client...");
                 OnLaunchOne();
                 break;
             case "LaunchAll":
+                ShowBalloon($"Launching {_config.Launch.NumClients} clients...");
                 OnLaunchAll();
                 break;
             case "Settings":
@@ -970,7 +1003,6 @@ public class TrayManager : IDisposable
         // Update the config reference (AppConfig is a class, so updating fields in-place)
         _config.EQPath = newConfig.EQPath;
         _config.EQProcessName = newConfig.EQProcessName;
-        _config.PollingIntervalMs = newConfig.PollingIntervalMs;
         _config.Layout.Columns = newConfig.Layout.Columns;
         _config.Layout.Rows = newConfig.Layout.Rows;
         _config.Layout.RemoveTitleBars = newConfig.Layout.RemoveTitleBars;
@@ -1052,9 +1084,6 @@ public class TrayManager : IDisposable
         _retryTimer?.Dispose();
         _retryTimer = null;
         StartRetryTimer();
-
-        // Update polling interval
-        _processManager.UpdatePollingInterval(_config.PollingIntervalMs);
 
         FileLogger.Info("Config reloaded and applied");
         ShowBalloon("Settings applied");

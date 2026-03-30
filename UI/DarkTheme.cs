@@ -40,7 +40,7 @@ public static class DarkTheme
     public static readonly Color BgHover = Color.FromArgb(64, 56, 78);
     public static readonly Color BgPanel = Color.FromArgb(38, 33, 48);
     public static readonly Color FgWhite = Color.FromArgb(235, 232, 240);
-    public static readonly Color FgGray = Color.FromArgb(160, 150, 175);
+    public static readonly Color FgGray = Color.FromArgb(195, 188, 210);
     public static readonly Color FgDimGray = Color.FromArgb(120, 112, 135);
     public static readonly Color AccentGreen = Color.FromArgb(0, 140, 80);
     public static readonly Color AccentGreenHover = Color.FromArgb(0, 170, 100);
@@ -60,12 +60,11 @@ public static class DarkTheme
         Color.FromArgb(100, 200, 210),  // Launch — cyan
         Color.FromArgb(180, 140, 220),  // PiP — purple
         Color.FromArgb(220, 180, 140),  // Paths — warm
-        Color.FromArgb(160, 220, 180),  // Characters — mint
     };
 
     // ─── Cached Fonts (avoid allocations in render methods) ──────
-    private static readonly Font TabFontBold = new("Consolas", 9f, FontStyle.Bold);
-    private static readonly Font TabFontRegular = new("Consolas", 8.5f, FontStyle.Regular);
+    private static readonly Font TabFontBold = new("Segoe UI Semibold", 9f, FontStyle.Bold);
+    private static readonly Font TabFontRegular = new("Segoe UI", 8.5f, FontStyle.Regular);
 
     // ─── Tab Control ─────────────────────────────────────────────
 
@@ -79,7 +78,7 @@ public static class DarkTheme
             Dock = DockStyle.Fill,
             DrawMode = TabDrawMode.OwnerDrawFixed,
             SizeMode = TabSizeMode.Fixed,
-            ItemSize = new Size(58, 32),
+            ItemSize = new Size(72, 30),
             Padding = new Point(12, 6),
             Font = new Font("Segoe UI", 8.5f, FontStyle.Regular)
         };
@@ -116,7 +115,7 @@ public static class DarkTheme
         }
 
         // Tab text — selected uses the tab's accent color, unselected is dim
-        var textColor = isSelected ? accent : FgGray;
+        var textColor = isSelected ? accent : FgWhite;
         using var textBrush = new SolidBrush(textColor);
         var font = isSelected ? TabFontBold : TabFontRegular;
 

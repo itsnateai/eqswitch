@@ -12,12 +12,11 @@ public class AppConfigTests
         config.Validate();
 
         Assert.Equal("eqgame", config.EQProcessName);
-        Assert.Equal(500, config.PollingIntervalMs);
-        Assert.Equal(2, config.Layout.Columns);
-        Assert.Equal(2, config.Layout.Rows);
+        Assert.Equal(1, config.Layout.Columns);
+        Assert.Equal(1, config.Layout.Rows);
         Assert.Equal(0, config.Layout.TargetMonitor);
         Assert.Equal(0, config.Layout.TopOffset);
-        Assert.Equal("High", config.Affinity.ActivePriority);
+        Assert.Equal("AboveNormal", config.Affinity.ActivePriority);
         Assert.Equal(3, config.Affinity.LaunchRetryCount);
         Assert.Equal(2000, config.Affinity.LaunchRetryDelayMs);
         Assert.Equal(2, config.Launch.NumClients);
@@ -27,22 +26,6 @@ public class AppConfigTests
         Assert.Equal(3, config.Pip.MaxWindows);
         Assert.Equal(320, config.Pip.CustomWidth);
         Assert.Equal(240, config.Pip.CustomHeight);
-    }
-
-    [Fact]
-    public void Validate_ClampsPollingInterval_TooLow()
-    {
-        var config = new AppConfig { PollingIntervalMs = 10 };
-        config.Validate();
-        Assert.Equal(100, config.PollingIntervalMs);
-    }
-
-    [Fact]
-    public void Validate_ClampsPollingInterval_TooHigh()
-    {
-        var config = new AppConfig { PollingIntervalMs = 99999 };
-        config.Validate();
-        Assert.Equal(10000, config.PollingIntervalMs);
     }
 
     [Fact]
@@ -89,8 +72,8 @@ public class AppConfigTests
     {
         var config = new AppConfig();
         config.Validate();
-        Assert.Equal("High", config.Affinity.ActivePriority);
-        Assert.Equal("High", config.Affinity.BackgroundPriority);
+        Assert.Equal("AboveNormal", config.Affinity.ActivePriority);
+        Assert.Equal("AboveNormal", config.Affinity.BackgroundPriority);
     }
 
     [Fact]

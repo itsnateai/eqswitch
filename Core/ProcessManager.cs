@@ -65,10 +65,7 @@ public class ProcessManager : IDisposable
     public void StartPolling() => _pollTimer.Start();
     public void StopPolling() => _pollTimer.Stop();
 
-    public void UpdatePollingInterval(int intervalMs)
-    {
-        _pollTimer.Interval = intervalMs;
-    }
+
 
     /// <summary>
     /// Scan for EQ processes and update the client list.
@@ -132,8 +129,6 @@ public class ProcessManager : IDisposable
                             WindowTitle = GetWindowTitle(hwnd),
                             SlotIndex = _clients.Count
                         };
-                        client.ResolveCharacterName();
-                        MatchCharacterProfile(client);
 
                         _clients.Add(client);
                         (discoveredClients ??= new List<EQClient>()).Add(client);
@@ -165,7 +160,7 @@ public class ProcessManager : IDisposable
                     var freshHwnd = proc.MainWindowHandle;
                     if (freshHwnd != IntPtr.Zero && freshHwnd != client.WindowHandle)
                     {
-                        FileLogger.Info($"RefreshClients: updated stale handle for PID {proc.Id} ({client.CharacterName}): 0x{client.WindowHandle:X} → 0x{freshHwnd:X}");
+                        FileLogger.Info($"RefreshClients: updated stale handle for PID {proc.Id} (Client {client.SlotIndex + 1}): 0x{client.WindowHandle:X} → 0x{freshHwnd:X}");
                         client.WindowHandle = freshHwnd;
                     }
 
@@ -173,8 +168,6 @@ public class ProcessManager : IDisposable
                     if (newTitle != client.WindowTitle)
                     {
                         client.WindowTitle = newTitle;
-                        client.ResolveCharacterName();
-                        MatchCharacterProfile(client);
                         titleChanged = true;
                     }
                 }
@@ -244,7 +237,6 @@ public class ProcessManager : IDisposable
                 // Update stale handle
                 client.WindowHandle = foreground;
                 client.WindowTitle = GetWindowTitle(foreground);
-                client.ResolveCharacterName();
             }
             return client;
         }
@@ -262,21 +254,6 @@ public class ProcessManager : IDisposable
                 if (_clients[i].SlotIndex == slot) return _clients[i];
             }
             return null;
-        }
-    }
-
-    private void MatchCharacterProfile(EQClient client)
-    {
-        if (string.IsNullOrEmpty(client.CharacterName)) return;
-
-        var characters = _config.Characters;
-        for (int i = 0; i < characters.Count; i++)
-        {
-            if (characters[i].Name.Equals(client.CharacterName, StringComparison.OrdinalIgnoreCase))
-            {
-                client.SlotIndex = characters[i].SlotIndex;
-                return;
-            }
         }
     }
 

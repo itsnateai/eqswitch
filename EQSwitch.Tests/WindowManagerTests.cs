@@ -196,7 +196,7 @@ public class WindowManagerTests
         });
 
         var config = new AppConfig();
-        config.Layout.Columns = 1;
+        config.Layout.Columns = 2;
         config.Layout.Rows = 1;
         config.Layout.TopOffset = 30;
         config.Layout.Mode = "single";
@@ -205,7 +205,8 @@ public class WindowManagerTests
         var clients = new[] { MakeClient(0) };
         wm.ArrangeWindows(clients);
 
-        api.Verify(a => a.SetWindowPos(clients[0].WindowHandle, IntPtr.Zero, 0, 30, 1920, 1080, It.IsAny<uint>()));
+        // 2x1 grid on 1920x1080: cell = 960x1080, TopOffset shifts Y by 30
+        api.Verify(a => a.SetWindowPos(clients[0].WindowHandle, IntPtr.Zero, 0, 30, 960, 1080, It.IsAny<uint>()));
     }
 
     [Fact]

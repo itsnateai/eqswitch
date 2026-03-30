@@ -28,6 +28,8 @@ public class VideoSettingsForm : Form
     private static readonly (string Name, int W, int H)[] Presets =
     {
         ("1920x1080 (Full HD)", 1920, 1080),
+        ("1920x1200 (WUXGA)", 1920, 1200),
+        ("1920x1020", 1920, 1020),
         ("2560x1440 (QHD)", 2560, 1440),
         ("3840x2160 (4K)", 3840, 2160),
         ("1280x720 (HD)", 1280, 720),
@@ -82,7 +84,7 @@ public class VideoSettingsForm : Form
             Location = new Point(15, y += 40),
             AutoSize = true,
             ForeColor = DarkTheme.FgWhite,
-            Checked = true
+            Checked = _config.EQClientIni.ForceWindowedMode
         };
         Controls.Add(_chkWindowed);
 
@@ -162,7 +164,7 @@ public class VideoSettingsForm : Form
                             if (int.TryParse(val, out int h)) _nudHeight.Value = Math.Clamp(h, 200, 4320);
                             break;
                         case "windowedmode":
-                            _chkWindowed.Checked = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase);
+                            _chkWindowed.Checked = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
                             break;
                         case "xoffset":
                             if (int.TryParse(val, out int ox)) _nudOffsetX.Value = ox;
@@ -250,6 +252,7 @@ public class VideoSettingsForm : Form
         {
             // Save TopOffset, log toggle, and custom preset to config
             _config.Layout.TopOffset = (int)_nudTopOffset.Value;
+            _config.EQClientIni.ForceWindowedMode = _chkWindowed.Checked;
             _config.DisableEQLog = _chkDisableLog.Checked;
             SaveCustomPreset();
             ConfigManager.Save(_config);
@@ -284,7 +287,7 @@ public class VideoSettingsForm : Form
             {
                 ["Width"] = ((int)_nudWidth.Value).ToString(),
                 ["Height"] = ((int)_nudHeight.Value).ToString(),
-                ["WindowedMode"] = _chkWindowed.Checked ? "1" : "0",
+                ["WindowedMode"] = _chkWindowed.Checked ? "TRUE" : "FALSE",
                 ["Maximized"] = "0",
                 ["XOffset"] = ((int)_nudOffsetX.Value).ToString(),
                 ["YOffset"] = ((int)_nudOffsetY.Value).ToString()

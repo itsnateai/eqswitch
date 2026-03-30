@@ -98,8 +98,7 @@ public class AffinityManager
                 continue;
             }
 
-            var priorityOverride = FindSlotPriorityOverride(client.SlotIndex)
-                                ?? FindCharacterPriorityOverride(client.CharacterName);
+            var priorityOverride = FindSlotPriorityOverride(client.SlotIndex);
             var retryPriority = priorityOverride ?? _config.Affinity.BackgroundPriority;
             bool success = SetProcessPriority(pid, retryPriority);
 
@@ -135,18 +134,6 @@ public class AffinityManager
         for (int i = 0; i < characters.Count; i++)
         {
             if (characters[i].SlotIndex == slotIndex && characters[i].PriorityOverride != null)
-                return characters[i].PriorityOverride;
-        }
-        return null;
-    }
-
-    private string? FindCharacterPriorityOverride(string? characterName)
-    {
-        if (string.IsNullOrEmpty(characterName)) return null;
-        var characters = _config.Characters;
-        for (int i = 0; i < characters.Count; i++)
-        {
-            if (characters[i].Name.Equals(characterName, StringComparison.OrdinalIgnoreCase))
                 return characters[i].PriorityOverride;
         }
         return null;

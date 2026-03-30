@@ -18,6 +18,7 @@ public interface IWindowsApi
 {
     // ─── Window Operations ───────────────────────────────────────────
     bool IsWindow(IntPtr hwnd);
+    bool IsIconic(IntPtr hwnd);
     bool IsHungAppWindow(IntPtr hwnd);
     bool ShowWindow(IntPtr hwnd, int nCmdShow);
     bool SetForegroundWindow(IntPtr hwnd);

@@ -159,7 +159,7 @@ public class ProcessManagerForm : Form
         // ─── Process grid ────────────────────────────────────────
         _grid = BuildProcessGrid(y);
         Controls.Add(_grid);
-        y += 168;
+        y += 30 + 28 * 4 + 2 + 8;  // grid height + padding
 
         // ─── Status bar ──────────────────────────────────────────
         _statusLabel = new Label
@@ -292,7 +292,7 @@ public class ProcessManagerForm : Form
         var grid = new DataGridView
         {
             Location = new Point(Pad, y),
-            Size = new Size(GridW, 160),
+            Size = new Size(GridW, 30 + 28 * 4 + 2),  // header + 4 rows + border
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
             AllowUserToResizeRows = false,
@@ -411,8 +411,7 @@ public class ProcessManagerForm : Form
                 var rawPriority = AffinityManager.GetProcessPriorityName(client.ProcessId);
                 // Clamp to known values so the combo cell doesn't crash on edit
                 var priority = Priorities.Contains(rawPriority) ? rawPriority : "Normal";
-                var name = client.CharacterName ?? client.WindowTitle;
-                if (string.IsNullOrEmpty(name)) name = $"Client {client.SlotIndex + 1}";
+                var name = $"Client {client.SlotIndex + 1}";
 
                 int rowIdx = _grid.Rows.Add(
                     (client.SlotIndex + 1).ToString(),
