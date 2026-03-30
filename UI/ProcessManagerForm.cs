@@ -170,7 +170,9 @@ public class ProcessManagerForm : Form
 
         // ─── Card 2: Core Assignment ─────────────────────────────
         // 6 slots matching eqclient.ini CPUAffinity0-5
-        var cardCores = DarkTheme.MakeCard(this, "\uD83E\uDDE0", "Core Assignment", DarkTheme.CardCyan, Pad, y, GridW, 90);
+        var cardCores = DarkTheme.MakeCard(this, "\uD83E\uDDE0", "CPU Thread Mapping", DarkTheme.CardCyan, Pad, y, GridW, 125);
+
+        DarkTheme.AddCardHint(cardCores, "EQ uses 6 internal threads — assign each to a CPU core to spread the load", 10, 28);
 
         var slots = _config.EQClientIni.CPUAffinitySlots;
         _slotPickers = new NumericUpDown[6];
@@ -178,18 +180,18 @@ public class ProcessManagerForm : Form
         {
             int col = i % 3;
             int row = i / 3;
-            int lx = 10 + col * 180;
-            int ly = 30 + row * 28;
+            int lx = 10 + col * 185;
+            int ly = 48 + row * 30;
 
-            DarkTheme.AddCardLabel(cardCores, $"Slot {i}:", lx, ly + 2);
+            DarkTheme.AddCardLabel(cardCores, $"Thread {i + 1}  \u2192", lx, ly + 2);
             int coreVal = i < slots.Length ? Math.Clamp(slots[i], 0, coreCount - 1) : i;
-            _slotPickers[i] = DarkTheme.AddCardNumeric(cardCores, lx + 45, ly, 55, coreVal, 0, coreCount - 1);
-            _tooltip.SetToolTip(_slotPickers[i], $"CPUAffinity{i} in eqclient.ini — physical core number");
+            _slotPickers[i] = DarkTheme.AddCardNumeric(cardCores, lx + 75, ly, 55, coreVal, 0, coreCount - 1);
+            _tooltip.SetToolTip(_slotPickers[i], $"CPU core for EQ thread {i + 1} (CPUAffinity{i} in eqclient.ini)");
         }
 
-        DarkTheme.AddCardHint(cardCores, $"6 EQ thread slots  |  {coreCount} cores available (0 = first core)", 10, 70);
+        DarkTheme.AddCardHint(cardCores, $"{coreCount} cores available  |  Shared by all EQ clients  |  Core 0 = first", 10, 108);
 
-        y += 98;
+        y += 133;
 
         // ─── Card 3: FPS Limits ──────────────────────────────────
         var cardFps = DarkTheme.MakeCard(this, "\uD83C\uDFAE", "FPS Limits", DarkTheme.CardGreen, Pad, y, GridW, 85);
@@ -366,6 +368,16 @@ public class ProcessManagerForm : Form
             col.SortMode = DataGridViewColumnSortMode.NotSortable;
             col.Resizable = DataGridViewTriState.False;
         }
+
+        // Pause refresh while editing a dropdown to prevent the grid rebuild
+        // from destroying the active combo cell mid-interaction (the "blink" bug)
+        grid.EditingControlShowing += (_, e) =>
+        {
+            _refreshTimer.Stop();
+            if (e.Control is ComboBox cb)
+                cb.DropDownClosed += (_, _) => _refreshTimer.Start();
+        };
+        grid.CellEndEdit += (_, _) => _refreshTimer.Start();
 
         // Commit dropdown changes immediately (don't wait for focus loss)
         grid.CurrentCellDirtyStateChanged += (_, _) =>
