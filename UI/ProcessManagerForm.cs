@@ -92,38 +92,13 @@ public class ProcessManagerForm : Form
         var (coreCount, systemMask) = AffinityManager.DetectCores();
         int y = 10;
 
-        // ─── Header bar ──────────────────────────────────────────
-        var headerPanel = new Panel
-        {
-            Location = new Point(Pad, y),
-            Size = new Size(GridW, 30),
-            BackColor = DarkTheme.BgPanel
-        };
-        headerPanel.Paint += (_, e) =>
-        {
-            var g = e.Graphics;
-            using var pen = new Pen(DarkTheme.Border, 1);
-            g.DrawRectangle(pen, 0, 0, headerPanel.Width - 1, headerPanel.Height - 1);
-            // Accent left-bar matching card visual language
-            using var accentBrush = new SolidBrush(DarkTheme.CardCyan);
-            g.FillRectangle(accentBrush, 0, 0, 3, headerPanel.Height);
-        };
-
-        var lblHeader = new Label
-        {
-            Text = $"\u2699  {coreCount} cores  |  system mask 0x{systemMask:X}",
-            Location = new Point(10, 6),
-            AutoSize = true,
-            ForeColor = DarkTheme.CardCyan,
-            Font = new Font("Consolas", 9f, FontStyle.Bold),
-            BackColor = Color.Transparent
-        };
-        headerPanel.Controls.Add(lblHeader);
+        // ─── Card 1: CPU Affinity Handling ───────────────────────
+        var cardPriority = DarkTheme.MakeCard(this, "\u26A1", "CPU Affinity Handling", DarkTheme.CardGold, Pad, y, GridW, 85);
 
         _chkAffinityEnabled = new CheckBox
         {
-            Text = "Affinity Active",
-            Location = new Point(headerPanel.Width - 125, 5),
+            Text = "Enable CPU Affinity Handling",
+            Location = new Point(10, 30),
             AutoSize = true,
             ForeColor = _config.Affinity.Enabled ? DarkTheme.CardGreen : DarkTheme.FgGray,
             Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
@@ -136,9 +111,17 @@ public class ProcessManagerForm : Form
             _chkAffinityEnabled.ForeColor = _chkAffinityEnabled.Checked
                 ? DarkTheme.CardGreen : DarkTheme.FgGray;
         };
-        headerPanel.Controls.Add(_chkAffinityEnabled);
-        Controls.Add(headerPanel);
-        y += 38;
+        cardPriority.Controls.Add(_chkAffinityEnabled);
+
+        DarkTheme.AddCardLabel(cardPriority, "Priority:", 10, 55);
+        var priorityOptions = new[] { "None", "High", "AboveNormal", "Normal", "BelowNormal" };
+        _cboPriority = DarkTheme.AddCardComboBox(cardPriority, 70, 53, 120, priorityOptions);
+        _cboPriority.SelectedItem = Priorities.Contains(_config.Affinity.ActivePriority)
+            ? _config.Affinity.ActivePriority : "None";
+
+        DarkTheme.AddCardHint(cardPriority, "None = per-client in grid  |  High = prevents VD crashes + autofollow", 205, 57);
+
+        y += 93;
 
         // ─── Process grid ────────────────────────────────────────
         _grid = BuildProcessGrid(y);
@@ -156,20 +139,6 @@ public class ProcessManagerForm : Form
         };
         Controls.Add(_statusLabel);
         y += 22;
-
-        // ─── Card 1: Windows Priority ────────────────────────────
-        var cardPriority = DarkTheme.MakeCard(this, "\u26A1", "Windows Priority", DarkTheme.CardGold, Pad, y, GridW, 65);
-
-        DarkTheme.AddCardLabel(cardPriority, "Preset:", 10, 32);
-        var priorityOptions = new[] { "None", "High", "AboveNormal", "Normal", "BelowNormal" };
-        _cboPriority = DarkTheme.AddCardComboBox(cardPriority, 60, 30, 120, priorityOptions);
-        // Show current config value if it matches, otherwise "None"
-        _cboPriority.SelectedItem = Priorities.Contains(_config.Affinity.ActivePriority)
-            ? _config.Affinity.ActivePriority : "None";
-
-        DarkTheme.AddCardHint(cardPriority, "None = set per-client in grid  |  High = prevents VD crashes + autofollow", 195, 34);
-
-        y += 73;
 
         // ─── Card 2: Core Assignment ─────────────────────────────
         // 6 slots matching eqclient.ini CPUAffinity0-5
@@ -192,7 +161,7 @@ public class ProcessManagerForm : Form
             _tooltip.SetToolTip(_slotPickers[i], $"CPU core for EQ thread {i + 1} (CPUAffinity{i} in eqclient.ini)");
         }
 
-        DarkTheme.AddCardHint(cardCores, $"{coreCount} cores available  |  Shared by all EQ clients  |  Core 0 = first", 10, 108);
+        DarkTheme.AddCardHint(cardCores, $"{coreCount} cores detected  |  Shared by all EQ clients  |  Core 0 = first", 10, 108);
 
         y += 133;
 
