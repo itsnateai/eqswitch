@@ -22,10 +22,10 @@ public class ProcessManager : IDisposable
     private IReadOnlyList<EQClient> _snapshot = Array.Empty<EQClient>();
 
     /// <summary>
-    /// Idle polling interval when no EQ clients are running (ms).
-    /// 5 seconds is plenty — EQ is launched externally, no rush to detect.
+    /// Polling interval (ms). 10s is plenty — EQ launches slowly,
+    /// and hotkeys/switching don't depend on the poll timer.
     /// </summary>
-    private const int IdlePollingMs = 5000;
+    private const int IdlePollingMs = 10000;
 
     private bool _isRefreshing;
 
@@ -57,7 +57,7 @@ public class ProcessManager : IDisposable
         _config = config;
         _pollTimer = new System.Windows.Forms.Timer
         {
-            Interval = config.PollingIntervalMs
+            Interval = IdlePollingMs
         };
         _pollTimer.Tick += (_, _) => RefreshClients();
     }
@@ -216,10 +216,9 @@ public class ProcessManager : IDisposable
         if (listChanged)
             ClientListChanged?.Invoke(this, EventArgs.Empty);
 
-        // Adaptive polling: slow down when idle, speed up when clients exist
-        int targetInterval = ClientCount > 0 ? _config.PollingIntervalMs : IdlePollingMs;
-        if (_pollTimer.Interval != targetInterval)
-            _pollTimer.Interval = targetInterval;
+        // Fixed 10s polling — hotkeys/switching don't depend on poll timer
+        if (_pollTimer.Interval != IdlePollingMs)
+            _pollTimer.Interval = IdlePollingMs;
     }
 
     /// <summary>
