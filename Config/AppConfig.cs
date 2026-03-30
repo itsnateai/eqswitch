@@ -275,17 +275,12 @@ public class TrayClickConfig
     /// Action for single left-click on tray icon.
     /// Values: "None", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp"
     /// </summary>
-    public string SingleClick { get; set; } = "None";
+    public string SingleClick { get; set; } = "LaunchOne";
 
     /// <summary>
     /// Action for double left-click on tray icon.
     /// </summary>
-    public string DoubleClick { get; set; } = "LaunchOne";
-
-    /// <summary>
-    /// Action for triple left-click on tray icon.
-    /// </summary>
-    public string TripleClick { get; set; } = "LaunchAll";
+    public string DoubleClick { get; set; } = "None";
 
     /// <summary>
     /// Action for single middle-click on tray icon.
@@ -295,12 +290,7 @@ public class TrayClickConfig
     /// <summary>
     /// Action for double middle-click on tray icon.
     /// </summary>
-    public string MiddleDoubleClick { get; set; } = "None";
-
-    /// <summary>
-    /// Action for triple middle-click on tray icon.
-    /// </summary>
-    public string MiddleTripleClick { get; set; } = "None";
+    public string MiddleDoubleClick { get; set; } = "Settings";
 }
 
 public class CharacterProfile

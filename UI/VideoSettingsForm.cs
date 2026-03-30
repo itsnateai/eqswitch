@@ -21,6 +21,7 @@ public class VideoSettingsForm : Form
     private NumericUpDown _nudOffsetX = null!;
     private NumericUpDown _nudOffsetY = null!;
     private CheckBox _chkWindowed = null!;
+    private CheckBox _chkMultiMon = null!;
     private CheckBox _chkDisableLog = null!;
     private NumericUpDown _nudTopOffset = null!;
 
@@ -87,6 +88,16 @@ public class VideoSettingsForm : Form
             Checked = _config.EQClientIni.ForceWindowedMode
         };
         Controls.Add(_chkWindowed);
+
+        _chkMultiMon = new CheckBox
+        {
+            Text = "Multi-Monitor Mode",
+            Location = new Point(200, y),
+            AutoSize = true,
+            ForeColor = DarkTheme.FgWhite,
+            Checked = _config.Hotkeys.MultiMonitorEnabled
+        };
+        Controls.Add(_chkMultiMon);
 
         _chkDisableLog = new CheckBox
         {
@@ -214,6 +225,7 @@ public class VideoSettingsForm : Form
         _nudOffsetX.Value = 0;
         _nudOffsetY.Value = 0;
         _chkWindowed.Checked = true;
+        _chkMultiMon.Checked = false;
         _chkDisableLog.Checked = false;
         _nudTopOffset.Value = 0;
     }
@@ -253,6 +265,7 @@ public class VideoSettingsForm : Form
             // Save TopOffset, log toggle, and custom preset to config
             _config.Layout.TopOffset = (int)_nudTopOffset.Value;
             _config.EQClientIni.ForceWindowedMode = _chkWindowed.Checked;
+            _config.Hotkeys.MultiMonitorEnabled = _chkMultiMon.Checked;
             _config.DisableEQLog = _chkDisableLog.Checked;
             SaveCustomPreset();
             ConfigManager.Save(_config);

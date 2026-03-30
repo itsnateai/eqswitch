@@ -23,7 +23,6 @@ public class SettingsForm : Form
     private TextBox _txtExeName = null!;
     private TextBox _txtArgs = null!;
     private NumericUpDown _nudTooltipDuration = null!;
-    private CheckBox _chkCtrlHoverHelp = null!;
     private TextBox _txtCustomIconPath = null!;
     private TextBox _txtSwitchKeyGeneral = null!;
     private Label _lblSwitchKey = null!;
@@ -31,11 +30,9 @@ public class SettingsForm : Form
     // ─── Tray Click controls (Left)
     private ComboBox _cboSingleClick = null!;
     private ComboBox _cboDoubleClick = null!;
-    private ComboBox _cboTripleClick = null!;
     // ─── Tray Click controls (Middle)
     private ComboBox _cboMiddleClick = null!;
     private ComboBox _cboMiddleDoubleClick = null!;
-    private ComboBox _cboMiddleTripleClick = null!;
 
     // ─── Hotkeys tab controls
     private TextBox _txtSwitchKey = null!;
@@ -84,10 +81,13 @@ public class SettingsForm : Form
 
 
 
-    public SettingsForm(AppConfig config, Action<AppConfig> onApply)
+    private int _initialTab;
+
+    public SettingsForm(AppConfig config, Action<AppConfig> onApply, int initialTab = 0)
     {
         _config = config;
         _onApply = onApply;
+        _initialTab = initialTab;
         InitializeForm();
     }
 
@@ -122,6 +122,9 @@ public class SettingsForm : Form
         tabs.TabPages.Add(BuildLaunchTab());
         tabs.TabPages.Add(BuildPipTab());
         tabs.TabPages.Add(BuildPathsTab());
+
+        if (_initialTab > 0 && _initialTab < tabs.TabCount)
+            tabs.SelectedIndex = _initialTab;
 
         // Button panel at bottom
         var buttonPanel = new Panel
@@ -247,54 +250,57 @@ public class SettingsForm : Form
 
         y += 138;
 
-        // ─── Tray Click Actions card (table layout) ───────────────
+        // ─── Tray Click Actions card ─────────────────────────────
         var clickActions = new[] { "None", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp" };
-        int lblX = 10, cboX = 130, cboX2 = 310, cboW = 135;
+        const int cboW = 140;
 
         var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 130);
 
-        // Column headers
-        DarkTheme.AddCardLabel(cardTray, "Left", cboX + 30, 28);
-        DarkTheme.AddCardLabel(cardTray, "Middle", cboX2 + 25, 28);
+        // ── Left Click section ──
+        var lblLeft = DarkTheme.AddCardLabel(cardTray, "Left Click", 10, 30);
+        lblLeft.Font = new Font("Segoe UI Semibold", 9f);
+        lblLeft.ForeColor = DarkTheme.FgWhite;
 
-        // Row 1: Single click
-        DarkTheme.AddCardLabel(cardTray, "Single click", lblX, 48);
-        _cboSingleClick = DarkTheme.AddCardComboBox(cardTray, cboX, 45, cboW, clickActions);
-        _cboMiddleClick = DarkTheme.AddCardComboBox(cardTray, cboX2, 45, cboW, clickActions);
+        DarkTheme.AddCardLabel(cardTray, "Single", 20, 52);
+        _cboSingleClick = DarkTheme.AddCardComboBox(cardTray, 85, 49, cboW, clickActions);
 
-        // Row 2: Double click
-        DarkTheme.AddCardLabel(cardTray, "Double click", lblX, 74);
-        _cboDoubleClick = DarkTheme.AddCardComboBox(cardTray, cboX, 71, cboW, clickActions);
-        _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, cboX2, 71, cboW, clickActions);
+        DarkTheme.AddCardLabel(cardTray, "Double", 20, 78);
+        _cboDoubleClick = DarkTheme.AddCardComboBox(cardTray, 85, 75, cboW, clickActions);
 
-        // Row 3: Triple click
-        DarkTheme.AddCardLabel(cardTray, "Triple click", lblX, 100);
-        _cboTripleClick = DarkTheme.AddCardComboBox(cardTray, cboX, 97, cboW, clickActions);
-        _cboMiddleTripleClick = DarkTheme.AddCardComboBox(cardTray, cboX2, 97, cboW, clickActions);
+        // ── Middle Click section ──
+        var lblMiddle = DarkTheme.AddCardLabel(cardTray, "Middle Click", 250, 30);
+        lblMiddle.Font = new Font("Segoe UI Semibold", 9f);
+        lblMiddle.ForeColor = DarkTheme.FgWhite;
+
+        DarkTheme.AddCardLabel(cardTray, "Single", 260, 52);
+        _cboMiddleClick = DarkTheme.AddCardComboBox(cardTray, 325, 49, cboW, clickActions);
+
+        DarkTheme.AddCardLabel(cardTray, "Triple", 260, 78);
+        _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 325, 75, cboW, clickActions);
 
         y += 138;
 
         // ─── Preferences card ────────────────────────────────────
         var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 115);
-        cy = 30;
+        cy = 32;
 
-        var btnEQSettings = DarkTheme.AddCardButton(cardPrefs, "\uD83D\uDCDD EQ Client Settings...", L, cy, 180);
+        // Row 1: EQ Client Settings button + Tooltip delay
+        var btnEQSettings = DarkTheme.AddCardButton(cardPrefs, "\uD83D\uDCDD EQ Client Settings...", L, cy, 170);
         btnEQSettings.Click += (_, _) =>
         {
             using var form = new EQClientSettingsForm(_config);
             form.ShowDialog();
         };
-        DarkTheme.AddCardLabel(cardPrefs, "Tooltip (ms):", I2, cy + 2);
-        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardPrefs, BRW + 30, cy, 70, 1000, 500, 10000);
+        DarkTheme.AddCardLabel(cardPrefs, "Tooltip Delay:", 200, cy + 2);
+        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardPrefs, 300, cy, 65, 1000, 0, 10000);
         _nudTooltipDuration.Increment = 100;
-        cy += R;
+        DarkTheme.AddCardHint(cardPrefs, "ms, 0=off", 370, cy + 4);
+        cy += R + 2;
 
-        _chkCtrlHoverHelp = DarkTheme.AddCardCheckBox(cardPrefs, "Ctrl+Hover shows hotkey help", L, cy);
-        cy += R;
-
+        // Row 2: Tray icon path + Browse
         DarkTheme.AddCardLabel(cardPrefs, "Tray Icon:", L, cy);
-        _txtCustomIconPath = DarkTheme.AddCardTextBox(cardPrefs, I, cy - 2, IW);
-        var btnBrowseIcon = DarkTheme.AddCardButton(cardPrefs, "Browse...", BRW, cy - 3, 75);
+        _txtCustomIconPath = DarkTheme.AddCardTextBox(cardPrefs, 80, cy - 2, 180);
+        var btnBrowseIcon = DarkTheme.AddCardButton(cardPrefs, "Browse...", 268, cy - 3, 65);
         btnBrowseIcon.Click += (_, _) =>
         {
             using var dlg = new OpenFileDialog
@@ -306,7 +312,7 @@ public class SettingsForm : Form
             if (dlg.ShowDialog() == DialogResult.OK)
                 _txtCustomIconPath.Text = dlg.FileName;
         };
-        DarkTheme.AddCardHint(cardPrefs, "blank = default icon", BRW + 80, cy + 2);
+        DarkTheme.AddCardHint(cardPrefs, ".ico — blank = default", 340, cy + 2);
 
         return page;
     }
@@ -345,7 +351,7 @@ public class SettingsForm : Form
                 _txtSwitchKeyGeneral.Text = _txtSwitchKey.Text;
         };
         DarkTheme.AddCardLabel(cardSwitch, "Mode:", 250, cy);
-        _cboSwitchKeyMode = DarkTheme.AddCardComboBox(cardSwitch, I2, cy - 2, 130, new[] { "swapLast", "cycleAll" });
+        _cboSwitchKeyMode = DarkTheme.AddCardComboBox(cardSwitch, I2, cy - 2, 130, new[] { "Swap Last", "Cycle All" });
         cy += R + 2;
 
         DarkTheme.AddCardLabel(cardSwitch, "Global Switch Key:", L, cy);
@@ -354,24 +360,26 @@ public class SettingsForm : Form
 
         y += 108;
 
-        // ─── Actions card (table layout) ─────────────────────────
-        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 100);
+        // ─── Actions card ────────────────────────────────────────
+        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 128);
         cy = 32;
+        const int col2 = 250, col2I = 370;
 
         DarkTheme.AddCardLabel(cardActions, "Arrange Windows:", L, cy);
         _txtArrangeWindows = MakeHotkeyBox(cardActions, I, cy - 2);
-        DarkTheme.AddCardLabel(cardActions, "Toggle Multi-Mon:", 250, cy);
-        _txtToggleMultiMon = MakeHotkeyBox(cardActions, I2 + 40, cy - 2);
+        DarkTheme.AddCardLabel(cardActions, "Launch One:", col2, cy);
+        _txtLaunchOne = MakeHotkeyBox(cardActions, col2I, cy - 2);
         cy += R + 2;
 
-        DarkTheme.AddCardLabel(cardActions, "Launch One:", L, cy);
-        _txtLaunchOne = MakeHotkeyBox(cardActions, I, cy - 2);
-        DarkTheme.AddCardLabel(cardActions, "Launch All:", 250, cy);
-        _txtLaunchAll = MakeHotkeyBox(cardActions, I2 + 40, cy - 2);
+        DarkTheme.AddCardLabel(cardActions, "Multi-Mon Toggle:", L, cy);
+        _txtToggleMultiMon = MakeHotkeyBox(cardActions, I, cy - 2);
+        DarkTheme.AddCardLabel(cardActions, "Launch All:", col2, cy);
+        _txtLaunchAll = MakeHotkeyBox(cardActions, col2I, cy - 2);
+        cy += R + 2;
 
-        _chkMultiMonEnabled = DarkTheme.AddCardCheckBox(cardActions, "Multi-Mon enabled", 250, cy - R);
+        _chkMultiMonEnabled = DarkTheme.AddCardCheckBox(cardActions, "Multi-monitor mode enabled", L, cy);
 
-        y += 108;
+        y += 136;
 
         DarkTheme.AddHint(page, "Press key combo to capture. Leave blank to disable. Backspace/Delete to clear.", 15, y);
 
@@ -558,7 +566,7 @@ public class SettingsForm : Form
         const int L = 10, I = 120, BRW = 380, IW = 250, R = 32;
 
         // ─── External Tools card ─────────────────────────────────
-        var cardPaths = DarkTheme.MakeCard(page, "📁", "External Tools", DarkTheme.CardGold, 10, y, 480, 150);
+        var cardPaths = DarkTheme.MakeCard(page, "📁", "External Tools", DarkTheme.CardGold, 10, y, 480, 160);
         int cy = 32;
 
         DarkTheme.AddCardLabel(cardPaths, "GINA Path:", L, cy);
@@ -589,7 +597,8 @@ public class SettingsForm : Form
             };
             if (ofd.ShowDialog() == DialogResult.OK) _txtNotesPath.Text = ofd.FileName;
         };
-        cy += R;
+        DarkTheme.AddCardHint(cardPaths, "Leave blank to auto-create eqnotes.txt next to EQSwitch", L, cy + 18);
+        cy += R + 10;
 
         DarkTheme.AddCardLabel(cardPaths, "Dalaya Patcher:", L, cy);
         _txtDalayaPatcherPath = DarkTheme.AddCardTextBox(cardPaths, I, cy - 2, IW);
@@ -726,21 +735,18 @@ public class SettingsForm : Form
         _txtExeName.Text = _config.Launch.ExeName;
         _txtArgs.Text = _config.Launch.Arguments;
         _nudTooltipDuration.Value = Math.Clamp(_config.TooltipDurationMs, (int)_nudTooltipDuration.Minimum, (int)_nudTooltipDuration.Maximum);
-        _chkCtrlHoverHelp.Checked = _config.CtrlHoverHelp;
         _txtCustomIconPath.Text = _config.CustomIconPath;
 
         // Tray Click Actions
         _cboSingleClick.SelectedItem = _config.TrayClick.SingleClick;
         _cboDoubleClick.SelectedItem = _config.TrayClick.DoubleClick;
-        _cboTripleClick.SelectedItem = _config.TrayClick.TripleClick;
         _cboMiddleClick.SelectedItem = _config.TrayClick.MiddleClick;
         _cboMiddleDoubleClick.SelectedItem = _config.TrayClick.MiddleDoubleClick;
-        _cboMiddleTripleClick.SelectedItem = _config.TrayClick.MiddleTripleClick;
 
         // Hotkeys
         _txtSwitchKeyGeneral.Text = _config.Hotkeys.SwitchKey;
         _txtSwitchKey.Text = _config.Hotkeys.SwitchKey;
-        _cboSwitchKeyMode.SelectedItem = _config.Hotkeys.SwitchKeyMode;
+        _cboSwitchKeyMode.SelectedItem = _config.Hotkeys.SwitchKeyMode == "cycleAll" ? "Cycle All" : "Swap Last";
         _txtGlobalSwitchKey.Text = _config.Hotkeys.GlobalSwitchKey;
         _txtArrangeWindows.Text = _config.Hotkeys.ArrangeWindows;
         _txtToggleMultiMon.Text = _config.Hotkeys.ToggleMultiMonitor;
@@ -796,7 +802,6 @@ public class SettingsForm : Form
             EQPath = _txtEQPath.Text.Trim(),
             EQProcessName = _config.EQProcessName,
             TooltipDurationMs = (int)_nudTooltipDuration.Value,
-            CtrlHoverHelp = _chkCtrlHoverHelp.Checked,
             CustomIconPath = _txtCustomIconPath.Text.Trim(),
             Layout = new WindowLayout
             {
@@ -827,7 +832,7 @@ public class SettingsForm : Form
                 LaunchAll = _txtLaunchAll.Text.Trim(),
                 MultiMonitorEnabled = _chkMultiMonEnabled.Checked,
                 DirectSwitchKeys = _config.Hotkeys.DirectSwitchKeys,
-                SwitchKeyMode = _cboSwitchKeyMode.SelectedItem?.ToString() ?? "swapLast"
+                SwitchKeyMode = _cboSwitchKeyMode.SelectedItem?.ToString() == "Cycle All" ? "cycleAll" : "swapLast"
             },
             Launch = new LaunchConfig
             {
@@ -851,12 +856,10 @@ public class SettingsForm : Form
             },
             TrayClick = new TrayClickConfig
             {
-                SingleClick = _cboSingleClick.SelectedItem?.ToString() ?? "None",
-                DoubleClick = _cboDoubleClick.SelectedItem?.ToString() ?? "LaunchOne",
-                TripleClick = _cboTripleClick.SelectedItem?.ToString() ?? "LaunchAll",
+                SingleClick = _cboSingleClick.SelectedItem?.ToString() ?? "LaunchOne",
+                DoubleClick = _cboDoubleClick.SelectedItem?.ToString() ?? "None",
                 MiddleClick = _cboMiddleClick.SelectedItem?.ToString() ?? "TogglePiP",
-                MiddleDoubleClick = _cboMiddleDoubleClick.SelectedItem?.ToString() ?? "None",
-                MiddleTripleClick = _cboMiddleTripleClick.SelectedItem?.ToString() ?? "None"
+                MiddleDoubleClick = _cboMiddleDoubleClick.SelectedItem?.ToString() ?? "Settings"
             },
             GinaPath = _txtGinaPath.Text.Trim(),
             NotesPath = _txtNotesPath.Text.Trim(),
