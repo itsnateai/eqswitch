@@ -123,7 +123,7 @@ public class WindowManager
 
         FileLogger.Info($"ArrangeSingleScreen: monitor bounds L={monitor.Left} T={monitor.Top} R={monitor.Right} B={monitor.Bottom} ({monitor.Width}x{monitor.Height}), grid {cols}x{rows}, cell {cellWidth}x{cellHeight}");
 
-        for (int i = 0; i < clients.Count && i < cols * rows; i++)
+        for (int i = 0; i < clients.Count; i++)
         {
             var client = clients[i];
             if (!_api.IsWindow(client.WindowHandle)) continue;
