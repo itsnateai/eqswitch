@@ -33,11 +33,21 @@ public class AffinityManager
 
     /// <summary>
     /// Apply priority rules to all EQ clients.
+    /// Skips work when active/background priorities are the same (common case)
+    /// since priority was already set on launch via ScheduleRetry.
     /// </summary>
     public void ApplyAffinityRules(IReadOnlyList<EQClient> clients, EQClient? activeClient)
     {
         if (!_config.Affinity.Enabled) return;
         if (clients.Count == 0) return;
+
+        // If active and background priorities are identical, no need to re-apply
+        // on every foreground change — priority was set once on launch.
+        bool samePriority = string.Equals(
+            _config.Affinity.ActivePriority,
+            _config.Affinity.BackgroundPriority,
+            StringComparison.OrdinalIgnoreCase);
+        if (samePriority) return;
 
         // Skip if active client hasn't changed
         if (activeClient != null && activeClient == _lastActiveClient) return;
@@ -46,11 +56,7 @@ public class AffinityManager
         foreach (var client in clients)
         {
             bool isActive = client == activeClient;
-
-            // Priority: per-slot override → per-character override → global
-            var priorityOverride = FindSlotPriorityOverride(client.SlotIndex)
-                                ?? FindCharacterPriorityOverride(client.CharacterName);
-            var priority = priorityOverride ?? (isActive ? _config.Affinity.ActivePriority : _config.Affinity.BackgroundPriority);
+            var priority = isActive ? _config.Affinity.ActivePriority : _config.Affinity.BackgroundPriority;
             SetProcessPriority(client.ProcessId, priority);
         }
     }

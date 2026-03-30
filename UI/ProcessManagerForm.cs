@@ -34,7 +34,7 @@ public class ProcessManagerForm : Form
     private bool _isRefreshing;
     private bool _forceNextRefresh;
 
-    // Card 1: Priority
+    // Card 1: Priority preset (applies to all clients, or "None" for per-row manual)
     private ComboBox _cboPriority = null!;
 
     // Card 2: Core Assignment (6 slots matching eqclient.ini CPUAffinity0-5)
@@ -160,11 +160,14 @@ public class ProcessManagerForm : Form
         // ─── Card 1: Windows Priority ────────────────────────────
         var cardPriority = DarkTheme.MakeCard(this, "\u26A1", "Windows Priority", DarkTheme.CardGold, Pad, y, GridW, 65);
 
-        DarkTheme.AddCardLabel(cardPriority, "All EQ Clients:", 10, 32);
-        _cboPriority = DarkTheme.AddCardComboBox(cardPriority, 115, 30, 120, Priorities);
-        _cboPriority.SelectedItem = _config.Affinity.ActivePriority;
+        DarkTheme.AddCardLabel(cardPriority, "Preset:", 10, 32);
+        var priorityOptions = new[] { "None", "High", "AboveNormal", "Normal", "BelowNormal" };
+        _cboPriority = DarkTheme.AddCardComboBox(cardPriority, 60, 30, 120, priorityOptions);
+        // Show current config value if it matches, otherwise "None"
+        _cboPriority.SelectedItem = Priorities.Contains(_config.Affinity.ActivePriority)
+            ? _config.Affinity.ActivePriority : "None";
 
-        DarkTheme.AddCardHint(cardPriority, "High = prevents virtual desktop crashes + enables autofollow", 250, 34);
+        DarkTheme.AddCardHint(cardPriority, "None = set per-client in grid  |  High = prevents VD crashes + autofollow", 195, 34);
 
         y += 73;
 
@@ -236,7 +239,6 @@ public class ProcessManagerForm : Form
             ApplyAllSettings();
             ConfigManager.Save(_config);
             ConfigManager.FlushSave();
-            _forceApply();
             Close();
         };
         Controls.Add(btnSave);
@@ -249,7 +251,6 @@ public class ProcessManagerForm : Form
             ApplyAllSettings();
             ConfigManager.Save(_config);
             ConfigManager.FlushSave();
-            _forceApply();
             _forceNextRefresh = true;
             RefreshList();
         };
@@ -386,7 +387,9 @@ public class ProcessManagerForm : Form
                 grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
         };
 
-        // Apply priority when the dropdown value changes
+        // Apply priority when the per-row dropdown value changes.
+        // Only affects the live process — does NOT change the global setting.
+        // Use the Card 1 "All EQ Clients" combo + Save/Apply for global changes.
         grid.CellValueChanged += (_, e) =>
         {
             if (_isRefreshing || e.RowIndex < 0) return;
@@ -397,14 +400,7 @@ public class ProcessManagerForm : Form
             var priority = row.Cells["Priority"].Value?.ToString();
             if (string.IsNullOrEmpty(priority)) return;
 
-            // Apply to the live process immediately
             AffinityManager.SetProcessPriority(pid, priority);
-
-            // Also update the global config priority
-            _config.Affinity.ActivePriority = priority;
-            _config.Affinity.BackgroundPriority = priority;
-            _cboPriority.SelectedItem = priority;
-            ConfigManager.Save(_config);
         };
 
         // Handle Kill button click
@@ -504,12 +500,17 @@ public class ProcessManagerForm : Form
     /// </summary>
     private void ApplyAllSettings()
     {
-        // Card 1: Priority
-        var priority = _cboPriority.SelectedItem?.ToString() ?? "High";
-        _config.Affinity.ActivePriority = priority;
-        _config.Affinity.BackgroundPriority = priority;
+        // Priority preset — apply to all live processes if not "None"
+        var preset = _cboPriority.SelectedItem?.ToString() ?? "None";
+        if (preset != "None")
+        {
+            _config.Affinity.ActivePriority = preset;
+            _config.Affinity.BackgroundPriority = preset;
+            foreach (var client in _getClients())
+                AffinityManager.SetProcessPriority(client.ProcessId, preset);
+        }
 
-        // Card 2: Core Assignment — write slot values to config
+        // Core Assignment — write slot values to config
         for (int i = 0; i < 6; i++)
             _config.EQClientIni.CPUAffinitySlots[i] = (int)_slotPickers[i].Value;
 
@@ -549,8 +550,8 @@ public class ProcessManagerForm : Form
 
     private void ResetToInitial()
     {
-        // Priority
-        _cboPriority.SelectedItem = _initialPriority;
+        // Priority preset
+        _cboPriority.SelectedItem = Priorities.Contains(_initialPriority) ? _initialPriority : "None";
 
         // Core slots
         for (int i = 0; i < 6; i++)
