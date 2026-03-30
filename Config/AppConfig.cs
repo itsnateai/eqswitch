@@ -139,12 +139,12 @@ public class AffinityConfig
     /// Process priority for all EQ clients.
     /// High required to prevent virtual desktop crashes and keep autofollow working.
     /// </summary>
-    public string ActivePriority { get; set; } = "High";
+    public string ActivePriority { get; set; } = "AboveNormal";
 
     /// <summary>
     /// Process priority for background EQ clients (kept in sync with ActivePriority).
     /// </summary>
-    public string BackgroundPriority { get; set; } = "High";
+    public string BackgroundPriority { get; set; } = "AboveNormal";
 
     /// <summary>
     /// Number of retry attempts when applying priority to a newly launched client.
