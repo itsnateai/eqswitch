@@ -10,8 +10,10 @@ public class TrayManager : IDisposable
     // ─── Constants ───────────────────────────────────────────────────
     private const int MultiMonToggleDebounceMs = 500;
     private const int AffinityPollIntervalMs = 250;
-    // Use the system double-click time so tray clicks match the user's Windows setting
-    private static readonly int ClickResolveDelayMs = SystemInformation.DoubleClickTime + 50;
+    // Left: MouseDoubleClick handles it, so this just delays single-click resolution.
+    private static readonly int LeftClickResolveMs = SystemInformation.DoubleClickTime + 50;
+    // Middle: no MouseDoubleClick event, so we count clicks. Longer window for reliability.
+    private static readonly int MiddleClickResolveMs = SystemInformation.DoubleClickTime * 2;
 
     private readonly AppConfig _config;
     private readonly ProcessManager _processManager;
@@ -49,11 +51,11 @@ public class TrayManager : IDisposable
     // Process Manager (single-instance)
     private ProcessManagerForm? _processManagerForm;
 
-    // Tray click detection (single/double/triple with delayed resolution)
-    private int _trayClickCount;
-    private int _trayMiddleClickCount;
-    private System.Windows.Forms.Timer? _clickResolveTimer;
-    private System.Windows.Forms.Timer? _middleClickResolveTimer;
+    // Tray click detection
+    private System.Windows.Forms.Timer? _leftClickTimer;
+    // Middle button: MouseDoubleClick doesn't fire, so we count clicks manually
+    private int _middleClickCount;
+    private System.Windows.Forms.Timer? _middleClickTimer;
 
 
     // Track last two active clients for swap-last-two mode (by PID, not handle — handles can change)
@@ -87,16 +89,7 @@ public class TrayManager : IDisposable
             _trayIcon.ContextMenuStrip = e.Button == MouseButtons.Right ? _contextMenu : null;
         };
         _trayIcon.MouseClick += OnTrayMouseClick;
-        _trayIcon.MouseDoubleClick += OnTrayMouseClick; // WinForms eats the 2nd click as DoubleClick
-
-        // Ctrl+hover help — event-driven, zero CPU when not hovering
-        _trayIcon.MouseMove += (_, e) =>
-        {
-            if (_config.CtrlHoverHelp && (Control.ModifierKeys & Keys.Control) != 0)
-            {
-                ShowHelpTooltip();
-            }
-        };
+        _trayIcon.MouseDoubleClick += OnTrayMouseDoubleClick;
 
         // Listen for TaskbarCreated to recover tray icon after explorer.exe restarts
         _taskbarMessageWindow = new TaskbarMessageWindow(() =>
@@ -122,13 +115,6 @@ public class TrayManager : IDisposable
         {
             ShowBalloon($"Discovered: {c}");
             _affinityManager.ScheduleRetry(c);
-            // During a launch sequence with grid layout, snap each window to the
-            // target monitor to prevent cross-monitor placement. Skip in stacked
-            // mode (1x1) — EQ opens fine on its own and moving it mid-init can
-            // cause it to minimize.
-            bool isStacked = _config.Layout.Columns == 1 && _config.Layout.Rows == 1;
-            if (_launchManager.IsLaunching && !isStacked)
-                _windowManager.PositionOnTargetMonitor(c);
         };
         _processManager.ClientLost += (_, c) =>
         {
@@ -137,13 +123,6 @@ public class TrayManager : IDisposable
         };
 
         _launchManager.ProgressUpdate += (_, msg) => ShowBalloon(msg);
-        _launchManager.LaunchSequenceComplete += (_, _) =>
-        {
-            // Final arrange after all clients launched (safety net)
-            var clients = _processManager.Clients;
-            if (clients.Count > 0)
-                _windowManager.ArrangeWindows(clients);
-        };
 
         _processManager.StartPolling();
         RegisterHotkeys();
@@ -633,14 +612,14 @@ public class TrayManager : IDisposable
         linksMenu.DropDownItems.Add("\uD83D\uDCD6  Dalaya Wiki", null, (_, _) => FileOperations.OpenUrl("https://wiki.dalaya.org/"));
         linksMenu.DropDownItems.Add("\uD83C\uDFC6  Fomelo Dalaya", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/fomelo/"));
         linksMenu.DropDownItems.Add("\uD83D\uDCDC  Dalaya Listsold", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/listsold.php"));
-        launcherMenu.DropDownItems.Add("\uD83D\uDD27  Dalaya Patcher", null, (_, _) => FileOperations.OpenDalayaPatcher(_config, ShowBalloon));
+        launcherMenu.DropDownItems.Add("\uD83D\uDD27  Dalaya Patcher", null, (_, _) => FileOperations.OpenDalayaPatcher(_config, ShowBalloon, () => ShowSettings(6)));
         launcherMenu.DropDownItems.Add(new ToolStripSeparator());
         launcherMenu.DropDownItems.Add("\uD83D\uDCDC  Open Log File...", null, (_, _) => FileOperations.OpenLogFile(_config, ShowBalloon));
         launcherMenu.DropDownItems.Add("\uD83D\uDCC4  Open eqclient.ini", null, (_, _) => FileOperations.OpenEqClientIni(_config, ShowBalloon));
         launcherMenu.DropDownItems.Add(new ToolStripSeparator());
         launcherMenu.DropDownItems.Add(linksMenu);
         launcherMenu.DropDownItems.Add(new ToolStripSeparator());
-        launcherMenu.DropDownItems.Add("\uD83C\uDFAF  Open GINA", null, (_, _) => FileOperations.OpenGina(_config, ShowBalloon));
+        launcherMenu.DropDownItems.Add("\uD83C\uDFAF  Open GINA", null, (_, _) => FileOperations.OpenGina(_config, ShowBalloon, () => ShowSettings(6)));
         launcherMenu.DropDownItems.Add("\uD83D\uDCDD  Open Notes", null, (_, _) => FileOperations.OpenNotes(_config, ShowBalloon));
         _contextMenu.Items.Add(launcherMenu);
 
@@ -765,6 +744,7 @@ public class TrayManager : IDisposable
 
     private void ShowBalloon(string message)
     {
+        if (_config.TooltipDurationMs <= 0) return;
         // Defer to next message loop iteration so context menu handlers
         // fully complete before we create the tooltip window.
         DeferToNextTick(() => FloatingTooltip.Show(message, _config.TooltipDurationMs));
@@ -810,10 +790,8 @@ public class TrayManager : IDisposable
         lines.Add("🖱  TRAY CLICKS");
         AddClickLine(lines, "Left single", tc.SingleClick);
         AddClickLine(lines, "Left double", tc.DoubleClick);
-        AddClickLine(lines, "Left triple", tc.TripleClick);
         AddClickLine(lines, "Middle single", tc.MiddleClick);
-        AddClickLine(lines, "Middle double", tc.MiddleDoubleClick);
-        AddClickLine(lines, "Middle triple", tc.MiddleTripleClick);
+        AddClickLine(lines, "Middle triple", tc.MiddleDoubleClick);
 
         // Status
         lines.Add("");
@@ -868,7 +846,7 @@ public class TrayManager : IDisposable
 
     private SettingsForm? _settingsForm;
 
-    private void ShowSettings()
+    private void ShowSettings(int tabIndex = 0)
     {
         // Prevent multiple settings windows
         if (_settingsForm != null && !_settingsForm.IsDisposed)
@@ -877,42 +855,48 @@ public class TrayManager : IDisposable
             return;
         }
 
-        _settingsForm = new SettingsForm(_config, ReloadConfig);
+        _settingsForm = new SettingsForm(_config, ReloadConfig, tabIndex);
         _settingsForm.FormClosed += (_, _) => _settingsForm = null;
         _settingsForm.Show();
     }
 
     /// <summary>
-    /// Handle tray icon clicks:
-    /// Double-click → launch one client
-    /// Middle-click → toggle PiP
+    /// Left: single click starts a timer. MouseDoubleClick cancels it.
+    /// Middle: MouseDoubleClick doesn't fire, so we count clicks with a timer.
     /// </summary>
     private void OnTrayMouseClick(object? sender, MouseEventArgs e)
     {
-        if (e.Button == MouseButtons.Middle)
+        if (e.Button == MouseButtons.Left)
         {
-            _trayMiddleClickCount++;
-            FileLogger.Info($"TrayClick: middle click #{_trayMiddleClickCount}");
-            EnsureClickTimer(ref _middleClickResolveTimer, OnMiddleClickResolved);
-            return;
+            FileLogger.Info("TrayClick: left click");
+            EnsureTimer(ref _leftClickTimer, LeftClickResolveMs, OnLeftSingleResolved);
         }
-
-        if (e.Button != MouseButtons.Left) return;
-
-        _trayClickCount++;
-        FileLogger.Info($"TrayClick: left click #{_trayClickCount}");
-        EnsureClickTimer(ref _clickResolveTimer, OnLeftClickResolved);
+        else if (e.Button == MouseButtons.Middle)
+        {
+            _middleClickCount++;
+            FileLogger.Info($"TrayClick: middle click #{_middleClickCount}");
+            EnsureTimer(ref _middleClickTimer, MiddleClickResolveMs, OnMiddleResolved);
+        }
     }
 
     /// <summary>
-    /// Create click resolve timer once, then just restart on subsequent clicks.
-    /// Avoids allocating a new Timer + event handler on every click.
+    /// Double-click: cancels pending single-click timer. Only fires for left button.
     /// </summary>
-    private void EnsureClickTimer(ref System.Windows.Forms.Timer? timer, EventHandler handler)
+    private void OnTrayMouseDoubleClick(object? sender, MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left)
+        {
+            _leftClickTimer?.Stop();
+            FileLogger.Info($"TrayClick: left double → {_config.TrayClick.DoubleClick}");
+            ExecuteTrayAction(_config.TrayClick.DoubleClick);
+        }
+    }
+
+    private void EnsureTimer(ref System.Windows.Forms.Timer? timer, int intervalMs, EventHandler handler)
     {
         if (timer == null)
         {
-            timer = new System.Windows.Forms.Timer { Interval = ClickResolveDelayMs };
+            timer = new System.Windows.Forms.Timer { Interval = intervalMs };
             timer.Tick += handler;
         }
         else
@@ -922,36 +906,21 @@ public class TrayManager : IDisposable
         timer.Start();
     }
 
-    private void OnLeftClickResolved(object? sender, EventArgs e)
+    private void OnLeftSingleResolved(object? sender, EventArgs e)
     {
-        _clickResolveTimer!.Stop();
-
-        int clicks = _trayClickCount;
-        _trayClickCount = 0;
-
-        string action = clicks switch
-        {
-            1 => _config.TrayClick.SingleClick,
-            2 => _config.TrayClick.DoubleClick,
-            _ => _config.TrayClick.TripleClick // 3+
-        };
-        FileLogger.Info($"TrayClick: resolved {clicks} left click(s) → {action}");
-        ExecuteTrayAction(action);
+        _leftClickTimer!.Stop();
+        FileLogger.Info($"TrayClick: left single → {_config.TrayClick.SingleClick}");
+        ExecuteTrayAction(_config.TrayClick.SingleClick);
     }
 
-    private void OnMiddleClickResolved(object? sender, EventArgs e)
+    private void OnMiddleResolved(object? sender, EventArgs e)
     {
-        _middleClickResolveTimer!.Stop();
-
-        int clicks = _trayMiddleClickCount;
-        _trayMiddleClickCount = 0;
-
-        string action = clicks switch
-        {
-            1 => _config.TrayClick.MiddleClick,
-            2 => _config.TrayClick.MiddleDoubleClick,
-            _ => _config.TrayClick.MiddleTripleClick
-        };
+        _middleClickTimer!.Stop();
+        int clicks = _middleClickCount;
+        _middleClickCount = 0;
+        string action = clicks >= 3
+            ? _config.TrayClick.MiddleDoubleClick
+            : _config.TrayClick.MiddleClick;
         FileLogger.Info($"TrayClick: resolved {clicks} middle click(s) → {action}");
         ExecuteTrayAction(action);
     }
@@ -1040,16 +1009,13 @@ public class TrayManager : IDisposable
         _config.Pip.MaxWindows = newConfig.Pip.MaxWindows;
         _config.TrayClick.SingleClick = newConfig.TrayClick.SingleClick;
         _config.TrayClick.DoubleClick = newConfig.TrayClick.DoubleClick;
-        _config.TrayClick.TripleClick = newConfig.TrayClick.TripleClick;
         _config.TrayClick.MiddleClick = newConfig.TrayClick.MiddleClick;
         _config.TrayClick.MiddleDoubleClick = newConfig.TrayClick.MiddleDoubleClick;
-        _config.TrayClick.MiddleTripleClick = newConfig.TrayClick.MiddleTripleClick;
         _config.GinaPath = newConfig.GinaPath;
         _config.NotesPath = newConfig.NotesPath;
         _config.DalayaPatcherPath = newConfig.DalayaPatcherPath;
         _config.Characters = newConfig.Characters;
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
-        _config.CtrlHoverHelp = newConfig.CtrlHoverHelp;
         _config.ShowTooltipErrors = newConfig.ShowTooltipErrors;
         _config.MinimizeToTray = newConfig.MinimizeToTray;
         _config.RunAtStartup = newConfig.RunAtStartup;
@@ -1199,10 +1165,10 @@ public class TrayManager : IDisposable
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
         _launchManager.Dispose();
-        _clickResolveTimer?.Stop();
-        _clickResolveTimer?.Dispose();
-        _middleClickResolveTimer?.Stop();
-        _middleClickResolveTimer?.Dispose();
+        _leftClickTimer?.Stop();
+        _leftClickTimer?.Dispose();
+        _middleClickTimer?.Stop();
+        _middleClickTimer?.Dispose();
         _deferTimer?.Stop();
         _deferTimer?.Dispose();
         _foregroundDebounceTimer?.Stop();

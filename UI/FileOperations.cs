@@ -77,11 +77,14 @@ public static class FileOperations
     /// missing (Windows Defender often deletes it). Only shows a balloon if
     /// the path is configured but the file was removed.
     /// </summary>
-    public static void OpenDalayaPatcher(AppConfig config, Action<string> showBalloon)
+    public static void OpenDalayaPatcher(AppConfig config, Action<string> showBalloon, Action? openPathsTab = null)
     {
         if (string.IsNullOrEmpty(config.DalayaPatcherPath))
         {
-            showBalloon("Dalaya patcher path not set.\nConfigure it in Settings → Paths.");
+            if (openPathsTab != null)
+                openPathsTab();
+            else
+                showBalloon("Dalaya patcher path not set.\nConfigure it in Settings → Paths.");
             return;
         }
 
@@ -107,11 +110,14 @@ public static class FileOperations
         }
     }
 
-    public static void OpenGina(AppConfig config, Action<string> showBalloon)
+    public static void OpenGina(AppConfig config, Action<string> showBalloon, Action? openPathsTab = null)
     {
         if (string.IsNullOrEmpty(config.GinaPath) || !File.Exists(config.GinaPath))
         {
-            showBalloon("GINA path not configured or file not found.\nSet it in Settings.");
+            if (openPathsTab != null)
+                openPathsTab();
+            else
+                showBalloon("GINA path not configured or file not found.\nSet it in Settings.");
             return;
         }
 

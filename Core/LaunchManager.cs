@@ -52,13 +52,12 @@ public class LaunchManager : IDisposable
         }
         _lastLaunchTime = now;
 
-        EnforceWindowedModeIfBorderless();
-        UI.EQClientSettingsForm.EnforceOverrides(_config);
         int pid = StartEQProcess();
         if (pid > 0)
         {
             ProgressUpdate?.Invoke(this, "Launching EQ client...");
             ClientLaunched?.Invoke(this, pid);
+            ScheduleRestore(pid);
         }
     }
 
@@ -78,8 +77,6 @@ public class LaunchManager : IDisposable
         _launchActive = true;
         _launchedPids.Clear();
 
-        EnforceWindowedModeIfBorderless();
-        UI.EQClientSettingsForm.EnforceOverrides(_config);
         FileLogger.Info($"LaunchAll: starting {count} client(s)");
         ProgressUpdate?.Invoke(this, $"Launching {count} client(s)...");
 
@@ -95,6 +92,7 @@ public class LaunchManager : IDisposable
         {
             _launchedPids.Add(pid);
             ClientLaunched?.Invoke(this, pid);
+            ScheduleRestore(pid);
         }
 
         launched++;
@@ -117,32 +115,12 @@ public class LaunchManager : IDisposable
         }
         else
         {
-            // All launched — schedule window fix after FixDelay
-            SchedulePostLaunchFix();
-        }
-    }
-
-    private void SchedulePostLaunchFix()
-    {
-        FileLogger.Info($"LaunchAll: all clients launched, waiting {_config.Launch.FixDelayMs}ms before arranging");
-        ProgressUpdate?.Invoke(this, "Waiting for clients to initialize...");
-
-        var fixTimer = new System.Windows.Forms.Timer { Interval = _config.Launch.FixDelayMs };
-        fixTimer.Tick += (_, _) =>
-        {
-            fixTimer.Stop();
-            _activeTimers.Remove(fixTimer);
-            fixTimer.Dispose();
-
             _launchActive = false;
             _launchedPids.Clear();
-
             ProgressUpdate?.Invoke(this, "Ready to play!");
             LaunchSequenceComplete?.Invoke(this, EventArgs.Empty);
             FileLogger.Info("LaunchAll: sequence complete");
-        };
-        _activeTimers.Add(fixTimer);
-        fixTimer.Start();
+        }
     }
 
     /// <summary>
@@ -167,30 +145,32 @@ public class LaunchManager : IDisposable
     }
 
     /// <summary>
-    /// Ensure eqclient.ini has WindowedMode=TRUE when borderless fullscreen is enabled.
-    /// EQ must launch in windowed mode first — EQSwitch then strips the chrome and
-    /// stretches it to cover the screen. Without this, EQ takes exclusive DirectX
-    /// fullscreen and triggers gamma errors.
+    /// After launching, wait a few seconds then restore the window if EQ minimized it.
+    /// No repositioning or resizing — just un-minimize.
     /// </summary>
-    private void EnforceWindowedModeIfBorderless()
+    private void ScheduleRestore(int pid)
     {
-        if (!_config.Layout.BorderlessFullscreen) return;
-
-        var iniPath = Path.Combine(_config.EQPath, "eqclient.ini");
-        if (!File.Exists(iniPath)) return;
-
-        try
+        var timer = new System.Windows.Forms.Timer { Interval = 3000 };
+        timer.Tick += (_, _) =>
         {
-            var lines = File.ReadAllLines(iniPath, Encoding.Default).ToList();
-            UI.EQClientSettingsForm.SetIniValue(lines, "VideoMode", "WindowedMode", "TRUE");
-            UI.EQClientSettingsForm.SetIniValue(lines, "VideoMode", "Maximized", "0");
-            File.WriteAllLines(iniPath, lines, Encoding.Default);
-            FileLogger.Info("LaunchManager: enforced WindowedMode=TRUE for borderless fullscreen");
-        }
-        catch (Exception ex)
-        {
-            FileLogger.Warn($"LaunchManager: failed to enforce windowed mode: {ex.Message}");
-        }
+            timer.Stop();
+            _activeTimers.Remove(timer);
+            timer.Dispose();
+
+            try
+            {
+                using var proc = System.Diagnostics.Process.GetProcessById(pid);
+                var hwnd = proc.MainWindowHandle;
+                if (hwnd != IntPtr.Zero && NativeMethods.IsIconic(hwnd))
+                {
+                    NativeMethods.ShowWindow(hwnd, NativeMethods.SW_RESTORE);
+                    FileLogger.Info($"LaunchManager: restored minimized window for PID {pid}");
+                }
+            }
+            catch { /* process may have exited */ }
+        };
+        _activeTimers.Add(timer);
+        timer.Start();
     }
 
     private int StartEQProcess()
