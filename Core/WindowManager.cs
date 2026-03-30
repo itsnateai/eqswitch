@@ -123,6 +123,10 @@ public class WindowManager
 
         FileLogger.Info($"ArrangeSingleScreen: monitor bounds L={monitor.Left} T={monitor.Top} R={monitor.Right} B={monitor.Bottom} ({monitor.Width}x{monitor.Height}), grid {cols}x{rows}, cell {cellWidth}x{cellHeight}");
 
+        // In 1x1 (stacked) mode, just restore windows without resizing —
+        // let EQ keep its own size to avoid distorting the render area.
+        bool isStacked = cols == 1 && rows == 1;
+
         for (int i = 0; i < clients.Count; i++)
         {
             var client = clients[i];
@@ -133,13 +137,19 @@ public class WindowManager
                 continue;
             }
 
+            // Restore if minimized
+            _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+
+            if (isStacked)
+            {
+                FileLogger.Info($"ArrangeSingleScreen: restored {client} (stacked mode, no resize)");
+                continue;
+            }
+
             int col = i % cols;
             int row = i / cols;
             int x = monitor.Left + (col * cellWidth);
             int y = monitor.Top + (row * cellHeight) + yOffset;
-
-            // Restore if minimized
-            _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
             if (borderless)
                 ApplyBorderlessStyle(client.WindowHandle);

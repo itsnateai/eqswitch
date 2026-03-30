@@ -578,17 +578,6 @@ public class TrayManager : IDisposable
         // Video Settings submenu
         var videoMenu = new ToolStripMenuItem("\uD83D\uDCFA  Video Settings") { DropDownDirection = ToolStripDropDownDirection.Right };
         videoMenu.DropDownItems.Add($"\uD83E\uDE9F  Fix Windows{HkSuffix(hk.ArrangeWindows)}", null, (_, _) => OnArrangeWindows());
-        videoMenu.DropDownItems.Add("\uD83D\uDD04  Swap Windows", null, (_, _) =>
-        {
-            var clients = _processManager.Clients;
-            if (clients.Count < 2)
-            {
-                ShowBalloon("Need 2+ windows to swap");
-                return;
-            }
-            _windowManager.SwapWindows(clients);
-            ShowBalloon($"Swapped {clients.Count} window positions");
-        });
         videoMenu.DropDownItems.Add("\uD83D\uDCFA  Toggle PiP", null, (_, _) => TogglePip());
         videoMenu.DropDownItems.Add(new ToolStripSeparator());
         videoMenu.DropDownItems.Add("\uD83D\uDCDD  Video Settings...", null, (_, _) =>
@@ -943,12 +932,6 @@ public class TrayManager : IDisposable
         {
             case "FixWindows":
                 OnArrangeWindows();
-                break;
-            case "SwapWindows":
-                var clients = _processManager.Clients;
-                if (clients.Count < 2) { ShowBalloon("Need 2+ windows to swap"); return; }
-                _windowManager.SwapWindows(clients);
-                ShowBalloon($"Swapped {clients.Count} window positions");
                 break;
             case "TogglePiP":
                 TogglePip();
