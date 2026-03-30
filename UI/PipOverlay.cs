@@ -50,10 +50,11 @@ public class PipOverlay : Form
                      ?? new Rectangle(0, 0, 1920, 1080);
         Location = new Point(screen.Right - Width - 10, screen.Top + 10);
 
-        // Restore saved position if available
+        // Restore saved position if available, clamped to visible screen
         if (config.Pip.SavedPositions.Count > 0 && config.Pip.SavedPositions[0].Length >= 2)
         {
             Location = new Point(config.Pip.SavedPositions[0][0], config.Pip.SavedPositions[0][1]);
+            ClampToScreen();
         }
 
         BackColor = config.Pip.ShowBorder ? config.Pip.GetBorderColor() : Color.Black;
@@ -180,7 +181,10 @@ public class PipOverlay : Form
         int newHeight = (h + gap) * _thumbnailIds.Count + borderPad;
         Size = new Size(w + (borderPad * 2), newHeight);
         if (oldHeight != newHeight)
+        {
             Location = new Point(Location.X, Location.Y + (oldHeight - newHeight));
+            ClampToScreen();
+        }
     }
 
     private bool _ctrlHeld;
@@ -269,12 +273,25 @@ public class PipOverlay : Form
 
     private void SavePosition()
     {
+        ClampToScreen();
+
         if (_config.Pip.SavedPositions.Count == 0)
             _config.Pip.SavedPositions.Add(new[] { Location.X, Location.Y });
         else
             _config.Pip.SavedPositions[0] = new[] { Location.X, Location.Y };
 
         ConfigManager.Save(_config);
+    }
+
+    /// <summary>
+    /// Ensure the overlay stays fully within the nearest screen's working area.
+    /// </summary>
+    private void ClampToScreen()
+    {
+        var screen = Screen.FromRectangle(Bounds).WorkingArea;
+        int x = Math.Clamp(Location.X, screen.Left, screen.Right - Width);
+        int y = Math.Clamp(Location.Y, screen.Top, screen.Bottom - Height);
+        Location = new Point(x, y);
     }
 
     protected override void Dispose(bool disposing)

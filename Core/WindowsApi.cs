@@ -8,6 +8,7 @@ namespace EQSwitch.Core;
 public class WindowsApi : IWindowsApi
 {
     public bool IsWindow(IntPtr hwnd) => NativeMethods.IsWindow(hwnd);
+    public bool IsIconic(IntPtr hwnd) => NativeMethods.IsIconic(hwnd);
     public bool IsHungAppWindow(IntPtr hwnd) => NativeMethods.IsHungAppWindow(hwnd);
     public bool ShowWindow(IntPtr hwnd, int nCmdShow) => NativeMethods.ShowWindow(hwnd, nCmdShow);
     public bool SetForegroundWindow(IntPtr hwnd) => NativeMethods.SetForegroundWindow(hwnd);

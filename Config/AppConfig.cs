@@ -53,10 +53,13 @@ public class AppConfig
     public bool ShowTooltipErrors { get; set; } = true;
     public bool MinimizeToTray { get; set; } = true;
     public bool RunAtStartup { get; set; } = false;
-    public int PollingIntervalMs { get; set; } = 500;
+
+
+    /// <summary>Last Settings window position [x, y]. Empty = center screen.</summary>
+    public int[] SettingsWindowPos { get; set; } = Array.Empty<int>();
 
     /// <summary>Duration in ms for floating tooltips (default 1500ms).</summary>
-    public int TooltipDurationMs { get; set; } = 1500;
+    public int TooltipDurationMs { get; set; } = 2000;
 
     /// <summary>Show help tooltip when Ctrl+hovering the tray icon.</summary>
     public bool CtrlHoverHelp { get; set; } = true;
@@ -79,8 +82,6 @@ public class AppConfig
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(EQProcessName)) EQProcessName = "eqgame";
-        PollingIntervalMs = Math.Clamp(PollingIntervalMs, 100, 10000);
-
         // Guard against null nested objects from corrupt/hand-edited JSON
         Layout ??= new();
         Affinity ??= new();
@@ -419,7 +420,7 @@ public class EQClientIniConfig
     public bool DisableChatServer { get; set; } = false;
 
     /// <summary>Force windowed mode (WindowedMode=TRUE in [VideoMode]).</summary>
-    public bool ForceWindowedMode { get; set; } = false;
+    public bool ForceWindowedMode { get; set; } = true;
 
     /// <summary>Max foreground FPS (MaxFPS in [Defaults]). Default 80.</summary>
     public int MaxFPS { get; set; } = 80;

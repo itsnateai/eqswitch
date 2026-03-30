@@ -90,8 +90,8 @@ static class Program
                 }
             }
 
-            bool isNewUser = config.IsFirstRun == false && config.PollingIntervalMs == 500
-                && string.IsNullOrEmpty(config.GinaPath) && config.Characters.Count == 0;
+            bool isNewUser = config.IsFirstRun == false
+                && string.IsNullOrEmpty(config.EQPath);
 
             var processManager = new ProcessManager(config);
             var trayApp = new TrayManager(config, processManager);

@@ -11,26 +11,8 @@ public class EQClient
     public IntPtr WindowHandle { get; set; }
     public int ProcessId { get; set; }
     public string WindowTitle { get; set; } = "";
-    public string? CharacterName { get; set; }
     public int SlotIndex { get; set; }
     public bool IsActive { get; set; }
-
-    /// <summary>
-    /// Attempt to resolve the character name from the window title.
-    /// EQ window titles typically contain the character name.
-    /// Format varies by client: "EverQuest - CharName" or just "EverQuest"
-    /// </summary>
-    public void ResolveCharacterName()
-    {
-        if (string.IsNullOrEmpty(WindowTitle)) return;
-
-        // Shards of Dalaya uses "EverQuest" as the title during login
-        // and "EverQuest - CharName" once logged in
-        if (WindowTitle.Contains(" - "))
-        {
-            CharacterName = WindowTitle.Split(" - ", 2)[1].Trim();
-        }
-    }
 
     /// <summary>
     /// Check if the underlying process is still running.
@@ -50,7 +32,7 @@ public class EQClient
 
     public override string ToString()
     {
-        var name = CharacterName ?? $"Client {SlotIndex + 1}";
+        var name = $"Client {SlotIndex + 1}";
         return $"{name} (PID: {ProcessId})";
     }
 }

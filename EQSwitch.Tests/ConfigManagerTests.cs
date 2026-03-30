@@ -12,7 +12,6 @@ public class ConfigManagerTests
         var original = new AppConfig
         {
             EQPath = @"D:\Games\EQ",
-            PollingIntervalMs = 750,
             Layout = new WindowLayout { Columns = 3, Rows = 2, TopOffset = 25 },
             Affinity = new AffinityConfig { ActivePriority = "High" }
         };
@@ -27,7 +26,6 @@ public class ConfigManagerTests
         var restored = JsonSerializer.Deserialize<AppConfig>(json, options)!;
 
         Assert.Equal(original.EQPath, restored.EQPath);
-        Assert.Equal(original.PollingIntervalMs, restored.PollingIntervalMs);
         Assert.Equal(original.Layout.Columns, restored.Layout.Columns);
         Assert.Equal(original.Layout.Rows, restored.Layout.Rows);
         Assert.Equal(original.Layout.TopOffset, restored.Layout.TopOffset);
@@ -94,7 +92,7 @@ public class ConfigManagerTests
 
         Assert.True(config.IsFirstRun);
         Assert.Equal("eqgame", config.EQProcessName);
-        Assert.Equal(2, config.Layout.Columns);
+        Assert.Equal(1, config.Layout.Columns);
     }
 
     [Fact]

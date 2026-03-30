@@ -927,8 +927,7 @@ public class EQClientSettingsForm : Form
             if (config.EQClientIni.ActorClipPlane > 0)
                 Set("Defaults", "ActorClipPlane", config.EQClientIni.ActorClipPlane.ToString());
 
-            if (config.DisableEQLog)
-                Set("Defaults", "Log", "FALSE");
+            Set("Defaults", "Log", config.DisableEQLog ? "FALSE" : "TRUE");
 
             // Enforce sub-form overrides (dictionary-based — already only write what user saved)
             EQModelsForm.EnforceOverrides(config, lines);

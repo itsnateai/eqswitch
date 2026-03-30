@@ -137,12 +137,22 @@ public class WindowManager
                 continue;
             }
 
-            // Restore if minimized
-            _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+            // Only restore if actually minimized — calling SW_RESTORE on a
+            // normal window during EQ initialization can minimize it
+            if (_api.IsIconic(client.WindowHandle))
+                _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
             if (isStacked)
             {
-                FileLogger.Info($"ArrangeSingleScreen: restored {client} (stacked mode, no resize)");
+                // Move to target monitor origin without resizing — EQ keeps its own window size
+                int sx = monitor.Left;
+                int sy = monitor.Top + yOffset;
+                _api.SetWindowPos(
+                    client.WindowHandle,
+                    IntPtr.Zero,
+                    sx, sy, 0, 0,
+                    NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW);
+                FileLogger.Info($"ArrangeSingleScreen: {client} → stacked at ({sx},{sy})");
                 continue;
             }
 
@@ -196,7 +206,8 @@ public class WindowManager
             // Cycle through monitors: window 0 → monitor 0, window 1 → monitor 1, etc.
             var mon = monitors[i % monitors.Count];
 
-            _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+            if (_api.IsIconic(client.WindowHandle))
+                _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
             if (borderless)
                 ApplyBorderlessStyle(client.WindowHandle);
@@ -245,9 +256,10 @@ public class WindowManager
             positions.Add(rect);
         }
 
-        // Restore all windows first (un-maximize)
+        // Restore minimized windows first
         foreach (var client in clients)
-            _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+            if (_api.IsIconic(client.WindowHandle))
+                _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
         // Rotate: each window moves to the next window's position
         for (int i = 0; i < clients.Count; i++)
@@ -344,17 +356,20 @@ public class WindowManager
         if (!_api.IsWindow(client.WindowHandle)) return;
 
         var monitor = GetTargetMonitor(false);
+        int yOffset = _config.Layout.BorderlessFullscreen ? 1 : _config.Layout.TopOffset;
 
-        _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+        if (_api.IsIconic(client.WindowHandle))
+            _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
+        // Move to target monitor without resizing — let EQ keep its own window size.
+        // Avoid SWP_FRAMECHANGED during launch as it can cause EQ to minimize itself.
         _api.SetWindowPos(
             client.WindowHandle,
             IntPtr.Zero,
-            monitor.Left, monitor.Top + _config.Layout.TopOffset,
-            monitor.Width, monitor.Height - _config.Layout.TopOffset,
-            NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW | NativeMethods.SWP_FRAMECHANGED);
+            monitor.Left, monitor.Top + yOffset, 0, 0,
+            NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW);
 
-        FileLogger.Info($"PositionOnTargetMonitor: {client} → ({monitor.Left},{monitor.Top}) {monitor.Width}x{monitor.Height}");
+        FileLogger.Info($"PositionOnTargetMonitor: {client} → ({monitor.Left},{monitor.Top + yOffset}) (no resize)");
     }
 
     // ─── Monitor Helpers ──────────────────────────────────────────
