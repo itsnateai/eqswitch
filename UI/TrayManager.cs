@@ -123,6 +123,20 @@ public class TrayManager : IDisposable
         };
 
         _launchManager.ProgressUpdate += (_, msg) => ShowBalloon(msg);
+        _launchManager.LaunchSequenceComplete += (_, _) =>
+        {
+            // Only auto-arrange in multimonitor mode — single screen lets EQ
+            // use eqclient.ini positioning (matches AHK behavior)
+            if (_config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase))
+            {
+                var clients = _processManager.Clients;
+                if (clients.Count > 0)
+                {
+                    ShowBalloon("Arranging windows across monitors...");
+                    _windowManager.ArrangeWindows(clients);
+                }
+            }
+        };
 
         _processManager.StartPolling();
         RegisterHotkeys();
@@ -612,14 +626,14 @@ public class TrayManager : IDisposable
         linksMenu.DropDownItems.Add("\uD83D\uDCD6  Dalaya Wiki", null, (_, _) => FileOperations.OpenUrl("https://wiki.dalaya.org/"));
         linksMenu.DropDownItems.Add("\uD83C\uDFC6  Fomelo Dalaya", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/fomelo/"));
         linksMenu.DropDownItems.Add("\uD83D\uDCDC  Dalaya Listsold", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/listsold.php"));
-        launcherMenu.DropDownItems.Add("\uD83D\uDD27  Dalaya Patcher", null, (_, _) => FileOperations.OpenDalayaPatcher(_config, ShowBalloon, () => ShowSettings(6)));
+        launcherMenu.DropDownItems.Add("\uD83D\uDD27  Dalaya Patcher", null, (_, _) => FileOperations.OpenDalayaPatcher(_config, ShowBalloon, () => ShowSettings(4)));
         launcherMenu.DropDownItems.Add(new ToolStripSeparator());
         launcherMenu.DropDownItems.Add("\uD83D\uDCDC  Open Log File...", null, (_, _) => FileOperations.OpenLogFile(_config, ShowBalloon));
         launcherMenu.DropDownItems.Add("\uD83D\uDCC4  Open eqclient.ini", null, (_, _) => FileOperations.OpenEqClientIni(_config, ShowBalloon));
         launcherMenu.DropDownItems.Add(new ToolStripSeparator());
         launcherMenu.DropDownItems.Add(linksMenu);
         launcherMenu.DropDownItems.Add(new ToolStripSeparator());
-        launcherMenu.DropDownItems.Add("\uD83C\uDFAF  Open GINA", null, (_, _) => FileOperations.OpenGina(_config, ShowBalloon, () => ShowSettings(6)));
+        launcherMenu.DropDownItems.Add("\uD83C\uDFAF  Open GINA", null, (_, _) => FileOperations.OpenGina(_config, ShowBalloon, () => ShowSettings(4)));
         launcherMenu.DropDownItems.Add("\uD83D\uDCDD  Open Notes", null, (_, _) => FileOperations.OpenNotes(_config, ShowBalloon));
         _contextMenu.Items.Add(launcherMenu);
 

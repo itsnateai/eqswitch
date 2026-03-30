@@ -36,6 +36,8 @@ public class ProcessManagerForm : Form
 
     // Card 1: Priority preset (applies to all clients, or "None" for per-row manual)
     private ComboBox _cboPriority = null!;
+    private NumericUpDown _nudLaunchRetries = null!;
+    private NumericUpDown _nudLaunchRetryDelay = null!;
 
     // Card 2: Core Assignment (6 slots matching eqclient.ini CPUAffinity0-5)
     private NumericUpDown[] _slotPickers = null!;
@@ -93,7 +95,7 @@ public class ProcessManagerForm : Form
         int y = 10;
 
         // ─── Card 1: CPU Affinity Handling ───────────────────────
-        var cardPriority = DarkTheme.MakeCard(this, "\u26A1", "CPU Affinity Handling", DarkTheme.CardGold, Pad, y, GridW, 65);
+        var cardPriority = DarkTheme.MakeCard(this, "\u26A1", "CPU Affinity Handling", DarkTheme.CardGold, Pad, y, GridW, 105);
 
         _chkAffinityEnabled = new CheckBox
         {
@@ -154,7 +156,15 @@ public class ProcessManagerForm : Form
 
         DarkTheme.AddCardHint(cardPriority, "None = per-client in grid  |  High = prevents VD crashes + autofollow", 10, 50);
 
-        y += 73;
+        // Retry on launch — EQ resets its own priority after starting
+        DarkTheme.AddCardLabel(cardPriority, "On Launch:", 10, 72);
+        DarkTheme.AddCardHint(cardPriority, "EQ resets priority on start —", 80, 74);
+        _nudLaunchRetries = DarkTheme.AddCardNumeric(cardPriority, 270, 70, 45, _config.Affinity.LaunchRetryCount, 0, 10);
+        DarkTheme.AddCardLabel(cardPriority, "retries every", 320, 72);
+        _nudLaunchRetryDelay = DarkTheme.AddCardNumeric(cardPriority, 405, 70, 60, _config.Affinity.LaunchRetryDelayMs, 500, 10000);
+        DarkTheme.AddCardHint(cardPriority, "ms", 470, 74);
+
+        y += 113;
 
         // ─── Process grid ────────────────────────────────────────
         _grid = BuildProcessGrid(y);
@@ -477,6 +487,10 @@ public class ProcessManagerForm : Form
             foreach (var client in _getClients())
                 AffinityManager.SetProcessPriority(client.ProcessId, preset);
         }
+
+        // Launch retry settings
+        _config.Affinity.LaunchRetryCount = (int)_nudLaunchRetries.Value;
+        _config.Affinity.LaunchRetryDelayMs = (int)_nudLaunchRetryDelay.Value;
 
         // Core Assignment — write slot values to config
         for (int i = 0; i < 6; i++)

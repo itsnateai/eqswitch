@@ -53,15 +53,10 @@ public class SettingsForm : Form
     private CheckBox _chkRemoveTitleBars = null!;
     private CheckBox _chkBorderlessFullscreen = null!;
 
-    // ─── Performance tab controls
-    private CheckBox _chkAffinityEnabled = null!;
-    private NumericUpDown _nudRetryCount = null!;
-    private NumericUpDown _nudRetryDelay = null!;
 
     // ─── Launch tab controls
     private NumericUpDown _nudNumClients = null!;
     private NumericUpDown _nudLaunchDelay = null!;
-    private NumericUpDown _nudFixDelay = null!;
 
     // ─── Paths tab controls
     private TextBox _txtGinaPath = null!;
@@ -118,8 +113,6 @@ public class SettingsForm : Form
         tabs.TabPages.Add(BuildGeneralTab());
         tabs.TabPages.Add(BuildHotkeysTab());
         tabs.TabPages.Add(BuildLayoutTab());
-        tabs.TabPages.Add(BuildPerformanceTab());
-        tabs.TabPages.Add(BuildLaunchTab());
         tabs.TabPages.Add(BuildPipTab());
         tabs.TabPages.Add(BuildPathsTab());
 
@@ -361,7 +354,7 @@ public class SettingsForm : Form
         y += 108;
 
         // ─── Actions card ────────────────────────────────────────
-        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 128);
+        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 185);
         cy = 32;
         const int col2 = 250, col2I = 370;
 
@@ -378,8 +371,16 @@ public class SettingsForm : Form
         cy += R + 2;
 
         _chkMultiMonEnabled = DarkTheme.AddCardCheckBox(cardActions, "Multi-monitor mode enabled", L, cy);
+        cy += R + 4;
 
-        y += 136;
+        // Launch settings
+        DarkTheme.AddCardLabel(cardActions, "Clients (Launch All):", L, cy);
+        _nudNumClients = DarkTheme.AddCardNumeric(cardActions, I, cy - 2, 55, 2, 1, 8);
+        DarkTheme.AddCardLabel(cardActions, "Delay between:", col2, cy);
+        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardActions, col2I, cy - 2, 70, 3000, 500, 30000);
+        DarkTheme.AddCardHint(cardActions, "ms", col2I + 75, cy + 2);
+
+        y += 193;
 
         DarkTheme.AddHint(page, "Press key combo to capture. Leave blank to disable. Backspace/Delete to clear.", 15, y);
 
@@ -509,55 +510,6 @@ public class SettingsForm : Form
         }
     }
 
-    private TabPage BuildPerformanceTab()
-    {
-        var page = DarkTheme.MakeTabPage("Performance");
-        int y = 8;
-        const int L = 10, I = 120;
-
-        DarkTheme.AddHint(page, "CPU affinity, priority, and FPS limits are in the Process Manager (tray menu).", 15, y);
-        y += 25;
-
-        // ─── Affinity Retry Settings ─────────────────────────────
-        var cardRetry = DarkTheme.MakeCard(page, "\uD83D\uDD04", "Affinity Retry", DarkTheme.CardGold, 10, y, 480, 95);
-        int cy = 32;
-
-        _chkAffinityEnabled = DarkTheme.AddCardCheckBox(cardRetry, "Enable CPU Affinity Management", L, cy);
-        cy += 28;
-
-        DarkTheme.AddCardLabel(cardRetry, "Retries:", L, cy);
-        _nudRetryCount = DarkTheme.AddCardNumeric(cardRetry, I, cy - 2, 60, 3, 0, 10);
-        DarkTheme.AddCardLabel(cardRetry, "Delay (ms):", 200, cy);
-        _nudRetryDelay = DarkTheme.AddCardNumeric(cardRetry, 280, cy - 2, 80, 2000, 500, 10000);
-
-        return page;
-    }
-
-    private TabPage BuildLaunchTab()
-    {
-        var page = DarkTheme.MakeTabPage("Launch");
-        int y = 8;
-        const int L = 10, I = 230, R = 30;
-
-        // ─── Launch Settings card ────────────────────────────────
-        var cardLaunch = DarkTheme.MakeCard(page, "🚀", "Launch Settings", DarkTheme.CardGreen, 10, y, 480, 140);
-        int cy = 32;
-
-        DarkTheme.AddCardLabel(cardLaunch, "Clients (Launch All):", L, cy);
-        _nudNumClients = DarkTheme.AddCardNumeric(cardLaunch, I, cy - 2, 65, 2, 1, 8);
-        cy += R;
-
-        DarkTheme.AddCardLabel(cardLaunch, "Delay Between Launches:", L, cy);
-        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardLaunch, I, cy - 2, 80, 3000, 500, 30000);
-        DarkTheme.AddCardHint(cardLaunch, "ms", I + 85, cy + 2);
-        cy += R;
-
-        DarkTheme.AddCardLabel(cardLaunch, "Window Fix Delay:", L, cy);
-        _nudFixDelay = DarkTheme.AddCardNumeric(cardLaunch, I, cy - 2, 80, 15000, 1000, 60000);
-        DarkTheme.AddCardHint(cardLaunch, "ms — wait before arranging", I + 85, cy + 2);
-
-        return page;
-    }
 
     private TabPage BuildPathsTab()
     {
@@ -765,14 +717,10 @@ public class SettingsForm : Form
         _chkBorderlessFullscreen.Checked = _config.Layout.BorderlessFullscreen;
 
         // Performance
-        _chkAffinityEnabled.Checked = _config.Affinity.Enabled;
-        _nudRetryCount.Value = DarkTheme.ClampNud(_nudRetryCount, _config.Affinity.LaunchRetryCount);
-        _nudRetryDelay.Value = DarkTheme.ClampNud(_nudRetryDelay, _config.Affinity.LaunchRetryDelayMs);
 
         // Launch
         _nudNumClients.Value = DarkTheme.ClampNud(_nudNumClients, _config.Launch.NumClients);
         _nudLaunchDelay.Value = DarkTheme.ClampNud(_nudLaunchDelay, _config.Launch.LaunchDelayMs);
-        _nudFixDelay.Value = DarkTheme.ClampNud(_nudFixDelay, _config.Launch.FixDelayMs);
 
         // Paths
         _txtGinaPath.Text = _config.GinaPath;
@@ -813,14 +761,7 @@ public class SettingsForm : Form
                 RemoveTitleBars = _chkRemoveTitleBars.Checked,
                 BorderlessFullscreen = _chkBorderlessFullscreen.Checked
             },
-            Affinity = new AffinityConfig
-            {
-                Enabled = _chkAffinityEnabled.Checked,
-                ActivePriority = _config.Affinity.ActivePriority,
-                BackgroundPriority = _config.Affinity.BackgroundPriority,
-                LaunchRetryCount = (int)_nudRetryCount.Value,
-                LaunchRetryDelayMs = (int)_nudRetryDelay.Value
-            },
+            Affinity = _config.Affinity, // managed by Process Manager
             Hotkeys = new HotkeyConfig
             {
                 // General tab switch key takes priority if user edited it there
@@ -839,8 +780,7 @@ public class SettingsForm : Form
                 ExeName = _txtExeName.Text.Trim(),
                 Arguments = _txtArgs.Text.Trim(),
                 NumClients = (int)_nudNumClients.Value,
-                LaunchDelayMs = (int)_nudLaunchDelay.Value,
-                FixDelayMs = (int)_nudFixDelay.Value
+                LaunchDelayMs = (int)_nudLaunchDelay.Value
             },
             Pip = new PipConfig
             {
