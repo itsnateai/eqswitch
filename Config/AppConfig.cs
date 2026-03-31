@@ -187,7 +187,7 @@ public class HotkeyConfig
     /// Alt+1 through Alt+6 — jump directly to a client by slot number.
     /// Uses RegisterHotKey (modifier-based).
     /// </summary>
-    public List<string> DirectSwitchKeys { get; set; } = new() { "Alt+1", "Alt+2", "Alt+3", "Alt+4", "Alt+5", "Alt+6" };
+    public List<string> DirectSwitchKeys { get; set; } = new();
 
     /// <summary>Arrange all EQ windows in a grid layout.</summary>
     public string ArrangeWindows { get; set; } = "";
