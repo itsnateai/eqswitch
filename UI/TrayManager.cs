@@ -203,7 +203,7 @@ public class TrayManager : IDisposable
         FileLogger.Info($"RegisterHotKey: {registered} registered, {failed} failed" +
             (failedKeys.Count > 0 ? $" [{string.Join(", ", failedKeys)}]" : ""));
         if (failedKeys.Count > 0)
-            ShowBalloon($"Hotkey conflict: {string.Join(", ", failedKeys)}\nAnother app may be using these keys.");
+            ShowWarning($"Hotkey conflict: {string.Join(", ", failedKeys)}\nAnother app may be using these keys.");
 
         // Low-level keyboard hook for single-key hotkeys
         if (_keyboardHook.Install())
@@ -768,6 +768,12 @@ public class TrayManager : IDisposable
         // Defer to next message loop iteration so context menu handlers
         // fully complete before we create the tooltip window.
         DeferToNextTick(() => FloatingTooltip.Show(message, _config.TooltipDurationMs));
+    }
+
+    /// <summary>Show a warning tooltip that stays visible longer (5s) regardless of user tooltip setting.</summary>
+    private void ShowWarning(string message)
+    {
+        DeferToNextTick(() => FloatingTooltip.Show(message, 5000));
     }
 
     /// <summary>
