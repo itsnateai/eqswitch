@@ -643,15 +643,16 @@ public class SettingsForm : Form
             _nudPipWidth.Enabled = isCustom;
             _nudPipHeight.Enabled = isCustom;
         };
-        DarkTheme.AddCardLabel(cardPip, "Max PiP Windows:", 250, cy);
+        DarkTheme.AddCardLabel(cardPip, "Max", 310, cy - 12);
+        DarkTheme.AddCardLabel(cardPip, "Windows:", 298, cy + 2);
         _nudPipMaxWindows = DarkTheme.AddCardNumeric(cardPip, 355, cy - 2, 40, 3, 1, 3);
         cy += R;
 
         DarkTheme.AddCardLabel(cardPip, "Custom W:", L, cy);
-        _nudPipWidth = DarkTheme.AddCardNumeric(cardPip, I, cy - 2, 70, 320, 100, 1920);
+        _nudPipWidth = DarkTheme.AddCardNumeric(cardPip, I, cy - 2, 70, 320, 100, 960);
         _nudPipWidth.Enabled = false;
         DarkTheme.AddCardLabel(cardPip, "Custom H:", 210, cy);
-        _nudPipHeight = DarkTheme.AddCardNumeric(cardPip, 290, cy - 2, 70, 240, 100, 1080);
+        _nudPipHeight = DarkTheme.AddCardNumeric(cardPip, 290, cy - 2, 70, 240, 100, 720);
         _nudPipHeight.Enabled = false;
 
         y += 128;
@@ -782,8 +783,8 @@ public class SettingsForm : Form
         _chkPipEnabled.Checked = _config.Pip.Enabled;
         // Select combo item that starts with the saved preset name
         SelectPipPreset(_config.Pip.SizePreset);
-        _nudPipWidth.Value = Math.Clamp(_config.Pip.CustomWidth, 100, 1920);
-        _nudPipHeight.Value = Math.Clamp(_config.Pip.CustomHeight, 100, 1080);
+        _nudPipWidth.Value = Math.Clamp(_config.Pip.CustomWidth, 100, 960);
+        _nudPipHeight.Value = Math.Clamp(_config.Pip.CustomHeight, 100, 720);
         _nudPipOpacity.Value = _config.Pip.Opacity;
         _chkPipBorder.Checked = _config.Pip.ShowBorder;
         _cboPipBorderColor.SelectedItem = _config.Pip.BorderColor;
