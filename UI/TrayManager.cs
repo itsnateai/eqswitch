@@ -174,50 +174,36 @@ public class TrayManager : IDisposable
         var hk = _config.Hotkeys;
         int registered = 0;
         int failed = 0;
+        var failedKeys = new List<string>();
+
+        // Helper: register and track failures
+        bool TryRegister(string key, Action callback, string label)
+        {
+            if (string.IsNullOrEmpty(key)) return false; // not configured
+            int id = _hotkeyManager.Register(key, callback);
+            if (id > 0) { registered++; return true; }
+            failed++;
+            failedKeys.Add($"{label} ({key})");
+            FileLogger.Warn($"RegisterHotKey FAILED for {label}: '{key}' — may be in use by another app");
+            return false;
+        }
 
         // Alt+1 through Alt+6 — direct switch to client by slot
         for (int i = 0; i < hk.DirectSwitchKeys.Count; i++)
         {
             int slot = i; // capture for closure
-            int id = _hotkeyManager.Register(hk.DirectSwitchKeys[i], () => OnDirectSwitch(slot));
-            if (id > 0) registered++; else failed++;
+            TryRegister(hk.DirectSwitchKeys[i], () => OnDirectSwitch(slot), $"Slot{i + 1}");
         }
 
-        // Alt+G — arrange windows in grid
-        if (!string.IsNullOrEmpty(hk.ArrangeWindows))
-        {
-            int id = _hotkeyManager.Register(hk.ArrangeWindows, OnArrangeWindows);
-            if (id > 0) registered++; else failed++;
-        }
+        TryRegister(hk.ArrangeWindows, OnArrangeWindows, "FixWindows");
+        TryRegister(hk.ToggleMultiMonitor, OnToggleMultiMonitor, "MultiMon");
+        TryRegister(hk.LaunchOne, OnLaunchOne, "LaunchOne");
+        TryRegister(hk.LaunchAll, OnLaunchAll, "LaunchAll");
 
-        // Alt+M — toggle multimonitor mode
-        if (!string.IsNullOrEmpty(hk.ToggleMultiMonitor))
-        {
-            int id = _hotkeyManager.Register(hk.ToggleMultiMonitor, OnToggleMultiMonitor);
-            if (id > 0)
-                registered++;
-            else
-            {
-                failed++;
-                FileLogger.Warn($"RegisterHotKey FAILED for ToggleMultiMonitor: '{hk.ToggleMultiMonitor}' — may be in use by another app");
-            }
-        }
-
-        // Launch hotkeys (register only if configured)
-        if (!string.IsNullOrEmpty(hk.LaunchOne))
-        {
-            int id = _hotkeyManager.Register(hk.LaunchOne, OnLaunchOne);
-            if (id > 0) registered++; else failed++;
-        }
-        if (!string.IsNullOrEmpty(hk.LaunchAll))
-        {
-            int id = _hotkeyManager.Register(hk.LaunchAll, OnLaunchAll);
-            if (id > 0) registered++; else failed++;
-        }
-
-        FileLogger.Info($"RegisterHotKey: {registered} registered, {failed} failed");
-        if (failed > 0)
-            ShowBalloon($"{failed} hotkey(s) failed to register — may be in use by another app");
+        FileLogger.Info($"RegisterHotKey: {registered} registered, {failed} failed" +
+            (failedKeys.Count > 0 ? $" [{string.Join(", ", failedKeys)}]" : ""));
+        if (failedKeys.Count > 0)
+            ShowBalloon($"Hotkey conflict: {string.Join(", ", failedKeys)}\nAnother app may be using these keys.");
 
         // Low-level keyboard hook for single-key hotkeys
         if (_keyboardHook.Install())
@@ -365,6 +351,7 @@ public class TrayManager : IDisposable
         if (clients.Count == 0)
         {
             FileLogger.Info("ArrangeWindows: no clients to arrange");
+            ShowBalloon("No EQ clients running");
             return;
         }
 

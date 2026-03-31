@@ -81,9 +81,10 @@ public static class FloatingTooltip
 
             var inner = new Panel
             {
-                Dock = DockStyle.Fill,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 BackColor = DarkTheme.BgPanel,
-                Padding = new Padding(0)
+                Location = new Point(1, 1),
             };
             inner.Paint += (_, e) =>
             {
