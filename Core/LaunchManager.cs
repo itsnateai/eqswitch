@@ -145,18 +145,20 @@ public class LaunchManager : IDisposable
     }
 
     /// <summary>
-    /// After launching, wait a few seconds then restore the window if EQ minimized it.
-    /// No repositioning or resizing — just un-minimize.
+    /// After launching, check multiple times over 15 seconds to restore if EQ minimized itself.
+    /// EQ can minimize when: (1) it starts up, (2) another client steals focus,
+    /// (3) it finishes DirectX init. Multiple checks catch all these cases.
     /// </summary>
     private void ScheduleRestore(int pid)
     {
-        var timer = new System.Windows.Forms.Timer { Interval = 3000 };
+        int attempt = 0;
+        const int maxAttempts = 5;
+        const int intervalMs = 3000; // check every 3s for 15s total
+
+        var timer = new System.Windows.Forms.Timer { Interval = intervalMs };
         timer.Tick += (_, _) =>
         {
-            timer.Stop();
-            _activeTimers.Remove(timer);
-            timer.Dispose();
-
+            attempt++;
             try
             {
                 using var proc = System.Diagnostics.Process.GetProcessById(pid);
@@ -164,10 +166,22 @@ public class LaunchManager : IDisposable
                 if (hwnd != IntPtr.Zero && NativeMethods.IsIconic(hwnd))
                 {
                     NativeMethods.ShowWindow(hwnd, NativeMethods.SW_RESTORE);
-                    FileLogger.Info($"LaunchManager: restored minimized window for PID {pid}");
+                    FileLogger.Info($"LaunchManager: restored minimized window for PID {pid} (attempt {attempt})");
+                }
+                else if (hwnd == IntPtr.Zero)
+                {
+                    FileLogger.Info($"LaunchManager: PID {pid} has no window yet (attempt {attempt})");
                 }
             }
             catch { /* process may have exited */ }
+
+            if (attempt >= maxAttempts)
+            {
+                timer.Stop();
+                _activeTimers.Remove(timer);
+                timer.Dispose();
+                FileLogger.Info($"LaunchManager: restore checks done for PID {pid} after {attempt} attempts");
+            }
         };
         _activeTimers.Add(timer);
         timer.Start();

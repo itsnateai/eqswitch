@@ -64,7 +64,7 @@ TRAY ICON:
   Single-click       {config.TrayClick.SingleClick}
   Double-click       {config.TrayClick.DoubleClick}
   Middle-click       {config.TrayClick.MiddleClick}
-  Middle-triple      {config.TrayClick.MiddleDoubleClick}
+  Middle-double      {config.TrayClick.MiddleDoubleClick}
   (Configurable in Settings → General tab)
 
 LAYOUT MODES:

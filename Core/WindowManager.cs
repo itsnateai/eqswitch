@@ -193,6 +193,18 @@ public class WindowManager
 
         int yOffset = borderless ? 1 : _config.Layout.TopOffset;
 
+        // Build ordered monitor list: primary first, then secondary
+        var primaryIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, monitors.Count - 1);
+        int secondaryIdx;
+        if (_config.Layout.SecondaryMonitor >= 0 && _config.Layout.SecondaryMonitor < monitors.Count)
+            secondaryIdx = _config.Layout.SecondaryMonitor;
+        else
+            secondaryIdx = primaryIdx == 0 && monitors.Count > 1 ? 1 : 0; // auto: first non-primary
+
+        var monitorOrder = new List<WinRect> { monitors[primaryIdx] };
+        if (monitors.Count > 1)
+            monitorOrder.Add(monitors[secondaryIdx]);
+
         for (int i = 0; i < clients.Count; i++)
         {
             var client = clients[i];
@@ -203,11 +215,10 @@ public class WindowManager
                 continue;
             }
 
-            // Cycle through monitors: window 0 → monitor 0, window 1 → monitor 1, etc.
-            var mon = monitors[i % monitors.Count];
+            var mon = monitorOrder[i % monitorOrder.Count];
 
-            if (_api.IsIconic(client.WindowHandle))
-                _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+            // Always restore before moving — prevents stuck-minimized windows
+            _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
             if (borderless)
                 ApplyBorderlessStyle(client.WindowHandle);
@@ -219,9 +230,12 @@ public class WindowManager
                 IntPtr.Zero,
                 mon.Left, mon.Top + yOffset, mon.Width, mon.Height,
                 NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW | NativeMethods.SWP_FRAMECHANGED);
+
+            string monLabel = i % monitorOrder.Count == 0 ? "primary" : "secondary";
+            FileLogger.Info($"ArrangeMultiMonitor: {client} → {monLabel} monitor ({mon.Left},{mon.Top}) {mon.Width}x{mon.Height}");
         }
 
-        FileLogger.Info($"ArrangeMultiMonitor: {clients.Count} window(s) across {monitors.Count} monitor(s)" +
+        FileLogger.Info($"ArrangeMultiMonitor: {clients.Count} window(s), primary={primaryIdx} secondary={secondaryIdx}" +
             (borderless ? " (borderless)" : ""));
     }
 

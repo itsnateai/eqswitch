@@ -22,18 +22,19 @@ public class VideoSettingsForm : Form
     private NumericUpDown _nudOffsetY = null!;
     private CheckBox _chkWindowed = null!;
     private CheckBox _chkMultiMon = null!;
-    private CheckBox _chkDisableLog = null!;
+    private ComboBox _cboPrimaryMon = null!;
+    private ComboBox _cboSecondaryMon = null!;
     private NumericUpDown _nudTopOffset = null!;
 
     // Resolution presets
     private static readonly (string Name, int W, int H)[] Presets =
     {
-        ("1920x1080 (Full HD)", 1920, 1080),
-        ("1920x1200 (WUXGA)", 1920, 1200),
-        ("1920x1020", 1920, 1020),
-        ("2560x1440 (QHD)", 2560, 1440),
+        ("1920x1080", 1920, 1080),
+        ("1920x1200", 1920, 1200),
+        ("1920x1020 (above taskbar)", 1920, 1020),
+        ("2560x1440", 2560, 1440),
         ("3840x2160 (4K)", 3840, 2160),
-        ("1280x720 (HD)", 1280, 720),
+        ("1280x720", 1280, 720),
         ("1600x900", 1600, 900),
         ("1366x768", 1366, 768),
         ("Custom", 0, 0)
@@ -49,15 +50,17 @@ public class VideoSettingsForm : Form
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 Video Settings", new Size(460, 440));
+        DarkTheme.StyleForm(this, "EQSwitch \u2014 Video Settings", new Size(480, 445));
 
         int y = 15;
+        const int L = 15, col2 = 245;
 
-        AddLabel("Resolution Preset:", 15, y);
+        // ─── Row 1: Preset + Windowed checkbox ──────────────────
+        AddLabel("Preset:", L, y + 2);
         _cboPreset = new ComboBox
         {
-            Location = new Point(15, y += 22),
-            Size = new Size(250, 25),
+            Location = new Point(65, y),
+            Size = new Size(150, 25),
             BackColor = DarkTheme.BgInput,
             ForeColor = DarkTheme.FgWhite,
             DropDownStyle = ComboBoxStyle.DropDownList,
@@ -67,72 +70,144 @@ public class VideoSettingsForm : Form
         _cboPreset.SelectedIndexChanged += CboPreset_SelectedIndexChanged;
         Controls.Add(_cboPreset);
 
-        AddLabel("Width:", 15, y += 35);
-        _nudWidth = AddNumeric(15, y += 22, 80, 1920, 320, 7680);
-
-        AddLabel("Height:", 110, y - 22);
-        _nudHeight = AddNumeric(110, y, 80, 1080, 200, 4320);
-
-        AddLabel("Window Offset X:", 15, y += 45);
-        _nudOffsetX = AddNumeric(15, y += 22, 60, 0, -5000, 5000);
-
-        AddLabel("Window Offset Y:", 130, y - 22);
-        _nudOffsetY = AddNumeric(130, y, 60, 0, -5000, 5000);
-
         _chkWindowed = new CheckBox
         {
             Text = "Windowed Mode",
-            Location = new Point(15, y += 40),
+            Location = new Point(col2, y + 2),
             AutoSize = true,
             ForeColor = DarkTheme.FgWhite,
             Checked = _config.EQClientIni.ForceWindowedMode
         };
         Controls.Add(_chkWindowed);
 
+        // ─── Row 2: Width / Height / Offsets (all on one row) ───
+        y += 32;
+        AddLabel("Width:", L, y + 2);
+        _nudWidth = AddNumeric(65, y, 70, 1920, 320, 7680);
+        _nudWidth.ValueChanged += (_, _) => SyncPresetToCustom();
+
+        AddLabel("Height:", 145, y + 2);
+        _nudHeight = AddNumeric(195, y, 70, 1080, 200, 4320);
+        _nudHeight.ValueChanged += (_, _) => SyncPresetToCustom();
+
+        // ─── Row 3: All three offsets on one line ───────────────
+        y += 32;
+        AddLabel("Offset X:", L, y + 2);
+        _nudOffsetX = AddNumeric(80, y, 55, 0, -5000, 5000);
+
+        AddLabel("Y:", 145, y + 2);
+        _nudOffsetY = AddNumeric(162, y, 55, 0, -5000, 5000);
+
+        AddLabel("Top:", 230, y + 2);
+        _nudTopOffset = AddNumeric(260, y, 55, _config.Layout.TopOffset, -100, 200);
+        DarkTheme.AddHint(this, "px down from top edge", 320, y + 4);
+
+        // ─── Row 4: Multi-Monitor checkbox ──────────────────────
+        y += 38;
         _chkMultiMon = new CheckBox
         {
             Text = "Multi-Monitor Mode",
-            Location = new Point(200, y),
+            Location = new Point(L, y),
             AutoSize = true,
             ForeColor = DarkTheme.FgWhite,
             Checked = _config.Hotkeys.MultiMonitorEnabled
         };
         Controls.Add(_chkMultiMon);
 
-        _chkDisableLog = new CheckBox
+        // ─── Row 5: Primary / Secondary monitors (stacked) ─────
+        y += 28;
+        var screens = Screen.AllScreens.OrderBy(s => s.Bounds.Left).ToArray();
+        var monItems = new string[screens.Length];
+        for (int i = 0; i < screens.Length; i++)
         {
-            Text = "Disable EQ Logging (Log=FALSE)",
-            Location = new Point(15, y += 25),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.DisableEQLog
+            var primary = screens[i].Primary ? " (primary)" : "";
+            monItems[i] = $"{i + 1}: {screens[i].Bounds.Width}x{screens[i].Bounds.Height}{primary}";
+        }
+
+        AddLabel("Primary:", L + 10, y + 2);
+        _cboPrimaryMon = new ComboBox
+        {
+            Location = new Point(95, y), Size = new Size(200, 25),
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat
         };
-        Controls.Add(_chkDisableLog);
+        _cboPrimaryMon.Items.AddRange(monItems);
+        _cboPrimaryMon.SelectedIndex = Math.Clamp(_config.Layout.TargetMonitor, 0, screens.Length - 1);
+        Controls.Add(_cboPrimaryMon);
+        DarkTheme.WrapWithBorder(_cboPrimaryMon);
 
-        AddLabel("Title Bar Offset (FIX_TOP_OFFSET):", 15, y += 35);
-        _nudTopOffset = AddNumeric(15, y += 22, 60, _config.Layout.TopOffset, -100, 200);
+        y += 28;
+        AddLabel("Secondary:", L + 10, y + 2);
+        var secItems = new string[screens.Length + 1];
+        secItems[0] = "Auto (first non-primary)";
+        for (int i = 0; i < monItems.Length; i++) secItems[i + 1] = monItems[i];
+        _cboSecondaryMon = new ComboBox
+        {
+            Location = new Point(95, y), Size = new Size(200, 25),
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat
+        };
+        _cboSecondaryMon.Items.AddRange(secItems);
+        var secIdx = _config.Layout.SecondaryMonitor < 0 ? 0 : _config.Layout.SecondaryMonitor + 1;
+        _cboSecondaryMon.SelectedIndex = Math.Clamp(secIdx, 0, secItems.Length - 1);
+        Controls.Add(_cboSecondaryMon);
+        DarkTheme.WrapWithBorder(_cboSecondaryMon);
 
-        // Hint
-        DarkTheme.AddHint(this, "Changes require EQ restart to take effect.", 15, y += 40);
+        // ─── Hint + Buttons ─────────────────────────────────────
+        y += 35;
+        DarkTheme.AddHint(this, "Changes require EQ restart to take effect.", L, y);
 
-        // Buttons
-        y += 20;
-        var btnBackup = DarkTheme.MakeButton("\uD83D\uDCBE Backup", DarkTheme.BgMedium, 15, y);
+        // Row 1: Backup + Restore
+        y += 22;
+        var btnBackup = DarkTheme.MakeButton("\uD83D\uDCBE Backup", DarkTheme.BgMedium, 130, y);
         btnBackup.Click += (_, _) => BackupIni();
 
-        var btnReset = DarkTheme.MakeButton("\uD83D\uDD04 Reset", DarkTheme.BgMedium, 100, y);
+        var btnRestore = DarkTheme.MakeButton("\uD83D\uDCC2 Restore", DarkTheme.BgMedium, 250, y);
+        btnRestore.Click += (_, _) => RestoreIni();
+
+        // Row 2: Reset, Save, Apply, Cancel
+        y += 36;
+        var btnReset = DarkTheme.MakeButton("\uD83D\uDD04 Reset", DarkTheme.BgMedium, 30, y);
         btnReset.Click += (_, _) => ResetDefaults();
 
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 185, y);
+        var btnSave = DarkTheme.MakePrimaryButton("Save", 140, y);
         btnSave.Click += (_, _) => { SaveToIni(); Close(); };
 
-        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 270, y);
+        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 250, y);
         btnApply.Click += (_, _) => { SaveToIni(); };
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 355, y);
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 360, y);
         btnCancel.Click += (_, _) => Close();
 
-        Controls.AddRange(new Control[] { btnBackup, btnReset, btnSave, btnApply, btnCancel });
+        Controls.AddRange(new Control[] { btnBackup, btnRestore, btnReset, btnSave, btnApply, btnCancel });
+    }
+
+    /// <summary>
+    /// When user manually changes width/height, switch preset dropdown to "Custom".
+    /// </summary>
+    private void SyncPresetToCustom()
+    {
+        int w = (int)_nudWidth.Value;
+        int h = (int)_nudHeight.Value;
+
+        // Check if current values match any preset
+        foreach (var p in Presets)
+        {
+            if (p.W == w && p.H == h) return; // matches a preset, don't change dropdown
+        }
+
+        // Check custom presets in the dropdown
+        for (int i = 0; i < _cboPreset.Items.Count; i++)
+        {
+            string? item = _cboPreset.Items[i]?.ToString();
+            if (item == $"{w}x{h}") { _cboPreset.SelectedIndex = i; return; }
+        }
+
+        // No match — select "Custom"
+        for (int i = 0; i < _cboPreset.Items.Count; i++)
+        {
+            if (_cboPreset.Items[i]?.ToString() == "Custom") { _cboPreset.SelectedIndex = i; return; }
+        }
     }
 
     private void LoadFromIni()
@@ -187,8 +262,7 @@ public class VideoSettingsForm : Form
                 }
                 else if (currentSection.Equals("[Defaults]", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (key.Equals("Log", StringComparison.OrdinalIgnoreCase))
-                        _chkDisableLog.Checked = val.Equals("FALSE", StringComparison.OrdinalIgnoreCase);
+                    // Log toggle moved to EQ Client Settings form
                 }
             }
 
@@ -226,7 +300,6 @@ public class VideoSettingsForm : Form
         _nudOffsetY.Value = 0;
         _chkWindowed.Checked = true;
         _chkMultiMon.Checked = false;
-        _chkDisableLog.Checked = false;
         _nudTopOffset.Value = 0;
     }
 
@@ -258,15 +331,50 @@ public class VideoSettingsForm : Form
         }
     }
 
+    private void RestoreIni()
+    {
+        var dir = Path.GetDirectoryName(_iniPath) ?? ".";
+        using var dlg = new OpenFileDialog
+        {
+            Title = "Restore eqclient.ini from Backup",
+            Filter = "Backup Files (*.bak*)|*.bak*|All Files (*.*)|*.*",
+            InitialDirectory = dir,
+            FileName = ""
+        };
+
+        if (dlg.ShowDialog() != DialogResult.OK)
+            return;
+
+        try
+        {
+            File.Copy(dlg.FileName, _iniPath, overwrite: true);
+            FileLogger.Info($"VideoSettings: restored eqclient.ini from {Path.GetFileName(dlg.FileName)}");
+
+            // Reload form values from restored file
+            LoadFromIni();
+            MessageBox.Show($"Restored from:\n{Path.GetFileName(dlg.FileName)}", "Restore Complete",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Error("VideoSettings: restore error", ex);
+            MessageBox.Show($"Restore failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
     private void SaveToIni()
     {
         try
         {
             // Save TopOffset, log toggle, and custom preset to config
             _config.Layout.TopOffset = (int)_nudTopOffset.Value;
+            _config.Layout.TargetMonitor = _cboPrimaryMon.SelectedIndex;
+            _config.Layout.SecondaryMonitor = _cboSecondaryMon.SelectedIndex <= 0 ? -1 : _cboSecondaryMon.SelectedIndex - 1;
             _config.EQClientIni.ForceWindowedMode = _chkWindowed.Checked;
             _config.Hotkeys.MultiMonitorEnabled = _chkMultiMon.Checked;
-            _config.DisableEQLog = _chkDisableLog.Checked;
+            // Reset to single-screen if user disabled multimonitor
+            if (!_chkMultiMon.Checked)
+                _config.Layout.Mode = "single";
             SaveCustomPreset();
             ConfigManager.Save(_config);
 
@@ -332,8 +440,7 @@ public class VideoSettingsForm : Form
                     lines.Add($"{kv.Key}={kv.Value}");
             }
 
-            // Update [Defaults] section — set Log=TRUE/FALSE
-            UpdateDefaultsSection(lines);
+            // Log toggle moved to EQ Client Settings form
 
             WriteWithRetry(_iniPath, lines);
             FileLogger.Info("VideoSettings: saved to eqclient.ini");
@@ -348,49 +455,7 @@ public class VideoSettingsForm : Form
     /// <summary>
     /// Update or create the Log= key in the [Defaults] section of eqclient.ini.
     /// </summary>
-    private void UpdateDefaultsSection(List<string> lines)
-    {
-        string logValue = _chkDisableLog.Checked ? "FALSE" : "TRUE";
-        int sectionStart = -1;
-        int sectionEnd = lines.Count;
-
-        for (int i = 0; i < lines.Count; i++)
-        {
-            var trimmed = lines[i].Trim();
-            if (trimmed.Equals("[Defaults]", StringComparison.OrdinalIgnoreCase))
-                sectionStart = i;
-            else if (sectionStart >= 0 && trimmed.StartsWith("["))
-            {
-                sectionEnd = i;
-                break;
-            }
-        }
-
-        if (sectionStart >= 0)
-        {
-            // Look for existing Log= key
-            bool found = false;
-            for (int i = sectionStart + 1; i < sectionEnd; i++)
-            {
-                var parts = lines[i].Split('=', 2);
-                if (parts.Length == 2 && parts[0].Trim().Equals("Log", StringComparison.OrdinalIgnoreCase))
-                {
-                    lines[i] = $"Log={logValue}";
-                    found = true;
-                    break;
-                }
-            }
-            if (!found)
-                lines.Insert(sectionEnd, $"Log={logValue}");
-        }
-        else
-        {
-            // Append [Defaults] section
-            lines.Add("");
-            lines.Add("[Defaults]");
-            lines.Add($"Log={logValue}");
-        }
-    }
+    // UpdateDefaultsSection removed — Log toggle moved to EQClientSettingsForm
 
     /// <summary>
     /// Write file with retry — EQ may hold a lock on eqclient.ini briefly.

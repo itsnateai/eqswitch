@@ -194,7 +194,13 @@ public class TrayManager : IDisposable
         if (!string.IsNullOrEmpty(hk.ToggleMultiMonitor))
         {
             int id = _hotkeyManager.Register(hk.ToggleMultiMonitor, OnToggleMultiMonitor);
-            if (id > 0) registered++; else failed++;
+            if (id > 0)
+                registered++;
+            else
+            {
+                failed++;
+                FileLogger.Warn($"RegisterHotKey FAILED for ToggleMultiMonitor: '{hk.ToggleMultiMonitor}' — may be in use by another app");
+            }
         }
 
         // Launch hotkeys (register only if configured)
@@ -210,6 +216,8 @@ public class TrayManager : IDisposable
         }
 
         FileLogger.Info($"RegisterHotKey: {registered} registered, {failed} failed");
+        if (failed > 0)
+            ShowBalloon($"{failed} hotkey(s) failed to register — may be in use by another app");
 
         // Low-level keyboard hook for single-key hotkeys
         if (_keyboardHook.Install())
@@ -275,6 +283,11 @@ public class TrayManager : IDisposable
             return;
         }
 
+        // In multimonitor mode, rotate window positions across monitors then focus
+        bool isMultiMon = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+        if (isMultiMon)
+            _windowManager.SwapWindows(clients);
+
         if (_config.Hotkeys.SwitchKeyMode == "swapLast")
         {
             // Alt+Tab style: swap to the previous active client (matched by PID — handles can change)
@@ -288,21 +301,21 @@ public class TrayManager : IDisposable
                 if (target != null)
                 {
                     _windowManager.SwitchToClient(target);
-                    FileLogger.Info($"SwitchKey: swapped to last active {target}");
+                    FileLogger.Info($"SwitchKey: {(isMultiMon ? "swapped positions + " : "")}swapped to last active {target}");
                     return;
                 }
             }
             // Fallback to cycle if no previous client tracked
             var next = _windowManager.CycleNext(clients, current);
             if (next != null)
-                FileLogger.Info($"SwitchKey: cycled (no previous tracked) to {next}");
+                FileLogger.Info($"SwitchKey: {(isMultiMon ? "swapped positions + " : "")}cycled (no previous tracked) to {next}");
         }
         else
         {
             // Cycle through all clients round-robin
             var next = _windowManager.CycleNext(clients, current);
             if (next != null)
-                FileLogger.Info($"SwitchKey: cycled to {next}");
+                FileLogger.Info($"SwitchKey: {(isMultiMon ? "swapped positions + " : "")}cycled to {next}");
         }
     }
 
@@ -322,12 +335,17 @@ public class TrayManager : IDisposable
             return;
         }
 
+        // In multimonitor mode, rotate window positions across monitors then focus
+        bool isMultiMon = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+        if (isMultiMon && clients.Count >= 2)
+            _windowManager.SwapWindows(clients);
+
         if (current != null)
         {
             // EQ is focused — cycle to next
             var next = _windowManager.CycleNext(clients, current);
             if (next != null)
-                FileLogger.Info($"GlobalSwitchKey: cycled to {next}");
+                FileLogger.Info($"GlobalSwitchKey: {(isMultiMon ? "swapped positions + " : "")}cycled to {next}");
         }
         else
         {
@@ -364,6 +382,7 @@ public class TrayManager : IDisposable
         if (!_config.Hotkeys.MultiMonitorEnabled)
         {
             FileLogger.Info("ToggleMultiMonitor: disabled in config");
+            ShowBalloon("Multi-monitor toggle is disabled in Settings");
             return;
         }
 
@@ -805,7 +824,7 @@ public class TrayManager : IDisposable
         AddClickLine(lines, "Left single", tc.SingleClick);
         AddClickLine(lines, "Left double", tc.DoubleClick);
         AddClickLine(lines, "Middle single", tc.MiddleClick);
-        AddClickLine(lines, "Middle triple", tc.MiddleDoubleClick);
+        AddClickLine(lines, "Middle double", tc.MiddleDoubleClick);
 
         // Status
         lines.Add("");
@@ -869,8 +888,16 @@ public class TrayManager : IDisposable
             return;
         }
 
-        _settingsForm = new SettingsForm(_config, ReloadConfig, tabIndex);
-        _settingsForm.FormClosed += (_, _) => _settingsForm = null;
+        // Suspend hotkeys while Settings is open so keys like ] can be typed into fields
+        _hotkeyManager.UnregisterAll();
+        _keyboardHook.Reset();
+
+        _settingsForm = new SettingsForm(_config, ReloadConfig, tabIndex, ShowProcessManager);
+        _settingsForm.FormClosed += (_, _) =>
+        {
+            _settingsForm = null;
+            RegisterHotkeys();
+        };
         _settingsForm.Show();
     }
 
@@ -932,7 +959,7 @@ public class TrayManager : IDisposable
         _middleClickTimer!.Stop();
         int clicks = _middleClickCount;
         _middleClickCount = 0;
-        string action = clicks >= 3
+        string action = clicks >= 2
             ? _config.TrayClick.MiddleDoubleClick
             : _config.TrayClick.MiddleClick;
         FileLogger.Info($"TrayClick: resolved {clicks} middle click(s) → {action}");
@@ -992,6 +1019,7 @@ public class TrayManager : IDisposable
         _config.Layout.BorderlessFullscreen = newConfig.Layout.BorderlessFullscreen;
         _config.Layout.SnapToMonitor = newConfig.Layout.SnapToMonitor;
         _config.Layout.TargetMonitor = newConfig.Layout.TargetMonitor;
+        _config.Layout.SecondaryMonitor = newConfig.Layout.SecondaryMonitor;
         _config.Layout.TopOffset = newConfig.Layout.TopOffset;
         _config.Layout.Mode = newConfig.Layout.Mode;
         _config.Affinity.Enabled = newConfig.Affinity.Enabled;

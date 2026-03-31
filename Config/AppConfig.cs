@@ -59,7 +59,7 @@ public class AppConfig
     public int[] SettingsWindowPos { get; set; } = Array.Empty<int>();
 
     /// <summary>Duration in ms for floating tooltips (default 1500ms).</summary>
-    public int TooltipDurationMs { get; set; } = 2000;
+    public int TooltipDurationMs { get; set; } = 1000;
 
     /// <summary>Show help tooltip when Ctrl+hovering the tray icon.</summary>
     public bool CtrlHoverHelp { get; set; } = true;
@@ -92,9 +92,10 @@ public class AppConfig
         EQClientIni ??= new();
         Characters ??= new();
 
-        Layout.Columns = Math.Clamp(Layout.Columns, 1, 4);
-        Layout.Rows = Math.Clamp(Layout.Rows, 1, 4);
+        Layout.Columns = Math.Clamp(Layout.Columns, 1, 2);
+        Layout.Rows = Math.Clamp(Layout.Rows, 1, 2);
         Layout.TargetMonitor = Math.Clamp(Layout.TargetMonitor, 0, 8);
+        Layout.SecondaryMonitor = Math.Clamp(Layout.SecondaryMonitor, -1, 8);
         Layout.TopOffset = Math.Clamp(Layout.TopOffset, -200, 200);
 
         Affinity.LaunchRetryCount = Math.Clamp(Affinity.LaunchRetryCount, 0, 20);
@@ -119,6 +120,11 @@ public class WindowLayout
     public bool BorderlessFullscreen { get; set; } = false;
     public bool SnapToMonitor { get; set; } = true;
     public int TargetMonitor { get; set; } = 0; // 0 = primary
+
+    /// <summary>
+    /// Secondary monitor index for multimonitor mode. Background client goes here.
+    /// </summary>
+    public int SecondaryMonitor { get; set; } = -1; // -1 = auto (first non-primary)
 
     /// <summary>
     /// Pixel offset added to Y position when arranging windows.
