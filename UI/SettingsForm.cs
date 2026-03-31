@@ -633,10 +633,13 @@ public class SettingsForm : Form
         cy += R;
 
         DarkTheme.AddCardLabel(cardPip, "Size Preset:", L, cy);
-        _cboPipSize = DarkTheme.AddCardComboBox(cardPip, I, cy - 2, 110, new[] { "Small", "Medium", "Large", "XL", "XXL", "Custom" });
+        _cboPipSize = DarkTheme.AddCardComboBox(cardPip, I, cy - 2, 170, new[] {
+            "Small (200x150)", "Medium (320x240)", "Large (400x300)",
+            "XL (480x360)", "XXL (640x480)", "Custom"
+        });
         _cboPipSize.SelectedIndexChanged += (_, _) =>
         {
-            bool isCustom = _cboPipSize.SelectedItem?.ToString() == "Custom";
+            bool isCustom = _cboPipSize.SelectedItem?.ToString()?.StartsWith("Custom") == true;
             _nudPipWidth.Enabled = isCustom;
             _nudPipHeight.Enabled = isCustom;
         };
@@ -777,7 +780,8 @@ public class SettingsForm : Form
 
         // PiP
         _chkPipEnabled.Checked = _config.Pip.Enabled;
-        _cboPipSize.SelectedItem = _config.Pip.SizePreset;
+        // Select combo item that starts with the saved preset name
+        SelectPipPreset(_config.Pip.SizePreset);
         _nudPipWidth.Value = Math.Clamp(_config.Pip.CustomWidth, 100, 1920);
         _nudPipHeight.Value = Math.Clamp(_config.Pip.CustomHeight, 100, 1080);
         _nudPipOpacity.Value = _config.Pip.Opacity;
@@ -835,7 +839,7 @@ public class SettingsForm : Form
             Pip = new PipConfig
             {
                 Enabled = _chkPipEnabled.Checked,
-                SizePreset = _cboPipSize.SelectedItem?.ToString() ?? "Medium",
+                SizePreset = ExtractPipPresetName(_cboPipSize.SelectedItem?.ToString() ?? "Medium"),
                 CustomWidth = (int)_nudPipWidth.Value,
                 CustomHeight = (int)_nudPipHeight.Value,
                 Opacity = (byte)_nudPipOpacity.Value,
@@ -862,6 +866,27 @@ public class SettingsForm : Form
     }
 
 
+
+    /// <summary>Strip " (WxH)" suffix from combo item to get bare preset name for config.</summary>
+    private static string ExtractPipPresetName(string comboText)
+    {
+        int paren = comboText.IndexOf(" (", StringComparison.Ordinal);
+        return paren > 0 ? comboText[..paren] : comboText;
+    }
+
+    /// <summary>Select the combo item that starts with the given preset name.</summary>
+    private void SelectPipPreset(string presetName)
+    {
+        for (int i = 0; i < _cboPipSize.Items.Count; i++)
+        {
+            if (_cboPipSize.Items[i]?.ToString()?.StartsWith(presetName, StringComparison.OrdinalIgnoreCase) == true)
+            {
+                _cboPipSize.SelectedIndex = i;
+                return;
+            }
+        }
+        _cboPipSize.SelectedIndex = 1; // fallback to Medium
+    }
 
     protected override void Dispose(bool disposing)
     {
