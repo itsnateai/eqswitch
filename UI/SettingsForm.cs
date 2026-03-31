@@ -643,7 +643,7 @@ public class SettingsForm : Form
             _nudPipWidth.Enabled = isCustom;
             _nudPipHeight.Enabled = isCustom;
         };
-        DarkTheme.AddCardLabel(cardPip, "Max Windows:", 260, cy);
+        DarkTheme.AddCardLabel(cardPip, "Max PiP Windows:", 250, cy);
         _nudPipMaxWindows = DarkTheme.AddCardNumeric(cardPip, 355, cy - 2, 40, 3, 1, 3);
         cy += R;
 
