@@ -157,11 +157,11 @@ public class ProcessManagerForm : Form
         DarkTheme.AddCardHint(cardPriority, "None = per-client in grid  |  High = prevents VD crashes + autofollow", 10, 50);
 
         // Retry on launch — EQ resets its own priority after starting
-        DarkTheme.AddCardHint(cardPriority, "On launch: EQ resets priority — Try", 10, 74);
-        _nudLaunchRetries = DarkTheme.AddCardNumeric(cardPriority, 215, 70, 40, _config.Affinity.LaunchRetryCount, 0, 10);
-        DarkTheme.AddCardHint(cardPriority, "times, rest", 260, 74);
-        _nudLaunchRetryDelay = DarkTheme.AddCardNumeric(cardPriority, 325, 70, 60, _config.Affinity.LaunchRetryDelayMs, 500, 10000);
-        DarkTheme.AddCardHint(cardPriority, "ms, after launch to enforce preset", 390, 74);
+        DarkTheme.AddCardHint(cardPriority, "On launch: EQ resets priority to Normal —  Try", 10, 74);
+        _nudLaunchRetries = DarkTheme.AddCardNumeric(cardPriority, 270, 70, 40, _config.Affinity.LaunchRetryCount, 0, 10);
+        DarkTheme.AddCardHint(cardPriority, "times, rest", 315, 74);
+        _nudLaunchRetryDelay = DarkTheme.AddCardNumeric(cardPriority, 370, 70, 60, _config.Affinity.LaunchRetryDelayMs, 500, 10000);
+        DarkTheme.AddCardHint(cardPriority, "ms after launch", 435, 74);
 
         y += 113;
 
