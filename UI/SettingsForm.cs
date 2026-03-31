@@ -613,7 +613,7 @@ public class SettingsForm : Form
         };
         cy += R - 4;
 
-        DarkTheme.AddCardHint(cardPaths, "Leave blank for defaults. Patcher may be deleted by antivirus.", L, cy);
+        DarkTheme.AddCardHint(cardPaths, "Patcher may be deleted by antivirus — re-download from SoD if missing.", L, cy);
 
         return page;
     }
