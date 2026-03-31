@@ -412,7 +412,7 @@ public static class DarkTheme
         var tb = new TextBox
         {
             Location = new Point(x, y),
-            Size = new Size(width, 24),
+            Size = new Size(width, 26),
             BackColor = BgInput,
             ForeColor = FgWhite,
             BorderStyle = BorderStyle.FixedSingle,
@@ -510,6 +510,7 @@ public static class DarkTheme
         // Remove the control's own border — the wrapper panel provides it
         if (control is TextBoxBase tb) tb.BorderStyle = BorderStyle.None;
         else if (control is NumericUpDown nud) nud.BorderStyle = BorderStyle.None;
+        else if (control is ComboBox cbo) cbo.FlatStyle = FlatStyle.Popup;
         control.Location = new Point(1, 1);
         control.Size = new Size(wrapper.Width - 2, wrapper.Height - 2);
 

@@ -38,7 +38,7 @@ public class AppConfigTests
 
         config.Layout.Columns = 10;
         config.Validate();
-        Assert.Equal(4, config.Layout.Columns);
+        Assert.Equal(2, config.Layout.Columns);
     }
 
     [Fact]
@@ -51,7 +51,7 @@ public class AppConfigTests
 
         config.Layout.Rows = 100;
         config.Validate();
-        Assert.Equal(4, config.Layout.Rows);
+        Assert.Equal(2, config.Layout.Rows);
     }
 
     [Fact]

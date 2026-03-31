@@ -13,6 +13,7 @@ public class SettingsForm : Form
 {
     private readonly AppConfig _config;
     private readonly Action<AppConfig> _onApply;
+    private readonly Action? _openProcessManager;
 
     // Track monitor identifier overlays to prevent stacking on rapid clicks
     private List<Form>? _monitorOverlays;
@@ -37,6 +38,7 @@ public class SettingsForm : Form
     // ─── Hotkeys tab controls
     private TextBox _txtSwitchKey = null!;
     private TextBox _txtGlobalSwitchKey = null!;
+    private Label _lblDuplicateKeyWarn = null!;
     private TextBox _txtArrangeWindows = null!;
     private TextBox _txtToggleMultiMon = null!;
     private TextBox _txtLaunchOne = null!;
@@ -48,8 +50,8 @@ public class SettingsForm : Form
     private NumericUpDown _nudColumns = null!;
     private NumericUpDown _nudRows = null!;
     private ComboBox _cboTargetMonitor = null!;
+    private ComboBox _cboSecondaryMonitor = null!;
     private NumericUpDown _nudTopOffset = null!;
-    private ComboBox _cboLayoutMode = null!;
     private CheckBox _chkRemoveTitleBars = null!;
     private CheckBox _chkBorderlessFullscreen = null!;
 
@@ -78,10 +80,11 @@ public class SettingsForm : Form
 
     private int _initialTab;
 
-    public SettingsForm(AppConfig config, Action<AppConfig> onApply, int initialTab = 0)
+    public SettingsForm(AppConfig config, Action<AppConfig> onApply, int initialTab = 0, Action? openProcessManager = null)
     {
         _config = config;
         _onApply = onApply;
+        _openProcessManager = openProcessManager;
         _initialTab = initialTab;
         InitializeForm();
     }
@@ -247,7 +250,7 @@ public class SettingsForm : Form
         var clickActions = new[] { "None", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp" };
         const int cboW = 140;
 
-        var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 130);
+        var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 200);
 
         // ── Left Click section ──
         var lblLeft = DarkTheme.AddCardLabel(cardTray, "Left Click", 10, 30);
@@ -268,13 +271,37 @@ public class SettingsForm : Form
         DarkTheme.AddCardLabel(cardTray, "Single", 260, 52);
         _cboMiddleClick = DarkTheme.AddCardComboBox(cardTray, 325, 49, cboW, clickActions);
 
-        DarkTheme.AddCardLabel(cardTray, "Triple", 260, 78);
+        DarkTheme.AddCardLabel(cardTray, "Double", 260, 78);
         _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 325, 75, cboW, clickActions);
 
-        y += 138;
+        // ── Tray Icon ──
+        DarkTheme.AddCardLabel(cardTray, "Tray Icon:", L, 108);
+        _txtCustomIconPath = DarkTheme.AddCardTextBox(cardTray, 80, 106, 180);
+        var btnBrowseIcon = DarkTheme.AddCardButton(cardTray, "Browse...", 268, 105, 65);
+        btnBrowseIcon.Click += (_, _) =>
+        {
+            using var dlg = new OpenFileDialog
+            {
+                Title = "Select Tray Icon",
+                Filter = "Icon Files (*.ico)|*.ico",
+                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures)
+            };
+            if (dlg.ShowDialog() == DialogResult.OK)
+                _txtCustomIconPath.Text = dlg.FileName;
+        };
+        DarkTheme.AddCardHint(cardTray, ".ico — blank = default", 340, 110);
+
+        // ── Launch settings ──
+        DarkTheme.AddCardLabel(cardTray, "Clients (Launch All):", L, 138);
+        _nudNumClients = DarkTheme.AddCardNumeric(cardTray, 140, 136, 55, 2, 1, 8);
+        DarkTheme.AddCardLabel(cardTray, "Delay between:", 220, 138);
+        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardTray, 330, 136, 70, 3000, 500, 30000);
+        DarkTheme.AddCardHint(cardTray, "ms", 405, 140);
+
+        y += 208;
 
         // ─── Preferences card ────────────────────────────────────
-        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 115);
+        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 100);
         cy = 32;
 
         // Row 1: EQ Client Settings button + Tooltip delay
@@ -288,26 +315,40 @@ public class SettingsForm : Form
         _nudTooltipDuration = DarkTheme.AddCardNumeric(cardPrefs, 300, cy, 65, 1000, 0, 10000);
         _nudTooltipDuration.Increment = 100;
         DarkTheme.AddCardHint(cardPrefs, "ms, 0=off", 370, cy + 4);
-        cy += R + 2;
+        cy += R + 8;
 
-        // Row 2: Tray icon path + Browse
-        DarkTheme.AddCardLabel(cardPrefs, "Tray Icon:", L, cy);
-        _txtCustomIconPath = DarkTheme.AddCardTextBox(cardPrefs, 80, cy - 2, 180);
-        var btnBrowseIcon = DarkTheme.AddCardButton(cardPrefs, "Browse...", 268, cy - 3, 65);
-        btnBrowseIcon.Click += (_, _) =>
+        // Row 2: Quick-access buttons — Video Settings, Help, Process Manager
+        var btnVideoSettings = DarkTheme.AddCardButton(cardPrefs, "📺 Video Settings...", 20, cy, 150);
+        btnVideoSettings.Click += (_, _) =>
         {
-            using var dlg = new OpenFileDialog
-            {
-                Title = "Select Tray Icon",
-                Filter = "Icon Files (*.ico)|*.ico",
-                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures)
-            };
-            if (dlg.ShowDialog() == DialogResult.OK)
-                _txtCustomIconPath.Text = dlg.FileName;
+            using var form = new VideoSettingsForm(_config);
+            form.ShowDialog();
+            // VideoSettings may have changed TopOffset, multi-monitor, monitors — sync back
+            _nudTopOffset.Value = DarkTheme.ClampNud(_nudTopOffset, _config.Layout.TopOffset);
+            _chkMultiMonEnabled.Checked = _config.Hotkeys.MultiMonitorEnabled;
+            _cboTargetMonitor.SelectedIndex = Math.Clamp(_config.Layout.TargetMonitor, 0, _cboTargetMonitor.Items.Count - 1);
+            var secIdx = _config.Layout.SecondaryMonitor < 0 ? 0 : _config.Layout.SecondaryMonitor + 1;
+            _cboSecondaryMonitor.SelectedIndex = Math.Clamp(secIdx, 0, _cboSecondaryMonitor.Items.Count - 1);
         };
-        DarkTheme.AddCardHint(cardPrefs, ".ico — blank = default", 340, cy + 2);
+        var btnHelp = DarkTheme.AddCardButton(cardPrefs, "❓ Help", 185, cy, 100);
+        btnHelp.Click += (_, _) => HelpForm.Show(_config);
+        var btnProcessMgr = DarkTheme.AddCardButton(cardPrefs, "⚡ Process Manager...", 310, cy, 150);
+        btnProcessMgr.Click += (_, _) => _openProcessManager?.Invoke();
 
         return page;
+    }
+
+    private void CheckDuplicateSwitchKeys()
+    {
+        var sk = _txtSwitchKey.Text.Trim();
+        var gsk = _txtGlobalSwitchKey.Text.Trim();
+        bool dup = sk.Length > 0 && gsk.Length > 0
+            && string.Equals(sk, gsk, StringComparison.OrdinalIgnoreCase);
+
+        _lblDuplicateKeyWarn.Text = dup
+            ? "⚠ Same as Switch Key — global will override"
+            : "Works from any app, cycles thru all";
+        _lblDuplicateKeyWarn.ForeColor = dup ? DarkTheme.CardWarn : DarkTheme.FgDimGray;
     }
 
     private TextBox MakeHotkeyBox(Panel card, int x, int y, int width = 80)
@@ -344,21 +385,25 @@ public class SettingsForm : Form
                 _txtSwitchKeyGeneral.Text = _txtSwitchKey.Text;
         };
         DarkTheme.AddCardLabel(cardSwitch, "Mode:", 250, cy);
-        _cboSwitchKeyMode = DarkTheme.AddCardComboBox(cardSwitch, I2, cy - 2, 130, new[] { "Swap Last", "Cycle All" });
+        _cboSwitchKeyMode = DarkTheme.AddCardComboBox(cardSwitch, I2, cy - 2, 130, new[] { "Swap Last Two", "Cycle All" });
         cy += R + 2;
 
         DarkTheme.AddCardLabel(cardSwitch, "Global Switch Key:", L, cy);
         _txtGlobalSwitchKey = MakeHotkeyBox(cardSwitch, I, cy - 2);
-        DarkTheme.AddCardHint(cardSwitch, "Works from any app, cycles thru all", 250, cy + 2);
+        _lblDuplicateKeyWarn = DarkTheme.AddCardHint(cardSwitch, "Works from any app, cycles thru all", 250, cy + 2);
+
+        // Show warning when both switch keys match
+        _txtSwitchKey.TextChanged += (_, _) => CheckDuplicateSwitchKeys();
+        _txtGlobalSwitchKey.TextChanged += (_, _) => CheckDuplicateSwitchKeys();
 
         y += 108;
 
         // ─── Actions card ────────────────────────────────────────
-        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 185);
+        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 145);
         cy = 32;
         const int col2 = 250, col2I = 370;
 
-        DarkTheme.AddCardLabel(cardActions, "Arrange Windows:", L, cy);
+        DarkTheme.AddCardLabel(cardActions, "Fix Windows:", L, cy);
         _txtArrangeWindows = MakeHotkeyBox(cardActions, I, cy - 2);
         DarkTheme.AddCardLabel(cardActions, "Launch One:", col2, cy);
         _txtLaunchOne = MakeHotkeyBox(cardActions, col2I, cy - 2);
@@ -371,18 +416,10 @@ public class SettingsForm : Form
         cy += R + 2;
 
         _chkMultiMonEnabled = DarkTheme.AddCardCheckBox(cardActions, "Multi-monitor mode enabled", L, cy);
-        cy += R + 4;
 
-        // Launch settings
-        DarkTheme.AddCardLabel(cardActions, "Clients (Launch All):", L, cy);
-        _nudNumClients = DarkTheme.AddCardNumeric(cardActions, I, cy - 2, 55, 2, 1, 8);
-        DarkTheme.AddCardLabel(cardActions, "Delay between:", col2, cy);
-        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardActions, col2I, cy - 2, 70, 3000, 500, 30000);
-        DarkTheme.AddCardHint(cardActions, "ms", col2I + 75, cy + 2);
+        y += 160;
 
-        y += 193;
-
-        DarkTheme.AddHint(page, "Press key combo to capture. Leave blank to disable. Backspace/Delete to clear.", 15, y);
+        DarkTheme.AddHint(page, "Press key combo to capture. Leave blank to disable. Backspace/Delete to clear. Hit Apply to update changes.", 15, y);
 
         return page;
     }
@@ -393,45 +430,38 @@ public class SettingsForm : Form
         int y = 8;
         const int L = 10, I = 120, R = 30;
 
-        // ─── Grid Layout card ────────────────────────────────────
-        var cardGrid = DarkTheme.MakeCard(page, "📐", "Grid Layout", DarkTheme.CardGold, 10, y, 480, 95);
+        // ─── Monitor card ────────────────────────────────────────
+        var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 125);
         int cy = 32;
 
-        DarkTheme.AddCardLabel(cardGrid, "Mode:", L, cy);
-        _cboLayoutMode = DarkTheme.AddCardComboBox(cardGrid, I, cy - 2, 140, new[] { "single", "multimonitor" });
-        DarkTheme.AddCardLabel(cardGrid, "Columns:", 280, cy);
-        _nudColumns = DarkTheme.AddCardNumeric(cardGrid, 340, cy - 2, 55, 2, 1, 4);
-        DarkTheme.AddCardLabel(cardGrid, "Rows:", 400, cy);
-        _nudRows = DarkTheme.AddCardNumeric(cardGrid, 435, cy - 2, 40, 2, 1, 4);
-        cy += R;
-
-        DarkTheme.AddCardHint(cardGrid, "Grid divides the monitor into columns × rows for window placement", L, cy);
-
-        y += 103;
-
-        // ─── Monitor card ────────────────────────────────────────
-        var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 95);
-        cy = 32;
-
-        DarkTheme.AddCardLabel(cardMon, "Target Monitor:", L, cy);
         var screens = Screen.AllScreens.OrderBy(s => s.Bounds.Left).ToArray();
         var monitorItems = new string[screens.Length];
         for (int i = 0; i < screens.Length; i++)
         {
             var s = screens[i];
             var primary = s.Primary ? " (primary)" : "";
-            monitorItems[i] = $"{i}: {s.Bounds.Width}x{s.Bounds.Height}{primary}";
+            monitorItems[i] = $"{i + 1}: {s.Bounds.Width}x{s.Bounds.Height}{primary}";
         }
-        _cboTargetMonitor = DarkTheme.AddCardComboBox(cardMon, I, cy - 2, 180, monitorItems);
-        var btnIdentify = DarkTheme.AddCardButton(cardMon, "🔍 Identify", 310, cy - 3, 90);
-        btnIdentify.Click += (_, _) => ShowMonitorIdentifiers();
+
+        DarkTheme.AddCardLabel(cardMon, "Primary:", L, cy);
+        _cboTargetMonitor = DarkTheme.AddCardComboBox(cardMon, 75, cy - 2, 185, monitorItems);
+        DarkTheme.AddCardLabel(cardMon, "Secondary:", 270, cy);
+        var secondaryItems = new string[screens.Length + 1];
+        secondaryItems[0] = "Auto (first non-primary)";
+        for (int i = 0; i < screens.Length; i++)
+            secondaryItems[i + 1] = monitorItems[i];
+        _cboSecondaryMonitor = DarkTheme.AddCardComboBox(cardMon, 340, cy - 2, 130, secondaryItems);
         cy += R;
 
         DarkTheme.AddCardLabel(cardMon, "Top Offset (px):", L, cy);
         _nudTopOffset = DarkTheme.AddCardNumeric(cardMon, I, cy - 2, 70, 0, -100, 200);
-        DarkTheme.AddCardHint(cardMon, "Gap from top edge (for taskbar/title bar)", 200, cy + 2);
+        var btnIdentify = DarkTheme.AddCardButton(cardMon, "🔍 Identify", 310, cy - 3, 90);
+        btnIdentify.Click += (_, _) => ShowMonitorIdentifiers();
+        cy += R;
 
-        y += 103;
+        DarkTheme.AddCardHint(cardMon, "Primary = active client. Secondary = background client (multimonitor mode).", L, cy);
+
+        y += 133;
 
         // ─── Window Style card ───────────────────────────────────
         var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 85);
@@ -441,6 +471,20 @@ public class SettingsForm : Form
         cy += 24;
         _chkBorderlessFullscreen = DarkTheme.AddCardCheckBox(cardStyle, "Borderless Fullscreen", L, cy);
         DarkTheme.AddCardHint(cardStyle, "Strips chrome, Y+1 offset, auto WindowedMode", 230, cy + 2);
+
+        y += 93;
+
+        // ─── Grid Layout card ────────────────────────────────────
+        var cardGrid = DarkTheme.MakeCard(page, "📐", "Grid Layout", DarkTheme.CardGold, 10, y, 480, 95);
+        cy = 32;
+
+        DarkTheme.AddCardLabel(cardGrid, "Columns:", L, cy);
+        _nudColumns = DarkTheme.AddCardNumeric(cardGrid, 75, cy - 2, 40, 1, 1, 2);
+        DarkTheme.AddCardLabel(cardGrid, "Rows:", 130, cy);
+        _nudRows = DarkTheme.AddCardNumeric(cardGrid, 170, cy - 2, 40, 1, 1, 2);
+        cy += R;
+
+        DarkTheme.AddCardHint(cardGrid, "Grid divides the primary monitor into columns × rows. Only works in single-screen mode.", L, cy);
 
         return page;
     }
@@ -472,7 +516,7 @@ public class SettingsForm : Form
 
             var lbl = new Label
             {
-                Text = $"Monitor {i}",
+                Text = $"Monitor {i + 1}",
                 Font = new Font("Segoe UI", 24, FontStyle.Bold),
                 ForeColor = DarkTheme.CardGreen,
                 BackColor = Color.Transparent,
@@ -549,7 +593,7 @@ public class SettingsForm : Form
             };
             if (ofd.ShowDialog() == DialogResult.OK) _txtNotesPath.Text = ofd.FileName;
         };
-        DarkTheme.AddCardHint(cardPaths, "Leave blank to auto-create eqnotes.txt next to EQSwitch", L, cy + 18);
+        DarkTheme.AddCardHint(cardPaths, "Leave blank to auto-create eqnotes.txt next to EQSwitch", L, cy + 22);
         cy += R + 10;
 
         DarkTheme.AddCardLabel(cardPaths, "Dalaya Patcher:", L, cy);
@@ -698,7 +742,7 @@ public class SettingsForm : Form
         // Hotkeys
         _txtSwitchKeyGeneral.Text = _config.Hotkeys.SwitchKey;
         _txtSwitchKey.Text = _config.Hotkeys.SwitchKey;
-        _cboSwitchKeyMode.SelectedItem = _config.Hotkeys.SwitchKeyMode == "cycleAll" ? "Cycle All" : "Swap Last";
+        _cboSwitchKeyMode.SelectedItem = _config.Hotkeys.SwitchKeyMode == "cycleAll" ? "Cycle All" : "Swap Last Two";
         _txtGlobalSwitchKey.Text = _config.Hotkeys.GlobalSwitchKey;
         _txtArrangeWindows.Text = _config.Hotkeys.ArrangeWindows;
         _txtToggleMultiMon.Text = _config.Hotkeys.ToggleMultiMonitor;
@@ -707,11 +751,13 @@ public class SettingsForm : Form
         _chkMultiMonEnabled.Checked = _config.Hotkeys.MultiMonitorEnabled;
 
         // Layout
-        _cboLayoutMode.SelectedItem = _config.Layout.Mode;
         _nudColumns.Value = DarkTheme.ClampNud(_nudColumns, _config.Layout.Columns);
         _nudRows.Value = DarkTheme.ClampNud(_nudRows, _config.Layout.Rows);
         var targetIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, _cboTargetMonitor.Items.Count - 1);
         _cboTargetMonitor.SelectedIndex = targetIdx;
+        // SecondaryMonitor: -1 = Auto (index 0), 0+ = monitor index (offset by 1 in dropdown)
+        var secIdx = _config.Layout.SecondaryMonitor < 0 ? 0 : _config.Layout.SecondaryMonitor + 1;
+        _cboSecondaryMonitor.SelectedIndex = Math.Clamp(secIdx, 0, _cboSecondaryMonitor.Items.Count - 1);
         _nudTopOffset.Value = DarkTheme.ClampNud(_nudTopOffset, _config.Layout.TopOffset);
         _chkRemoveTitleBars.Checked = _config.Layout.RemoveTitleBars;
         _chkBorderlessFullscreen.Checked = _config.Layout.BorderlessFullscreen;
@@ -753,10 +799,12 @@ public class SettingsForm : Form
             CustomIconPath = _txtCustomIconPath.Text.Trim(),
             Layout = new WindowLayout
             {
-                Mode = _cboLayoutMode.SelectedItem?.ToString() ?? "single",
+                // Preserve multimonitor mode only if the checkbox is on; reset to single if disabled
+                Mode = _chkMultiMonEnabled.Checked ? _config.Layout.Mode : "single",
                 Columns = (int)_nudColumns.Value,
                 Rows = (int)_nudRows.Value,
                 TargetMonitor = _cboTargetMonitor.SelectedIndex >= 0 ? _cboTargetMonitor.SelectedIndex : 0,
+                SecondaryMonitor = _cboSecondaryMonitor.SelectedIndex <= 0 ? -1 : _cboSecondaryMonitor.SelectedIndex - 1,
                 TopOffset = (int)_nudTopOffset.Value,
                 RemoveTitleBars = _chkRemoveTitleBars.Checked,
                 BorderlessFullscreen = _chkBorderlessFullscreen.Checked

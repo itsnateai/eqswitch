@@ -37,6 +37,7 @@ public class EQClientSettingsForm : Form
     private CheckBox _chkUseLitBatches = null!;
     private CheckBox _chkDisableInspectOthers = null!;
     private CheckBox _chkAnonymous = null!;
+    private CheckBox _chkDisableLog = null!;
     private CheckBox _chkRaidInviteConfirm = null!;
     private CheckBox _chkAANoConfirm = null!;
     private CheckBox _chkDisableChatServer = null!;
@@ -82,6 +83,16 @@ public class EQClientSettingsForm : Form
             Checked = _config.EQClientIni.Anonymous
         };
         Controls.Add(_chkAnonymous);
+
+        _chkDisableLog = new CheckBox
+        {
+            Text = "Disable EQ Logging  (Log=FALSE)",
+            Location = new Point(20, y += 25),
+            AutoSize = true,
+            ForeColor = DarkTheme.FgWhite,
+            Checked = _config.DisableEQLog
+        };
+        Controls.Add(_chkDisableLog);
 
         _chkRaidInviteConfirm = new CheckBox
         {
@@ -678,6 +689,7 @@ public class EQClientSettingsForm : Form
         _config.EQClientIni.UseLitBatches = _chkUseLitBatches.Checked;
         _config.EQClientIni.DisableInspectOthers = _chkDisableInspectOthers.Checked;
         _config.EQClientIni.Anonymous = _chkAnonymous.Checked;
+        _config.DisableEQLog = _chkDisableLog.Checked;
         _config.EQClientIni.RaidInviteConfirm = _chkRaidInviteConfirm.Checked;
         _config.EQClientIni.AANoConfirm = _chkAANoConfirm.Checked;
         _config.EQClientIni.DisableChatServer = _chkDisableChatServer.Checked;
