@@ -12,8 +12,7 @@ public class VideoSettingsForm : Form
 {
     private readonly AppConfig _config;
     private readonly string _iniPath;
-
-    // Use shared DarkTheme palette
+    private bool _suppressSync; // prevent SyncPresetToCustom during programmatic changes
 
     private ComboBox _cboPreset = null!;
     private NumericUpDown _nudWidth = null!;
@@ -187,6 +186,8 @@ public class VideoSettingsForm : Form
     /// </summary>
     private void SyncPresetToCustom()
     {
+        if (_suppressSync) return;
+
         int w = (int)_nudWidth.Value;
         int h = (int)_nudHeight.Value;
 
@@ -219,6 +220,7 @@ public class VideoSettingsForm : Form
             return;
         }
 
+        _suppressSync = true;
         try
         {
             var lines = File.ReadAllLines(_iniPath, Encoding.Default);
@@ -287,6 +289,7 @@ public class VideoSettingsForm : Form
             FileLogger.Error("VideoSettings: load error", ex);
             _cboPreset.SelectedIndex = 0;
         }
+        finally { _suppressSync = false; }
     }
 
     /// <summary>
@@ -508,22 +511,27 @@ public class VideoSettingsForm : Form
         string? selected = _cboPreset.SelectedItem?.ToString();
         if (selected == null || selected == "Custom") return;
 
-        // Check built-in presets first
-        var preset = Array.Find(Presets, p => p.Name == selected);
-        if (preset.W > 0)
+        _suppressSync = true;
+        try
         {
-            _nudWidth.Value = preset.W;
-            _nudHeight.Value = preset.H;
-            return;
-        }
+            // Check built-in presets first
+            var preset = Array.Find(Presets, p => p.Name == selected);
+            if (preset.W > 0)
+            {
+                _nudWidth.Value = preset.W;
+                _nudHeight.Value = preset.H;
+                return;
+            }
 
-        // Custom preset format: "WxH"
-        var dims = selected.Split('x');
-        if (dims.Length == 2 && int.TryParse(dims[0], out int w) && int.TryParse(dims[1], out int h))
-        {
-            _nudWidth.Value = Math.Clamp(w, 320, 7680);
-            _nudHeight.Value = Math.Clamp(h, 200, 4320);
+            // Custom preset format: "WxH"
+            var dims = selected.Split('x');
+            if (dims.Length == 2 && int.TryParse(dims[0], out int w) && int.TryParse(dims[1], out int h))
+            {
+                _nudWidth.Value = Math.Clamp(w, 320, 7680);
+                _nudHeight.Value = Math.Clamp(h, 200, 4320);
+            }
         }
+        finally { _suppressSync = false; }
     }
 
     /// <summary>
