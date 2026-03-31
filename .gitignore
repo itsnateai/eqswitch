@@ -45,3 +45,5 @@ SCHEDULED_TASKS.md
 ASSUMPTIONS.md
 DEFERRED_FEATURES.md
 eqclient.ini.reference
+CLAUDE.md
+EQSwitch.Tests/

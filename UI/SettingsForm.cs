@@ -250,7 +250,7 @@ public class SettingsForm : Form
         var clickActions = new[] { "None", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp" };
         const int cboW = 140;
 
-        var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 200);
+        var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 105);
 
         // ── Left Click section ──
         var lblLeft = DarkTheme.AddCardLabel(cardTray, "Left Click", 10, 30);
@@ -274,34 +274,10 @@ public class SettingsForm : Form
         DarkTheme.AddCardLabel(cardTray, "Double", 260, 78);
         _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 325, 75, cboW, clickActions);
 
-        // ── Tray Icon ──
-        DarkTheme.AddCardLabel(cardTray, "Tray Icon:", L, 108);
-        _txtCustomIconPath = DarkTheme.AddCardTextBox(cardTray, 80, 106, 180);
-        var btnBrowseIcon = DarkTheme.AddCardButton(cardTray, "Browse...", 268, 105, 65);
-        btnBrowseIcon.Click += (_, _) =>
-        {
-            using var dlg = new OpenFileDialog
-            {
-                Title = "Select Tray Icon",
-                Filter = "Icon Files (*.ico)|*.ico",
-                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures)
-            };
-            if (dlg.ShowDialog() == DialogResult.OK)
-                _txtCustomIconPath.Text = dlg.FileName;
-        };
-        DarkTheme.AddCardHint(cardTray, ".ico — blank = default", 340, 110);
-
-        // ── Launch settings ──
-        DarkTheme.AddCardLabel(cardTray, "Clients (Launch All):", L, 138);
-        _nudNumClients = DarkTheme.AddCardNumeric(cardTray, 140, 136, 55, 2, 1, 8);
-        DarkTheme.AddCardLabel(cardTray, "Delay between:", 220, 138);
-        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardTray, 330, 136, 70, 3000, 500, 30000);
-        DarkTheme.AddCardHint(cardTray, "ms", 405, 140);
-
-        y += 208;
+        y += 113;
 
         // ─── Preferences card ────────────────────────────────────
-        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 100);
+        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 170);
         cy = 32;
 
         // Row 1: EQ Client Settings button + Tooltip delay
@@ -315,9 +291,35 @@ public class SettingsForm : Form
         _nudTooltipDuration = DarkTheme.AddCardNumeric(cardPrefs, 300, cy, 65, 1000, 0, 10000);
         _nudTooltipDuration.Increment = 100;
         DarkTheme.AddCardHint(cardPrefs, "ms, 0=off", 370, cy + 4);
-        cy += R + 8;
+        cy += R + 4;
 
-        // Row 2: Quick-access buttons — Video Settings, Help, Process Manager
+        // Row 2: Tray icon path + Browse
+        DarkTheme.AddCardLabel(cardPrefs, "Tray Icon:", L, cy);
+        _txtCustomIconPath = DarkTheme.AddCardTextBox(cardPrefs, 80, cy - 2, 180);
+        var btnBrowseIcon = DarkTheme.AddCardButton(cardPrefs, "Browse...", 268, cy - 3, 65);
+        btnBrowseIcon.Click += (_, _) =>
+        {
+            using var dlg = new OpenFileDialog
+            {
+                Title = "Select Tray Icon",
+                Filter = "Icon Files (*.ico)|*.ico",
+                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures)
+            };
+            if (dlg.ShowDialog() == DialogResult.OK)
+                _txtCustomIconPath.Text = dlg.FileName;
+        };
+        DarkTheme.AddCardHint(cardPrefs, ".ico — blank = default", 340, cy + 2);
+        cy += R + 4;
+
+        // Row 3: Launch settings
+        DarkTheme.AddCardLabel(cardPrefs, "Clients (Launch All):", L, cy);
+        _nudNumClients = DarkTheme.AddCardNumeric(cardPrefs, 140, cy - 2, 55, 2, 1, 8);
+        DarkTheme.AddCardLabel(cardPrefs, "Delay between:", 220, cy);
+        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardPrefs, 330, cy - 2, 70, 3000, 500, 30000);
+        DarkTheme.AddCardHint(cardPrefs, "ms", 405, cy + 2);
+        cy += R + 6;
+
+        // Row 4: Quick-access buttons — Video Settings, Help, Process Manager
         var btnVideoSettings = DarkTheme.AddCardButton(cardPrefs, "📺 Video Settings...", 20, cy, 150);
         btnVideoSettings.Click += (_, _) =>
         {
