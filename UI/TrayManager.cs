@@ -889,6 +889,8 @@ public class TrayManager : IDisposable
         _settingsForm.FormClosed += (_, _) =>
         {
             _settingsForm = null;
+            _hotkeyManager.UnregisterAll();
+            _keyboardHook.Reset();
             RegisterHotkeys();
         };
         _settingsForm.Show();
