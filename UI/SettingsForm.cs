@@ -645,7 +645,8 @@ public class SettingsForm : Form
         };
         DarkTheme.AddCardLabel(cardPip, "Max", 310, cy - 12);
         DarkTheme.AddCardLabel(cardPip, "Windows:", 298, cy + 2);
-        _nudPipMaxWindows = DarkTheme.AddCardNumeric(cardPip, 355, cy - 2, 40, 3, 1, 3);
+        _nudPipMaxWindows = DarkTheme.AddCardNumeric(cardPip, 365, cy - 2, 40, 3, 1, 3);
+        _nudPipMaxWindows.TextAlign = HorizontalAlignment.Center;
         cy += R;
 
         DarkTheme.AddCardLabel(cardPip, "Custom W:", L, cy);
