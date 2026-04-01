@@ -49,10 +49,22 @@ public class VideoSettingsForm : Form
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 Video Settings", new Size(480, 445));
+        DarkTheme.StyleForm(this, "EQSwitch \u2014 Video Settings", new Size(480, 490));
 
-        int y = 15;
+        int y = 12;
         const int L = 15, col2 = 245;
+
+        // ─── Page description ───────────────────────────────────
+        var lblDesc = new Label
+        {
+            Text = "EQ's in-game resolution (eqclient.ini). Use a preset or set custom dimensions.",
+            Location = new Point(L, y),
+            AutoSize = true,
+            ForeColor = DarkTheme.FgDimGray,
+            Font = new Font("Segoe UI", 8f)
+        };
+        Controls.Add(lblDesc);
+        y += 22;
 
         // ─── Row 1: Preset + Windowed checkbox ──────────────────
         AddLabel("Preset:", L, y + 2);
@@ -113,8 +125,18 @@ public class VideoSettingsForm : Form
         };
         Controls.Add(_chkMultiMon);
 
-        // ─── Row 5: Primary / Secondary monitors (stacked) ─────
-        y += 28;
+        // ─── Monitor Selection ─────────────────────────────────
+        y += 26;
+        var lblMonSel = new Label
+        {
+            Text = "Monitor Selection",
+            Location = new Point(L, y),
+            AutoSize = true,
+            ForeColor = DarkTheme.FgWhite,
+            Font = new Font("Segoe UI", 9f, FontStyle.Bold)
+        };
+        Controls.Add(lblMonSel);
+        y += 22;
         var screens = Screen.AllScreens.OrderBy(s => s.Bounds.Left).ToArray();
         var monItems = new string[screens.Length];
         for (int i = 0; i < screens.Length; i++)

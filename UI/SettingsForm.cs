@@ -62,6 +62,7 @@ public class SettingsForm : Form
     private NumericUpDown _nudBottomOffset = null!;
     private CheckBox _chkUseHook = null!;
     private CheckBox _chkMaximizeWindow = null!;
+    private Label _lblStyleDisabledHint = null!;
     private TextBox _txtWindowTitleTemplate = null!;
 
 
@@ -473,7 +474,7 @@ public class SettingsForm : Form
         y += 133;
 
         // ─── Window Style card ───────────────────────────────────
-        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 193);
+        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 215);
         cy = 32;
 
         const int hintX = 260;
@@ -501,6 +502,18 @@ public class SettingsForm : Form
 
         _chkMaximizeWindow = DarkTheme.AddCardCheckBox(cardStyle, "Maximize on Launch", L, cy);
         DarkTheme.AddCardHint(cardStyle, "Sets Maximized=1 in eqclient.ini", hintX, cy + 2);
+        cy += 26;
+
+        _lblStyleDisabledHint = new Label
+        {
+            Text = "If disabled, set EQ video resolution to fit above the taskbar",
+            Location = new Point(L, cy),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(230, 190, 60),
+            Font = new Font("Segoe UI", 7.5f),
+            Visible = true,
+        };
+        cardStyle.Controls.Add(_lblStyleDisabledHint);
 
         _chkSlimTitlebar.CheckedChanged += (_, _) =>
         {
@@ -520,9 +533,10 @@ public class SettingsForm : Form
             {
                 _chkMaximizeWindow.Enabled = true;
             }
+            _lblStyleDisabledHint.Visible = !slim;
         };
 
-        y += 201;
+        y += 223;
 
         // ─── Window Title card ───────────────────────────────────
         var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 65);
@@ -872,6 +886,7 @@ public class SettingsForm : Form
         _nudTitlebarOffset.Enabled = _config.Layout.SlimTitlebar;
         _nudBottomOffset.Enabled = _config.Layout.SlimTitlebar;
         _chkMaximizeWindow.Enabled = !_config.Layout.SlimTitlebar;
+        _lblStyleDisabledHint.Visible = !_config.Layout.SlimTitlebar;
 
         // Performance
 
