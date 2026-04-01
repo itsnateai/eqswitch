@@ -205,6 +205,20 @@ public class TrayManager : IDisposable
             _injectedPids.Remove(c.ProcessId);
         };
 
+        // Immediately detect newly launched clients so slim titlebar applies without
+        // waiting for the 10s poll interval. Short delay lets EQ create its window first.
+        _launchManager.ClientLaunched += (_, pid) =>
+        {
+            var detectTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+            detectTimer.Tick += (_, _) =>
+            {
+                detectTimer.Stop();
+                detectTimer.Dispose();
+                _processManager.RefreshClients();
+            };
+            detectTimer.Start();
+        };
+
         // No tooltip for launch progress — TopMost windows during EQ init cause minimize
         _launchManager.ProgressUpdate += (_, msg) => FileLogger.Info($"LaunchProgress: {msg}");
         _launchManager.LaunchSequenceComplete += (_, _) =>
