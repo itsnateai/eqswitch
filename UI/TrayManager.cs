@@ -189,8 +189,10 @@ public class TrayManager : IDisposable
                     _config.Layout.TitlebarOffset);
             }
 
-            // Inject hook DLL if slim titlebar + hook enabled
-            if (_config.Layout.SlimTitlebar && _config.Layout.UseHook)
+            // Inject hook DLL if slim titlebar + hook enabled (single monitor only —
+            // multimonitor needs different positions per window, hook only supports one)
+            bool isMM = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+            if (_config.Layout.SlimTitlebar && _config.Layout.UseHook && !isMM)
             {
                 InjectHookDll(c.ProcessId);
             }
@@ -1237,6 +1239,24 @@ public class TrayManager : IDisposable
         _retryTimer?.Dispose();
         _retryTimer = null;
         StartRetryTimer();
+
+        // Auto-arrange when multimonitor mode is toggled on
+        bool isMultiMon = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+        if (isMultiMon && _processManager.Clients.Count > 0)
+        {
+            _windowManager.ArrangeWindows(_processManager.Clients);
+            FileLogger.Info("ReloadConfig: auto-arranged for multimonitor mode");
+        }
+
+        // Disable hook in multimonitor mode — shared memory only supports one position
+        if (isMultiMon)
+        {
+            _hookConfig?.Disable();
+        }
+        else
+        {
+            UpdateHookConfig();
+        }
 
         FileLogger.Info("Config reloaded and applied");
         ShowBalloon("Settings applied");

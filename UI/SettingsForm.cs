@@ -299,20 +299,17 @@ public class SettingsForm : Form
         y += 113;
 
         // ─── Preferences card ────────────────────────────────────
-        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 105);
+        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 130);
         cy = 32;
 
-        // Row 1: EQ Client Settings button + Tooltip delay
+        // Row 1: EQ Client Settings + Video Settings
         var btnEQSettings = DarkTheme.AddCardButton(cardPrefs, "\uD83D\uDCDD EQ Client Settings...", L, cy, 170);
         btnEQSettings.Click += (_, _) =>
         {
             using var form = new EQClientSettingsForm(_config);
             form.ShowDialog();
         };
-        cy += R + 6;
-
-        // Row 2: Quick-access buttons — Video Settings, Help, Process Manager
-        var btnVideoSettings = DarkTheme.AddCardButton(cardPrefs, "📺 Video Settings...", 20, cy, 150);
+        var btnVideoSettings = DarkTheme.AddCardButton(cardPrefs, "📺 Video Settings...", 210, cy, 150);
         btnVideoSettings.Click += (_, _) =>
         {
             using var form = new VideoSettingsForm(_config);
@@ -323,10 +320,13 @@ public class SettingsForm : Form
             var secIdx2 = _config.Layout.SecondaryMonitor < 0 ? 0 : _config.Layout.SecondaryMonitor + 1;
             _cboSecondaryMonitor.SelectedIndex = Math.Clamp(secIdx2, 0, _cboSecondaryMonitor.Items.Count - 1);
         };
-        var btnHelp = DarkTheme.AddCardButton(cardPrefs, "❓ Help", 185, cy, 100);
-        btnHelp.Click += (_, _) => HelpForm.Show(_config);
-        var btnProcessMgr = DarkTheme.AddCardButton(cardPrefs, "⚡ Process Manager...", 310, cy, 150);
+        cy += R + 6;
+
+        // Row 2: Process Manager + Help
+        var btnProcessMgr = DarkTheme.AddCardButton(cardPrefs, "⚡ Process Manager...", L, cy, 170);
         btnProcessMgr.Click += (_, _) => _openProcessManager?.Invoke();
+        var btnHelp = DarkTheme.AddCardButton(cardPrefs, "❓ Help", 210, cy, 150);
+        btnHelp.Click += (_, _) => HelpForm.Show(_config);
 
         return page;
     }
