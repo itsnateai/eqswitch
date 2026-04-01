@@ -436,7 +436,11 @@ public class WindowManager
             .Replace("{SLOT}", (slotIndex + 1).ToString())
             .Replace("{PID}", client.ProcessId.ToString());
 
+        // Skip if already set — avoids unnecessary Win32 call on every guard tick
+        if (client.WindowTitle == title) return;
+
         _api.SetWindowText(client.WindowHandle, title);
+        client.WindowTitle = title;
         FileLogger.Info($"SetWindowTitle: {client} → \"{title}\"");
     }
 
