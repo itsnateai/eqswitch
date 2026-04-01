@@ -279,10 +279,10 @@ public class PipConfig
     public string SizePreset { get; set; } = "Medium";
 
     /// <summary>Custom width (used when SizePreset = "Custom").</summary>
-    public int CustomWidth { get; set; } = 320;
+    public int CustomWidth { get; set; } = 480;
 
     /// <summary>Custom height (used when SizePreset = "Custom").</summary>
-    public int CustomHeight { get; set; } = 240;
+    public int CustomHeight { get; set; } = 270;
 
     /// <summary>Stacking orientation: "Vertical" (top-to-bottom) or "Horizontal" (left-to-right).</summary>
     public string Orientation { get; set; } = "Vertical";

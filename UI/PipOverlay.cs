@@ -43,8 +43,8 @@ public class PipOverlay : Form
         bool horizontal = config.Pip.IsHorizontal;
 
         // Stack PiP windows with a small gap
-        int gap = config.Pip.ShowBorder ? 3 : 2;
-        int borderPad = config.Pip.ShowBorder ? 1 : 0;
+        int gap = config.Pip.ShowBorder ? 4 : 2;
+        int borderPad = config.Pip.ShowBorder ? 2 : 0;
         if (horizontal)
             Size = new Size((w + gap) * maxWin + borderPad, h + (borderPad * 2));
         else
@@ -134,8 +134,8 @@ public class PipOverlay : Form
         UnregisterAll();
 
         var (w, h) = _config.Pip.GetSize();
-        int borderPad = _config.Pip.ShowBorder ? 1 : 0;
-        int gap = _config.Pip.ShowBorder ? 3 : 2;
+        int borderPad = _config.Pip.ShowBorder ? 2 : 0;
+        int gap = _config.Pip.ShowBorder ? 4 : 2;
         bool horizontal = _config.Pip.IsHorizontal;
         int idx = 0;
 
