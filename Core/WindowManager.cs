@@ -424,12 +424,22 @@ public class WindowManager
         if (string.IsNullOrEmpty(template)) return;
         if (!_api.IsWindow(client.WindowHandle)) return;
 
+        // Read the current native title — if EQ has overwritten our custom title
+        // back to "EverQuest - CharName", capture it before we rename again.
+        int len = NativeMethods.GetWindowTextLength(client.WindowHandle);
+        if (len > 0)
+        {
+            var sb = new System.Text.StringBuilder(len + 1);
+            NativeMethods.GetWindowText(client.WindowHandle, sb, sb.Capacity);
+            var currentNative = sb.ToString();
+            if (currentNative.StartsWith("EverQuest", StringComparison.Ordinal))
+                client.OriginalTitle = currentNative;
+        }
+
         // Extract character name from EQ's native title format: "EverQuest - CharName"
-        // Use OriginalTitle so this works even after we've already renamed the window.
         var charName = "Unknown";
-        var eqTitle = !string.IsNullOrEmpty(client.OriginalTitle) ? client.OriginalTitle : client.WindowTitle;
-        if (!string.IsNullOrEmpty(eqTitle) && eqTitle.Contains(" - "))
-            charName = eqTitle.Split(" - ", 2)[1];
+        if (!string.IsNullOrEmpty(client.OriginalTitle) && client.OriginalTitle.Contains(" - "))
+            charName = client.OriginalTitle.Split(" - ", 2)[1];
 
         var title = template
             .Replace("{CHAR}", charName)
