@@ -21,7 +21,7 @@ struct HookConfig {
 };
 #pragma pack(pop)
 
-static const char* SHARED_MEM_NAME = "EQSwitchHookCfg";
+static const char* SHARED_MEM_PREFIX = "EQSwitchHookCfg_";
 static const DWORD SHARED_MEM_SIZE = sizeof(HookConfig);
 
 // Globals
@@ -162,11 +162,16 @@ static BOOL WINAPI HookedMoveWindow(
     return g_origMoveWindow(hWnd, X, Y, nWidth, nHeight, bRepaint);
 }
 
-// Open shared memory region
+// Open per-process shared memory region (EQSwitchHookCfg_{PID})
 static BOOL OpenSharedMemory() {
-    g_hMapFile = OpenFileMappingA(FILE_MAP_READ, FALSE, SHARED_MEM_NAME);
+    char shmName[64];
+    _snprintf(shmName, sizeof(shmName), "%s%lu", SHARED_MEM_PREFIX, GetCurrentProcessId());
+    shmName[sizeof(shmName) - 1] = '\0';
+
+    LogMessage("Opening shared memory: %s", shmName);
+    g_hMapFile = OpenFileMappingA(FILE_MAP_READ, FALSE, shmName);
     if (!g_hMapFile) {
-        LogMessage("OpenFileMapping failed: %lu", GetLastError());
+        LogMessage("OpenFileMapping(%s) failed: %lu", shmName, GetLastError());
         return FALSE;
     }
 

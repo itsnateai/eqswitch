@@ -24,6 +24,9 @@ public class SettingsForm : Form
     private List<Form>? _monitorOverlays;
     private System.Windows.Forms.Timer? _monitorOverlayTimer;
 
+    // Fonts created inline on controls — WinForms won't dispose these
+    private readonly List<Font> _inlineFonts = new();
+
     // ─── General tab controls
     private TextBox _txtEQPath = null!;
     private TextBox _txtExeName = null!;
@@ -192,7 +195,7 @@ public class SettingsForm : Form
             Location = new Point(175, 17),
             AutoSize = true,
             ForeColor = DarkTheme.FgDimGray,
-            Font = new Font("Segoe UI", 8f)
+            Font = TrackFont(new Font("Segoe UI", 8f))
         };
 
         var btnSave = DarkTheme.MakePrimaryButton("Save", 230, 10);
@@ -276,7 +279,7 @@ public class SettingsForm : Form
 
         // ── Left Click section ──
         var lblLeft = DarkTheme.AddCardLabel(cardTray, "Left Click", 10, 30);
-        lblLeft.Font = new Font("Segoe UI Semibold", 9f);
+        lblLeft.Font = TrackFont(new Font("Segoe UI Semibold", 9f));
         lblLeft.ForeColor = DarkTheme.FgWhite;
 
         DarkTheme.AddCardLabel(cardTray, "Single", 20, 52);
@@ -287,7 +290,7 @@ public class SettingsForm : Form
 
         // ── Middle Click section ──
         var lblMiddle = DarkTheme.AddCardLabel(cardTray, "Middle Click", 250, 30);
-        lblMiddle.Font = new Font("Segoe UI Semibold", 9f);
+        lblMiddle.Font = TrackFont(new Font("Segoe UI Semibold", 9f));
         lblMiddle.ForeColor = DarkTheme.FgWhite;
 
         DarkTheme.AddCardLabel(cardTray, "Single", 260, 52);
@@ -1029,7 +1032,7 @@ public class SettingsForm : Form
                 BackColor = DarkTheme.BgMedium,
                 ForeColor = DarkTheme.FgWhite,
                 SelectionBackColor = DarkTheme.BgMedium,
-                Font = new Font("Segoe UI", 9)
+                Font = TrackFont(new Font("Segoe UI", 9))
             },
             DefaultCellStyle = new DataGridViewCellStyle
             {
@@ -1223,8 +1226,17 @@ public class SettingsForm : Form
             // that were created with new Font() — base.Dispose doesn't clean these up
             DisposeControlFonts(_txtSwitchKeyGeneral, _txtSwitchKey, _txtGlobalSwitchKey,
                 _txtArrangeWindows, _txtToggleMultiMon, _txtLaunchOne, _txtLaunchAll);
+            foreach (var f in _inlineFonts)
+                f.Dispose();
+            _inlineFonts.Clear();
         }
         base.Dispose(disposing);
+    }
+
+    private Font TrackFont(Font font)
+    {
+        _inlineFonts.Add(font);
+        return font;
     }
 
     private static void DisposeControlFonts(params Control?[] controls)

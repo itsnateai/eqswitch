@@ -491,4 +491,10 @@ public class WindowManager
     /// Used by TrayManager to write hook config with correct coordinates.
     /// </summary>
     public WinRect GetTargetMonitorBounds() => GetTargetMonitor(fullBounds: true);
+
+    /// <summary>
+    /// Get full monitor bounds for all monitors. Used by TrayManager to calculate
+    /// per-process hook config positions in multimonitor mode.
+    /// </summary>
+    public IReadOnlyList<WinRect> GetAllMonitorFullBounds() => _api.GetAllMonitorBounds();
 }

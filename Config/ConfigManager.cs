@@ -96,7 +96,9 @@ public static class ConfigManager
                 CreateBackup();
 
             var json = JsonSerializer.Serialize(config, JsonOptions);
-            File.WriteAllText(ConfigPath, json);
+            var tempPath = ConfigPath + ".tmp";
+            File.WriteAllText(tempPath, json);
+            File.Move(tempPath, ConfigPath, overwrite: true);
         }
         catch (Exception ex)
         {

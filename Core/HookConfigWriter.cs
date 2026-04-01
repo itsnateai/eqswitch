@@ -4,13 +4,13 @@ using System.Runtime.InteropServices;
 namespace EQSwitch.Core;
 
 /// <summary>
-/// Manages a memory-mapped file shared with eqswitch-hook.dll inside eqgame.exe.
-/// The DLL reads this config on every hooked SetWindowPos/MoveWindow call to
-/// determine target window position and style.
+/// Manages per-process memory-mapped files shared with eqswitch-hook.dll.
+/// Each injected eqgame.exe gets its own mapping named "EQSwitchHookCfg_{PID}",
+/// allowing different position/size configs per process (required for multimonitor).
 /// </summary>
 public class HookConfigWriter : IDisposable
 {
-    private const string SharedMemoryName = "EQSwitchHookCfg";
+    private const string SharedMemoryPrefix = "EQSwitchHookCfg_";
 
     // Must match the C++ HookConfig struct exactly (packed, sequential ints)
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -24,52 +24,75 @@ public class HookConfigWriter : IDisposable
         public int StripThickFrame; // 1 = remove WS_THICKFRAME
     }
 
-    private MemoryMappedFile? _mmf;
-    private MemoryMappedViewAccessor? _accessor;
+    private sealed class MappingEntry : IDisposable
+    {
+        public MemoryMappedFile Mmf;
+        public MemoryMappedViewAccessor Accessor;
+
+        public MappingEntry(MemoryMappedFile mmf, MemoryMappedViewAccessor accessor)
+        {
+            Mmf = mmf;
+            Accessor = accessor;
+        }
+
+        public void Dispose()
+        {
+            Accessor.Dispose();
+            Mmf.Dispose();
+        }
+    }
+
+    private readonly Dictionary<int, MappingEntry> _mappings = new();
     private bool _disposed;
 
-    /// <summary>True if the shared memory is open and writable.</summary>
-    public bool IsOpen => _mmf != null && _accessor != null;
+    /// <summary>True if at least one per-process shared memory mapping is open.</summary>
+    public bool HasMappings => _mappings.Count > 0;
+
+    /// <summary>True if a mapping exists for the given PID.</summary>
+    public bool IsOpen(int pid) => _mappings.ContainsKey(pid);
 
     /// <summary>
-    /// Create or open the shared memory region. Call this before injecting the DLL —
-    /// the DLL opens the same named mapping on DLL_PROCESS_ATTACH.
+    /// Create or open a per-process shared memory region. Call before injecting the DLL —
+    /// the DLL opens "EQSwitchHookCfg_{its own PID}" on DLL_PROCESS_ATTACH.
     /// </summary>
-    public bool Open()
+    public bool Open(int pid)
     {
-        if (IsOpen) return true;
+        if (_mappings.ContainsKey(pid)) return true;
 
+        MemoryMappedFile? mmf = null;
+        MemoryMappedViewAccessor? accessor = null;
         try
         {
-            _mmf = MemoryMappedFile.CreateOrOpen(
-                SharedMemoryName,
+            var name = $"{SharedMemoryPrefix}{(uint)pid}";
+            mmf = MemoryMappedFile.CreateOrOpen(
+                name,
                 Marshal.SizeOf<HookConfig>(),
                 MemoryMappedFileAccess.ReadWrite);
 
-            _accessor = _mmf.CreateViewAccessor(0, Marshal.SizeOf<HookConfig>(), MemoryMappedFileAccess.ReadWrite);
+            accessor = mmf.CreateViewAccessor(0, Marshal.SizeOf<HookConfig>(), MemoryMappedFileAccess.ReadWrite);
+
+            _mappings[pid] = new MappingEntry(mmf, accessor);
 
             // Write disabled config initially
-            WriteConfig(0, 0, 0, 0, false, false);
-            FileLogger.Info("HookConfigWriter: shared memory opened");
+            WriteConfig(pid, 0, 0, 0, 0, false, false);
+            FileLogger.Info($"HookConfigWriter: shared memory opened for PID {pid} ({name})");
             return true;
         }
         catch (Exception ex)
         {
-            FileLogger.Error("HookConfigWriter: failed to open shared memory", ex);
-            _accessor?.Dispose();
-            _mmf?.Dispose();
-            _accessor = null;
-            _mmf = null;
+            accessor?.Dispose();
+            mmf?.Dispose();
+            FileLogger.Error($"HookConfigWriter: failed to open shared memory for PID {pid}", ex);
             return false;
         }
     }
 
     /// <summary>
-    /// Write window position/size config that the hook DLL reads on every call.
+    /// Write window position/size config for a specific process.
     /// </summary>
-    public void WriteConfig(int x, int y, int w, int h, bool enabled, bool stripThickFrame = true)
+    public void WriteConfig(int pid, int x, int y, int w, int h, bool enabled, bool stripThickFrame = true)
     {
-        if (!IsOpen) return;
+        if (!_mappings.TryGetValue(pid, out var entry)) return;
 
         var config = new HookConfig
         {
@@ -83,21 +106,45 @@ public class HookConfigWriter : IDisposable
 
         try
         {
-            _accessor!.Write(0, ref config);
+            entry.Accessor.Write(0, ref config);
         }
         catch (Exception ex)
         {
-            FileLogger.Error("HookConfigWriter: write failed", ex);
+            FileLogger.Error($"HookConfigWriter: write failed for PID {pid}", ex);
         }
     }
 
-    /// <summary>Disable the hook (passthrough mode) without closing shared memory.</summary>
-    public void Disable()
+    /// <summary>Disable the hook for a specific process (passthrough mode).
+    /// Only flips the Enabled flag — preserves geometry so re-enable doesn't need a full rewrite.</summary>
+    public void Disable(int pid)
     {
-        if (!IsOpen) return;
-        var config = new HookConfig { Enabled = 0 };
-        try { _accessor!.Write(0, ref config); }
-        catch { /* best effort */ }
+        if (!_mappings.TryGetValue(pid, out var entry)) return;
+        try
+        {
+            entry.Accessor.Read(0, out HookConfig config);
+            config.Enabled = 0;
+            entry.Accessor.Write(0, ref config);
+        }
+        catch (Exception ex) { FileLogger.Warn($"HookConfigWriter.Disable failed for PID {pid}: {ex.Message}"); }
+    }
+
+    /// <summary>Disable the hook for all tracked processes.</summary>
+    public void DisableAll()
+    {
+        foreach (var pid in _mappings.Keys)
+            Disable(pid);
+    }
+
+    /// <summary>Close and remove shared memory for a specific process.</summary>
+    public void Close(int pid)
+    {
+        if (_mappings.Remove(pid, out var entry))
+        {
+            var config = new HookConfig { Enabled = 0 };
+            try { entry.Accessor.Write(0, ref config); } catch { }
+            entry.Dispose();
+            FileLogger.Info($"HookConfigWriter: closed mapping for PID {pid}");
+        }
     }
 
     public void Dispose()
@@ -105,12 +152,14 @@ public class HookConfigWriter : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        Disable(); // Ensure hooks pass through before cleanup
-        _accessor?.Dispose();
-        _mmf?.Dispose();
-        _accessor = null;
-        _mmf = null;
+        foreach (var (pid, entry) in _mappings)
+        {
+            var config = new HookConfig { Enabled = 0 };
+            try { entry.Accessor.Write(0, ref config); } catch { }
+            entry.Dispose();
+        }
+        _mappings.Clear();
 
-        FileLogger.Info("HookConfigWriter: disposed");
+        FileLogger.Info("HookConfigWriter: all mappings disposed");
     }
 }

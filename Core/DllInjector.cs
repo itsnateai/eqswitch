@@ -27,6 +27,7 @@ public static class DllInjector
 
         var hProcess = IntPtr.Zero;
         var allocAddr = IntPtr.Zero;
+        var hThread = IntPtr.Zero;
 
         try
         {
@@ -68,7 +69,7 @@ public static class DllInjector
             }
 
             // Create a remote thread that calls LoadLibraryA(dllPath)
-            var hThread = NativeMethods.CreateRemoteThread(
+            hThread = NativeMethods.CreateRemoteThread(
                 hProcess, IntPtr.Zero, 0, loadLibAddr, allocAddr, 0, out _);
             if (hThread == IntPtr.Zero)
             {
@@ -80,7 +81,6 @@ public static class DllInjector
 
             // Check if LoadLibraryA returned non-null (DLL loaded successfully)
             NativeMethods.GetExitCodeThread(hThread, out uint exitCode);
-            NativeMethods.CloseHandle(hThread);
 
             if (waitResult != NativeMethods.WAIT_OBJECT_0)
             {
@@ -104,6 +104,8 @@ public static class DllInjector
         }
         finally
         {
+            if (hThread != IntPtr.Zero)
+                NativeMethods.CloseHandle(hThread);
             if (allocAddr != IntPtr.Zero && hProcess != IntPtr.Zero)
                 NativeMethods.VirtualFreeEx(hProcess, allocAddr, 0, NativeMethods.MEM_RELEASE);
             if (hProcess != IntPtr.Zero)
@@ -239,6 +241,8 @@ public static class DllInjector
             int ordinalsFileOff = RvaToFileOffset(peData, peOffset, addressOfOrdinals);
             int functionsFileOff = RvaToFileOffset(peData, peOffset, addressOfFunctions);
 
+            if (namesFileOff < 0 || ordinalsFileOff < 0 || functionsFileOff < 0) return 0;
+
             for (uint i = 0; i < numberOfNames; i++)
             {
                 uint nameRva = BitConverter.ToUInt32(peData, namesFileOff + (int)(i * 4));
@@ -298,7 +302,7 @@ public static class DllInjector
     public static bool Eject(int pid, string dllName)
     {
         var hProcess = IntPtr.Zero;
-        var allocAddr = IntPtr.Zero;
+        var hThread = IntPtr.Zero;
 
         try
         {
@@ -323,9 +327,6 @@ public static class DllInjector
             }
 
             // Resolve FreeLibrary in the target process
-            var freeLibAddr = ResolveLoadLibraryA(hProcess, pid);
-            // Actually we need FreeLibrary, not LoadLibraryA — but they're in the same module.
-            // Let's find it properly via the same PE parsing approach.
             bool targetIsWow64 = false;
             NativeMethods.IsWow64Process(hProcess, out targetIsWow64);
 
@@ -351,12 +352,11 @@ public static class DllInjector
                 return false;
             }
 
-            var hThread = NativeMethods.CreateRemoteThread(
+            hThread = NativeMethods.CreateRemoteThread(
                 hProcess, IntPtr.Zero, 0, freeLibrary, dllBase, 0, out _);
             if (hThread == IntPtr.Zero) return false;
 
             NativeMethods.WaitForSingleObject(hThread, 5000);
-            NativeMethods.CloseHandle(hThread);
 
             FileLogger.Info($"DllInjector.Eject: successfully ejected from PID {pid}");
             return true;
@@ -368,8 +368,8 @@ public static class DllInjector
         }
         finally
         {
-            if (allocAddr != IntPtr.Zero && hProcess != IntPtr.Zero)
-                NativeMethods.VirtualFreeEx(hProcess, allocAddr, 0, NativeMethods.MEM_RELEASE);
+            if (hThread != IntPtr.Zero)
+                NativeMethods.CloseHandle(hThread);
             if (hProcess != IntPtr.Zero)
                 NativeMethods.CloseHandle(hProcess);
         }
