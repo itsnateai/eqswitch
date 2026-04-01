@@ -23,6 +23,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <!-- Exclude sub-projects from default globbing -->
+  <ItemGroup>
+    <Compile Remove="TestInput\**" />
+    <None Remove="TestInput\**" />
+  </ItemGroup>
+
   <ItemGroup>
     <EmbeddedResource Include="eqswitch.ico" LogicalName="EQSwitch.eqswitch.ico" />
     <EmbeddedResource Include="eqswitch-alt.ico" LogicalName="EQSwitch.eqswitch-alt.ico" />
