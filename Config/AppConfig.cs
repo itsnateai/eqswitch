@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using EQSwitch.Models;
 
 namespace EQSwitch.Config;
 
@@ -39,6 +40,9 @@ public class AppConfig
     public string GinaPath { get; set; } = "";
     public string DalayaPatcherPath { get; set; } = "";
     public string NotesPath { get; set; } = "";
+
+    // Login Accounts (auto-login presets)
+    public List<LoginAccount> Accounts { get; set; } = new();
 
     // Tray Click Actions
     public TrayClickConfig TrayClick { get; set; } = new();

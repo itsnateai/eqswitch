@@ -22,6 +22,7 @@ public class TrayManager : IDisposable
     private readonly KeyboardHookManager _keyboardHook;
     private readonly AffinityManager _affinityManager;
     private readonly LaunchManager _launchManager;
+    private readonly AutoLoginManager _autoLoginManager;
 
     private NotifyIcon? _trayIcon;
     private ContextMenuStrip? _contextMenu;
@@ -79,6 +80,8 @@ public class TrayManager : IDisposable
         _keyboardHook = new KeyboardHookManager();
         _affinityManager = new AffinityManager(config);
         _launchManager = new LaunchManager(config, _affinityManager);
+        _autoLoginManager = new AutoLoginManager(config);
+        _autoLoginManager.StatusUpdate += (_, msg) => ShowBalloon(msg);
     }
 
     public void Initialize()
@@ -669,6 +672,24 @@ public class TrayManager : IDisposable
         launchAllItem.Click += (_, _) => OnLaunchAll();
         _contextMenu.Items.Add(launchAllItem);
 
+        // Login submenu (auto-login accounts)
+        if (_config.Accounts.Count > 0)
+        {
+            var loginMenu = new ToolStripMenuItem("\uD83D\uDD11  Login") { Font = _boldMenuFont };
+            foreach (var account in _config.Accounts)
+            {
+                var acct = account; // capture for closure
+                var label = string.IsNullOrEmpty(acct.CharacterName)
+                    ? acct.Name
+                    : $"{acct.Name} ({acct.CharacterName})";
+                loginMenu.DropDownItems.Add($"\uD83D\uDC64  {label}", null, (_, _) =>
+                    _autoLoginManager.LoginAccount(acct));
+            }
+            loginMenu.DropDownItems.Add(new ToolStripSeparator());
+            loginMenu.DropDownItems.Add("\u2699  Manage Accounts...", null, (_, _) => ShowSettings(5));
+            _contextMenu.Items.Add(loginMenu);
+        }
+
         _contextMenu.Items.Add(new ToolStripSeparator());
 
         _clientsMenu = new ToolStripMenuItem("\uD83D\uDC64  Clients");
@@ -1042,6 +1063,9 @@ public class TrayManager : IDisposable
         _middleClickTimer!.Stop();
         int clicks = _middleClickCount;
         _middleClickCount = 0;
+        // Guard: a stale Tick can fire after Stop() if it was already queued
+        // on the UI message pump. Ignore ticks with zero clicks.
+        if (clicks == 0) return;
         string action = clicks >= 2
             ? _config.TrayClick.MiddleDoubleClick
             : _config.TrayClick.MiddleClick;

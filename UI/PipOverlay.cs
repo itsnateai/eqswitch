@@ -164,19 +164,39 @@ public class PipOverlay : Form
                 yPos = idx * (h + gap) + borderPad;
             }
 
+            // Query source size and letterbox to preserve aspect ratio
+            var destRect = new NativeMethods.RECT { Left = xPos, Top = yPos, Right = xPos + w, Bottom = yPos + h };
+            if (NativeMethods.DwmQueryThumbnailSourceSize(thumbId, out var srcSize) == 0
+                && srcSize.cx > 0 && srcSize.cy > 0)
+            {
+                double srcAspect = (double)srcSize.cx / srcSize.cy;
+                double dstAspect = (double)w / h;
+
+                if (dstAspect > srcAspect)
+                {
+                    // Pillarbox: destination is wider than source — shrink width
+                    int fitW = (int)(h * srcAspect);
+                    int pad = (w - fitW) / 2;
+                    destRect.Left = xPos + pad;
+                    destRect.Right = xPos + pad + fitW;
+                }
+                else if (dstAspect < srcAspect)
+                {
+                    // Letterbox: destination is taller than source — shrink height
+                    int fitH = (int)(w / srcAspect);
+                    int pad = (h - fitH) / 2;
+                    destRect.Top = yPos + pad;
+                    destRect.Bottom = yPos + pad + fitH;
+                }
+            }
+
             var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
             {
                 dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION
                         | NativeMethods.DWM_TNP_VISIBLE
                         | NativeMethods.DWM_TNP_OPACITY
                         | NativeMethods.DWM_TNP_SOURCECLIENTAREAONLY,
-                rcDestination = new NativeMethods.RECT
-                {
-                    Left = xPos,
-                    Top = yPos,
-                    Right = xPos + w,
-                    Bottom = yPos + h
-                },
+                rcDestination = destRect,
                 opacity = _config.Pip.Opacity,
                 fVisible = true,
                 fSourceClientAreaOnly = true

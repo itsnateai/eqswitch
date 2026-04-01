@@ -52,6 +52,7 @@ A system tray utility for managing multiple EverQuest clients — window switchi
 - **Configurable Tray Actions** — Left/double/middle click actions are fully customizable
 - **Character Profiles** — Per-character priority overrides, export/import
 - **Custom Tray Icon** — Custom .ico support
+- **Auto-Login** — Encrypted account presets with one-click launch, login, server select, and character enter world
 - **Portable** — Single exe, config stored next to it, no installer needed
 
 ## Requirements
@@ -118,6 +119,19 @@ Place a file named `eqswitch-custom.ico` next to the exe to use your own icon.
 | `Models/` | EQ client data model |
 | `UI/` | Tray manager, settings GUI, PiP overlay, dark theme, process manager |
 | `Native/` | C++ hook DLL source (MinHook) — compiled as 32-bit for eqgame.exe |
+
+## Auto-Login Security
+
+Passwords are encrypted using **Windows DPAPI** (Data Protection API) and stored locally in your config file. Here's what that means:
+
+- **AES-256 encryption** — DPAPI derives an encryption key from your Windows login credentials (password hash + machine SID + user SID) using PBKDF2, then encrypts with AES-256
+- **User-scoped** — Only your Windows user account on your machine can decrypt the passwords. Other users on the same PC (even administrators) cannot read them
+- **Zero network traffic** — Encryption and decryption happen entirely on your machine. Passwords are never transmitted anywhere
+- **No master password** — Your Windows login IS the master key. The encrypted master key is stored in `%APPDATA%\Microsoft\Protect\{SID}\`
+- **Stored as base64** — The encrypted blob is base64-encoded in `eqswitch-config.json`. Even if someone reads the file, they see gibberish without your Windows credentials
+
+> [!IMPORTANT]
+> If you reinstall Windows or create a new user account, stored passwords cannot be recovered. You'll need to re-enter them in Settings.
 
 ## Troubleshooting
 
