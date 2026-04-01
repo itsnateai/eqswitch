@@ -189,10 +189,9 @@ public class TrayManager : IDisposable
                     _config.Layout.TitlebarOffset);
             }
 
-            // Inject hook DLL if slim titlebar + hook enabled (single monitor only —
-            // multimonitor needs different positions per window, hook only supports one)
-            bool isMM = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
-            if (_config.Layout.SlimTitlebar && _config.Layout.UseHook && !isMM)
+            // Inject hook DLL if slim titlebar + hook enabled (per-process shared memory
+            // supports both single and multimonitor modes)
+            if (_config.Layout.SlimTitlebar && _config.Layout.UseHook)
             {
                 InjectHookDll(c.ProcessId);
             }
@@ -203,8 +202,9 @@ public class TrayManager : IDisposable
                 ShowBalloon($"Lost: {c}");
             _affinityManager.CancelRetry(c.ProcessId);
 
-            // Clean up injection tracking (DLL unloads automatically when process exits)
+            // Clean up injection tracking and per-process shared memory
             _injectedPids.Remove(c.ProcessId);
+            _hookConfig?.Close(c.ProcessId);
         };
 
         // Immediately detect newly launched clients so slim titlebar applies without
@@ -384,6 +384,7 @@ public class TrayManager : IDisposable
             {
                 _windowManager.SwapWindows(clients);
                 _windowManager.ResizeToCurrentMonitors(clients);
+                UpdateHookConfig(); // Hook configs must follow swapped positions
             }
             catch (Exception ex)
             {
@@ -446,6 +447,7 @@ public class TrayManager : IDisposable
             {
                 _windowManager.SwapWindows(clients);
                 _windowManager.ResizeToCurrentMonitors(clients);
+                UpdateHookConfig(); // Hook configs must follow swapped positions
             }
             catch (Exception ex)
             {
@@ -483,6 +485,7 @@ public class TrayManager : IDisposable
         }
 
         _windowManager.ArrangeWindows(clients);
+        UpdateHookConfig();
         FileLogger.Info($"ArrangeWindows: arranged {clients.Count} client(s)");
         string mode = _config.Layout.SlimTitlebar ? "slim titlebar" : "stacked";
         ShowBalloon($"Fixed {clients.Count} window(s) ({mode})");
@@ -521,7 +524,10 @@ public class TrayManager : IDisposable
         // Re-arrange windows with the new mode
         var clients = _processManager.Clients;
         if (clients.Count > 0)
+        {
             _windowManager.ArrangeWindows(clients);
+            UpdateHookConfig();
+        }
     }
 
     /// <summary>
@@ -1258,15 +1264,9 @@ public class TrayManager : IDisposable
             FileLogger.Info("ReloadConfig: auto-arranged for multimonitor mode");
         }
 
-        // Disable hook in multimonitor mode — shared memory only supports one position
-        if (isMultiMon)
-        {
-            _hookConfig?.Disable();
-        }
-        else
-        {
-            UpdateHookConfig();
-        }
+        // Update hook configs for all injected processes (per-PID shared memory
+        // supports both single and multimonitor modes)
+        UpdateHookConfig();
 
         FileLogger.Info("Config reloaded and applied");
         ShowBalloon("Settings applied");
@@ -1295,22 +1295,26 @@ public class TrayManager : IDisposable
 
     /// <summary>
     /// Inject eqswitch-hook.dll into a target EQ process.
-    /// Opens shared memory first so the DLL can read config on attach.
+    /// Opens per-process shared memory first so the DLL can read config on attach.
     /// </summary>
     private void InjectHookDll(int pid)
     {
         if (_injectedPids.Contains(pid)) return;
 
-        // Ensure shared memory is open before injection
+        // Open per-PID shared memory before injection — the DLL opens "EQSwitchHookCfg_{PID}"
         _hookConfig ??= new HookConfigWriter();
-        if (!_hookConfig.IsOpen && !_hookConfig.Open())
+        if (!_hookConfig.Open(pid))
         {
-            FileLogger.Warn("InjectHookDll: shared memory unavailable, skipping injection");
+            FileLogger.Warn($"InjectHookDll: shared memory unavailable for PID {pid}, skipping injection");
             return;
         }
 
-        // Write current config before injection so the DLL reads correct values on attach
-        UpdateHookConfig();
+        // Track immediately so UpdateHookConfig() includes this PID during the
+        // injection delay — shared memory is open and configured, just awaiting DLL load
+        _injectedPids.Add(pid);
+
+        // Write this process's config before injection so the DLL reads correct values on attach
+        UpdateHookConfigForPid(pid);
 
         // Find the DLL next to our exe
         var exeDir = AppContext.BaseDirectory;
@@ -1318,6 +1322,7 @@ public class TrayManager : IDisposable
         if (!File.Exists(dllPath))
         {
             FileLogger.Warn($"InjectHookDll: DLL not found at {dllPath}");
+            _injectedPids.Remove(pid);
             return;
         }
 
@@ -1328,13 +1333,16 @@ public class TrayManager : IDisposable
             timer.Stop();
             timer.Dispose();
 
+            // Guard: if the process died during the delay, ClientLost already cleaned up
+            if (!_injectedPids.Contains(pid)) return;
+
             if (DllInjector.Inject(pid, dllPath))
             {
-                _injectedPids.Add(pid);
                 FileLogger.Info($"InjectHookDll: successfully injected into PID {pid}");
             }
             else
             {
+                _injectedPids.Remove(pid);
                 FileLogger.Warn($"InjectHookDll: injection failed for PID {pid}, falling back to guard timer");
             }
         };
@@ -1342,29 +1350,93 @@ public class TrayManager : IDisposable
     }
 
     /// <summary>
-    /// Write current slim titlebar position to shared memory for the hook DLL.
+    /// Write slim titlebar positions to shared memory for all injected processes.
+    /// In multimonitor mode, each process gets a different position based on its monitor.
     /// </summary>
     private void UpdateHookConfig()
     {
-        if (_hookConfig == null || !_hookConfig.IsOpen) return;
+        if (_hookConfig == null || !_hookConfig.HasMappings) return;
         if (!_config.Layout.SlimTitlebar)
         {
-            _hookConfig.Disable();
+            _hookConfig.DisableAll();
             return;
         }
 
-        // Calculate the same position and size that ApplySlimTitlebar uses
-        var monitors = _windowManager.GetTargetMonitorBounds();
-        int x = monitors.Left;
-        int y = monitors.Top - _config.Layout.TitlebarOffset;
-        int w = monitors.Right - monitors.Left;
-        int h = (monitors.Bottom - monitors.Top) + _config.Layout.TitlebarOffset;
-
-        _hookConfig.WriteConfig(x, y, w, h, enabled: true, stripThickFrame: true);
+        foreach (var pid in _injectedPids)
+            UpdateHookConfigForPid(pid);
     }
 
     /// <summary>
-    /// Eject hook DLL from all injected EQ processes and close shared memory.
+    /// Write slim titlebar position for a specific process based on its monitor assignment.
+    /// </summary>
+    private void UpdateHookConfigForPid(int pid)
+    {
+        if (_hookConfig == null || !_hookConfig.IsOpen(pid)) return;
+        if (!_config.Layout.SlimTitlebar)
+        {
+            _hookConfig.Disable(pid);
+            return;
+        }
+
+        var clients = _processManager.Clients;
+        int clientIndex = -1;
+        for (int i = 0; i < clients.Count; i++)
+        {
+            if (clients[i].ProcessId == pid) { clientIndex = i; break; }
+        }
+        if (clientIndex < 0)
+        {
+            FileLogger.Warn($"UpdateHookConfigForPid: PID {pid} not in client list, skipping");
+            return;
+        }
+
+        WinRect monBounds;
+        bool isMM = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+        if (isMM)
+        {
+            // Match the same monitor assignment logic as ArrangeMultiMonitor
+            monBounds = GetMonitorForClientIndex(clientIndex);
+        }
+        else
+        {
+            monBounds = _windowManager.GetTargetMonitorBounds();
+        }
+
+        int x = monBounds.Left;
+        int y = monBounds.Top - _config.Layout.TitlebarOffset;
+        int w = monBounds.Right - monBounds.Left;
+        int h = (monBounds.Bottom - monBounds.Top) + _config.Layout.TitlebarOffset;
+
+        _hookConfig.WriteConfig(pid, x, y, w, h, enabled: true, stripThickFrame: true);
+        FileLogger.Info($"UpdateHookConfig: PID {pid} → ({x},{y}) {w}x{h}");
+    }
+
+    /// <summary>
+    /// Get the monitor bounds for a client based on its index in the client list.
+    /// Mirrors the assignment logic in WindowManager.ArrangeMultiMonitor.
+    /// </summary>
+    private WinRect GetMonitorForClientIndex(int clientIndex)
+    {
+        var monitors = _windowManager.GetAllMonitorFullBounds();
+        if (monitors.Count == 0)
+            return new WinRect { Right = 1920, Bottom = 1080 };
+
+        var primaryIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, monitors.Count - 1);
+        int secondaryIdx;
+        if (_config.Layout.SecondaryMonitor >= 0 && _config.Layout.SecondaryMonitor < monitors.Count)
+            secondaryIdx = _config.Layout.SecondaryMonitor;
+        else
+            secondaryIdx = primaryIdx == 0 && monitors.Count > 1 ? 1 : 0;
+
+        var monitorOrder = new List<WinRect> { monitors[primaryIdx] };
+        if (monitors.Count > 1)
+            monitorOrder.Add(monitors[secondaryIdx]);
+
+        return monitorOrder[clientIndex % monitorOrder.Count];
+    }
+
+    /// <summary>
+    /// Eject hook DLL from all injected EQ processes and close all shared memory mappings.
     /// </summary>
     private void CleanupHookInjection()
     {
@@ -1436,7 +1508,7 @@ public class TrayManager : IDisposable
             else
             {
                 // Priority 2: Default embedded Stone icon (eqswitch.ico — the primary embedded icon)
-                var stream = typeof(TrayManager).Assembly.GetManifestResourceStream("EQSwitch.eqswitch.ico");
+                using var stream = typeof(TrayManager).Assembly.GetManifestResourceStream("EQSwitch.eqswitch.ico");
                 if (stream != null)
                 {
                     newIcon = new Icon(stream, 32, 32);
@@ -1478,8 +1550,7 @@ public class TrayManager : IDisposable
         _middleClickTimer?.Dispose();
         _deferTimer?.Stop();
         _deferTimer?.Dispose();
-        _foregroundDebounceTimer?.Stop();
-        _foregroundDebounceTimer?.Dispose();
+        // _foregroundDebounceTimer already disposed by StopForegroundHook() above
         _boldMenuFont?.Dispose();
         _pipOverlay?.Dispose();
         _hotkeyManager.Dispose();
