@@ -142,7 +142,7 @@ public class TrayManager : IDisposable
                 {
                     _slimTitlebarGuard = new System.Windows.Forms.Timer { Interval = guardInterval };
                     _slimTitlebarGuard.Tick += (_, _) =>
-                        _windowManager.ApplySlimTitlebarToAll(_processManager.Clients);
+                        _windowManager.ApplySlimTitlebarToAll(_processManager.Clients, _injectedPids);
                     _slimTitlebarGuard.Start();
                 }
                 else if (_slimTitlebarGuard.Interval != guardInterval)
@@ -628,7 +628,7 @@ public class TrayManager : IDisposable
         // EQ resets its window position during screen transitions (login → char select).
         if (_config.Layout.SlimTitlebar && active != null)
         {
-            _windowManager.ApplySlimTitlebarToAll(clients);
+            _windowManager.ApplySlimTitlebarToAll(clients, _injectedPids);
         }
 
         if (_config.Affinity.Enabled)

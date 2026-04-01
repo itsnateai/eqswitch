@@ -352,7 +352,7 @@ public class WindowManager
     /// Lightweight slim titlebar apply for all clients — just repositions windows
     /// without the full arrange logic. Used by foreground hook and auto-apply.
     /// </summary>
-    public void ApplySlimTitlebarToAll(IReadOnlyList<EQClient> clients)
+    public void ApplySlimTitlebarToAll(IReadOnlyList<EQClient> clients, IReadOnlySet<int>? injectedPids = null)
     {
         if (!_config.Layout.SlimTitlebar) return;
         var monitor = GetTargetMonitor(true);
@@ -365,6 +365,11 @@ public class WindowManager
 
             // Re-apply custom window title if EQ overwrote it
             SetWindowTitle(client, i);
+
+            // Skip position enforcement if hook DLL is active in this process —
+            // the DLL handles it from inside, no need for external repositioning
+            if (injectedPids != null && injectedPids.Contains(client.ProcessId))
+                continue;
 
             // Check if already positioned correctly — avoid unnecessary repositioning
             _api.GetWindowRect(client.WindowHandle, out var rect);
