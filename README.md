@@ -38,7 +38,7 @@ A system tray utility for managing multiple EverQuest clients — window switchi
 
 ## Features
 
-- **Slim Titlebar** — WinEQ2-style borderless mode that hides the titlebar above the screen edge
+- **Fullscreen Window** — WinEQ2-style borderless mode that hides the titlebar above the screen edge
 - **DLL Hook Injection** — Hooks SetWindowPos/MoveWindow inside eqgame.exe for zero-flicker window positioning
 - **Window Switching** — Cycle EQ clients with hotkeys (keyboard hook for single keys, RegisterHotKey for combos)
 - **Multi-Monitor** — One client per physical monitor with automatic arrangement

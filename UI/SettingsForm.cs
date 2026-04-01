@@ -469,7 +469,7 @@ public class SettingsForm : Form
 
         const int hintX = 260;
 
-        _chkSlimTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Slim Titlebar (WinEQ2 mode)", L, cy);
+        _chkSlimTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Fullscreen Window (WinEQ2 mode)", L, cy);
         DarkTheme.AddCardHint(cardStyle, "Auto-sets resolution + hides titlebar", hintX, cy + 2);
         cy += 24;
 
