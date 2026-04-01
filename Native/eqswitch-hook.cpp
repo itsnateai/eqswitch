@@ -66,7 +66,10 @@ static void LogMessage(const char* fmt, ...) {
     fclose(f);
 }
 
-// Check if a window belongs to this EQ process
+// Check if a window belongs to this EQ process.
+// We're injected ONLY into eqgame.exe, so any top-level window in our process
+// is the EQ window. No title check — EQ's title can be empty or change during
+// login/character select transitions, which caused the hook to miss repositions.
 static BOOL IsEqWindow(HWND hWnd) {
     // Fast path: cached handle still valid
     if (g_cachedEqHwnd && g_cachedEqHwnd == hWnd && IsWindow(hWnd)) {
@@ -80,25 +83,18 @@ static BOOL IsEqWindow(HWND hWnd) {
         return FALSE;
     }
 
-    // Check if it's a top-level window with a title (EQ's main window)
     // Skip child windows and message-only windows
     if (GetParent(hWnd) != NULL) {
         return FALSE;
     }
 
-    char title[256] = {0};
-    GetWindowTextA(hWnd, title, sizeof(title));
-    if (strlen(title) == 0) {
+    // Must be a visible top-level window (skip hidden helper windows)
+    if (!IsWindowVisible(hWnd)) {
         return FALSE;
     }
 
-    // EQ window titles start with "EverQuest"
-    if (strncmp(title, "EverQuest", 9) == 0) {
-        g_cachedEqHwnd = hWnd;
-        return TRUE;
-    }
-
-    return FALSE;
+    g_cachedEqHwnd = hWnd;
+    return TRUE;
 }
 
 // Read config from shared memory
