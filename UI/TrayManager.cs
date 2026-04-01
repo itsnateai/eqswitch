@@ -153,11 +153,24 @@ public class TrayManager : IDisposable
                 // Update shared memory config for hook DLL
                 UpdateHookConfig();
             }
+
             else if (_slimTitlebarGuard != null)
             {
                 _slimTitlebarGuard.Stop();
                 _slimTitlebarGuard.Dispose();
                 _slimTitlebarGuard = null;
+            }
+
+            // Auto-show PiP overlay when enabled and 2+ clients are present
+            if (_config.Pip.Enabled && _processManager.Clients.Count >= 2
+                && (_pipOverlay == null || _pipOverlay.IsDisposed))
+            {
+                TogglePip();
+            }
+            // Update PiP sources when client list changes
+            else if (_pipOverlay != null && !_pipOverlay.IsDisposed)
+            {
+                _pipOverlay.UpdateSources(_processManager.Clients, _processManager.GetActiveClient());
             }
         };
         _processManager.ClientDiscovered += (_, c) =>
