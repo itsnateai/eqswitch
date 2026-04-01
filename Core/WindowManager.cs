@@ -424,22 +424,33 @@ public class WindowManager
         if (string.IsNullOrEmpty(template)) return;
         if (!_api.IsWindow(client.WindowHandle)) return;
 
-        // Read the current native title — if EQ has overwritten our custom title
-        // back to "EverQuest - CharName", capture it before we rename again.
-        int len = NativeMethods.GetWindowTextLength(client.WindowHandle);
-        if (len > 0)
+        // Resolve character name: prefer account preset, fall back to EQ window title
+        var charName = "Unknown";
+
+        // Look up by slot index in auto-login accounts
+        if (slotIndex < _config.Accounts.Count)
         {
-            var sb = new System.Text.StringBuilder(len + 1);
-            NativeMethods.GetWindowText(client.WindowHandle, sb, sb.Capacity);
-            var currentNative = sb.ToString();
-            if (currentNative.StartsWith("EverQuest", StringComparison.Ordinal))
-                client.OriginalTitle = currentNative;
+            var accountName = _config.Accounts[slotIndex].CharacterName;
+            if (!string.IsNullOrEmpty(accountName))
+                charName = accountName;
         }
 
-        // Extract character name from EQ's native title format: "EverQuest - CharName"
-        var charName = "Unknown";
-        if (!string.IsNullOrEmpty(client.OriginalTitle) && client.OriginalTitle.Contains(" - "))
-            charName = client.OriginalTitle.Split(" - ", 2)[1];
+        // Fall back to EQ's native window title if no account match
+        if (charName == "Unknown")
+        {
+            int len = NativeMethods.GetWindowTextLength(client.WindowHandle);
+            if (len > 0)
+            {
+                var sb = new System.Text.StringBuilder(len + 1);
+                NativeMethods.GetWindowText(client.WindowHandle, sb, sb.Capacity);
+                var currentNative = sb.ToString();
+                if (currentNative.StartsWith("EverQuest", StringComparison.Ordinal))
+                    client.OriginalTitle = currentNative;
+            }
+
+            if (!string.IsNullOrEmpty(client.OriginalTitle) && client.OriginalTitle.Contains(" - "))
+                charName = client.OriginalTitle.Split(" - ", 2)[1];
+        }
 
         var title = template
             .Replace("{CHAR}", charName)
