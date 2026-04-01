@@ -122,11 +122,13 @@ public class ProcessManager : IDisposable
                         var hwnd = proc.MainWindowHandle;
                         if (hwnd == IntPtr.Zero) continue;
 
+                        var title = GetWindowTitle(hwnd);
                         var client = new EQClient
                         {
                             WindowHandle = hwnd,
                             ProcessId = proc.Id,
-                            WindowTitle = GetWindowTitle(hwnd),
+                            WindowTitle = title,
+                            OriginalTitle = title,
                             SlotIndex = _clients.Count
                         };
 
@@ -168,6 +170,10 @@ public class ProcessManager : IDisposable
                     if (newTitle != client.WindowTitle)
                     {
                         client.WindowTitle = newTitle;
+                        // Track EQ-native titles (start with "EverQuest") for {CHAR} extraction
+                        // even after we rename the window with a custom template.
+                        if (newTitle.StartsWith("EverQuest", StringComparison.Ordinal))
+                            client.OriginalTitle = newTitle;
                         titleChanged = true;
                     }
                 }
