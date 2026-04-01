@@ -939,6 +939,11 @@ public class EQClientSettingsForm : Form
                 var screen = Screen.AllScreens[targetIdx];
                 int monW = screen.Bounds.Width;
                 int monH = screen.Bounds.Height;
+                int offset = config.Layout.TitlebarOffset;
+                // Reduce client height so the game bottom doesn't extend below the
+                // screen — keeps chat boxes and bottom UI visible.
+                // Subtract offset (titlebar hidden above) + 10px bottom margin.
+                int gameH = monH - offset - 10;
 
                 SetIniValue(lines, "Defaults", "WindowedMode", "TRUE");
                 SetIniValue(lines, "VideoMode", "WindowedMode", "TRUE");
@@ -947,15 +952,18 @@ public class EQClientSettingsForm : Form
                 SetIniValue(lines, "VideoMode", "Width", monW.ToString());
                 SetIniValue(lines, "VideoMode", "Height", monH.ToString());
                 SetIniValue(lines, "VideoMode", "WindowedWidth", monW.ToString());
-                SetIniValue(lines, "VideoMode", "WindowedHeight", monH.ToString());
+                SetIniValue(lines, "VideoMode", "WindowedHeight", gameH.ToString());
                 SetIniValue(lines, "Defaults", "WindowedWidth", monW.ToString());
-                SetIniValue(lines, "Defaults", "WindowedHeight", monH.ToString());
-                // Zero out offsets — they shift the window away from expected position
+                SetIniValue(lines, "Defaults", "WindowedHeight", gameH.ToString());
                 SetIniValue(lines, "Defaults", "WindowedModeXOffset", "0");
                 SetIniValue(lines, "Defaults", "WindowedModeYOffset", "0");
                 SetIniValue(lines, "VideoMode", "WindowedModeXOffset", "0");
                 SetIniValue(lines, "VideoMode", "WindowedModeYOffset", "0");
-                FileLogger.Info($"EnforceOverrides: SlimTitlebar ON → forced {monW}x{monH}, offsets zeroed, Maximized=0, WindowedMode=TRUE");
+                // Unbind Alt+N (Story Window) in EQ so it doesn't conflict with
+                // our multi-monitor toggle hotkey. 0 = unbound.
+                SetIniValue(lines, "Defaults", "KEYMAPPING_TOGGLE_STORYWIN_1", "0");
+                SetIniValue(lines, "Defaults", "KEYMAPPING_TOGGLE_STORYWIN_2", "0");
+                FileLogger.Info($"EnforceOverrides: SlimTitlebar ON → forced {monW}x{gameH} (monitor {monH} - offset {offset}), Maximized=0, WindowedMode=TRUE, Story Window unbound");
             }
 
             if (config.EQClientIni.MaxFPS > 0)

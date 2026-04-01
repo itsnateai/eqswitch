@@ -147,11 +147,11 @@ public class WindowLayout
     public bool SlimTitlebar { get; set; } = true;
 
     /// <summary>
-    /// How many pixels of the titlebar to hide above the monitor edge (default 22).
-    /// A standard Windows titlebar is ~30px. Hiding 22px leaves ~8px visible as a thin strip.
+    /// How many pixels of the titlebar to hide above the monitor edge (default 18).
+    /// A standard Windows titlebar is ~30px. Hiding 18px leaves ~12px visible.
     /// Set to 0 for full titlebar, or up to 30 to hide it completely.
     /// </summary>
-    public int TitlebarOffset { get; set; } = 22;
+    public int TitlebarOffset { get; set; } = 15;
 
     /// <summary>
     /// Custom window title template for EQ windows. Supports placeholders:
@@ -216,7 +216,7 @@ public class HotkeyConfig
     public string ArrangeWindows { get; set; } = "";
 
     /// <summary>Toggle single-screen / multi-monitor mode.</summary>
-    public string ToggleMultiMonitor { get; set; } = "Alt+M";
+    public string ToggleMultiMonitor { get; set; } = "Alt+N";
 
     /// <summary>Launch one EQ client.</summary>
     public string LaunchOne { get; set; } = "";

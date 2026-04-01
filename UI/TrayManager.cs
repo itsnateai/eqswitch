@@ -42,6 +42,10 @@ public class TrayManager : IDisposable
     private System.Windows.Forms.Timer? _foregroundDebounceTimer;
     private const int ForegroundDebounceMs = 50;
 
+    // Slim titlebar position guard — checks every 2s if EQ reset its window
+    // position (happens on screen transitions like login → char select)
+    private System.Windows.Forms.Timer? _slimTitlebarGuard;
+
     // Debounce timestamp for multi-monitor toggle (500ms)
     private long _lastMultiMonToggle;
 
@@ -117,14 +121,33 @@ public class TrayManager : IDisposable
         {
             UpdateClientMenu();
             UpdateTrayText();
-            // Update cached PIDs for keyboard hook process filter
             _keyboardHook.UpdateFilteredPids(_processManager.Clients.Select(c => c.ProcessId));
+
+            // Start/stop slim titlebar position guard based on client count
+            if (_config.Layout.SlimTitlebar && _processManager.Clients.Count > 0)
+            {
+                if (_slimTitlebarGuard == null)
+                {
+                    _slimTitlebarGuard = new System.Windows.Forms.Timer { Interval = 500 };
+                    _slimTitlebarGuard.Tick += (_, _) =>
+                        _windowManager.ApplySlimTitlebarToAll(_processManager.Clients);
+                    _slimTitlebarGuard.Start();
+                }
+            }
+            else if (_slimTitlebarGuard != null)
+            {
+                _slimTitlebarGuard.Stop();
+                _slimTitlebarGuard.Dispose();
+                _slimTitlebarGuard = null;
+            }
         };
         _processManager.ClientDiscovered += (_, c) =>
         {
             // NO tooltip here — creating TopMost windows during EQ's DirectX init
             // causes the game to lose foreground and minimize itself
             _affinityManager.ScheduleRetry(c);
+
+            // Guard timer handles slim titlebar — no separate delay needed
         };
         _processManager.ClientLost += (_, c) =>
         {
@@ -381,7 +404,7 @@ public class TrayManager : IDisposable
     }
 
     /// <summary>
-    /// Alt+G: Arrange all EQ windows in a grid on the target monitor.
+    /// Alt+G: Arrange all EQ windows (Fix Windows).
     /// </summary>
     private void OnArrangeWindows()
     {
@@ -395,7 +418,8 @@ public class TrayManager : IDisposable
 
         _windowManager.ArrangeWindows(clients);
         FileLogger.Info($"ArrangeWindows: arranged {clients.Count} client(s)");
-        ShowBalloon($"Arranged {clients.Count} window(s) in grid");
+        string mode = _config.Layout.SlimTitlebar ? "slim titlebar" : "stacked";
+        ShowBalloon($"Fixed {clients.Count} window(s) ({mode})");
     }
 
     /// <summary>
@@ -535,6 +559,13 @@ public class TrayManager : IDisposable
     {
         var active = _processManager.GetActiveClient();
         var clients = _processManager.Clients;
+
+        // Re-apply slim titlebar when an EQ window comes to foreground.
+        // EQ resets its window position during screen transitions (login → char select).
+        if (_config.Layout.SlimTitlebar && active != null)
+        {
+            _windowManager.ApplySlimTitlebarToAll(clients);
+        }
 
         if (_config.Affinity.Enabled)
         {
@@ -845,7 +876,7 @@ public class TrayManager : IDisposable
         if (!string.IsNullOrEmpty(hk.GlobalSwitchKey))
             lines.Add($"  [{hk.GlobalSwitchKey}]  Global switch (focus EQ / cycle)");
         if (!string.IsNullOrEmpty(hk.ArrangeWindows))
-            lines.Add($"  [{hk.ArrangeWindows}]  Arrange windows in grid");
+            lines.Add($"  [{hk.ArrangeWindows}]  Fix Windows");
         if (!string.IsNullOrEmpty(hk.ToggleMultiMonitor))
             lines.Add($"  [{hk.ToggleMultiMonitor}]  Toggle multi-monitor");
         if (!string.IsNullOrEmpty(hk.LaunchOne))
@@ -1175,6 +1206,9 @@ public class TrayManager : IDisposable
         _foregroundDebounceTimer?.Stop();
         _foregroundDebounceTimer?.Dispose();
         _foregroundDebounceTimer = null;
+        _slimTitlebarGuard?.Stop();
+        _slimTitlebarGuard?.Dispose();
+        _slimTitlebarGuard = null;
         _affinityFallbackTimer?.Stop();
         _affinityFallbackTimer?.Dispose();
         _affinityFallbackTimer = null;

@@ -351,6 +351,29 @@ public class WindowManager
     // ─── Window Style Management ──────────────────────────────────
 
     /// <summary>
+    /// Lightweight slim titlebar apply for all clients — just repositions windows
+    /// without the full arrange logic. Used by foreground hook and auto-apply.
+    /// </summary>
+    public void ApplySlimTitlebarToAll(IReadOnlyList<EQClient> clients)
+    {
+        if (!_config.Layout.SlimTitlebar) return;
+        var monitor = GetTargetMonitor(true);
+        int offset = _config.Layout.TitlebarOffset;
+
+        foreach (var client in clients)
+        {
+            if (!_api.IsWindow(client.WindowHandle)) continue;
+
+            // Check if already positioned correctly — avoid unnecessary repositioning
+            _api.GetWindowRect(client.WindowHandle, out var rect);
+            int expectedY = monitor.Top - offset;
+            if (rect.Top == expectedY) continue;
+
+            ApplySlimTitlebar(client.WindowHandle, monitor, offset);
+        }
+    }
+
+    /// <summary>
     /// Apply slim titlebar mode: position window so the titlebar is partially hidden
     /// above the top edge of the monitor, and oversize the window height to compensate.
     /// The game fills the full monitor height while a thin titlebar strip remains visible.
