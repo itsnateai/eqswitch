@@ -1232,6 +1232,16 @@ public class TrayManager : IDisposable
         BuildContextMenu();
         UpdateClientMenu();
 
+        // Recreate PiP overlay if it's active (picks up size/orientation/max changes)
+        if (_pipOverlay != null && !_pipOverlay.IsDisposed)
+        {
+            _pipOverlay.Close();
+            _pipOverlay.Dispose();
+            _pipOverlay = null;
+            if (_config.Pip.Enabled && _processManager.Clients.Count >= 2)
+                TogglePip();
+        }
+
         // Re-install foreground hook (in case it was lost) and restart retry timer
         StopForegroundHook();
         StartForegroundHook();
