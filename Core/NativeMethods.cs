@@ -344,6 +344,22 @@ internal static class NativeMethods
     public const uint WAIT_TIMEOUT = 0x00000102;
     public const uint INFINITE = 0xFFFFFFFF;
 
+    // ─── Cross-architecture injection (64→32 bit) ──────────────────
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool IsWow64Process(IntPtr hProcess, out bool wow64Process);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool ReadProcessMemory(IntPtr hProcess, IntPtr lpBaseAddress, byte[] lpBuffer, int dwSize, out int lpNumberOfBytesRead);
+
+    [DllImport("psapi.dll", SetLastError = true)]
+    public static extern bool EnumProcessModulesEx(IntPtr hProcess, IntPtr[] lphModule, int cb, out int lpcbNeeded, uint dwFilterFlag);
+
+    [DllImport("psapi.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern int GetModuleFileNameExW(IntPtr hProcess, IntPtr hModule, System.Text.StringBuilder lpFilename, int nSize);
+
+    public const uint LIST_MODULES_32BIT = 0x01;
+
     // ─── SendInput (Auto-Login Keystroke Injection) ────────────────
 
     [DllImport("user32.dll", SetLastError = true)]
