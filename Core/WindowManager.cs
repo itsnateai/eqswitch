@@ -392,17 +392,22 @@ public class WindowManager
             NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER |
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_FRAMECHANGED);
 
-        // Step 2: Move window up so titlebar is hidden above the monitor edge.
-        // Do NOT resize — EQ controls its own window size via eqclient.ini.
-        // The game window is already taller than the monitor (client area + titlebar),
-        // so pushing it up naturally covers the taskbar.
+        // Step 2: Position and size the window to cover the full monitor.
+        // We MUST set explicit size — stripping WS_THICKFRAME shrinks the window
+        // (thick frame borders ~7px each side are gone), and the bottomOffset in
+        // the INI reduces the client area further. Without explicit sizing, the
+        // window is too short to cover the taskbar.
+        // Height = monitorHeight + titlebarOffset ensures the window spans from
+        // y (above the monitor) to exactly the monitor's bottom edge.
         int x = monitor.Left;
         int y = monitor.Top - titlebarOffset;
+        int w = monitor.Right - monitor.Left;
+        int h = (monitor.Bottom - monitor.Top) + titlebarOffset;
         _api.SetWindowPos(
-            hwnd, IntPtr.Zero, x, y, 0, 0,
-            NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+            hwnd, IntPtr.Zero, x, y, w, h,
+            NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
 
-        FileLogger.Info($"ApplySlimTitlebar: hwnd={hwnd} → moved to ({x},{y}), offset={titlebarOffset}px hidden");
+        FileLogger.Info($"ApplySlimTitlebar: hwnd={hwnd} → ({x},{y}) {w}x{h}, offset={titlebarOffset}px hidden");
     }
 
     /// <summary>

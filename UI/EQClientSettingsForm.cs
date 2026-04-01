@@ -940,8 +940,8 @@ public class EQClientSettingsForm : Form
                 int monW = screen.Bounds.Width;
                 int monH = screen.Bounds.Height;
                 int offset = config.Layout.TitlebarOffset;
-                // monH - 21: covers taskbar with margin for chat boxes
-                int gameH = monH - 21;
+                int bottomOffset = config.Layout.BottomOffset;
+                int gameH = monH - bottomOffset;
 
                 SetIniValue(lines, "Defaults", "WindowedMode", "TRUE");
                 SetIniValue(lines, "VideoMode", "WindowedMode", "TRUE");
@@ -961,7 +961,7 @@ public class EQClientSettingsForm : Form
                 // our multi-monitor toggle hotkey. 0 = unbound.
                 SetIniValue(lines, "Defaults", "KEYMAPPING_TOGGLE_STORYWIN_1", "0");
                 SetIniValue(lines, "Defaults", "KEYMAPPING_TOGGLE_STORYWIN_2", "0");
-                FileLogger.Info($"EnforceOverrides: SlimTitlebar ON → forced {monW}x{gameH} (monitor {monH} - offset {offset}), Maximized=0, WindowedMode=TRUE, Story Window unbound");
+                FileLogger.Info($"EnforceOverrides: SlimTitlebar ON → forced {monW}x{gameH} (monitor {monH} - bottom {bottomOffset}), titlebar hidden {offset}px, Maximized=0, WindowedMode=TRUE, Story Window unbound");
             }
 
             if (config.EQClientIni.MaxFPS > 0)

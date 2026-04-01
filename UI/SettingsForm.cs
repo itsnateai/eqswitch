@@ -56,6 +56,7 @@ public class SettingsForm : Form
     private ComboBox _cboSecondaryMonitor = null!;
     private CheckBox _chkSlimTitlebar = null!;
     private NumericUpDown _nudTitlebarOffset = null!;
+    private NumericUpDown _nudBottomOffset = null!;
     private CheckBox _chkUseHook = null!;
     private CheckBox _chkMaximizeWindow = null!;
     private TextBox _txtWindowTitleTemplate = null!;
@@ -463,7 +464,7 @@ public class SettingsForm : Form
         y += 133;
 
         // ─── Window Style card ───────────────────────────────────
-        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 143);
+        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 193);
         cy = 32;
 
         const int hintX = 260;
@@ -475,7 +476,15 @@ public class SettingsForm : Form
         DarkTheme.AddCardLabel(cardStyle, "Titlebar hidden (px):", L, cy);
         _nudTitlebarOffset = DarkTheme.AddCardNumeric(cardStyle, 140, cy - 2, 55, 22, 0, 40);
         DarkTheme.AddCardHint(cardStyle, "22 = thin strip, 30 = fully hidden", hintX, cy);
-        cy += 28;
+        cy += 26;
+
+        DarkTheme.AddCardLabel(cardStyle, "Bottom margin (px):", L, cy);
+        _nudBottomOffset = DarkTheme.AddCardNumeric(cardStyle, 140, cy - 2, 55, 22, 0, 100);
+        DarkTheme.AddCardHint(cardStyle, "Game render height reduction", hintX, cy);
+        cy += 22;
+
+        DarkTheme.AddCardHint(cardStyle, "WinEQ2 mode: hidden 13, margin 21 — keep margin > hidden", L, cy);
+        cy += 22;
 
         _chkUseHook = DarkTheme.AddCardCheckBox(cardStyle, "DLL Hook (zero flicker)", L, cy);
         DarkTheme.AddCardHint(cardStyle, "Hooks SetWindowPos inside EQ", hintX, cy + 2);
@@ -488,6 +497,7 @@ public class SettingsForm : Form
         {
             bool slim = _chkSlimTitlebar.Checked;
             _nudTitlebarOffset.Enabled = slim;
+            _nudBottomOffset.Enabled = slim;
             _chkUseHook.Enabled = slim;
             if (!slim) _chkUseHook.Checked = false;
             // Slim titlebar and Maximize are incompatible — maximized windows
@@ -503,7 +513,7 @@ public class SettingsForm : Form
             }
         };
 
-        y += 151;
+        y += 201;
 
         // ─── Window Title card ───────────────────────────────────
         var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 65);
@@ -834,11 +844,13 @@ public class SettingsForm : Form
         _cboSecondaryMonitor.SelectedIndex = Math.Clamp(secIdx, 0, _cboSecondaryMonitor.Items.Count - 1);
         _chkSlimTitlebar.Checked = _config.Layout.SlimTitlebar;
         _nudTitlebarOffset.Value = DarkTheme.ClampNud(_nudTitlebarOffset, _config.Layout.TitlebarOffset);
+        _nudBottomOffset.Value = DarkTheme.ClampNud(_nudBottomOffset, _config.Layout.BottomOffset);
         _chkUseHook.Checked = _config.Layout.UseHook;
         _chkUseHook.Enabled = _config.Layout.SlimTitlebar;
         _chkMaximizeWindow.Checked = _config.EQClientIni.MaximizeWindow;
         _txtWindowTitleTemplate.Text = _config.Layout.WindowTitleTemplate;
         _nudTitlebarOffset.Enabled = _config.Layout.SlimTitlebar;
+        _nudBottomOffset.Enabled = _config.Layout.SlimTitlebar;
         _chkMaximizeWindow.Enabled = !_config.Layout.SlimTitlebar;
 
         // Performance
@@ -887,6 +899,7 @@ public class SettingsForm : Form
                 TopOffset = _config.Layout.TopOffset,
                 SlimTitlebar = _chkSlimTitlebar.Checked,
                 TitlebarOffset = (int)_nudTitlebarOffset.Value,
+                BottomOffset = (int)_nudBottomOffset.Value,
                 UseHook = _chkUseHook.Checked,
                 WindowTitleTemplate = _txtWindowTitleTemplate.Text.Trim()
             },

@@ -1126,6 +1126,7 @@ public class TrayManager : IDisposable
         _config.Layout.TopOffset = newConfig.Layout.TopOffset;
         _config.Layout.SlimTitlebar = newConfig.Layout.SlimTitlebar;
         _config.Layout.TitlebarOffset = newConfig.Layout.TitlebarOffset;
+        _config.Layout.BottomOffset = newConfig.Layout.BottomOffset;
         _config.Layout.WindowTitleTemplate = newConfig.Layout.WindowTitleTemplate;
         _config.Layout.Mode = newConfig.Layout.Mode;
         _config.Affinity.Enabled = newConfig.Affinity.Enabled;
@@ -1284,13 +1285,14 @@ public class TrayManager : IDisposable
             return;
         }
 
-        // Calculate the same position that ApplySlimTitlebar uses
+        // Calculate the same position and size that ApplySlimTitlebar uses
         var monitors = _windowManager.GetTargetMonitorBounds();
         int x = monitors.Left;
         int y = monitors.Top - _config.Layout.TitlebarOffset;
+        int w = monitors.Right - monitors.Left;
+        int h = (monitors.Bottom - monitors.Top) + _config.Layout.TitlebarOffset;
 
-        // Width/height: 0 means "don't override" — EQ controls its own size via eqclient.ini
-        _hookConfig.WriteConfig(x, y, 0, 0, enabled: true, stripThickFrame: true);
+        _hookConfig.WriteConfig(x, y, w, h, enabled: true, stripThickFrame: true);
     }
 
     /// <summary>

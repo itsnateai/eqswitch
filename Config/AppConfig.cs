@@ -100,6 +100,7 @@ public class AppConfig
         Layout.SecondaryMonitor = Math.Clamp(Layout.SecondaryMonitor, -1, 8);
         Layout.TopOffset = Math.Clamp(Layout.TopOffset, -200, 200);
         Layout.TitlebarOffset = Math.Clamp(Layout.TitlebarOffset, 0, 40);
+        Layout.BottomOffset = Math.Clamp(Layout.BottomOffset, 0, 100);
 
         Affinity.LaunchRetryCount = Math.Clamp(Affinity.LaunchRetryCount, 0, 20);
         Affinity.LaunchRetryDelayMs = Math.Clamp(Affinity.LaunchRetryDelayMs, 500, 30000);
@@ -152,6 +153,13 @@ public class WindowLayout
     /// Set to 0 for full titlebar, or up to 30 to hide it completely.
     /// </summary>
     public int TitlebarOffset { get; set; } = 13;
+
+    /// <summary>
+    /// How many pixels to subtract from the bottom of the game window height.
+    /// Creates a gap at the bottom edge (useful for taskbar or chat box visibility).
+    /// Only used when SlimTitlebar is enabled. Default 21.
+    /// </summary>
+    public int BottomOffset { get; set; } = 21;
 
     /// <summary>
     /// Custom window title template for EQ windows. Supports placeholders:
@@ -288,7 +296,7 @@ public class PipConfig
     public string BorderColor { get; set; } = "Green";
 
     /// <summary>Max number of PiP windows to show (1-3).</summary>
-    public int MaxWindows { get; set; } = 3;
+    public int MaxWindows { get; set; } = 2;
 
     /// <summary>Saved positions (X,Y pairs per slot).</summary>
     public List<int[]> SavedPositions { get; set; } = new();
