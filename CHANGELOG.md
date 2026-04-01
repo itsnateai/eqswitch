@@ -1,5 +1,28 @@
 # Changelog
 
+## v3.0.1 — Per-Process Hook Shared Memory & Audit Fixes (2026-04-01)
+
+### Changed
+- **Per-process shared memory** — Each injected eqgame.exe gets its own memory-mapped file (`EQSwitchHookCfg_{PID}`) instead of a single global mapping. Hook DLL now works in both single and multimonitor modes with correct per-window positioning.
+- **Atomic config writes** — `ConfigManager.FlushSave` writes to a temp file then `File.Move` to prevent config corruption on crash.
+
+### Fixed
+- **Hook configs not updated after ArrangeWindows/ToggleMultiMonitor** — Hook DLL would snap windows back to stale positions after "Fix Windows" or mode toggle.
+- **Hook configs not updated after SwapWindows** — Multimonitor swap would be immediately undone by the hook.
+- **DllInjector handle leaks** — `hThread` handles in both `Inject()` and `Eject()` moved into `finally` blocks.
+- **DllInjector.Eject dead code** — Removed unused `allocAddr`/`VirtualFreeEx` and stale `ResolveLoadLibraryA` call.
+- **GetExportRva missing guards** — Added `-1` checks after `RvaToFileOffset` calls for clearer PE parse errors.
+- **HookConfigWriter resource leak** — `Open()` catch path now disposes both `MemoryMappedFile` and `ViewAccessor` on failure.
+- **HookConfigWriter.Disable zeroed geometry** — Now read-modify-writes to only flip the `Enabled` flag.
+- **Dead-PID injection race** — Timer tick guards against injecting into a process that died during the 2s delay.
+- **Missing client early-return** — `UpdateHookConfigForPid` logs and returns when PID not in client list.
+- **Stream leak in LoadIcon** — `GetManifestResourceStream` now disposed with `using`.
+- **SettingsForm font leaks** — Inline fonts on labels and DataGridView header tracked and disposed.
+- **Double-dispose of foreground debounce timer** — Removed redundant dispose in `TrayManager.Dispose`.
+- **PID naming contract** — Cast to `uint` for shared memory name to match C++ `%lu` formatting.
+
+---
+
 ## v3.0.0 — DLL Hook Injection, Auto-Login & PiP Overhaul (2026-04-01)
 
 ### Added
