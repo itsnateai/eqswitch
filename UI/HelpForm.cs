@@ -70,7 +70,7 @@ TRAY ICON:
 LAYOUT MODES:
   Single Screen      Stacked on monitor {layout.TargetMonitor}
   Multi-Monitor      One window per physical monitor
-  Slim Titlebar      {(layout.SlimTitlebar ? "ON" : "OFF")} — hides titlebar above screen edge (WinEQ2 mode)
+  Fullscreen Window   {(layout.SlimTitlebar ? "ON" : "OFF")} — hides titlebar above screen edge (WinEQ2 mode)
 
 PIP (PICTURE-IN-PICTURE):
   Live DWM thumbnail preview of background EQ windows
