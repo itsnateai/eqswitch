@@ -201,6 +201,11 @@ public class HotkeyConfig
     /// <summary>Launch all configured EQ clients.</summary>
     public string LaunchAll { get; set; } = "";
 
+    /// <summary>
+    /// Set true once the user has enabled multimonitor mode at least once.
+    /// Unlocks Alt+M hotkey permanently. Won't work until user tries
+    /// multimonitor via the Settings checkbox first.
+    /// </summary>
     public bool MultiMonitorEnabled { get; set; } = false;
 
     /// <summary>

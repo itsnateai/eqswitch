@@ -781,7 +781,9 @@ public class EQClientSettingsForm : Form
                 SetIniValue(lines, "Defaults", "SkyUpdateInterval", _origSkyInterval);
             }
 
-            SetIniValue(lines, "VideoMode", "WindowedMode", _chkForceWindowed.Checked ? "TRUE" : "FALSE");
+            string wmVal = _chkForceWindowed.Checked ? "TRUE" : "FALSE";
+            SetIniValue(lines, "Defaults", "WindowedMode", wmVal);
+            SetIniValue(lines, "VideoMode", "WindowedMode", wmVal);
 
             if ((int)_nudMaxFPS.Value > 0)
             {
@@ -918,8 +920,11 @@ public class EQClientSettingsForm : Form
             if (config.EQClientIni.SlowSkyUpdates)
                 Set("Defaults", "SkyUpdateInterval", "60000");
 
-            Set("VideoMode", "WindowedMode", config.EQClientIni.ForceWindowedMode ? "TRUE" : "FALSE");
-            Set("VideoMode", "Maximized", "0");
+            // EQ reads WindowedMode from [Defaults], not [VideoMode] — write both
+            string wmVal = config.EQClientIni.ForceWindowedMode ? "TRUE" : "FALSE";
+            Set("Defaults", "WindowedMode", wmVal);
+            Set("VideoMode", "WindowedMode", wmVal);
+            // Don't overwrite [Defaults] Maximized — EQ uses it to start maximized
 
             if (config.EQClientIni.MaxFPS > 0)
             {

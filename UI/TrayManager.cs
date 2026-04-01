@@ -87,6 +87,15 @@ public class TrayManager : IDisposable
         _trayIcon.MouseDown += (_, e) =>
         {
             _trayIcon.ContextMenuStrip = e.Button == MouseButtons.Right ? _contextMenu : null;
+            // Handle middle button on MouseDown — MouseClick swallows rapid
+            // middle clicks on the tiny tray icon because any slight movement
+            // between press and release kills the Click event.
+            if (e.Button == MouseButtons.Middle)
+            {
+                _middleClickCount++;
+                FileLogger.Info($"TrayClick: middle click #{_middleClickCount}");
+                EnsureTimer(ref _middleClickTimer, MiddleClickResolveMs, OnMiddleResolved);
+            }
         };
         _trayIcon.MouseClick += OnTrayMouseClick;
         _trayIcon.MouseDoubleClick += OnTrayMouseDoubleClick;
@@ -113,28 +122,44 @@ public class TrayManager : IDisposable
         };
         _processManager.ClientDiscovered += (_, c) =>
         {
-            ShowBalloon($"Discovered: {c}");
+            // Don't show balloon while menu is open — it steals focus and closes the menu
+            if (_contextMenu?.Visible != true)
+                ShowBalloon($"Discovered: {c}");
             _affinityManager.ScheduleRetry(c);
         };
         _processManager.ClientLost += (_, c) =>
         {
-            ShowBalloon($"Lost: {c}");
+            if (_contextMenu?.Visible != true)
+                ShowBalloon($"Lost: {c}");
             _affinityManager.CancelRetry(c.ProcessId);
         };
 
         _launchManager.ProgressUpdate += (_, msg) => ShowBalloon(msg);
         _launchManager.LaunchSequenceComplete += (_, _) =>
         {
-            // Only auto-arrange in multimonitor mode — single screen lets EQ
-            // use eqclient.ini positioning (matches AHK behavior)
+            // Only auto-arrange in multimonitor mode after launch —
+            // single screen lets EQ use its own eqclient.ini positioning
             if (_config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase))
             {
-                var clients = _processManager.Clients;
-                if (clients.Count > 0)
+                ShowBalloon("Multi-Monitor mode — arranging in 15s...");
+                var fixDelay = Math.Max(_config.Launch.FixDelayMs, 5000);
+                var arrangeTimer = new System.Windows.Forms.Timer { Interval = fixDelay };
+                arrangeTimer.Tick += (_, _) =>
                 {
-                    ShowBalloon("Arranging windows across monitors...");
-                    _windowManager.ArrangeWindows(clients);
-                }
+                    arrangeTimer.Stop();
+                    arrangeTimer.Dispose();
+                    var clients = _processManager.Clients;
+                    if (clients.Count > 0)
+                    {
+                        ShowBalloon("Arranging windows...");
+                        _windowManager.ArrangeWindows(clients);
+                    }
+                };
+                arrangeTimer.Start();
+            }
+            else
+            {
+                ShowBalloon("Ready to play!");
             }
         };
 
@@ -269,10 +294,20 @@ public class TrayManager : IDisposable
             return;
         }
 
-        // In multimonitor mode, rotate window positions across monitors then focus
+        // In multimonitor mode, swap positions then resize to fit new monitors
         bool isMultiMon = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
         if (isMultiMon)
-            _windowManager.SwapWindows(clients);
+        {
+            try
+            {
+                _windowManager.SwapWindows(clients);
+                _windowManager.ResizeToCurrentMonitors(clients);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Error("SwitchKey: multimonitor swap+resize failed", ex);
+            }
+        }
 
         if (_config.Hotkeys.SwitchKeyMode == "swapLast")
         {
@@ -321,10 +356,20 @@ public class TrayManager : IDisposable
             return;
         }
 
-        // In multimonitor mode, rotate window positions across monitors then focus
+        // In multimonitor mode, swap positions then resize to fit new monitors
         bool isMultiMon = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
         if (isMultiMon && clients.Count >= 2)
-            _windowManager.SwapWindows(clients);
+        {
+            try
+            {
+                _windowManager.SwapWindows(clients);
+                _windowManager.ResizeToCurrentMonitors(clients);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Error("GlobalSwitchKey: multimonitor swap+resize failed", ex);
+            }
+        }
 
         if (current != null)
         {
@@ -366,10 +411,11 @@ public class TrayManager : IDisposable
     /// </summary>
     private void OnToggleMultiMonitor()
     {
+        // Hotkey locked until user has tried multimonitor at least once via Settings
         if (!_config.Hotkeys.MultiMonitorEnabled)
         {
-            FileLogger.Info("ToggleMultiMonitor: disabled in config");
-            ShowBalloon("Multi-monitor toggle is disabled in Settings");
+            FileLogger.Info("ToggleMultiMonitor: not yet unlocked — enable in Settings first");
+            ShowBalloon("Enable Multi-Monitor mode in Settings first");
             return;
         }
 
@@ -378,7 +424,7 @@ public class TrayManager : IDisposable
             return;
         _lastMultiMonToggle = now;
 
-        // Toggle the mode
+        // Full toggle — identical to the Settings checkbox
         bool isMulti = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
         _config.Layout.Mode = isMulti ? "single" : "multimonitor";
 
@@ -386,8 +432,8 @@ public class TrayManager : IDisposable
         FileLogger.Info($"ToggleMultiMonitor: switched to {label}");
         ShowBalloon($"Layout: {label}");
 
-        // Save the mode change
         ConfigManager.Save(_config);
+        BuildContextMenu();
 
         // Re-arrange windows with the new mode
         var clients = _processManager.Clients;
@@ -594,9 +640,19 @@ public class TrayManager : IDisposable
             form.ShowDialog();
         });
         videoMenu.DropDownItems.Add(new ToolStripSeparator());
-        videoMenu.DropDownItems.Add("\uD83D\uDCFA  Toggle PiP", null, (_, _) => TogglePip());
+        videoMenu.DropDownItems.Add("Toggle PiP  \uD83D\uDC41", null, (_, _) => TogglePip());
         videoMenu.DropDownItems.Add(new ToolStripSeparator());
-        videoMenu.DropDownItems.Add($"\uD83E\uDE9F  Fix Windows{HkSuffix(hk.ArrangeWindows)}", null, (_, _) => OnArrangeWindows());
+        videoMenu.DropDownItems.Add($"Fix Windows  \uD83D\uDD27{HkSuffix(hk.ArrangeWindows)}", null, (_, _) => OnArrangeWindows());
+        bool isMultiMon = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+        var multiMonItem = new ToolStripMenuItem(
+            $"{(isMultiMon ? "\u2705" : "\u2B1C")}  Multi-Monitor Mode");
+        multiMonItem.Click += (_, _) =>
+        {
+            _config.Hotkeys.MultiMonitorEnabled = true; // ensure toggle works from menu
+            OnToggleMultiMonitor();
+            BuildContextMenu(); // rebuild to update checkmark
+        };
+        videoMenu.DropDownItems.Add(multiMonItem);
         _contextMenu.Items.Add(videoMenu);
 
         _contextMenu.Items.Add(new ToolStripSeparator());
@@ -817,7 +873,7 @@ public class TrayManager : IDisposable
         AddClickLine(lines, "Left single", tc.SingleClick);
         AddClickLine(lines, "Left double", tc.DoubleClick);
         AddClickLine(lines, "Middle single", tc.MiddleClick);
-        AddClickLine(lines, "Middle double", tc.MiddleDoubleClick);
+        AddClickLine(lines, "Middle triple", tc.MiddleDoubleClick);
 
         // Status
         lines.Add("");
@@ -907,12 +963,7 @@ public class TrayManager : IDisposable
             FileLogger.Info("TrayClick: left click");
             EnsureTimer(ref _leftClickTimer, LeftClickResolveMs, OnLeftSingleResolved);
         }
-        else if (e.Button == MouseButtons.Middle)
-        {
-            _middleClickCount++;
-            FileLogger.Info($"TrayClick: middle click #{_middleClickCount}");
-            EnsureTimer(ref _middleClickTimer, MiddleClickResolveMs, OnMiddleResolved);
-        }
+        // Middle button handled in MouseDown for reliability — see comment there
     }
 
     /// <summary>
@@ -925,6 +976,14 @@ public class TrayManager : IDisposable
             _leftClickTimer?.Stop();
             FileLogger.Info($"TrayClick: left double → {_config.TrayClick.DoubleClick}");
             ExecuteTrayAction(_config.TrayClick.DoubleClick);
+        }
+        else if (e.Button == MouseButtons.Middle)
+        {
+            // Windows converts the 2nd middle click into MouseDoubleClick
+            // instead of a 2nd MouseDown — count it here too
+            _middleClickCount++;
+            FileLogger.Info($"TrayClick: middle click #{_middleClickCount} (via dblclick)");
+            EnsureTimer(ref _middleClickTimer, MiddleClickResolveMs, OnMiddleResolved);
         }
     }
 

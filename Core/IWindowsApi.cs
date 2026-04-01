@@ -29,6 +29,11 @@ public interface IWindowsApi
     IntPtr GetWindowLongPtr(IntPtr hwnd, int nIndex);
     IntPtr SetWindowLongPtr(IntPtr hwnd, int nIndex, IntPtr dwNewLong);
 
+    // ─── Deferred Window Positioning ────────────────────────────────
+    IntPtr BeginDeferWindowPos(int nNumWindows);
+    IntPtr DeferWindowPos(IntPtr hWinPosInfo, IntPtr hwnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
+    bool EndDeferWindowPos(IntPtr hWinPosInfo);
+
     // ─── Monitor Operations ──────────────────────────────────────────
     List<WinRect> GetAllMonitorWorkAreas();
     List<WinRect> GetAllMonitorBounds();

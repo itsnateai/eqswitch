@@ -109,7 +109,7 @@ public class VideoSettingsForm : Form
             Location = new Point(L, y),
             AutoSize = true,
             ForeColor = DarkTheme.FgWhite,
-            Checked = _config.Hotkeys.MultiMonitorEnabled
+            Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase)
         };
         Controls.Add(_chkMultiMon);
 
@@ -374,10 +374,10 @@ public class VideoSettingsForm : Form
             _config.Layout.TargetMonitor = _cboPrimaryMon.SelectedIndex;
             _config.Layout.SecondaryMonitor = _cboSecondaryMon.SelectedIndex <= 0 ? -1 : _cboSecondaryMon.SelectedIndex - 1;
             _config.EQClientIni.ForceWindowedMode = _chkWindowed.Checked;
-            _config.Hotkeys.MultiMonitorEnabled = _chkMultiMon.Checked;
-            // Reset to single-screen if user disabled multimonitor
-            if (!_chkMultiMon.Checked)
-                _config.Layout.Mode = "single";
+            _config.Layout.Mode = _chkMultiMon.Checked ? "multimonitor" : "single";
+            // Once enabled, permanently unlock the Alt+M hotkey
+            if (_chkMultiMon.Checked)
+                _config.Hotkeys.MultiMonitorEnabled = true;
             SaveCustomPreset();
             ConfigManager.Save(_config);
 
@@ -443,7 +443,19 @@ public class VideoSettingsForm : Form
                     lines.Add($"{kv.Key}={kv.Value}");
             }
 
-            // Log toggle moved to EQ Client Settings form
+            // Also update WindowedMode in [Defaults] — EQ reads from there,
+            // not [VideoMode]. Both must stay in sync.
+            string wmVal = _chkWindowed.Checked ? "TRUE" : "FALSE";
+            for (int i = 0; i < lines.Count; i++)
+            {
+                var trimmed = lines[i].Trim();
+                if (trimmed.StartsWith("WindowedMode=", StringComparison.OrdinalIgnoreCase)
+                    && !trimmed.StartsWith("WindowedModeX", StringComparison.OrdinalIgnoreCase)
+                    && !trimmed.StartsWith("WindowedModeY", StringComparison.OrdinalIgnoreCase))
+                {
+                    lines[i] = $"WindowedMode={wmVal}";
+                }
+            }
 
             WriteWithRetry(_iniPath, lines);
             FileLogger.Info("VideoSettings: saved to eqclient.ini");
