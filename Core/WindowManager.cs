@@ -358,9 +358,13 @@ public class WindowManager
         var monitor = GetTargetMonitor(true);
         int offset = _config.Layout.TitlebarOffset;
 
-        foreach (var client in clients)
+        for (int i = 0; i < clients.Count; i++)
         {
+            var client = clients[i];
             if (!_api.IsWindow(client.WindowHandle)) continue;
+
+            // Re-apply custom window title if EQ overwrote it
+            SetWindowTitle(client, i);
 
             // Check if already positioned correctly — avoid unnecessary repositioning
             _api.GetWindowRect(client.WindowHandle, out var rect);
@@ -420,10 +424,12 @@ public class WindowManager
         if (string.IsNullOrEmpty(template)) return;
         if (!_api.IsWindow(client.WindowHandle)) return;
 
-        // Extract character name from EQ window title format: "EverQuest - CharName"
+        // Extract character name from EQ's native title format: "EverQuest - CharName"
+        // Use OriginalTitle so this works even after we've already renamed the window.
         var charName = "Unknown";
-        if (!string.IsNullOrEmpty(client.WindowTitle) && client.WindowTitle.Contains(" - "))
-            charName = client.WindowTitle.Split(" - ", 2)[1];
+        var eqTitle = !string.IsNullOrEmpty(client.OriginalTitle) ? client.OriginalTitle : client.WindowTitle;
+        if (!string.IsNullOrEmpty(eqTitle) && eqTitle.Contains(" - "))
+            charName = eqTitle.Split(" - ", 2)[1];
 
         var title = template
             .Replace("{CHAR}", charName)

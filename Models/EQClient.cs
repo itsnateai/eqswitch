@@ -11,6 +11,12 @@ public class EQClient
     public IntPtr WindowHandle { get; set; }
     public int ProcessId { get; set; }
     public string WindowTitle { get; set; } = "";
+
+    /// <summary>
+    /// The last EQ-native title seen (e.g. "EverQuest - CharName").
+    /// Used for {CHAR} extraction in custom title templates even after renaming.
+    /// </summary>
+    public string OriginalTitle { get; set; } = "";
     public int SlotIndex { get; set; }
     public bool IsActive { get; set; }
 
