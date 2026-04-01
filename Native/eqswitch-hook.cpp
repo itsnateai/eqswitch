@@ -1,5 +1,11 @@
-// eqswitch-hook.dll — Hooks SetWindowPos/MoveWindow inside eqgame.exe
-// to enforce window positioning from EQSwitch via shared memory.
+// eqswitch-hook.dll — Injected into eqgame.exe to enforce window behavior
+// via shared memory config from EQSwitch.
+//
+// Hooks:
+//   SetWindowPos / MoveWindow    — enforce window position/size (slim titlebar)
+//   SetWindowTextA               — override window title (like WinEQ2)
+//   ShowWindow                   — block unwanted minimize during DirectX init
+//
 // Compiled as 32-bit DLL (eqgame.exe is x86).
 
 #define WIN32_LEAN_AND_MEAN
@@ -18,6 +24,8 @@ struct HookConfig {
     int targetW;            // 0 = don't override width
     int targetH;            // 0 = don't override height
     int stripThickFrame;    // 1 = remove WS_THICKFRAME on hooked calls
+    int blockMinimize;      // 1 = prevent EQ from minimizing itself
+    char windowTitle[256];  // custom title (empty = don't override)
 };
 #pragma pack(pop)
 
@@ -33,16 +41,18 @@ static HMODULE g_hModule = NULL;
 // Original function pointers (trampolines)
 typedef BOOL(WINAPI* PFN_SetWindowPos)(HWND, HWND, int, int, int, int, UINT);
 typedef BOOL(WINAPI* PFN_MoveWindow)(HWND, int, int, int, int, BOOL);
+typedef BOOL(WINAPI* PFN_SetWindowTextA)(HWND, LPCSTR);
+typedef BOOL(WINAPI* PFN_ShowWindow)(HWND, int);
 
 static PFN_SetWindowPos g_origSetWindowPos = NULL;
 static PFN_MoveWindow g_origMoveWindow = NULL;
+static PFN_SetWindowTextA g_origSetWindowTextA = NULL;
+static PFN_ShowWindow g_origShowWindow = NULL;
 
 // Simple file logger for debugging injection issues
 static void LogMessage(const char* fmt, ...) {
-    // Log to a file next to eqgame.exe for debugging
     char path[MAX_PATH];
     GetModuleFileNameA(NULL, path, MAX_PATH);
-    // Replace exe name with log name
     char* lastSlash = strrchr(path, '\\');
     if (lastSlash) {
         strcpy(lastSlash + 1, "eqswitch-hook.log");
@@ -67,9 +77,6 @@ static void LogMessage(const char* fmt, ...) {
 }
 
 // Check if a window belongs to this EQ process.
-// We're injected ONLY into eqgame.exe, so any top-level window in our process
-// is the EQ window. No title check — EQ's title can be empty or change during
-// login/character select transitions, which caused the hook to miss repositions.
 static BOOL IsEqWindow(HWND hWnd) {
     // Fast path: cached handle still valid
     if (g_cachedEqHwnd && g_cachedEqHwnd == hWnd && IsWindow(hWnd)) {
@@ -105,27 +112,23 @@ static BOOL ReadConfig(HookConfig* out) {
     return TRUE;
 }
 
-// Hooked SetWindowPos
+// ─── Hooked SetWindowPos ─────────────────────────────────────────
 static BOOL WINAPI HookedSetWindowPos(
     HWND hWnd, HWND hWndInsertAfter,
     int X, int Y, int cx, int cy, UINT uFlags)
 {
     HookConfig cfg;
     if (IsEqWindow(hWnd) && ReadConfig(&cfg) && cfg.enabled) {
-        // Override position
         X = cfg.targetX;
         Y = cfg.targetY;
 
-        // Override size unless SWP_NOSIZE flag is set
         if (!(uFlags & SWP_NOSIZE)) {
             if (cfg.targetW > 0) cx = cfg.targetW;
             if (cfg.targetH > 0) cy = cfg.targetH;
         }
 
-        // Never let EQ set SWP_NOMOVE — we always want our position
         uFlags &= ~SWP_NOMOVE;
 
-        // Strip thick frame if requested
         if (cfg.stripThickFrame) {
             LONG_PTR style = GetWindowLongPtr(hWnd, GWL_STYLE);
             if (style & WS_THICKFRAME) {
@@ -139,7 +142,7 @@ static BOOL WINAPI HookedSetWindowPos(
     return g_origSetWindowPos(hWnd, hWndInsertAfter, X, Y, cx, cy, uFlags);
 }
 
-// Hooked MoveWindow
+// ─── Hooked MoveWindow ───────────────────────────────────────────
 static BOOL WINAPI HookedMoveWindow(
     HWND hWnd, int X, int Y, int nWidth, int nHeight, BOOL bRepaint)
 {
@@ -162,13 +165,48 @@ static BOOL WINAPI HookedMoveWindow(
     return g_origMoveWindow(hWnd, X, Y, nWidth, nHeight, bRepaint);
 }
 
-// Open per-process shared memory region (EQSwitchHookCfg_{PID})
+// ─── Hooked SetWindowTextA ───────────────────────────────────────
+// EQ calls SetWindowTextA to set its own title ("EverQuest", "EverQuest - CharName").
+// When we have a custom title configured, override any title EQ tries to set.
+// This is how WinEQ2 makes titles stick — hook from inside the process.
+static BOOL WINAPI HookedSetWindowTextA(HWND hWnd, LPCSTR lpString)
+{
+    HookConfig cfg;
+    if (IsEqWindow(hWnd) && ReadConfig(&cfg) && cfg.windowTitle[0] != '\0') {
+        // Use our title instead of whatever EQ wants to set
+        return g_origSetWindowTextA(hWnd, cfg.windowTitle);
+    }
+
+    return g_origSetWindowTextA(hWnd, lpString);
+}
+
+// ─── Hooked ShowWindow ───────────────────────────────────────────
+// EQ minimizes itself when it loses focus during DirectX init.
+// Block SW_MINIMIZE/SW_SHOWMINIMIZED/SW_SHOWMINNOACTIVE when configured.
+static BOOL WINAPI HookedShowWindow(HWND hWnd, int nCmdShow)
+{
+    HookConfig cfg;
+    if (IsEqWindow(hWnd) && ReadConfig(&cfg) && cfg.blockMinimize) {
+        if (nCmdShow == SW_MINIMIZE ||        // 6
+            nCmdShow == SW_SHOWMINIMIZED ||   // 2
+            nCmdShow == SW_SHOWMINNOACTIVE || // 7
+            nCmdShow == SW_FORCEMINIMIZE)     // 11
+        {
+            LogMessage("Blocked minimize attempt (nCmdShow=%d)", nCmdShow);
+            return TRUE; // Pretend we did it
+        }
+    }
+
+    return g_origShowWindow(hWnd, nCmdShow);
+}
+
+// ─── Shared Memory ──────────────────────────────────────────────
 static BOOL OpenSharedMemory() {
     char shmName[64];
     _snprintf(shmName, sizeof(shmName), "%s%lu", SHARED_MEM_PREFIX, GetCurrentProcessId());
     shmName[sizeof(shmName) - 1] = '\0';
 
-    LogMessage("Opening shared memory: %s", shmName);
+    LogMessage("Opening shared memory: %s (size=%u)", shmName, SHARED_MEM_SIZE);
     g_hMapFile = OpenFileMappingA(FILE_MAP_READ, FALSE, shmName);
     if (!g_hMapFile) {
         LogMessage("OpenFileMapping(%s) failed: %lu", shmName, GetLastError());
@@ -184,13 +222,14 @@ static BOOL OpenSharedMemory() {
         return FALSE;
     }
 
-    LogMessage("Shared memory opened: enabled=%d, x=%d, y=%d, w=%d, h=%d",
+    LogMessage("Shared memory opened: enabled=%d, pos=(%d,%d) size=%dx%d, blockMin=%d, title=\"%.64s\"",
         g_pConfig->enabled, g_pConfig->targetX, g_pConfig->targetY,
-        g_pConfig->targetW, g_pConfig->targetH);
+        g_pConfig->targetW, g_pConfig->targetH,
+        g_pConfig->blockMinimize, (const char*)g_pConfig->windowTitle);
     return TRUE;
 }
 
-// Install hooks
+// ─── Hook Installation ──────────────────────────────────────────
 static BOOL InstallHooks() {
     MH_STATUS status = MH_Initialize();
     if (status != MH_OK) {
@@ -220,6 +259,28 @@ static BOOL InstallHooks() {
         return FALSE;
     }
 
+    // Hook SetWindowTextA — EQ uses the ANSI version
+    status = MH_CreateHook(
+        (LPVOID)&SetWindowTextA,
+        (LPVOID)&HookedSetWindowTextA,
+        (LPVOID*)&g_origSetWindowTextA);
+    if (status != MH_OK) {
+        LogMessage("MH_CreateHook(SetWindowTextA) failed: %d", status);
+        MH_Uninitialize();
+        return FALSE;
+    }
+
+    // Hook ShowWindow — block EQ's self-minimize on focus loss
+    status = MH_CreateHook(
+        (LPVOID)&ShowWindow,
+        (LPVOID)&HookedShowWindow,
+        (LPVOID*)&g_origShowWindow);
+    if (status != MH_OK) {
+        LogMessage("MH_CreateHook(ShowWindow) failed: %d", status);
+        MH_Uninitialize();
+        return FALSE;
+    }
+
     // Enable all hooks
     status = MH_EnableHook(MH_ALL_HOOKS);
     if (status != MH_OK) {
@@ -228,11 +289,11 @@ static BOOL InstallHooks() {
         return FALSE;
     }
 
-    LogMessage("Hooks installed successfully");
+    LogMessage("All hooks installed (SetWindowPos, MoveWindow, SetWindowTextA, ShowWindow)");
     return TRUE;
 }
 
-// Cleanup
+// ─── Cleanup ─────────────────────────────────────────────────────
 static void Cleanup() {
     MH_DisableHook(MH_ALL_HOOKS);
     MH_Uninitialize();
@@ -258,12 +319,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
 
         if (!OpenSharedMemory()) {
             LogMessage("Shared memory not available — hooks NOT installed");
-            return TRUE; // Still load, but do nothing
+            return TRUE;
         }
 
         if (!InstallHooks()) {
             LogMessage("Hook installation failed");
-            // Clean up shared memory
             if (g_pConfig) { UnmapViewOfFile((LPCVOID)g_pConfig); g_pConfig = NULL; }
             if (g_hMapFile) { CloseHandle(g_hMapFile); g_hMapFile = NULL; }
             return TRUE;

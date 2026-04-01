@@ -1,5 +1,6 @@
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace EQSwitch.Core;
 
@@ -7,22 +8,35 @@ namespace EQSwitch.Core;
 /// Manages per-process memory-mapped files shared with eqswitch-hook.dll.
 /// Each injected eqgame.exe gets its own mapping named "EQSwitchHookCfg_{PID}",
 /// allowing different position/size configs per process (required for multimonitor).
+///
+/// The hook DLL uses these fields:
+///   enabled + position/size + stripThickFrame  — slim titlebar enforcement
+///   blockMinimize                              — prevent EQ self-minimize on focus loss
+///   windowTitle                                — override EQ's SetWindowTextA calls
 /// </summary>
 public class HookConfigWriter : IDisposable
 {
     private const string SharedMemoryPrefix = "EQSwitchHookCfg_";
 
-    // Must match the C++ HookConfig struct exactly (packed, sequential ints)
+    // Must match the C++ HookConfig struct exactly (packed, sequential)
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     private struct HookConfig
     {
-        public int Enabled;         // 1 = enforce, 0 = passthrough
+        public int Enabled;         // 1 = enforce positions, 0 = passthrough
         public int TargetX;
         public int TargetY;
         public int TargetW;         // 0 = don't override
         public int TargetH;         // 0 = don't override
         public int StripThickFrame; // 1 = remove WS_THICKFRAME
+        public int BlockMinimize;   // 1 = prevent EQ from minimizing itself
+
+        // Fixed-size 256-byte title buffer — null-terminated ASCII.
+        // Using a fixed array in a struct requires unsafe, so we use
+        // manual marshal instead (see WriteConfig).
     }
+
+    // Total shared memory size: HookConfig fields + 256 bytes for title
+    private static readonly int StructSize = Marshal.SizeOf<HookConfig>() + 256;
 
     private sealed class MappingEntry : IDisposable
     {
@@ -66,16 +80,17 @@ public class HookConfigWriter : IDisposable
             var name = $"{SharedMemoryPrefix}{(uint)pid}";
             mmf = MemoryMappedFile.CreateOrOpen(
                 name,
-                Marshal.SizeOf<HookConfig>(),
+                StructSize,
                 MemoryMappedFileAccess.ReadWrite);
 
-            accessor = mmf.CreateViewAccessor(0, Marshal.SizeOf<HookConfig>(), MemoryMappedFileAccess.ReadWrite);
+            accessor = mmf.CreateViewAccessor(0, StructSize, MemoryMappedFileAccess.ReadWrite);
 
             _mappings[pid] = new MappingEntry(mmf, accessor);
 
             // Write disabled config initially
-            WriteConfig(pid, 0, 0, 0, 0, false, false);
-            FileLogger.Info($"HookConfigWriter: shared memory opened for PID {pid} ({name})");
+            WriteConfig(pid, 0, 0, 0, 0, enabled: false, stripThickFrame: false,
+                blockMinimize: false, windowTitle: "");
+            FileLogger.Info($"HookConfigWriter: shared memory opened for PID {pid} ({name}, {StructSize} bytes)");
             return true;
         }
         catch (Exception ex)
@@ -88,9 +103,11 @@ public class HookConfigWriter : IDisposable
     }
 
     /// <summary>
-    /// Write window position/size config for a specific process.
+    /// Write full config for a specific process.
     /// </summary>
-    public void WriteConfig(int pid, int x, int y, int w, int h, bool enabled, bool stripThickFrame = true)
+    public void WriteConfig(int pid, int x, int y, int w, int h,
+        bool enabled, bool stripThickFrame = true,
+        bool blockMinimize = false, string windowTitle = "")
     {
         if (!_mappings.TryGetValue(pid, out var entry)) return;
 
@@ -101,12 +118,27 @@ public class HookConfigWriter : IDisposable
             TargetY = y,
             TargetW = w,
             TargetH = h,
-            StripThickFrame = stripThickFrame ? 1 : 0
+            StripThickFrame = stripThickFrame ? 1 : 0,
+            BlockMinimize = blockMinimize ? 1 : 0
         };
 
         try
         {
+            // Write the struct fields
             entry.Accessor.Write(0, ref config);
+
+            // Write the title as a fixed 256-byte null-terminated ASCII buffer
+            // at the offset right after the struct fields
+            int titleOffset = Marshal.SizeOf<HookConfig>();
+            byte[] titleBytes = new byte[256];
+            if (!string.IsNullOrEmpty(windowTitle))
+            {
+                var encoded = Encoding.ASCII.GetBytes(windowTitle);
+                int copyLen = Math.Min(encoded.Length, 255); // leave room for null
+                Array.Copy(encoded, titleBytes, copyLen);
+                // titleBytes[copyLen] is already 0 (null terminator)
+            }
+            entry.Accessor.WriteArray(titleOffset, titleBytes, 0, 256);
         }
         catch (Exception ex)
         {
