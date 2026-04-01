@@ -15,6 +15,10 @@ public class SettingsForm : Form
     private readonly Action<AppConfig> _onApply;
     private readonly Action? _openProcessManager;
 
+    /// <summary>When true, TrayManager should reopen Settings after this form closes (used by Reset).</summary>
+    public bool ReopenAfterClose => _reopenAfterClose;
+    private bool _reopenAfterClose;
+
     // Track monitor identifier overlays to prevent stacking on rapid clicks
     private List<Form>? _monitorOverlays;
     private System.Windows.Forms.Timer? _monitorOverlayTimer;
@@ -47,13 +51,11 @@ public class SettingsForm : Form
     private ComboBox _cboSwitchKeyMode = null!;
 
     // ─── Layout tab controls
-    private NumericUpDown _nudColumns = null!;
-    private NumericUpDown _nudRows = null!;
     private ComboBox _cboTargetMonitor = null!;
     private ComboBox _cboSecondaryMonitor = null!;
-    private NumericUpDown _nudTopOffset = null!;
     private CheckBox _chkSlimTitlebar = null!;
     private NumericUpDown _nudTitlebarOffset = null!;
+    private CheckBox _chkUseHook = null!;
     private CheckBox _chkMaximizeWindow = null!;
     private TextBox _txtWindowTitleTemplate = null!;
 
@@ -66,6 +68,7 @@ public class SettingsForm : Form
     private TextBox _txtGinaPath = null!;
     private TextBox _txtNotesPath = null!;
     private TextBox _txtDalayaPatcherPath = null!;
+    private CheckBox _chkRunAtStartup = null!;
 
     // ─── PiP tab controls
     private CheckBox _chkPipEnabled = null!;
@@ -76,6 +79,7 @@ public class SettingsForm : Form
     private CheckBox _chkPipBorder = null!;
     private ComboBox _cboPipBorderColor = null!;
     private NumericUpDown _nudPipMaxWindows = null!;
+    private ComboBox _cboPipOrientation = null!;
 
 
 
@@ -161,6 +165,8 @@ public class SettingsForm : Form
                 var fresh = new AppConfig { IsFirstRun = false, EQPath = _config.EQPath };
                 _onApply(fresh);
                 ConfigManager.Save(fresh);
+                // Reopen Settings with fresh config so user sees the defaults
+                _reopenAfterClose = true;
                 Close();
             }
         };
@@ -279,7 +285,7 @@ public class SettingsForm : Form
         y += 113;
 
         // ─── Preferences card ────────────────────────────────────
-        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 170);
+        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 105);
         cy = 32;
 
         // Row 1: EQ Client Settings button + Tooltip delay
@@ -289,46 +295,15 @@ public class SettingsForm : Form
             using var form = new EQClientSettingsForm(_config);
             form.ShowDialog();
         };
-        DarkTheme.AddCardLabel(cardPrefs, "Tooltip Delay:", 200, cy + 2);
-        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardPrefs, 300, cy, 65, 1000, 0, 10000);
-        _nudTooltipDuration.Increment = 100;
-        DarkTheme.AddCardHint(cardPrefs, "ms, 0=off", 370, cy + 4);
-        cy += R + 4;
-
-        // Row 2: Tray icon path + Browse
-        DarkTheme.AddCardLabel(cardPrefs, "Tray Icon:", L, cy);
-        _txtCustomIconPath = DarkTheme.AddCardTextBox(cardPrefs, 80, cy - 2, 180);
-        var btnBrowseIcon = DarkTheme.AddCardButton(cardPrefs, "Browse...", 268, cy - 3, 65);
-        btnBrowseIcon.Click += (_, _) =>
-        {
-            using var dlg = new OpenFileDialog
-            {
-                Title = "Select Tray Icon",
-                Filter = "Icon Files (*.ico)|*.ico",
-                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures)
-            };
-            if (dlg.ShowDialog() == DialogResult.OK)
-                _txtCustomIconPath.Text = dlg.FileName;
-        };
-        DarkTheme.AddCardHint(cardPrefs, ".ico — blank = default", 340, cy + 2);
-        cy += R + 4;
-
-        // Row 3: Launch settings
-        DarkTheme.AddCardLabel(cardPrefs, "Clients (Launch All):", L, cy);
-        _nudNumClients = DarkTheme.AddCardNumeric(cardPrefs, 140, cy - 2, 55, 2, 1, 8);
-        DarkTheme.AddCardLabel(cardPrefs, "Delay between:", 220, cy);
-        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardPrefs, 330, cy - 2, 70, 3000, 500, 30000);
-        DarkTheme.AddCardHint(cardPrefs, "ms", 405, cy + 2);
         cy += R + 6;
 
-        // Row 4: Quick-access buttons — Video Settings, Help, Process Manager
+        // Row 2: Quick-access buttons — Video Settings, Help, Process Manager
         var btnVideoSettings = DarkTheme.AddCardButton(cardPrefs, "📺 Video Settings...", 20, cy, 150);
         btnVideoSettings.Click += (_, _) =>
         {
             using var form = new VideoSettingsForm(_config);
             form.ShowDialog();
             // VideoSettings may have changed TopOffset, multi-monitor, monitors — sync back
-            _nudTopOffset.Value = DarkTheme.ClampNud(_nudTopOffset, _config.Layout.TopOffset);
             _chkMultiMonEnabled.Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
             _cboTargetMonitor.SelectedIndex = Math.Clamp(_config.Layout.TargetMonitor, 0, _cboTargetMonitor.Items.Count - 1);
             var secIdx2 = _config.Layout.SecondaryMonitor < 0 ? 0 : _config.Layout.SecondaryMonitor + 1;
@@ -378,7 +353,7 @@ public class SettingsForm : Form
         const int L = 10, I = 150, I2 = 310, R = 28;
 
         // ─── Window Switching card ───────────────────────────────
-        var cardSwitch = DarkTheme.MakeCard(page, "⚔", "Window Switching", DarkTheme.CardGreen, 10, y, 480, 100);
+        var cardSwitch = DarkTheme.MakeCard(page, "⚔", "Window Switching", DarkTheme.CardGreen, 10, y, 480, 130);
         int cy = 32;
 
         DarkTheme.AddCardLabel(cardSwitch, "Switch Key (EQ-only):", L, cy);
@@ -399,8 +374,15 @@ public class SettingsForm : Form
         // Show warning when both switch keys match
         _txtSwitchKey.TextChanged += (_, _) => CheckDuplicateSwitchKeys();
         _txtGlobalSwitchKey.TextChanged += (_, _) => CheckDuplicateSwitchKeys();
+        cy += R + 2;
 
-        y += 108;
+        DarkTheme.AddCardLabel(cardSwitch, "Clients (Launch All):", L, cy);
+        _nudNumClients = DarkTheme.AddCardNumeric(cardSwitch, I, cy - 2, 55, 2, 1, 8);
+        DarkTheme.AddCardLabel(cardSwitch, "Delay between:", 250, cy);
+        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardSwitch, I2 + 50, cy - 2, 55, 3, 1, 30);
+        DarkTheme.AddCardHint(cardSwitch, "sec", I2 + 110, cy + 2);
+
+        y += 138;
 
         // ─── Actions card ────────────────────────────────────────
         var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 145);
@@ -420,6 +402,10 @@ public class SettingsForm : Form
         cy += R + 2;
 
         _chkMultiMonEnabled = DarkTheme.AddCardCheckBox(cardActions, "Multi-monitor mode enabled", L, cy);
+        DarkTheme.AddCardLabel(cardActions, "Tooltip Delay:", col2, cy + 2);
+        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardActions, col2I, cy, 55, 1000, 0, 10000);
+        _nudTooltipDuration.Increment = 100;
+        DarkTheme.AddCardHint(cardActions, "ms", col2I + 60, cy + 4);
 
         y += 160;
 
@@ -432,7 +418,7 @@ public class SettingsForm : Form
     {
         var page = DarkTheme.MakeTabPage("Layout");
         int y = 8;
-        const int L = 10, I = 120, R = 30;
+        const int L = 10, R = 30;
 
         // ─── Monitor card ────────────────────────────────────────
         var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 125);
@@ -457,36 +443,40 @@ public class SettingsForm : Form
         _cboSecondaryMonitor = DarkTheme.AddCardComboBox(cardMon, 340, cy - 2, 130, secondaryItems);
         cy += R;
 
-        DarkTheme.AddCardLabel(cardMon, "Top Offset (px):", L, cy);
-        _nudTopOffset = DarkTheme.AddCardNumeric(cardMon, I, cy - 2, 70, 0, -100, 200);
-        var btnIdentify = DarkTheme.AddCardButton(cardMon, "🔍 Identify", 310, cy - 3, 90);
+        var btnIdentify = DarkTheme.AddCardButton(cardMon, "🔍 Identify", L, cy - 3, 90);
         btnIdentify.Click += (_, _) => ShowMonitorIdentifiers();
-        cy += R;
-
-        DarkTheme.AddCardHint(cardMon, "Primary = active client. Secondary = background client (multimonitor mode).", L, cy);
+        DarkTheme.AddCardHint(cardMon, "Primary = active client. Secondary = background client (multimonitor mode).", 110, cy);
 
         y += 133;
 
         // ─── Window Style card ───────────────────────────────────
-        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 119);
+        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 143);
         cy = 32;
 
+        const int hintX = 260;
+
         _chkSlimTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Slim Titlebar (WinEQ2 mode)", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "Auto-sets resolution + hides titlebar", 260, cy + 2);
+        DarkTheme.AddCardHint(cardStyle, "Auto-sets resolution + hides titlebar", hintX, cy + 2);
         cy += 24;
 
         DarkTheme.AddCardLabel(cardStyle, "Titlebar hidden (px):", L, cy);
         _nudTitlebarOffset = DarkTheme.AddCardNumeric(cardStyle, 140, cy - 2, 55, 22, 0, 40);
-        DarkTheme.AddCardHint(cardStyle, "22 = thin strip visible, 30 = fully hidden", 210, cy);
+        DarkTheme.AddCardHint(cardStyle, "22 = thin strip, 30 = fully hidden", hintX, cy);
         cy += 28;
 
+        _chkUseHook = DarkTheme.AddCardCheckBox(cardStyle, "DLL Hook (zero flicker)", L, cy);
+        DarkTheme.AddCardHint(cardStyle, "Hooks SetWindowPos inside EQ", hintX, cy + 2);
+        cy += 24;
+
         _chkMaximizeWindow = DarkTheme.AddCardCheckBox(cardStyle, "Maximize on Launch", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "Sets Maximized=1 in eqclient.ini", 200, cy + 2);
+        DarkTheme.AddCardHint(cardStyle, "Sets Maximized=1 in eqclient.ini", hintX, cy + 2);
 
         _chkSlimTitlebar.CheckedChanged += (_, _) =>
         {
             bool slim = _chkSlimTitlebar.Checked;
             _nudTitlebarOffset.Enabled = slim;
+            _chkUseHook.Enabled = slim;
+            if (!slim) _chkUseHook.Checked = false;
             // Slim titlebar and Maximize are incompatible — maximized windows
             // are constrained to the work area, defeating the WinEQ2 trick
             if (slim)
@@ -500,7 +490,7 @@ public class SettingsForm : Form
             }
         };
 
-        y += 127;
+        y += 151;
 
         // ─── Window Title card ───────────────────────────────────
         var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 65);
@@ -508,21 +498,7 @@ public class SettingsForm : Form
 
         DarkTheme.AddCardLabel(cardTitle, "Template:", L, cy);
         _txtWindowTitleTemplate = DarkTheme.AddCardTextBox(cardTitle, 75, cy - 2, 280);
-        DarkTheme.AddCardHint(cardTitle, "{CHAR} {SLOT} {PID}", 365, cy);
-
-        y += 73;
-
-        // ─── Grid Layout card ────────────────────────────────────
-        var cardGrid = DarkTheme.MakeCard(page, "📐", "Grid Layout", DarkTheme.CardGold, 10, y, 480, 95);
-        cy = 32;
-
-        DarkTheme.AddCardLabel(cardGrid, "Columns:", L, cy);
-        _nudColumns = DarkTheme.AddCardNumeric(cardGrid, 75, cy - 2, 40, 1, 1, 2);
-        DarkTheme.AddCardLabel(cardGrid, "Rows:", 130, cy);
-        _nudRows = DarkTheme.AddCardNumeric(cardGrid, 170, cy - 2, 40, 1, 1, 2);
-        cy += R;
-
-        DarkTheme.AddCardHint(cardGrid, "Grid requires matching eqclient.ini resolution. EQ controls its own window size.", L, cy);
+        DarkTheme.AddCardHint(cardTitle, "{SLOT} {PID}", 365, cy);
 
         return page;
     }
@@ -651,6 +627,48 @@ public class SettingsForm : Form
 
         DarkTheme.AddCardHint(cardPaths, "Patcher may be deleted by antivirus — re-download from SoD if missing.", L, cy);
 
+        y += 168;
+
+        // ─── Tray Icon card ─────────────────────────────────────
+        var cardIcon = DarkTheme.MakeCard(page, "🎨", "Tray Icon", DarkTheme.CardPurple, 10, y, 480, 65);
+        cy = 32;
+
+        DarkTheme.AddCardLabel(cardIcon, "Custom Icon:", L, cy);
+        _txtCustomIconPath = DarkTheme.AddCardTextBox(cardIcon, I, cy - 2, IW);
+        var btnBrowseIcon = DarkTheme.AddCardButton(cardIcon, "Browse...", BRW, cy - 3, 75);
+        btnBrowseIcon.Click += (_, _) =>
+        {
+            using var dlg = new OpenFileDialog
+            {
+                Title = "Select Tray Icon",
+                Filter = "Icon Files (*.ico)|*.ico",
+                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures)
+            };
+            if (dlg.ShowDialog() == DialogResult.OK)
+                _txtCustomIconPath.Text = dlg.FileName;
+        };
+
+        y += 73;
+
+        // ─── Startup card ───────────────────────────────────────
+        var cardStartup = DarkTheme.MakeCard(page, "🚀", "Startup", DarkTheme.CardGreen, 10, y, 480, 65);
+        cy = 32;
+
+        var btnShortcut = DarkTheme.AddCardButton(cardStartup, "Create Desktop Shortcut", L, cy, 180);
+        btnShortcut.Click += (_, _) =>
+        {
+            var originalText = btnShortcut.Text;
+            StartupManager.CreateDesktopShortcut(_ =>
+            {
+                btnShortcut.Text = "Created!";
+                var reset = new System.Windows.Forms.Timer { Interval = 2000 };
+                reset.Tick += (__, ___) => { reset.Stop(); reset.Dispose(); btnShortcut.Text = originalText; };
+                reset.Start();
+            });
+        };
+
+        _chkRunAtStartup = DarkTheme.AddCardCheckBox(cardStartup, "Run at Startup", 250, cy);
+
         return page;
     }
 
@@ -671,7 +689,7 @@ public class SettingsForm : Form
         DarkTheme.AddCardLabel(cardPip, "Size Preset:", L, cy);
         _cboPipSize = DarkTheme.AddCardComboBox(cardPip, I, cy - 2, 170, new[] {
             "Small (200x150)", "Medium (320x240)", "Large (400x300)",
-            "XL (480x360)", "XXL (640x480)", "Custom"
+            "XL (480x360)", "XXL (640x480)", "XXXL (960x720)", "Custom"
         });
         _cboPipSize.SelectedIndexChanged += (_, _) =>
         {
@@ -686,11 +704,13 @@ public class SettingsForm : Form
         cy += R;
 
         DarkTheme.AddCardLabel(cardPip, "Custom W:", L, cy);
-        _nudPipWidth = DarkTheme.AddCardNumeric(cardPip, I, cy - 2, 70, 320, 100, 960);
+        _nudPipWidth = DarkTheme.AddCardNumeric(cardPip, I, cy - 2, 50, 320, 100, 1920);
         _nudPipWidth.Enabled = false;
-        DarkTheme.AddCardLabel(cardPip, "Custom H:", 210, cy);
-        _nudPipHeight = DarkTheme.AddCardNumeric(cardPip, 290, cy - 2, 70, 240, 100, 720);
+        DarkTheme.AddCardLabel(cardPip, "Custom H:", 190, cy);
+        _nudPipHeight = DarkTheme.AddCardNumeric(cardPip, 260, cy - 2, 50, 240, 75, 1080);
         _nudPipHeight.Enabled = false;
+        DarkTheme.AddCardLabel(cardPip, "Layout:", 330, cy);
+        _cboPipOrientation = DarkTheme.AddCardComboBox(cardPip, 385, cy - 2, 85, new[] { "Vertical", "Horizontal" });
 
         y += 128;
 
@@ -794,16 +814,15 @@ public class SettingsForm : Form
         _chkMultiMonEnabled.Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
 
         // Layout
-        _nudColumns.Value = DarkTheme.ClampNud(_nudColumns, _config.Layout.Columns);
-        _nudRows.Value = DarkTheme.ClampNud(_nudRows, _config.Layout.Rows);
         var targetIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, _cboTargetMonitor.Items.Count - 1);
         _cboTargetMonitor.SelectedIndex = targetIdx;
         // SecondaryMonitor: -1 = Auto (index 0), 0+ = monitor index (offset by 1 in dropdown)
         var secIdx = _config.Layout.SecondaryMonitor < 0 ? 0 : _config.Layout.SecondaryMonitor + 1;
         _cboSecondaryMonitor.SelectedIndex = Math.Clamp(secIdx, 0, _cboSecondaryMonitor.Items.Count - 1);
-        _nudTopOffset.Value = DarkTheme.ClampNud(_nudTopOffset, _config.Layout.TopOffset);
         _chkSlimTitlebar.Checked = _config.Layout.SlimTitlebar;
         _nudTitlebarOffset.Value = DarkTheme.ClampNud(_nudTitlebarOffset, _config.Layout.TitlebarOffset);
+        _chkUseHook.Checked = _config.Layout.UseHook;
+        _chkUseHook.Enabled = _config.Layout.SlimTitlebar;
         _chkMaximizeWindow.Checked = _config.EQClientIni.MaximizeWindow;
         _txtWindowTitleTemplate.Text = _config.Layout.WindowTitleTemplate;
         _nudTitlebarOffset.Enabled = _config.Layout.SlimTitlebar;
@@ -813,23 +832,25 @@ public class SettingsForm : Form
 
         // Launch
         _nudNumClients.Value = DarkTheme.ClampNud(_nudNumClients, _config.Launch.NumClients);
-        _nudLaunchDelay.Value = DarkTheme.ClampNud(_nudLaunchDelay, _config.Launch.LaunchDelayMs);
+        _nudLaunchDelay.Value = DarkTheme.ClampNud(_nudLaunchDelay, _config.Launch.LaunchDelayMs / 1000);
 
         // Paths
         _txtGinaPath.Text = _config.GinaPath;
         _txtNotesPath.Text = _config.NotesPath;
         _txtDalayaPatcherPath.Text = _config.DalayaPatcherPath;
+        _chkRunAtStartup.Checked = _config.RunAtStartup;
 
         // PiP
         _chkPipEnabled.Checked = _config.Pip.Enabled;
         // Select combo item that starts with the saved preset name
         SelectPipPreset(_config.Pip.SizePreset);
-        _nudPipWidth.Value = Math.Clamp(_config.Pip.CustomWidth, 100, 960);
-        _nudPipHeight.Value = Math.Clamp(_config.Pip.CustomHeight, 100, 720);
+        _nudPipWidth.Value = Math.Clamp(_config.Pip.CustomWidth, (int)_nudPipWidth.Minimum, (int)_nudPipWidth.Maximum);
+        _nudPipHeight.Value = Math.Clamp(_config.Pip.CustomHeight, (int)_nudPipHeight.Minimum, (int)_nudPipHeight.Maximum);
         _nudPipOpacity.Value = _config.Pip.Opacity;
         _chkPipBorder.Checked = _config.Pip.ShowBorder;
         _cboPipBorderColor.SelectedItem = _config.Pip.BorderColor;
         _nudPipMaxWindows.Value = Math.Clamp(_config.Pip.MaxWindows, 1, 3);
+        _cboPipOrientation.SelectedItem = _config.Pip.IsHorizontal ? "Horizontal" : "Vertical";
         _nudPipWidth.Enabled = _config.Pip.SizePreset == "Custom";
         _nudPipHeight.Enabled = _config.Pip.SizePreset == "Custom";
         _cboPipBorderColor.Enabled = _config.Pip.ShowBorder;
@@ -848,13 +869,12 @@ public class SettingsForm : Form
             Layout = new WindowLayout
             {
                 Mode = _chkMultiMonEnabled.Checked ? "multimonitor" : "single",
-                Columns = (int)_nudColumns.Value,
-                Rows = (int)_nudRows.Value,
                 TargetMonitor = _cboTargetMonitor.SelectedIndex >= 0 ? _cboTargetMonitor.SelectedIndex : 0,
                 SecondaryMonitor = _cboSecondaryMonitor.SelectedIndex <= 0 ? -1 : _cboSecondaryMonitor.SelectedIndex - 1,
-                TopOffset = (int)_nudTopOffset.Value,
+                TopOffset = _config.Layout.TopOffset,
                 SlimTitlebar = _chkSlimTitlebar.Checked,
                 TitlebarOffset = (int)_nudTitlebarOffset.Value,
+                UseHook = _chkUseHook.Checked,
                 WindowTitleTemplate = _txtWindowTitleTemplate.Text.Trim()
             },
             Affinity = _config.Affinity, // managed by Process Manager
@@ -877,7 +897,7 @@ public class SettingsForm : Form
                 ExeName = _txtExeName.Text.Trim(),
                 Arguments = _txtArgs.Text.Trim(),
                 NumClients = (int)_nudNumClients.Value,
-                LaunchDelayMs = (int)_nudLaunchDelay.Value
+                LaunchDelayMs = (int)_nudLaunchDelay.Value * 1000
             },
             Pip = new PipConfig
             {
@@ -889,6 +909,7 @@ public class SettingsForm : Form
                 ShowBorder = _chkPipBorder.Checked,
                 BorderColor = _cboPipBorderColor.SelectedItem?.ToString() ?? "Green",
                 MaxWindows = (int)_nudPipMaxWindows.Value,
+                Orientation = _cboPipOrientation.SelectedItem?.ToString() ?? "Vertical",
                 SavedPositions = _config.Pip.SavedPositions // preserve existing positions
             },
             TrayClick = new TrayClickConfig
@@ -901,8 +922,13 @@ public class SettingsForm : Form
             GinaPath = _txtGinaPath.Text.Trim(),
             NotesPath = _txtNotesPath.Text.Trim(),
             DalayaPatcherPath = _txtDalayaPatcherPath.Text.Trim(),
+            RunAtStartup = _chkRunAtStartup.Checked,
             Characters = _config.Characters
         };
+
+        // Apply startup registry change
+        if (newConfig.RunAtStartup != _config.RunAtStartup)
+            StartupManager.SetRunAtStartup(newConfig.RunAtStartup);
 
         // MaximizeWindow lives in EQClientIni, update in-place
         newConfig.EQClientIni = _config.EQClientIni;

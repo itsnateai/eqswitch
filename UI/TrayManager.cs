@@ -66,6 +66,10 @@ public class TrayManager : IDisposable
     private int _lastActivePid;
     private int _previousActivePid;
 
+    // DLL hook injection — hooks SetWindowPos/MoveWindow inside eqgame.exe
+    private HookConfigWriter? _hookConfig;
+    private readonly HashSet<int> _injectedPids = new();
+
     public TrayManager(AppConfig config, ProcessManager processManager)
     {
         _config = config;
@@ -123,16 +127,28 @@ public class TrayManager : IDisposable
             UpdateTrayText();
             _keyboardHook.UpdateFilteredPids(_processManager.Clients.Select(c => c.ProcessId));
 
-            // Start/stop slim titlebar position guard based on client count
+            // Start/stop slim titlebar position guard based on client count.
+            // When hook injection is active, the DLL handles positioning from inside
+            // the process, so we increase the guard interval (backup only).
             if (_config.Layout.SlimTitlebar && _processManager.Clients.Count > 0)
             {
+                bool hookActive = _injectedPids.Count > 0;
+                int guardInterval = hookActive ? 5000 : 500;
+
                 if (_slimTitlebarGuard == null)
                 {
-                    _slimTitlebarGuard = new System.Windows.Forms.Timer { Interval = 500 };
+                    _slimTitlebarGuard = new System.Windows.Forms.Timer { Interval = guardInterval };
                     _slimTitlebarGuard.Tick += (_, _) =>
                         _windowManager.ApplySlimTitlebarToAll(_processManager.Clients);
                     _slimTitlebarGuard.Start();
                 }
+                else if (_slimTitlebarGuard.Interval != guardInterval)
+                {
+                    _slimTitlebarGuard.Interval = guardInterval;
+                }
+
+                // Update shared memory config for hook DLL
+                UpdateHookConfig();
             }
             else if (_slimTitlebarGuard != null)
             {
@@ -147,13 +163,20 @@ public class TrayManager : IDisposable
             // causes the game to lose foreground and minimize itself
             _affinityManager.ScheduleRetry(c);
 
-            // Guard timer handles slim titlebar — no separate delay needed
+            // Inject hook DLL if slim titlebar + hook enabled
+            if (_config.Layout.SlimTitlebar && _config.Layout.UseHook)
+            {
+                InjectHookDll(c.ProcessId);
+            }
         };
         _processManager.ClientLost += (_, c) =>
         {
             if (_contextMenu?.Visible != true)
                 ShowBalloon($"Lost: {c}");
             _affinityManager.CancelRetry(c.ProcessId);
+
+            // Clean up injection tracking (DLL unloads automatically when process exits)
+            _injectedPids.Remove(c.ProcessId);
         };
 
         // No tooltip for launch progress — TopMost windows during EQ init cause minimize
@@ -404,7 +427,7 @@ public class TrayManager : IDisposable
     }
 
     /// <summary>
-    /// Alt+G: Arrange all EQ windows (Fix Windows).
+    /// Arrange all EQ windows (Fix Windows). Hotkey configurable in Settings.
     /// </summary>
     private void OnArrangeWindows()
     {
@@ -681,27 +704,7 @@ public class TrayManager : IDisposable
 
         _contextMenu.Items.Add(new ToolStripSeparator());
 
-        // Settings submenu
-        var settingsMenu = new ToolStripMenuItem("\u2699  Settings") { DropDownDirection = ToolStripDropDownDirection.Right };
-        settingsMenu.DropDownItems.Add("\u2753  Help", null, (_, _) => HelpForm.Show(_config));
-        settingsMenu.DropDownItems.Add(new ToolStripSeparator());
-        settingsMenu.DropDownItems.Add("Create Desktop Shortcut", null, (_, _) => StartupManager.CreateDesktopShortcut(ShowBalloon));
-        var startupItem = new ToolStripMenuItem(_config.RunAtStartup ? "\u2705  Run at Startup" : "\u2B1C  Run at Startup")
-        {
-            Checked = _config.RunAtStartup,
-            CheckOnClick = true
-        };
-        startupItem.CheckedChanged += (_, _) =>
-        {
-            _config.RunAtStartup = startupItem.Checked;
-            startupItem.Text = startupItem.Checked ? "\u2705  Run at Startup" : "\u2B1C  Run at Startup";
-            StartupManager.SetRunAtStartup(startupItem.Checked);
-            ConfigManager.Save(_config);
-        };
-        settingsMenu.DropDownItems.Add(startupItem);
-        settingsMenu.DropDownItems.Add(new ToolStripSeparator());
-        settingsMenu.DropDownItems.Add("\u2699  Settings...", null, (_, _) => ShowSettings());
-        _contextMenu.Items.Add(settingsMenu);
+        _contextMenu.Items.Add("\u2699  Settings...", null, (_, _) => ShowSettings());
 
         // Launcher submenu (files + links)
         var launcherMenu = new ToolStripMenuItem("\uD83D\uDCC2  Launcher") { DropDownDirection = ToolStripDropDownDirection.Right };
@@ -968,10 +971,12 @@ public class TrayManager : IDisposable
         _settingsForm = new SettingsForm(_config, ReloadConfig, tabIndex, ShowProcessManager);
         _settingsForm.FormClosed += (_, _) =>
         {
+            bool reopen = _settingsForm?.ReopenAfterClose == true;
             _settingsForm = null;
             _hotkeyManager.UnregisterAll();
             _keyboardHook.Reset();
             RegisterHotkeys();
+            if (reopen) OpenSettingsAfterDelay(200);
         };
         _settingsForm.Show();
     }
@@ -1091,8 +1096,6 @@ public class TrayManager : IDisposable
         // Update the config reference (AppConfig is a class, so updating fields in-place)
         _config.EQPath = newConfig.EQPath;
         _config.EQProcessName = newConfig.EQProcessName;
-        _config.Layout.Columns = newConfig.Layout.Columns;
-        _config.Layout.Rows = newConfig.Layout.Rows;
         _config.Layout.SnapToMonitor = newConfig.Layout.SnapToMonitor;
         _config.Layout.TargetMonitor = newConfig.Layout.TargetMonitor;
         _config.Layout.SecondaryMonitor = newConfig.Layout.SecondaryMonitor;
@@ -1195,6 +1198,91 @@ public class TrayManager : IDisposable
         _processManagerForm.Show();
     }
 
+    // ─── DLL Hook Injection ─────────────────────────────────────────
+
+    /// <summary>
+    /// Inject eqswitch-hook.dll into a target EQ process.
+    /// Opens shared memory first so the DLL can read config on attach.
+    /// </summary>
+    private void InjectHookDll(int pid)
+    {
+        if (_injectedPids.Contains(pid)) return;
+
+        // Ensure shared memory is open before injection
+        _hookConfig ??= new HookConfigWriter();
+        if (!_hookConfig.IsOpen && !_hookConfig.Open())
+        {
+            FileLogger.Warn("InjectHookDll: shared memory unavailable, skipping injection");
+            return;
+        }
+
+        // Write current config before injection so the DLL reads correct values on attach
+        UpdateHookConfig();
+
+        // Find the DLL next to our exe
+        var exeDir = AppContext.BaseDirectory;
+        var dllPath = Path.Combine(exeDir, "eqswitch-hook.dll");
+        if (!File.Exists(dllPath))
+        {
+            FileLogger.Warn($"InjectHookDll: DLL not found at {dllPath}");
+            return;
+        }
+
+        // Delay injection slightly — EQ needs time to initialize its window
+        var timer = new System.Windows.Forms.Timer { Interval = 2000 };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+
+            if (DllInjector.Inject(pid, dllPath))
+            {
+                _injectedPids.Add(pid);
+                FileLogger.Info($"InjectHookDll: successfully injected into PID {pid}");
+            }
+            else
+            {
+                FileLogger.Warn($"InjectHookDll: injection failed for PID {pid}, falling back to guard timer");
+            }
+        };
+        timer.Start();
+    }
+
+    /// <summary>
+    /// Write current slim titlebar position to shared memory for the hook DLL.
+    /// </summary>
+    private void UpdateHookConfig()
+    {
+        if (_hookConfig == null || !_hookConfig.IsOpen) return;
+        if (!_config.Layout.SlimTitlebar)
+        {
+            _hookConfig.Disable();
+            return;
+        }
+
+        // Calculate the same position that ApplySlimTitlebar uses
+        var monitors = _windowManager.GetTargetMonitorBounds();
+        int x = monitors.Left;
+        int y = monitors.Top - _config.Layout.TitlebarOffset;
+
+        // Width/height: 0 means "don't override" — EQ controls its own size via eqclient.ini
+        _hookConfig.WriteConfig(x, y, 0, 0, enabled: true, stripThickFrame: true);
+    }
+
+    /// <summary>
+    /// Eject hook DLL from all injected EQ processes and close shared memory.
+    /// </summary>
+    private void CleanupHookInjection()
+    {
+        foreach (var pid in _injectedPids.ToArray())
+        {
+            DllInjector.Eject(pid, "eqswitch-hook.dll");
+        }
+        _injectedPids.Clear();
+        _hookConfig?.Dispose();
+        _hookConfig = null;
+    }
+
     private void StopForegroundHook()
     {
         if (_foregroundHook != IntPtr.Zero)
@@ -1217,6 +1305,7 @@ public class TrayManager : IDisposable
     private void Shutdown()
     {
         StopForegroundHook();
+        CleanupHookInjection();
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
         _launchManager.CancelLaunch();

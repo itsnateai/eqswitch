@@ -114,10 +114,8 @@ public class WindowManager
         bool slimTitlebar = _config.Layout.SlimTitlebar;
         var monitor = GetTargetMonitor(slimTitlebar);
         var layout = _config.Layout;
-        int cols = layout.Columns;
-        int rows = layout.Rows;
 
-        FileLogger.Info($"ArrangeSingleScreen: monitor bounds L={monitor.Left} T={monitor.Top} R={monitor.Right} B={monitor.Bottom} ({monitor.Width}x{monitor.Height}), grid {cols}x{rows}");
+        FileLogger.Info($"ArrangeSingleScreen: monitor bounds L={monitor.Left} T={monitor.Top} R={monitor.Right} B={monitor.Bottom} ({monitor.Width}x{monitor.Height})");
 
         for (int i = 0; i < clients.Count; i++)
         {
@@ -152,7 +150,7 @@ public class WindowManager
             }
         }
 
-        string mode = slimTitlebar ? "slim titlebar" : $"{cols}x{rows} stacked";
+        string mode = slimTitlebar ? "slim titlebar" : "stacked";
         FileLogger.Info($"ArrangeSingleScreen: {clients.Count} window(s) in {mode}");
     }
 
@@ -445,4 +443,10 @@ public class WindowManager
         int targetIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, Math.Max(0, monitors.Count - 1));
         return monitors.Count > 0 ? monitors[targetIdx] : new WinRect { Right = 1920, Bottom = 1080 };
     }
+
+    /// <summary>
+    /// Get the full monitor bounds for the target monitor (including taskbar area).
+    /// Used by TrayManager to write hook config with correct coordinates.
+    /// </summary>
+    public WinRect GetTargetMonitorBounds() => GetTargetMonitor(fullBounds: true);
 }
