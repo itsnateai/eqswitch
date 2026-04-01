@@ -302,7 +302,7 @@ public class SettingsForm : Form
         y += 113;
 
         // ─── Preferences card ────────────────────────────────────
-        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 130);
+        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 100);
         cy = 32;
 
         // Row 1: EQ Client Settings + Video Settings
@@ -325,11 +325,17 @@ public class SettingsForm : Form
         };
         cy += R + 6;
 
-        // Row 2: Process Manager + Help
+        // Row 2: Process Manager
         var btnProcessMgr = DarkTheme.AddCardButton(cardPrefs, "⚡ Process Manager...", L, cy, 170);
         btnProcessMgr.Click += (_, _) => _openProcessManager?.Invoke();
-        var btnHelp = DarkTheme.AddCardButton(cardPrefs, "❓ Help", 210, cy, 150);
+
+        y += 108;
+
+        // ─── Help card ───────────────────────────────────────────
+        var cardHelp = DarkTheme.MakeCard(page, "", "", DarkTheme.CardPurple, 10, y, 480, 45);
+        var btnHelp = DarkTheme.AddCardButton(cardHelp, "❓ Help", L, 8, 100);
         btnHelp.Click += (_, _) => HelpForm.Show(_config);
+        DarkTheme.AddCardHint(cardHelp, "keybinds, features, and tips", 120, 12);
 
         return page;
     }

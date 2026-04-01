@@ -82,6 +82,32 @@ public class TrayManager : IDisposable
         _launchManager = new LaunchManager(config, _affinityManager);
         _autoLoginManager = new AutoLoginManager(config);
         _autoLoginManager.StatusUpdate += (_, msg) => ShowBalloon(msg);
+        _autoLoginManager.LoginStarting += (_, _) =>
+        {
+            // Pause guard timer during auto-login to prevent focus theft
+            _slimTitlebarGuard?.Stop();
+            FileLogger.Info("AutoLogin: paused slim titlebar guard timer");
+        };
+        _autoLoginManager.LoginComplete += (_, pid) =>
+        {
+            // Resume guard timer
+            _slimTitlebarGuard?.Start();
+            FileLogger.Info("AutoLogin: resumed slim titlebar guard timer");
+
+            // Now that login is done, apply everything that was deferred
+            var client = _processManager.Clients.FirstOrDefault(c => c.ProcessId == pid);
+            if (client == null) return;
+
+            if (_config.Layout.SlimTitlebar)
+            {
+                _windowManager.ApplySlimTitlebar(
+                    client.WindowHandle,
+                    _windowManager.GetTargetMonitorBounds(),
+                    _config.Layout.TitlebarOffset);
+            }
+            if (_config.Layout.SlimTitlebar && _config.Layout.UseHook)
+                InjectHookDll(pid);
+        };
     }
 
     public void Initialize()
@@ -179,6 +205,12 @@ public class TrayManager : IDisposable
             // causes the game to lose foreground and minimize itself
             _affinityManager.ScheduleRetry(c);
 
+            // Defer all window manipulation when auto-login is active —
+            // SetWindowPos/SetWindowLongPtr/CreateRemoteThread can steal focus
+            // and cause SendInput keystrokes to go nowhere.
+            if (_autoLoginManager.IsLoginActive(c.ProcessId))
+                return;
+
             // Apply slim titlebar immediately so the window covers the taskbar
             // from the moment it's discovered — don't wait for the guard timer
             if (_config.Layout.SlimTitlebar)
@@ -189,8 +221,7 @@ public class TrayManager : IDisposable
                     _config.Layout.TitlebarOffset);
             }
 
-            // Inject hook DLL if slim titlebar + hook enabled (per-process shared memory
-            // supports both single and multimonitor modes)
+            // Inject hook DLL if slim titlebar + hook enabled
             if (_config.Layout.SlimTitlebar && _config.Layout.UseHook)
             {
                 InjectHookDll(c.ProcessId);
@@ -1210,6 +1241,7 @@ public class TrayManager : IDisposable
         _config.NotesPath = newConfig.NotesPath;
         _config.DalayaPatcherPath = newConfig.DalayaPatcherPath;
         _config.Characters = newConfig.Characters;
+        _config.Accounts = newConfig.Accounts;
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
         _config.ShowTooltipErrors = newConfig.ShowTooltipErrors;
         _config.MinimizeToTray = newConfig.MinimizeToTray;
