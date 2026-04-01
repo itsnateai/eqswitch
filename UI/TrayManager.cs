@@ -105,7 +105,7 @@ public class TrayManager : IDisposable
                     _windowManager.GetTargetMonitorBounds(),
                     _config.Layout.TitlebarOffset);
             }
-            if (_config.Layout.SlimTitlebar && _config.Layout.UseHook)
+            if (ShouldInjectHook())
                 InjectHookDll(pid);
         };
     }
@@ -175,32 +175,6 @@ public class TrayManager : IDisposable
                 {
                     _slimTitlebarGuard.Interval = guardInterval;
                 }
-
-                // Update shared memory config for hook DLL
-                UpdateHookConfig();
-            }
-
-            // When Maximize is on but Slim Titlebar is off, EQ's DirectX init
-            // can minimize the window on focus loss and never recover. Run a
-            // lightweight guard that restores minimized windows.
-            else if (_config.EQClientIni.MaximizeWindow && _processManager.Clients.Count > 0)
-            {
-                if (_slimTitlebarGuard == null)
-                {
-                    _slimTitlebarGuard = new System.Windows.Forms.Timer { Interval = 2000 };
-                    _slimTitlebarGuard.Tick += (_, _) =>
-                    {
-                        foreach (var c in _processManager.Clients)
-                        {
-                            if (NativeMethods.IsIconic(c.WindowHandle))
-                            {
-                                NativeMethods.ShowWindow(c.WindowHandle, NativeMethods.SW_RESTORE);
-                                FileLogger.Info($"MaximizeGuard: restored minimized window {c}");
-                            }
-                        }
-                    };
-                    _slimTitlebarGuard.Start();
-                }
             }
             else if (_slimTitlebarGuard != null)
             {
@@ -208,6 +182,9 @@ public class TrayManager : IDisposable
                 _slimTitlebarGuard.Dispose();
                 _slimTitlebarGuard = null;
             }
+
+            // Update shared memory config for all injected processes
+            UpdateHookConfig();
 
             // Auto-show PiP overlay when enabled and 2+ clients are present
             if (_config.Pip.Enabled && _processManager.Clients.Count >= 2
@@ -243,16 +220,19 @@ public class TrayManager : IDisposable
                     _config.Layout.TitlebarOffset);
             }
 
-            // Inject hook DLL if slim titlebar + hook enabled
-            if (_config.Layout.SlimTitlebar && _config.Layout.UseHook)
+            // Inject hook DLL when any hook feature is needed:
+            //   - Slim titlebar + hook enabled: position enforcement from inside
+            //   - Custom window title: hook SetWindowTextA so EQ can't overwrite it
+            //   - Maximize on launch: hook ShowWindow to block self-minimize
+            if (ShouldInjectHook())
             {
                 InjectHookDll(c.ProcessId);
             }
-
-            // Apply custom window title (safe during init — SetWindowText doesn't
-            // steal focus or trigger EQ's minimize-on-focus-loss handler)
-            if (!string.IsNullOrEmpty(_config.Layout.WindowTitleTemplate))
+            // If hook not injected, apply title externally as fallback
+            else if (!string.IsNullOrEmpty(_config.Layout.WindowTitleTemplate))
+            {
                 _windowManager.SetWindowTitle(c, c.SlotIndex);
+            }
         };
         _processManager.ClientLost += (_, c) =>
         {
@@ -1415,27 +1395,30 @@ public class TrayManager : IDisposable
     private void UpdateHookConfig()
     {
         if (_hookConfig == null || !_hookConfig.HasMappings) return;
-        if (!_config.Layout.SlimTitlebar)
-        {
-            _hookConfig.DisableAll();
-            return;
-        }
 
         foreach (var pid in _injectedPids)
             UpdateHookConfigForPid(pid);
     }
 
     /// <summary>
-    /// Write slim titlebar position for a specific process based on its monitor assignment.
+    /// Whether any hook feature is currently enabled (slim titlebar + hook,
+    /// custom window title, or maximize-on-launch protection).
+    /// </summary>
+    private bool ShouldInjectHook()
+    {
+        if (_config.Layout.SlimTitlebar && _config.Layout.UseHook) return true;
+        if (!string.IsNullOrEmpty(_config.Layout.WindowTitleTemplate)) return true;
+        if (_config.EQClientIni.MaximizeWindow) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Write hook config for a specific process. Handles all hook features:
+    /// slim titlebar positioning, window title override, and minimize blocking.
     /// </summary>
     private void UpdateHookConfigForPid(int pid)
     {
         if (_hookConfig == null || !_hookConfig.IsOpen(pid)) return;
-        if (!_config.Layout.SlimTitlebar)
-        {
-            _hookConfig.Disable(pid);
-            return;
-        }
 
         var clients = _processManager.Clients;
         int clientIndex = -1;
@@ -1449,25 +1432,54 @@ public class TrayManager : IDisposable
             return;
         }
 
-        WinRect monBounds;
-        bool isMM = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
-        if (isMM)
+        // ─── Position enforcement (slim titlebar) ───
+        bool posEnabled = _config.Layout.SlimTitlebar;
+        int x = 0, y = 0, w = 0, h = 0;
+        if (posEnabled)
         {
-            // Match the same monitor assignment logic as ArrangeMultiMonitor
-            monBounds = GetMonitorForClientIndex(clientIndex);
-        }
-        else
-        {
-            monBounds = _windowManager.GetTargetMonitorBounds();
+            WinRect monBounds;
+            bool isMM = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+            monBounds = isMM ? GetMonitorForClientIndex(clientIndex) : _windowManager.GetTargetMonitorBounds();
+
+            x = monBounds.Left;
+            y = monBounds.Top - _config.Layout.TitlebarOffset;
+            w = monBounds.Right - monBounds.Left;
+            h = (monBounds.Bottom - monBounds.Top) + _config.Layout.TitlebarOffset;
         }
 
-        int x = monBounds.Left;
-        int y = monBounds.Top - _config.Layout.TitlebarOffset;
-        int w = monBounds.Right - monBounds.Left;
-        int h = (monBounds.Bottom - monBounds.Top) + _config.Layout.TitlebarOffset;
+        // ─── Window title ───
+        string title = "";
+        var template = _config.Layout.WindowTitleTemplate;
+        if (!string.IsNullOrEmpty(template))
+        {
+            // Resolve placeholders
+            var client = clients[clientIndex];
+            var charName = "";
+            if (clientIndex < _config.Accounts.Count)
+            {
+                var accountName = _config.Accounts[clientIndex].CharacterName;
+                if (!string.IsNullOrEmpty(accountName))
+                    charName = accountName;
+            }
+            title = template
+                .Replace("{CHAR}", charName)
+                .Replace("{SLOT}", (clientIndex + 1).ToString())
+                .Replace("{PID}", pid.ToString())
+                .Trim();
+        }
 
-        _hookConfig.WriteConfig(pid, x, y, w, h, enabled: true, stripThickFrame: true);
-        FileLogger.Info($"UpdateHookConfig: PID {pid} → ({x},{y}) {w}x{h}");
+        // ─── Minimize blocking ───
+        bool blockMin = _config.EQClientIni.MaximizeWindow;
+
+        _hookConfig.WriteConfig(pid, x, y, w, h,
+            enabled: posEnabled, stripThickFrame: posEnabled,
+            blockMinimize: blockMin, windowTitle: title);
+
+        var features = new System.Collections.Generic.List<string>();
+        if (posEnabled) features.Add($"pos=({x},{y}) {w}x{h}");
+        if (!string.IsNullOrEmpty(title)) features.Add($"title=\"{title}\"");
+        if (blockMin) features.Add("blockMin");
+        FileLogger.Info($"UpdateHookConfig: PID {pid} → {string.Join(", ", features)}");
     }
 
     /// <summary>
