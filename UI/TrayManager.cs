@@ -179,6 +179,16 @@ public class TrayManager : IDisposable
             // causes the game to lose foreground and minimize itself
             _affinityManager.ScheduleRetry(c);
 
+            // Apply slim titlebar immediately so the window covers the taskbar
+            // from the moment it's discovered — don't wait for the guard timer
+            if (_config.Layout.SlimTitlebar)
+            {
+                _windowManager.ApplySlimTitlebar(
+                    c.WindowHandle,
+                    _windowManager.GetTargetMonitorBounds(),
+                    _config.Layout.TitlebarOffset);
+            }
+
             // Inject hook DLL if slim titlebar + hook enabled
             if (_config.Layout.SlimTitlebar && _config.Layout.UseHook)
             {
