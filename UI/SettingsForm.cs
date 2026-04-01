@@ -712,13 +712,24 @@ public class SettingsForm : Form
         DarkTheme.AddCardLabel(cardPip, "Size Preset:", L, cy);
         _cboPipSize = DarkTheme.AddCardComboBox(cardPip, I, cy - 2, 170, new[] {
             "Small (200x150)", "Medium (320x240)", "Large (400x300)",
-            "XL (480x360)", "XXL (640x480)", "XXXL (960x720)", "Custom"
+            "XL (480x360)", "XXL (640x480)", "XXXL (960x720)", "XXXXL (1600x900)", "Custom"
         });
         _cboPipSize.SelectedIndexChanged += (_, _) =>
         {
-            bool isCustom = _cboPipSize.SelectedItem?.ToString()?.StartsWith("Custom") == true;
+            var selected = _cboPipSize.SelectedItem?.ToString() ?? "";
+            bool isCustom = selected.StartsWith("Custom");
             _nudPipWidth.Enabled = isCustom;
             _nudPipHeight.Enabled = isCustom;
+            // XXXXL is nearly full-screen — enforce max 1 PiP window
+            if (selected.StartsWith("XXXXL"))
+            {
+                _nudPipMaxWindows.Value = 1;
+                _nudPipMaxWindows.Maximum = 1;
+            }
+            else
+            {
+                _nudPipMaxWindows.Maximum = 3;
+            }
         };
         DarkTheme.AddCardLabel(cardPip, "Max", 310, cy - 12);
         DarkTheme.AddCardLabel(cardPip, "Windows:", 298, cy + 2);

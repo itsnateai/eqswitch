@@ -110,7 +110,8 @@ public class AppConfig
         Launch.FixDelayMs = Math.Clamp(Launch.FixDelayMs, 1000, 120000);
 
         Pip.Opacity = Math.Clamp(Pip.Opacity, (byte)10, (byte)255);
-        Pip.MaxWindows = Math.Clamp(Pip.MaxWindows, 1, 3);
+        int maxPip = Pip.SizePreset == "XXXXL" ? 1 : 3;
+        Pip.MaxWindows = Math.Clamp(Pip.MaxWindows, 1, maxPip);
         Pip.CustomWidth = Math.Clamp(Pip.CustomWidth, 100, 3840);
         Pip.CustomHeight = Math.Clamp(Pip.CustomHeight, 75, 2160);
     }
@@ -274,7 +275,7 @@ public class PipConfig
 {
     public bool Enabled { get; set; } = false;
 
-    /// <summary>Size preset: "Small", "Medium", "Large", "XL", "XXL", "XXXL", "Custom"</summary>
+    /// <summary>Size preset: "Small", "Medium", "Large", "XL", "XXL", "XXXL", "XXXXL", "Custom"</summary>
     public string SizePreset { get; set; } = "Medium";
 
     /// <summary>Custom width (used when SizePreset = "Custom").</summary>
@@ -309,6 +310,7 @@ public class PipConfig
         "XL" => (480, 360),
         "XXL" => (640, 480),
         "XXXL" => (960, 720),
+        "XXXXL" => (1600, 900),
         _ => (CustomWidth, CustomHeight)
     };
 
