@@ -146,6 +146,9 @@ public class LaunchManager : IDisposable
     {
         try
         {
+            // Write eqclient.ini overrides BEFORE launching (slim titlebar resolution, etc.)
+            EQSwitch.UI.EQClientSettingsForm.EnforceOverrides(_config);
+
             // Validate exe name doesn't contain path traversal sequences
             var exeName = _config.Launch.ExeName;
             if (exeName.Contains("..") || exeName.Contains('/') || exeName.Contains('\\'))

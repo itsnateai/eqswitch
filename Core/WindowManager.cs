@@ -105,27 +105,19 @@ public class WindowManager
     }
 
     /// <summary>
-    /// Single-screen mode: arrange all windows in a grid on the target monitor.
-    /// When BorderlessFullscreen is enabled, uses full monitor bounds with Y+1 offset
-    /// to cover the taskbar (WinEQ method).
+    /// Single-screen mode: arrange all windows on the target monitor.
+    /// In 1x1 (stacked) mode, windows keep their own size from eqclient.ini.
+    /// Slim Titlebar mode pushes the titlebar off-screen (WinEQ2 method).
     /// </summary>
     private void ArrangeSingleScreen(IReadOnlyList<EQClient> clients)
     {
-        bool borderless = _config.Layout.BorderlessFullscreen;
-        var monitor = GetTargetMonitor(borderless);
+        bool slimTitlebar = _config.Layout.SlimTitlebar;
+        var monitor = GetTargetMonitor(slimTitlebar);
         var layout = _config.Layout;
         int cols = layout.Columns;
         int rows = layout.Rows;
-        int yOffset = borderless ? 1 : layout.TopOffset; // +1 Y offset for borderless
 
-        int cellWidth = monitor.Width / cols;
-        int cellHeight = monitor.Height / rows;
-
-        FileLogger.Info($"ArrangeSingleScreen: monitor bounds L={monitor.Left} T={monitor.Top} R={monitor.Right} B={monitor.Bottom} ({monitor.Width}x{monitor.Height}), grid {cols}x{rows}, cell {cellWidth}x{cellHeight}");
-
-        // In 1x1 (stacked) mode, just restore windows without resizing —
-        // let EQ keep its own size to avoid distorting the render area.
-        bool isStacked = cols == 1 && rows == 1;
+        FileLogger.Info($"ArrangeSingleScreen: monitor bounds L={monitor.Left} T={monitor.Top} R={monitor.Right} B={monitor.Bottom} ({monitor.Width}x{monitor.Height}), grid {cols}x{rows}");
 
         for (int i = 0; i < clients.Count; i++)
         {
@@ -137,45 +129,30 @@ public class WindowManager
                 continue;
             }
 
-            // Only restore if actually minimized — calling SW_RESTORE on a
-            // normal window during EQ initialization can minimize it
             if (_api.IsIconic(client.WindowHandle))
                 _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
-            if (isStacked)
+            SetWindowTitle(client, i);
+
+            if (slimTitlebar)
+            {
+                ApplySlimTitlebar(client.WindowHandle, monitor, layout.TitlebarOffset);
+            }
+            else
             {
                 // Move to target monitor origin without resizing — EQ keeps its own window size
                 int sx = monitor.Left;
-                int sy = monitor.Top + yOffset;
+                int sy = monitor.Top + layout.TopOffset;
                 _api.SetWindowPos(
                     client.WindowHandle,
                     IntPtr.Zero,
                     sx, sy, 0, 0,
-                    NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW);
+                    NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
                 FileLogger.Info($"ArrangeSingleScreen: {client} → stacked at ({sx},{sy})");
-                continue;
             }
-
-            int col = i % cols;
-            int row = i / cols;
-            int x = monitor.Left + (col * cellWidth);
-            int y = monitor.Top + (row * cellHeight) + yOffset;
-
-            if (borderless)
-                ApplyBorderlessStyle(client.WindowHandle);
-            else if (layout.RemoveTitleBars)
-                RemoveTitleBar(client.WindowHandle);
-
-            _api.SetWindowPos(
-                client.WindowHandle,
-                IntPtr.Zero,
-                x, y, cellWidth, cellHeight,
-                NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW | NativeMethods.SWP_FRAMECHANGED);
-
-            FileLogger.Info($"ArrangeSingleScreen: {client} → pos ({x},{y}) size ({cellWidth}x{cellHeight})");
         }
 
-        string mode = borderless ? "borderless fullscreen" : $"{cols}x{rows} grid";
+        string mode = slimTitlebar ? "slim titlebar" : $"{cols}x{rows} stacked";
         FileLogger.Info($"ArrangeSingleScreen: {clients.Count} window(s) in {mode}");
     }
 
@@ -183,15 +160,12 @@ public class WindowManager
     /// Multi-monitor mode: distribute windows across physical monitors.
     /// Each window fills its assigned monitor. Cycles through monitors if
     /// there are more windows than screens.
-    /// When BorderlessFullscreen is enabled, uses full monitor bounds with Y+1 offset.
     /// </summary>
     private void ArrangeMultiMonitor(IReadOnlyList<EQClient> clients)
     {
-        bool borderless = _config.Layout.BorderlessFullscreen;
-        var monitors = borderless ? _api.GetAllMonitorBounds() : _api.GetAllMonitorWorkAreas();
+        bool slimTitlebar = _config.Layout.SlimTitlebar;
+        var monitors = slimTitlebar ? _api.GetAllMonitorBounds() : _api.GetAllMonitorWorkAreas();
         if (monitors.Count == 0) return;
-
-        int yOffset = borderless ? 1 : _config.Layout.TopOffset;
 
         // Build ordered monitor list: primary first, then secondary
         var primaryIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, monitors.Count - 1);
@@ -199,7 +173,7 @@ public class WindowManager
         if (_config.Layout.SecondaryMonitor >= 0 && _config.Layout.SecondaryMonitor < monitors.Count)
             secondaryIdx = _config.Layout.SecondaryMonitor;
         else
-            secondaryIdx = primaryIdx == 0 && monitors.Count > 1 ? 1 : 0; // auto: first non-primary
+            secondaryIdx = primaryIdx == 0 && monitors.Count > 1 ? 1 : 0;
 
         var monitorOrder = new List<WinRect> { monitors[primaryIdx] };
         if (monitors.Count > 1)
@@ -217,26 +191,31 @@ public class WindowManager
 
             var mon = monitorOrder[i % monitorOrder.Count];
 
-            // Always restore before moving — prevents stuck-minimized windows
-            _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+            if (_api.IsIconic(client.WindowHandle))
+                _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
-            if (borderless)
-                ApplyBorderlessStyle(client.WindowHandle);
-            else if (_config.Layout.RemoveTitleBars)
-                RemoveTitleBar(client.WindowHandle);
+            SetWindowTitle(client, i);
 
-            _api.SetWindowPos(
-                client.WindowHandle,
-                IntPtr.Zero,
-                mon.Left, mon.Top + yOffset, mon.Width, mon.Height,
-                NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW | NativeMethods.SWP_FRAMECHANGED);
+            if (slimTitlebar)
+            {
+                ApplySlimTitlebar(client.WindowHandle, mon, _config.Layout.TitlebarOffset);
+            }
+            else
+            {
+                _api.SetWindowPos(
+                    client.WindowHandle,
+                    IntPtr.Zero,
+                    mon.Left, mon.Top + _config.Layout.TopOffset, 0, 0,
+                    NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+            }
 
             string monLabel = i % monitorOrder.Count == 0 ? "primary" : "secondary";
-            FileLogger.Info($"ArrangeMultiMonitor: {client} → {monLabel} monitor ({mon.Left},{mon.Top}) {mon.Width}x{mon.Height}");
+            FileLogger.Info($"ArrangeMultiMonitor: {client} → {monLabel} monitor ({mon.Left},{mon.Top}) {mon.Width}x{mon.Height}" +
+                (slimTitlebar ? " (slim titlebar)" : ""));
         }
 
-        FileLogger.Info($"ArrangeMultiMonitor: {clients.Count} window(s), primary={primaryIdx} secondary={secondaryIdx}" +
-            (borderless ? " (borderless)" : ""));
+        string modeLabel = slimTitlebar ? " (slim titlebar)" : "";
+        FileLogger.Info($"ArrangeMultiMonitor: {clients.Count} window(s), primary={primaryIdx} secondary={secondaryIdx}{modeLabel}");
     }
 
     /// <summary>
@@ -328,11 +307,10 @@ public class WindowManager
     /// </summary>
     public void ResizeToCurrentMonitors(IReadOnlyList<EQClient> clients)
     {
-        bool borderless = _config.Layout.BorderlessFullscreen;
-        var monitors = borderless ? _api.GetAllMonitorBounds() : _api.GetAllMonitorWorkAreas();
+        var monitors = _api.GetAllMonitorWorkAreas();
         if (monitors.Count == 0) return;
 
-        int yOffset = borderless ? 1 : _config.Layout.TopOffset;
+        int yOffset = _config.Layout.TopOffset;
 
         foreach (var client in clients)
         {
@@ -370,98 +348,64 @@ public class WindowManager
         }
     }
 
-    // ─── Title Bar & Borderless Management ──────────────────────────
+    // ─── Window Style Management ──────────────────────────────────
 
     /// <summary>
-    /// Remove the title bar and borders from a window.
+    /// Apply slim titlebar mode: position window so the titlebar is partially hidden
+    /// above the top edge of the monitor, and oversize the window height to compensate.
+    /// The game fills the full monitor height while a thin titlebar strip remains visible.
+    /// This is the WinEQ2 method — no style modification needed, just positioning.
     /// </summary>
-    public void RemoveTitleBar(IntPtr hwnd)
+    public void ApplySlimTitlebar(IntPtr hwnd, WinRect monitor, int titlebarOffset)
     {
+        // Strip WS_THICKFRAME for thin border, KEEP WS_CAPTION for draggable titlebar
         long style = _api.GetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE).ToInt64();
-        style &= ~NativeMethods.WS_CAPTION;
         style &= ~NativeMethods.WS_THICKFRAME;
         _api.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, (IntPtr)style);
 
+        // Step 1: Apply style change only (no move, no resize).
+        // Use NOACTIVATE instead of SHOWWINDOW — SHOWWINDOW triggers EQ's
+        // focus-loss handler during initialization, causing the game to minimize.
         _api.SetWindowPos(
             hwnd, IntPtr.Zero, 0, 0, 0, 0,
-            NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE |
-            NativeMethods.SWP_NOZORDER | NativeMethods.SWP_FRAMECHANGED);
+            NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER |
+            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_FRAMECHANGED);
+
+        // Step 2: Move window up so titlebar is hidden above the monitor edge.
+        // Do NOT resize — EQ controls its own window size via eqclient.ini.
+        // The game window is already taller than the monitor (client area + titlebar),
+        // so pushing it up naturally covers the taskbar.
+        int x = monitor.Left;
+        int y = monitor.Top - titlebarOffset;
+        _api.SetWindowPos(
+            hwnd, IntPtr.Zero, x, y, 0, 0,
+            NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+
+        FileLogger.Info($"ApplySlimTitlebar: hwnd={hwnd} → moved to ({x},{y}), offset={titlebarOffset}px hidden");
     }
 
     /// <summary>
-    /// Apply full borderless style — removes all window chrome including
-    /// extended styles. Used for borderless fullscreen mode (WinEQ method).
-    /// Strips: WS_CAPTION, WS_THICKFRAME, WS_SYSMENU, WS_MINIMIZEBOX, WS_MAXIMIZEBOX
-    /// Extended: WS_EX_DLGMODALFRAME, WS_EX_CLIENTEDGE, WS_EX_STATICEDGE
+    /// Set a custom window title using the template from config.
+    /// Supports placeholders: {CHAR} = character name, {SLOT} = slot number, {PID} = process ID.
     /// </summary>
-    public void ApplyBorderlessStyle(IntPtr hwnd)
+    public void SetWindowTitle(EQClient client, int slotIndex)
     {
-        // Remove standard styles
-        long style = _api.GetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE).ToInt64();
-        style &= ~NativeMethods.WS_CAPTION;
-        style &= ~NativeMethods.WS_THICKFRAME;
-        style &= ~NativeMethods.WS_SYSMENU;
-        style &= ~NativeMethods.WS_MINIMIZEBOX;
-        style &= ~NativeMethods.WS_MAXIMIZEBOX;
-        _api.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, (IntPtr)style);
-
-        // Remove extended styles (border chrome remnants)
-        long exStyle = _api.GetWindowLongPtr(hwnd, NativeMethods.GWL_EXSTYLE).ToInt64();
-        exStyle &= ~NativeMethods.WS_EX_DLGMODALFRAME;
-        exStyle &= ~NativeMethods.WS_EX_CLIENTEDGE;
-        exStyle &= ~NativeMethods.WS_EX_STATICEDGE;
-        _api.SetWindowLongPtr(hwnd, NativeMethods.GWL_EXSTYLE, (IntPtr)exStyle);
-
-        // Apply style changes
-        _api.SetWindowPos(
-            hwnd, IntPtr.Zero, 0, 0, 0, 0,
-            NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE |
-            NativeMethods.SWP_NOZORDER | NativeMethods.SWP_FRAMECHANGED);
-    }
-
-    /// <summary>
-    /// Restore the title bar on a window.
-    /// </summary>
-    public void RestoreTitleBar(IntPtr hwnd)
-    {
-        long style = _api.GetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE).ToInt64();
-        style |= NativeMethods.WS_CAPTION;
-        style |= NativeMethods.WS_THICKFRAME;
-        _api.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, (IntPtr)style);
-
-        _api.SetWindowPos(
-            hwnd, IntPtr.Zero, 0, 0, 0, 0,
-            NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE |
-            NativeMethods.SWP_NOZORDER | NativeMethods.SWP_FRAMECHANGED);
-    }
-
-    // ─── Immediate Positioning ─────────────────────────────────────
-
-    /// <summary>
-    /// Immediately position a single client window on the target monitor,
-    /// filling the work area. Used during launch to snap each window to
-    /// the correct monitor as soon as it's discovered — prevents Windows
-    /// from placing it across monitor boundaries.
-    /// </summary>
-    public void PositionOnTargetMonitor(EQClient client)
-    {
+        var template = _config.Layout.WindowTitleTemplate;
+        if (string.IsNullOrEmpty(template)) return;
         if (!_api.IsWindow(client.WindowHandle)) return;
 
-        var monitor = GetTargetMonitor(false);
-        int yOffset = _config.Layout.BorderlessFullscreen ? 1 : _config.Layout.TopOffset;
+        // Extract character name from EQ window title format: "EverQuest - CharName"
+        var charName = "Unknown";
+        if (!string.IsNullOrEmpty(client.WindowTitle) && client.WindowTitle.Contains(" - "))
+            charName = client.WindowTitle.Split(" - ", 2)[1];
 
-        if (_api.IsIconic(client.WindowHandle))
-            _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+        var title = template
+            .Replace("{CHAR}", charName)
+            .Replace("{SLOT}", (slotIndex + 1).ToString())
+            .Replace("{PID}", client.ProcessId.ToString());
 
-        // Move to target monitor without resizing — let EQ keep its own window size.
-        // Avoid SWP_FRAMECHANGED during launch as it can cause EQ to minimize itself.
-        _api.SetWindowPos(
-            client.WindowHandle,
-            IntPtr.Zero,
-            monitor.Left, monitor.Top + yOffset, 0, 0,
-            NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW);
-
-        FileLogger.Info($"PositionOnTargetMonitor: {client} → ({monitor.Left},{monitor.Top + yOffset}) (no resize)");
+        _api.SetWindowText(client.WindowHandle, title);
+        FileLogger.Info($"SetWindowTitle: {client} → \"{title}\"");
     }
 
     // ─── Monitor Helpers ──────────────────────────────────────────

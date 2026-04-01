@@ -52,8 +52,10 @@ public class SettingsForm : Form
     private ComboBox _cboTargetMonitor = null!;
     private ComboBox _cboSecondaryMonitor = null!;
     private NumericUpDown _nudTopOffset = null!;
-    private CheckBox _chkRemoveTitleBars = null!;
-    private CheckBox _chkBorderlessFullscreen = null!;
+    private CheckBox _chkSlimTitlebar = null!;
+    private NumericUpDown _nudTitlebarOffset = null!;
+    private CheckBox _chkMaximizeWindow = null!;
+    private TextBox _txtWindowTitleTemplate = null!;
 
 
     // ─── Launch tab controls
@@ -329,8 +331,8 @@ public class SettingsForm : Form
             _nudTopOffset.Value = DarkTheme.ClampNud(_nudTopOffset, _config.Layout.TopOffset);
             _chkMultiMonEnabled.Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
             _cboTargetMonitor.SelectedIndex = Math.Clamp(_config.Layout.TargetMonitor, 0, _cboTargetMonitor.Items.Count - 1);
-            var secIdx = _config.Layout.SecondaryMonitor < 0 ? 0 : _config.Layout.SecondaryMonitor + 1;
-            _cboSecondaryMonitor.SelectedIndex = Math.Clamp(secIdx, 0, _cboSecondaryMonitor.Items.Count - 1);
+            var secIdx2 = _config.Layout.SecondaryMonitor < 0 ? 0 : _config.Layout.SecondaryMonitor + 1;
+            _cboSecondaryMonitor.SelectedIndex = Math.Clamp(secIdx2, 0, _cboSecondaryMonitor.Items.Count - 1);
         };
         var btnHelp = DarkTheme.AddCardButton(cardPrefs, "❓ Help", 185, cy, 100);
         btnHelp.Click += (_, _) => HelpForm.Show(_config);
@@ -466,15 +468,49 @@ public class SettingsForm : Form
         y += 133;
 
         // ─── Window Style card ───────────────────────────────────
-        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 85);
+        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 119);
         cy = 32;
 
-        _chkRemoveTitleBars = DarkTheme.AddCardCheckBox(cardStyle, "Remove Title Bars on Arrange", L, cy);
+        _chkSlimTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Slim Titlebar (WinEQ2 mode)", L, cy);
+        DarkTheme.AddCardHint(cardStyle, "Auto-sets resolution + hides titlebar", 260, cy + 2);
         cy += 24;
-        _chkBorderlessFullscreen = DarkTheme.AddCardCheckBox(cardStyle, "Borderless Fullscreen", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "Strips chrome, Y+1 offset, auto WindowedMode", 230, cy + 2);
 
-        y += 93;
+        DarkTheme.AddCardLabel(cardStyle, "Titlebar hidden (px):", L, cy);
+        _nudTitlebarOffset = DarkTheme.AddCardNumeric(cardStyle, 140, cy - 2, 55, 22, 0, 40);
+        DarkTheme.AddCardHint(cardStyle, "22 = thin strip visible, 30 = fully hidden", 210, cy);
+        cy += 28;
+
+        _chkMaximizeWindow = DarkTheme.AddCardCheckBox(cardStyle, "Maximize on Launch", L, cy);
+        DarkTheme.AddCardHint(cardStyle, "Sets Maximized=1 in eqclient.ini", 200, cy + 2);
+
+        _chkSlimTitlebar.CheckedChanged += (_, _) =>
+        {
+            bool slim = _chkSlimTitlebar.Checked;
+            _nudTitlebarOffset.Enabled = slim;
+            // Slim titlebar and Maximize are incompatible — maximized windows
+            // are constrained to the work area, defeating the WinEQ2 trick
+            if (slim)
+            {
+                _chkMaximizeWindow.Checked = false;
+                _chkMaximizeWindow.Enabled = false;
+            }
+            else
+            {
+                _chkMaximizeWindow.Enabled = true;
+            }
+        };
+
+        y += 127;
+
+        // ─── Window Title card ───────────────────────────────────
+        var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 65);
+        cy = 32;
+
+        DarkTheme.AddCardLabel(cardTitle, "Template:", L, cy);
+        _txtWindowTitleTemplate = DarkTheme.AddCardTextBox(cardTitle, 75, cy - 2, 280);
+        DarkTheme.AddCardHint(cardTitle, "{CHAR} {SLOT} {PID}", 365, cy);
+
+        y += 73;
 
         // ─── Grid Layout card ────────────────────────────────────
         var cardGrid = DarkTheme.MakeCard(page, "📐", "Grid Layout", DarkTheme.CardGold, 10, y, 480, 95);
@@ -486,7 +522,7 @@ public class SettingsForm : Form
         _nudRows = DarkTheme.AddCardNumeric(cardGrid, 170, cy - 2, 40, 1, 1, 2);
         cy += R;
 
-        DarkTheme.AddCardHint(cardGrid, "Grid divides the primary monitor into columns × rows. Only works in single-screen mode.", L, cy);
+        DarkTheme.AddCardHint(cardGrid, "Grid requires matching eqclient.ini resolution. EQ controls its own window size.", L, cy);
 
         return page;
     }
@@ -766,8 +802,12 @@ public class SettingsForm : Form
         var secIdx = _config.Layout.SecondaryMonitor < 0 ? 0 : _config.Layout.SecondaryMonitor + 1;
         _cboSecondaryMonitor.SelectedIndex = Math.Clamp(secIdx, 0, _cboSecondaryMonitor.Items.Count - 1);
         _nudTopOffset.Value = DarkTheme.ClampNud(_nudTopOffset, _config.Layout.TopOffset);
-        _chkRemoveTitleBars.Checked = _config.Layout.RemoveTitleBars;
-        _chkBorderlessFullscreen.Checked = _config.Layout.BorderlessFullscreen;
+        _chkSlimTitlebar.Checked = _config.Layout.SlimTitlebar;
+        _nudTitlebarOffset.Value = DarkTheme.ClampNud(_nudTitlebarOffset, _config.Layout.TitlebarOffset);
+        _chkMaximizeWindow.Checked = _config.EQClientIni.MaximizeWindow;
+        _txtWindowTitleTemplate.Text = _config.Layout.WindowTitleTemplate;
+        _nudTitlebarOffset.Enabled = _config.Layout.SlimTitlebar;
+        _chkMaximizeWindow.Enabled = !_config.Layout.SlimTitlebar;
 
         // Performance
 
@@ -813,8 +853,9 @@ public class SettingsForm : Form
                 TargetMonitor = _cboTargetMonitor.SelectedIndex >= 0 ? _cboTargetMonitor.SelectedIndex : 0,
                 SecondaryMonitor = _cboSecondaryMonitor.SelectedIndex <= 0 ? -1 : _cboSecondaryMonitor.SelectedIndex - 1,
                 TopOffset = (int)_nudTopOffset.Value,
-                RemoveTitleBars = _chkRemoveTitleBars.Checked,
-                BorderlessFullscreen = _chkBorderlessFullscreen.Checked
+                SlimTitlebar = _chkSlimTitlebar.Checked,
+                TitlebarOffset = (int)_nudTitlebarOffset.Value,
+                WindowTitleTemplate = _txtWindowTitleTemplate.Text.Trim()
             },
             Affinity = _config.Affinity, // managed by Process Manager
             Hotkeys = new HotkeyConfig
@@ -862,6 +903,10 @@ public class SettingsForm : Form
             DalayaPatcherPath = _txtDalayaPatcherPath.Text.Trim(),
             Characters = _config.Characters
         };
+
+        // MaximizeWindow lives in EQClientIni, update in-place
+        newConfig.EQClientIni = _config.EQClientIni;
+        newConfig.EQClientIni.MaximizeWindow = _chkMaximizeWindow.Checked;
 
         _onApply(newConfig);
         Debug.WriteLine("Settings applied");

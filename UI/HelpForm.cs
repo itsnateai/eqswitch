@@ -68,9 +68,9 @@ TRAY ICON:
   (Configurable in Settings → General tab)
 
 LAYOUT MODES:
-  Single Screen      Grid layout ({layout.Columns}x{layout.Rows}) on monitor {layout.TargetMonitor}
+  Single Screen      Stacked on monitor {layout.TargetMonitor}
   Multi-Monitor      One window per physical monitor
-  Borderless FS      {(layout.BorderlessFullscreen ? "ON" : "OFF")} — removes title bar + stretches to monitor
+  Slim Titlebar      {(layout.SlimTitlebar ? "ON" : "OFF")} — hides titlebar above screen edge (WinEQ2 mode)
 
 PIP (PICTURE-IN-PICTURE):
   Live DWM thumbnail preview of background EQ windows
