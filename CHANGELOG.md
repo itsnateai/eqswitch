@@ -1,5 +1,93 @@
 # Changelog
 
+## v3.0.0 — DLL Hook Injection, Auto-Login & PiP Overhaul (2026-04-01)
+
+### Added
+- **DLL hook injection** (`Core/DllInjector.cs`, `Native/eqswitch-hook.dll`) — Injects a native MinHook-based DLL into eqgame.exe that hooks `SetWindowPos` and `MoveWindow`. Enforces window position/style via shared memory-mapped config (`HookConfigWriter.cs`). Prevents EQ from fighting window management.
+- **DPAPI-encrypted auto-login** (`Core/AutoLoginManager.cs`, `Core/CredentialManager.cs`) — Account presets with username, encrypted password, server, character name, and slot. Full enter-world automation via `SendInput` on a background thread. Credentials encrypted with `DataProtectionScope.CurrentUser` — only the same Windows user on the same machine can decrypt.
+- **Login Accounts model** (`Models/LoginAccount.cs`) — Stored account presets for auto-login with name, username, encrypted password, server, character, slot, and login flag toggle.
+- **PiP orientation support** — PiP overlays adapt to window orientation and layout changes.
+- **Hook config shared memory** (`Core/HookConfigWriter.cs`) — Memory-mapped file (`EQSwitchHookCfg`) shared between C# host and injected DLL. Struct-matched layout (packed, sequential ints) for target position, style, and enable flag.
+- **Native hook source** (`Native/`) — Full MinHook source (buffer, trampoline, HDE32/64 disassembler) plus `eqswitch-hook.cpp` with build scripts for MSVC and MinGW.
+
+### Changed
+- **Settings expanded** — New Auto-Login tab with account management, credential encryption, and launch integration.
+- **PipOverlay enhanced** — 87 lines added for orientation-aware thumbnail rendering.
+- **TrayManager expanded** (982 → 1549 lines) — Auto-login menu integration, DLL injection lifecycle, hook config management.
+- **SettingsForm expanded** (734 → 1211 lines) — Auto-login account editor, DLL hook controls, PiP orientation settings.
+- **README updated** with new feature descriptions.
+
+### Removed
+- **Unit test project** (`EQSwitch.Tests/`) — Removed during architecture transition. Tests covered v2.x patterns that no longer apply post-DLL injection.
+- **Solution file** — Simplified to single-project build.
+- **PLAN_DLL_HOOK.md** — Planning doc removed after implementation.
+
+---
+
+## v2.9.1 — Settings & Launch Cleanup (2026-03-30)
+
+### Changed
+- **Tray clicks simplified** — Removed triple-click entirely. Left button: single + double click. Middle button: single + triple (via click counting — `MouseDoubleClick` doesn't fire for middle on `NotifyIcon`).
+- **Launch is bare-bones** — Removed `EnforceOverrides`, `EnforceWindowedModeIfBorderless`, `PositionOnTargetMonitor`, and post-launch `ArrangeWindows`. Launch just starts `eqgame.exe` with staggered delay. Added restore-if-minimized after 3s.
+- **Settings UI cleanup** — Removed CtrlHoverHelp (unreliable in overflow tray). Human-readable switch mode labels ("Swap Last" / "Cycle All"). Tray Click Actions card redesigned. Preferences card alignment fixed.
+- **Paths tab auto-open** — Clicking GINA or Dalaya Patcher in launcher menu opens Settings → Paths tab if path not set.
+- **Tooltip Delay** — Renamed, supports 0 = disabled.
+- **Multi-Monitor Mode checkbox** in Video Settings synced with config.
+
+### Fixed
+- **eqclient.ini corruption** — `EnforceOverrides` was writing `Maximized=1` and offsets=-8 on every launch, causing windows to minimize. Removed from launch path entirely.
+- Hotkeys tab overlapping labels in Actions card — clean 2-column grid.
+
+---
+
+## v2.9.0 — UI Consolidation & Multi-Monitor (2026-03-30)
+
+### Added
+- **Multi-monitor video settings** — Monitor picker, per-monitor resolution, position preview.
+- **Config backup restore** — Restore from any of the 10 backup rotations.
+
+### Changed
+- **Tabs consolidated** — Merged Performance + Launch into Hotkeys tab. Reduced from 8 to 6 tabs.
+- **Stacked fullscreen as default layout** — Clients stack on top of each other, arranged in stacked mode.
+- **FPS writes to [Options] section** — Correct INI section for MaxFPS/MaxBGFPS.
+- **Priority default changed to AboveNormal** (was High).
+- **Process Manager redesigned** — Priority card moved to top, CPU thread mapping card, grid refresh paused during edits.
+- **Video Settings overhaul** — Reordered submenu, preset sizes fixed.
+
+### Fixed
+- **DefaultFont crash** — Null reference on systems without default font.
+- **Launch positioning** — Don't force window offsets on every launch, respect user INI edits.
+- **PiP anchor** — Fixed anchor point for overlay positioning.
+- **Dalaya patcher** path handling.
+- Direct switch hotkeys (Alt+1-6) disabled by default to avoid conflicts.
+- Hotkey conflict warning appearing on every Settings close.
+- PiP max windows label layout and custom size capped to 960×720.
+
+### Removed
+- **Swap Windows** feature — removed (stacked mode replaces it).
+- **CharacterEditDialog** — removed (per-character overrides simplified).
+
+---
+
+## v2.8.0 — Slim Titlebar / WinEQ2 Mode (2026-03-30)
+
+### Added
+- **Slim titlebar mode** (WinEQ2 style) — Strips `WS_THICKFRAME` (resize border) while keeping `WS_CAPTION` (thin title bar). Positions window at full `rcMonitor` bounds to overlap taskbar. Replaces both "borderless" and "remove title bars" options with a single unified mode.
+- **Auto-apply slim titlebar** — Guard timer re-applies style when EQ fights the window decoration changes.
+- **EQClientSettingsForm expanded** — Additional eqclient.ini toggle controls.
+
+### Changed
+- **WindowManager rewritten** (280+ lines changed) — Unified slim titlebar logic, monitor bounds calculation, style manipulation.
+- **Settings Layout tab** — Slim titlebar checkbox replaces borderless + remove-title-bar checkboxes.
+- **LaunchManager simplified** — Removed post-launch window positioning (slim titlebar handles it).
+
+### Removed
+- **ROADMAP.md** — Removed from project (tracked in root `Roadmap_master.md`).
+- **Borderless fullscreen mode** — Superseded by slim titlebar mode.
+- **Remove Title Bars option** — Superseded by slim titlebar mode.
+
+---
+
 ## v2.7.0 — Process Manager Consolidation (2026-03-28)
 
 ### Added
