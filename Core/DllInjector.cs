@@ -5,16 +5,15 @@ namespace EQSwitch.Core;
 
 /// <summary>
 /// Injects/ejects a native DLL into a target process using CreateRemoteThread + LoadLibraryA.
-/// Used to inject eqswitch-hook.dll into eqgame.exe for SetWindowPos/MoveWindow hooking.
+/// Handles cross-architecture injection (64-bit host → 32-bit WoW64 target) by finding
+/// the 32-bit kernel32.dll base address in the target process and parsing the PE export
+/// table to resolve LoadLibraryA's address.
 /// </summary>
 public static class DllInjector
 {
     /// <summary>
     /// Inject a DLL into the target process.
     /// </summary>
-    /// <param name="pid">Target process ID (eqgame.exe)</param>
-    /// <param name="dllPath">Full path to the DLL to inject</param>
-    /// <returns>True if injection succeeded</returns>
     public static bool Inject(int pid, string dllPath)
     {
         if (!File.Exists(dllPath))
@@ -23,7 +22,6 @@ public static class DllInjector
             return false;
         }
 
-        // Use full path for LoadLibraryA
         dllPath = Path.GetFullPath(dllPath);
         var dllBytes = Encoding.ASCII.GetBytes(dllPath + '\0');
 
@@ -32,7 +30,6 @@ public static class DllInjector
 
         try
         {
-            // Open the target process with required permissions
             uint access = NativeMethods.PROCESS_CREATE_THREAD |
                           NativeMethods.PROCESS_VM_OPERATION |
                           NativeMethods.PROCESS_VM_WRITE |
@@ -56,31 +53,21 @@ public static class DllInjector
                 return false;
             }
 
-            // Write the DLL path into the allocated memory
             if (!NativeMethods.WriteProcessMemory(hProcess, allocAddr, dllBytes, (uint)dllBytes.Length, out _))
             {
                 FileLogger.Error($"DllInjector: WriteProcessMemory failed, error={Marshal.GetLastWin32Error()}");
                 return false;
             }
 
-            // Get address of LoadLibraryA in kernel32.dll
-            // This works cross-architecture because kernel32 is loaded at the same address
-            // in both WoW64 (32-bit) and native (64-bit) processes on the same system.
-            var kernel32 = NativeMethods.GetModuleHandleA("kernel32.dll");
-            if (kernel32 == IntPtr.Zero)
-            {
-                FileLogger.Error("DllInjector: GetModuleHandle(kernel32) failed");
-                return false;
-            }
-
-            var loadLibAddr = NativeMethods.GetProcAddress(kernel32, "LoadLibraryA");
+            // Resolve LoadLibraryA address — must handle cross-architecture
+            var loadLibAddr = ResolveLoadLibraryA(hProcess, pid);
             if (loadLibAddr == IntPtr.Zero)
             {
-                FileLogger.Error("DllInjector: GetProcAddress(LoadLibraryA) failed");
+                FileLogger.Error("DllInjector: failed to resolve LoadLibraryA in target process");
                 return false;
             }
 
-            // Create a remote thread in the target process that calls LoadLibraryA(dllPath)
+            // Create a remote thread that calls LoadLibraryA(dllPath)
             var hThread = NativeMethods.CreateRemoteThread(
                 hProcess, IntPtr.Zero, 0, loadLibAddr, allocAddr, 0, out _);
             if (hThread == IntPtr.Zero)
@@ -89,13 +76,21 @@ public static class DllInjector
                 return false;
             }
 
-            // Wait for the remote thread to complete (LoadLibraryA returns)
             var waitResult = NativeMethods.WaitForSingleObject(hThread, 5000);
+
+            // Check if LoadLibraryA returned non-null (DLL loaded successfully)
+            NativeMethods.GetExitCodeThread(hThread, out uint exitCode);
             NativeMethods.CloseHandle(hThread);
 
             if (waitResult != NativeMethods.WAIT_OBJECT_0)
             {
                 FileLogger.Error($"DllInjector: remote thread didn't complete in time, result={waitResult}");
+                return false;
+            }
+
+            if (exitCode == 0)
+            {
+                FileLogger.Error($"DllInjector: LoadLibraryA returned NULL in PID {pid} — DLL failed to load");
                 return false;
             }
 
@@ -109,7 +104,6 @@ public static class DllInjector
         }
         finally
         {
-            // Free the allocated memory (the DLL path string — the DLL itself stays loaded)
             if (allocAddr != IntPtr.Zero && hProcess != IntPtr.Zero)
                 NativeMethods.VirtualFreeEx(hProcess, allocAddr, 0, NativeMethods.MEM_RELEASE);
             if (hProcess != IntPtr.Zero)
@@ -118,16 +112,191 @@ public static class DllInjector
     }
 
     /// <summary>
+    /// Resolve LoadLibraryA's address in the target process.
+    /// For same-architecture, uses GetProcAddress directly.
+    /// For cross-architecture (64→32), finds 32-bit kernel32 base in the target
+    /// and parses the PE export table from disk to compute the function address.
+    /// </summary>
+    private static IntPtr ResolveLoadLibraryA(IntPtr hProcess, int pid)
+    {
+        // Check if target is WoW64 (32-bit process on 64-bit OS)
+        bool targetIsWow64 = false;
+        NativeMethods.IsWow64Process(hProcess, out targetIsWow64);
+
+        bool weAreWow64 = !Environment.Is64BitProcess;
+
+        // Same architecture — simple path
+        if (targetIsWow64 == weAreWow64)
+        {
+            var kernel32 = NativeMethods.GetModuleHandleA("kernel32.dll");
+            if (kernel32 == IntPtr.Zero) return IntPtr.Zero;
+            return NativeMethods.GetProcAddress(kernel32, "LoadLibraryA");
+        }
+
+        // Cross-architecture: we're 64-bit, target is 32-bit WoW64
+        // Find 32-bit kernel32.dll base address in the target process
+        FileLogger.Info($"DllInjector: cross-arch injection (64→32) for PID {pid}");
+
+        var kernel32Base = FindModule32InProcess(hProcess, "kernel32.dll");
+        if (kernel32Base == IntPtr.Zero)
+        {
+            FileLogger.Error("DllInjector: couldn't find 32-bit kernel32.dll in target");
+            return IntPtr.Zero;
+        }
+
+        // Parse the 32-bit kernel32.dll from SysWOW64 to find LoadLibraryA's RVA
+        string kernel32Path = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+            "SysWOW64", "kernel32.dll");
+
+        if (!File.Exists(kernel32Path))
+        {
+            FileLogger.Error($"DllInjector: SysWOW64 kernel32 not found at {kernel32Path}");
+            return IntPtr.Zero;
+        }
+
+        uint rva = GetExportRva(kernel32Path, "LoadLibraryA");
+        if (rva == 0)
+        {
+            FileLogger.Error("DllInjector: LoadLibraryA not found in kernel32 exports");
+            return IntPtr.Zero;
+        }
+
+        var result = new IntPtr(kernel32Base.ToInt64() + rva);
+        FileLogger.Info($"DllInjector: resolved LoadLibraryA at 0x{result.ToInt64():X} (base=0x{kernel32Base.ToInt64():X} + RVA=0x{rva:X})");
+        return result;
+    }
+
+    /// <summary>
+    /// Find a 32-bit module's base address in a WoW64 process using EnumProcessModulesEx.
+    /// </summary>
+    private static IntPtr FindModule32InProcess(IntPtr hProcess, string moduleName)
+    {
+        const int maxModules = 1024;
+        var modules = new IntPtr[maxModules];
+
+        if (!NativeMethods.EnumProcessModulesEx(
+            hProcess, modules, maxModules * IntPtr.Size, out int cbNeeded,
+            NativeMethods.LIST_MODULES_32BIT))
+        {
+            FileLogger.Error($"DllInjector: EnumProcessModulesEx failed, error={Marshal.GetLastWin32Error()}");
+            return IntPtr.Zero;
+        }
+
+        int count = cbNeeded / IntPtr.Size;
+        var sb = new StringBuilder(260);
+
+        for (int i = 0; i < count; i++)
+        {
+            sb.Clear();
+            NativeMethods.GetModuleFileNameExW(hProcess, modules[i], sb, sb.Capacity);
+            var name = Path.GetFileName(sb.ToString());
+            if (name.Equals(moduleName, StringComparison.OrdinalIgnoreCase))
+            {
+                FileLogger.Info($"DllInjector: found {moduleName} at 0x{modules[i].ToInt64():X}");
+                return modules[i];
+            }
+        }
+
+        return IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// Parse a PE file's export table to find an exported function's RVA.
+    /// Works on both 32-bit (PE32) and 64-bit (PE32+) binaries.
+    /// </summary>
+    private static uint GetExportRva(string pePath, string functionName)
+    {
+        try
+        {
+            var peData = File.ReadAllBytes(pePath);
+
+            // DOS header → PE offset at 0x3C
+            int peOffset = BitConverter.ToInt32(peData, 0x3C);
+
+            // PE signature (4 bytes) + COFF header (20 bytes) = optional header at peOffset + 24
+            ushort magic = BitConverter.ToUInt16(peData, peOffset + 24);
+            bool isPE32 = magic == 0x10B;
+
+            // Export directory RVA is at different offsets for PE32 vs PE32+
+            int exportDirOffset = isPE32 ? peOffset + 24 + 96 : peOffset + 24 + 112;
+            uint exportRva = BitConverter.ToUInt32(peData, exportDirOffset);
+            uint exportSize = BitConverter.ToUInt32(peData, exportDirOffset + 4);
+
+            if (exportRva == 0) return 0;
+
+            // Convert RVA to file offset by walking section headers
+            int fileOffset = RvaToFileOffset(peData, peOffset, exportRva);
+            if (fileOffset < 0) return 0;
+
+            // Parse export directory
+            uint numberOfNames = BitConverter.ToUInt32(peData, fileOffset + 24);
+            uint addressOfFunctions = BitConverter.ToUInt32(peData, fileOffset + 28);
+            uint addressOfNames = BitConverter.ToUInt32(peData, fileOffset + 32);
+            uint addressOfOrdinals = BitConverter.ToUInt32(peData, fileOffset + 36);
+
+            int namesFileOff = RvaToFileOffset(peData, peOffset, addressOfNames);
+            int ordinalsFileOff = RvaToFileOffset(peData, peOffset, addressOfOrdinals);
+            int functionsFileOff = RvaToFileOffset(peData, peOffset, addressOfFunctions);
+
+            for (uint i = 0; i < numberOfNames; i++)
+            {
+                uint nameRva = BitConverter.ToUInt32(peData, namesFileOff + (int)(i * 4));
+                int nameFileOff = RvaToFileOffset(peData, peOffset, nameRva);
+
+                // Read null-terminated ASCII string
+                int end = nameFileOff;
+                while (end < peData.Length && peData[end] != 0) end++;
+                string name = Encoding.ASCII.GetString(peData, nameFileOff, end - nameFileOff);
+
+                if (name == functionName)
+                {
+                    ushort ordinal = BitConverter.ToUInt16(peData, ordinalsFileOff + (int)(i * 2));
+                    uint funcRva = BitConverter.ToUInt32(peData, functionsFileOff + ordinal * 4);
+                    return funcRva;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Error($"DllInjector: PE parse error for {pePath}", ex);
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Convert an RVA to a file offset by walking PE section headers.
+    /// </summary>
+    private static int RvaToFileOffset(byte[] peData, int peOffset, uint rva)
+    {
+        // Number of sections is at peOffset + 6
+        ushort numSections = BitConverter.ToUInt16(peData, peOffset + 6);
+        ushort optHeaderSize = BitConverter.ToUInt16(peData, peOffset + 20);
+        int sectionStart = peOffset + 24 + optHeaderSize;
+
+        for (int i = 0; i < numSections; i++)
+        {
+            int secOff = sectionStart + i * 40;
+            uint virtualAddress = BitConverter.ToUInt32(peData, secOff + 12);
+            uint rawSize = BitConverter.ToUInt32(peData, secOff + 16);
+            uint rawOffset = BitConverter.ToUInt32(peData, secOff + 20);
+            uint virtualSize = BitConverter.ToUInt32(peData, secOff + 8);
+
+            if (rva >= virtualAddress && rva < virtualAddress + Math.Max(rawSize, virtualSize))
+            {
+                return (int)(rva - virtualAddress + rawOffset);
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
     /// Eject a previously injected DLL from the target process by calling FreeLibrary remotely.
     /// </summary>
-    /// <param name="pid">Target process ID</param>
-    /// <param name="dllName">DLL filename (e.g., "eqswitch-hook.dll")</param>
-    /// <returns>True if ejection succeeded</returns>
     public static bool Eject(int pid, string dllName)
     {
-        // We need to find the DLL's module handle inside the target process.
-        // Since we can't call GetModuleHandle in a 32-bit process from 64-bit,
-        // we use CreateRemoteThread + GetModuleHandleA to get it, then FreeLibrary.
         var hProcess = IntPtr.Zero;
         var allocAddr = IntPtr.Zero;
 
@@ -145,48 +314,49 @@ public static class DllInjector
                 return false;
             }
 
-            var nameBytes = Encoding.ASCII.GetBytes(dllName + '\0');
+            // Find the DLL module in the target process
+            var dllBase = FindModule32InProcess(hProcess, dllName);
+            if (dllBase == IntPtr.Zero)
+            {
+                FileLogger.Info($"DllInjector.Eject: DLL not found in process (already unloaded?)");
+                return true;
+            }
 
-            // Allocate memory for the DLL name
-            allocAddr = NativeMethods.VirtualAllocEx(
-                hProcess, IntPtr.Zero, (uint)nameBytes.Length,
-                NativeMethods.MEM_COMMIT | NativeMethods.MEM_RESERVE,
-                NativeMethods.PAGE_READWRITE);
-            if (allocAddr == IntPtr.Zero) return false;
+            // Resolve FreeLibrary in the target process
+            var freeLibAddr = ResolveLoadLibraryA(hProcess, pid);
+            // Actually we need FreeLibrary, not LoadLibraryA — but they're in the same module.
+            // Let's find it properly via the same PE parsing approach.
+            bool targetIsWow64 = false;
+            NativeMethods.IsWow64Process(hProcess, out targetIsWow64);
 
-            if (!NativeMethods.WriteProcessMemory(hProcess, allocAddr, nameBytes, (uint)nameBytes.Length, out _))
+            IntPtr freeLibrary;
+            if (!targetIsWow64 || !Environment.Is64BitProcess)
+            {
+                var kernel32 = NativeMethods.GetModuleHandleA("kernel32.dll");
+                freeLibrary = NativeMethods.GetProcAddress(kernel32, "FreeLibrary");
+            }
+            else
+            {
+                var kernel32Base = FindModule32InProcess(hProcess, "kernel32.dll");
+                string kernel32Path = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                    "SysWOW64", "kernel32.dll");
+                uint rva = GetExportRva(kernel32Path, "FreeLibrary");
+                freeLibrary = rva > 0 ? new IntPtr(kernel32Base.ToInt64() + rva) : IntPtr.Zero;
+            }
+
+            if (freeLibrary == IntPtr.Zero)
+            {
+                FileLogger.Error("DllInjector.Eject: couldn't resolve FreeLibrary");
                 return false;
-
-            // Call GetModuleHandleA in the target process to get the DLL's HMODULE
-            var kernel32 = NativeMethods.GetModuleHandleA("kernel32.dll");
-            var getModAddr = NativeMethods.GetProcAddress(kernel32, "GetModuleHandleA");
+            }
 
             var hThread = NativeMethods.CreateRemoteThread(
-                hProcess, IntPtr.Zero, 0, getModAddr, allocAddr, 0, out _);
+                hProcess, IntPtr.Zero, 0, freeLibrary, dllBase, 0, out _);
             if (hThread == IntPtr.Zero) return false;
 
             NativeMethods.WaitForSingleObject(hThread, 5000);
-            NativeMethods.GetExitCodeThread(hThread, out uint moduleHandle);
             NativeMethods.CloseHandle(hThread);
-
-            if (moduleHandle == 0)
-            {
-                FileLogger.Info($"DllInjector.Eject: DLL not found in process (already unloaded?)");
-                return true; // Not an error — DLL already gone
-            }
-
-            // Free the name string memory
-            NativeMethods.VirtualFreeEx(hProcess, allocAddr, 0, NativeMethods.MEM_RELEASE);
-            allocAddr = IntPtr.Zero;
-
-            // Call FreeLibrary in the target process
-            var freeLibAddr = NativeMethods.GetProcAddress(kernel32, "FreeLibrary");
-            var hThread2 = NativeMethods.CreateRemoteThread(
-                hProcess, IntPtr.Zero, 0, freeLibAddr, (IntPtr)moduleHandle, 0, out _);
-            if (hThread2 == IntPtr.Zero) return false;
-
-            NativeMethods.WaitForSingleObject(hThread2, 5000);
-            NativeMethods.CloseHandle(hThread2);
 
             FileLogger.Info($"DllInjector.Eject: successfully ejected from PID {pid}");
             return true;
