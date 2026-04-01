@@ -114,6 +114,12 @@ public class AppConfig
         Pip.MaxWindows = Math.Clamp(Pip.MaxWindows, 1, maxPip);
         Pip.CustomWidth = Math.Clamp(Pip.CustomWidth, 100, 3840);
         Pip.CustomHeight = Math.Clamp(Pip.CustomHeight, 75, 2160);
+        // Migrate old 4:3 default (320x240) to 16:9 (480x270)
+        if (Pip.CustomWidth == 320 && Pip.CustomHeight == 240)
+        {
+            Pip.CustomWidth = 480;
+            Pip.CustomHeight = 270;
+        }
     }
 }
 
