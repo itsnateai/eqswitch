@@ -373,6 +373,7 @@ internal static class NativeMethods
 
     public const uint INPUT_KEYBOARD = 1;
     public const uint KEYEVENTF_KEYUP = 0x0002;
+    public const uint KEYEVENTF_UNICODE = 0x0004;
     public const uint KEYEVENTF_SCANCODE = 0x0008;
     public const uint MAPVK_VK_TO_VSC = 0;
 

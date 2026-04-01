@@ -16,7 +16,19 @@ public class AutoLoginManager
 {
     private readonly AppConfig _config;
 
+    /// <summary>PIDs currently in the login sequence — DLL injection should be deferred for these.</summary>
+    private readonly HashSet<int> _activeLoginPids = new();
+
     public event EventHandler<string>? StatusUpdate;
+
+    /// <summary>Fires just before the login sequence starts (use to pause guard timers).</summary>
+    public event EventHandler<int>? LoginStarting;
+
+    /// <summary>Fires when a login sequence completes (success or failure) with the PID.</summary>
+    public event EventHandler<int>? LoginComplete;
+
+    /// <summary>True if the given PID is currently running through the login sequence.</summary>
+    public bool IsLoginActive(int pid) => _activeLoginPids.Contains(pid);
 
     public AutoLoginManager(AppConfig config)
     {
@@ -58,6 +70,7 @@ public class AutoLoginManager
             args += $" /login:{account.Username}";
 
         StatusUpdate?.Invoke(this, $"Launching {account.Name}...");
+        LoginStarting?.Invoke(this, 0);
 
         int pid;
         try
@@ -89,6 +102,9 @@ public class AutoLoginManager
             return;
         }
 
+        // Track PID so DLL injection is deferred until login completes
+        _activeLoginPids.Add(pid);
+
         // Run the login sequence on a background thread
         var loginAccount = account;
         Task.Run(() => RunLoginSequence(pid, loginAccount, password));
@@ -118,45 +134,42 @@ public class AutoLoginManager
             {
                 ForceForeground(hwnd);
                 Thread.Sleep(200);
-                SendKey(0x09); // Tab to username field
+                FocusAndSendKey(hwnd, 0x09); // Tab to username field
                 Thread.Sleep(100);
-                TypeString(account.Username);
+                TypeString(account.Username, hwnd);
                 Thread.Sleep(100);
             }
 
             // Step 4: Tab to password field and type password
-            ForceForeground(hwnd);
-            SendKey(0x09); // Tab to password field
+            FocusAndSendKey(hwnd, 0x09); // Tab to password field
             Thread.Sleep(100);
-            TypeString(password);
+            TypeString(password, hwnd);
             Thread.Sleep(100);
 
             // Step 5: Press Enter to submit login
             Report("Submitting login...");
-            SendKey(0x0D); // Enter
+            FocusAndSendKey(hwnd, 0x0D); // Enter
             Thread.Sleep(3000);
 
             // Step 6: Server select — press Enter to confirm pre-selected server
             Report("Confirming server...");
-            ForceForeground(hwnd);
-            SendKey(0x0D); // Enter
+            FocusAndSendKey(hwnd, 0x0D); // Enter
             Thread.Sleep(3000);
 
             // Step 7: Character select — navigate to character slot
             Report($"Selecting character (slot {account.CharacterSlot})...");
-            ForceForeground(hwnd);
 
             // Navigate down to the correct character slot (1-based)
             for (int i = 1; i < account.CharacterSlot; i++)
             {
-                SendKey(0x28); // VK_DOWN
+                FocusAndSendKey(hwnd, 0x28); // VK_DOWN
                 Thread.Sleep(200);
             }
             Thread.Sleep(300);
 
             // Step 8: Enter World
             Report("Entering world...");
-            SendKey(0x0D); // Enter
+            FocusAndSendKey(hwnd, 0x0D); // Enter
             Thread.Sleep(1000);
 
             Report($"{account.Name} logged in!");
@@ -166,6 +179,11 @@ public class AutoLoginManager
         {
             FileLogger.Error($"AutoLogin: sequence failed for {account.Name}", ex);
             Report($"Error: {ex.Message}");
+        }
+        finally
+        {
+            _activeLoginPids.Remove(pid);
+            LoginComplete?.Invoke(this, pid);
         }
     }
 
@@ -213,34 +231,64 @@ public class AutoLoginManager
     // ─── SendInput Helpers ──────────────────────────────────────────
 
     /// <summary>
-    /// Type a string character by character using VK codes + scan codes.
-    /// EQ uses DirectInput which reads scan codes, so we send both.
+    /// Type a string using KEYEVENTF_UNICODE. This generates WM_CHAR messages
+    /// which EQ's login screen text fields respond to (scan codes alone don't
+    /// produce WM_CHAR, so the old approach failed on the login screen).
+    /// Re-focuses the target window before each character to survive focus theft.
     /// </summary>
-    private static void TypeString(string text)
+    private static void TypeString(string text, IntPtr hwnd)
     {
         foreach (char c in text)
         {
-            short vkResult = NativeMethods.VkKeyScanW(c);
-            if (vkResult == -1)
+            ForceForeground(hwnd);
+            Thread.Sleep(30);
+
+            var down = new NativeMethods.INPUT
             {
-                FileLogger.Warn($"AutoLogin: no VK mapping for char '{c}'");
-                continue;
-            }
+                type = NativeMethods.INPUT_KEYBOARD,
+                u = new NativeMethods.INPUTUNION
+                {
+                    ki = new NativeMethods.KEYBDINPUT
+                    {
+                        wVk = 0,
+                        wScan = c,
+                        dwFlags = NativeMethods.KEYEVENTF_UNICODE,
+                        time = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            };
+            var up = new NativeMethods.INPUT
+            {
+                type = NativeMethods.INPUT_KEYBOARD,
+                u = new NativeMethods.INPUTUNION
+                {
+                    ki = new NativeMethods.KEYBDINPUT
+                    {
+                        wVk = 0,
+                        wScan = c,
+                        dwFlags = NativeMethods.KEYEVENTF_UNICODE | NativeMethods.KEYEVENTF_KEYUP,
+                        time = 0,
+                        dwExtraInfo = IntPtr.Zero
+                    }
+                }
+            };
 
-            byte vk = (byte)(vkResult & 0xFF);
-            bool needsShift = ((vkResult >> 8) & 0x01) != 0;
-            ushort scan = (ushort)NativeMethods.MapVirtualKeyW(vk, NativeMethods.MAPVK_VK_TO_VSC);
-
-            if (needsShift) SendKeyDown(0x10, 0x2A); // VK_SHIFT, DIK_LSHIFT
-
-            SendKeyDown(vk, scan);
+            NativeMethods.SendInput(1, new[] { down }, Marshal.SizeOf<NativeMethods.INPUT>());
             Thread.Sleep(50);
-            SendKeyUp(vk, scan);
-
-            if (needsShift) SendKeyUp(0x10, 0x2A);
-
+            NativeMethods.SendInput(1, new[] { up }, Marshal.SizeOf<NativeMethods.INPUT>());
             Thread.Sleep(50);
         }
+    }
+
+    /// <summary>
+    /// Re-focus the target window then press a key. Survives focus theft.
+    /// </summary>
+    private static void FocusAndSendKey(IntPtr hwnd, ushort vk)
+    {
+        ForceForeground(hwnd);
+        Thread.Sleep(30);
+        SendKey(vk);
     }
 
     /// <summary>
