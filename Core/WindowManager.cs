@@ -425,7 +425,7 @@ public class WindowManager
         if (!_api.IsWindow(client.WindowHandle)) return;
 
         // Resolve character name: prefer account preset, fall back to EQ window title
-        var charName = "Unknown";
+        var charName = "";
 
         // Look up by slot index in auto-login accounts
         if (slotIndex < _config.Accounts.Count)
@@ -436,7 +436,7 @@ public class WindowManager
         }
 
         // Fall back to EQ's native window title if no account match
-        if (charName == "Unknown")
+        if (string.IsNullOrEmpty(charName))
         {
             int len = NativeMethods.GetWindowTextLength(client.WindowHandle);
             if (len > 0)
@@ -455,7 +455,8 @@ public class WindowManager
         var title = template
             .Replace("{CHAR}", charName)
             .Replace("{SLOT}", (slotIndex + 1).ToString())
-            .Replace("{PID}", client.ProcessId.ToString());
+            .Replace("{PID}", client.ProcessId.ToString())
+            .Trim();
 
         // Skip if already set — avoids unnecessary Win32 call on every guard tick
         if (client.WindowTitle == title) return;
