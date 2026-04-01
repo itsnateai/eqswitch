@@ -289,8 +289,11 @@ public class PipOverlay : Form
     private void ClampToScreen()
     {
         var screen = Screen.FromRectangle(Bounds).WorkingArea;
-        int x = Math.Clamp(Location.X, screen.Left, screen.Right - Width);
-        int y = Math.Clamp(Location.Y, screen.Top, screen.Bottom - Height);
+        // Guard against PiP being wider/taller than the screen (XXL preset on small monitor)
+        int maxX = Math.Max(screen.Left, screen.Right - Width);
+        int maxY = Math.Max(screen.Top, screen.Bottom - Height);
+        int x = Math.Clamp(Location.X, screen.Left, maxX);
+        int y = Math.Clamp(Location.Y, screen.Top, maxY);
         Location = new Point(x, y);
     }
 

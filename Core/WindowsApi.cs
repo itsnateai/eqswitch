@@ -65,6 +65,15 @@ public class WindowsApi : IWindowsApi
     public IntPtr SetWindowLongPtr(IntPtr hwnd, int nIndex, IntPtr dwNewLong)
         => NativeMethods.SetWindowLongPtr(hwnd, nIndex, dwNewLong);
 
+    public IntPtr BeginDeferWindowPos(int nNumWindows)
+        => NativeMethods.BeginDeferWindowPos(nNumWindows);
+
+    public IntPtr DeferWindowPos(IntPtr hWinPosInfo, IntPtr hwnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags)
+        => NativeMethods.DeferWindowPos(hWinPosInfo, hwnd, hWndInsertAfter, x, y, cx, cy, flags);
+
+    public bool EndDeferWindowPos(IntPtr hWinPosInfo)
+        => NativeMethods.EndDeferWindowPos(hWinPosInfo);
+
     public List<WinRect> GetAllMonitorWorkAreas()
     {
         var monitors = new List<WinRect>();

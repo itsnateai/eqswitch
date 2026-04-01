@@ -271,7 +271,7 @@ public class SettingsForm : Form
         DarkTheme.AddCardLabel(cardTray, "Single", 260, 52);
         _cboMiddleClick = DarkTheme.AddCardComboBox(cardTray, 325, 49, cboW, clickActions);
 
-        DarkTheme.AddCardLabel(cardTray, "Double", 260, 78);
+        DarkTheme.AddCardLabel(cardTray, "Triple", 260, 78);
         _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 325, 75, cboW, clickActions);
 
         y += 113;
@@ -327,7 +327,7 @@ public class SettingsForm : Form
             form.ShowDialog();
             // VideoSettings may have changed TopOffset, multi-monitor, monitors — sync back
             _nudTopOffset.Value = DarkTheme.ClampNud(_nudTopOffset, _config.Layout.TopOffset);
-            _chkMultiMonEnabled.Checked = _config.Hotkeys.MultiMonitorEnabled;
+            _chkMultiMonEnabled.Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
             _cboTargetMonitor.SelectedIndex = Math.Clamp(_config.Layout.TargetMonitor, 0, _cboTargetMonitor.Items.Count - 1);
             var secIdx = _config.Layout.SecondaryMonitor < 0 ? 0 : _config.Layout.SecondaryMonitor + 1;
             _cboSecondaryMonitor.SelectedIndex = Math.Clamp(secIdx, 0, _cboSecondaryMonitor.Items.Count - 1);
@@ -755,7 +755,7 @@ public class SettingsForm : Form
         _txtToggleMultiMon.Text = _config.Hotkeys.ToggleMultiMonitor;
         _txtLaunchOne.Text = _config.Hotkeys.LaunchOne;
         _txtLaunchAll.Text = _config.Hotkeys.LaunchAll;
-        _chkMultiMonEnabled.Checked = _config.Hotkeys.MultiMonitorEnabled;
+        _chkMultiMonEnabled.Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
 
         // Layout
         _nudColumns.Value = DarkTheme.ClampNud(_nudColumns, _config.Layout.Columns);
@@ -807,8 +807,7 @@ public class SettingsForm : Form
             CustomIconPath = _txtCustomIconPath.Text.Trim(),
             Layout = new WindowLayout
             {
-                // Preserve multimonitor mode only if the checkbox is on; reset to single if disabled
-                Mode = _chkMultiMonEnabled.Checked ? _config.Layout.Mode : "single",
+                Mode = _chkMultiMonEnabled.Checked ? "multimonitor" : "single",
                 Columns = (int)_nudColumns.Value,
                 Rows = (int)_nudRows.Value,
                 TargetMonitor = _cboTargetMonitor.SelectedIndex >= 0 ? _cboTargetMonitor.SelectedIndex : 0,
@@ -827,7 +826,8 @@ public class SettingsForm : Form
                 ToggleMultiMonitor = _txtToggleMultiMon.Text.Trim(),
                 LaunchOne = _txtLaunchOne.Text.Trim(),
                 LaunchAll = _txtLaunchAll.Text.Trim(),
-                MultiMonitorEnabled = _chkMultiMonEnabled.Checked,
+                // Once enabled, the hotkey is unlocked permanently
+                MultiMonitorEnabled = _chkMultiMonEnabled.Checked || _config.Hotkeys.MultiMonitorEnabled,
                 DirectSwitchKeys = _config.Hotkeys.DirectSwitchKeys,
                 SwitchKeyMode = _cboSwitchKeyMode.SelectedItem?.ToString() == "Cycle All" ? "cycleAll" : "swapLast"
             },

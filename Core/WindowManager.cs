@@ -275,7 +275,38 @@ public class WindowManager
             if (_api.IsIconic(client.WindowHandle))
                 _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
-        // Rotate: each window moves to the next window's position
+        // Atomic batch move — all windows reposition in a single
+        // screen update, eliminating the desktop flash between moves.
+        var hdwp = _api.BeginDeferWindowPos(clients.Count);
+        if (hdwp == IntPtr.Zero)
+        {
+            FileLogger.Warn("SwapWindows: BeginDeferWindowPos failed, falling back to sequential");
+            goto sequential;
+        }
+
+        for (int i = 0; i < clients.Count; i++)
+        {
+            int nextIdx = (i + 1) % clients.Count;
+            var nextPos = positions[nextIdx];
+
+            hdwp = _api.DeferWindowPos(
+                hdwp, clients[i].WindowHandle, IntPtr.Zero,
+                nextPos.Left, nextPos.Top,
+                nextPos.Width, nextPos.Height,
+                NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+
+            if (hdwp == IntPtr.Zero)
+            {
+                FileLogger.Warn($"SwapWindows: DeferWindowPos failed at index {i}, falling back to sequential");
+                goto sequential;
+            }
+        }
+
+        _api.EndDeferWindowPos(hdwp);
+        FileLogger.Info($"SwapWindows: rotated {clients.Count} window positions (atomic)");
+        return;
+
+    sequential:
         for (int i = 0; i < clients.Count; i++)
         {
             int nextIdx = (i + 1) % clients.Count;
@@ -286,10 +317,57 @@ public class WindowManager
                 IntPtr.Zero,
                 nextPos.Left, nextPos.Top,
                 nextPos.Width, nextPos.Height,
-                NativeMethods.SWP_NOZORDER | NativeMethods.SWP_SHOWWINDOW);
+                NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
         }
+        FileLogger.Info($"SwapWindows: rotated {clients.Count} window positions (sequential fallback)");
+    }
 
-        FileLogger.Info($"SwapWindows: rotated {clients.Count} window positions");
+    /// <summary>
+    /// After a swap, resize each window to fill whichever monitor it's currently on.
+    /// Does NOT change position — just adjusts size to match the monitor dimensions.
+    /// </summary>
+    public void ResizeToCurrentMonitors(IReadOnlyList<EQClient> clients)
+    {
+        bool borderless = _config.Layout.BorderlessFullscreen;
+        var monitors = borderless ? _api.GetAllMonitorBounds() : _api.GetAllMonitorWorkAreas();
+        if (monitors.Count == 0) return;
+
+        int yOffset = borderless ? 1 : _config.Layout.TopOffset;
+
+        foreach (var client in clients)
+        {
+            if (!_api.IsWindow(client.WindowHandle)) continue;
+
+            // Find which monitor this window is currently on
+            _api.GetWindowRect(client.WindowHandle, out var rect);
+            int centerX = rect.Left + rect.Width / 2;
+            int centerY = rect.Top + rect.Height / 2;
+
+            WinRect? bestMon = null;
+            foreach (var mon in monitors)
+            {
+                if (centerX >= mon.Left && centerX < mon.Right &&
+                    centerY >= mon.Top && centerY < mon.Bottom)
+                {
+                    bestMon = mon;
+                    break;
+                }
+            }
+            if (bestMon == null) continue;
+            var m = bestMon.Value;
+
+            // SW_RESTORE first in case EQ locked its size in a maximized/minimized state
+            if (_api.IsIconic(client.WindowHandle))
+                _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+
+            _api.SetWindowPos(
+                client.WindowHandle, IntPtr.Zero,
+                m.Left, m.Top + yOffset, m.Width, m.Height,
+                NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE |
+                NativeMethods.SWP_SHOWWINDOW | NativeMethods.SWP_FRAMECHANGED);
+
+            FileLogger.Info($"ResizeToCurrentMonitors: {client} → ({m.Left},{m.Top + yOffset}) {m.Width}x{m.Height}");
+        }
     }
 
     // ─── Title Bar & Borderless Management ──────────────────────────

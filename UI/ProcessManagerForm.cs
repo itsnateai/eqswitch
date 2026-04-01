@@ -95,11 +95,11 @@ public class ProcessManagerForm : Form
         int y = 10;
 
         // ─── Card 1: CPU Affinity Handling ───────────────────────
-        var cardPriority = DarkTheme.MakeCard(this, "\u26A1", "CPU Affinity Handling", DarkTheme.CardGold, Pad, y, GridW, 105);
+        var cardPriority = DarkTheme.MakeCard(this, "\u26A1", "CPU Affinity/Priority Handling", DarkTheme.CardGold, Pad, y, GridW, 105);
 
         _chkAffinityEnabled = new CheckBox
         {
-            Text = "  Enable CPU Affinity Handling",
+            Text = "  Enable CPU Affinity/Priority Handling",
             Location = new Point(15, 26),
             AutoSize = true,
             ForeColor = _config.Affinity.Enabled ? DarkTheme.CardGreen : DarkTheme.FgGray,
@@ -477,14 +477,17 @@ public class ProcessManagerForm : Form
     /// </summary>
     private void ApplyAllSettings()
     {
-        // Priority preset — apply to all live processes if not "None"
+        // Priority preset — save to config, but only apply to live processes when enabled
         var preset = _cboPriority.SelectedItem?.ToString() ?? "None";
         if (preset != "None")
         {
             _config.Affinity.ActivePriority = preset;
             _config.Affinity.BackgroundPriority = preset;
-            foreach (var client in _getClients())
-                AffinityManager.SetProcessPriority(client.ProcessId, preset);
+            if (_config.Affinity.Enabled)
+            {
+                foreach (var client in _getClients())
+                    AffinityManager.SetProcessPriority(client.ProcessId, preset);
+            }
         }
 
         // Launch retry settings
