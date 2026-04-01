@@ -93,8 +93,6 @@ public static class ConfigMigration
             if (values.TryGetValue("NUM_CLIENTS", out var numClients) && int.TryParse(numClients, out int nc))
             {
                 config.Launch.NumClients = Math.Clamp(nc, 1, 8);
-                config.Layout.Columns = nc <= 2 ? nc : 2;
-                config.Layout.Rows = (int)Math.Ceiling(nc / 2.0);
             }
 
             // Launch

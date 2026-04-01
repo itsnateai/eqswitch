@@ -40,10 +40,15 @@ public class PipOverlay : Form
 
         var (w, h) = config.Pip.GetSize();
         var maxWin = Math.Clamp(config.Pip.MaxWindows, 1, 3);
+        bool horizontal = config.Pip.IsHorizontal;
 
-        // Stack PiP windows vertically with a small gap
+        // Stack PiP windows with a small gap
         int gap = config.Pip.ShowBorder ? 3 : 2;
-        Size = new Size(w + (config.Pip.ShowBorder ? 2 : 0), (h + gap) * maxWin);
+        int borderPad = config.Pip.ShowBorder ? 1 : 0;
+        if (horizontal)
+            Size = new Size((w + gap) * maxWin + borderPad, h + (borderPad * 2));
+        else
+            Size = new Size(w + (borderPad * 2), (h + gap) * maxWin + borderPad);
 
         // Default position: top-right corner
         var screen = (Screen.PrimaryScreen ?? Screen.AllScreens.FirstOrDefault())?.WorkingArea
@@ -131,6 +136,7 @@ public class PipOverlay : Form
         var (w, h) = _config.Pip.GetSize();
         int borderPad = _config.Pip.ShowBorder ? 1 : 0;
         int gap = _config.Pip.ShowBorder ? 3 : 2;
+        bool horizontal = _config.Pip.IsHorizontal;
         int idx = 0;
 
         foreach (var client in clients)
@@ -146,7 +152,17 @@ public class PipOverlay : Form
                 continue;
             }
 
-            int yPos = idx * (h + gap) + borderPad;
+            int xPos, yPos;
+            if (horizontal)
+            {
+                xPos = idx * (w + gap) + borderPad;
+                yPos = borderPad;
+            }
+            else
+            {
+                xPos = borderPad;
+                yPos = idx * (h + gap) + borderPad;
+            }
 
             var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
             {
@@ -156,9 +172,9 @@ public class PipOverlay : Form
                         | NativeMethods.DWM_TNP_SOURCECLIENTAREAONLY,
                 rcDestination = new NativeMethods.RECT
                 {
-                    Left = borderPad,
+                    Left = xPos,
                     Top = yPos,
-                    Right = borderPad + w,
+                    Right = xPos + w,
                     Bottom = yPos + h
                 },
                 opacity = _config.Pip.Opacity,
@@ -175,15 +191,32 @@ public class PipOverlay : Form
         }
 
         // Resize the overlay to fit actual number of thumbnails.
-        // Anchor to the BOTTOM edge so the overlay grows/shrinks upward —
-        // the bottom-most thumbnail stays in a consistent screen position.
+        // Anchor to the edge so the overlay grows/shrinks toward the origin —
+        // vertical: anchors bottom edge, horizontal: anchors right edge.
+        int oldWidth = Width;
         int oldHeight = Height;
-        int newHeight = (h + gap) * _thumbnailIds.Count + borderPad;
-        Size = new Size(w + (borderPad * 2), newHeight);
-        if (oldHeight != newHeight)
+        int newWidth, newHeight;
+        if (horizontal)
         {
-            Location = new Point(Location.X, Location.Y + (oldHeight - newHeight));
-            ClampToScreen();
+            newWidth = (w + gap) * _thumbnailIds.Count + borderPad;
+            newHeight = h + (borderPad * 2);
+            Size = new Size(newWidth, newHeight);
+            if (oldWidth != newWidth)
+            {
+                Location = new Point(Location.X + (oldWidth - newWidth), Location.Y);
+                ClampToScreen();
+            }
+        }
+        else
+        {
+            newWidth = w + (borderPad * 2);
+            newHeight = (h + gap) * _thumbnailIds.Count + borderPad;
+            Size = new Size(newWidth, newHeight);
+            if (oldHeight != newHeight)
+            {
+                Location = new Point(Location.X, Location.Y + (oldHeight - newHeight));
+                ClampToScreen();
+            }
         }
     }
 

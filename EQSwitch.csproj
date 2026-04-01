@@ -24,18 +24,18 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Remove="EQSwitch.Tests\**" />
-    <Content Remove="EQSwitch.Tests\**" />
-    <None Remove="EQSwitch.Tests\**" />
-  </ItemGroup>
-
-  <ItemGroup>
     <EmbeddedResource Include="eqswitch.ico" LogicalName="EQSwitch.eqswitch.ico" />
     <EmbeddedResource Include="eqswitch-alt.ico" LogicalName="EQSwitch.eqswitch-alt.ico" />
   </ItemGroup>
 
+  <!-- Copy native hook DLL to publish output. ExcludeFromSingleFile keeps it as a
+       separate file — it needs to exist on disk for injection into eqgame.exe. -->
   <ItemGroup>
-    <InternalsVisibleTo Include="EQSwitch.Tests" />
+    <Content Include="Native\eqswitch-hook.dll"
+             Link="eqswitch-hook.dll"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest"
+             ExcludeFromSingleFile="true" />
   </ItemGroup>
 
 </Project>

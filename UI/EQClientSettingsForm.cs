@@ -940,10 +940,8 @@ public class EQClientSettingsForm : Form
                 int monW = screen.Bounds.Width;
                 int monH = screen.Bounds.Height;
                 int offset = config.Layout.TitlebarOffset;
-                // Reduce client height so the game bottom doesn't extend below the
-                // screen — keeps chat boxes and bottom UI visible.
-                // Subtract offset (titlebar hidden above) + 10px bottom margin.
-                int gameH = monH - offset - 10;
+                // monH - 21: covers taskbar with margin for chat boxes
+                int gameH = monH - 21;
 
                 SetIniValue(lines, "Defaults", "WindowedMode", "TRUE");
                 SetIniValue(lines, "VideoMode", "WindowedMode", "TRUE");

@@ -92,8 +92,6 @@ public class AppConfig
         EQClientIni ??= new();
         Characters ??= new();
 
-        Layout.Columns = Math.Clamp(Layout.Columns, 1, 2);
-        Layout.Rows = Math.Clamp(Layout.Rows, 1, 2);
         Layout.TargetMonitor = Math.Clamp(Layout.TargetMonitor, 0, 8);
         Layout.SecondaryMonitor = Math.Clamp(Layout.SecondaryMonitor, -1, 8);
         Layout.TopOffset = Math.Clamp(Layout.TopOffset, -200, 200);
@@ -108,15 +106,13 @@ public class AppConfig
 
         Pip.Opacity = Math.Clamp(Pip.Opacity, (byte)10, (byte)255);
         Pip.MaxWindows = Math.Clamp(Pip.MaxWindows, 1, 3);
-        Pip.CustomWidth = Math.Clamp(Pip.CustomWidth, 100, 1920);
-        Pip.CustomHeight = Math.Clamp(Pip.CustomHeight, 75, 1080);
+        Pip.CustomWidth = Math.Clamp(Pip.CustomWidth, 100, 3840);
+        Pip.CustomHeight = Math.Clamp(Pip.CustomHeight, 75, 2160);
     }
 }
 
 public class WindowLayout
 {
-    public int Columns { get; set; } = 1;
-    public int Rows { get; set; } = 1;
     public bool RemoveTitleBars { get; set; } = false;
     public bool BorderlessFullscreen { get; set; } = false;
     public bool SnapToMonitor { get; set; } = true;
@@ -151,7 +147,7 @@ public class WindowLayout
     /// A standard Windows titlebar is ~30px. Hiding 18px leaves ~12px visible.
     /// Set to 0 for full titlebar, or up to 30 to hide it completely.
     /// </summary>
-    public int TitlebarOffset { get; set; } = 15;
+    public int TitlebarOffset { get; set; } = 13;
 
     /// <summary>
     /// Custom window title template for EQ windows. Supports placeholders:
@@ -159,6 +155,13 @@ public class WindowLayout
     /// Empty = don't modify window titles.
     /// </summary>
     public string WindowTitleTemplate { get; set; } = "";
+
+    /// <summary>
+    /// Inject eqswitch-hook.dll into eqgame.exe to hook SetWindowPos/MoveWindow from inside
+    /// the process. Eliminates window position flicker during screen transitions.
+    /// Only active when SlimTitlebar is also enabled. Falls back to guard timer if injection fails.
+    /// </summary>
+    public bool UseHook { get; set; } = true;
 }
 
 public class AffinityConfig
@@ -259,7 +262,7 @@ public class PipConfig
 {
     public bool Enabled { get; set; } = false;
 
-    /// <summary>Size preset: "Small", "Medium", "Large", "XL", "XXL", "Custom"</summary>
+    /// <summary>Size preset: "Small", "Medium", "Large", "XL", "XXL", "XXXL", "Custom"</summary>
     public string SizePreset { get; set; } = "Medium";
 
     /// <summary>Custom width (used when SizePreset = "Custom").</summary>
@@ -267,6 +270,9 @@ public class PipConfig
 
     /// <summary>Custom height (used when SizePreset = "Custom").</summary>
     public int CustomHeight { get; set; } = 240;
+
+    /// <summary>Stacking orientation: "Vertical" (top-to-bottom) or "Horizontal" (left-to-right).</summary>
+    public string Orientation { get; set; } = "Vertical";
 
     /// <summary>Opacity (0-255). 255 = fully opaque.</summary>
     public byte Opacity { get; set; } = 245;
@@ -290,8 +296,11 @@ public class PipConfig
         "Large" => (400, 300),
         "XL" => (480, 360),
         "XXL" => (640, 480),
+        "XXXL" => (960, 720),
         _ => (CustomWidth, CustomHeight)
     };
+
+    public bool IsHorizontal => Orientation.Equals("Horizontal", StringComparison.OrdinalIgnoreCase);
 
     public Color GetBorderColor() => BorderColor switch
     {

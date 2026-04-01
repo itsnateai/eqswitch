@@ -1,11 +1,7 @@
-<p align="center">
-  <img src="assets/eqswitch.svg" width="120" alt="EQSwitch logo">
-</p>
-
 <h1 align="center">EQSwitch</h1>
 
 <p align="center">
-  EverQuest multiboxing window manager for <a href="https://shardsofdalaya.com">Shards of Dalaya</a>
+  EverQuest multiboxing window manager for <a href="https://dalaya.org">Shards of Dalaya</a>
 </p>
 
 <p align="center">
@@ -17,7 +13,7 @@
 
 ---
 
-A system tray utility for managing multiple EverQuest clients — window switching, arrangement, CPU affinity, PiP overlays, and more. Ported from AHK v2 to C# (.NET 8 WinForms).
+A system tray utility for managing multiple EverQuest clients — window switching, arrangement, CPU affinity, PiP overlays, and more.
 
 ## Download
 
@@ -27,17 +23,6 @@ A system tray utility for managing multiple EverQuest clients — window switchi
 |------|------|-------|
 | **EQSwitch.exe** | ~171 MB | Self-contained — no runtime needed, click and go |
 | **EQSwitch-fd.exe** | ~790 KB | Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) |
-
-### Alternative install methods (coming soon)
-
-```powershell
-# Scoop
-scoop bucket add extras
-scoop install eqswitch
-
-# WinGet
-winget install itsnateai.EQSwitch
-```
 
 > [!TIP]
 > Place in any folder and run — no installation needed. Config is stored as `eqswitch-config.json` next to the exe.
@@ -53,22 +38,21 @@ winget install itsnateai.EQSwitch
 
 ## Features
 
+- **Slim Titlebar** — WinEQ2-style borderless mode that hides the titlebar above the screen edge
+- **DLL Hook Injection** — Hooks SetWindowPos/MoveWindow inside eqgame.exe for zero-flicker window positioning
 - **Window Switching** — Cycle EQ clients with hotkeys (keyboard hook for single keys, RegisterHotKey for combos)
-- **Window Arrangement** — Grid layout (single monitor) or one-per-monitor (multi-monitor mode)
-- **CPU Affinity** — Active client on P-cores, background on E-cores (Intel hybrid CPU optimized)
-- **Per-Character Overrides** — Individual affinity masks and priority levels per character
-- **Background FPS Throttling** — Duty-cycle suspend/resume to reduce GPU/CPU usage on background clients
-- **PiP Overlay** — Live DWM thumbnail previews of background clients (click-through, Ctrl+drag to move)
-- **Borderless Fullscreen** — Fill screen without exclusive fullscreen — preserves Alt+Tab and PiP
-- **Launching** — Staggered multi-client launch with auto-arrange after initialization
-- **Settings GUI** — 8-tab dark-themed settings (General, Hotkeys, Layout, Affinity, Launch, PiP, Paths, Characters)
-- **EQ Client Settings** — Sub-forms for editing eqclient.ini (Defaults, Video Mode, Key Mappings, Spells, Models)
-- **Video Settings** — Resolution presets, custom presets, windowed mode, Reset Defaults
-- **Configurable Tray Actions** — Single/double/triple/middle-click actions are fully customizable
-- **Dark Themed Context Menus** — Medieval-themed emoji icons throughout
-- **Character Profiles** — Per-character affinity overrides, export/import
-- **Custom Icons** — Two built-in styles (Dark/Stone) + custom .ico support
-- **Run at Startup** — Startup folder shortcut toggle
+- **Multi-Monitor** — One client per physical monitor with automatic arrangement
+- **Process Priority** — Active client on High, background on AboveNormal (configurable per-character)
+- **CPU Core Assignment** — CPUAffinity0-5 slots written to eqclient.ini for per-client core pinning
+- **PiP Overlay** — Live DWM thumbnail previews (zero CPU, GPU composited). Vertical or horizontal layout, 7 size presets + custom
+- **Staggered Launch** — Multi-client launch with configurable delay and auto-arrange
+- **Settings GUI** — Dark-themed tabbed settings (General, Hotkeys, Layout, PiP, Paths, Characters)
+- **EQ Client Settings** — Sub-forms for editing eqclient.ini (Video, Key Mappings, Chat, Particles, Models)
+- **Video Settings** — Resolution presets, custom presets, windowed mode enforcement
+- **Configurable Tray Actions** — Left/double/middle click actions are fully customizable
+- **Character Profiles** — Per-character priority overrides, export/import
+- **Custom Tray Icon** — Custom .ico support
+- **Portable** — Single exe, config stored next to it, no installer needed
 
 ## Requirements
 
@@ -80,12 +64,14 @@ winget install itsnateai.EQSwitch
 git clone https://github.com/itsnateai/eqswitch_port.git
 cd eqswitch_port
 
-# Framework-dependent (~790KB, requires .NET 8 runtime)
-dotnet publish EQSwitch.csproj -c Release --no-self-contained -p:PublishSingleFile=false
+# Build the native hook DLL (requires MSVC Build Tools, 32-bit target)
+bash Native/build.sh
 
-# Self-contained single-file (~171MB, no runtime needed)
-dotnet publish EQSwitch.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
+# Self-contained single-file (~179MB, no runtime needed)
+dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 ```
+
+Output: `bin/Release/net8.0-windows/win-x64/publish/EQSwitch.exe` + `eqswitch-hook.dll`
 
 ## Default Hotkeys
 
@@ -93,8 +79,7 @@ dotnet publish EQSwitch.csproj -c Release -r win-x64 --self-contained -p:Publish
 |--------|--------|
 | `\` | Swap to last active EQ client (EQ must be focused) |
 | `]` | Global switch — cycle next / bring EQ to front |
-| Alt+1 through Alt+6 | Switch to client by slot |
-| Alt+M | Toggle single-screen / multi-monitor mode |
+| Alt+N | Toggle single-screen / multi-monitor mode |
 
 ### Tray Icon Actions (all configurable)
 
@@ -116,25 +101,23 @@ EQSwitch ships with two icon styles selectable in Settings:
 
 Place a file named `eqswitch-custom.ico` next to the exe to use your own icon.
 
-### CPU Affinity Defaults (Intel 12th+ gen hybrid)
+### Process Priority Defaults
 
-- **Active client**: P-cores (mask `0xFF` = cores 0-7), AboveNormal priority
-- **Background clients**: E-cores (mask `0xFF00` = cores 8-15), Normal priority
-- Auto-applies on window switch (event-driven, instant)
-- Per-character affinity overrides supported
+- **Active client**: High priority
+- **Background clients**: High priority
+- Per-character priority overrides in Settings → Characters
+- CPU core assignment via eqclient.ini CPUAffinity0-5 slots (Settings → Process Manager)
 
 ## Project Structure
 
 | Path | Description |
 |------|-------------|
-| `EQSwitch.csproj` | .NET 8 project file |
-| `Program.cs` | Entry point — single-instance mutex, migration |
-| `Core/` | Win32 interop, process management, hotkeys, throttling |
+| `Program.cs` | Entry point — single-instance mutex, first-run setup |
+| `Core/` | Win32 interop, process management, hotkeys, DLL injection, shared memory |
 | `Config/` | JSON config model, load/save, AHK migration |
 | `Models/` | EQ client data model |
-| `UI/` | Tray manager, settings GUI, PiP overlay, dark theme |
-| `assets/` | Icon source files |
-| `EQSwitch.Tests/` | xUnit tests |
+| `UI/` | Tray manager, settings GUI, PiP overlay, dark theme, process manager |
+| `Native/` | C++ hook DLL source (MinHook) — compiled as 32-bit for eqgame.exe |
 
 ## Troubleshooting
 

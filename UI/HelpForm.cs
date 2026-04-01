@@ -53,7 +53,7 @@ GitHub: https://github.com/itsnateai/eqswitch_port
 HOTKEYS:
   {hk.SwitchKey,-18} Cycle to next EQ client (EQ must be focused)
   {hk.GlobalSwitchKey,-18} Cycle next / bring EQ to front from any app
-  {(string.IsNullOrEmpty(hk.ArrangeWindows) ? "(not set)" : hk.ArrangeWindows),-18} Arrange all windows in grid layout
+  {(string.IsNullOrEmpty(hk.ArrangeWindows) ? "(not set)" : hk.ArrangeWindows),-18} Fix/arrange all windows
   {(string.IsNullOrEmpty(hk.ToggleMultiMonitor) ? "(not set)" : hk.ToggleMultiMonitor),-18} Toggle single-screen / multi-monitor mode
   {directKeys,-18} Switch directly to client by slot number
   {(string.IsNullOrEmpty(hk.LaunchOne) ? "(not set)" : hk.LaunchOne),-18} Launch one EQ client

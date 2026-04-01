@@ -302,9 +302,21 @@ public static class DarkTheme
         form.FormBorderStyle = FormBorderStyle.FixedDialog;
         form.MaximizeBox = false;
         form.StartPosition = FormStartPosition.CenterScreen;
+        form.WindowState = FormWindowState.Normal;
+        form.ShowInTaskbar = true;
         form.BackColor = BgDark;
         form.ForeColor = FgWhite;
         form.Font = new Font("Segoe UI", 9f);
+
+        // Tray-only apps don't get foreground activation — briefly set TopMost
+        // on first show so the form actually appears visible, then release it
+        form.Shown += (_, _) =>
+        {
+            form.TopMost = true;
+            form.BringToFront();
+            form.Activate();
+            form.TopMost = false;
+        };
     }
 
     // ─── Card Panels ────────────────────────────────────────────
@@ -448,7 +460,7 @@ public static class DarkTheme
         var nud = new NumericUpDown
         {
             Location = new Point(x, y),
-            Size = new Size(width, 24),
+            Size = new Size(width, 22),
             BackColor = BgInput,
             ForeColor = FgWhite,
             Minimum = min,

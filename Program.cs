@@ -63,6 +63,7 @@ static class Program
             var config = ConfigManager.Load();
 
             // First-run: try migrating from AHK config, then show EQ path picker
+            bool isNewUser = false;
             if (config.IsFirstRun)
             {
                 var migrated = ConfigMigration.TryImportFromAhk();
@@ -71,6 +72,7 @@ static class Program
                     config = migrated;
                     ConfigManager.Save(config);
                     ConfigManager.FlushSave(); // Critical: write immediately — coalesced timer may not fire before crash
+                    isNewUser = true;
                     MessageBox.Show(
                         "Imported settings from eqswitch.cfg (AHK version).\nCheck Settings to verify everything looks right.",
                         "EQSwitch — Migration",
@@ -85,13 +87,12 @@ static class Program
 
                     config.EQPath = dialog.SelectedEQPath;
                     config.IsFirstRun = false;
+                    isNewUser = true;
                     ConfigManager.Save(config);
                     ConfigManager.FlushSave(); // Critical: write immediately — coalesced timer may not fire before crash
                 }
             }
 
-            bool isNewUser = config.IsFirstRun == false
-                && string.IsNullOrEmpty(config.EQPath);
 
             var processManager = new ProcessManager(config);
             var trayApp = new TrayManager(config, processManager);

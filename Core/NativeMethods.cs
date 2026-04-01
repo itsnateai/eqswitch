@@ -304,4 +304,43 @@ internal static class NativeMethods
     public static extern int NtResumeProcess(IntPtr processHandle);
 
     public const uint PROCESS_SUSPEND_RESUME = 0x0800;
+
+    // ─── DLL Injection ──────────────────────────────────────────────
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr VirtualAllocEx(IntPtr hProcess, IntPtr lpAddress, uint dwSize, uint flAllocationType, uint flProtect);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool VirtualFreeEx(IntPtr hProcess, IntPtr lpAddress, uint dwSize, uint dwFreeType);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool WriteProcessMemory(IntPtr hProcess, IntPtr lpBaseAddress, byte[] lpBuffer, uint nSize, out IntPtr lpNumberOfBytesWritten);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr CreateRemoteThread(IntPtr hProcess, IntPtr lpThreadAttributes, uint dwStackSize, IntPtr lpStartAddress, IntPtr lpParameter, uint dwCreationFlags, out IntPtr lpThreadId);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+    public static extern IntPtr GetModuleHandleA(string lpModuleName);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+    public static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetExitCodeThread(IntPtr hThread, out uint lpExitCode);
+
+    public const uint PROCESS_ALL_ACCESS = 0x001FFFFF;
+    public const uint PROCESS_CREATE_THREAD = 0x0002;
+    public const uint PROCESS_VM_OPERATION = 0x0008;
+    public const uint PROCESS_VM_READ = 0x0010;
+    public const uint PROCESS_VM_WRITE = 0x0020;
+    public const uint MEM_COMMIT = 0x00001000;
+    public const uint MEM_RESERVE = 0x00002000;
+    public const uint MEM_RELEASE = 0x00008000;
+    public const uint PAGE_READWRITE = 0x04;
+    public const uint WAIT_OBJECT_0 = 0x00000000;
+    public const uint WAIT_TIMEOUT = 0x00000102;
+    public const uint INFINITE = 0xFFFFFFFF;
 }

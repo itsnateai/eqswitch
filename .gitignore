@@ -5,9 +5,12 @@ obj/
 *.suo
 *.userprefs
 *.sln.docstates
-*.dll
 *.exe
 *.pdb
+
+# DLLs — ignore build output but keep native hook source DLL
+*.dll
+!Native/eqswitch-hook.dll
 
 ## IDE
 .vs/
@@ -33,6 +36,11 @@ eqswitch-config.json
 backups/
 eqswitch-custom.ico
 eqswitch.log
+
+## Native build artifacts
+Native/*.obj
+Native/*.exp
+Native/*.lib
 
 ## Claude Code
 .claude/
