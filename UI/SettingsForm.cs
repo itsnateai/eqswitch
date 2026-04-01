@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using EQSwitch.Config;
 using EQSwitch.Core;
+using EQSwitch.Models;
 
 namespace EQSwitch.UI;
 
@@ -70,6 +71,10 @@ public class SettingsForm : Form
     private TextBox _txtDalayaPatcherPath = null!;
     private CheckBox _chkRunAtStartup = null!;
 
+    // ─── Accounts tab controls
+    private List<LoginAccount> _pendingAccounts = new();
+    private DataGridView _dgvAccounts = null!;
+
     // ─── PiP tab controls
     private CheckBox _chkPipEnabled = null!;
     private ComboBox _cboPipSize = null!;
@@ -119,11 +124,19 @@ public class SettingsForm : Form
 
         var tabs = DarkTheme.MakeTabControl();
 
+        _pendingAccounts = _config.Accounts.Select(a => new LoginAccount
+        {
+            Name = a.Name, Username = a.Username, EncryptedPassword = a.EncryptedPassword,
+            Server = a.Server, CharacterName = a.CharacterName, CharacterSlot = a.CharacterSlot,
+            UseLoginFlag = a.UseLoginFlag
+        }).ToList();
+
         tabs.TabPages.Add(BuildGeneralTab());
         tabs.TabPages.Add(BuildHotkeysTab());
         tabs.TabPages.Add(BuildLayoutTab());
         tabs.TabPages.Add(BuildPipTab());
         tabs.TabPages.Add(BuildPathsTab());
+        tabs.TabPages.Add(BuildAccountsTab());
 
         if (_initialTab > 0 && _initialTab < tabs.TabCount)
             tabs.SelectedIndex = _initialTab;
@@ -923,7 +936,8 @@ public class SettingsForm : Form
             NotesPath = _txtNotesPath.Text.Trim(),
             DalayaPatcherPath = _txtDalayaPatcherPath.Text.Trim(),
             RunAtStartup = _chkRunAtStartup.Checked,
-            Characters = _config.Characters
+            Characters = _config.Characters,
+            Accounts = _pendingAccounts
         };
 
         // Apply startup registry change
@@ -959,6 +973,221 @@ public class SettingsForm : Form
             }
         }
         _cboPipSize.SelectedIndex = 1; // fallback to Medium
+    }
+
+    // ─── Accounts Tab ──────────────────────────────────────────────
+
+    private TabPage BuildAccountsTab()
+    {
+        var page = DarkTheme.MakeTabPage("Accounts");
+        int y = 8;
+
+        var card = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Login Accounts", DarkTheme.CardGold, 10, y, 480, 340);
+
+        _dgvAccounts = new DataGridView
+        {
+            Location = new Point(10, 32),
+            Size = new Size(458, 200),
+            BackgroundColor = DarkTheme.BgDark,
+            ForeColor = DarkTheme.FgWhite,
+            GridColor = DarkTheme.Border,
+            BorderStyle = BorderStyle.None,
+            RowHeadersVisible = false,
+            AllowUserToAddRows = false,
+            AllowUserToDeleteRows = false,
+            AllowUserToResizeRows = false,
+            SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            MultiSelect = false,
+            ReadOnly = true,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
+            {
+                BackColor = DarkTheme.BgMedium,
+                ForeColor = DarkTheme.FgWhite,
+                SelectionBackColor = DarkTheme.BgMedium,
+                Font = new Font("Segoe UI", 9)
+            },
+            DefaultCellStyle = new DataGridViewCellStyle
+            {
+                BackColor = DarkTheme.BgDark,
+                ForeColor = DarkTheme.FgWhite,
+                SelectionBackColor = DarkTheme.ActiveRowBg,
+                SelectionForeColor = DarkTheme.FgWhite
+            },
+            EnableHeadersVisualStyles = false
+        };
+
+        _dgvAccounts.Columns.Add("Name", "Name");
+        _dgvAccounts.Columns.Add("Username", "Username");
+        _dgvAccounts.Columns.Add("Character", "Character");
+        _dgvAccounts.Columns.Add("Server", "Server");
+        _dgvAccounts.Columns.Add("Slot", "Slot");
+        _dgvAccounts.Columns["Slot"]!.Width = 40;
+        _dgvAccounts.Columns["Slot"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
+
+        RefreshAccountsGrid();
+        card.Controls.Add(_dgvAccounts);
+
+        int btnY = 240;
+        var btnAdd = DarkTheme.AddCardButton(card, "Add", 10, btnY, 70);
+        btnAdd.Click += (_, _) => ShowAccountDialog(null);
+
+        var btnEdit = DarkTheme.AddCardButton(card, "Edit", 85, btnY, 70);
+        btnEdit.Click += (_, _) =>
+        {
+            if (_dgvAccounts.SelectedRows.Count > 0)
+                ShowAccountDialog(_dgvAccounts.SelectedRows[0].Index);
+        };
+
+        var btnRemove = DarkTheme.AddCardButton(card, "Remove", 160, btnY, 70);
+        btnRemove.Click += (_, _) =>
+        {
+            if (_dgvAccounts.SelectedRows.Count > 0)
+            {
+                int idx = _dgvAccounts.SelectedRows[0].Index;
+                _pendingAccounts.RemoveAt(idx);
+                RefreshAccountsGrid();
+            }
+        };
+
+        var btnMoveUp = DarkTheme.AddCardButton(card, "\u25B2", 250, btnY, 35);
+        btnMoveUp.Click += (_, _) =>
+        {
+            if (_dgvAccounts.SelectedRows.Count > 0)
+            {
+                int idx = _dgvAccounts.SelectedRows[0].Index;
+                if (idx > 0)
+                {
+                    (_pendingAccounts[idx], _pendingAccounts[idx - 1]) = (_pendingAccounts[idx - 1], _pendingAccounts[idx]);
+                    RefreshAccountsGrid();
+                    _dgvAccounts.Rows[idx - 1].Selected = true;
+                }
+            }
+        };
+
+        var btnMoveDown = DarkTheme.AddCardButton(card, "\u25BC", 290, btnY, 35);
+        btnMoveDown.Click += (_, _) =>
+        {
+            if (_dgvAccounts.SelectedRows.Count > 0)
+            {
+                int idx = _dgvAccounts.SelectedRows[0].Index;
+                if (idx < _pendingAccounts.Count - 1)
+                {
+                    (_pendingAccounts[idx], _pendingAccounts[idx + 1]) = (_pendingAccounts[idx + 1], _pendingAccounts[idx]);
+                    RefreshAccountsGrid();
+                    _dgvAccounts.Rows[idx + 1].Selected = true;
+                }
+            }
+        };
+
+        DarkTheme.AddCardHint(card, "Passwords are encrypted with Windows DPAPI (tied to your user account)", 10, 275);
+        DarkTheme.AddCardHint(card, "Character slot is 1-based position on the character select screen", 10, 295);
+
+        return page;
+    }
+
+    private void RefreshAccountsGrid()
+    {
+        _dgvAccounts.Rows.Clear();
+        foreach (var a in _pendingAccounts)
+            _dgvAccounts.Rows.Add(a.Name, a.Username, a.CharacterName, a.Server, a.CharacterSlot);
+    }
+
+    private void ShowAccountDialog(int? editIndex)
+    {
+        var existing = editIndex.HasValue ? _pendingAccounts[editIndex.Value] : null;
+
+        using var dlg = new Form
+        {
+            Text = existing != null ? "Edit Account" : "Add Account",
+            Size = new Size(380, 340),
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent,
+            MaximizeBox = false,
+            MinimizeBox = false
+        };
+        DarkTheme.StyleForm(dlg, dlg.Text, dlg.Size);
+
+        int y = 15;
+        const int L = 15, I = 130, W = 210, R = 35;
+
+        TextBox MakeTextBox(int tx, int ty, int tw, string text = "")
+        {
+            var tb = new TextBox { Location = new Point(tx, ty), Width = tw, Text = text,
+                BackColor = DarkTheme.BgDark, ForeColor = DarkTheme.FgWhite,
+                BorderStyle = BorderStyle.FixedSingle };
+            dlg.Controls.Add(tb);
+            return tb;
+        }
+
+        DarkTheme.AddLabel(dlg, "Display Name:", L, y);
+        var txtName = MakeTextBox(I, y - 2, W, existing?.Name ?? "");
+        y += R;
+
+        DarkTheme.AddLabel(dlg, "Username:", L, y);
+        var txtUsername = MakeTextBox(I, y - 2, W, existing?.Username ?? "");
+        y += R;
+
+        DarkTheme.AddLabel(dlg, "Password:", L, y);
+        var txtPassword = MakeTextBox(I, y - 2, W);
+        txtPassword.UseSystemPasswordChar = true;
+        if (existing != null)
+            txtPassword.PlaceholderText = "(unchanged)";
+        y += R;
+
+        DarkTheme.AddLabel(dlg, "Server:", L, y);
+        var txtServer = MakeTextBox(I, y - 2, W, existing?.Server ?? "Dalaya");
+        y += R;
+
+        DarkTheme.AddLabel(dlg, "Character Name:", L, y);
+        var txtCharName = MakeTextBox(I, y - 2, W, existing?.CharacterName ?? "");
+        y += R;
+
+        DarkTheme.AddLabel(dlg, "Character Slot:", L, y);
+        var nudSlot = DarkTheme.AddNumeric(dlg, I, y - 2, 60, existing?.CharacterSlot ?? 1, 1, 8);
+        y += R;
+
+        var chkLoginFlag = DarkTheme.AddCheckBox(dlg, "Use /login: flag", L, y);
+        chkLoginFlag.Checked = existing?.UseLoginFlag ?? true;
+        y += R + 5;
+
+        var btnOK = DarkTheme.MakePrimaryButton("Save", L, y);
+        btnOK.Width = 100;
+        btnOK.Click += (_, _) =>
+        {
+            if (string.IsNullOrWhiteSpace(txtName.Text) || string.IsNullOrWhiteSpace(txtUsername.Text))
+            {
+                MessageBox.Show("Name and Username are required.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var account = existing ?? new LoginAccount();
+            account.Name = txtName.Text.Trim();
+            account.Username = txtUsername.Text.Trim();
+            account.Server = txtServer.Text.Trim();
+            account.CharacterName = txtCharName.Text.Trim();
+            account.CharacterSlot = (int)nudSlot.Value;
+            account.UseLoginFlag = chkLoginFlag.Checked;
+
+            // Only update password if user typed something new
+            if (!string.IsNullOrEmpty(txtPassword.Text))
+                account.EncryptedPassword = CredentialManager.Encrypt(txtPassword.Text);
+
+            if (!editIndex.HasValue)
+                _pendingAccounts.Add(account);
+
+            RefreshAccountsGrid();
+            dlg.DialogResult = DialogResult.OK;
+        };
+        dlg.Controls.Add(btnOK);
+
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 130, y);
+        btnCancel.Width = 100;
+        btnCancel.Click += (_, _) => dlg.DialogResult = DialogResult.Cancel;
+        dlg.Controls.Add(btnCancel);
+
+        dlg.AcceptButton = (IButtonControl)btnOK;
+        dlg.ShowDialog(this);
     }
 
     protected override void Dispose(bool disposing)

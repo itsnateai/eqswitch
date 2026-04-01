@@ -31,11 +31,10 @@
   <!-- Copy native hook DLL to publish output. ExcludeFromSingleFile keeps it as a
        separate file — it needs to exist on disk for injection into eqgame.exe. -->
   <ItemGroup>
-    <Content Include="Native\eqswitch-hook.dll"
-             Link="eqswitch-hook.dll"
-             CopyToOutputDirectory="PreserveNewest"
-             CopyToPublishDirectory="PreserveNewest"
-             ExcludeFromSingleFile="true" />
+    <Content Include="Native\eqswitch-hook.dll" Link="eqswitch-hook.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.5" />
   </ItemGroup>
 
 </Project>
