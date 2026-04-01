@@ -28,6 +28,7 @@ public interface IWindowsApi
     bool GetWindowRect(IntPtr hwnd, out WinRect rect);
     IntPtr GetWindowLongPtr(IntPtr hwnd, int nIndex);
     IntPtr SetWindowLongPtr(IntPtr hwnd, int nIndex, IntPtr dwNewLong);
+    bool SetWindowText(IntPtr hwnd, string text);
 
     // ─── Deferred Window Positioning ────────────────────────────────
     IntPtr BeginDeferWindowPos(int nNumWindows);

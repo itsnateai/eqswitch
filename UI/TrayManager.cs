@@ -122,9 +122,8 @@ public class TrayManager : IDisposable
         };
         _processManager.ClientDiscovered += (_, c) =>
         {
-            // Don't show balloon while menu is open — it steals focus and closes the menu
-            if (_contextMenu?.Visible != true)
-                ShowBalloon($"Discovered: {c}");
+            // NO tooltip here — creating TopMost windows during EQ's DirectX init
+            // causes the game to lose foreground and minimize itself
             _affinityManager.ScheduleRetry(c);
         };
         _processManager.ClientLost += (_, c) =>
@@ -134,14 +133,15 @@ public class TrayManager : IDisposable
             _affinityManager.CancelRetry(c.ProcessId);
         };
 
-        _launchManager.ProgressUpdate += (_, msg) => ShowBalloon(msg);
+        // No tooltip for launch progress — TopMost windows during EQ init cause minimize
+        _launchManager.ProgressUpdate += (_, msg) => FileLogger.Info($"LaunchProgress: {msg}");
         _launchManager.LaunchSequenceComplete += (_, _) =>
         {
             // Only auto-arrange in multimonitor mode after launch —
             // single screen lets EQ use its own eqclient.ini positioning
             if (_config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase))
             {
-                ShowBalloon("Multi-Monitor mode — arranging in 15s...");
+                FileLogger.Info("Multi-Monitor mode — arranging after delay...");
                 var fixDelay = Math.Max(_config.Launch.FixDelayMs, 5000);
                 var arrangeTimer = new System.Windows.Forms.Timer { Interval = fixDelay };
                 arrangeTimer.Tick += (_, _) =>
@@ -150,16 +150,9 @@ public class TrayManager : IDisposable
                     arrangeTimer.Dispose();
                     var clients = _processManager.Clients;
                     if (clients.Count > 0)
-                    {
-                        ShowBalloon("Arranging windows...");
                         _windowManager.ArrangeWindows(clients);
-                    }
                 };
                 arrangeTimer.Start();
-            }
-            else
-            {
-                ShowBalloon("Ready to play!");
             }
         };
 
@@ -1069,12 +1062,13 @@ public class TrayManager : IDisposable
         _config.EQProcessName = newConfig.EQProcessName;
         _config.Layout.Columns = newConfig.Layout.Columns;
         _config.Layout.Rows = newConfig.Layout.Rows;
-        _config.Layout.RemoveTitleBars = newConfig.Layout.RemoveTitleBars;
-        _config.Layout.BorderlessFullscreen = newConfig.Layout.BorderlessFullscreen;
         _config.Layout.SnapToMonitor = newConfig.Layout.SnapToMonitor;
         _config.Layout.TargetMonitor = newConfig.Layout.TargetMonitor;
         _config.Layout.SecondaryMonitor = newConfig.Layout.SecondaryMonitor;
         _config.Layout.TopOffset = newConfig.Layout.TopOffset;
+        _config.Layout.SlimTitlebar = newConfig.Layout.SlimTitlebar;
+        _config.Layout.TitlebarOffset = newConfig.Layout.TitlebarOffset;
+        _config.Layout.WindowTitleTemplate = newConfig.Layout.WindowTitleTemplate;
         _config.Layout.Mode = newConfig.Layout.Mode;
         _config.Affinity.Enabled = newConfig.Affinity.Enabled;
         _config.Affinity.ActivePriority = newConfig.Affinity.ActivePriority;

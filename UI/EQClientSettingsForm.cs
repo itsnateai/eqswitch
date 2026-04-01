@@ -924,7 +924,39 @@ public class EQClientSettingsForm : Form
             string wmVal = config.EQClientIni.ForceWindowedMode ? "TRUE" : "FALSE";
             Set("Defaults", "WindowedMode", wmVal);
             Set("VideoMode", "WindowedMode", wmVal);
-            // Don't overwrite [Defaults] Maximized — EQ uses it to start maximized
+            // Write Maximized to all sections that use it
+            string maxVal = config.EQClientIni.MaximizeWindow ? "1" : "0";
+            Set("Defaults", "Maximized", maxVal);
+            Set("VideoMode", "Maximized", maxVal);
+
+            // Slim Titlebar requires: WindowedMode=TRUE, Maximized=0,
+            // and resolution matching the target monitor so the game + titlebar
+            // extends below the screen edge (WinEQ2 method).
+            if (config.Layout.SlimTitlebar)
+            {
+                var targetIdx = Math.Clamp(config.Layout.TargetMonitor, 0,
+                    Math.Max(0, Screen.AllScreens.Length - 1));
+                var screen = Screen.AllScreens[targetIdx];
+                int monW = screen.Bounds.Width;
+                int monH = screen.Bounds.Height;
+
+                SetIniValue(lines, "Defaults", "WindowedMode", "TRUE");
+                SetIniValue(lines, "VideoMode", "WindowedMode", "TRUE");
+                SetIniValue(lines, "Defaults", "Maximized", "0");
+                SetIniValue(lines, "VideoMode", "Maximized", "0");
+                SetIniValue(lines, "VideoMode", "Width", monW.ToString());
+                SetIniValue(lines, "VideoMode", "Height", monH.ToString());
+                SetIniValue(lines, "VideoMode", "WindowedWidth", monW.ToString());
+                SetIniValue(lines, "VideoMode", "WindowedHeight", monH.ToString());
+                SetIniValue(lines, "Defaults", "WindowedWidth", monW.ToString());
+                SetIniValue(lines, "Defaults", "WindowedHeight", monH.ToString());
+                // Zero out offsets — they shift the window away from expected position
+                SetIniValue(lines, "Defaults", "WindowedModeXOffset", "0");
+                SetIniValue(lines, "Defaults", "WindowedModeYOffset", "0");
+                SetIniValue(lines, "VideoMode", "WindowedModeXOffset", "0");
+                SetIniValue(lines, "VideoMode", "WindowedModeYOffset", "0");
+                FileLogger.Info($"EnforceOverrides: SlimTitlebar ON → forced {monW}x{monH}, offsets zeroed, Maximized=0, WindowedMode=TRUE");
+            }
 
             if (config.EQClientIni.MaxFPS > 0)
             {

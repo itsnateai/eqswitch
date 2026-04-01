@@ -97,6 +97,7 @@ public class AppConfig
         Layout.TargetMonitor = Math.Clamp(Layout.TargetMonitor, 0, 8);
         Layout.SecondaryMonitor = Math.Clamp(Layout.SecondaryMonitor, -1, 8);
         Layout.TopOffset = Math.Clamp(Layout.TopOffset, -200, 200);
+        Layout.TitlebarOffset = Math.Clamp(Layout.TitlebarOffset, 0, 40);
 
         Affinity.LaunchRetryCount = Math.Clamp(Affinity.LaunchRetryCount, 0, 20);
         Affinity.LaunchRetryDelayMs = Math.Clamp(Affinity.LaunchRetryDelayMs, 500, 30000);
@@ -136,6 +137,28 @@ public class WindowLayout
     /// Current layout mode: "single" (all on one monitor) or "multimonitor" (one per monitor).
     /// </summary>
     public string Mode { get; set; } = "single";
+
+    /// <summary>
+    /// Slim titlebar mode: keeps WS_CAPTION but positions the window with a negative Y offset
+    /// so the titlebar is partially hidden above the monitor edge. The game window is oversized
+    /// by the offset amount so the visible game area fills the full monitor height.
+    /// This is the WinEQ2 method for covering the taskbar while keeping a draggable titlebar.
+    /// </summary>
+    public bool SlimTitlebar { get; set; } = true;
+
+    /// <summary>
+    /// How many pixels of the titlebar to hide above the monitor edge (default 22).
+    /// A standard Windows titlebar is ~30px. Hiding 22px leaves ~8px visible as a thin strip.
+    /// Set to 0 for full titlebar, or up to 30 to hide it completely.
+    /// </summary>
+    public int TitlebarOffset { get; set; } = 22;
+
+    /// <summary>
+    /// Custom window title template for EQ windows. Supports placeholders:
+    /// {CHAR} = character name, {SLOT} = slot number (1-based), {PID} = process ID.
+    /// Empty = don't modify window titles.
+    /// </summary>
+    public string WindowTitleTemplate { get; set; } = "";
 }
 
 public class AffinityConfig
@@ -422,6 +445,9 @@ public class EQClientIniConfig
 
     /// <summary>Force windowed mode (WindowedMode=TRUE in [VideoMode]).</summary>
     public bool ForceWindowedMode { get; set; } = true;
+
+    /// <summary>Start EQ maximized in windowed mode (Maximized=1 in [Defaults] + [VideoMode]).</summary>
+    public bool MaximizeWindow { get; set; } = false;
 
     /// <summary>Max foreground FPS (MaxFPS in [Defaults]). Default 80.</summary>
     public int MaxFPS { get; set; } = 80;

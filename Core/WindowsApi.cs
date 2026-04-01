@@ -65,6 +65,9 @@ public class WindowsApi : IWindowsApi
     public IntPtr SetWindowLongPtr(IntPtr hwnd, int nIndex, IntPtr dwNewLong)
         => NativeMethods.SetWindowLongPtr(hwnd, nIndex, dwNewLong);
 
+    public bool SetWindowText(IntPtr hwnd, string text)
+        => NativeMethods.SetWindowText(hwnd, text);
+
     public IntPtr BeginDeferWindowPos(int nNumWindows)
         => NativeMethods.BeginDeferWindowPos(nNumWindows);
 

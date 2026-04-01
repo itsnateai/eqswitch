@@ -22,7 +22,7 @@ public class EQVideoModeForm : Form
         ("FullscreenRefreshRate", "Fullscreen Refresh Rate", 0, 0, 360),
         ("FullscreenBitsPerPixel", "Fullscreen Bits Per Pixel", 32, 16, 32),
         ("WindowedWidth", "Windowed Width", 1920, 640, 7680),
-        ("WindowedHeight", "Windowed Height", 1009, 480, 4320),
+        ("WindowedHeight", "Windowed Height", 1080, 480, 4320),
         ("WinEQWidth", "WinEQ Width", 1920, 640, 7680),
         ("WinEQHeight", "WinEQ Height", 1200, 480, 4320),
         ("WindowedModeXOffset", "Windowed X Offset", 0, -9999, 9999),

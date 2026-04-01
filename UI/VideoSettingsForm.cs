@@ -412,7 +412,7 @@ public class VideoSettingsForm : Form
                 ["Width"] = ((int)_nudWidth.Value).ToString(),
                 ["Height"] = ((int)_nudHeight.Value).ToString(),
                 ["WindowedMode"] = _chkWindowed.Checked ? "TRUE" : "FALSE",
-                ["Maximized"] = "0",
+                ["Maximized"] = _config.EQClientIni.MaximizeWindow ? "1" : "0",
                 ["XOffset"] = ((int)_nudOffsetX.Value).ToString(),
                 ["YOffset"] = ((int)_nudOffsetY.Value).ToString()
             };
