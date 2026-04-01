@@ -180,6 +180,28 @@ public class TrayManager : IDisposable
                 UpdateHookConfig();
             }
 
+            // When Maximize is on but Slim Titlebar is off, EQ's DirectX init
+            // can minimize the window on focus loss and never recover. Run a
+            // lightweight guard that restores minimized windows.
+            else if (_config.EQClientIni.MaximizeWindow && _processManager.Clients.Count > 0)
+            {
+                if (_slimTitlebarGuard == null)
+                {
+                    _slimTitlebarGuard = new System.Windows.Forms.Timer { Interval = 2000 };
+                    _slimTitlebarGuard.Tick += (_, _) =>
+                    {
+                        foreach (var c in _processManager.Clients)
+                        {
+                            if (NativeMethods.IsIconic(c.WindowHandle))
+                            {
+                                NativeMethods.ShowWindow(c.WindowHandle, NativeMethods.SW_RESTORE);
+                                FileLogger.Info($"MaximizeGuard: restored minimized window {c}");
+                            }
+                        }
+                    };
+                    _slimTitlebarGuard.Start();
+                }
+            }
             else if (_slimTitlebarGuard != null)
             {
                 _slimTitlebarGuard.Stop();
@@ -226,6 +248,11 @@ public class TrayManager : IDisposable
             {
                 InjectHookDll(c.ProcessId);
             }
+
+            // Apply custom window title (safe during init — SetWindowText doesn't
+            // steal focus or trigger EQ's minimize-on-focus-loss handler)
+            if (!string.IsNullOrEmpty(_config.Layout.WindowTitleTemplate))
+                _windowManager.SetWindowTitle(c, c.SlotIndex);
         };
         _processManager.ClientLost += (_, c) =>
         {
