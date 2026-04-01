@@ -265,7 +265,7 @@ public class LaunchConfig
     public int NumClients { get; set; } = 2;
 
     /// <summary>Delay in ms between launching each client.</summary>
-    public int LaunchDelayMs { get; set; } = 3000;
+    public int LaunchDelayMs { get; set; } = 1000;
 
     /// <summary>Delay in ms after all clients launched before arranging windows.</summary>
     public int FixDelayMs { get; set; } = 15000;

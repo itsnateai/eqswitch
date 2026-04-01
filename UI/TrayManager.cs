@@ -206,6 +206,7 @@ public class TrayManager : IDisposable
         };
 
         _processManager.StartPolling();
+        _processManager.RefreshClients(); // Populate PIDs immediately so keyboard hook filters work
         RegisterHotkeys();
         StartForegroundHook();
         StartRetryTimer();
