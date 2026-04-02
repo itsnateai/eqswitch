@@ -120,7 +120,7 @@ Place a file named `eqswitch-custom.ico` next to the exe to use your own icon.
 | Path | Description |
 |------|-------------|
 | `Program.cs` | Entry point — single-instance mutex, first-run setup |
-| `Core/` | Win32 interop, process management, hotkeys, DLL injection, shared memory, key broadcasting |
+| `Core/` | Win32 interop, process management, hotkeys, DLL injection, shared memory |
 | `Config/` | JSON config model, load/save, AHK migration |
 | `Models/` | EQ client data model |
 | `UI/` | Tray manager, settings GUI, PiP overlay, dark theme, process manager |
