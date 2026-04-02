@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -19,10 +20,10 @@ public class AutoLoginManager
     private readonly AppConfig _config;
 
     /// <summary>PIDs currently in the login sequence — DLL injection should be deferred for these.</summary>
-    private readonly HashSet<int> _activeLoginPids = new();
+    private readonly ConcurrentDictionary<int, byte> _activeLoginPids = new();
 
-    /// <summary>Per-login shared memory writer for DirectInput key injection.</summary>
-    private KeyInputWriter? _loginWriter;
+    /// <summary>UI thread sync context — captured at construction for marshaling events back to the UI thread.</summary>
+    private readonly SynchronizationContext? _syncContext;
 
     public event EventHandler<string>? StatusUpdate;
 
@@ -33,11 +34,12 @@ public class AutoLoginManager
     public event EventHandler<int>? LoginComplete;
 
     /// <summary>True if the given PID is currently running through the login sequence.</summary>
-    public bool IsLoginActive(int pid) => _activeLoginPids.Contains(pid);
+    public bool IsLoginActive(int pid) => _activeLoginPids.ContainsKey(pid);
 
     public AutoLoginManager(AppConfig config)
     {
         _config = config;
+        _syncContext = SynchronizationContext.Current;
     }
 
     /// <summary>
@@ -115,7 +117,7 @@ public class AutoLoginManager
         }
 
         // Track PID so DLL injection is deferred until login completes
-        _activeLoginPids.Add(pid);
+        _activeLoginPids.TryAdd(pid, 0);
 
         // Run the login sequence on a background thread
         var loginAccount = account;
@@ -124,6 +126,8 @@ public class AutoLoginManager
 
     private void RunLoginSequence(int pid, LoginAccount account, string password, bool background)
     {
+        // Local writer eliminates shared-state race when two logins run concurrently
+        KeyInputWriter? loginWriter = null;
         try
         {
             // Step 1: Wait for EQ window to appear
@@ -141,9 +145,9 @@ public class AutoLoginManager
                 // Background mode: open shared memory so dinput8.dll can read our keys.
                 // dinput8.dll lazy-opens the mapping with retry, so give it time to find it.
                 Report("Waiting for login screen (background)...");
-                _loginWriter = new KeyInputWriter();
-                _loginWriter.Open(pid);
-                _loginWriter.Activate(pid);
+                loginWriter = new KeyInputWriter();
+                loginWriter.Open(pid);
+                loginWriter.Activate(pid);
                 Thread.Sleep(3000); // let EQ fully init + dinput8.dll find shared memory
             }
             else
@@ -161,9 +165,9 @@ public class AutoLoginManager
                 if (background)
                 {
                     Thread.Sleep(200);
-                    DiPressKey(pid, 0x09); // Tab to username field
+                    DiPressKey(loginWriter, pid, 0x09); // Tab to username field
                     Thread.Sleep(100);
-                    DiTypeString(pid, account.Username);
+                    DiTypeString(loginWriter, pid, account.Username);
                     Thread.Sleep(100);
                 }
                 else
@@ -180,9 +184,9 @@ public class AutoLoginManager
             // Step 4: Tab to password field and type password
             if (background)
             {
-                DiPressKey(pid, 0x09); // Tab
+                DiPressKey(loginWriter, pid, 0x09); // Tab
                 Thread.Sleep(100);
-                DiTypeString(pid, password);
+                DiTypeString(loginWriter, pid, password);
                 Thread.Sleep(100);
             }
             else
@@ -196,7 +200,7 @@ public class AutoLoginManager
             // Step 5: Press Enter to submit login
             Report("Submitting login...");
             if (background)
-                DiPressKey(pid, 0x0D); // Enter
+                DiPressKey(loginWriter, pid, 0x0D); // Enter
             else
                 FocusAndSendKey(hwnd, 0x0D);
             Thread.Sleep(3000);
@@ -204,7 +208,7 @@ public class AutoLoginManager
             // Step 6: Server select — press Enter to confirm pre-selected server
             Report("Confirming server...");
             if (background)
-                DiPressKey(pid, 0x0D);
+                DiPressKey(loginWriter, pid, 0x0D);
             else
                 FocusAndSendKey(hwnd, 0x0D);
             Thread.Sleep(3000);
@@ -214,7 +218,7 @@ public class AutoLoginManager
             for (int i = 1; i < account.CharacterSlot; i++)
             {
                 if (background)
-                    DiPressKey(pid, 0x28); // VK_DOWN
+                    DiPressKey(loginWriter, pid, 0x28); // VK_DOWN
                 else
                     FocusAndSendKey(hwnd, 0x28);
                 Thread.Sleep(200);
@@ -224,7 +228,7 @@ public class AutoLoginManager
             // Step 8: Enter World
             Report("Entering world...");
             if (background)
-                DiPressKey(pid, 0x0D);
+                DiPressKey(loginWriter, pid, 0x0D);
             else
                 FocusAndSendKey(hwnd, 0x0D);
             Thread.Sleep(1000);
@@ -240,22 +244,27 @@ public class AutoLoginManager
         finally
         {
             // Clean up shared memory for this login session
-            if (background && _loginWriter != null)
+            if (background && loginWriter != null)
             {
-                _loginWriter.Deactivate(pid);
-                _loginWriter.Close(pid);
-                _loginWriter.Dispose();
-                _loginWriter = null;
+                loginWriter.Deactivate(pid);
+                loginWriter.Close(pid);
+                loginWriter.Dispose();
             }
-            _activeLoginPids.Remove(pid);
-            LoginComplete?.Invoke(this, pid);
+            _activeLoginPids.TryRemove(pid, out _);
+            if (_syncContext != null)
+                _syncContext.Post(_ => LoginComplete?.Invoke(this, pid), null);
+            else
+                LoginComplete?.Invoke(this, pid);
         }
     }
 
     private void Report(string message)
     {
         FileLogger.Info($"AutoLogin: {message}");
-        StatusUpdate?.Invoke(this, message);
+        if (_syncContext != null)
+            _syncContext.Post(_ => StatusUpdate?.Invoke(this, message), null);
+        else
+            StatusUpdate?.Invoke(this, message);
     }
 
     /// <summary>
@@ -304,21 +313,21 @@ public class AutoLoginManager
     /// Set a scan code state in shared memory. The dinput8.dll proxy picks
     /// this up on the next GetDeviceState call (~60Hz).
     /// </summary>
-    private void DiSetKey(int pid, ushort vk, bool pressed)
+    private static void DiSetKey(KeyInputWriter? writer, int pid, ushort vk, bool pressed)
     {
         uint scan = NativeMethods.MapVirtualKeyW(vk, NativeMethods.MAPVK_VK_TO_VSC);
         if (scan > 0 && scan < 256)
-            _loginWriter?.SetKey(pid, (byte)scan, pressed);
+            writer?.SetKey(pid, (byte)scan, pressed);
     }
 
     /// <summary>
     /// Press and release a single key via DirectInput shared memory.
     /// </summary>
-    private void DiPressKey(int pid, ushort vk)
+    private static void DiPressKey(KeyInputWriter? writer, int pid, ushort vk)
     {
-        DiSetKey(pid, vk, true);
+        DiSetKey(writer, pid, vk, true);
         Thread.Sleep(80);
-        DiSetKey(pid, vk, false);
+        DiSetKey(writer, pid, vk, false);
         Thread.Sleep(80);
     }
 
@@ -326,7 +335,7 @@ public class AutoLoginManager
     /// Type a string by converting each character to its VK + scan code.
     /// Handles Shift for uppercase and symbols (e.g. '!' = Shift+'1').
     /// </summary>
-    private void DiTypeString(int pid, string text)
+    private static void DiTypeString(KeyInputWriter? writer, int pid, string text)
     {
         foreach (char c in text)
         {
@@ -336,11 +345,11 @@ public class AutoLoginManager
             ushort vk = (ushort)(vkScan & 0xFF);
             bool needShift = (vkScan & 0x100) != 0;
 
-            if (needShift) DiSetKey(pid, 0x10, true); // VK_SHIFT down
-            DiSetKey(pid, vk, true);
+            if (needShift) DiSetKey(writer, pid, 0x10, true); // VK_SHIFT down
+            DiSetKey(writer, pid, vk, true);
             Thread.Sleep(80);
-            DiSetKey(pid, vk, false);
-            if (needShift) DiSetKey(pid, 0x10, false); // VK_SHIFT up
+            DiSetKey(writer, pid, vk, false);
+            if (needShift) DiSetKey(writer, pid, 0x10, false); // VK_SHIFT up
             Thread.Sleep(50);
         }
     }
