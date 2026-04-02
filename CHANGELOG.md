@@ -1,13 +1,18 @@
 # Changelog
 
-## v3.1.0 — Internal Hook Upgrades (2026-04-01)
+## v3.1.0 — DirectInput Proxy, Background Auto-Login & Hook Upgrades (2026-04-01)
 
 ### Added
+- **DirectInput proxy DLL** (`Native/dinput8.dll`) — IAT hook proxy that intercepts `GetForegroundWindow`, `GetAsyncKeyState`, and `GetKeyboardState` inside eqgame.exe. Per-PID shared memory injects scan codes into EQ's DirectInput keyboard device without stealing focus.
+- **Background auto-login** — Types passwords into background EQ windows via DirectInput shared memory injection. True one-click multi-account login with no focus stealing.
+- **Key broadcast manager** (`Core/KeyBroadcastManager.cs`) — Writes key state to per-PID shared memory for background keystroke injection.
+- **Key input writer** (`Core/KeyInputWriter.cs`) — Shared memory writer for DirectInput key state.
 - **SetWindowTextA hook** — Custom window titles now persist through zone transitions, login, and character select. The injected DLL intercepts EQ's own SetWindowTextA calls and substitutes the configured title. Same approach as WinEQ2.
 - **ShowWindow hook** — Blocks EQ from minimizing itself on focus loss during DirectX init. Fixes the Maximize-on-Launch + no-Slim-Titlebar crash where EQ would get stuck minimized.
 - **Auto hook injection** — Hook DLL now injects whenever any hook feature is needed (custom window title, maximize protection, or slim titlebar), not just when slim titlebar + hook is toggled on.
 - **Video Settings description** — Added page description and "Monitor Selection" section title for clarity.
 - **Resolution hint** — Yellow hint in Window Style card when slim titlebar is disabled, reminding to set EQ resolution to fit above the taskbar.
+- **Help form auto-login section** — Documents background login status and dinput8.dll requirement.
 
 ### Fixed
 - **Auto-login typing** — Switched from VK+scancode to KEYEVENTF_UNICODE for reliable text entry on EQ's login screen. FocusAndSendKey re-focuses before each keystroke to survive focus theft.
@@ -17,6 +22,7 @@
 
 ### Changed
 - Hook DLL shared memory struct extended with `blockMinimize` flag and 256-byte `windowTitle` buffer (284 bytes total, up from 24).
+- **License changed to GPL-3.0** — Matches Stonemite's license (studied their DirectInput proxy approach).
 
 ---
 
