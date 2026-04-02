@@ -511,7 +511,7 @@ public class SettingsForm : Form
             Location = new Point(L, cy),
             AutoSize = true,
             ForeColor = Color.FromArgb(230, 190, 60),
-            Font = new Font("Segoe UI", 7.5f),
+            Font = DarkTheme.FontUI75,
             Visible = true,
         };
         cardStyle.Controls.Add(_lblStyleDisabledHint);

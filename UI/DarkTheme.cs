@@ -62,9 +62,15 @@ public static class DarkTheme
         Color.FromArgb(220, 180, 140),  // Paths — warm
     };
 
-    // ─── Cached Fonts (avoid allocations in render methods) ──────
+    // ─── Cached Fonts (shared across all controls — prevents GDI handle leaks) ──
     private static readonly Font TabFontBold = new("Segoe UI Semibold", 9f, FontStyle.Bold);
     private static readonly Font TabFontRegular = new("Segoe UI", 8.5f, FontStyle.Regular);
+    public static readonly Font FontUI9 = new("Segoe UI", 9f);
+    public static readonly Font FontUI85 = new("Segoe UI", 8.5f);
+    public static readonly Font FontUI75 = new("Segoe UI", 7.5f);
+    public static readonly Font FontUI75Italic = new("Segoe UI", 7.5f, FontStyle.Italic);
+    public static readonly Font FontSemibold9 = new("Segoe UI Semibold", 9f);
+    public static readonly Font FontSemibold95 = new("Segoe UI Semibold", 9.5f);
 
     // ─── Tab Control ─────────────────────────────────────────────
 
@@ -80,7 +86,7 @@ public static class DarkTheme
             SizeMode = TabSizeMode.Fixed,
             ItemSize = new Size(72, 30),
             Padding = new Point(12, 6),
-            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular)
+            Font = FontUI85
         };
 
         tabs.DrawItem += DrawTab;
@@ -153,7 +159,7 @@ public static class DarkTheme
             Location = new Point(x, y),
             AutoSize = true,
             ForeColor = AccentBar,
-            Font = new Font("Segoe UI Semibold", 9f)
+            Font = FontSemibold9
         };
         parent.Controls.Add(label);
 
@@ -179,7 +185,7 @@ public static class DarkTheme
             Location = new Point(x, y),
             AutoSize = true,
             ForeColor = FgWhite,
-            Font = new Font("Segoe UI", 9f)
+            Font = FontUI9
         };
         parent.Controls.Add(lbl);
         return lbl;
@@ -193,7 +199,7 @@ public static class DarkTheme
             Location = new Point(x, y),
             AutoSize = true,
             ForeColor = FgDimGray,
-            Font = new Font("Segoe UI", 7.5f, FontStyle.Italic)
+            Font = FontUI75Italic
         };
         parent.Controls.Add(lbl);
         return lbl;
@@ -213,7 +219,7 @@ public static class DarkTheme
             Maximum = max,
             Value = Math.Clamp(defaultVal, min, max),
             BorderStyle = BorderStyle.FixedSingle,
-            Font = new Font("Segoe UI", 9f)
+            Font = FontUI9
         };
         parent.Controls.Add(nud);
         return nud;
@@ -229,7 +235,7 @@ public static class DarkTheme
             ForeColor = FgWhite,
             DropDownStyle = ComboBoxStyle.DropDownList,
             FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 9f)
+            Font = FontUI9
         };
         cb.Items.AddRange(items);
         if (cb.Items.Count > 0) cb.SelectedIndex = 0;
@@ -247,7 +253,7 @@ public static class DarkTheme
             Location = new Point(x, y),
             AutoSize = true,
             ForeColor = FgWhite,
-            Font = new Font("Segoe UI", 9f)
+            Font = FontUI9
         };
         parent.Controls.Add(cb);
         return cb;
@@ -269,7 +275,7 @@ public static class DarkTheme
             BackColor = bgColor,
             ForeColor = FgWhite,
             Cursor = Cursors.Hand,
-            Font = new Font("Segoe UI", 9f)
+            Font = FontUI9
         };
         btn.FlatAppearance.BorderColor = Border;
         btn.FlatAppearance.BorderSize = 1;
@@ -306,7 +312,7 @@ public static class DarkTheme
         form.ShowInTaskbar = true;
         form.BackColor = BgDark;
         form.ForeColor = FgWhite;
-        form.Font = new Font("Segoe UI", 9f);
+        form.Font = FontUI9;
 
         // Tray-only apps don't get foreground activation — briefly set TopMost
         // on first show so the form actually appears visible, then release it
@@ -366,7 +372,7 @@ public static class DarkTheme
             Location = new Point(10, 8),
             AutoSize = true,
             ForeColor = titleColor,
-            Font = new Font("Segoe UI Semibold", 9.5f)
+            Font = FontSemibold95
         };
         panel.Controls.Add(lblTitle);
 
@@ -397,7 +403,7 @@ public static class DarkTheme
             Location = new Point(x, y),
             AutoSize = true,
             ForeColor = FgGray,
-            Font = new Font("Segoe UI", 8.5f)
+            Font = FontUI85
         };
         card.Controls.Add(lbl);
         return lbl;
@@ -412,7 +418,7 @@ public static class DarkTheme
             Location = new Point(x, y),
             AutoSize = true,
             ForeColor = FgDimGray,
-            Font = new Font("Segoe UI", 7.5f)
+            Font = FontUI75
         };
         card.Controls.Add(lbl);
         return lbl;
@@ -428,7 +434,7 @@ public static class DarkTheme
             BackColor = BgInput,
             ForeColor = FgWhite,
             BorderStyle = BorderStyle.FixedSingle,
-            Font = new Font("Segoe UI", 9f)
+            Font = FontUI9
         };
         card.Controls.Add(tb);
         WrapWithBorder(tb);
@@ -446,7 +452,7 @@ public static class DarkTheme
             ForeColor = FgWhite,
             DropDownStyle = ComboBoxStyle.DropDownList,
             FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", 8.5f)
+            Font = FontUI85
         };
         cb.Items.AddRange(items);
         if (cb.Items.Count > 0) cb.SelectedIndex = 0;
@@ -467,7 +473,7 @@ public static class DarkTheme
             Maximum = max,
             Value = Math.Clamp(defaultVal, min, max),
             BorderStyle = BorderStyle.FixedSingle,
-            Font = new Font("Segoe UI", 9f)
+            Font = FontUI9
         };
         card.Controls.Add(nud);
         WrapWithBorder(nud);
@@ -483,7 +489,7 @@ public static class DarkTheme
             Location = new Point(x, y),
             AutoSize = true,
             ForeColor = FgWhite,
-            Font = new Font("Segoe UI", 8.5f)
+            Font = FontUI85
         };
         card.Controls.Add(cb);
         return cb;
@@ -494,7 +500,7 @@ public static class DarkTheme
     {
         var btn = MakeButton(text, BgMedium, x, y);
         btn.Size = new Size(width, 26);
-        btn.Font = new Font("Segoe UI", 8.5f);
+        btn.Font = FontUI85;
         card.Controls.Add(btn);
         return btn;
     }
