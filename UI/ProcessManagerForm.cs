@@ -87,7 +87,7 @@ public class ProcessManagerForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = DarkTheme.BgDark;
         ForeColor = DarkTheme.FgWhite;
-        Font = new Font("Segoe UI", 9);
+        Font = DarkTheme.FontUI9;
 
         _tooltip = new ToolTip { InitialDelay = 300, ReshowDelay = 200 };
 
@@ -226,7 +226,7 @@ public class ProcessManagerForm : Form
             Location = new Point(340, 30),
             AutoSize = true,
             ForeColor = DarkTheme.FgDimGray,
-            Font = new Font("Segoe UI", 7.5f),
+            Font = DarkTheme.FontUI75,
             BackColor = Color.Transparent
         };
         cardFps.Controls.Add(iniLabel);
