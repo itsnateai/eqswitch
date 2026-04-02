@@ -71,6 +71,10 @@ public class TrayManager : IDisposable
     private HookConfigWriter? _hookConfig;
     private readonly HashSet<int> _injectedPids = new();
 
+    // Key broadcasting — writes synthetic key state to dinput8.dll proxy via shared memory
+    private KeyInputWriter? _keyInputWriter;
+    private KeyBroadcastManager? _keyBroadcastManager;
+
     public TrayManager(AppConfig config, ProcessManager processManager)
     {
         _config = config;
@@ -220,6 +224,9 @@ public class TrayManager : IDisposable
                     _config.Layout.TitlebarOffset);
             }
 
+            // Register as broadcast target for key injection (if broadcasting enabled)
+            _keyBroadcastManager?.AddTarget(c.ProcessId);
+
             // Inject hook DLL when any hook feature is needed:
             //   - Slim titlebar + hook enabled: position enforcement from inside
             //   - Custom window title: hook SetWindowTextA so EQ can't overwrite it
@@ -243,6 +250,7 @@ public class TrayManager : IDisposable
             // Clean up injection tracking and per-process shared memory
             _injectedPids.Remove(c.ProcessId);
             _hookConfig?.Close(c.ProcessId);
+            _keyBroadcastManager?.RemoveTarget(c.ProcessId);
         };
 
         // Immediately detect newly launched clients so slim titlebar applies without
@@ -289,6 +297,10 @@ public class TrayManager : IDisposable
         StartRetryTimer();
         StartupManager.MigrateFromRegistry();
         StartupManager.ValidateStartupPath(_config);
+
+        // Enable key broadcasting if configured
+        if (_config.KeyBroadcast.Enabled)
+            EnableKeyBroadcast();
 
         // Log core detection at startup
         var (cores, sysMask) = AffinityManager.DetectCores();
@@ -687,6 +699,9 @@ public class TrayManager : IDisposable
         {
             _previousActivePid = _lastActivePid;
             _lastActivePid = active.ProcessId;
+
+            // Exclude focused EQ window from key broadcast (it gets real input)
+            _keyBroadcastManager?.SetFocusedPid(active.ProcessId);
         }
 
         // Update PiP sources when foreground changes
@@ -806,6 +821,24 @@ public class TrayManager : IDisposable
         };
         videoMenu.DropDownItems.Add(multiMonItem);
         _contextMenu.Items.Add(videoMenu);
+
+        _contextMenu.Items.Add(new ToolStripSeparator());
+
+        // Key Broadcast toggle
+        var kbEnabled = _config.KeyBroadcast.Enabled;
+        var kbItem = new ToolStripMenuItem(
+            $"{(kbEnabled ? "\u2705" : "\u2B1C")}  Key Broadcast");
+        kbItem.Click += (_, _) =>
+        {
+            _config.KeyBroadcast.Enabled = !_config.KeyBroadcast.Enabled;
+            if (_config.KeyBroadcast.Enabled)
+                EnableKeyBroadcast();
+            else
+                DisableKeyBroadcast();
+            ConfigManager.Save(_config);
+            BuildContextMenu();
+        };
+        _contextMenu.Items.Add(kbItem);
 
         _contextMenu.Items.Add(new ToolStripSeparator());
 
@@ -1249,6 +1282,7 @@ public class TrayManager : IDisposable
         _config.DalayaPatcherPath = newConfig.DalayaPatcherPath;
         _config.Characters = newConfig.Characters;
         _config.Accounts = newConfig.Accounts;
+        _config.BackgroundLogin = newConfig.BackgroundLogin;
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
         _config.ShowTooltipErrors = newConfig.ShowTooltipErrors;
         _config.MinimizeToTray = newConfig.MinimizeToTray;
@@ -1400,6 +1434,72 @@ public class TrayManager : IDisposable
             UpdateHookConfigForPid(pid);
     }
 
+    // --- Key Broadcasting (dinput8.dll proxy) ---
+
+    /// <summary>
+    /// Deploy dinput8.dll to the EQ game directory and enable key broadcasting.
+    /// The proxy DLL uses DLL search order (app directory first) to intercept DirectInput.
+    /// </summary>
+    public void EnableKeyBroadcast()
+    {
+        if (_keyBroadcastManager?.Enabled == true) return;
+
+        // Deploy dinput8.dll to EQ directory
+        DeployDinput8Proxy();
+
+        // Initialize writer + manager
+        _keyInputWriter ??= new KeyInputWriter();
+        _keyBroadcastManager ??= new KeyBroadcastManager(_keyInputWriter);
+
+        // Register all existing clients as targets
+        foreach (var client in _processManager.Clients)
+            _keyBroadcastManager.AddTarget(client.ProcessId);
+
+        _keyBroadcastManager.Enable();
+        ShowBalloon("Key broadcasting enabled");
+    }
+
+    /// <summary>
+    /// Disable key broadcasting and remove dinput8.dll from EQ directory.
+    /// Note: can't remove DLL while EQ is running (file in use).
+    /// </summary>
+    public void DisableKeyBroadcast()
+    {
+        if (_keyBroadcastManager?.Enabled != true) return;
+        _keyBroadcastManager.Disable();
+        ShowBalloon("Key broadcasting disabled");
+    }
+
+    private void DeployDinput8Proxy()
+    {
+        var srcPath = Path.Combine(AppContext.BaseDirectory, "dinput8.dll");
+        if (!File.Exists(srcPath))
+        {
+            FileLogger.Warn($"DeployDinput8: dinput8.dll not found at {srcPath}");
+            return;
+        }
+
+        foreach (var client in _processManager.Clients)
+        {
+            try
+            {
+                using var proc = System.Diagnostics.Process.GetProcessById(client.ProcessId);
+                var eqDir = Path.GetDirectoryName(proc.MainModule?.FileName);
+                if (string.IsNullOrEmpty(eqDir)) continue;
+
+                var dstPath = Path.Combine(eqDir, "dinput8.dll");
+                if (File.Exists(dstPath)) continue; // already deployed
+
+                File.Copy(srcPath, dstPath);
+                FileLogger.Info($"DeployDinput8: copied to {dstPath}");
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Warn($"DeployDinput8: failed for PID {client.ProcessId}: {ex.Message}");
+            }
+        }
+    }
+
     /// <summary>
     /// Whether any hook feature is currently enabled (slim titlebar + hook,
     /// custom window title, or maximize-on-launch protection).
@@ -1518,6 +1618,12 @@ public class TrayManager : IDisposable
         _injectedPids.Clear();
         _hookConfig?.Dispose();
         _hookConfig = null;
+
+        // Clean up key broadcasting
+        _keyBroadcastManager?.Dispose();
+        _keyBroadcastManager = null;
+        _keyInputWriter?.Dispose();
+        _keyInputWriter = null;
     }
 
     private void StopForegroundHook()
@@ -1624,6 +1730,8 @@ public class TrayManager : IDisposable
         // _foregroundDebounceTimer already disposed by StopForegroundHook() above
         _boldMenuFont?.Dispose();
         _pipOverlay?.Dispose();
+        _keyBroadcastManager?.Dispose();
+        _keyInputWriter?.Dispose();
         _hotkeyManager.Dispose();
         _keyboardHook.Dispose();
         _taskbarMessageWindow?.DestroyHandle();

@@ -47,6 +47,16 @@ public class AppConfig
     // Tray Click Actions
     public TrayClickConfig TrayClick { get; set; } = new();
 
+    // Key Broadcasting (dinput8.dll proxy)
+    public KeyBroadcastConfig KeyBroadcast { get; set; } = new();
+
+    /// <summary>
+    /// When true, auto-login uses DirectInput shared memory to type in background
+    /// windows instead of SendInput+focus-stealing. Requires dinput8.dll deployed
+    /// to the EQ directory (provides IAT focus-faking hooks + DirectInput proxy).
+    /// </summary>
+    public bool BackgroundLogin { get; set; } = false;
+
     /// <summary>
     /// Custom tray icon path. Empty = use built-in Stone icon (default).
     /// Users can browse to any .ico file on their system.
@@ -94,6 +104,7 @@ public class AppConfig
         Hotkeys ??= new();
         TrayClick ??= new();
         EQClientIni ??= new();
+        KeyBroadcast ??= new();
         Characters ??= new();
 
         Layout.TargetMonitor = Math.Clamp(Layout.TargetMonitor, 0, 8);
@@ -354,6 +365,15 @@ public class TrayClickConfig
     /// Action for double middle-click on tray icon.
     /// </summary>
     public string MiddleDoubleClick { get; set; } = "Settings";
+}
+
+public class KeyBroadcastConfig
+{
+    /// <summary>Enable key broadcasting to background EQ windows via dinput8.dll proxy.</summary>
+    public bool Enabled { get; set; } = false;
+
+    /// <summary>Zero physical keyboard state in background windows before injecting synthetic keys.</summary>
+    public bool SuppressPhysical { get; set; } = false;
 }
 
 public class CharacterProfile

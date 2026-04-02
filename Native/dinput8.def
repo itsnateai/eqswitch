@@ -1,0 +1,5 @@
+; dinput8.dll proxy — export definition
+; Ensures the export name is undecorated (no _@N suffix from stdcall)
+LIBRARY dinput8
+EXPORTS
+    DirectInput8Create

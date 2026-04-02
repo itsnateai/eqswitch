@@ -194,6 +194,8 @@ internal static class NativeMethods
 
     public const int WH_KEYBOARD_LL = 13;
     public const int WM_KEYDOWN = 0x0100;
+    public const int WM_KEYUP = 0x0101;
+    public const int WM_CHAR = 0x0102;
     public const int WM_SYSKEYDOWN = 0x0104;
 
     // OEM keys (US keyboard layout)
@@ -359,6 +361,11 @@ internal static class NativeMethods
     public static extern int GetModuleFileNameExW(IntPtr hProcess, IntPtr hModule, System.Text.StringBuilder lpFilename, int nSize);
 
     public const uint LIST_MODULES_32BIT = 0x01;
+
+    // ─── PostMessage (Background Keystroke Injection) ──────────────
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool PostMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
     // ─── SendInput (Auto-Login Keystroke Injection) ────────────────
 
