@@ -38,6 +38,9 @@ public class HookConfigWriter : IDisposable
     // Total shared memory size: HookConfig fields + 256 bytes for title
     private static readonly int StructSize = Marshal.SizeOf<HookConfig>() + 256;
 
+    /// <summary>Reusable buffer for title writes — avoids allocating 256 bytes on every timer tick.</summary>
+    private static readonly byte[] TitleBuffer = new byte[256];
+
     private sealed class MappingEntry : IDisposable
     {
         public MemoryMappedFile Mmf;
@@ -130,15 +133,14 @@ public class HookConfigWriter : IDisposable
             // Write the title as a fixed 256-byte null-terminated ASCII buffer
             // at the offset right after the struct fields
             int titleOffset = Marshal.SizeOf<HookConfig>();
-            byte[] titleBytes = new byte[256];
+            Array.Clear(TitleBuffer);
             if (!string.IsNullOrEmpty(windowTitle))
             {
                 var encoded = Encoding.ASCII.GetBytes(windowTitle);
                 int copyLen = Math.Min(encoded.Length, 255); // leave room for null
-                Array.Copy(encoded, titleBytes, copyLen);
-                // titleBytes[copyLen] is already 0 (null terminator)
+                Array.Copy(encoded, TitleBuffer, copyLen);
             }
-            entry.Accessor.WriteArray(titleOffset, titleBytes, 0, 256);
+            entry.Accessor.WriteArray(titleOffset, TitleBuffer, 0, 256);
         }
         catch (Exception ex)
         {

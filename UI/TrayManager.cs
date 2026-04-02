@@ -170,7 +170,9 @@ public class TrayManager : IDisposable
                     _slimTitlebarGuard = new System.Windows.Forms.Timer { Interval = guardInterval };
                     _slimTitlebarGuard.Tick += (_, _) =>
                         _windowManager.ApplySlimTitlebarToAll(_processManager.Clients, _injectedPids);
-                    _slimTitlebarGuard.Start();
+                    // Don't start if a login is in progress — LoginComplete handler will resume it
+                    if (!_processManager.Clients.Any(c => _autoLoginManager.IsLoginActive(c.ProcessId)))
+                        _slimTitlebarGuard.Start();
                 }
                 else if (_slimTitlebarGuard.Interval != guardInterval)
                 {
@@ -1217,6 +1219,7 @@ public class TrayManager : IDisposable
         _config.Layout.BottomOffset = newConfig.Layout.BottomOffset;
         _config.Layout.WindowTitleTemplate = newConfig.Layout.WindowTitleTemplate;
         _config.Layout.Mode = newConfig.Layout.Mode;
+        _config.Layout.UseHook = newConfig.Layout.UseHook;
         _config.Affinity.Enabled = newConfig.Affinity.Enabled;
         _config.Affinity.ActivePriority = newConfig.Affinity.ActivePriority;
         _config.Affinity.BackgroundPriority = newConfig.Affinity.BackgroundPriority;
@@ -1241,6 +1244,7 @@ public class TrayManager : IDisposable
         _config.Pip.CustomWidth = newConfig.Pip.CustomWidth;
         _config.Pip.CustomHeight = newConfig.Pip.CustomHeight;
         _config.Pip.Opacity = newConfig.Pip.Opacity;
+        _config.Pip.Orientation = newConfig.Pip.Orientation;
         _config.Pip.ShowBorder = newConfig.Pip.ShowBorder;
         _config.Pip.BorderColor = newConfig.Pip.BorderColor;
         _config.Pip.MaxWindows = newConfig.Pip.MaxWindows;
@@ -1618,6 +1622,7 @@ public class TrayManager : IDisposable
     public void Dispose()
     {
         StopForegroundHook();
+        CleanupHookInjection();
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
         _launchManager.Dispose();
