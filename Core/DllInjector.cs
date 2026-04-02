@@ -28,6 +28,7 @@ public static class DllInjector
         var hProcess = IntPtr.Zero;
         var allocAddr = IntPtr.Zero;
         var hThread = IntPtr.Zero;
+        uint waitResult = NativeMethods.WAIT_TIMEOUT;
 
         try
         {
@@ -77,7 +78,7 @@ public static class DllInjector
                 return false;
             }
 
-            var waitResult = NativeMethods.WaitForSingleObject(hThread, 5000);
+            waitResult = NativeMethods.WaitForSingleObject(hThread, 5000);
 
             // Check if LoadLibraryA returned non-null (DLL loaded successfully)
             NativeMethods.GetExitCodeThread(hThread, out uint exitCode);
@@ -106,7 +107,11 @@ public static class DllInjector
         {
             if (hThread != IntPtr.Zero)
                 NativeMethods.CloseHandle(hThread);
-            if (allocAddr != IntPtr.Zero && hProcess != IntPtr.Zero)
+            // Only free remote memory if the thread completed — if it timed out,
+            // the remote thread may still be using the allocation. Leak the small
+            // buffer (~260 bytes) rather than crash eqgame.exe.
+            if (allocAddr != IntPtr.Zero && hProcess != IntPtr.Zero
+                && waitResult == NativeMethods.WAIT_OBJECT_0)
                 NativeMethods.VirtualFreeEx(hProcess, allocAddr, 0, NativeMethods.MEM_RELEASE);
             if (hProcess != IntPtr.Zero)
                 NativeMethods.CloseHandle(hProcess);
@@ -356,7 +361,12 @@ public static class DllInjector
                 hProcess, IntPtr.Zero, 0, freeLibrary, dllBase, 0, out _);
             if (hThread == IntPtr.Zero) return false;
 
-            NativeMethods.WaitForSingleObject(hThread, 5000);
+            var ejectWait = NativeMethods.WaitForSingleObject(hThread, 5000);
+            if (ejectWait != NativeMethods.WAIT_OBJECT_0)
+            {
+                FileLogger.Warn($"DllInjector.Eject: FreeLibrary didn't complete in time for PID {pid}, result={ejectWait}");
+                return false;
+            }
 
             FileLogger.Info($"DllInjector.Eject: successfully ejected from PID {pid}");
             return true;
