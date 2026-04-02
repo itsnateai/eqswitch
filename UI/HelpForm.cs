@@ -95,6 +95,13 @@ VIDEO SETTINGS:
 CUSTOM TRAY ICON:
   Set a custom .ico file in Settings → Paths tab
 
+AUTO-LOGIN:
+  Background Login: {(config.BackgroundLogin ? "ON" : "OFF")}
+  When ON, types passwords via DirectInput shared memory
+  (no focus stealing — all clients stay in background)
+  Requires dinput8.dll in EQ directory (auto-deployed)
+  Toggle in Settings → Accounts → Background Login card
+
 LAUNCHING:
   EQ Path: {config.EQPath}
   Delay between launches: {config.Launch.LaunchDelayMs / 1000.0:F1}s

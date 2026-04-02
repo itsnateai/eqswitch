@@ -8,7 +8,7 @@
   <a href="https://github.com/itsnateai/eqswitch_port/releases/latest"><img src="https://img.shields.io/github/v/release/itsnateai/eqswitch_port?style=flat-square&color=34c060" alt="Release"></a>
   <img src="https://img.shields.io/badge/.NET-8.0-512bd4?style=flat-square&logo=dotnet" alt=".NET 8">
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4?style=flat-square&logo=windows" alt="Windows">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/itsnateai/eqswitch_port?style=flat-square&color=34c060" alt="MIT License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/itsnateai/eqswitch_port?style=flat-square&color=34c060" alt="GPL-3.0 License"></a>
 </p>
 
 ---
@@ -21,8 +21,9 @@ A system tray utility for managing multiple EverQuest clients — window switchi
 
 | File | Size | Notes |
 |------|------|-------|
-| **EQSwitch.exe** | ~171 MB | Self-contained — no runtime needed, click and go |
-| **EQSwitch-fd.exe** | ~790 KB | Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) |
+| **EQSwitch.exe** | ~179 MB | Self-contained — no runtime needed, click and go |
+| **eqswitch-hook.dll** | ~132 KB | Ships with exe — hooks SetWindowPos/MoveWindow inside eqgame.exe |
+| **dinput8.dll** | ~132 KB | Ships with exe — deployed to EQ directory for background auto-login |
 
 > [!TIP]
 > Place in any folder and run — no installation needed. Config is stored as `eqswitch-config.json` next to the exe.
@@ -53,7 +54,9 @@ A system tray utility for managing multiple EverQuest clients — window switchi
 - **Character Profiles** — Per-character priority overrides, export/import
 - **Custom Tray Icon** — Custom .ico support
 - **Auto-Login** — Encrypted account presets with one-click launch, login, server select, and character enter world
-- **Portable** — Single exe, config stored next to it, no installer needed
+- **Background Auto-Login** — Types passwords in background windows via DirectInput shared memory injection — no focus stealing, true one-click multi-login
+- **DirectInput Proxy** — dinput8.dll hooks IAT for focus faking (GetForegroundWindow, GetAsyncKeyState, etc.) and injects keyboard state via per-PID shared memory
+- **Portable** — Single exe + 2 DLLs, config stored next to it, no installer needed
 
 ## Requirements
 
@@ -65,14 +68,17 @@ A system tray utility for managing multiple EverQuest clients — window switchi
 git clone https://github.com/itsnateai/eqswitch_port.git
 cd eqswitch_port
 
-# Build the native hook DLL (requires MSVC Build Tools, 32-bit target)
+# Build the native hook DLL (requires MSVC Build Tools, 32-bit x86 target)
 bash Native/build.sh
+
+# Build the DirectInput proxy DLL (32-bit x86)
+bash Native/build-dinput8.sh
 
 # Self-contained single-file (~179MB, no runtime needed)
 dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 ```
 
-Output: `bin/Release/net8.0-windows/win-x64/publish/EQSwitch.exe` + `eqswitch-hook.dll`
+Output: `bin/Release/net8.0-windows/win-x64/publish/EQSwitch.exe` + `eqswitch-hook.dll` + `dinput8.dll`
 
 ## Default Hotkeys
 
@@ -114,11 +120,27 @@ Place a file named `eqswitch-custom.ico` next to the exe to use your own icon.
 | Path | Description |
 |------|-------------|
 | `Program.cs` | Entry point — single-instance mutex, first-run setup |
-| `Core/` | Win32 interop, process management, hotkeys, DLL injection, shared memory |
+| `Core/` | Win32 interop, process management, hotkeys, DLL injection, shared memory, key broadcasting |
 | `Config/` | JSON config model, load/save, AHK migration |
 | `Models/` | EQ client data model |
 | `UI/` | Tray manager, settings GUI, PiP overlay, dark theme, process manager |
-| `Native/` | C++ hook DLL source (MinHook) — compiled as 32-bit for eqgame.exe |
+| `Native/` | C++ DLL sources — eqswitch-hook (MinHook) + dinput8 proxy (DirectInput + IAT hooks), 32-bit x86 |
+
+## Background Auto-Login
+
+When **Background Login** is enabled (Settings → Accounts), EQSwitch types passwords into background EQ windows without stealing focus. This allows true one-click multi-account login.
+
+**How it works:**
+1. `dinput8.dll` is deployed to your EQ directory before launching
+2. The DLL intercepts DirectInput and hooks keyboard state APIs (GetAsyncKeyState, GetForegroundWindow, etc.)
+3. Per-PID shared memory injects scan codes directly into EQ's DirectInput keyboard device
+4. EQ processes the keystrokes as if it were the focused window
+
+> [!NOTE]
+> EQ must be restarted after enabling background login for the first time — the proxy DLL loads at startup.
+
+> [!WARNING]
+> Windows Defender may flag `dinput8.dll` as suspicious (DirectInput hooking is a common game-tool technique). Add your EQ folder to Defender's exclusion list if the DLL is blocked or quarantined.
 
 ## Auto-Login Security
 
@@ -145,4 +167,4 @@ Passwords are encrypted using **Windows DPAPI** (Data Protection API) and stored
 
 ## License
 
-[MIT](LICENSE)
+[GPL-3.0](LICENSE)

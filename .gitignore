@@ -37,6 +37,8 @@ eqswitch-config.json
 backups/
 eqswitch-custom.ico
 eqswitch.log
+eqswitch-dinput8.log
+*.dll.old
 
 ## Native build artifacts
 Native/*.obj
