@@ -11,6 +11,7 @@ obj/
 # DLLs — ignore build output but keep native hook source DLL
 *.dll
 !Native/eqswitch-hook.dll
+!Native/dinput8.dll
 
 ## IDE
 .vs/
