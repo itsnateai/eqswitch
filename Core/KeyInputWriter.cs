@@ -79,7 +79,7 @@ public class KeyInputWriter : IDisposable
 
             _mappings[pid] = new MappingEntry(mmf, accessor);
 
-            // Write header with active=0 (dormant until broadcasting starts)
+            // Write header with active=0 (dormant until auto-login activates)
             var header = new SharedKeyState
             {
                 Magic = Magic,
@@ -105,7 +105,7 @@ public class KeyInputWriter : IDisposable
     }
 
     /// <summary>
-    /// Activate broadcasting for a process. Sets active=1 so the proxy starts injecting.
+    /// Activate key injection for a process. Sets active=1 so the proxy starts injecting.
     /// </summary>
     public void Activate(int pid, bool suppress = false)
     {
@@ -119,7 +119,7 @@ public class KeyInputWriter : IDisposable
     }
 
     /// <summary>
-    /// Deactivate broadcasting for a process. Sets active=0 and clears all keys.
+    /// Deactivate key injection for a process. Sets active=0 and clears all keys.
     /// </summary>
     public void Deactivate(int pid)
     {
@@ -133,7 +133,7 @@ public class KeyInputWriter : IDisposable
     }
 
     /// <summary>
-    /// Write a full key state snapshot. Called on each key event from KeyBroadcastManager.
+    /// Write a full key state snapshot.
     /// </summary>
     public void WriteKeys(int pid, byte[] keys)
     {
