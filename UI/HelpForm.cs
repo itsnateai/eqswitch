@@ -31,8 +31,10 @@ public static class HelpForm
         helpForm.Controls.Add(rtb);
         helpForm.FormClosed += (_, _) =>
         {
-            helpForm.Font?.Dispose();
+            // Only dispose the locally-created Consolas font.
+            // Do NOT dispose helpForm.Font — it's the shared DarkTheme.FontUI9 static.
             rtbFont.Dispose();
+            helpForm.Dispose();
         };
         helpForm.Show();
     }

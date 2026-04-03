@@ -15,6 +15,7 @@ typedef HRESULT(WINAPI *PFN_DirectInput8Create)(
     HINSTANCE, DWORD, REFIID, LPVOID *, LPUNKNOWN);
 
 static PFN_DirectInput8Create g_realCreate = nullptr;
+static HMODULE g_realDll = nullptr;
 static FILE *g_logFile = nullptr;
 static bool g_logInitAttempted = false;
 // Log path built from hModule during DLL_PROCESS_ATTACH (no loader-lock concern)
@@ -31,14 +32,15 @@ static void EnsureLogOpen() {
 
 void DI8Log(const char *fmt, ...) {
     EnsureLogOpen();
-    if (!g_logFile) return;
-    fprintf(g_logFile, "[%lu] ", GetTickCount());
+    FILE *f = g_logFile; // snapshot — detach may null g_logFile from another thread
+    if (!f) return;
+    fprintf(f, "[%lu] ", GetTickCount());
     va_list args;
     va_start(args, fmt);
-    vfprintf(g_logFile, fmt, args);
+    vfprintf(f, fmt, args);
     va_end(args);
-    fprintf(g_logFile, "\n");
-    fflush(g_logFile);
+    fprintf(f, "\n");
+    fflush(f);
 }
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
@@ -67,17 +69,19 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
         char realPath[MAX_PATH];
         snprintf(realPath, MAX_PATH, "%s\\dinput8.dll", sysDir);
 
-        HMODULE realDll = LoadLibraryA(realPath);
-        if (!realDll) {
+        g_realDll = LoadLibraryA(realPath);
+        if (!g_realDll) {
             DI8Log("FATAL: failed to load real dinput8.dll from %s", realPath);
             return FALSE;
         }
         DI8Log("Loaded real dinput8.dll from %s", realPath);
 
         g_realCreate = (PFN_DirectInput8Create)
-            GetProcAddress(realDll, "DirectInput8Create");
+            GetProcAddress(g_realDll, "DirectInput8Create");
         if (!g_realCreate) {
             DI8Log("FATAL: failed to resolve DirectInput8Create");
+            FreeLibrary(g_realDll);
+            g_realDll = nullptr;
             return FALSE;
         }
         DI8Log("Resolved real DirectInput8Create");
@@ -89,10 +93,17 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     }
     else if (reason == DLL_PROCESS_DETACH) {
         DI8Log("DllMain: PROCESS_DETACH");
+        // Restore IAT patches FIRST — before code pages are unmapped
+        IatHook::RemoveKeyboardHooks();
         // Signal background threads to exit and release handles (no wait — loader lock held)
         extern "C" void DeviceProxy_Shutdown();
         DeviceProxy_Shutdown();
-        if (g_logFile) { fclose(g_logFile); g_logFile = nullptr; }
+        // Release the real dinput8.dll reference
+        if (g_realDll) { FreeLibrary(g_realDll); g_realDll = nullptr; }
+        // Close log file — null before fclose so racing threads see nullptr
+        FILE *lf = g_logFile;
+        g_logFile = nullptr;
+        if (lf) fclose(lf);
     }
     return TRUE;
 }

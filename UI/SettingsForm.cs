@@ -160,7 +160,7 @@ public class SettingsForm : Form
         btnGitHub.Size = new Size(85, 30);
         btnGitHub.Click += (_, _) =>
         {
-            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://github.com/itsnateai/eqswitch") { UseShellExecute = true }); }
+            try { using var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://github.com/itsnateai/eqswitch") { UseShellExecute = true }); }
             catch (Exception ex) { FileLogger.Warn($"Failed to open GitHub URL: {ex.Message}"); }
         };
 

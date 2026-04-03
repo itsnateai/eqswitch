@@ -110,3 +110,8 @@ bool KeyShm::ReadKeys(uint8_t out[256]) {
         out[i] = *(volatile uint8_t *)&state->keys[i];
     return true;
 }
+
+void KeyShm::Close() {
+    if (g_shmPtr) { UnmapViewOfFile((void *)g_shmPtr); g_shmPtr = nullptr; }
+    if (g_shmHandle) { CloseHandle(g_shmHandle); g_shmHandle = nullptr; }
+}

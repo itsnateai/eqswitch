@@ -28,7 +28,7 @@ public static class FileOperations
 
         if (logFiles.Length == 0)
         {
-            Process.Start("explorer.exe", logsDir);
+            using var _ = Process.Start("explorer.exe", logsDir);
             return;
         }
 
@@ -56,7 +56,7 @@ public static class FileOperations
         }
         if (logFiles.Length > 10)
             menu.Items.Add($"({logFiles.Length - 10} more — open folder)", null, (_, _) =>
-                Process.Start("explorer.exe", logsDir));
+                { using var p = Process.Start("explorer.exe", logsDir); });
 
         menu.Show(Cursor.Position);
     }
@@ -96,7 +96,7 @@ public static class FileOperations
 
         try
         {
-            Process.Start(new ProcessStartInfo
+            using var proc = Process.Start(new ProcessStartInfo
             {
                 FileName = config.DalayaPatcherPath,
                 WorkingDirectory = Path.GetDirectoryName(config.DalayaPatcherPath) ?? "",
@@ -123,7 +123,7 @@ public static class FileOperations
 
         try
         {
-            Process.Start(new ProcessStartInfo
+            using var proc = Process.Start(new ProcessStartInfo
             {
                 FileName = config.GinaPath,
                 UseShellExecute = true
@@ -169,7 +169,7 @@ public static class FileOperations
     {
         try
         {
-            Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+            using var proc = Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
         }
         catch (Exception ex)
         {
@@ -181,7 +181,7 @@ public static class FileOperations
     {
         try
         {
-            Process.Start(new ProcessStartInfo
+            using var proc = Process.Start(new ProcessStartInfo
             {
                 FileName = path,
                 UseShellExecute = true

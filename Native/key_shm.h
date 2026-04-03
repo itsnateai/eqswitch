@@ -31,4 +31,6 @@ namespace KeyShm {
     bool InjectKeys(uint8_t *buf, uint32_t bufLen);
     // Copy full 256-byte key array. Returns true if active.
     bool ReadKeys(uint8_t out[256]);
+    // Close shared memory handles. Call from DLL_PROCESS_DETACH cleanup.
+    void Close();
 }

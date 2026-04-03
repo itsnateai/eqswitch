@@ -80,6 +80,7 @@ static void StartActivateThread() {
 // will see g_shutdown and exit within one sleep cycle (~16ms).
 extern "C" void DeviceProxy_Shutdown() {
     g_shutdown = true;
+    KeyShm::Close(); // release shared memory handles
     if (g_hActivateThread) { CloseHandle(g_hActivateThread); g_hActivateThread = nullptr; }
     if (g_hShmThread) { CloseHandle(g_hShmThread); g_hShmThread = nullptr; }
 }

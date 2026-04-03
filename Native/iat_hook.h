@@ -7,4 +7,9 @@ namespace IatHook {
     // Patch eqgame.exe's IAT for keyboard + window focus functions.
     // Call once from DllMain after shared memory is ready.
     void InstallKeyboardHooks();
+
+    // Restore all patched IAT entries to their original function pointers.
+    // MUST be called from DLL_PROCESS_DETACH BEFORE the DLL is unmapped,
+    // otherwise the IAT entries point into unmapped code and crash.
+    void RemoveKeyboardHooks();
 }
