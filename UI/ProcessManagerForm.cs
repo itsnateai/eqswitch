@@ -554,6 +554,11 @@ public class ProcessManagerForm : Form
             _refreshTimer?.Stop();
             _refreshTimer?.Dispose();
             _tooltip?.Dispose();
+            // Dispose GDI Font handles — WinForms doesn't own control fonts
+            _chkAffinityEnabled?.Font?.Dispose();
+            _statusLabel?.Font?.Dispose();
+            _grid?.DefaultCellStyle?.Font?.Dispose();
+            _grid?.ColumnHeadersDefaultCellStyle?.Font?.Dispose();
         }
         base.Dispose(disposing);
     }

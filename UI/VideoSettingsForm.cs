@@ -604,4 +604,10 @@ public class VideoSettingsForm : Form
     {
         return DarkTheme.AddNumeric(this, x, y, width, defaultVal, min, max);
     }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) DarkTheme.DisposeControlFonts(this);
+        base.Dispose(disposing);
+    }
 }

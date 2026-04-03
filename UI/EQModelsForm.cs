@@ -304,4 +304,10 @@ public class EQModelsForm : Form
         foreach (var (key, value) in config.EQClientIni.ModelOverrides)
             EQClientSettingsForm.SetIniValue(lines, "Defaults", key, value ? "TRUE" : "FALSE");
     }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) DarkTheme.DisposeControlFonts(this);
+        base.Dispose(disposing);
+    }
 }

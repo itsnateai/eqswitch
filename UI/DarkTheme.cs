@@ -554,4 +554,21 @@ public static class DarkTheme
             Math.Clamp(c.R + amount, 0, 255),
             Math.Clamp(c.G + amount, 0, 255),
             Math.Clamp(c.B + amount, 0, 255));
+
+    /// <summary>
+    /// Dispose all non-shared Font objects on a control tree.
+    /// WinForms does NOT own or dispose fonts assigned to controls — call this
+    /// from Dispose(bool) in any form that creates fonts via new Font().
+    /// Skips the shared static FontUI9 to avoid destroying it for other forms.
+    /// </summary>
+    public static void DisposeControlFonts(Control root)
+    {
+        foreach (Control c in root.Controls)
+        {
+            DisposeControlFonts(c);
+            // Skip shared static fonts — disposing them would crash other forms
+            if (c.Font != null && !ReferenceEquals(c.Font, FontUI9))
+                try { c.Font.Dispose(); } catch { }
+        }
+    }
 }

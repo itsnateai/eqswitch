@@ -353,4 +353,10 @@ public class EQParticlesForm : Form
         foreach (var (key, value) in config.EQClientIni.ParticleOverrides)
             EQClientSettingsForm.SetIniValue(lines, "Defaults", key, value);
     }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) DarkTheme.DisposeControlFonts(this);
+        base.Dispose(disposing);
+    }
 }

@@ -86,6 +86,12 @@ static HWND WINAPI HookedGetActiveWindow() {
     return g_realGetActiveWindow ? g_realGetActiveWindow() : nullptr;
 }
 
+// --- IAT patch tracking (for removal on detach) ---
+
+struct IatPatchEntry { uint32_t *slot; uint32_t original; };
+static IatPatchEntry g_patches[8];
+static int g_patchCount = 0;
+
 // --- IAT patching engine (x86 PE32 only) ---
 
 // Patch a single IAT entry. Returns original function pointer, or nullptr on failure.
@@ -126,10 +132,16 @@ static void *PatchIat(const uint8_t *base, const char *targetDll,
                     const char *fnName = (const char *)(base + *orig + 2);
                     if (strcmp(fnName, targetFn) == 0) {
                         void *original = (void *)(uintptr_t)*thunk;
-                        DWORD oldProtect;
+                        DWORD oldProtect, dummy;
                         VirtualProtect(thunk, 4, PAGE_READWRITE, &oldProtect);
                         *thunk = (uint32_t)(uintptr_t)newFn;
-                        VirtualProtect(thunk, 4, oldProtect, &oldProtect);
+                        VirtualProtect(thunk, 4, oldProtect, &dummy);
+                        // Track for removal on DLL detach
+                        if (g_patchCount < 8) {
+                            g_patches[g_patchCount].slot = thunk;
+                            g_patches[g_patchCount].original = (uint32_t)(uintptr_t)original;
+                            g_patchCount++;
+                        }
                         return original;
                     }
                 }
@@ -179,4 +191,15 @@ void IatHook::InstallKeyboardHooks() {
     if (p) { g_realGetActiveWindow = (PFN_GetActiveWindow)p; hooked++; DI8Log("iat_hook: hooked GetActiveWindow"); }
 
     DI8Log("iat_hook: %d function(s) hooked", hooked);
+}
+
+void IatHook::RemoveKeyboardHooks() {
+    for (int i = 0; i < g_patchCount; i++) {
+        DWORD oldProtect, dummy;
+        VirtualProtect(g_patches[i].slot, 4, PAGE_READWRITE, &oldProtect);
+        *g_patches[i].slot = g_patches[i].original;
+        VirtualProtect(g_patches[i].slot, 4, oldProtect, &dummy);
+    }
+    DI8Log("iat_hook: restored %d IAT entries", g_patchCount);
+    g_patchCount = 0;
 }
