@@ -48,7 +48,7 @@ public static class HelpForm
 
         return $@"EQSwitch v{version} — EverQuest Window Manager
 ============================================
-GitHub: https://github.com/itsnateai/eqswitch_port
+GitHub: https://github.com/itsnateai/eqswitch
 
 HOTKEYS:
   {hk.SwitchKey,-18} Cycle to next EQ client (EQ must be focused)
