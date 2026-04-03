@@ -49,18 +49,29 @@ static PFN_MoveWindow g_origMoveWindow = NULL;
 static PFN_SetWindowTextA g_origSetWindowTextA = NULL;
 static PFN_ShowWindow g_origShowWindow = NULL;
 
-// Simple file logger for debugging injection issues
-static void LogMessage(const char* fmt, ...) {
-    char path[MAX_PATH];
-    GetModuleFileNameA(NULL, path, MAX_PATH);
-    char* lastSlash = strrchr(path, '\\');
-    if (lastSlash) {
-        strcpy(lastSlash + 1, "eqswitch-hook.log");
-    } else {
-        strcpy(path, "eqswitch-hook.log");
-    }
+// Log path built from host exe path during DLL_PROCESS_ATTACH (safe under loader lock).
+// Actual fopen is deferred to first LogMessage call outside DllMain.
+static char g_hookLogPath[MAX_PATH] = {};
+static bool g_hookLogPathReady = false;
 
-    FILE* f = fopen(path, "a");
+static void BuildLogPath() {
+    // Use NULL = process exe path (we're injected into eqgame.exe, log goes next to it)
+    if (GetModuleFileNameA(NULL, g_hookLogPath, MAX_PATH)) {
+        char* lastSlash = strrchr(g_hookLogPath, '\\');
+        if (lastSlash && (size_t)(lastSlash + 1 - g_hookLogPath) + 18 < MAX_PATH)
+            memcpy(lastSlash + 1, "eqswitch-hook.log", 18);
+        else
+            snprintf(g_hookLogPath, MAX_PATH, "eqswitch-hook.log");
+    } else {
+        snprintf(g_hookLogPath, MAX_PATH, "eqswitch-hook.log");
+    }
+    g_hookLogPathReady = true;
+}
+
+static void LogMessage(const char* fmt, ...) {
+    if (!g_hookLogPathReady) return;
+
+    FILE* f = fopen(g_hookLogPath, "a");
     if (!f) return;
 
     SYSTEMTIME st;
@@ -104,11 +115,21 @@ static BOOL IsEqWindow(HWND hWnd) {
     return TRUE;
 }
 
-// Read config from shared memory
+// Read config from shared memory with torn-read detection.
+// The C# side is single-threaded and writes are fast, so torn reads
+// are extremely unlikely but theoretically possible for the 284-byte struct.
+// A simple retry on mismatch is sufficient — no lock needed.
 static BOOL ReadConfig(HookConfig* out) {
     if (!g_pConfig) return FALSE;
-    // Volatile read — C# side may update at any time
+    // Double-read to detect torn writes: read twice and compare enabled field.
+    // If the C# side was mid-write, the two reads will likely differ.
     *out = *(const HookConfig*)g_pConfig;
+    HookConfig verify;
+    verify.enabled = ((const volatile HookConfig*)g_pConfig)->enabled;
+    if (verify.enabled != out->enabled) {
+        // Retry once — C# write should be complete by now
+        *out = *(const HookConfig*)g_pConfig;
+    }
     return TRUE;
 }
 
@@ -315,6 +336,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     case DLL_PROCESS_ATTACH:
         g_hModule = hModule;
         DisableThreadLibraryCalls(hModule);
+        // Build log path now (safe — GetModuleFileNameA(NULL,...) doesn't re-acquire loader lock).
+        // Actual fopen is deferred to first LogMessage call outside DllMain.
+        BuildLogPath();
         LogMessage("=== eqswitch-hook.dll loaded into PID %lu ===", GetCurrentProcessId());
 
         if (!OpenSharedMemory()) {

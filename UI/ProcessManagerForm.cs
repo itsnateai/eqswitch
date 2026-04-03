@@ -387,7 +387,8 @@ public class ProcessManagerForm : Form
                 _forceNextRefresh = true;
                 RefreshList();
             }
-            catch { /* process already gone */ }
+            catch (ArgumentException) { /* process already exited */ }
+            catch (Exception ex) { FileLogger.Warn($"Kill process failed for PID {pid}: {ex.Message}"); }
         };
 
         // Suppress DataGridView error dialogs — log instead of crashing
@@ -506,7 +507,7 @@ public class ProcessManagerForm : Form
         if (!string.IsNullOrEmpty(_config.EQPath))
         {
             try { EQClientSettingsForm.ApplyProcessManagerToIni(_config); }
-            catch { /* non-critical — will apply next launch */ }
+            catch (Exception ex) { FileLogger.Warn($"ProcessManager: failed to write INI settings: {ex.Message}"); }
         }
     }
 
@@ -529,7 +530,7 @@ public class ProcessManagerForm : Form
             }
             return (fps, bgFps);
         }
-        catch { return ("?", "?"); }
+        catch (Exception ex) { FileLogger.Warn($"ProcessManager: failed to read FPS from INI: {ex.Message}"); return ("?", "?"); }
     }
 
     private void ResetToInitial()

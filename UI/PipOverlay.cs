@@ -202,7 +202,9 @@ public class PipOverlay : Form
                 fSourceClientAreaOnly = true
             };
 
-            NativeMethods.DwmUpdateThumbnailProperties(thumbId, ref props);
+            int updateHr = NativeMethods.DwmUpdateThumbnailProperties(thumbId, ref props);
+            if (updateHr != 0)
+                FileLogger.Warn($"PiP: DwmUpdateThumbnailProperties failed ({MapDwmError(updateHr)}) for {client}");
             _thumbnailIds.Add(thumbId);
             _sourceWindows.Add(srcHwnd);
 

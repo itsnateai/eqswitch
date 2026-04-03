@@ -80,8 +80,8 @@ public class TrayManager : IDisposable
         _hotkeyManager = new HotkeyManager();
         _keyboardHook = new KeyboardHookManager();
         _affinityManager = new AffinityManager(config);
-        _launchManager = new LaunchManager(config, _affinityManager);
-        _autoLoginManager = new AutoLoginManager(config);
+        _launchManager = new LaunchManager(config, _affinityManager, EQClientSettingsForm.EnforceOverrides);
+        _autoLoginManager = new AutoLoginManager(config, EQClientSettingsForm.EnforceOverrides);
         _autoLoginManager.StatusUpdate += (_, msg) => ShowBalloon(msg);
         _autoLoginManager.LoginStarting += (_, _) =>
         {
@@ -1605,8 +1605,9 @@ public class TrayManager : IDisposable
                 }
             }
         }
-        catch
+        catch (Exception ex)
         {
+            FileLogger.Warn($"Icon loading failed, using default: {ex.Message}");
             newIcon = SystemIcons.Application;
         }
 

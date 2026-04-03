@@ -32,6 +32,9 @@ public class KeyInputWriter : IDisposable
     }
 
     private static readonly int HeaderSize = Marshal.SizeOf<SharedKeyState>();
+    private static readonly int ActiveOffset = (int)Marshal.OffsetOf<SharedKeyState>(nameof(SharedKeyState.Active));
+    private static readonly int SuppressOffset = (int)Marshal.OffsetOf<SharedKeyState>(nameof(SharedKeyState.Suppress));
+    private static readonly int SeqOffset = (int)Marshal.OffsetOf<SharedKeyState>(nameof(SharedKeyState.Seq));
 
     private sealed class MappingEntry : IDisposable
     {
@@ -112,8 +115,8 @@ public class KeyInputWriter : IDisposable
         if (!_mappings.TryGetValue(pid, out var entry)) return;
         try
         {
-            entry.Accessor.Write(8, (uint)1);   // active = 1
-            entry.Accessor.Write(12, suppress ? (uint)1 : (uint)0); // suppress
+            entry.Accessor.Write(ActiveOffset, (uint)1);
+            entry.Accessor.Write(SuppressOffset, suppress ? (uint)1 : (uint)0);
         }
         catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Activate failed: {ex.Message}"); }
     }
@@ -126,7 +129,7 @@ public class KeyInputWriter : IDisposable
         if (!_mappings.TryGetValue(pid, out var entry)) return;
         try
         {
-            entry.Accessor.Write(8, (uint)0); // active = 0
+            entry.Accessor.Write(ActiveOffset, (uint)0);
             entry.Accessor.WriteArray(HeaderSize, new byte[256], 0, 256);
         }
         catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Deactivate failed: {ex.Message}"); }
@@ -143,7 +146,7 @@ public class KeyInputWriter : IDisposable
         try
         {
             entry.Seq++;
-            entry.Accessor.Write(16, entry.Seq); // seq
+            entry.Accessor.Write(SeqOffset, entry.Seq);
             entry.Accessor.WriteArray(HeaderSize, keys, 0, 256);
         }
         catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.WriteKeys failed: {ex.Message}"); }
@@ -158,7 +161,7 @@ public class KeyInputWriter : IDisposable
         try
         {
             entry.Seq++;
-            entry.Accessor.Write(16, entry.Seq); // bump seq
+            entry.Accessor.Write(SeqOffset, entry.Seq);
             entry.Accessor.Write(HeaderSize + scanCode, pressed ? (byte)0x80 : (byte)0x00);
         }
         catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.SetKey failed: {ex.Message}"); }
@@ -171,10 +174,10 @@ public class KeyInputWriter : IDisposable
         {
             try
             {
-                entry.Accessor.Write(8, (uint)0); // active = 0
+                entry.Accessor.Write(ActiveOffset, (uint)0);
                 entry.Accessor.WriteArray(HeaderSize, new byte[256], 0, 256);
             }
-            catch { }
+            catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Close: cleanup failed for PID {pid}: {ex.Message}"); }
             entry.Dispose();
             FileLogger.Info($"KeyInputWriter: closed mapping for PID {pid}");
         }
@@ -185,13 +188,13 @@ public class KeyInputWriter : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        foreach (var (_, entry) in _mappings)
+        foreach (var (pid, entry) in _mappings)
         {
             try
             {
-                entry.Accessor.Write(8, (uint)0); // active = 0
+                entry.Accessor.Write(ActiveOffset, (uint)0);
             }
-            catch { }
+            catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Dispose: cleanup failed for PID {pid}: {ex.Message}"); }
             entry.Dispose();
         }
         _mappings.Clear();

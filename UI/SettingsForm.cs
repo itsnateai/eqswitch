@@ -161,7 +161,7 @@ public class SettingsForm : Form
         btnGitHub.Click += (_, _) =>
         {
             try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://github.com/itsnateai/eqswitch") { UseShellExecute = true }); }
-            catch { }
+            catch (Exception ex) { FileLogger.Warn($"Failed to open GitHub URL: {ex.Message}"); }
         };
 
         // Reset Defaults button (small, discreet, next to GitHub)
@@ -999,7 +999,7 @@ public class SettingsForm : Form
         newConfig.EQClientIni.MaximizeWindow = _chkMaximizeWindow.Checked;
 
         _onApply(newConfig);
-        Debug.WriteLine("Settings applied");
+        FileLogger.Info("Settings applied");
     }
 
 

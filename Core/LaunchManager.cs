@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text;
 using EQSwitch.Config;
 
 namespace EQSwitch.Core;
@@ -15,6 +14,7 @@ public class LaunchManager : IDisposable
 
     private readonly AppConfig _config;
     private readonly AffinityManager _affinityManager;
+    private readonly Action<AppConfig>? _enforceOverrides;
 
     private bool _launchActive;
     private long _lastLaunchTime;
@@ -33,10 +33,11 @@ public class LaunchManager : IDisposable
     /// <summary>Fires with progress messages during launch.</summary>
     public event EventHandler<string>? ProgressUpdate;
 
-    public LaunchManager(AppConfig config, AffinityManager affinityManager)
+    public LaunchManager(AppConfig config, AffinityManager affinityManager, Action<AppConfig>? enforceOverrides = null)
     {
         _config = config;
         _affinityManager = affinityManager;
+        _enforceOverrides = enforceOverrides;
     }
 
     /// <summary>
@@ -147,7 +148,10 @@ public class LaunchManager : IDisposable
         try
         {
             // Write eqclient.ini overrides BEFORE launching (slim titlebar resolution, etc.)
-            EQSwitch.UI.EQClientSettingsForm.EnforceOverrides(_config);
+            if (_enforceOverrides != null)
+                _enforceOverrides(_config);
+            else
+                FileLogger.Warn("LaunchManager: no enforceOverrides callback registered, skipping INI overrides");
 
             // Validate exe name doesn't contain path traversal sequences
             var exeName = _config.Launch.ExeName;

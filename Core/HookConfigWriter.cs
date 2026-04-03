@@ -38,8 +38,18 @@ public class HookConfigWriter : IDisposable
     // Total shared memory size: HookConfig fields + 256 bytes for title
     private static readonly int StructSize = Marshal.SizeOf<HookConfig>() + 256;
 
-    /// <summary>Reusable buffer for title writes — avoids allocating 256 bytes on every timer tick.</summary>
-    private static readonly byte[] TitleBuffer = new byte[256];
+    // Verify struct size matches C++ side (7 ints * 4 bytes + 256 byte title = 284 total).
+    // Runtime check — not Debug.Assert which is stripped in Release builds.
+    private static readonly bool _ = VerifyStructSize();
+    private static bool VerifyStructSize()
+    {
+        if (StructSize != 284)
+        {
+            FileLogger.Error($"HookConfig struct size mismatch: expected 284, got {StructSize}");
+            throw new InvalidOperationException($"HookConfig struct size mismatch: expected 284, got {StructSize}");
+        }
+        return true;
+    }
 
     private sealed class MappingEntry : IDisposable
     {
@@ -131,16 +141,17 @@ public class HookConfigWriter : IDisposable
             entry.Accessor.Write(0, ref config);
 
             // Write the title as a fixed 256-byte null-terminated ASCII buffer
-            // at the offset right after the struct fields
+            // at the offset right after the struct fields.
+            // Local buffer avoids thread-safety issues with a shared static buffer.
             int titleOffset = Marshal.SizeOf<HookConfig>();
-            Array.Clear(TitleBuffer);
+            var titleBuffer = new byte[256];
             if (!string.IsNullOrEmpty(windowTitle))
             {
                 var encoded = Encoding.ASCII.GetBytes(windowTitle);
                 int copyLen = Math.Min(encoded.Length, 255); // leave room for null
-                Array.Copy(encoded, TitleBuffer, copyLen);
+                Array.Copy(encoded, titleBuffer, copyLen);
             }
-            entry.Accessor.WriteArray(titleOffset, TitleBuffer, 0, 256);
+            entry.Accessor.WriteArray(titleOffset, titleBuffer, 0, 256);
         }
         catch (Exception ex)
         {
@@ -175,7 +186,8 @@ public class HookConfigWriter : IDisposable
         if (_mappings.Remove(pid, out var entry))
         {
             var config = new HookConfig { Enabled = 0 };
-            try { entry.Accessor.Write(0, ref config); } catch { }
+            try { entry.Accessor.Write(0, ref config); }
+            catch (Exception ex) { FileLogger.Warn($"HookConfigWriter.Close: failed to disable hook for PID {pid}: {ex.Message}"); }
             entry.Dispose();
             FileLogger.Info($"HookConfigWriter: closed mapping for PID {pid}");
         }
@@ -189,7 +201,8 @@ public class HookConfigWriter : IDisposable
         foreach (var (pid, entry) in _mappings)
         {
             var config = new HookConfig { Enabled = 0 };
-            try { entry.Accessor.Write(0, ref config); } catch { }
+            try { entry.Accessor.Write(0, ref config); }
+            catch (Exception ex) { FileLogger.Warn($"HookConfigWriter.Dispose: failed to disable hook for PID {pid}: {ex.Message}"); }
             entry.Dispose();
         }
         _mappings.Clear();

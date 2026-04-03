@@ -131,7 +131,7 @@ public static class FileOperations
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"OpenGina failed: {ex.Message}");
+            FileLogger.Warn($"OpenGina failed: {ex.Message}");
             showBalloon($"Failed to launch GINA: {ex.Message}");
         }
     }
@@ -152,11 +152,11 @@ public static class FileOperations
             try
             {
                 File.WriteAllText(notesPath, "# EQSwitch Notes\n\n");
-                Debug.WriteLine($"Created notes file: {notesPath}");
+                FileLogger.Info($"Created notes file: {notesPath}");
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"OpenNotes: failed to create {notesPath} — {ex.Message}");
+                FileLogger.Warn($"OpenNotes: failed to create {notesPath} — {ex.Message}");
                 showBalloon($"Failed to create notes file: {ex.Message}");
                 return;
             }
@@ -173,7 +173,7 @@ public static class FileOperations
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"OpenUrl failed for {url}: {ex.Message}");
+            FileLogger.Warn($"OpenUrl failed for {url}: {ex.Message}");
         }
     }
 
@@ -189,7 +189,7 @@ public static class FileOperations
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"OpenWithDefaultEditor failed for {path}: {ex.Message}");
+            FileLogger.Warn($"OpenWithDefaultEditor failed for {path}: {ex.Message}");
         }
     }
 }
