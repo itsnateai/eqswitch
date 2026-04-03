@@ -11,6 +11,7 @@ public class WindowManager
 {
     private readonly AppConfig _config;
     private readonly IWindowsApi _api;
+    [ThreadStatic] private static System.Text.StringBuilder? _titleSb;
 
     public WindowManager(AppConfig config, IWindowsApi? api = null)
     {
@@ -446,8 +447,11 @@ public class WindowManager
             int len = NativeMethods.GetWindowTextLength(client.WindowHandle);
             if (len > 0)
             {
-                var sb = new System.Text.StringBuilder(len + 1);
-                NativeMethods.GetWindowText(client.WindowHandle, sb, sb.Capacity);
+                _titleSb ??= new System.Text.StringBuilder(256);
+                _titleSb.EnsureCapacity(len + 1);
+                _titleSb.Clear();
+                NativeMethods.GetWindowText(client.WindowHandle, _titleSb, _titleSb.Capacity);
+                var sb = _titleSb;
                 var currentNative = sb.ToString();
                 if (currentNative.StartsWith("EverQuest", StringComparison.Ordinal))
                     client.OriginalTitle = currentNative;
@@ -483,7 +487,12 @@ public class WindowManager
     {
         var monitors = fullBounds ? _api.GetAllMonitorBounds() : _api.GetAllMonitorWorkAreas();
         int targetIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, Math.Max(0, monitors.Count - 1));
-        return monitors.Count > 0 ? monitors[targetIdx] : new WinRect { Right = 1920, Bottom = 1080 };
+        if (monitors.Count == 0)
+        {
+            FileLogger.Warn("GetTargetMonitor: no monitors detected, falling back to 1920x1080");
+            return new WinRect { Right = 1920, Bottom = 1080 };
+        }
+        return monitors[targetIdx];
     }
 
     /// <summary>

@@ -79,16 +79,18 @@ public static class DllInjector
             }
 
             waitResult = NativeMethods.WaitForSingleObject(hThread, 5000);
-
-            // Check if LoadLibraryA returned non-null (DLL loaded successfully)
-            NativeMethods.GetExitCodeThread(hThread, out uint exitCode);
-
             if (waitResult != NativeMethods.WAIT_OBJECT_0)
             {
                 FileLogger.Error($"DllInjector: remote thread didn't complete in time, result={waitResult}");
                 return false;
             }
 
+            // Check if LoadLibraryA returned non-null (DLL loaded successfully)
+            if (!NativeMethods.GetExitCodeThread(hThread, out uint exitCode))
+            {
+                FileLogger.Error($"DllInjector: GetExitCodeThread failed, error={Marshal.GetLastWin32Error()}");
+                return false;
+            }
             if (exitCode == 0)
             {
                 FileLogger.Error($"DllInjector: LoadLibraryA returned NULL in PID {pid} — DLL failed to load");
@@ -128,7 +130,11 @@ public static class DllInjector
     {
         // Check if target is WoW64 (32-bit process on 64-bit OS)
         bool targetIsWow64 = false;
-        NativeMethods.IsWow64Process(hProcess, out targetIsWow64);
+        if (!NativeMethods.IsWow64Process(hProcess, out targetIsWow64))
+        {
+            FileLogger.Error($"DllInjector: IsWow64Process failed for PID {pid}, error={Marshal.GetLastWin32Error()}");
+            return IntPtr.Zero;
+        }
 
         bool weAreWow64 = !Environment.Is64BitProcess;
 
@@ -252,6 +258,7 @@ public static class DllInjector
             {
                 uint nameRva = BitConverter.ToUInt32(peData, namesFileOff + (int)(i * 4));
                 int nameFileOff = RvaToFileOffset(peData, peOffset, nameRva);
+                if (nameFileOff < 0) continue;
 
                 // Read null-terminated ASCII string
                 int end = nameFileOff;
@@ -333,7 +340,11 @@ public static class DllInjector
 
             // Resolve FreeLibrary in the target process
             bool targetIsWow64 = false;
-            NativeMethods.IsWow64Process(hProcess, out targetIsWow64);
+            if (!NativeMethods.IsWow64Process(hProcess, out targetIsWow64))
+            {
+                FileLogger.Error($"DllInjector.Eject: IsWow64Process failed, error={Marshal.GetLastWin32Error()}");
+                return false;
+            }
 
             IntPtr freeLibrary;
             if (!targetIsWow64 || !Environment.Is64BitProcess)
@@ -359,13 +370,24 @@ public static class DllInjector
 
             hThread = NativeMethods.CreateRemoteThread(
                 hProcess, IntPtr.Zero, 0, freeLibrary, dllBase, 0, out _);
-            if (hThread == IntPtr.Zero) return false;
+            if (hThread == IntPtr.Zero)
+            {
+                FileLogger.Error($"DllInjector.Eject: CreateRemoteThread failed for PID {pid}, error={Marshal.GetLastWin32Error()}");
+                return false;
+            }
 
             var ejectWait = NativeMethods.WaitForSingleObject(hThread, 5000);
             if (ejectWait != NativeMethods.WAIT_OBJECT_0)
             {
                 FileLogger.Warn($"DllInjector.Eject: FreeLibrary didn't complete in time for PID {pid}, result={ejectWait}");
                 return false;
+            }
+
+            // Verify FreeLibrary returned non-zero (success)
+            if (NativeMethods.GetExitCodeThread(hThread, out uint freeResult))
+            {
+                if (freeResult == 0)
+                    FileLogger.Warn($"DllInjector.Eject: FreeLibrary returned FALSE in PID {pid} — DLL may still be loaded");
             }
 
             FileLogger.Info($"DllInjector.Eject: successfully ejected from PID {pid}");

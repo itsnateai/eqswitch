@@ -123,13 +123,10 @@ public class ProcessManager : IDisposable
                         if (hwnd == IntPtr.Zero) continue;
 
                         var title = GetWindowTitle(hwnd);
-                        var client = new EQClient
+                        var client = new EQClient(proc.Id, hwnd, _clients.Count)
                         {
-                            WindowHandle = hwnd,
-                            ProcessId = proc.Id,
                             WindowTitle = title,
-                            OriginalTitle = title,
-                            SlotIndex = _clients.Count
+                            OriginalTitle = title
                         };
 
                         _clients.Add(client);

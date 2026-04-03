@@ -3,14 +3,17 @@ namespace EQSwitch.Core;
 /// <summary>
 /// Minimal persistent file logger. Zero external dependencies.
 /// Writes to eqswitch.log alongside the exe. Thread-safe via lock.
+/// Falls back to %TEMP% if the primary log path is inaccessible.
 /// </summary>
 public static class FileLogger
 {
     private static StreamWriter? _writer;
     private static readonly object _lock = new();
     private static bool _initialized;
+    private static int _consecutiveWriteFailures;
 
     private const long MaxLogSize = 1_048_576; // 1MB
+    private const int MaxConsecutiveFailures = 10;
 
     /// <summary>
     /// Initialize the logger. Call once at startup before any logging.
@@ -19,9 +22,27 @@ public static class FileLogger
     {
         if (_initialized) return;
 
+        var logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "eqswitch.log");
+
+        if (TryInitializeAt(logPath))
+            return;
+
+        // Fallback to %TEMP% if primary path fails (read-only dir, antivirus, disk full)
+        var tempLog = Path.Combine(Path.GetTempPath(), "eqswitch.log");
+        if (TryInitializeAt(tempLog))
+        {
+            Info($"Logger fallback to {tempLog} (primary path unavailable)");
+            return;
+        }
+
+        // Truly no logging available — Debug output for development only
+        System.Diagnostics.Debug.WriteLine("FileLogger: failed to initialize at both primary and temp paths");
+    }
+
+    private static bool TryInitializeAt(string logPath)
+    {
         try
         {
-            var logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "eqswitch.log");
             var bakPath = logPath + ".bak";
 
             // Rotate if log exceeds 1MB
@@ -42,12 +63,13 @@ public static class FileLogger
             };
 
             _initialized = true;
+            _consecutiveWriteFailures = 0;
             Info("Logger initialized");
+            return true;
         }
         catch
         {
-            // If we can't create the log file, continue without logging.
-            // Better than crashing the app over diagnostics.
+            return false;
         }
     }
 
@@ -68,8 +90,21 @@ public static class FileLogger
 
         lock (_lock)
         {
-            try { _writer.WriteLine(line); }
-            catch { /* Don't crash the app over logging failures */ }
+            try
+            {
+                _writer.WriteLine(line);
+                _consecutiveWriteFailures = 0;
+            }
+            catch
+            {
+                _consecutiveWriteFailures++;
+                if (_consecutiveWriteFailures >= MaxConsecutiveFailures)
+                {
+                    _initialized = false;
+                    System.Diagnostics.Debug.WriteLine(
+                        $"FileLogger: {MaxConsecutiveFailures} consecutive write failures, disabling");
+                }
+            }
         }
     }
 

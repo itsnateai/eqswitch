@@ -16,8 +16,21 @@ typedef HRESULT(WINAPI *PFN_DirectInput8Create)(
 
 static PFN_DirectInput8Create g_realCreate = nullptr;
 static FILE *g_logFile = nullptr;
+static bool g_logInitAttempted = false;
+// Log path built from hModule during DLL_PROCESS_ATTACH (no loader-lock concern)
+static char g_logPath[MAX_PATH] = {};
+
+// Open log file using the path prepared during DLL_PROCESS_ATTACH.
+// Deferred from DllMain because fopen calls CreateFileA internally.
+static void EnsureLogOpen() {
+    if (g_logFile || g_logInitAttempted) return;
+    g_logInitAttempted = true;
+    if (g_logPath[0])
+        g_logFile = fopen(g_logPath, "w");
+}
 
 void DI8Log(const char *fmt, ...) {
+    EnsureLogOpen();
     if (!g_logFile) return;
     fprintf(g_logFile, "[%lu] ", GetTickCount());
     va_list args;
@@ -32,7 +45,18 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
 
-        g_logFile = fopen("eqswitch-dinput8.log", "w");
+        // Build log path from hModule (safe in DllMain — no loader lock re-entry).
+        // Actual fopen is deferred to first DI8Log call.
+        if (GetModuleFileNameA(hModule, g_logPath, MAX_PATH)) {
+            char *lastSlash = strrchr(g_logPath, '\\');
+            if (lastSlash && (size_t)(lastSlash + 1 - g_logPath) + 21 < MAX_PATH)
+                memcpy(lastSlash + 1, "eqswitch-dinput8.log", 21);
+            else
+                snprintf(g_logPath, MAX_PATH, "eqswitch-dinput8.log");
+        } else {
+            snprintf(g_logPath, MAX_PATH, "eqswitch-dinput8.log");
+        }
+
         DI8Log("DllMain: PROCESS_ATTACH (EQSwitch dinput8 proxy v1)");
 
         // Build path to real dinput8.dll dynamically.
@@ -65,6 +89,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     }
     else if (reason == DLL_PROCESS_DETACH) {
         DI8Log("DllMain: PROCESS_DETACH");
+        // Signal background threads to exit and release handles (no wait — loader lock held)
+        extern "C" void DeviceProxy_Shutdown();
+        DeviceProxy_Shutdown();
         if (g_logFile) { fclose(g_logFile); g_logFile = nullptr; }
     }
     return TRUE;

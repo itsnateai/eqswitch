@@ -20,6 +20,9 @@ static bool g_shmThreadStarted = false;
 static DWORD g_originalCoopFlags = 0;
 static bool g_coopSwitched = false;
 static IDirectInputDevice8W *g_realKeyboardDevice = nullptr;
+static volatile bool g_shutdown = false;
+static HANDLE g_hActivateThread = nullptr;
+static HANDLE g_hShmThread = nullptr;
 
 HWND GetEqHwnd() { return g_eqHwnd; }
 
@@ -29,7 +32,7 @@ HWND GetEqHwnd() { return g_eqHwnd; }
 
 static DWORD WINAPI ActivateThread(LPVOID) {
     bool wasActive = false;
-    while (true) {
+    while (!g_shutdown) {
         Sleep(16); // ~60Hz
         bool active = KeyShm::IsActive();
         HWND hwnd = g_eqHwnd;
@@ -67,7 +70,18 @@ static DWORD WINAPI ActivateThread(LPVOID) {
 static void StartActivateThread() {
     if (g_activateThreadStarted) return;
     g_activateThreadStarted = true;
-    CreateThread(nullptr, 0, ActivateThread, nullptr, 0, nullptr);
+    g_hActivateThread = CreateThread(nullptr, 0, ActivateThread, nullptr, 0, nullptr);
+}
+
+// Called from dinput8-proxy DLL_PROCESS_DETACH to signal threads to exit.
+// MUST NOT call WaitForSingleObject here — DllMain holds the loader lock,
+// and the threads may call DI8Log→EnsureLogOpen which touches the loader.
+// The OS terminates threads on process exit; on FreeLibrary, the threads
+// will see g_shutdown and exit within one sleep cycle (~16ms).
+extern "C" void DeviceProxy_Shutdown() {
+    g_shutdown = true;
+    if (g_hActivateThread) { CloseHandle(g_hActivateThread); g_hActivateThread = nullptr; }
+    if (g_hShmThread) { CloseHandle(g_hShmThread); g_hShmThread = nullptr; }
 }
 
 // --- SHM polling thread (Phase 3) ---
@@ -76,7 +90,7 @@ static void StartActivateThread() {
 
 static DWORD WINAPI ShmPollingThread(LPVOID) {
     bool prevAnyKeys = false;
-    while (true) {
+    while (!g_shutdown) {
         Sleep(8); // ~120Hz
         uint8_t keys[256];
         bool active = KeyShm::ReadKeys(keys);
@@ -99,7 +113,7 @@ static DWORD WINAPI ShmPollingThread(LPVOID) {
 static void StartShmPollingThread() {
     if (g_shmThreadStarted) return;
     g_shmThreadStarted = true;
-    CreateThread(nullptr, 0, ShmPollingThread, nullptr, 0, nullptr);
+    g_hShmThread = CreateThread(nullptr, 0, ShmPollingThread, nullptr, 0, nullptr);
 }
 
 // --- Constructor ---
@@ -178,7 +192,7 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::GetDeviceData(
     if (!m_isKeyboard)
         return m_real->GetDeviceData(cbObjectData, rgdod, pdwInOut, dwFlags);
 
-    DWORD originalCapacity = (pdwInOut && !IsBadReadPtr(pdwInOut, 4)) ? *pdwInOut : 0;
+    DWORD originalCapacity = pdwInOut ? *pdwInOut : 0;
     bool peek = (dwFlags & DIGDD_PEEK) != 0;
 
     HRESULT hr = m_real->GetDeviceData(cbObjectData, rgdod, pdwInOut, dwFlags);

@@ -187,7 +187,11 @@ public class AffinityManager
             if (hProcess == IntPtr.Zero)
                 return (0, 0);
 
-            NativeMethods.GetProcessAffinityMask(hProcess, out IntPtr processAffinity, out IntPtr systemAffinity);
+            if (!NativeMethods.GetProcessAffinityMask(hProcess, out IntPtr processAffinity, out IntPtr systemAffinity))
+            {
+                FileLogger.Warn($"GetProcessAffinityMask failed for PID {processId}");
+                return (0, 0);
+            }
             return ((long)processAffinity, (long)systemAffinity);
         }
         finally
@@ -240,8 +244,7 @@ public class AffinityManager
 
             if (hProcess != IntPtr.Zero)
             {
-                NativeMethods.GetProcessAffinityMask(hProcess, out _, out IntPtr sysMask);
-                if ((long)sysMask != 0)
+                if (NativeMethods.GetProcessAffinityMask(hProcess, out _, out IntPtr sysMask) && (long)sysMask != 0)
                     systemMask = (long)sysMask;
             }
         }

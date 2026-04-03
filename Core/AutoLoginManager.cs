@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using EQSwitch.Config;
 using EQSwitch.Models;
@@ -25,6 +26,9 @@ public class AutoLoginManager
     /// <summary>UI thread sync context — captured at construction for marshaling events back to the UI thread.</summary>
     private readonly SynchronizationContext? _syncContext;
 
+    /// <summary>Callback to enforce eqclient.ini overrides before launch (injected to avoid Core→UI dependency).</summary>
+    private readonly Action<AppConfig>? _enforceOverrides;
+
     public event EventHandler<string>? StatusUpdate;
 
     /// <summary>Fires just before the login sequence starts (use to pause guard timers).</summary>
@@ -36,10 +40,11 @@ public class AutoLoginManager
     /// <summary>True if the given PID is currently running through the login sequence.</summary>
     public bool IsLoginActive(int pid) => _activeLoginPids.ContainsKey(pid);
 
-    public AutoLoginManager(AppConfig config)
+    public AutoLoginManager(AppConfig config, Action<AppConfig>? enforceOverrides = null)
     {
         _config = config;
         _syncContext = SynchronizationContext.Current;
+        _enforceOverrides = enforceOverrides;
     }
 
     /// <summary>
@@ -83,14 +88,21 @@ public class AutoLoginManager
 
         // Deploy dinput8.dll to EQ directory before launching if background mode is on.
         // The DLL must be present at launch time — EQ loads it via DLL search order.
-        if (backgroundMode)
-            DeployDinput8ToEQPath();
+        if (backgroundMode && !DeployDinput8ToEQPath())
+        {
+            FileLogger.Warn("AutoLogin: dinput8 deploy failed, falling back to legacy mode");
+            Report("Background login unavailable — falling back to foreground mode");
+            backgroundMode = false;
+        }
 
         int pid;
         try
         {
             // Write eqclient.ini overrides before launch
-            EQSwitch.UI.EQClientSettingsForm.EnforceOverrides(_config);
+            if (_enforceOverrides != null)
+                _enforceOverrides(_config);
+            else
+                FileLogger.Warn("AutoLogin: no enforceOverrides callback registered, skipping INI overrides");
 
             var startInfo = new ProcessStartInfo
             {
@@ -291,15 +303,16 @@ public class AutoLoginManager
         return IntPtr.Zero;
     }
 
+    /// <summary>
+    /// Bring window to foreground. This runs on a Task.Run background thread,
+    /// so AttachThreadInput is not used (it requires the calling thread to own
+    /// an input queue / message pump). SetForegroundWindow + BringWindowToTop
+    /// is sufficient when paired with ShowWindow(SW_RESTORE).
+    /// </summary>
     private static void ForceForeground(IntPtr hwnd)
     {
-        var foreThread = NativeMethods.GetCurrentThreadId();
-        NativeMethods.GetWindowThreadProcessId(NativeMethods.GetForegroundWindow(), out _);
-        var targetThread = NativeMethods.GetWindowThreadProcessId(hwnd, out _);
-        NativeMethods.AttachThreadInput(foreThread, targetThread, true);
         NativeMethods.SetForegroundWindow(hwnd);
         NativeMethods.BringWindowToTop(hwnd);
-        NativeMethods.AttachThreadInput(foreThread, targetThread, false);
     }
 
     // ─── DirectInput Shared Memory Helpers (Background Mode) ────────
@@ -358,39 +371,39 @@ public class AutoLoginManager
 
     /// <summary>
     /// Copy dinput8.dll to the EQ game directory so it's loaded on next launch.
-    /// The proxy DLL provides IAT hooks that fake window focus, enabling
-    /// background input during auto-login.
-    /// Handles antivirus blocks and existing files from other tools.
+    /// Returns true on success. Handles antivirus blocks and existing files
+    /// from other tools. The proxy DLL provides IAT hooks that fake window
+    /// focus, enabling background input during auto-login.
     /// </summary>
-    private void DeployDinput8ToEQPath()
+    private bool DeployDinput8ToEQPath()
     {
         var srcPath = Path.Combine(AppContext.BaseDirectory, "dinput8.dll");
         if (!File.Exists(srcPath))
         {
             FileLogger.Warn("AutoLogin: dinput8.dll not found next to EQSwitch.exe");
             StatusUpdate?.Invoke(this, "Error: dinput8.dll missing from EQSwitch folder");
-            return;
+            return false;
         }
 
         var dstPath = Path.Combine(_config.EQPath, "dinput8.dll");
 
-        // Check if already deployed and up to date (compare file size)
+        // Check if already deployed and up to date (SHA256 hash comparison)
         if (File.Exists(dstPath))
         {
-            var srcSize = new FileInfo(srcPath).Length;
-            var dstSize = new FileInfo(dstPath).Length;
-            if (srcSize == dstSize)
+            var srcHash = SHA256.HashData(File.ReadAllBytes(srcPath));
+            var dstHash = SHA256.HashData(File.ReadAllBytes(dstPath));
+            if (srcHash.AsSpan().SequenceEqual(dstHash))
             {
-                FileLogger.Info("AutoLogin: dinput8.dll already deployed and up to date");
-                return;
+                FileLogger.Info("AutoLogin: dinput8.dll already deployed and up to date (hash match)");
+                return true;
             }
-            // Different size = different version (ours vs another tool's).
+            // Different hash = different version (ours vs another tool's).
             // Back up the existing one before overwriting.
             var backupPath = dstPath + ".old";
             try
             {
                 File.Copy(dstPath, backupPath, overwrite: true);
-                FileLogger.Info($"AutoLogin: backed up existing dinput8.dll ({dstSize} bytes) to .old");
+                FileLogger.Info("AutoLogin: backed up existing dinput8.dll to .old");
             }
             catch (Exception ex)
             {
@@ -402,21 +415,25 @@ public class AutoLoginManager
         {
             File.Copy(srcPath, dstPath, overwrite: true);
             FileLogger.Info($"AutoLogin: deployed dinput8.dll to {dstPath}");
+            return true;
         }
         catch (UnauthorizedAccessException)
         {
             FileLogger.Error("AutoLogin: blocked deploying dinput8.dll — antivirus or permissions");
             StatusUpdate?.Invoke(this,
                 "Blocked: add EQ folder to Windows Defender exclusions, then retry");
+            return false;
         }
         catch (IOException ex) when (ex.HResult == unchecked((int)0x80070020)) // sharing violation
         {
             FileLogger.Warn("AutoLogin: dinput8.dll in use — EQ restart needed to update");
+            return true; // file exists, may be the right version — proceed
         }
         catch (Exception ex)
         {
             FileLogger.Error($"AutoLogin: failed to deploy dinput8.dll: {ex.Message}");
             StatusUpdate?.Invoke(this, $"Error deploying dinput8.dll: {ex.Message}");
+            return false;
         }
     }
 
@@ -430,6 +447,22 @@ public class AutoLoginManager
     }
 
     // ─── SendInput Helpers (Legacy Mode) ─────────────────────────────
+
+    /// <summary>
+    /// Send a single INPUT event, checking the return value.
+    /// Returns false if the input was blocked (UIPI — target runs at higher integrity).
+    /// </summary>
+    private static bool SendInputChecked(NativeMethods.INPUT input)
+    {
+        uint sent = NativeMethods.SendInput(1, new[] { input }, Marshal.SizeOf<NativeMethods.INPUT>());
+        if (sent == 0)
+        {
+            var err = Marshal.GetLastWin32Error();
+            FileLogger.Warn($"AutoLogin: SendInput failed (error={err}) — is EQ running as administrator?");
+            return false;
+        }
+        return true;
+    }
 
     /// <summary>
     /// Type a string using KEYEVENTF_UNICODE. This generates WM_CHAR messages
@@ -475,9 +508,9 @@ public class AutoLoginManager
                 }
             };
 
-            NativeMethods.SendInput(1, new[] { down }, Marshal.SizeOf<NativeMethods.INPUT>());
+            if (!SendInputChecked(down)) return;
             Thread.Sleep(50);
-            NativeMethods.SendInput(1, new[] { up }, Marshal.SizeOf<NativeMethods.INPUT>());
+            SendInputChecked(up);
             Thread.Sleep(50);
         }
     }
@@ -498,13 +531,15 @@ public class AutoLoginManager
     private static void SendKey(ushort vk)
     {
         ushort scan = (ushort)NativeMethods.MapVirtualKeyW(vk, NativeMethods.MAPVK_VK_TO_VSC);
-        SendKeyDown(vk, scan);
+        if (!SendKeyDown(vk, scan))
+            FileLogger.Warn($"AutoLogin: SendKeyDown failed for VK 0x{vk:X2}");
         Thread.Sleep(50);
-        SendKeyUp(vk, scan);
+        if (!SendKeyUp(vk, scan))
+            FileLogger.Warn($"AutoLogin: SendKeyUp failed for VK 0x{vk:X2}");
         Thread.Sleep(50);
     }
 
-    private static void SendKeyDown(ushort vk, ushort scan)
+    private static bool SendKeyDown(ushort vk, ushort scan)
     {
         var input = new NativeMethods.INPUT
         {
@@ -521,10 +556,10 @@ public class AutoLoginManager
                 }
             }
         };
-        NativeMethods.SendInput(1, new[] { input }, Marshal.SizeOf<NativeMethods.INPUT>());
+        return SendInputChecked(input);
     }
 
-    private static void SendKeyUp(ushort vk, ushort scan)
+    private static bool SendKeyUp(ushort vk, ushort scan)
     {
         var input = new NativeMethods.INPUT
         {
@@ -541,7 +576,7 @@ public class AutoLoginManager
                 }
             }
         };
-        NativeMethods.SendInput(1, new[] { input }, Marshal.SizeOf<NativeMethods.INPUT>());
+        return SendInputChecked(input);
     }
 
     // ─── EQ INI Helpers ──────────────────────────────────────────────

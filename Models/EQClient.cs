@@ -9,7 +9,7 @@ namespace EQSwitch.Models;
 public class EQClient
 {
     public IntPtr WindowHandle { get; set; }
-    public int ProcessId { get; set; }
+    public int ProcessId { get; }
     public string WindowTitle { get; set; } = "";
 
     /// <summary>
@@ -19,6 +19,13 @@ public class EQClient
     public string OriginalTitle { get; set; } = "";
     public int SlotIndex { get; set; }
     public bool IsActive { get; set; }
+
+    public EQClient(int processId, IntPtr windowHandle, int slotIndex)
+    {
+        ProcessId = processId;
+        WindowHandle = windowHandle;
+        SlotIndex = slotIndex;
+    }
 
     /// <summary>
     /// Check if the underlying process is still running.

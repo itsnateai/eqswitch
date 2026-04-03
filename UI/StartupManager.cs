@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using EQSwitch.Config;
+using EQSwitch.Core;
 
 namespace EQSwitch.UI;
 
@@ -25,7 +25,7 @@ public static class StartupManager
         if (!File.Exists(StartupShortcutPath))
         {
             // Shortcut missing but config says enabled — recreate it
-            Debug.WriteLine("Startup: shortcut missing, recreating");
+            FileLogger.Info("Startup: shortcut missing, recreating");
             SetRunAtStartup(true);
             return;
         }
@@ -46,7 +46,7 @@ public static class StartupManager
                     var currentPath = Application.ExecutablePath;
                     if (!targetPath.Equals(currentPath, StringComparison.OrdinalIgnoreCase))
                     {
-                        Debug.WriteLine($"Startup: shortcut target stale ({targetPath}), updating to {currentPath}");
+                        FileLogger.Info($"Startup: shortcut target stale ({targetPath}), updating to {currentPath}");
                         SetRunAtStartup(true);
                     }
                 }
@@ -62,7 +62,7 @@ public static class StartupManager
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"ValidateStartupPath failed: {ex.Message}");
+            FileLogger.Warn($"ValidateStartupPath failed: {ex.Message}");
         }
     }
 
@@ -76,18 +76,18 @@ public static class StartupManager
             if (enable)
             {
                 CreateShortcut(StartupShortcutPath, "EQSwitch — EverQuest Window Manager");
-                Debug.WriteLine($"Startup: created shortcut at {StartupShortcutPath}");
+                FileLogger.Info($"Startup: created shortcut at {StartupShortcutPath}");
             }
             else
             {
                 if (File.Exists(StartupShortcutPath))
                     File.Delete(StartupShortcutPath);
-                Debug.WriteLine("Startup: removed startup shortcut");
+                FileLogger.Info("Startup: removed startup shortcut");
             }
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"SetRunAtStartup failed: {ex.Message}");
+            FileLogger.Warn($"SetRunAtStartup failed: {ex.Message}");
         }
     }
 
@@ -104,12 +104,12 @@ public static class StartupManager
             if (key?.GetValue("EQSwitch") != null)
             {
                 key.DeleteValue("EQSwitch", throwOnMissingValue: false);
-                Debug.WriteLine("Startup: migrated from registry entry (removed)");
+                FileLogger.Info("Startup: migrated from registry entry (removed)");
             }
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"MigrateFromRegistry failed: {ex.Message}");
+            FileLogger.Warn($"MigrateFromRegistry failed: {ex.Message}");
         }
     }
 
@@ -131,12 +131,12 @@ public static class StartupManager
 
             CreateShortcut(shortcutPath, "EQSwitch — EverQuest Window Manager");
 
-            Debug.WriteLine($"Desktop shortcut created: {shortcutPath}");
+            FileLogger.Info($"Desktop shortcut created: {shortcutPath}");
             showBalloon("Desktop shortcut created");
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"CreateDesktopShortcut failed: {ex.Message}");
+            FileLogger.Warn($"CreateDesktopShortcut failed: {ex.Message}");
             showBalloon($"Failed to create shortcut: {ex.Message}");
         }
     }

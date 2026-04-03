@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using System.Text;
+using EQSwitch.Core;
 
 namespace EQSwitch.Config;
 
@@ -19,7 +19,7 @@ public static class ConfigMigration
         if (!File.Exists(cfgPath))
             return null;
 
-        Debug.WriteLine($"ConfigMigration: found AHK config at {cfgPath}");
+        FileLogger.Info($"ConfigMigration: found AHK config at {cfgPath}");
 
         try
         {
@@ -45,7 +45,7 @@ public static class ConfigMigration
 
             if (values.Count == 0)
             {
-                Debug.WriteLine("ConfigMigration: no values found in [EQSwitch] section");
+                FileLogger.Info("ConfigMigration: no values found in [EQSwitch] section");
                 return null;
             }
 
@@ -169,13 +169,13 @@ public static class ConfigMigration
                 config.RunAtStartup = startup == "1";
 
             int imported = values.Count;
-            Debug.WriteLine($"ConfigMigration: imported {imported} values from AHK config");
+            FileLogger.Info($"ConfigMigration: imported {imported} values from AHK config");
 
             return config;
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"ConfigMigration: import failed — {ex.Message}");
+            FileLogger.Warn($"ConfigMigration: import failed — {ex.Message}");
             return null;
         }
     }
