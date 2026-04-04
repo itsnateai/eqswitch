@@ -105,7 +105,6 @@ public class SettingsForm : Form
     private ComboBox _cboVideoPrimaryMon = null!;
     private ComboBox _cboVideoSecondaryMon = null!;
     private bool _suppressVideoSync; // prevent SyncVideoPresetToCustom during programmatic changes
-    private Button? _btnVideoSaveIni; // save button reference for enable/disable on load failure
     private Label? _lblVideoLoadError; // warning label shown when ini load fails
 
     // Resolution presets for Video tab
@@ -168,13 +167,13 @@ public class SettingsForm : Form
             UseLoginFlag = a.UseLoginFlag
         }).ToList();
 
-        tabs.TabPages.Add(BuildGeneralTab());
-        tabs.TabPages.Add(BuildHotkeysTab());
-        tabs.TabPages.Add(BuildLayoutTab());
-        tabs.TabPages.Add(BuildPipTab());
-        tabs.TabPages.Add(BuildPathsTab());
-        tabs.TabPages.Add(BuildAccountsTab());
-        tabs.TabPages.Add(BuildVideoTab());
+        tabs.TabPages.Add(BuildGeneralTab());      // 0
+        tabs.TabPages.Add(BuildVideoTab());        // 1
+        tabs.TabPages.Add(BuildLayoutTab());       // 2
+        tabs.TabPages.Add(BuildAccountsTab());     // 3
+        tabs.TabPages.Add(BuildPipTab());          // 4
+        tabs.TabPages.Add(BuildHotkeysTab());      // 5
+        tabs.TabPages.Add(BuildPathsTab());        // 6
 
         if (_initialTab > 0 && _initialTab < tabs.TabCount)
             tabs.SelectedIndex = _initialTab;
@@ -305,6 +304,21 @@ public class SettingsForm : Form
 
         y += 138;
 
+        // ─── Preferences card ────────────────────────────────────
+        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 65);
+        cy = 32;
+
+        var btnEQSettings = DarkTheme.AddCardButton(cardPrefs, "\uD83D\uDCDD EQ Client Settings...", 47, cy, 170);
+        btnEQSettings.Click += (_, _) =>
+        {
+            using var form = new EQClientSettingsForm(_config);
+            form.ShowDialog();
+        };
+        var btnProcessMgr = DarkTheme.AddCardButton(cardPrefs, "⚡ Process Manager...", 264, cy, 170);
+        btnProcessMgr.Click += (_, _) => _openProcessManager?.Invoke();
+
+        y += 73;
+
         // ─── Tray Click Actions card ─────────────────────────────
         var clickActions = new[] { "None", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp" };
         const int cboW = 140;
@@ -332,33 +346,6 @@ public class SettingsForm : Form
 
         DarkTheme.AddCardLabel(cardTray, "Triple", 260, 78);
         _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 325, 75, cboW, clickActions);
-
-        y += 113;
-
-        // ─── Preferences card ────────────────────────────────────
-        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 100);
-        cy = 32;
-
-        // Row 1: EQ Client Settings
-        var btnEQSettings = DarkTheme.AddCardButton(cardPrefs, "\uD83D\uDCDD EQ Client Settings...", L, cy, 170);
-        btnEQSettings.Click += (_, _) =>
-        {
-            using var form = new EQClientSettingsForm(_config);
-            form.ShowDialog();
-        };
-        cy += R + 6;
-
-        // Row 2: Process Manager
-        var btnProcessMgr = DarkTheme.AddCardButton(cardPrefs, "⚡ Process Manager...", L, cy, 170);
-        btnProcessMgr.Click += (_, _) => _openProcessManager?.Invoke();
-
-        y += 108;
-
-        // ─── Help card ───────────────────────────────────────────
-        var cardHelp = DarkTheme.MakeCard(page, "", "", DarkTheme.CardPurple, 10, y, 480, 45);
-        var btnHelp = DarkTheme.AddCardButton(cardHelp, "❓ Help", L, 8, 100);
-        btnHelp.Click += (_, _) => HelpForm.Show(_config);
-        DarkTheme.AddCardHint(cardHelp, "keybinds, features, and tips", 120, 12);
 
         return page;
     }
@@ -722,7 +709,7 @@ public class SettingsForm : Form
         var cardStartup = DarkTheme.MakeCard(page, "🚀", "Startup", DarkTheme.CardGreen, 10, y, 480, 65);
         cy = 32;
 
-        var btnShortcut = DarkTheme.AddCardButton(cardStartup, "Create Desktop Shortcut", L, cy, 180);
+        var btnShortcut = DarkTheme.AddCardButton(cardStartup, "Create Desktop Shortcut", 47, cy, 180);
         btnShortcut.Click += (_, _) =>
         {
             var originalText = btnShortcut.Text;
@@ -735,7 +722,15 @@ public class SettingsForm : Form
             });
         };
 
-        _chkRunAtStartup = DarkTheme.AddCardCheckBox(cardStartup, "Run at Startup", 250, cy);
+        _chkRunAtStartup = DarkTheme.AddCardCheckBox(cardStartup, "Run at Startup", 280, cy);
+
+        y += 73;
+
+        // ─── Help button ─────────────────────────────────────────
+        var btnHelp = DarkTheme.MakeButton("❓ Help", DarkTheme.BgMedium, 10, y);
+        btnHelp.Size = new Size(100, 30);
+        btnHelp.Click += (_, _) => HelpForm.Show(_config);
+        page.Controls.Add(btnHelp);
 
         return page;
     }
@@ -1026,6 +1021,7 @@ public class SettingsForm : Form
         newConfig.EQClientIni.MaximizeWindow = _chkMaximizeWindow.Checked;
 
         _onApply(newConfig);
+        VideoSaveToIni();
         FileLogger.Info("Settings applied");
     }
 
@@ -1369,30 +1365,17 @@ public class SettingsForm : Form
 
         y += 118;
 
-        // ─── Actions card (Save to eqclient.ini + Backup/Restore) ─
-        var cardActions = DarkTheme.MakeCard(page, "💾", "eqclient.ini", DarkTheme.CardGold, 10, y, 480, 115);
+        // ─── eqclient.ini actions card ─────────────────────────────
+        var cardActions = DarkTheme.MakeCard(page, "💾", "eqclient.ini", DarkTheme.CardGold, 10, y, 480, 85);
         cy = 30;
 
-        var lblIniHint = new Label
-        {
-            Text = "These settings write directly to eqclient.ini — not EQSwitch config. Changes require EQ restart.",
-            Location = new Point(L, cy),
-            Size = new Size(460, 28),
-            ForeColor = DarkTheme.FgDimGray,
-            Font = TrackFont(new Font("Segoe UI", 7.5f))
-        };
-        cardActions.Controls.Add(lblIniHint);
-        cy += 30;
-
-        _btnVideoSaveIni = DarkTheme.MakePrimaryButton("Save to eqclient.ini", L, cy);
-        _btnVideoSaveIni.Width = 160;
-        _btnVideoSaveIni.Click += (_, _) => VideoSaveToIni();
-        cardActions.Controls.Add(_btnVideoSaveIni);
+        DarkTheme.AddCardHint(cardActions, "Resolution & offsets save to eqclient.ini on Apply. Changes require EQ restart.", L, cy);
+        cy += 20;
 
         _lblVideoLoadError = new Label
         {
             Text = "⚠ Failed to read eqclient.ini — values shown are defaults, not your settings.",
-            Location = new Point(L, cy + 32),
+            Location = new Point(L, cy),
             Size = new Size(460, 18),
             ForeColor = DarkTheme.CardWarn,
             Font = TrackFont(new Font("Segoe UI", 7.5f, FontStyle.Bold)),
@@ -1400,17 +1383,14 @@ public class SettingsForm : Form
         };
         cardActions.Controls.Add(_lblVideoLoadError);
 
-        var btnBackup = DarkTheme.MakeButton("📋 Backup", DarkTheme.BgMedium, 190, cy);
+        var btnBackup = DarkTheme.AddCardButton(cardActions, "📋 Backup", 47, cy, 110);
         btnBackup.Click += (_, _) => VideoBackupIni();
-        cardActions.Controls.Add(btnBackup);
 
-        var btnRestore = DarkTheme.MakeButton("📂 Restore", DarkTheme.BgMedium, 290, cy);
+        var btnRestore = DarkTheme.AddCardButton(cardActions, "📂 Restore", 185, cy, 110);
         btnRestore.Click += (_, _) => VideoRestoreIni();
-        cardActions.Controls.Add(btnRestore);
 
-        var btnReset = DarkTheme.MakeButton("🔄 Reset", DarkTheme.BgMedium, 390, cy);
+        var btnReset = DarkTheme.AddCardButton(cardActions, "🔄 Reset", 323, cy, 110);
         btnReset.Click += (_, _) => VideoResetDefaults();
-        cardActions.Controls.Add(btnReset);
 
         return page;
     }
@@ -1423,7 +1403,7 @@ public class SettingsForm : Form
             FileLogger.Info($"VideoSettings: eqclient.ini not found at {iniPath}");
             _cboVideoPreset.SelectedIndex = 0;
 
-            if (_btnVideoSaveIni != null) _btnVideoSaveIni.Enabled = false;
+
             if (_lblVideoLoadError != null)
             {
                 _lblVideoLoadError.Text = "⚠ eqclient.ini not found — check EQ Path on the General tab.";
@@ -1436,7 +1416,7 @@ public class SettingsForm : Form
         try
         {
             // Clear any previous error state (e.g., after a successful Restore)
-            if (_btnVideoSaveIni != null) _btnVideoSaveIni.Enabled = true;
+
             if (_lblVideoLoadError != null) _lblVideoLoadError.Visible = false;
 
             var lines = File.ReadAllLines(iniPath, System.Text.Encoding.Default);
@@ -1500,7 +1480,7 @@ public class SettingsForm : Form
             FileLogger.Error("VideoSettings: load error", ex);
             _cboVideoPreset.SelectedIndex = 0;
 
-            if (_btnVideoSaveIni != null) _btnVideoSaveIni.Enabled = false;
+
             if (_lblVideoLoadError != null) _lblVideoLoadError.Visible = true;
         }
         finally { _suppressVideoSync = false; }
