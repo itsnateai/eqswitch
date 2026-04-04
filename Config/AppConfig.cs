@@ -1,4 +1,6 @@
+using System.Text;
 using System.Text.Json.Serialization;
+using EQSwitch.Core;
 using EQSwitch.Models;
 
 namespace EQSwitch.Config;
@@ -473,8 +475,8 @@ public class EQClientIniConfig
     /// <summary>Disable AA confirmation dialog (AANoConfirm=0 in [Defaults]). EQ default: FALSE.</summary>
     public bool AANoConfirm { get; set; } = false;
 
-    /// <summary>Disable chat server (ChatServerPort not present in fresh ini). EQ default: FALSE (chat server active).</summary>
-    public bool DisableChatServer { get; set; } = false;
+    /// <summary>Disable chat server (ChatServerPort=0 in [Options]). EQSwitch default: TRUE (chat server disabled for multiboxing).</summary>
+    public bool DisableChatServer { get; set; } = true;
 
     /// <summary>Force windowed mode (WindowedMode=TRUE in [VideoMode]).</summary>
     public bool ForceWindowedMode { get; set; } = true;
@@ -529,4 +531,233 @@ public class EQClientIniConfig
     /// Each value is a physical core number (0-based). Default: cores 1,2,3,1,2,3 (skip core 0 for OS).
     /// </summary>
     public int[] CPUAffinitySlots { get; set; } = { 1, 2, 3, 1, 2, 3 };
+
+    /// <summary>
+    /// Read the user's actual eqclient.ini and return an EQClientIniConfig seeded from it.
+    /// Called on first launch so AppConfig reflects reality instead of hardcoded defaults.
+    /// Does not touch ConfiguredKeys, sub-form dictionaries, or CPUAffinitySlots.
+    /// Returns a default instance if the ini file doesn't exist.
+    /// </summary>
+    public static EQClientIniConfig SeedFromIni(string iniPath)
+    {
+        var cfg = new EQClientIniConfig();
+        if (!File.Exists(iniPath)) return cfg;
+
+        try
+        {
+            var lines = File.ReadAllLines(iniPath, Encoding.Default);
+            string currentSection = "";
+
+            foreach (var line in lines)
+            {
+                var trimmed = line.Trim();
+                if (trimmed.StartsWith("["))
+                {
+                    currentSection = trimmed;
+                    continue;
+                }
+
+                var parts = trimmed.Split('=', 2);
+                if (parts.Length != 2) continue;
+
+                string key = parts[0].Trim();
+                string val = parts[1].Trim();
+
+                if (currentSection.Equals("[Defaults]", StringComparison.OrdinalIgnoreCase))
+                {
+                    switch (key.ToLowerInvariant())
+                    {
+                        case "sound":
+                            cfg.DisableSound = val.Equals("FALSE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "music":
+                            cfg.DisableMusic = val == "0";
+                            break;
+                        case "soundvolume":
+                            if (int.TryParse(val, out int svol))
+                                cfg.SoundVolume = Math.Clamp(svol, -1, 100);
+                            break;
+                        case "envsounds":
+                            cfg.DisableEnvSounds = val == "0";
+                            break;
+                        case "combatmusic":
+                            cfg.DisableCombatMusic = val == "0";
+                            break;
+                        case "allowautoduck":
+                            cfg.DisableAutoDuck = val == "0";
+                            break;
+                        case "skyupdateinterval":
+                            cfg.SlowSkyUpdates = val == "60000";
+                            break;
+                        case "attackonassist":
+                            cfg.AttackOnAssist = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "showinspectmessage":
+                            cfg.ShowInspectMessage = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "showgrass":
+                            cfg.ShowGrass = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "netstat":
+                            cfg.NetStat = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "trackautoupdate":
+                            cfg.TrackAutoUpdate = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "targetgroupbuff":
+                            cfg.TargetGroupBuff = val == "1";
+                            break;
+                        case "mipmapping":
+                            cfg.DisableMipMapping = val.Equals("FALSE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "texturecache":
+                            cfg.TextureCache = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "used3dtexturecompression":
+                            cfg.UseD3DTextureCompression = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "showdynamiclights":
+                            cfg.DisableDynamicLights = val.Equals("FALSE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "uselitbatches":
+                            cfg.UseLitBatches = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "inspectothers":
+                            cfg.DisableInspectOthers = val.Equals("FALSE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "sky":
+                            cfg.DisableSky = val == "0";
+                            break;
+                        case "bardsongs":
+                            cfg.BardSongs = val == "1";
+                            break;
+                        case "bardsongsonpets":
+                            cfg.BardSongsOnPets = val == "1";
+                            break;
+                        case "anonymous":
+                            cfg.Anonymous = val == "1";
+                            break;
+                        case "raidinviteconfirm":
+                            cfg.RaidInviteConfirm = val == "1";
+                            break;
+                        case "aanoconfirm":
+                            cfg.AANoConfirm = val == "0";
+                            break;
+                        case "chatserverport":
+                            cfg.DisableChatServer = val == "0";
+                            break;
+                        case "lootallconfirm":
+                            cfg.DisableLootAllConfirm = val == "0";
+                            break;
+                        case "clipplane":
+                            if (int.TryParse(val, out int cp))
+                                cfg.ClipPlane = Math.Clamp(cp, 0, 999);
+                            break;
+                        case "mousesensitivity":
+                            if (int.TryParse(val, out int ms))
+                                cfg.MouseSensitivity = Math.Clamp(ms, -1, 100);
+                            break;
+                        case "shadowclipplane":
+                            if (int.TryParse(val, out int scp))
+                                cfg.ShadowClipPlane = Math.Clamp(scp, 0, 999);
+                            break;
+                        case "actorclipplane":
+                            if (int.TryParse(val, out int acp))
+                                cfg.ActorClipPlane = Math.Clamp(acp, 0, 999);
+                            break;
+                        case "maxfps":
+                            if (int.TryParse(val, out int fps))
+                                cfg.MaxFPS = Math.Clamp(fps, 0, 99);
+                            break;
+                        case "maxbgfps":
+                            if (int.TryParse(val, out int bgfps))
+                                cfg.MaxBGFPS = Math.Clamp(bgfps, 0, 99);
+                            break;
+                        case "windowedmode":
+                            cfg.ForceWindowedMode = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "maximized":
+                            cfg.MaximizeWindow = val == "1";
+                            break;
+                        case "log":
+                            cfg.DisableEQLog = val.Equals("FALSE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                    }
+                }
+                else if (currentSection.Equals("[Options]", StringComparison.OrdinalIgnoreCase))
+                {
+                    // [Options] is runtime-authoritative — overrides [Defaults] for shared keys
+                    switch (key.ToLowerInvariant())
+                    {
+                        case "sky":
+                            cfg.DisableSky = val == "0";
+                            break;
+                        case "bardsongs":
+                            cfg.BardSongs = val == "1";
+                            break;
+                        case "bardsongsonpets":
+                            cfg.BardSongsOnPets = val == "1";
+                            break;
+                        case "anonymous":
+                            cfg.Anonymous = val == "1";
+                            break;
+                        case "clipplane":
+                            if (int.TryParse(val, out int optCp))
+                                cfg.ClipPlane = Math.Clamp(optCp, 0, 999);
+                            break;
+                        case "mousesensitivity":
+                            if (int.TryParse(val, out int optMs))
+                                cfg.MouseSensitivity = Math.Clamp(optMs, -1, 100);
+                            break;
+                        case "shadowclipplane":
+                            if (int.TryParse(val, out int optScp))
+                                cfg.ShadowClipPlane = Math.Clamp(optScp, 0, 999);
+                            break;
+                        case "actorclipplane":
+                            if (int.TryParse(val, out int optAcp))
+                                cfg.ActorClipPlane = Math.Clamp(optAcp, 0, 999);
+                            break;
+                        case "maxfps":
+                            if (int.TryParse(val, out int optFps))
+                                cfg.MaxFPS = Math.Clamp(optFps, 0, 99);
+                            break;
+                        case "maxbgfps":
+                            if (int.TryParse(val, out int optBgfps))
+                                cfg.MaxBGFPS = Math.Clamp(optBgfps, 0, 99);
+                            break;
+                        case "lootallconfirm":
+                            cfg.DisableLootAllConfirm = val == "0";
+                            break;
+                        case "raidinviteconfirm":
+                            cfg.RaidInviteConfirm = val == "1";
+                            break;
+                        case "aanoconfirm":
+                            cfg.AANoConfirm = val == "0";
+                            break;
+                        case "chatserverport":
+                            cfg.DisableChatServer = val == "0";
+                            break;
+                    }
+                }
+                else if (currentSection.Equals("[VideoMode]", StringComparison.OrdinalIgnoreCase))
+                {
+                    switch (key.ToLowerInvariant())
+                    {
+                        case "windowedmode":
+                            cfg.ForceWindowedMode = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "maximized":
+                            cfg.MaximizeWindow = val == "1";
+                            break;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Warn($"SeedFromIni: failed to read {iniPath}: {ex.Message}");
+        }
+
+        return cfg;
+    }
 }
