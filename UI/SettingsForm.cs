@@ -1019,6 +1019,7 @@ public class SettingsForm : Form
         // MaximizeWindow lives in EQClientIni, update in-place
         newConfig.EQClientIni = _config.EQClientIni;
         newConfig.EQClientIni.MaximizeWindow = _chkMaximizeWindow.Checked;
+        newConfig.EQClientIni.ConfiguredKeys.Add("Maximized");
 
         _onApply(newConfig);
         VideoSaveToIni();
@@ -1779,6 +1780,7 @@ public class SettingsForm : Form
             foreach (var f in _inlineFonts)
                 f.Dispose();
             _inlineFonts.Clear();
+            DarkTheme.DisposeControlFonts(this);
         }
         base.Dispose(disposing);
     }

@@ -237,7 +237,7 @@ public class EQClientSettingsForm : Form
                             break;
                         case "soundvolume":
                             if (int.TryParse(val, out int svol))
-                                _nudSoundVolume.Value = Math.Clamp(svol, 0, 100);
+                                _nudSoundVolume.Value = Math.Clamp(svol, -1, 100);
                             break;
                         case "envsounds":
                             _chkDisableEnvSounds.Checked = val == "0";
@@ -314,7 +314,7 @@ public class EQClientSettingsForm : Form
                             break;
                         case "mousesensitivity":
                             if (int.TryParse(val, out int ms))
-                                _nudMouseSensitivity.Value = Math.Clamp(ms, 0, 100);
+                                _nudMouseSensitivity.Value = Math.Clamp(ms, -1, 100);
                             break;
                         case "skyupdateinterval":
                             if (val == "60000")
@@ -341,10 +341,72 @@ public class EQClientSettingsForm : Form
                             if (int.TryParse(val, out int acp))
                                 _nudActorClipPlane.Value = Math.Clamp(acp, 0, 999);
                             break;
+                        case "windowedmode":
+                            _chkForceWindowed.Checked = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "log":
+                            _chkDisableLog.Checked = val.Equals("FALSE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                    }
+                }
+                else if (currentSection.Equals("[Options]", StringComparison.OrdinalIgnoreCase))
+                {
+                    // [Options] is EQ's runtime-authoritative section — overrides [Defaults]
+                    switch (key.ToLowerInvariant())
+                    {
+                        case "anonymous":
+                            _chkAnonymous.Checked = val == "1";
+                            break;
+                        case "sky":
+                            _chkDisableSky.Checked = val == "0";
+                            break;
+                        case "bardsongs":
+                            _chkBardSongs.Checked = val == "1";
+                            break;
+                        case "bardsongsonpets":
+                            _chkBardSongsOnPets.Checked = val == "1";
+                            break;
+                        case "clipplane":
+                            if (int.TryParse(val, out int optCp))
+                                _nudClipPlane.Value = Math.Clamp(optCp, 0, 999);
+                            break;
+                        case "mousesensitivity":
+                            if (int.TryParse(val, out int optMs))
+                                _nudMouseSensitivity.Value = Math.Clamp(optMs, -1, 100);
+                            break;
+                        case "shadowclipplane":
+                            if (int.TryParse(val, out int optScp))
+                                _nudShadowClipPlane.Value = Math.Clamp(optScp, 0, 999);
+                            break;
+                        case "actorclipplane":
+                            if (int.TryParse(val, out int optAcp))
+                                _nudActorClipPlane.Value = Math.Clamp(optAcp, 0, 999);
+                            break;
+                        case "maxfps":
+                            if (int.TryParse(val, out int optFps))
+                                _nudMaxFPS.Value = Math.Clamp(optFps, 0, 99);
+                            break;
+                        case "maxbgfps":
+                            if (int.TryParse(val, out int optBgfps))
+                                _nudMaxBGFPS.Value = Math.Clamp(optBgfps, 0, 99);
+                            break;
+                        case "lootallconfirm":
+                            _chkDisableLootAllConfirm.Checked = val == "0";
+                            break;
+                        case "raidinviteconfirm":
+                            _chkRaidInviteConfirm.Checked = val == "1";
+                            break;
+                        case "aanoconfirm":
+                            _chkAANoConfirm.Checked = val == "0";
+                            break;
+                        case "chatserverport":
+                            _chkDisableChatServer.Checked = val == "0";
+                            break;
                     }
                 }
                 else if (currentSection.Equals("[VideoMode]", StringComparison.OrdinalIgnoreCase))
                 {
+                    // [VideoMode] overrides [Defaults] for WindowedMode if present
                     if (key.Equals("WindowedMode", StringComparison.OrdinalIgnoreCase))
                         _chkForceWindowed.Checked = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
                 }
@@ -383,7 +445,7 @@ public class EQClientSettingsForm : Form
         _config.EQClientIni.UseLitBatches = _chkUseLitBatches.Checked;
         _config.EQClientIni.DisableInspectOthers = _chkDisableInspectOthers.Checked;
         _config.EQClientIni.Anonymous = _chkAnonymous.Checked;
-        _config.DisableEQLog = _chkDisableLog.Checked;
+        _config.EQClientIni.DisableEQLog = _chkDisableLog.Checked;
         _config.EQClientIni.RaidInviteConfirm = _chkRaidInviteConfirm.Checked;
         _config.EQClientIni.AANoConfirm = _chkAANoConfirm.Checked;
         _config.EQClientIni.DisableChatServer = _chkDisableChatServer.Checked;
@@ -396,20 +458,30 @@ public class EQClientSettingsForm : Form
         _config.EQClientIni.ActorClipPlane = (int)_nudActorClipPlane.Value;
         _config.EQClientIni.MouseSensitivity = (int)_nudMouseSensitivity.Value;
 
-        // Mark all settings as explicitly configured — EnforceOverrides will only write these
+        // Mark all settings as explicitly configured — EnforceOverrides will only write these.
+        // Sentinel values (-1 or 0 depending on field) mean "don't touch" — remove from
+        // ConfiguredKeys so EnforceOverrides doesn't claim ownership of a setting it won't write.
         var keys = _config.EQClientIni.ConfiguredKeys;
         keys.UnionWith(new[]
         {
-            "Sound", "Music", "SoundVolume", "EnvSounds", "CombatMusic", "AllowAutoDuck",
+            "Sound", "Music", "EnvSounds", "CombatMusic", "AllowAutoDuck",
             "Sky", "SkyUpdateInterval", "BardSongs", "BardSongsOnPets",
             "AttackOnAssist", "ShowInspectMessage", "ShowGrass", "NetStat",
             "TrackAutoUpdate", "TargetGroupBuff", "MipMapping", "TextureCache",
             "UseD3DTextureCompression", "ShowDynamicLights", "UseLitBatches",
             "InspectOthers", "Anonymous", "RaidInviteConfirm", "AANoConfirm",
-            "ChatServerPort", "LootAllConfirm", "WindowedMode",
-            "MaxFPS", "MaxBGFPS", "ClipPlane", "ShadowClipPlane", "ActorClipPlane",
-            "MouseSensitivity", "Log"
+            "ChatServerPort", "LootAllConfirm", "WindowedMode", "Log"
         });
+
+        // Numeric settings: add to ConfiguredKeys only when non-sentinel
+        void Track(string key, bool active) { if (active) keys.Add(key); else keys.Remove(key); }
+        Track("SoundVolume", _config.EQClientIni.SoundVolume >= 0);
+        Track("MouseSensitivity", _config.EQClientIni.MouseSensitivity >= 0);
+        Track("ClipPlane", _config.EQClientIni.ClipPlane > 0);
+        Track("ShadowClipPlane", _config.EQClientIni.ShadowClipPlane > 0);
+        Track("ActorClipPlane", _config.EQClientIni.ActorClipPlane > 0);
+        Track("MaxFPS", _config.EQClientIni.MaxFPS > 0);
+        Track("MaxBGFPS", _config.EQClientIni.MaxBGFPS > 0);
 
         ConfigManager.Save(_config);
 
@@ -438,9 +510,9 @@ public class EQClientSettingsForm : Form
             SetIniValue(lines, "Defaults", "CombatMusic", _chkDisableCombatMusic.Checked ? "0" : "1");
             SetIniValue(lines, "Defaults", "AllowAutoDuck", _chkDisableAutoDuck.Checked ? "0" : "1");
 
-            SetIniValue(lines, "Defaults", "Sky", _chkDisableSky.Checked ? "0" : "1");
-            SetIniValue(lines, "Defaults", "BardSongs", _chkBardSongs.Checked ? "1" : "0");
-            SetIniValue(lines, "Defaults", "BardSongsOnPets", _chkBardSongsOnPets.Checked ? "1" : "0");
+            SetIniValue(lines, "Options", "Sky", _chkDisableSky.Checked ? "0" : "1");
+            SetIniValue(lines, "Options", "BardSongs", _chkBardSongs.Checked ? "1" : "0");
+            SetIniValue(lines, "Options", "BardSongsOnPets", _chkBardSongsOnPets.Checked ? "1" : "0");
             SetIniValue(lines, "Defaults", "AttackOnAssist", _chkAttackOnAssist.Checked ? "TRUE" : "FALSE");
             SetIniValue(lines, "Defaults", "ShowInspectMessage", _chkShowInspectMessage.Checked ? "TRUE" : "FALSE");
             SetIniValue(lines, "Defaults", "ShowGrass", _chkShowGrass.Checked ? "TRUE" : "FALSE");
@@ -453,26 +525,27 @@ public class EQClientSettingsForm : Form
             SetIniValue(lines, "Defaults", "ShowDynamicLights", _chkDisableDynamicLights.Checked ? "FALSE" : "TRUE");
             SetIniValue(lines, "Defaults", "UseLitBatches", _chkUseLitBatches.Checked ? "TRUE" : "FALSE");
             SetIniValue(lines, "Defaults", "InspectOthers", _chkDisableInspectOthers.Checked ? "FALSE" : "TRUE");
-            SetIniValue(lines, "Defaults", "Anonymous", _chkAnonymous.Checked ? "1" : "0");
-            SetIniValue(lines, "Defaults", "RaidInviteConfirm", _chkRaidInviteConfirm.Checked ? "1" : "0");
-            SetIniValue(lines, "Defaults", "AANoConfirm", _chkAANoConfirm.Checked ? "0" : "1");
-            SetIniValue(lines, "Defaults", "ChatServerPort", _chkDisableChatServer.Checked ? "0" : "7003");
-            SetIniValue(lines, "Defaults", "LootAllConfirm", _chkDisableLootAllConfirm.Checked ? "0" : "1");
+            SetIniValue(lines, "Options", "Anonymous", _chkAnonymous.Checked ? "1" : "0");
+            SetIniValue(lines, "Options", "RaidInviteConfirm", _chkRaidInviteConfirm.Checked ? "1" : "0");
+            SetIniValue(lines, "Options", "AANoConfirm", _chkAANoConfirm.Checked ? "0" : "1");
+            SetIniValue(lines, "Options", "ChatServerPort", _chkDisableChatServer.Checked ? "0" : "7003");
+            SetIniValue(lines, "Options", "LootAllConfirm", _chkDisableLootAllConfirm.Checked ? "0" : "1");
 
             if ((int)_nudClipPlane.Value > 0)
-                SetIniValue(lines, "Defaults", "ClipPlane", ((int)_nudClipPlane.Value).ToString());
+                SetIniValue(lines, "Options", "ClipPlane", ((int)_nudClipPlane.Value).ToString());
 
             if ((int)_nudMouseSensitivity.Value >= 0)
-                SetIniValue(lines, "Defaults", "MouseSensitivity", ((int)_nudMouseSensitivity.Value).ToString());
+                SetIniValue(lines, "Options", "MouseSensitivity", ((int)_nudMouseSensitivity.Value).ToString());
 
             if (_chkSlowSky.Checked)
             {
                 SetIniValue(lines, "Defaults", "SkyUpdateInterval", "60000");
             }
-            else if (!string.IsNullOrEmpty(_origSkyInterval))
+            else
             {
-                // Restore original value that was read from INI
-                SetIniValue(lines, "Defaults", "SkyUpdateInterval", _origSkyInterval);
+                // Restore original non-slow value, or fall back to EQ default (3000)
+                string restoreVal = string.IsNullOrEmpty(_origSkyInterval) ? "3000" : _origSkyInterval;
+                SetIniValue(lines, "Defaults", "SkyUpdateInterval", restoreVal);
             }
 
             string wmVal = _chkForceWindowed.Checked ? "TRUE" : "FALSE";
@@ -492,10 +565,12 @@ public class EQClientSettingsForm : Form
             }
 
             if ((int)_nudShadowClipPlane.Value > 0)
-                SetIniValue(lines, "Defaults", "ShadowClipPlane", ((int)_nudShadowClipPlane.Value).ToString());
+                SetIniValue(lines, "Options", "ShadowClipPlane", ((int)_nudShadowClipPlane.Value).ToString());
 
             if ((int)_nudActorClipPlane.Value > 0)
-                SetIniValue(lines, "Defaults", "ActorClipPlane", ((int)_nudActorClipPlane.Value).ToString());
+                SetIniValue(lines, "Options", "ActorClipPlane", ((int)_nudActorClipPlane.Value).ToString());
+
+            SetIniValue(lines, "Defaults", "Log", _config.EQClientIni.DisableEQLog ? "FALSE" : "TRUE");
 
             File.WriteAllLines(_iniPath, lines, Encoding.Default);
             FileLogger.Info("EQClientSettings: applied overrides to eqclient.ini");
@@ -506,6 +581,12 @@ public class EQClientSettingsForm : Form
             MessageBox.Show($"Failed to update eqclient.ini: {ex.Message}", "Error",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) DarkTheme.DisposeControlFonts(this);
+        base.Dispose(disposing);
     }
 
     /// <summary>
@@ -584,9 +665,9 @@ public class EQClientSettingsForm : Form
             Set("Defaults", "CombatMusic", config.EQClientIni.DisableCombatMusic ? "0" : "1");
             Set("Defaults", "AllowAutoDuck", config.EQClientIni.DisableAutoDuck ? "0" : "1");
 
-            Set("Defaults", "Sky", config.EQClientIni.DisableSky ? "0" : "1");
-            Set("Defaults", "BardSongs", config.EQClientIni.BardSongs ? "1" : "0");
-            Set("Defaults", "BardSongsOnPets", config.EQClientIni.BardSongsOnPets ? "1" : "0");
+            Set("Options", "Sky", config.EQClientIni.DisableSky ? "0" : "1");
+            Set("Options", "BardSongs", config.EQClientIni.BardSongs ? "1" : "0");
+            Set("Options", "BardSongsOnPets", config.EQClientIni.BardSongsOnPets ? "1" : "0");
             Set("Defaults", "AttackOnAssist", config.EQClientIni.AttackOnAssist ? "TRUE" : "FALSE");
             Set("Defaults", "ShowInspectMessage", config.EQClientIni.ShowInspectMessage ? "TRUE" : "FALSE");
             Set("Defaults", "ShowGrass", config.EQClientIni.ShowGrass ? "TRUE" : "FALSE");
@@ -599,20 +680,22 @@ public class EQClientSettingsForm : Form
             Set("Defaults", "ShowDynamicLights", config.EQClientIni.DisableDynamicLights ? "FALSE" : "TRUE");
             Set("Defaults", "UseLitBatches", config.EQClientIni.UseLitBatches ? "TRUE" : "FALSE");
             Set("Defaults", "InspectOthers", config.EQClientIni.DisableInspectOthers ? "FALSE" : "TRUE");
-            Set("Defaults", "Anonymous", config.EQClientIni.Anonymous ? "1" : "0");
-            Set("Defaults", "RaidInviteConfirm", config.EQClientIni.RaidInviteConfirm ? "1" : "0");
-            Set("Defaults", "AANoConfirm", config.EQClientIni.AANoConfirm ? "0" : "1");
-            Set("Defaults", "ChatServerPort", config.EQClientIni.DisableChatServer ? "0" : "7003");
-            Set("Defaults", "LootAllConfirm", config.EQClientIni.DisableLootAllConfirm ? "0" : "1");
+            Set("Options", "Anonymous", config.EQClientIni.Anonymous ? "1" : "0");
+            Set("Options", "RaidInviteConfirm", config.EQClientIni.RaidInviteConfirm ? "1" : "0");
+            Set("Options", "AANoConfirm", config.EQClientIni.AANoConfirm ? "0" : "1");
+            Set("Options", "ChatServerPort", config.EQClientIni.DisableChatServer ? "0" : "7003");
+            Set("Options", "LootAllConfirm", config.EQClientIni.DisableLootAllConfirm ? "0" : "1");
 
             if (config.EQClientIni.ClipPlane > 0)
-                Set("Defaults", "ClipPlane", config.EQClientIni.ClipPlane.ToString());
+                Set("Options", "ClipPlane", config.EQClientIni.ClipPlane.ToString());
 
             if (config.EQClientIni.MouseSensitivity >= 0)
-                Set("Defaults", "MouseSensitivity", config.EQClientIni.MouseSensitivity.ToString());
+                Set("Options", "MouseSensitivity", config.EQClientIni.MouseSensitivity.ToString());
 
             if (config.EQClientIni.SlowSkyUpdates)
                 Set("Defaults", "SkyUpdateInterval", "60000");
+            else
+                Set("Defaults", "SkyUpdateInterval", "3000"); // EQ default
 
             // EQ reads WindowedMode from [Defaults], not [VideoMode] — write both
             string wmVal = config.EQClientIni.ForceWindowedMode ? "TRUE" : "FALSE";
@@ -671,12 +754,12 @@ public class EQClientSettingsForm : Form
             }
 
             if (config.EQClientIni.ShadowClipPlane > 0)
-                Set("Defaults", "ShadowClipPlane", config.EQClientIni.ShadowClipPlane.ToString());
+                Set("Options", "ShadowClipPlane", config.EQClientIni.ShadowClipPlane.ToString());
 
             if (config.EQClientIni.ActorClipPlane > 0)
-                Set("Defaults", "ActorClipPlane", config.EQClientIni.ActorClipPlane.ToString());
+                Set("Options", "ActorClipPlane", config.EQClientIni.ActorClipPlane.ToString());
 
-            Set("Defaults", "Log", config.DisableEQLog ? "FALSE" : "TRUE");
+            Set("Defaults", "Log", config.EQClientIni.DisableEQLog ? "FALSE" : "TRUE");
 
             // Enforce sub-form overrides (dictionary-based — already only write what user saved)
             EQModelsForm.EnforceOverrides(config, lines);

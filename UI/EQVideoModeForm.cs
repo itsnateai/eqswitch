@@ -27,8 +27,8 @@ public class EQVideoModeForm : Form
         ("WinEQHeight", "WinEQ Height", 1200, 480, 4320),
         ("WindowedModeXOffset", "Windowed X Offset", 0, -9999, 9999),
         ("WindowedModeYOffset", "Windowed Y Offset", 0, -9999, 9999),
-        ("YOffset", "Y Offset", 1, -9999, 9999),
-        ("XOffset", "X Offset", 1, -9999, 9999),
+        ("YOffset", "Y Offset", 0, -9999, 9999),
+        ("XOffset", "X Offset", 0, -9999, 9999),
     };
 
     public EQVideoModeForm(AppConfig config)
@@ -80,48 +80,49 @@ public class EQVideoModeForm : Form
 
     private void LoadFromIni()
     {
-        if (!File.Exists(_iniPath)) return;
-
-        try
+        if (File.Exists(_iniPath))
         {
-            var lines = File.ReadAllLines(_iniPath, Encoding.Default);
-            string currentSection = "";
-
-            foreach (var line in lines)
+            try
             {
-                var trimmed = line.Trim();
-                if (trimmed.StartsWith("["))
+                var lines = File.ReadAllLines(_iniPath, Encoding.Default);
+                string currentSection = "";
+
+                foreach (var line in lines)
                 {
-                    currentSection = trimmed;
-                    continue;
+                    var trimmed = line.Trim();
+                    if (trimmed.StartsWith("["))
+                    {
+                        currentSection = trimmed;
+                        continue;
+                    }
+
+                    if (!currentSection.Equals("[VideoMode]", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var parts = trimmed.Split('=', 2);
+                    if (parts.Length != 2) continue;
+
+                    string key = parts[0].Trim();
+                    string val = parts[1].Trim();
+
+                    if (_numerics.TryGetValue(key, out var nud))
+                    {
+                        if (int.TryParse(val, out int v))
+                            nud.Value = Math.Clamp(v, (int)nud.Minimum, (int)nud.Maximum);
+                    }
                 }
 
-                if (!currentSection.Equals("[VideoMode]", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                var parts = trimmed.Split('=', 2);
-                if (parts.Length != 2) continue;
-
-                string key = parts[0].Trim();
-                string val = parts[1].Trim();
-
-                if (_numerics.TryGetValue(key, out var nud))
-                {
-                    if (int.TryParse(val, out int v))
-                        nud.Value = Math.Clamp(v, (int)nud.Minimum, (int)nud.Maximum);
-                }
+                FileLogger.Info("EQVideoMode: loaded current values from eqclient.ini");
             }
-
-            // Snapshot
-            foreach (var (key, nud) in _numerics)
-                _initialValues[key] = ((int)nud.Value).ToString();
-
-            FileLogger.Info("EQVideoMode: loaded current values from eqclient.ini");
+            catch (Exception ex)
+            {
+                FileLogger.Error("EQVideoMode: load error", ex);
+            }
         }
-        catch (Exception ex)
-        {
-            FileLogger.Error("EQVideoMode: load error", ex);
-        }
+
+        // Snapshot unconditionally — runs even if file missing or load failed
+        foreach (var (key, nud) in _numerics)
+            _initialValues[key] = ((int)nud.Value).ToString();
     }
 
     private void SaveSettings()
@@ -169,6 +170,12 @@ public class EQVideoModeForm : Form
             MessageBox.Show($"Failed to save: {ex.Message}", "Error",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) DarkTheme.DisposeControlFonts(this);
+        base.Dispose(disposing);
     }
 
     /// <summary>

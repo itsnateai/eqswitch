@@ -77,12 +77,6 @@ public class AppConfig
     public bool CtrlHoverHelp { get; set; } = true;
 
     /// <summary>
-    /// When true, sets Log=FALSE in eqclient.ini [Defaults] section.
-    /// Prevents EQ from writing large log files to disk.
-    /// </summary>
-    public bool DisableEQLog { get; set; } = false;
-
-    /// <summary>
     /// Persistent eqclient.ini overrides — applied on every save/launch.
     /// </summary>
     public EQClientIniConfig EQClientIni { get; set; } = new();
@@ -389,104 +383,107 @@ public class CharacterProfile
 /// </summary>
 public class EQClientIniConfig
 {
-    /// <summary>Disable all EQ sound (Sound=FALSE in [Defaults]).</summary>
-    public bool DisableSound { get; set; } = false;
+    /// <summary>Disable all EQ sound (Sound=FALSE in [Defaults]). EQ default: TRUE (sound disabled).</summary>
+    public bool DisableSound { get; set; } = true;
 
-    /// <summary>Disable music (Music=0 in [Defaults]). 0 = off, 1 = on.</summary>
-    public bool DisableMusic { get; set; } = false;
+    /// <summary>Disable music (Music=0 in [Defaults]). EQ default: TRUE (music off).</summary>
+    public bool DisableMusic { get; set; } = true;
 
-    /// <summary>Sound volume (SoundVolume in [Defaults]). 0 = mute, range 0-100. -1 = don't override.</summary>
-    public int SoundVolume { get; set; } = -1;
+    /// <summary>Sound volume (SoundVolume in [Defaults]). EQ default: 0. -1 = don't override.</summary>
+    public int SoundVolume { get; set; } = 0;
 
-    /// <summary>Disable environment sounds (EnvSounds=0 in [Defaults]).</summary>
-    public bool DisableEnvSounds { get; set; } = false;
+    /// <summary>Disable environment sounds (EnvSounds=0 in [Defaults]). EQ default: TRUE (env sounds off).</summary>
+    public bool DisableEnvSounds { get; set; } = true;
 
-    /// <summary>Disable combat music (CombatMusic=0 in [Defaults]).</summary>
-    public bool DisableCombatMusic { get; set; } = false;
+    /// <summary>Disable combat music (CombatMusic=0 in [Defaults]). EQ default: TRUE (combat music off).</summary>
+    public bool DisableCombatMusic { get; set; } = true;
 
-    /// <summary>Disable Windows auto-ducking of EQ audio (AllowAutoDuck=0 in [Defaults]).</summary>
-    public bool DisableAutoDuck { get; set; } = false;
+    /// <summary>Disable Windows auto-ducking of EQ audio (AllowAutoDuck=0 in [Defaults]). EQ default: TRUE (auto-duck off).</summary>
+    public bool DisableAutoDuck { get; set; } = true;
 
-    /// <summary>Set sky update interval in ms (SkyUpdateInterval=60000 in [Defaults]).</summary>
-    public bool SlowSkyUpdates { get; set; } = false;
+    /// <summary>Set sky update interval in ms (SkyUpdateInterval=60000 in [Defaults]). EQ default: TRUE (60000ms = slow).</summary>
+    public bool SlowSkyUpdates { get; set; } = true;
 
-    /// <summary>Disable sky rendering (Sky=0 in [Defaults]). Performance boost.</summary>
-    public bool DisableSky { get; set; } = false;
+    /// <summary>Disable sky rendering (Sky=0 in [Defaults]). EQ default: TRUE (sky off).</summary>
+    public bool DisableSky { get; set; } = true;
 
-    /// <summary>Enable persistent bard songs (BardSongs=1 in [Defaults]).</summary>
-    public bool BardSongs { get; set; } = false;
+    /// <summary>Enable persistent bard songs (BardSongs=1 in [Defaults]). EQ default: TRUE.</summary>
+    public bool BardSongs { get; set; } = true;
 
-    /// <summary>Enable bard songs on pets (BardSongsOnPets=1 in [Defaults]).</summary>
-    public bool BardSongsOnPets { get; set; } = false;
+    /// <summary>Enable bard songs on pets (BardSongsOnPets=1 in [Defaults]). EQ default: TRUE.</summary>
+    public bool BardSongsOnPets { get; set; } = true;
 
-    /// <summary>Shadow clip plane distance (ShadowClipPlane in [Defaults]). 0 = don't override.</summary>
-    public int ShadowClipPlane { get; set; } = 0;
+    /// <summary>Shadow clip plane distance (ShadowClipPlane in [Defaults]). EQ default: 35.</summary>
+    public int ShadowClipPlane { get; set; } = 35;
 
-    /// <summary>Actor clip plane distance (ActorClipPlane in [Defaults]). 0 = don't override.</summary>
-    public int ActorClipPlane { get; set; } = 0;
+    /// <summary>Actor clip plane distance (ActorClipPlane in [Defaults]). EQ default: 67.</summary>
+    public int ActorClipPlane { get; set; } = 67;
 
-    /// <summary>Auto-attack when assisting (AttackOnAssist=TRUE in [Defaults]).</summary>
-    public bool AttackOnAssist { get; set; } = false;
+    /// <summary>Auto-attack when assisting (AttackOnAssist=TRUE in [Defaults]). EQ default: TRUE.</summary>
+    public bool AttackOnAssist { get; set; } = true;
 
-    /// <summary>Show inspect message (ShowInspectMessage=TRUE in [Defaults]).</summary>
-    public bool ShowInspectMessage { get; set; } = false;
+    /// <summary>Show inspect message (ShowInspectMessage=TRUE in [Defaults]). EQ default: TRUE.</summary>
+    public bool ShowInspectMessage { get; set; } = true;
 
-    /// <summary>Show grass (ShowGrass=TRUE in [Defaults]).</summary>
-    public bool ShowGrass { get; set; } = false;
+    /// <summary>Show grass (ShowGrass=TRUE in [Defaults]). EQ default: TRUE.</summary>
+    public bool ShowGrass { get; set; } = true;
 
-    /// <summary>Show ping bar / network stats (NetStat=TRUE in [Defaults]).</summary>
-    public bool NetStat { get; set; } = false;
+    /// <summary>Show ping bar / network stats (NetStat=TRUE in [Defaults]). EQ default: TRUE.</summary>
+    public bool NetStat { get; set; } = true;
 
-    /// <summary>Auto-update tracking window position (TrackAutoUpdate=TRUE in [Defaults]).</summary>
-    public bool TrackAutoUpdate { get; set; } = false;
+    /// <summary>Auto-update tracking window position (TrackAutoUpdate=TRUE in [Defaults]). EQ default: TRUE.</summary>
+    public bool TrackAutoUpdate { get; set; } = true;
 
-    /// <summary>Target Group Buff (TargetGroupBuff=1 in [Defaults]).</summary>
-    public bool TargetGroupBuff { get; set; } = false;
+    /// <summary>Target Group Buff (TargetGroupBuff=1 in [Defaults]). EQ default: TRUE.</summary>
+    public bool TargetGroupBuff { get; set; } = true;
 
-    /// <summary>Disable mip-mapping (MipMapping=FALSE in [Defaults]).</summary>
-    public bool DisableMipMapping { get; set; } = false;
+    /// <summary>Disable mip-mapping (MipMapping=FALSE in [Defaults]). EQ default: TRUE (mip-mapping off).</summary>
+    public bool DisableMipMapping { get; set; } = true;
 
-    /// <summary>Enable texture cache (TextureCache=TRUE in [Defaults]).</summary>
-    public bool TextureCache { get; set; } = false;
+    /// <summary>Enable texture cache (TextureCache=TRUE in [Defaults]). EQ default: TRUE.</summary>
+    public bool TextureCache { get; set; } = true;
 
-    /// <summary>Use D3D texture compression (UseD3DTextureCompression=TRUE in [Defaults]).</summary>
-    public bool UseD3DTextureCompression { get; set; } = false;
+    /// <summary>Use D3D texture compression (UseD3DTextureCompression=TRUE in [Defaults]). EQ default: TRUE.</summary>
+    public bool UseD3DTextureCompression { get; set; } = true;
 
-    /// <summary>Disable dynamic lights (ShowDynamicLights=FALSE in [Defaults]).</summary>
-    public bool DisableDynamicLights { get; set; } = false;
+    /// <summary>Disable dynamic lights (ShowDynamicLights=FALSE in [Defaults]). EQ default: TRUE (lights off).</summary>
+    public bool DisableDynamicLights { get; set; } = true;
 
-    /// <summary>Use lit batches (UseLitBatches=TRUE in [Defaults]).</summary>
-    public bool UseLitBatches { get; set; } = false;
+    /// <summary>Use lit batches (UseLitBatches=TRUE in [Defaults]). EQ default: TRUE.</summary>
+    public bool UseLitBatches { get; set; } = true;
 
-    /// <summary>Disable inspect others (InspectOthers=FALSE in [Defaults]).</summary>
-    public bool DisableInspectOthers { get; set; } = false;
+    /// <summary>Disable inspect others (InspectOthers=FALSE in [Defaults]). EQ default: TRUE (inspect off).</summary>
+    public bool DisableInspectOthers { get; set; } = true;
 
-    /// <summary>Anonymous mode (Anonymous=1 in [Defaults]).</summary>
-    public bool Anonymous { get; set; } = false;
+    /// <summary>Anonymous mode (Anonymous=1 in [Defaults]). EQ default: TRUE.</summary>
+    public bool Anonymous { get; set; } = true;
 
-    /// <summary>Clip plane distance (ClipPlane in [Defaults]). 0 = don't override.</summary>
-    public int ClipPlane { get; set; } = 0;
+    /// <summary>Clip plane distance (ClipPlane in [Defaults]). EQ default: 14.</summary>
+    public int ClipPlane { get; set; } = 14;
 
-    /// <summary>Mouse sensitivity (MouseSensitivity in [Defaults]). -1 = don't override.</summary>
-    public int MouseSensitivity { get; set; } = -1;
+    /// <summary>Mouse sensitivity (MouseSensitivity in [Defaults]). EQ default: 5. -1 = don't override.</summary>
+    public int MouseSensitivity { get; set; } = 5;
 
-    /// <summary>Disable loot all confirmation (LootAllConfirm=0 in [Defaults]).</summary>
-    public bool DisableLootAllConfirm { get; set; } = false;
+    /// <summary>Disable loot all confirmation (LootAllConfirm=0 in [Defaults]). EQ default: TRUE (confirm off).</summary>
+    public bool DisableLootAllConfirm { get; set; } = true;
 
-    /// <summary>Confirm raid invites (RaidInviteConfirm=1 in [Defaults]).</summary>
-    public bool RaidInviteConfirm { get; set; } = false;
+    /// <summary>Confirm raid invites (RaidInviteConfirm=1 in [Defaults]). EQ default: TRUE.</summary>
+    public bool RaidInviteConfirm { get; set; } = true;
 
-    /// <summary>Disable AA confirmation dialog (AANoConfirm=0 in [Defaults]).</summary>
+    /// <summary>Disable AA confirmation dialog (AANoConfirm=0 in [Defaults]). EQ default: FALSE.</summary>
     public bool AANoConfirm { get; set; } = false;
 
-    /// <summary>Disable chat server (ChatServerPort=0 in [Defaults]). Disables the built-in chat channel server.</summary>
+    /// <summary>Disable chat server (ChatServerPort not present in fresh ini). EQ default: FALSE (chat server active).</summary>
     public bool DisableChatServer { get; set; } = false;
 
     /// <summary>Force windowed mode (WindowedMode=TRUE in [VideoMode]).</summary>
     public bool ForceWindowedMode { get; set; } = true;
 
-    /// <summary>Start EQ maximized in windowed mode (Maximized=1 in [Defaults] + [VideoMode]).</summary>
+    /// <summary>Start EQ maximized in windowed mode (Maximized=0 in [Defaults] + [VideoMode]). EQ default: FALSE.</summary>
     public bool MaximizeWindow { get; set; } = false;
+
+    /// <summary>Disable EQ logging (Log=FALSE in [Defaults]). EQ default: FALSE (logging enabled).</summary>
+    public bool DisableEQLog { get; set; } = false;
 
     /// <summary>Max foreground FPS (MaxFPS in [Defaults]). Default 80.</summary>
     public int MaxFPS { get; set; } = 80;
