@@ -732,6 +732,12 @@ public class SettingsForm : Form
         btnHelp.Click += (_, _) => HelpForm.Show(_config);
         page.Controls.Add(btnHelp);
 
+        // ─── Uninstall button (right-aligned) ───────────────────
+        var btnUninstall = DarkTheme.MakeButton("🗑 Uninstall", DarkTheme.CardWarn, 380, y);
+        btnUninstall.Size = new Size(110, 30);
+        btnUninstall.Click += (_, _) => RunUninstall();
+        page.Controls.Add(btnUninstall);
+
         return page;
     }
 
@@ -937,6 +943,40 @@ public class SettingsForm : Form
         _chkVideoMultiMon.Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
         _nudVideoTopOffset.Value = DarkTheme.ClampNud(_nudVideoTopOffset, _config.Layout.TopOffset);
         PopulateVideoFromIni();
+    }
+
+    private void RunUninstall()
+    {
+        var result = MessageBox.Show(
+            "This will revert all external changes made by EQSwitch:\n\n" +
+            "  • Restore original dinput8.dll in EQ folder (if backed up)\n" +
+            "  • Remove startup shortcut\n" +
+            "  • Remove desktop shortcut\n\n" +
+            "EQSwitch's own config and logs will NOT be deleted.\n" +
+            "eqclient.ini settings will NOT be reverted (use .bak files).\n\n" +
+            "Continue?",
+            "EQSwitch — Uninstall",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning);
+
+        if (result != DialogResult.Yes) return;
+
+        var actions = UninstallHelper.CleanUp(_config);
+
+        if (actions.Count == 0)
+            actions.Add("Nothing to clean up — no external modifications found.");
+
+        MessageBox.Show(
+            string.Join("\n", actions),
+            "EQSwitch — Uninstall Complete",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
+
+        // Persist RunAtStartup=false so ValidateStartupPath doesn't recreate the shortcut
+        _chkRunAtStartup.Checked = false;
+        _config.RunAtStartup = false;
+        ConfigManager.Save(_config);
+        ConfigManager.FlushSave();
     }
 
     private void ApplySettings()
