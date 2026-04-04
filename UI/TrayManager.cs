@@ -794,8 +794,7 @@ public class TrayManager : IDisposable
         var videoMenu = new ToolStripMenuItem("\uD83D\uDCFA  Video Settings") { DropDownDirection = ToolStripDropDownDirection.Right };
         videoMenu.DropDownItems.Add("\uD83D\uDCDD  Video Settings...", null, (_, _) =>
         {
-            using var form = new VideoSettingsForm(_config);
-            form.ShowDialog();
+            ShowSettings(6); // Video tab
         });
         videoMenu.DropDownItems.Add(new ToolStripSeparator());
         videoMenu.DropDownItems.Add("Toggle PiP  \uD83D\uDC41", null, (_, _) => TogglePip());
@@ -1079,7 +1078,7 @@ public class TrayManager : IDisposable
         _hotkeyManager.UnregisterAll();
         _keyboardHook.Reset();
 
-        _settingsForm = new SettingsForm(_config, ReloadConfig, tabIndex, ShowProcessManager);
+        _settingsForm = new SettingsForm(_config, ReloadConfig, tabIndex, ShowProcessManager, UpdateHookConfig);
         _settingsForm.FormClosed += (_, _) =>
         {
             bool reopen = _settingsForm?.ReopenAfterClose == true;
