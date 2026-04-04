@@ -5,8 +5,8 @@ using EQSwitch.Core;
 namespace EQSwitch.UI;
 
 /// <summary>
-/// Manages particle/opacity settings in eqclient.ini [Defaults] section.
-/// Experimental sub-form — sliders for opacity/density, numerics for filters/clip planes.
+/// Manages particle/opacity settings in eqclient.ini.
+/// Most settings are in [Defaults]; FogScale, LODBias, SameResolution are in [Options].
 /// </summary>
 public class EQParticlesForm : Form
 {
@@ -198,10 +198,10 @@ public class EQParticlesForm : Form
 
     private void LoadFromIni()
     {
-        if (!File.Exists(_iniPath)) return;
-
-        try
+        if (File.Exists(_iniPath))
         {
+            try
+            {
             var lines = File.ReadAllLines(_iniPath, Encoding.Default);
             string currentSection = "";
 
@@ -214,7 +214,9 @@ public class EQParticlesForm : Form
                     continue;
                 }
 
-                if (!currentSection.Equals("[Defaults]", StringComparison.OrdinalIgnoreCase))
+                bool isDefaults = currentSection.Equals("[Defaults]", StringComparison.OrdinalIgnoreCase);
+                bool isOptions = currentSection.Equals("[Options]", StringComparison.OrdinalIgnoreCase);
+                if (!isDefaults && !isOptions)
                     continue;
 
                 var parts = trimmed.Split('=', 2);
@@ -223,48 +225,55 @@ public class EQParticlesForm : Form
                 string key = parts[0].Trim();
                 string val = parts[1].Trim();
 
-                // Opacity/density sliders (float 0.0-1.0 → slider 0-100)
-                if (_sliders.TryGetValue(key, out var slider))
+                // [Defaults] — opacity/density sliders and clip/filter numerics
+                if (isDefaults)
                 {
-                    if (double.TryParse(val, System.Globalization.NumberStyles.Float,
-                        System.Globalization.CultureInfo.InvariantCulture, out double d))
-                        slider.Value = Math.Clamp((int)(d * 100), 0, 100);
-                }
+                    if (_sliders.TryGetValue(key, out var slider))
+                    {
+                        if (double.TryParse(val, System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out double d))
+                            slider.Value = Math.Clamp((int)(d * 100), 0, 100);
+                    }
 
-                // Clip planes and filters
-                if (_numerics.TryGetValue(key, out var nud))
-                {
-                    if (decimal.TryParse(val, System.Globalization.NumberStyles.Float,
-                        System.Globalization.CultureInfo.InvariantCulture, out decimal dec))
-                        nud.Value = Math.Clamp(dec, nud.Minimum, nud.Maximum);
-                }
-
-                // Misc
-                switch (key)
-                {
-                    case "FogScale":
+                    if (_numerics.TryGetValue(key, out var nud))
+                    {
                         if (decimal.TryParse(val, System.Globalization.NumberStyles.Float,
-                            System.Globalization.CultureInfo.InvariantCulture, out decimal fog))
-                            _nudFogScale.Value = Math.Clamp(fog, 0, 100);
-                        break;
-                    case "LODBias":
-                        if (int.TryParse(val, out int lod))
-                            _nudLODBias.Value = Math.Clamp(lod, 0, 100);
-                        break;
-                    case "SameResolution":
-                        _chkSameResolution.Checked = val == "1";
-                        break;
+                            System.Globalization.CultureInfo.InvariantCulture, out decimal dec))
+                            nud.Value = Math.Clamp(dec, nud.Minimum, nud.Maximum);
+                    }
+                }
+
+                // [Options] — FogScale, LODBias, SameResolution
+                if (isOptions)
+                {
+                    switch (key)
+                    {
+                        case "FogScale":
+                            if (decimal.TryParse(val, System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out decimal fog))
+                                _nudFogScale.Value = Math.Clamp(fog, 0, 100);
+                            break;
+                        case "LODBias":
+                            if (int.TryParse(val, out int lod))
+                                _nudLODBias.Value = Math.Clamp(lod, 0, 100);
+                            break;
+                        case "SameResolution":
+                            _chkSameResolution.Checked = val == "1";
+                            break;
+                    }
                 }
             }
 
-            // Snapshot initial state
-            SnapshotValues();
             FileLogger.Info("EQParticles: loaded current values from eqclient.ini");
         }
-        catch (Exception ex)
-        {
-            FileLogger.Error("EQParticles: load error", ex);
+            catch (Exception ex)
+            {
+                FileLogger.Error("EQParticles: load error", ex);
+            }
         }
+
+        // Snapshot unconditionally — runs even if file missing or load failed
+        SnapshotValues();
     }
 
     private void SnapshotValues()
@@ -328,7 +337,7 @@ public class EQParticlesForm : Form
             var lines = File.ReadAllLines(_iniPath, Encoding.Default).ToList();
 
             foreach (var (key, val) in changed)
-                EQClientSettingsForm.SetIniValue(lines, "Defaults", key, val);
+                EQClientSettingsForm.SetIniValue(lines, GetSection(key), key, val);
 
             File.WriteAllLines(_iniPath, lines, Encoding.Default);
             FileLogger.Info($"EQParticles: saved {changed.Count} changed setting(s) to eqclient.ini");
@@ -351,8 +360,12 @@ public class EQParticlesForm : Form
     public static void EnforceOverrides(AppConfig config, List<string> lines)
     {
         foreach (var (key, value) in config.EQClientIni.ParticleOverrides)
-            EQClientSettingsForm.SetIniValue(lines, "Defaults", key, value);
+            EQClientSettingsForm.SetIniValue(lines, GetSection(key), key, value);
     }
+
+    /// <summary>FogScale, LODBias, SameResolution live in [Options]; everything else in [Defaults].</summary>
+    private static string GetSection(string key) =>
+        key is "FogScale" or "LODBias" or "SameResolution" ? "Options" : "Defaults";
 
     protected override void Dispose(bool disposing)
     {

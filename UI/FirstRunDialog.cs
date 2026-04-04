@@ -97,4 +97,10 @@ public class FirstRunDialog : Form
         AcceptButton = okBtn;
         CancelButton = cancelBtn;
     }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) DarkTheme.DisposeControlFonts(this);
+        base.Dispose(disposing);
+    }
 }

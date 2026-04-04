@@ -1,5 +1,30 @@
 # Changelog
 
+## v3.3.1 — Config Baseline & Defaults Overhaul (2026-04-04)
+
+### Fixed
+- **AppConfig defaults baselined to EQ's eqclient.ini** — nuclear reset now matches a fresh EQ install (22 booleans, 3 clip planes, mouse sensitivity, sound volume)
+- **INI section targeting corrected** — ChatSpam writes to [Options] not [Defaults], Keymaps writes to [KeyMaps] not [Defaults], Particles routes FogScale/LODBias/SameResolution to [Options]
+- **11 phantom [Defaults] writes removed** — Sky, BardSongs, Anonymous, ClipPlane, MouseSensitivity, ShadowClipPlane, ActorClipPlane and 4 others were being injected into [Defaults] where they don't belong; now write only to [Options]
+- **LoadFromIni reads [Options] section** — settings that live in [Options] (EQ's runtime-authoritative section) are now read correctly on form open
+- **SlowSkyUpdates EnforceOverrides** — now restores EQ default (3000ms) when unchecked instead of leaving 60000
+- **SkyUpdateInterval ApplyToIni** — falls back to 3000 when no original value was captured
+- **MouseSensitivity/SoundVolume LoadFromIni clamp** — minimum changed from 0 to -1 to preserve sentinel values
+- **ForceWindowedMode** — now reads from [Defaults] in addition to [VideoMode]
+- **DisableEQLog** — moved from AppConfig to EQClientIniConfig; LoadFromIni now reads Log key; ApplyToIni now writes it
+- **ConfiguredKeys sentinel tracking** — numeric fields at sentinel values (-1 or 0) are removed from ConfiguredKeys instead of being tracked but never enforced
+- **Maximized ConfiguredKeys gap** — now tracked when saved from SettingsForm
+- **ProcessManagerForm FPS ConfiguredKeys** — MaxFPS/MaxBGFPS now tracked when saved from Process Manager
+- **ChatSpamForm EnforceOverrides** — safe int serialization (`value != 0 ? "1" : "0"`) instead of raw `value.ToString()`
+- **ModelsForm phantom writes on load failure** — _initialValues snapshot moved outside try block
+- **Snapshot early-return bypass** — all 4 sub-forms restructured from `if (!exists) return` to `if (exists) { try...catch }` so snapshots run unconditionally
+- **VideoModeForm XOffset/YOffset defaults** — changed from 1 to 0 (EQ default)
+- **GDI font leak coverage** — added DisposeControlFonts to EQChatSpamForm, EQVideoModeForm, EQClientSettingsForm, FirstRunDialog, ProcessManagerForm, SettingsForm
+
+### Changed
+- ChatServerPort writes to [Options] (was [Defaults], key doesn't exist in fresh ini)
+- Doc comments updated to accurately describe EQ defaults and section locations
+
 ## v3.1.0 — DirectInput Proxy, Background Auto-Login & Hook Upgrades (2026-04-01)
 
 ### Added

@@ -5,7 +5,7 @@ using EQSwitch.Core;
 namespace EQSwitch.UI;
 
 /// <summary>
-/// Manages eqclient.ini [Defaults] key mapping settings.
+/// Manages eqclient.ini [KeyMaps] key mapping settings.
 /// EQ uses DirectInput scan codes for keybindings (KEYMAPPING_*=code).
 /// Large values encode modifier flags in upper bits:
 ///   0x10000000 = Shift, 0x20000000 = Ctrl, 0x40000000 = Alt
@@ -193,52 +193,53 @@ public class EQKeymapsForm : Form
 
     private void LoadFromIni()
     {
-        if (!File.Exists(_iniPath)) return;
-
-        try
+        if (File.Exists(_iniPath))
         {
-            var lines = File.ReadAllLines(_iniPath, Encoding.Default);
-            string currentSection = "";
-
-            foreach (var line in lines)
+            try
             {
-                var trimmed = line.Trim();
-                if (trimmed.StartsWith("["))
+                var lines = File.ReadAllLines(_iniPath, Encoding.Default);
+                string currentSection = "";
+
+                foreach (var line in lines)
                 {
-                    currentSection = trimmed;
-                    continue;
-                }
-
-                if (!currentSection.Equals("[Defaults]", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                var parts = trimmed.Split('=', 2);
-                if (parts.Length != 2) continue;
-
-                string key = parts[0].Trim();
-                string val = parts[1].Trim();
-
-                if (_nudValues.TryGetValue(key, out var nud))
-                {
-                    if (long.TryParse(val, out long code))
+                    var trimmed = line.Trim();
+                    if (trimmed.StartsWith("["))
                     {
-                        nud.Value = Math.Clamp(code, 0, 2000000000);
-                        if (_keyLabels.TryGetValue(key, out var lbl))
-                            lbl.Text = GetKeyName(code);
+                        currentSection = trimmed;
+                        continue;
+                    }
+
+                    if (!currentSection.Equals("[KeyMaps]", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var parts = trimmed.Split('=', 2);
+                    if (parts.Length != 2) continue;
+
+                    string key = parts[0].Trim();
+                    string val = parts[1].Trim();
+
+                    if (_nudValues.TryGetValue(key, out var nud))
+                    {
+                        if (long.TryParse(val, out long code))
+                        {
+                            nud.Value = Math.Clamp(code, 0, 2000000000);
+                            if (_keyLabels.TryGetValue(key, out var lbl))
+                                lbl.Text = GetKeyName(code);
+                        }
                     }
                 }
+
+                FileLogger.Info("EQKeymaps: loaded current values from eqclient.ini");
             }
-
-            // Snapshot
-            foreach (var (key, nud) in _nudValues)
-                _initialValues[key] = (long)nud.Value;
-
-            FileLogger.Info("EQKeymaps: loaded current values from eqclient.ini");
+            catch (Exception ex)
+            {
+                FileLogger.Error("EQKeymaps: load error", ex);
+            }
         }
-        catch (Exception ex)
-        {
-            FileLogger.Error("EQKeymaps: load error", ex);
-        }
+
+        // Snapshot unconditionally — runs even if file missing or load failed
+        foreach (var (key, nud) in _nudValues)
+            _initialValues[key] = (long)nud.Value;
     }
 
     private void SaveSettings()
@@ -264,7 +265,7 @@ public class EQKeymapsForm : Form
             var lines = File.ReadAllLines(_iniPath, Encoding.Default).ToList();
 
             foreach (var (key, val) in changed)
-                EQClientSettingsForm.SetIniValue(lines, "Defaults", key, val.ToString());
+                EQClientSettingsForm.SetIniValue(lines, "KeyMaps", key, val.ToString());
 
             File.WriteAllLines(_iniPath, lines, Encoding.Default);
             FileLogger.Info($"EQKeymaps: saved {changed.Count} changed keymap(s) to eqclient.ini");

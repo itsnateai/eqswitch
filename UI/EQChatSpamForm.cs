@@ -6,7 +6,7 @@ namespace EQSwitch.UI;
 
 /// <summary>
 /// Manages eqclient.ini chat spam filter settings.
-/// All settings are in [Defaults] section, values are 0 or 1.
+/// All settings are in [Options] section, values are 0 or 1.
 /// </summary>
 public class EQChatSpamForm : Form
 {
@@ -115,7 +115,7 @@ public class EQChatSpamForm : Form
                     continue;
                 }
 
-                if (!currentSection.Equals("[Defaults]", StringComparison.OrdinalIgnoreCase))
+                if (!currentSection.Equals("[Options]", StringComparison.OrdinalIgnoreCase))
                     continue;
 
                 var parts = trimmed.Split('=', 2);
@@ -166,7 +166,7 @@ public class EQChatSpamForm : Form
 
             foreach (var (key, chk) in _checkBoxes)
             {
-                EQClientSettingsForm.SetIniValue(lines, "Defaults", key, chk.Checked ? "1" : "0");
+                EQClientSettingsForm.SetIniValue(lines, "Options", key, chk.Checked ? "1" : "0");
             }
 
             File.WriteAllLines(_iniPath, lines, Encoding.Default);
@@ -180,6 +180,12 @@ public class EQChatSpamForm : Form
         }
     }
 
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) DarkTheme.DisposeControlFonts(this);
+        base.Dispose(disposing);
+    }
+
     /// <summary>
     /// Static helper: enforce all chat spam overrides in eqclient.ini.
     /// Called by EnforceOverrides in EQClientSettingsForm.
@@ -188,7 +194,7 @@ public class EQChatSpamForm : Form
     {
         foreach (var (key, value) in config.EQClientIni.ChatSpamOverrides)
         {
-            EQClientSettingsForm.SetIniValue(lines, "Defaults", key, value.ToString());
+            EQClientSettingsForm.SetIniValue(lines, "Options", key, value != 0 ? "1" : "0");
         }
     }
 }
