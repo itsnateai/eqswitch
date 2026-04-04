@@ -63,445 +63,139 @@ public class EQClientSettingsForm : Form
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 EQ Client Settings", new Size(400, 900));
-        AutoScroll = true;
+        DarkTheme.StyleForm(this, "EQSwitch \u2014 EQ Client Settings", new Size(750, 680));
 
-        int y = 12;
+        int y = 8;
+        const int C1 = 10, C2 = 245, C3 = 480, RH = 22;
 
-        y = DarkTheme.AddSectionHeader(this, "\u2699  Persistent eqclient.ini Overrides", 15, y);
+        // ─── Gameplay card (3 columns × 4 rows) ─────────────────
+        var cardGame = DarkTheme.MakeCard(this, "\u2694", "Gameplay", DarkTheme.CardGreen, 10, y, 710, 130);
+        int cy = 30;
 
-        DarkTheme.AddHint(this, "These settings are written to eqclient.ini on Save/Apply.\nEQ must be restarted for changes to take effect.", 15, y);
+        _chkAnonymous = DarkTheme.AddCardCheckBox(cardGame, "Anonymous", C1, cy);
+        _chkRaidInviteConfirm = DarkTheme.AddCardCheckBox(cardGame, "Raid Invite Confirm", C2, cy);
+        _chkDisableChatServer = DarkTheme.AddCardCheckBox(cardGame, "Disable Chat Server", C3, cy);
+        cy += RH;
+        _chkDisableLog = DarkTheme.AddCardCheckBox(cardGame, "Disable EQ Logging", C1, cy);
+        _chkAANoConfirm = DarkTheme.AddCardCheckBox(cardGame, "AA No Confirm", C2, cy);
+        _chkDisableLootAllConfirm = DarkTheme.AddCardCheckBox(cardGame, "Disable Loot All Confirm", C3, cy);
+        cy += RH;
+        _chkAttackOnAssist = DarkTheme.AddCardCheckBox(cardGame, "Attack on Assist", C1, cy);
+        _chkShowInspectMessage = DarkTheme.AddCardCheckBox(cardGame, "Show Inspect Message", C2, cy);
+        _chkDisableInspectOthers = DarkTheme.AddCardCheckBox(cardGame, "Disable Inspect Others", C3, cy);
+        cy += RH;
+        _chkForceWindowed = DarkTheme.AddCardCheckBox(cardGame, "Force Windowed Mode", C1, cy);
 
-        y += 35;
+        y += 138;
 
-        _chkAnonymous = new CheckBox
+        // ─── Sound & Audio card (3 columns × 2 rows) ────────────
+        var cardSound = DarkTheme.MakeCard(this, "\uD83D\uDD0A", "Sound & Audio", DarkTheme.CardGold, 10, y, 710, 85);
+        cy = 30;
+
+        _chkDisableSound = DarkTheme.AddCardCheckBox(cardSound, "Disable Sound", C1, cy);
+        _chkDisableEnvSounds = DarkTheme.AddCardCheckBox(cardSound, "Disable Env Sounds", C2, cy);
+        _chkDisableAutoDuck = DarkTheme.AddCardCheckBox(cardSound, "Disable Auto-Duck", C3, cy);
+        cy += RH;
+        _chkDisableMusic = DarkTheme.AddCardCheckBox(cardSound, "Disable Music", C1, cy);
+        _chkDisableCombatMusic = DarkTheme.AddCardCheckBox(cardSound, "Disable Combat Music", C2, cy);
+        DarkTheme.AddCardLabel(cardSound, "Volume:", C3, cy + 2);
+        _nudSoundVolume = DarkTheme.AddCardNumeric(cardSound, C3 + 55, cy, 50, Math.Clamp(_config.EQClientIni.SoundVolume, -1, 100), -1, 100);
+        DarkTheme.AddCardHint(cardSound, "(-1 = skip)", C3 + 110, cy + 4);
+
+        y += 93;
+
+        // ─── Graphics & Visual card (3 columns × 5 rows) ────────
+        var cardGfx = DarkTheme.MakeCard(this, "\uD83C\uDFA8", "Graphics & Visual", DarkTheme.CardBlue, 10, y, 710, 150);
+        cy = 30;
+
+        _chkSlowSky = DarkTheme.AddCardCheckBox(cardGfx, "Slow Sky Updates", C1, cy);
+        _chkDisableMipMapping = DarkTheme.AddCardCheckBox(cardGfx, "Disable Mip-Mapping", C2, cy);
+        _chkDisableDynamicLights = DarkTheme.AddCardCheckBox(cardGfx, "Disable Dynamic Lights", C3, cy);
+        cy += RH;
+        _chkDisableSky = DarkTheme.AddCardCheckBox(cardGfx, "Disable Sky", C1, cy);
+        _chkTextureCache = DarkTheme.AddCardCheckBox(cardGfx, "Texture Cache", C2, cy);
+        _chkUseLitBatches = DarkTheme.AddCardCheckBox(cardGfx, "Use Lit Batches", C3, cy);
+        cy += RH;
+        _chkShowGrass = DarkTheme.AddCardCheckBox(cardGfx, "Show Grass", C1, cy);
+        _chkUseD3DTextureCompression = DarkTheme.AddCardCheckBox(cardGfx, "D3D Texture Compression", C2, cy);
+        _chkNetStat = DarkTheme.AddCardCheckBox(cardGfx, "Ping Bar", C3, cy);
+        cy += RH;
+        _chkBardSongs = DarkTheme.AddCardCheckBox(cardGfx, "Persistent Bard Songs", C1, cy);
+        _chkBardSongsOnPets = DarkTheme.AddCardCheckBox(cardGfx, "Bard Songs on Pets", C2, cy);
+        _chkTrackAutoUpdate = DarkTheme.AddCardCheckBox(cardGfx, "Track Auto-Update", C3, cy);
+        cy += RH;
+        _chkTargetGroupBuff = DarkTheme.AddCardCheckBox(cardGfx, "Target Group Buff", C1, cy);
+
+        y += 158;
+
+        // ─── Performance card (numerics in aligned rows) ──────────
+        // 3 columns: label, numeric, hint — spaced at 230px intervals
+        var cardPerf = DarkTheme.MakeCard(this, "\uD83D\uDD27", "Performance", DarkTheme.CardPurple, 10, y, 710, 95);
+        cy = 32;
+
+        // Row 1: MaxFPS | MaxBGFPS | Mouse Sensitivity
+        DarkTheme.AddCardLabel(cardPerf, "MaxFPS:", 10, cy + 2);
+        _nudMaxFPS = DarkTheme.AddCardNumeric(cardPerf, 78, cy, 50, Math.Clamp(_config.EQClientIni.MaxFPS, 0, 99), 0, 99);
+        DarkTheme.AddCardLabel(cardPerf, "MaxBGFPS:", 245, cy + 2);
+        _nudMaxBGFPS = DarkTheme.AddCardNumeric(cardPerf, 325, cy, 50, Math.Clamp(_config.EQClientIni.MaxBGFPS, 0, 99), 0, 99);
+        DarkTheme.AddCardHint(cardPerf, "(0 = don't set)", 380, cy + 4);
+        DarkTheme.AddCardLabel(cardPerf, "Mouse:", 500, cy + 2);
+        _nudMouseSensitivity = DarkTheme.AddCardNumeric(cardPerf, 555, cy, 50, Math.Clamp(_config.EQClientIni.MouseSensitivity, -1, 100), -1, 100);
+        DarkTheme.AddCardHint(cardPerf, "(-1 = skip)", 610, cy + 4);
+
+        // Row 2: Clip | Shadow | Actor
+        cy += RH + 6;
+        DarkTheme.AddCardLabel(cardPerf, "Clip:", 10, cy + 2);
+        _nudClipPlane = DarkTheme.AddCardNumeric(cardPerf, 78, cy, 55, Math.Clamp(_config.EQClientIni.ClipPlane, 0, 999), 0, 999);
+        DarkTheme.AddCardHint(cardPerf, "(def 14)", 138, cy + 4);
+        DarkTheme.AddCardLabel(cardPerf, "Shadow:", 245, cy + 2);
+        _nudShadowClipPlane = DarkTheme.AddCardNumeric(cardPerf, 325, cy, 55, Math.Clamp(_config.EQClientIni.ShadowClipPlane, 0, 999), 0, 999);
+        DarkTheme.AddCardHint(cardPerf, "(def 35)", 385, cy + 4);
+        DarkTheme.AddCardLabel(cardPerf, "Actor:", 500, cy + 2);
+        _nudActorClipPlane = DarkTheme.AddCardNumeric(cardPerf, 555, cy, 55, Math.Clamp(_config.EQClientIni.ActorClipPlane, 0, 999), 0, 999);
+        DarkTheme.AddCardHint(cardPerf, "(def 67)", 615, cy + 4);
+
+        y += 103;
+
+        // ─── Related Settings card (5 buttons in a row) ──────────
+        var cardSub = DarkTheme.MakeCard(this, "\uD83D\uDCC2", "Related Settings", DarkTheme.CardCyan, 10, y, 710, 65);
+        cy = 30;
+        const int BW = 125, BG = 12;
+
+        var btnModels = DarkTheme.AddCardButton(cardSub, "\uD83C\uDFAD Models", C1, cy, BW);
+        btnModels.Click += (_, _) => { using var f = new EQModelsForm(_config); f.ShowDialog(this); };
+
+        var btnChatSpam = DarkTheme.AddCardButton(cardSub, "\uD83D\uDCAC Chat Spam", C1 + BW + BG, cy, BW);
+        btnChatSpam.Click += (_, _) => { using var f = new EQChatSpamForm(_config); f.ShowDialog(this); };
+
+        var btnParticles = DarkTheme.AddCardButton(cardSub, "\u2728 Particles", C1 + (BW + BG) * 2, cy, BW);
+        btnParticles.Click += (_, _) => { using var f = new EQParticlesForm(_config); f.ShowDialog(this); };
+
+        var btnVideoMode = DarkTheme.AddCardButton(cardSub, "\uD83D\uDCFA Video Mode", C1 + (BW + BG) * 3, cy, BW);
+        btnVideoMode.Click += (_, _) => { using var f = new EQVideoModeForm(_config); f.ShowDialog(this); };
+
+        var btnKeymaps = DarkTheme.AddCardButton(cardSub, "\u2328 Keymaps", C1 + (BW + BG) * 4, cy, BW);
+        btnKeymaps.Click += (_, _) => { using var f = new EQKeymapsForm(_config); f.ShowDialog(this); };
+
+        // ─── Docked bottom panel with Save/Apply/Cancel ──────────
+        var buttonPanel = new Panel
         {
-            Text = "Anonymous  (Anonymous=1)",
-            Location = new Point(20, y),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.Anonymous
+            Dock = DockStyle.Bottom,
+            Height = 50,
+            BackColor = DarkTheme.BgDark
         };
-        Controls.Add(_chkAnonymous);
 
-        _chkDisableLog = new CheckBox
-        {
-            Text = "Disable EQ Logging  (Log=FALSE)",
-            Location = new Point(20, y += 25),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.DisableEQLog
-        };
-        Controls.Add(_chkDisableLog);
-
-        _chkRaidInviteConfirm = new CheckBox
-        {
-            Text = "Raid Invite Confirm  (RaidInviteConfirm=1)",
-            Location = new Point(20, y += 25),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.RaidInviteConfirm
-        };
-        Controls.Add(_chkRaidInviteConfirm);
-
-        _chkAANoConfirm = new CheckBox
-        {
-            Text = "AA No Confirm  (AANoConfirm=0)",
-            Location = new Point(20, y += 25),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.AANoConfirm
-        };
-        Controls.Add(_chkAANoConfirm);
-
-        _chkDisableChatServer = new CheckBox
-        {
-            Text = "Disable Chat Server  (ChatServerPort=0)",
-            Location = new Point(20, y += 25),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.DisableChatServer
-        };
-        Controls.Add(_chkDisableChatServer);
-
-        y += 30;
-        _chkDisableSound = new CheckBox
-        {
-            Text = "Disable Sound  (Sound=FALSE)",
-            Location = new Point(20, y),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.DisableSound
-        };
-        Controls.Add(_chkDisableSound);
-
-        _chkDisableMusic = new CheckBox
-        {
-            Text = "Disable Music  (Music=0)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.DisableMusic
-        };
-        Controls.Add(_chkDisableMusic);
-
-        DarkTheme.AddLabel(this, "Sound Volume:", 230, y + 2);
-        _nudSoundVolume = new NumericUpDown
-        {
-            Location = new Point(330, y), Size = new Size(50, 24),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            Minimum = -1, Maximum = 100,
-            Value = Math.Clamp(_config.EQClientIni.SoundVolume, -1, 100)
-        };
-        DarkTheme.AddHint(this, "(-1 = don't set)", 230, y + 25);
-        Controls.Add(_nudSoundVolume);
-
-        _chkDisableEnvSounds = new CheckBox
-        {
-            Text = "Disable Env Sounds  (EnvSounds=0)",
-            Location = new Point(20, y += 50),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.DisableEnvSounds
-        };
-        Controls.Add(_chkDisableEnvSounds);
-
-        _chkDisableCombatMusic = new CheckBox
-        {
-            Text = "Disable Combat Music  (CombatMusic=0)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.DisableCombatMusic
-        };
-        Controls.Add(_chkDisableCombatMusic);
-
-        _chkDisableAutoDuck = new CheckBox
-        {
-            Text = "Disable Auto-Duck  (AllowAutoDuck=0)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.DisableAutoDuck
-        };
-        Controls.Add(_chkDisableAutoDuck);
-
-        _chkSlowSky = new CheckBox
-        {
-            Text = "Slow Sky Updates  (SkyUpdateInterval=60000)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.SlowSkyUpdates
-        };
-        Controls.Add(_chkSlowSky);
-
-        _chkDisableSky = new CheckBox
-        {
-            Text = "Disable Sky  (Sky=0)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.DisableSky
-        };
-        Controls.Add(_chkDisableSky);
-
-        _chkBardSongs = new CheckBox
-        {
-            Text = "Persistent Bard Songs  (BardSongs=1)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.BardSongs
-        };
-        Controls.Add(_chkBardSongs);
-
-        _chkBardSongsOnPets = new CheckBox
-        {
-            Text = "Bard Songs on Pets  (BardSongsOnPets=1)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.BardSongsOnPets
-        };
-        Controls.Add(_chkBardSongsOnPets);
-
-        _chkAttackOnAssist = new CheckBox
-        {
-            Text = "Attack on Assist  (AttackOnAssist=TRUE)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.AttackOnAssist
-        };
-        Controls.Add(_chkAttackOnAssist);
-
-        _chkShowInspectMessage = new CheckBox
-        {
-            Text = "Show Inspect Message  (ShowInspectMessage=TRUE)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.ShowInspectMessage
-        };
-        Controls.Add(_chkShowInspectMessage);
-
-        _chkShowGrass = new CheckBox
-        {
-            Text = "Show Grass  (ShowGrass=TRUE)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.ShowGrass
-        };
-        Controls.Add(_chkShowGrass);
-
-        _chkNetStat = new CheckBox
-        {
-            Text = "Ping Bar  (NetStat=TRUE)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.NetStat
-        };
-        Controls.Add(_chkNetStat);
-
-        _chkTrackAutoUpdate = new CheckBox
-        {
-            Text = "Track Auto-Update  (TrackAutoUpdate=TRUE)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.TrackAutoUpdate
-        };
-        Controls.Add(_chkTrackAutoUpdate);
-
-        _chkTargetGroupBuff = new CheckBox
-        {
-            Text = "Target Group Buff  (TargetGroupBuff=1)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.TargetGroupBuff
-        };
-        Controls.Add(_chkTargetGroupBuff);
-
-        _chkDisableMipMapping = new CheckBox
-        {
-            Text = "Disable Mip-Mapping  (MipMapping=FALSE)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.DisableMipMapping
-        };
-        Controls.Add(_chkDisableMipMapping);
-
-        _chkTextureCache = new CheckBox
-        {
-            Text = "Texture Cache  (TextureCache=TRUE)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.TextureCache
-        };
-        Controls.Add(_chkTextureCache);
-
-        _chkUseD3DTextureCompression = new CheckBox
-        {
-            Text = "D3D Texture Compression  (UseD3DTextureCompression=TRUE)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.UseD3DTextureCompression
-        };
-        Controls.Add(_chkUseD3DTextureCompression);
-
-        _chkDisableDynamicLights = new CheckBox
-        {
-            Text = "Disable Dynamic Lights  (ShowDynamicLights=FALSE)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.DisableDynamicLights
-        };
-        Controls.Add(_chkDisableDynamicLights);
-
-        _chkUseLitBatches = new CheckBox
-        {
-            Text = "Use Lit Batches  (UseLitBatches=TRUE)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.UseLitBatches
-        };
-        Controls.Add(_chkUseLitBatches);
-
-        _chkDisableInspectOthers = new CheckBox
-        {
-            Text = "Disable Inspect Others  (InspectOthers=FALSE)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.DisableInspectOthers
-        };
-        Controls.Add(_chkDisableInspectOthers);
-
-        _chkDisableLootAllConfirm = new CheckBox
-        {
-            Text = "Disable Loot All Confirm  (LootAllConfirm=0)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.DisableLootAllConfirm
-        };
-        Controls.Add(_chkDisableLootAllConfirm);
-
-        _chkForceWindowed = new CheckBox
-        {
-            Text = "Force Windowed Mode  (WindowedMode=TRUE)",
-            Location = new Point(20, y += 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = _config.EQClientIni.ForceWindowedMode
-        };
-        Controls.Add(_chkForceWindowed);
-
-        y += 35;
-
-        // FPS limits — EQ's in-game slider is 0-99
-        y = DarkTheme.AddSectionHeader(this, "FPS Limits", 20, y);
-        DarkTheme.AddLabel(this, "MaxFPS:", 20, y + 3);
-        _nudMaxFPS = new NumericUpDown
-        {
-            Location = new Point(85, y), Size = new Size(50, 24),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            Minimum = 0, Maximum = 99,
-            Value = Math.Clamp(_config.EQClientIni.MaxFPS, 0, 99)
-        };
-        Controls.Add(_nudMaxFPS);
-
-        DarkTheme.AddLabel(this, "MaxBGFPS:", 155, y + 3);
-        _nudMaxBGFPS = new NumericUpDown
-        {
-            Location = new Point(235, y), Size = new Size(50, 24),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            Minimum = 0, Maximum = 99,
-            Value = Math.Clamp(_config.EQClientIni.MaxBGFPS, 0, 99)
-        };
-        DarkTheme.AddHint(this, "(0 = don't set)", 290, y + 3);
-        Controls.Add(_nudMaxBGFPS);
-
-        // Clip planes (all grouped together)
-        y += 35;
-        y = DarkTheme.AddSectionHeader(this, "Clip Planes", 20, y);
-        DarkTheme.AddLabel(this, "Clip Plane:", 20, y + 3);
-        _nudClipPlane = new NumericUpDown
-        {
-            Location = new Point(120, y), Size = new Size(60, 24),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            Minimum = 0, Maximum = 999,
-            Value = Math.Clamp(_config.EQClientIni.ClipPlane, 0, 999)
-        };
-        DarkTheme.AddHint(this, "(0 = don't set, default 14)", 185, y + 3);
-        Controls.Add(_nudClipPlane);
-
-        DarkTheme.AddLabel(this, "Shadow Clip:", 20, y += 28);
-        _nudShadowClipPlane = new NumericUpDown
-        {
-            Location = new Point(120, y - 3), Size = new Size(60, 24),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            Minimum = 0, Maximum = 999,
-            Value = Math.Clamp(_config.EQClientIni.ShadowClipPlane, 0, 999)
-        };
-        DarkTheme.AddHint(this, "(0 = don't set, default 35)", 185, y);
-        Controls.Add(_nudShadowClipPlane);
-
-        DarkTheme.AddLabel(this, "Actor Clip:", 20, y += 28);
-        _nudActorClipPlane = new NumericUpDown
-        {
-            Location = new Point(120, y - 3), Size = new Size(60, 24),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            Minimum = 0, Maximum = 999,
-            Value = Math.Clamp(_config.EQClientIni.ActorClipPlane, 0, 999)
-        };
-        DarkTheme.AddHint(this, "(0 = don't set, default 67)", 185, y);
-        Controls.Add(_nudActorClipPlane);
-
-        // Mouse sensitivity
-        DarkTheme.AddLabel(this, "Mouse Sens:", 20, y += 28);
-        _nudMouseSensitivity = new NumericUpDown
-        {
-            Location = new Point(120, y - 3), Size = new Size(60, 24),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            Minimum = -1, Maximum = 100,
-            Value = Math.Clamp(_config.EQClientIni.MouseSensitivity, -1, 100)
-        };
-        DarkTheme.AddHint(this, "(-1 = don't set)", 185, y);
-        Controls.Add(_nudMouseSensitivity);
-
-        y += 35;
-
-        var btnModels = DarkTheme.MakeButton("\uD83C\uDFAD  Luclin Models...", DarkTheme.BgMedium, 20, y);
-        btnModels.Size = new Size(180, 30);
-        btnModels.Click += (_, _) =>
-        {
-            using var form = new EQModelsForm(_config);
-            form.ShowDialog(this);
-        };
-        Controls.Add(btnModels);
-
-        var btnChatSpam = DarkTheme.MakeButton("\uD83D\uDCAC  Chat Spam Filters...", DarkTheme.BgMedium, 210, y);
-        btnChatSpam.Size = new Size(150, 30);
-        btnChatSpam.Click += (_, _) =>
-        {
-            using var form = new EQChatSpamForm(_config);
-            form.ShowDialog(this);
-        };
-        Controls.Add(btnChatSpam);
-
-        y += 35;
-
-        var btnParticles = DarkTheme.MakeButton("\u2728  Particles & Opacity...", DarkTheme.BgMedium, 20, y);
-        btnParticles.Size = new Size(180, 30);
-        btnParticles.Click += (_, _) =>
-        {
-            using var form = new EQParticlesForm(_config);
-            form.ShowDialog(this);
-        };
-        Controls.Add(btnParticles);
-
-        var btnVideoMode = DarkTheme.MakeButton("\uD83D\uDCFA  Video Mode...", DarkTheme.BgMedium, 210, y);
-        btnVideoMode.Size = new Size(150, 30);
-        btnVideoMode.Click += (_, _) =>
-        {
-            using var form = new EQVideoModeForm(_config);
-            form.ShowDialog(this);
-        };
-        Controls.Add(btnVideoMode);
-
-        y += 35;
-
-        var btnKeymaps = DarkTheme.MakeButton("\u2328  Key Mappings...", DarkTheme.BgMedium, 20, y);
-        btnKeymaps.Size = new Size(180, 30);
-        btnKeymaps.Click += (_, _) =>
-        {
-            using var form = new EQKeymapsForm(_config);
-            form.ShowDialog(this);
-        };
-        Controls.Add(btnKeymaps);
-
-        y += 45;
-
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 60, y);
+        var btnSave = DarkTheme.MakePrimaryButton("Save", 250, 10);
         btnSave.Click += (_, _) => { SaveSettings(); Close(); };
 
-        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 150, y);
+        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 340, 10);
         btnApply.Click += (_, _) => { SaveSettings(); };
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 240, y);
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 430, 10);
         btnCancel.Click += (_, _) => Close();
 
-        Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
+        buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
+        Controls.Add(buttonPanel);
     }
 
     /// <summary>
