@@ -114,7 +114,7 @@ public class AppConfig
         Affinity.LaunchRetryCount = Math.Clamp(Affinity.LaunchRetryCount, 0, 20);
         Affinity.LaunchRetryDelayMs = Math.Clamp(Affinity.LaunchRetryDelayMs, 500, 30000);
 
-        Launch.NumClients = Math.Clamp(Launch.NumClients, 1, 8);
+        Launch.NumClients = Math.Clamp(Launch.NumClients, 1, 6);
         Launch.LaunchDelayMs = Math.Clamp(Launch.LaunchDelayMs, 500, 30000);
         Launch.FixDelayMs = Math.Clamp(Launch.FixDelayMs, 1000, 120000);
 
@@ -276,7 +276,7 @@ public class LaunchConfig
     /// <summary>Command-line arguments for the EQ client (e.g. "patchme").</summary>
     public string Arguments { get; set; } = "patchme";
 
-    /// <summary>Number of clients to launch with "Launch All" (1-8).</summary>
+    /// <summary>Number of clients to launch with "Launch All" (1-6).</summary>
     public int NumClients { get; set; } = 2;
 
     /// <summary>Delay in ms between launching each client.</summary>

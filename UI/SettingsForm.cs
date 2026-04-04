@@ -14,6 +14,7 @@ public class SettingsForm : Form
 {
     private readonly AppConfig _config;
     private readonly Action<AppConfig> _onApply;
+    private readonly Action? _onVideoSaved;
     private readonly Action? _openProcessManager;
 
     /// <summary>When true, TrayManager should reopen Settings after this form closes (used by Reset).</summary>
@@ -92,15 +93,45 @@ public class SettingsForm : Form
     private NumericUpDown _nudPipMaxWindows = null!;
     private ComboBox _cboPipOrientation = null!;
 
+    // ─── Video tab controls (writes to eqclient.ini, not AppConfig)
+    private ComboBox _cboVideoPreset = null!;
+    private NumericUpDown _nudVideoWidth = null!;
+    private NumericUpDown _nudVideoHeight = null!;
+    private NumericUpDown _nudVideoOffsetX = null!;
+    private NumericUpDown _nudVideoOffsetY = null!;
+    private NumericUpDown _nudVideoTopOffset = null!;
+    private CheckBox _chkVideoWindowed = null!;
+    private CheckBox _chkVideoMultiMon = null!;
+    private ComboBox _cboVideoPrimaryMon = null!;
+    private ComboBox _cboVideoSecondaryMon = null!;
+    private bool _suppressVideoSync; // prevent SyncVideoPresetToCustom during programmatic changes
+    private Button? _btnVideoSaveIni; // save button reference for enable/disable on load failure
+    private Label? _lblVideoLoadError; // warning label shown when ini load fails
+
+    // Resolution presets for Video tab
+    private static readonly (string Name, int W, int H)[] VideoPresets =
+    {
+        ("1920x1080", 1920, 1080),
+        ("1920x1200", 1920, 1200),
+        ("1920x1020 (above taskbar)", 1920, 1020),
+        ("2560x1440", 2560, 1440),
+        ("3840x2160 (4K)", 3840, 2160),
+        ("1280x720", 1280, 720),
+        ("1600x900", 1600, 900),
+        ("1366x768", 1366, 768),
+        ("Custom", 0, 0)
+    };
+
 
 
 
     private int _initialTab;
 
-    public SettingsForm(AppConfig config, Action<AppConfig> onApply, int initialTab = 0, Action? openProcessManager = null)
+    public SettingsForm(AppConfig config, Action<AppConfig> onApply, int initialTab = 0, Action? openProcessManager = null, Action? onVideoSaved = null)
     {
         _config = config;
         _onApply = onApply;
+        _onVideoSaved = onVideoSaved;
         _openProcessManager = openProcessManager;
         _initialTab = initialTab;
         InitializeForm();
@@ -143,6 +174,7 @@ public class SettingsForm : Form
         tabs.TabPages.Add(BuildPipTab());
         tabs.TabPages.Add(BuildPathsTab());
         tabs.TabPages.Add(BuildAccountsTab());
+        tabs.TabPages.Add(BuildVideoTab());
 
         if (_initialTab > 0 && _initialTab < tabs.TabCount)
             tabs.SelectedIndex = _initialTab;
@@ -307,23 +339,12 @@ public class SettingsForm : Form
         var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 100);
         cy = 32;
 
-        // Row 1: EQ Client Settings + Video Settings
+        // Row 1: EQ Client Settings
         var btnEQSettings = DarkTheme.AddCardButton(cardPrefs, "\uD83D\uDCDD EQ Client Settings...", L, cy, 170);
         btnEQSettings.Click += (_, _) =>
         {
             using var form = new EQClientSettingsForm(_config);
             form.ShowDialog();
-        };
-        var btnVideoSettings = DarkTheme.AddCardButton(cardPrefs, "📺 Video Settings...", 210, cy, 150);
-        btnVideoSettings.Click += (_, _) =>
-        {
-            using var form = new VideoSettingsForm(_config);
-            form.ShowDialog();
-            // VideoSettings may have changed TopOffset, multi-monitor, monitors — sync back
-            _chkMultiMonEnabled.Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
-            _cboTargetMonitor.SelectedIndex = Math.Clamp(_config.Layout.TargetMonitor, 0, _cboTargetMonitor.Items.Count - 1);
-            var secIdx2 = _config.Layout.SecondaryMonitor < 0 ? 0 : _config.Layout.SecondaryMonitor + 1;
-            _cboSecondaryMonitor.SelectedIndex = Math.Clamp(secIdx2, 0, _cboSecondaryMonitor.Items.Count - 1);
         };
         cy += R + 6;
 
@@ -402,7 +423,7 @@ public class SettingsForm : Form
         cy += R + 2;
 
         DarkTheme.AddCardLabel(cardSwitch, "Clients (Launch All):", L, cy);
-        _nudNumClients = DarkTheme.AddCardNumeric(cardSwitch, I, cy - 2, 55, 2, 1, 8);
+        _nudNumClients = DarkTheme.AddCardNumeric(cardSwitch, I, cy - 2, 55, 2, 1, 6);
         DarkTheme.AddCardLabel(cardSwitch, "Delay between:", 250, cy);
         _nudLaunchDelay = DarkTheme.AddCardNumeric(cardSwitch, I2 + 50, cy - 2, 55, 3, 1, 30);
         DarkTheme.AddCardHint(cardSwitch, "sec", I2 + 110, cy + 2);
@@ -915,6 +936,12 @@ public class SettingsForm : Form
         _nudPipWidth.Enabled = _config.Pip.SizePreset == "Custom";
         _nudPipHeight.Enabled = _config.Pip.SizePreset == "Custom";
         _cboPipBorderColor.Enabled = _config.Pip.ShowBorder;
+
+        // Video (reads from eqclient.ini)
+        _chkVideoWindowed.Checked = _config.EQClientIni.ForceWindowedMode;
+        _chkVideoMultiMon.Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+        _nudVideoTopOffset.Value = DarkTheme.ClampNud(_nudVideoTopOffset, _config.Layout.TopOffset);
+        PopulateVideoFromIni();
     }
 
     private void ApplySettings()
@@ -932,7 +959,7 @@ public class SettingsForm : Form
                 Mode = _chkMultiMonEnabled.Checked ? "multimonitor" : "single",
                 TargetMonitor = _cboTargetMonitor.SelectedIndex >= 0 ? _cboTargetMonitor.SelectedIndex : 0,
                 SecondaryMonitor = _cboSecondaryMonitor.SelectedIndex <= 0 ? -1 : _cboSecondaryMonitor.SelectedIndex - 1,
-                TopOffset = _config.Layout.TopOffset,
+                TopOffset = (int)_nudVideoTopOffset.Value,
                 SlimTitlebar = _chkSlimTitlebar.Checked,
                 TitlebarOffset = (int)_nudTitlebarOffset.Value,
                 BottomOffset = (int)_nudBottomOffset.Value,
@@ -1245,6 +1272,519 @@ public class SettingsForm : Form
 
         dlg.AcceptButton = (IButtonControl)btnOK;
         dlg.ShowDialog(this);
+    }
+
+    // ─── Video Tab (eqclient.ini) ───────────────────────────────────
+
+    private TabPage BuildVideoTab()
+    {
+        var page = DarkTheme.MakeTabPage("Video");
+        int y = 8;
+        const int L = 10;
+
+        // ─── Resolution card ──────────────────────────────────────
+        var cardRes = DarkTheme.MakeCard(page, "📺", "EQ Resolution", DarkTheme.CardPurple, 10, y, 480, 135);
+        int cy = 32;
+
+        DarkTheme.AddLabel(cardRes, "Preset:", L, cy + 2);
+        _cboVideoPreset = new ComboBox
+        {
+            Location = new Point(65, cy),
+            Size = new Size(150, 25),
+            BackColor = DarkTheme.BgInput,
+            ForeColor = DarkTheme.FgWhite,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            FlatStyle = FlatStyle.Flat
+        };
+        PopulateVideoPresets();
+        _cboVideoPreset.SelectedIndexChanged += CboVideoPreset_SelectedIndexChanged;
+        cardRes.Controls.Add(_cboVideoPreset);
+        DarkTheme.WrapWithBorder(_cboVideoPreset);
+
+        _chkVideoWindowed = DarkTheme.AddCheckBox(cardRes, "Windowed Mode", 245, cy + 2);
+
+        cy += 30;
+        DarkTheme.AddLabel(cardRes, "Width:", L, cy + 2);
+        _nudVideoWidth = DarkTheme.AddNumeric(cardRes, 65, cy, 70, 1920, 320, 7680);
+        _nudVideoWidth.ValueChanged += (_, _) => SyncVideoPresetToCustom();
+
+        DarkTheme.AddLabel(cardRes, "Height:", 145, cy + 2);
+        _nudVideoHeight = DarkTheme.AddNumeric(cardRes, 195, cy, 70, 1080, 200, 4320);
+        _nudVideoHeight.ValueChanged += (_, _) => SyncVideoPresetToCustom();
+
+        cy += 30;
+        DarkTheme.AddLabel(cardRes, "Offset X:", L, cy + 2);
+        _nudVideoOffsetX = DarkTheme.AddNumeric(cardRes, 80, cy, 55, 0, -5000, 5000);
+        DarkTheme.AddLabel(cardRes, "Y:", 145, cy + 2);
+        _nudVideoOffsetY = DarkTheme.AddNumeric(cardRes, 162, cy, 55, 0, -5000, 5000);
+        DarkTheme.AddLabel(cardRes, "Top:", 230, cy + 2);
+        _nudVideoTopOffset = DarkTheme.AddNumeric(cardRes, 260, cy, 55, _config.Layout.TopOffset, -100, 200);
+        DarkTheme.AddHint(cardRes, "px down from top edge", 320, cy + 4);
+
+        y += 143;
+
+        // ─── Monitor card ─────────────────────────────────────────
+        var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 110);
+        cy = 32;
+
+        _chkVideoMultiMon = DarkTheme.AddCheckBox(cardMon, "Multi-Monitor Mode", L, cy);
+
+        cy += 26;
+        var screens = Screen.AllScreens.OrderBy(s => s.Bounds.Left).ToArray();
+        var monItems = new string[screens.Length];
+        for (int i = 0; i < screens.Length; i++)
+        {
+            var primary = screens[i].Primary ? " (primary)" : "";
+            monItems[i] = $"{i + 1}: {screens[i].Bounds.Width}x{screens[i].Bounds.Height}{primary}";
+        }
+
+        DarkTheme.AddLabel(cardMon, "Primary:", L + 10, cy + 2);
+        _cboVideoPrimaryMon = new ComboBox
+        {
+            Location = new Point(95, cy), Size = new Size(160, 25),
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat
+        };
+        _cboVideoPrimaryMon.Items.AddRange(monItems);
+        _cboVideoPrimaryMon.SelectedIndex = Math.Clamp(_config.Layout.TargetMonitor, 0, screens.Length - 1);
+        cardMon.Controls.Add(_cboVideoPrimaryMon);
+        DarkTheme.WrapWithBorder(_cboVideoPrimaryMon);
+
+        var secItems = new string[screens.Length + 1];
+        secItems[0] = "Auto (first non-primary)";
+        for (int i = 0; i < monItems.Length; i++) secItems[i + 1] = monItems[i];
+
+        DarkTheme.AddLabel(cardMon, "Secondary:", 270, cy + 2);
+        _cboVideoSecondaryMon = new ComboBox
+        {
+            Location = new Point(345, cy), Size = new Size(120, 25),
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat
+        };
+        _cboVideoSecondaryMon.Items.AddRange(secItems);
+        var secIdx = _config.Layout.SecondaryMonitor < 0 ? 0 : _config.Layout.SecondaryMonitor + 1;
+        _cboVideoSecondaryMon.SelectedIndex = Math.Clamp(secIdx, 0, secItems.Length - 1);
+        cardMon.Controls.Add(_cboVideoSecondaryMon);
+        DarkTheme.WrapWithBorder(_cboVideoSecondaryMon);
+
+        y += 118;
+
+        // ─── Actions card (Save to eqclient.ini + Backup/Restore) ─
+        var cardActions = DarkTheme.MakeCard(page, "💾", "eqclient.ini", DarkTheme.CardGold, 10, y, 480, 115);
+        cy = 30;
+
+        var lblIniHint = new Label
+        {
+            Text = "These settings write directly to eqclient.ini — not EQSwitch config. Changes require EQ restart.",
+            Location = new Point(L, cy),
+            Size = new Size(460, 28),
+            ForeColor = DarkTheme.FgDimGray,
+            Font = TrackFont(new Font("Segoe UI", 7.5f))
+        };
+        cardActions.Controls.Add(lblIniHint);
+        cy += 30;
+
+        _btnVideoSaveIni = DarkTheme.MakePrimaryButton("Save to eqclient.ini", L, cy);
+        _btnVideoSaveIni.Width = 160;
+        _btnVideoSaveIni.Click += (_, _) => VideoSaveToIni();
+        cardActions.Controls.Add(_btnVideoSaveIni);
+
+        _lblVideoLoadError = new Label
+        {
+            Text = "⚠ Failed to read eqclient.ini — values shown are defaults, not your settings.",
+            Location = new Point(L, cy + 32),
+            Size = new Size(460, 18),
+            ForeColor = DarkTheme.CardWarn,
+            Font = TrackFont(new Font("Segoe UI", 7.5f, FontStyle.Bold)),
+            Visible = false
+        };
+        cardActions.Controls.Add(_lblVideoLoadError);
+
+        var btnBackup = DarkTheme.MakeButton("📋 Backup", DarkTheme.BgMedium, 190, cy);
+        btnBackup.Click += (_, _) => VideoBackupIni();
+        cardActions.Controls.Add(btnBackup);
+
+        var btnRestore = DarkTheme.MakeButton("📂 Restore", DarkTheme.BgMedium, 290, cy);
+        btnRestore.Click += (_, _) => VideoRestoreIni();
+        cardActions.Controls.Add(btnRestore);
+
+        var btnReset = DarkTheme.MakeButton("🔄 Reset", DarkTheme.BgMedium, 390, cy);
+        btnReset.Click += (_, _) => VideoResetDefaults();
+        cardActions.Controls.Add(btnReset);
+
+        return page;
+    }
+
+    private void PopulateVideoFromIni()
+    {
+        var iniPath = Path.Combine(_config.EQPath, "eqclient.ini");
+        if (!File.Exists(iniPath))
+        {
+            FileLogger.Info($"VideoSettings: eqclient.ini not found at {iniPath}");
+            _cboVideoPreset.SelectedIndex = 0;
+
+            if (_btnVideoSaveIni != null) _btnVideoSaveIni.Enabled = false;
+            if (_lblVideoLoadError != null)
+            {
+                _lblVideoLoadError.Text = "⚠ eqclient.ini not found — check EQ Path on the General tab.";
+                _lblVideoLoadError.Visible = true;
+            }
+            return;
+        }
+
+        _suppressVideoSync = true;
+        try
+        {
+            // Clear any previous error state (e.g., after a successful Restore)
+            if (_btnVideoSaveIni != null) _btnVideoSaveIni.Enabled = true;
+            if (_lblVideoLoadError != null) _lblVideoLoadError.Visible = false;
+
+            var lines = File.ReadAllLines(iniPath, System.Text.Encoding.Default);
+            string currentSection = "";
+
+            foreach (var line in lines)
+            {
+                var trimmed = line.Trim();
+                if (trimmed.StartsWith("["))
+                {
+                    currentSection = trimmed;
+                    continue;
+                }
+
+                var parts = trimmed.Split('=', 2);
+                if (parts.Length != 2) continue;
+
+                string key = parts[0].Trim();
+                string val = parts[1].Trim();
+
+                if (currentSection.Equals("[VideoMode]", StringComparison.OrdinalIgnoreCase))
+                {
+                    switch (key.ToLowerInvariant())
+                    {
+                        case "width":
+                            if (int.TryParse(val, out int w)) _nudVideoWidth.Value = Math.Clamp(w, 320, 7680);
+                            break;
+                        case "height":
+                            if (int.TryParse(val, out int h)) _nudVideoHeight.Value = Math.Clamp(h, 200, 4320);
+                            break;
+                        case "windowedmode":
+                            _chkVideoWindowed.Checked = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                            break;
+                        case "xoffset":
+                            if (int.TryParse(val, out int ox)) _nudVideoOffsetX.Value = Math.Clamp(ox, -5000, 5000);
+                            break;
+                        case "yoffset":
+                            if (int.TryParse(val, out int oy)) _nudVideoOffsetY.Value = Math.Clamp(oy, -5000, 5000);
+                            break;
+                    }
+                }
+            }
+
+            // Match to preset
+            int width = (int)_nudVideoWidth.Value;
+            int height = (int)_nudVideoHeight.Value;
+            int presetIdx = Array.FindIndex(VideoPresets, p => p.W == width && p.H == height);
+            if (presetIdx >= 0)
+            {
+                _cboVideoPreset.SelectedIndex = presetIdx;
+            }
+            else
+            {
+                string customKey = $"{width}x{height}";
+                int customIdx = _cboVideoPreset.Items.IndexOf(customKey);
+                _cboVideoPreset.SelectedIndex = customIdx >= 0 ? customIdx : _cboVideoPreset.Items.Count - 1;
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Error("VideoSettings: load error", ex);
+            _cboVideoPreset.SelectedIndex = 0;
+
+            if (_btnVideoSaveIni != null) _btnVideoSaveIni.Enabled = false;
+            if (_lblVideoLoadError != null) _lblVideoLoadError.Visible = true;
+        }
+        finally { _suppressVideoSync = false; }
+    }
+
+    private void VideoSaveToIni()
+    {
+        try
+        {
+            var iniPath = Path.Combine(_config.EQPath, "eqclient.ini");
+
+            // Save TopOffset, monitors, windowed mode, multi-mon to AppConfig
+            _config.Layout.TopOffset = (int)_nudVideoTopOffset.Value;
+            _config.Layout.TargetMonitor = _cboVideoPrimaryMon.SelectedIndex;
+            _config.Layout.SecondaryMonitor = _cboVideoSecondaryMon.SelectedIndex <= 0 ? -1 : _cboVideoSecondaryMon.SelectedIndex - 1;
+            _config.EQClientIni.ForceWindowedMode = _chkVideoWindowed.Checked;
+            _config.Layout.Mode = _chkVideoMultiMon.Checked ? "multimonitor" : "single";
+            if (_chkVideoMultiMon.Checked)
+                _config.Hotkeys.MultiMonitorEnabled = true;
+            VideoSaveCustomPreset();
+            ConfigManager.Save(_config);
+
+            // Sync Layout tab controls to reflect Video tab's committed values
+            if (_chkMultiMonEnabled != null)
+                _chkMultiMonEnabled.Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+            if (_cboTargetMonitor != null)
+                _cboTargetMonitor.SelectedIndex = Math.Clamp(_config.Layout.TargetMonitor, 0, _cboTargetMonitor.Items.Count - 1);
+            if (_cboSecondaryMonitor != null)
+            {
+                var secIdx = _config.Layout.SecondaryMonitor < 0 ? 0 : _config.Layout.SecondaryMonitor + 1;
+                _cboSecondaryMonitor.SelectedIndex = Math.Clamp(secIdx, 0, _cboSecondaryMonitor.Items.Count - 1);
+            }
+
+            if (!File.Exists(iniPath))
+            {
+                FileLogger.Warn($"VideoSettings: cannot save — {iniPath} not found");
+                MessageBox.Show(
+                    $"eqclient.ini not found at:\n{iniPath}\n\nEQSwitch config was saved, but video settings could not be written to the INI file.\nCheck your EQ Path on the General tab.",
+                    "Save Incomplete", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var lines = File.ReadAllLines(iniPath, System.Text.Encoding.Default).ToList();
+            int sectionStart = -1;
+            int sectionEnd = lines.Count;
+
+            for (int i = 0; i < lines.Count; i++)
+            {
+                var trimmed = lines[i].Trim();
+                if (trimmed.Equals("[VideoMode]", StringComparison.OrdinalIgnoreCase))
+                    sectionStart = i;
+                else if (sectionStart >= 0 && trimmed.StartsWith("["))
+                {
+                    sectionEnd = i;
+                    break;
+                }
+            }
+
+            var settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Width"] = ((int)_nudVideoWidth.Value).ToString(),
+                ["Height"] = ((int)_nudVideoHeight.Value).ToString(),
+                ["WindowedMode"] = _chkVideoWindowed.Checked ? "TRUE" : "FALSE",
+                ["Maximized"] = _config.EQClientIni.MaximizeWindow ? "1" : "0",
+                ["XOffset"] = ((int)_nudVideoOffsetX.Value).ToString(),
+                ["YOffset"] = ((int)_nudVideoOffsetY.Value).ToString()
+            };
+
+            if (sectionStart >= 0)
+            {
+                for (int i = sectionStart + 1; i < sectionEnd; i++)
+                {
+                    var parts = lines[i].Split('=', 2);
+                    if (parts.Length == 2 && settings.ContainsKey(parts[0].Trim()))
+                    {
+                        lines[i] = $"{parts[0].Trim()}={settings[parts[0].Trim()]}";
+                        settings.Remove(parts[0].Trim());
+                    }
+                }
+
+                foreach (var kv in settings)
+                    lines.Insert(sectionEnd, $"{kv.Key}={kv.Value}");
+            }
+            else
+            {
+                lines.Add("");
+                lines.Add("[VideoMode]");
+                foreach (var kv in settings)
+                    lines.Add($"{kv.Key}={kv.Value}");
+            }
+
+            // Sync WindowedMode in [Defaults] too — EQ reads from there
+            string wmVal = _chkVideoWindowed.Checked ? "TRUE" : "FALSE";
+            for (int i = 0; i < lines.Count; i++)
+            {
+                var trimmed = lines[i].Trim();
+                if (trimmed.StartsWith("WindowedMode=", StringComparison.OrdinalIgnoreCase)
+                    && !trimmed.StartsWith("WindowedModeX", StringComparison.OrdinalIgnoreCase)
+                    && !trimmed.StartsWith("WindowedModeY", StringComparison.OrdinalIgnoreCase))
+                {
+                    lines[i] = $"WindowedMode={wmVal}";
+                }
+            }
+
+            VideoWriteWithRetry(iniPath, lines);
+            FileLogger.Info("VideoSettings: saved to eqclient.ini");
+
+            // Notify TrayManager so hook DLL configs are updated for injected processes
+            _onVideoSaved?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Error("VideoSettings: save error", ex);
+            MessageBox.Show($"Failed to save: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private static void VideoWriteWithRetry(string path, List<string> lines, int maxRetries = 2, int delayMs = 500)
+    {
+        for (int attempt = 0; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                File.WriteAllLines(path, lines, System.Text.Encoding.Default);
+                return;
+            }
+            catch (IOException) when (attempt < maxRetries)
+            {
+                FileLogger.Warn($"VideoSettings: file locked, retry {attempt + 1}/{maxRetries}");
+                Thread.Sleep(delayMs);
+            }
+        }
+    }
+
+    private void VideoBackupIni()
+    {
+        var iniPath = Path.Combine(_config.EQPath, "eqclient.ini");
+        if (!File.Exists(iniPath))
+        {
+            MessageBox.Show("eqclient.ini not found.", "Backup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        try
+        {
+            int bakNum = 1;
+            while (File.Exists($"{iniPath}.bak{bakNum}") && bakNum < 99)
+                bakNum++;
+
+            string bakPath = $"{iniPath}.bak{bakNum}";
+            File.Copy(iniPath, bakPath, overwrite: false);
+            FileLogger.Info($"VideoSettings: backed up eqclient.ini → {Path.GetFileName(bakPath)}");
+            MessageBox.Show($"Backed up to:\n{Path.GetFileName(bakPath)}", "Backup Created",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Error("VideoSettings: backup error", ex);
+            MessageBox.Show($"Backup failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void VideoRestoreIni()
+    {
+        var iniPath = Path.Combine(_config.EQPath, "eqclient.ini");
+        var dir = Path.GetDirectoryName(iniPath) ?? ".";
+        using var dlg = new OpenFileDialog
+        {
+            Title = "Restore eqclient.ini from Backup",
+            Filter = "Backup Files (*.bak*)|*.bak*|All Files (*.*)|*.*",
+            InitialDirectory = dir,
+            FileName = ""
+        };
+
+        if (dlg.ShowDialog() != DialogResult.OK)
+            return;
+
+        try
+        {
+            File.Copy(dlg.FileName, iniPath, overwrite: true);
+            FileLogger.Info($"VideoSettings: restored eqclient.ini from {Path.GetFileName(dlg.FileName)}");
+            PopulateVideoFromIni();
+            MessageBox.Show($"Restored from:\n{Path.GetFileName(dlg.FileName)}", "Restore Complete",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Error("VideoSettings: restore error", ex);
+            MessageBox.Show($"Restore failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void VideoResetDefaults()
+    {
+        _cboVideoPreset.SelectedIndex = 0; // triggers width/height update
+        _nudVideoOffsetX.Value = 0;
+        _nudVideoOffsetY.Value = 0;
+        _chkVideoWindowed.Checked = true;
+        _chkVideoMultiMon.Checked = false;
+        _nudVideoTopOffset.Value = 0;
+    }
+
+    private void PopulateVideoPresets()
+    {
+        _cboVideoPreset.Items.Clear();
+        for (int i = 0; i < VideoPresets.Length - 1; i++)
+            _cboVideoPreset.Items.Add(VideoPresets[i].Name);
+
+        var builtInSet = new HashSet<string>(VideoPresets.Select(p => $"{p.W}x{p.H}"));
+        foreach (var custom in _config.CustomVideoPresets)
+        {
+            if (!builtInSet.Contains(custom))
+                _cboVideoPreset.Items.Add(custom);
+        }
+
+        _cboVideoPreset.Items.Add("Custom");
+    }
+
+    private void CboVideoPreset_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        string? selected = _cboVideoPreset.SelectedItem?.ToString();
+        if (selected == null || selected == "Custom") return;
+
+        _suppressVideoSync = true;
+        try
+        {
+            var preset = Array.Find(VideoPresets, p => p.Name == selected);
+            if (preset.W > 0)
+            {
+                _nudVideoWidth.Value = preset.W;
+                _nudVideoHeight.Value = preset.H;
+                return;
+            }
+
+            var dims = selected.Split('x');
+            if (dims.Length == 2 && int.TryParse(dims[0], out int w) && int.TryParse(dims[1], out int h))
+            {
+                _nudVideoWidth.Value = Math.Clamp(w, 320, 7680);
+                _nudVideoHeight.Value = Math.Clamp(h, 200, 4320);
+            }
+        }
+        finally { _suppressVideoSync = false; }
+    }
+
+    private void SyncVideoPresetToCustom()
+    {
+        if (_suppressVideoSync) return;
+
+        int w = (int)_nudVideoWidth.Value;
+        int h = (int)_nudVideoHeight.Value;
+
+        foreach (var p in VideoPresets)
+        {
+            if (p.W == w && p.H == h) return;
+        }
+
+        for (int i = 0; i < _cboVideoPreset.Items.Count; i++)
+        {
+            string? item = _cboVideoPreset.Items[i]?.ToString();
+            if (item == $"{w}x{h}") { _cboVideoPreset.SelectedIndex = i; return; }
+        }
+
+        for (int i = 0; i < _cboVideoPreset.Items.Count; i++)
+        {
+            if (_cboVideoPreset.Items[i]?.ToString() == "Custom") { _cboVideoPreset.SelectedIndex = i; return; }
+        }
+    }
+
+    private void VideoSaveCustomPreset()
+    {
+        int w = (int)_nudVideoWidth.Value;
+        int h = (int)_nudVideoHeight.Value;
+        string key = $"{w}x{h}";
+
+        if (Array.Exists(VideoPresets, p => p.W == w && p.H == h))
+            return;
+
+        if (_config.CustomVideoPresets.Contains(key))
+            return;
+
+        _config.CustomVideoPresets.Add(key);
+
+        while (_config.CustomVideoPresets.Count > 3)
+            _config.CustomVideoPresets.RemoveAt(0);
     }
 
     protected override void Dispose(bool disposing)
