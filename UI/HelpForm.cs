@@ -109,6 +109,29 @@ LAUNCHING:
   Delay between launches: {config.Launch.LaunchDelayMs / 1000.0:F1}s
   Auto-arrange after: {config.Launch.FixDelayMs / 1000.0:F0}s
 
+DLL HOOK (eqswitch-hook.dll):
+  Injected into eqgame.exe to prevent EQ from fighting
+  window management. Memory-only — auto-ejected on exit.
+  No files are dropped into your EQ folder by the hook.
+
+DINPUT8.DLL (Background Login only):
+  Copied to your EQ folder when Background Login is enabled.
+  If an existing dinput8.dll was present, it is backed up
+  as dinput8.dll.old and can be restored via Uninstall.
+
+FIRST-RUN CONFIG SEEDING:
+  On first launch, EQSwitch reads your actual eqclient.ini
+  and uses those values as its starting defaults. Settings
+  are NOT enforced until you explicitly click Save.
+
+UNINSTALL / CLEAN UP:
+  Settings → General → Uninstall button (or run uninstall.bat)
+  Reverts all external changes:
+    • Restores original dinput8.dll from backup (if present)
+    • Removes startup shortcut
+    • Removes desktop shortcut
+  Does NOT modify eqclient.ini settings or EQSwitch config.
+
 CONFIG:
   eqswitch-config.json (alongside exe)
   Auto-backup on save (keeps last 10 in backups/ folder)

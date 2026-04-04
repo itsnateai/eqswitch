@@ -155,6 +155,30 @@ Passwords are encrypted using **Windows DPAPI** (Data Protection API) and stored
 > [!IMPORTANT]
 > If you reinstall Windows or create a new user account, stored passwords cannot be recovered. You'll need to re-enter them in Settings.
 
+## First-Run Config Seeding
+
+On first launch, EQSwitch reads your actual `eqclient.ini` and uses those values as its starting defaults. This means the settings form always shows your real configuration — not generic defaults that could silently overwrite your manual INI edits.
+
+Settings are **not enforced** until you explicitly click Save in the EQ Client Settings form.
+
+## Uninstall / Clean Up
+
+EQSwitch can be fully removed without leaving traces. Two options:
+
+**From the GUI:** Settings → General tab → **Uninstall** button
+
+**From the command line:** Run `uninstall.bat` (ships next to `EQSwitch.exe`)
+
+Both options revert all external changes:
+- Restores original `dinput8.dll` from backup (if one was created)
+- Removes startup shortcut
+- Removes desktop shortcut
+
+Your `eqclient.ini` settings and EQSwitch config files are **not** modified — restore from `.bak` files in your EQ folder if needed.
+
+> [!TIP]
+> After running uninstall, you can delete the entire EQSwitch folder to complete the removal.
+
 ## Troubleshooting
 
 | Issue | Solution |
@@ -164,6 +188,7 @@ Passwords are encrypted using **Windows DPAPI** (Data Protection API) and stored
 | **PiP not showing** | Requires 2+ EQ clients running. Middle-click tray icon to toggle |
 | **CPU affinity not applying** | EQ resets affinity after launch — EQSwitch retries automatically. Use tray menu → Force Apply |
 | **Config lost after moving exe** | Move `eqswitch-config.json` with the exe. Backups in `backups/` subfolder |
+| **dinput8.dll blocked** | Add your EQ folder to Windows Defender exclusions |
 
 ## License
 
