@@ -503,6 +503,10 @@ public class ProcessManagerForm : Form
         _config.EQClientIni.MaxFPS = (int)_nudMaxFPS.Value;
         _config.EQClientIni.MaxBGFPS = (int)_nudMaxBGFPS.Value;
 
+        // Track in ConfiguredKeys so EnforceOverrides re-enforces on launch
+        if (_config.EQClientIni.MaxFPS > 0) _config.EQClientIni.ConfiguredKeys.Add("MaxFPS");
+        if (_config.EQClientIni.MaxBGFPS > 0) _config.EQClientIni.ConfiguredKeys.Add("MaxBGFPS");
+
         // Write FPS + CPUAffinity to eqclient.ini
         if (!string.IsNullOrEmpty(_config.EQPath))
         {
@@ -559,6 +563,7 @@ public class ProcessManagerForm : Form
             _statusLabel?.Font?.Dispose();
             _grid?.DefaultCellStyle?.Font?.Dispose();
             _grid?.ColumnHeadersDefaultCellStyle?.Font?.Dispose();
+            DarkTheme.DisposeControlFonts(this);
         }
         base.Dispose(disposing);
     }

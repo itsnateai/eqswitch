@@ -210,43 +210,44 @@ public class EQModelsForm : Form
     /// </summary>
     private void LoadFromIni()
     {
-        if (!File.Exists(_iniPath)) return;
-
-        try
+        if (File.Exists(_iniPath))
         {
-            var lines = File.ReadAllLines(_iniPath, Encoding.Default);
-            string currentSection = "";
-
-            foreach (var line in lines)
+            try
             {
-                var trimmed = line.Trim();
-                if (trimmed.StartsWith("["))
+                var lines = File.ReadAllLines(_iniPath, Encoding.Default);
+                string currentSection = "";
+
+                foreach (var line in lines)
                 {
-                    currentSection = trimmed;
-                    continue;
+                    var trimmed = line.Trim();
+                    if (trimmed.StartsWith("["))
+                    {
+                        currentSection = trimmed;
+                        continue;
+                    }
+
+                    if (!currentSection.Equals("[Defaults]", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var parts = trimmed.Split('=', 2);
+                    if (parts.Length != 2) continue;
+
+                    string key = parts[0].Trim();
+                    string val = parts[1].Trim();
+
+                    if (_checkboxes.TryGetValue(key, out var chk))
+                        chk.Checked = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
                 }
-
-                if (!currentSection.Equals("[Defaults]", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                var parts = trimmed.Split('=', 2);
-                if (parts.Length != 2) continue;
-
-                string key = parts[0].Trim();
-                string val = parts[1].Trim();
-
-                if (_checkboxes.TryGetValue(key, out var chk))
-                    chk.Checked = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
             }
+            catch (Exception ex)
+            {
+                FileLogger.Error("EQModels: load error", ex);
+            }
+        }
 
-            // Snapshot initial state — we'll only write keys the user actually changes
-            foreach (var (key, chk) in _checkboxes)
-                _initialValues[key] = chk.Checked;
-        }
-        catch (Exception ex)
-        {
-            FileLogger.Error("EQModels: load error", ex);
-        }
+        // Snapshot initial state unconditionally — runs even if file missing or load failed
+        foreach (var (key, chk) in _checkboxes)
+            _initialValues[key] = chk.Checked;
     }
 
     private void SaveSettings()
