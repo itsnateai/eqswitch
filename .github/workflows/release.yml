@@ -34,14 +34,12 @@ jobs:
       - name: Build self-contained
         run: dotnet publish EQSwitch.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 
-      - name: Build framework-dependent
-        run: dotnet publish EQSwitch.csproj -c Release --no-self-contained -p:PublishSingleFile=false
-
       - name: Prepare assets
         shell: bash
         run: |
           cp bin/Release/net8.0-windows/win-x64/publish/EQSwitch.exe EQSwitch.exe
-          cp bin/Release/net8.0-windows/EQSwitch.exe EQSwitch-fd.exe
+          cp Native/eqswitch-hook.dll eqswitch-hook.dll
+          cp Native/dinput8.dll dinput8.dll
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -49,4 +47,5 @@ jobs:
           generate_release_notes: true
           files: |
             EQSwitch.exe
-            EQSwitch-fd.exe
+            eqswitch-hook.dll
+            dinput8.dll
