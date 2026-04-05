@@ -286,8 +286,8 @@ public class PipConfig
 {
     public bool Enabled { get; set; } = false;
 
-    /// <summary>Size preset: "Small", "Medium", "Large", "XL", "XXL", "XXXL", "XXXXL", "Custom"</summary>
-    public string SizePreset { get; set; } = "Medium";
+    /// <summary>Size preset: "Small", "Medium", "Large", "XL", "XXL", "XXXL", "Custom"</summary>
+    public string SizePreset { get; set; } = "Large";
 
     /// <summary>Custom width (used when SizePreset = "Custom").</summary>
     public int CustomWidth { get; set; } = 480;
@@ -317,11 +317,10 @@ public class PipConfig
     {
         "Small" => (200, 150),
         "Medium" => (320, 240),
-        "Large" => (400, 300),
-        "XL" => (480, 360),
-        "XXL" => (640, 480),
-        "XXXL" => (960, 720),
-        "XXXXL" => (1600, 900),
+        "Large" => (480, 360),
+        "XL" => (720, 540),
+        "XXL" => (1024, 768),
+        "XXXL" => (1600, 900),
         _ => (CustomWidth, CustomHeight)
     };
 

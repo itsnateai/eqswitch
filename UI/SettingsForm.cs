@@ -1049,7 +1049,7 @@ public class SettingsForm : Form
             Pip = new PipConfig
             {
                 Enabled = _chkPipEnabled.Checked,
-                SizePreset = ExtractPipPresetName(_cboPipSize.SelectedItem?.ToString() ?? "Medium"),
+                SizePreset = ExtractPipPresetName(_cboPipSize.SelectedItem?.ToString() ?? "Large"),
                 CustomWidth = (int)_nudPipWidth.Value,
                 CustomHeight = (int)_nudPipHeight.Value,
                 Opacity = (byte)_nudPipOpacity.Value,
@@ -1109,7 +1109,7 @@ public class SettingsForm : Form
                 return;
             }
         }
-        _cboPipSize.SelectedIndex = 1; // fallback to Medium
+        _cboPipSize.SelectedIndex = 2; // fallback to Large
     }
 
     // ─── Accounts Tab ──────────────────────────────────────────────
