@@ -190,7 +190,7 @@ public class TrayManager : IDisposable
             UpdateHookConfig();
 
             // Auto-show PiP overlay when enabled and 2+ clients are present
-            if (_config.Pip.Enabled && _processManager.Clients.Count >= 2
+            if (_config.Pip.Enabled && _processManager.Clients.Count >= 1
                 && (_pipOverlay == null || _pipOverlay.IsDisposed))
             {
                 TogglePip();
@@ -698,7 +698,7 @@ public class TrayManager : IDisposable
         // Update PiP sources when foreground changes
         if (_pipOverlay != null && !_pipOverlay.IsDisposed)
         {
-            if (clients.Count < 2)
+            if (clients.Count < 1)
             {
                 _pipOverlay.Close();
                 _pipOverlay.Dispose();
@@ -916,9 +916,9 @@ public class TrayManager : IDisposable
         }
 
         var clients = _processManager.Clients;
-        if (clients.Count < 2)
+        if (clients.Count < 1)
         {
-            ShowBalloon("Need 2+ clients for PiP overlay");
+            ShowBalloon("No EQ clients detected for PiP overlay");
             return;
         }
 
