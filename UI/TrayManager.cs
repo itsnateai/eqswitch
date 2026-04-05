@@ -770,8 +770,8 @@ public class TrayManager : IDisposable
             {
                 var acct = account; // capture for closure
                 var label = string.IsNullOrEmpty(acct.CharacterName)
-                    ? acct.Name
-                    : $"{acct.Name} ({acct.CharacterName})";
+                    ? acct.Username
+                    : acct.CharacterName;
                 loginMenu.DropDownItems.Add($"\uD83D\uDC64  {label}", null, (_, _) =>
                     _autoLoginManager.LoginAccount(acct));
             }
@@ -826,6 +826,7 @@ public class TrayManager : IDisposable
         linksMenu.DropDownItems.Add("\uD83C\uDFC6  Fomelo Dalaya", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/fomelo/"));
         linksMenu.DropDownItems.Add("\uD83D\uDCDC  Dalaya Listsold", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/listsold.php"));
         launcherMenu.DropDownItems.Add("\uD83D\uDD27  Dalaya Patcher", null, (_, _) => FileOperations.OpenDalayaPatcher(_config, ShowBalloon, () => ShowSettings(6)));
+        launcherMenu.DropDownItems.Add("\uD83D\uDCAC  Dalaya Discord", null, (_, _) => FileOperations.OpenUrl("discord://discord.com/channels/1233224126353768490/1249250739918864446"));
         launcherMenu.DropDownItems.Add(new ToolStripSeparator());
         launcherMenu.DropDownItems.Add("\uD83D\uDCDC  Open Log File...", null, (_, _) => FileOperations.OpenLogFile(_config, ShowBalloon));
         launcherMenu.DropDownItems.Add("\uD83D\uDCC4  Open eqclient.ini", null, (_, _) => FileOperations.OpenEqClientIni(_config, ShowBalloon));
@@ -1246,6 +1247,7 @@ public class TrayManager : IDisposable
         _config.Pip.Orientation = newConfig.Pip.Orientation;
         _config.Pip.ShowBorder = newConfig.Pip.ShowBorder;
         _config.Pip.BorderColor = newConfig.Pip.BorderColor;
+        _config.Pip.BorderThickness = newConfig.Pip.BorderThickness;
         _config.Pip.MaxWindows = newConfig.Pip.MaxWindows;
         _config.TrayClick.SingleClick = newConfig.TrayClick.SingleClick;
         _config.TrayClick.DoubleClick = newConfig.TrayClick.DoubleClick;
@@ -1290,10 +1292,14 @@ public class TrayManager : IDisposable
             _pipOverlay.Close();
             _pipOverlay.Dispose();
             _pipOverlay = null;
-            // Silently recreate — no balloon, no client count check (it was already showing)
-            _pipOverlay = new PipOverlay(_config);
-            _pipOverlay.Show();
-            _pipOverlay.UpdateSources(_processManager.Clients, _processManager.GetActiveClient());
+
+            // Only recreate if still enabled
+            if (_config.Pip.Enabled)
+            {
+                _pipOverlay = new PipOverlay(_config);
+                _pipOverlay.Show();
+                _pipOverlay.UpdateSources(_processManager.Clients, _processManager.GetActiveClient());
+            }
         }
 
         // Re-install foreground hook (in case it was lost) and restart retry timer
