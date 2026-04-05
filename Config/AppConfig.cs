@@ -304,8 +304,8 @@ public class PipConfig
     /// <summary>Show colored border around PiP windows.</summary>
     public bool ShowBorder { get; set; } = true;
 
-    /// <summary>Border color name: "Green", "Blue", "Red", "Black".</summary>
-    public string BorderColor { get; set; } = "Green";
+    /// <summary>Border color name: "Blue", "Green", "Red".</summary>
+    public string BorderColor { get; set; } = "Blue";
 
     /// <summary>Border thickness in pixels (1-10). Default 3.</summary>
     public int BorderThickness { get; set; } = 3;
@@ -331,11 +331,10 @@ public class PipConfig
 
     public Color GetBorderColor() => BorderColor switch
     {
-        "Green" => Color.FromArgb(34, 180, 85),
-        "Blue" => Color.FromArgb(60, 140, 230),
-        "Red" => Color.FromArgb(220, 50, 50),
-        "Black" => Color.Black,
-        _ => Color.FromArgb(34, 180, 85)
+        "Blue" => Color.FromArgb(15, 30, 80),
+        "Green" => Color.FromArgb(10, 60, 25),
+        "Red" => Color.FromArgb(50, 5, 5),
+        _ => Color.FromArgb(15, 30, 80)
     };
 }
 
