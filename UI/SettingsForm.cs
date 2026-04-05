@@ -726,6 +726,29 @@ public class SettingsForm : Form
 
         y += 73;
 
+        // ─── eqclient.ini actions card ─────────────────────────────
+        var cardIni = DarkTheme.MakeCard(page, "💾", "eqclient.ini", DarkTheme.CardGold, 10, y, 480, 70);
+        cy = 30;
+
+        _lblVideoLoadError = new Label
+        {
+            Text = "⚠ Failed to read eqclient.ini — values shown are defaults, not your settings.",
+            Location = new Point(L, cy),
+            Size = new Size(460, 18),
+            ForeColor = DarkTheme.CardWarn,
+            Font = TrackFont(new Font("Segoe UI", 7.5f, FontStyle.Bold)),
+            Visible = false
+        };
+        cardIni.Controls.Add(_lblVideoLoadError);
+
+        var btnBackup = DarkTheme.AddCardButton(cardIni, "📋 Backup", 47, cy, 110);
+        btnBackup.Click += (_, _) => VideoBackupIni();
+
+        var btnRestore = DarkTheme.AddCardButton(cardIni, "📂 Restore", 185, cy, 110);
+        btnRestore.Click += (_, _) => VideoRestoreIni();
+
+        y += 78;
+
         // ─── Help button ─────────────────────────────────────────
         var btnHelp = DarkTheme.MakeButton("❓ Help", DarkTheme.BgMedium, 10, y);
         btnHelp.Size = new Size(100, 30);
@@ -1366,7 +1389,7 @@ public class SettingsForm : Form
         y += 158;
 
         // ─── Monitor card ─────────────────────────────────────────
-        var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 110);
+        var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 95);
         cy = 32;
 
         _chkVideoMultiMon = DarkTheme.AddCheckBox(cardMon, "Multi-Monitor Mode", L, cy);
@@ -1409,28 +1432,7 @@ public class SettingsForm : Form
         cardMon.Controls.Add(_cboVideoSecondaryMon);
         DarkTheme.WrapWithBorder(_cboVideoSecondaryMon);
 
-        y += 118;
-
-        // ─── eqclient.ini actions card ─────────────────────────────
-        var cardActions = DarkTheme.MakeCard(page, "💾", "eqclient.ini", DarkTheme.CardGold, 10, y, 480, 70);
-        cy = 30;
-
-        _lblVideoLoadError = new Label
-        {
-            Text = "⚠ Failed to read eqclient.ini — values shown are defaults, not your settings.",
-            Location = new Point(L, cy),
-            Size = new Size(460, 18),
-            ForeColor = DarkTheme.CardWarn,
-            Font = TrackFont(new Font("Segoe UI", 7.5f, FontStyle.Bold)),
-            Visible = false
-        };
-        cardActions.Controls.Add(_lblVideoLoadError);
-
-        var btnBackup = DarkTheme.AddCardButton(cardActions, "📋 Backup", 47, cy, 110);
-        btnBackup.Click += (_, _) => VideoBackupIni();
-
-        var btnRestore = DarkTheme.AddCardButton(cardActions, "📂 Restore", 185, cy, 110);
-        btnRestore.Click += (_, _) => VideoRestoreIni();
+        y += 103;
 
         return page;
     }
