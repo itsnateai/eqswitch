@@ -1320,7 +1320,7 @@ public class SettingsForm : Form
         const int L = 10;
 
         // ─── Resolution card ──────────────────────────────────────
-        var cardRes = DarkTheme.MakeCard(page, "📺", "EQ Resolution", DarkTheme.CardPurple, 10, y, 480, 135);
+        var cardRes = DarkTheme.MakeCard(page, "📺", "EQ Resolution", DarkTheme.CardPurple, 10, y, 480, 155);
         int cy = 32;
 
         DarkTheme.AddLabel(cardRes, "Preset:", L, cy + 2);
@@ -1360,8 +1360,10 @@ public class SettingsForm : Form
         DarkTheme.AddLabel(cardRes, "Top:", 230, cy + 2);
         _nudVideoTopOffset = DarkTheme.AddNumeric(cardRes, 260, cy, 55, _config.Layout.TopOffset, -100, 200);
         DarkTheme.AddHint(cardRes, "px down from top edge", 320, cy + 4);
+        cy += 22;
+        DarkTheme.AddHint(cardRes, "Resolution & offsets save to eqclient.ini on Apply. Changes require EQ restart.", L, cy + 2);
 
-        y += 143;
+        y += 163;
 
         // ─── Monitor card ─────────────────────────────────────────
         var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 110);
@@ -1410,11 +1412,8 @@ public class SettingsForm : Form
         y += 118;
 
         // ─── eqclient.ini actions card ─────────────────────────────
-        var cardActions = DarkTheme.MakeCard(page, "💾", "eqclient.ini", DarkTheme.CardGold, 10, y, 480, 85);
+        var cardActions = DarkTheme.MakeCard(page, "💾", "eqclient.ini", DarkTheme.CardGold, 10, y, 480, 70);
         cy = 30;
-
-        DarkTheme.AddCardHint(cardActions, "Resolution & offsets save to eqclient.ini on Apply. Changes require EQ restart.", L, cy);
-        cy += 20;
 
         _lblVideoLoadError = new Label
         {
