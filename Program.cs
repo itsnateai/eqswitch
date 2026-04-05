@@ -16,6 +16,17 @@ static class Program
         const string mutexName = "EQSwitch_SingleInstance_SoD";
         _mutex = new Mutex(true, mutexName, out bool createdNew);
 
+        // After self-update, the old instance may still be shutting down
+        if (!createdNew && args.Contains("--after-update"))
+        {
+            for (int i = 0; i < 10 && !createdNew; i++)
+            {
+                Thread.Sleep(500);
+                _mutex.Dispose();
+                _mutex = new Mutex(true, mutexName, out createdNew);
+            }
+        }
+
         if (!createdNew)
         {
             Application.EnableVisualStyles();
@@ -27,6 +38,7 @@ static class Program
         }
 
         FileLogger.Initialize();
+        CleanupUpdateArtifacts();
 
         Application.SetHighDpiMode(HighDpiMode.SystemAware);
         Application.EnableVisualStyles();
@@ -128,8 +140,52 @@ static class Program
         {
             ConfigManager.FlushSave();
             FileLogger.Shutdown();
-            _mutex?.ReleaseMutex();
+            if (createdNew) _mutex?.ReleaseMutex();
             _mutex?.Dispose();
+        }
+    }
+
+    private static void CleanupUpdateArtifacts()
+    {
+        var dir = AppDomain.CurrentDomain.BaseDirectory;
+        var exePath = Path.Combine(dir, "EQSwitch.exe");
+
+        // Torn-state recovery: if exe is missing but .old exists, restore it
+        if (!File.Exists(exePath))
+        {
+            var oldPath = exePath + ".old";
+            if (File.Exists(oldPath))
+            {
+                try
+                {
+                    File.Move(oldPath, exePath);
+                    FileLogger.Warn("Recovered EQSwitch.exe from .old after interrupted update.");
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Error($"Failed to recover EQSwitch.exe from .old: {ex.Message}");
+                }
+            }
+            return;
+        }
+
+        // Clean up each artifact independently so one locked file doesn't block the rest
+        foreach (var pattern in new[] { "EQSwitch.exe.old", "EQSwitch.exe.new",
+                                        "eqswitch-hook.dll.old", "eqswitch-hook.dll.new" })
+        {
+            try
+            {
+                var path = Path.Combine(dir, pattern);
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                    FileLogger.Info($"Cleaned up update artifact: {pattern}");
+                }
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Warn($"Failed to clean up {pattern}: {ex.Message}");
+            }
         }
     }
 }

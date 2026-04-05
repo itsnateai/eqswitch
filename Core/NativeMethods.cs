@@ -264,6 +264,12 @@ internal static class NativeMethods
     public const int WS_EX_TOPMOST = 0x00000008;
     public const int WS_EX_NOACTIVATE = 0x08000000;
 
+    public const int LWA_ALPHA = 0x02;
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetLayeredWindowAttributes(IntPtr hwnd, uint crKey, byte bAlpha, int dwFlags);
+
     // WM_NCHITTEST message and return values for selective click-through
     public const int WM_NCHITTEST = 0x0084;
     public const int HTTRANSPARENT = -1;

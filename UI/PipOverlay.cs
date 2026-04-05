@@ -24,6 +24,10 @@ public class PipOverlay : Form
     private readonly List<IntPtr> _sourceWindows = new();
     private readonly System.Windows.Forms.Timer _refreshTimer;
 
+    // Border rendering — paint border color only in padding area, keep black behind thumbnails
+    private readonly Color _borderColor;
+    private readonly int _borderPad;
+
     // Ctrl+drag state
     private bool _dragging;
     private Point _dragStart;
@@ -42,13 +46,12 @@ public class PipOverlay : Form
         var maxWin = Math.Clamp(config.Pip.MaxWindows, 1, 3);
         bool horizontal = config.Pip.IsHorizontal;
 
-        // Stack PiP windows with a small gap
-        int gap = config.Pip.ShowBorder ? 6 : 2;
+        // Flush thumbnails — border only on outside edges
         int borderPad = config.Pip.ShowBorder ? 3 : 0;
         if (horizontal)
-            Size = new Size(borderPad + (w + gap) * maxWin - gap + borderPad, h + borderPad * 2);
+            Size = new Size(borderPad + w * maxWin + borderPad, h + borderPad * 2);
         else
-            Size = new Size(w + borderPad * 2, borderPad + (h + gap) * maxWin - gap + borderPad);
+            Size = new Size(w + borderPad * 2, borderPad + h * maxWin + borderPad);
 
         // Default position: top-right corner
         var screen = (Screen.PrimaryScreen ?? Screen.AllScreens.FirstOrDefault())?.WorkingArea
@@ -62,7 +65,13 @@ public class PipOverlay : Form
             ClampToScreen();
         }
 
-        BackColor = config.Pip.ShowBorder ? config.Pip.GetBorderColor() : Color.Black;
+        BackColor = Color.Black;
+        _borderColor = config.Pip.ShowBorder ? config.Pip.GetBorderColor() : Color.Empty;
+        _borderPad = borderPad;
+
+        // Make the layered window opaque so BackColor renders as the border
+        HandleCreated += (_, _) =>
+            NativeMethods.SetLayeredWindowAttributes(Handle, 0, 255, NativeMethods.LWA_ALPHA);
 
         // Ctrl+drag support
         MouseDown += OnMouseDown;
@@ -72,6 +81,20 @@ public class PipOverlay : Form
         _refreshTimer = new System.Windows.Forms.Timer { Interval = RefreshIntervalMs };
         _refreshTimer.Tick += (_, _) => RefreshIfNeeded();
         _refreshTimer.Start();
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        if (_borderPad <= 0 || _borderColor.IsEmpty) return;
+
+        // Paint border color only in the padding strips around the edges
+        using var brush = new SolidBrush(_borderColor);
+        int w = ClientSize.Width, h = ClientSize.Height, p = _borderPad;
+        e.Graphics.FillRectangle(brush, 0, 0, w, p);           // top
+        e.Graphics.FillRectangle(brush, 0, h - p, w, p);       // bottom
+        e.Graphics.FillRectangle(brush, 0, p, p, h - p * 2);   // left
+        e.Graphics.FillRectangle(brush, w - p, p, p, h - p * 2); // right
     }
 
     /// <summary>
@@ -135,7 +158,6 @@ public class PipOverlay : Form
 
         var (w, h) = _config.Pip.GetSize();
         int borderPad = _config.Pip.ShowBorder ? 3 : 0;
-        int gap = _config.Pip.ShowBorder ? 6 : 2;
         bool horizontal = _config.Pip.IsHorizontal;
         int idx = 0;
 
@@ -155,13 +177,13 @@ public class PipOverlay : Form
             int xPos, yPos;
             if (horizontal)
             {
-                xPos = idx * (w + gap) + borderPad;
+                xPos = idx * w + borderPad;
                 yPos = borderPad;
             }
             else
             {
                 xPos = borderPad;
-                yPos = idx * (h + gap) + borderPad;
+                yPos = idx * h + borderPad;
             }
 
             // Query source size and letterbox to preserve aspect ratio
@@ -221,7 +243,7 @@ public class PipOverlay : Form
         int count = _thumbnailIds.Count;
         if (horizontal)
         {
-            newWidth = borderPad + (w + gap) * count - gap + borderPad;
+            newWidth = borderPad + w * count + borderPad;
             newHeight = h + borderPad * 2;
             Size = new Size(newWidth, newHeight);
             if (oldWidth != newWidth)
@@ -233,7 +255,7 @@ public class PipOverlay : Form
         else
         {
             newWidth = w + borderPad * 2;
-            newHeight = borderPad + (h + gap) * count - gap + borderPad;
+            newHeight = borderPad + h * count + borderPad;
             Size = new Size(newWidth, newHeight);
             if (oldHeight != newHeight)
             {

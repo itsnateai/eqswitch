@@ -16,6 +16,7 @@ public class SettingsForm : Form
     private readonly Action<AppConfig> _onApply;
     private readonly Action? _onVideoSaved;
     private readonly Action? _openProcessManager;
+    private EQClientSettingsForm? _eqClientSettingsForm;
 
     /// <summary>When true, TrayManager should reopen Settings after this form closes (used by Reset).</summary>
     public bool ReopenAfterClose => _reopenAfterClose;
@@ -56,8 +57,6 @@ public class SettingsForm : Form
     private ComboBox _cboSwitchKeyMode = null!;
 
     // ─── Layout tab controls
-    private ComboBox _cboTargetMonitor = null!;
-    private ComboBox _cboSecondaryMonitor = null!;
     private CheckBox _chkSlimTitlebar = null!;
     private NumericUpDown _nudTitlebarOffset = null!;
     private NumericUpDown _nudBottomOffset = null!;
@@ -287,7 +286,7 @@ public class SettingsForm : Form
 
         // EQ Path
         DarkTheme.AddCardLabel(cardEQ, "EQ Path:", L, cy);
-        _txtEQPath = DarkTheme.AddCardTextBox(cardEQ, I, cy - 2, IW);
+        _txtEQPath = DarkTheme.AddCardTextBox(cardEQ, I, cy, IW);
         var btnBrowse = DarkTheme.AddCardButton(cardEQ, "Browse...", BRW, cy - 3, 75);
         btnBrowse.Click += (_, _) =>
         {
@@ -298,9 +297,9 @@ public class SettingsForm : Form
 
         // Exe / Args on same row
         DarkTheme.AddCardLabel(cardEQ, "Exe:", L, cy);
-        _txtExeName = DarkTheme.AddCardTextBox(cardEQ, I, cy - 2, 100, 50);
+        _txtExeName = DarkTheme.AddCardTextBox(cardEQ, I, cy, 100, 50);
         DarkTheme.AddCardLabel(cardEQ, "Args:", 240, cy);
-        _txtArgs = DarkTheme.AddCardTextBox(cardEQ, I2, cy - 2, 100, 100);
+        _txtArgs = DarkTheme.AddCardTextBox(cardEQ, I2, cy, 100, 100);
 
         y += 126;
 
@@ -311,8 +310,15 @@ public class SettingsForm : Form
         var btnEQSettings = DarkTheme.AddCardButton(cardPrefs, "\uD83D\uDCDD EQ Client Settings...", 47, cy, 170);
         btnEQSettings.Click += (_, _) =>
         {
-            using var form = new EQClientSettingsForm(_config);
-            form.ShowDialog();
+            if (_eqClientSettingsForm != null && !_eqClientSettingsForm.IsDisposed)
+            {
+                _eqClientSettingsForm.BringToFront();
+                _eqClientSettingsForm.Activate();
+                return;
+            }
+            _eqClientSettingsForm = new EQClientSettingsForm(_config);
+            _eqClientSettingsForm.FormClosed += (_, _) => _eqClientSettingsForm = null;
+            _eqClientSettingsForm.Show();
         };
         var btnProcessMgr = DarkTheme.AddCardButton(cardPrefs, "⚡ Process Manager...", 264, cy, 170);
         btnProcessMgr.Click += (_, _) => _openProcessManager?.Invoke();
@@ -386,7 +392,7 @@ public class SettingsForm : Form
         const int L = 10, I = 150, I2 = 310, R = 28;
 
         // ─── Window Switching card ───────────────────────────────
-        var cardSwitch = DarkTheme.MakeCard(page, "⚔", "Window Switching", DarkTheme.CardGreen, 10, y, 480, 130);
+        var cardSwitch = DarkTheme.MakeCard(page, "⚔", "Window Switching", DarkTheme.CardGreen, 10, y, 480, 118);
         int cy = 32;
 
         DarkTheme.AddCardLabel(cardSwitch, "Switch Key (EQ-only):", L, cy);
@@ -397,7 +403,7 @@ public class SettingsForm : Form
                 _txtSwitchKeyGeneral.Text = _txtSwitchKey.Text;
         };
         DarkTheme.AddCardLabel(cardSwitch, "Mode:", 250, cy);
-        _cboSwitchKeyMode = DarkTheme.AddCardComboBox(cardSwitch, I2, cy - 2, 130, new[] { "Swap Last Two", "Cycle All" });
+        _cboSwitchKeyMode = DarkTheme.AddCardComboBox(cardSwitch, I2, cy, 130, new[] { "Swap Last Two", "Cycle All" });
         cy += R + 2;
 
         DarkTheme.AddCardLabel(cardSwitch, "Global Switch Key:", L, cy);
@@ -410,15 +416,15 @@ public class SettingsForm : Form
         cy += R + 2;
 
         DarkTheme.AddCardLabel(cardSwitch, "Clients (Launch All):", L, cy);
-        _nudNumClients = DarkTheme.AddCardNumeric(cardSwitch, I, cy - 2, 40, 2, 1, 6);
+        _nudNumClients = DarkTheme.AddCardNumeric(cardSwitch, I, cy, 40, 2, 1, 6);
         DarkTheme.AddCardLabel(cardSwitch, "Delay between launches:", 220, cy);
-        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardSwitch, I2 + 50, cy - 2, 40, 3, 1, 30);
+        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardSwitch, I2 + 50, cy, 40, 3, 1, 30);
         DarkTheme.AddCardHint(cardSwitch, "sec", I2 + 110, cy + 2);
 
-        y += 138;
+        y += 126;
 
         // ─── Actions card ────────────────────────────────────────
-        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 95);
+        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 110);
         cy = 32;
         const int col2 = 250, col2I = 370;
 
@@ -432,20 +438,25 @@ public class SettingsForm : Form
         _txtToggleMultiMon = MakeHotkeyBox(cardActions, I, cy - 2);
         DarkTheme.AddCardLabel(cardActions, "Launch All:", col2, cy);
         _txtLaunchAll = MakeHotkeyBox(cardActions, col2I, cy - 2);
+        cy += R + 2;
 
-        y += 103;
+        DarkTheme.AddCardHint(cardActions, "Press key combo to capture. Leave blank to disable. Backspace/Delete to clear.", L, cy);
+
+        y += 120;
 
         // ─── Tooltip card ───────────────────────────────────────
-        var cardTooltip = DarkTheme.MakeCard(page, "💬", "Tooltip", DarkTheme.CardCyan, 10, y, 480, 55);
-        cy = 28;
+        var cardTooltip = DarkTheme.MakeCard(page, "💬", "Tooltip", DarkTheme.CardCyan, 10, y, 480, 60);
+        cy = 32;
         DarkTheme.AddCardLabel(cardTooltip, "Delay:", L, cy);
-        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardTooltip, 55, cy - 2, 55, 1000, 0, 10000);
+        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardTooltip, 55, cy, 55, 1000, 0, 10000);
         _nudTooltipDuration.Increment = 100;
         DarkTheme.AddCardHint(cardTooltip, "ms — hover time before showing tooltip", 120, cy);
 
-        y += 63;
+        y += 68;
 
-        DarkTheme.AddHint(page, "Press key combo to capture. Leave blank to disable. Backspace/Delete to clear. Hit Apply to update changes.", 15, y);
+        // ─── Window Title card ───────────────────────────────────
+        var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 40);
+        _txtWindowTitleTemplate = DarkTheme.AddCardTextBox(cardTitle, 130, 6, 330, 100);
 
         return page;
     }
@@ -454,40 +465,11 @@ public class SettingsForm : Form
     {
         var page = DarkTheme.MakeTabPage("Layout");
         int y = 8;
-        const int L = 10, R = 30;
-
-        // ─── Monitor card ────────────────────────────────────────
-        var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 90);
-        int cy = 32;
-
-        var screens = Screen.AllScreens.OrderBy(s => s.Bounds.Left).ToArray();
-        var monitorItems = new string[screens.Length];
-        for (int i = 0; i < screens.Length; i++)
-        {
-            var s = screens[i];
-            var primary = s.Primary ? " (primary)" : "";
-            monitorItems[i] = $"{i + 1}: {s.Bounds.Width}x{s.Bounds.Height}{primary}";
-        }
-
-        DarkTheme.AddCardLabel(cardMon, "Primary:", L, cy);
-        _cboTargetMonitor = DarkTheme.AddCardComboBox(cardMon, 75, cy - 2, 155, monitorItems);
-        DarkTheme.AddCardLabel(cardMon, "Secondary:", 245, cy);
-        var secondaryItems = new string[screens.Length + 1];
-        secondaryItems[0] = "Auto (first non-primary)";
-        for (int i = 0; i < screens.Length; i++)
-            secondaryItems[i + 1] = monitorItems[i];
-        _cboSecondaryMonitor = DarkTheme.AddCardComboBox(cardMon, 320, cy - 2, 150, secondaryItems);
-        cy += R;
-
-        var btnIdentify = DarkTheme.AddCardButton(cardMon, "🔍 Identify", L, cy - 3, 90);
-        btnIdentify.Click += (_, _) => ShowMonitorIdentifiers();
-        DarkTheme.AddCardHint(cardMon, "Primary = active client. Secondary = background client (multimonitor mode).", 110, cy);
-
-        y += 98;
+        const int L = 10;
 
         // ─── Window Style card ───────────────────────────────────
-        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 195);
-        cy = 32;
+        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 175);
+        int cy = 32;
 
         const int hintX = 260;
 
@@ -496,12 +478,12 @@ public class SettingsForm : Form
         cy += 24;
 
         DarkTheme.AddCardLabel(cardStyle, "Titlebar hidden (px):", L, cy);
-        _nudTitlebarOffset = DarkTheme.AddCardNumeric(cardStyle, 140, cy - 2, 55, 22, 0, 40);
+        _nudTitlebarOffset = DarkTheme.AddCardNumeric(cardStyle, 140, cy, 55, 22, 0, 40);
         DarkTheme.AddCardHint(cardStyle, "22 = thin strip, 30 = fully hidden", hintX, cy);
         cy += 26;
 
         DarkTheme.AddCardLabel(cardStyle, "Bottom margin (px):", L, cy);
-        _nudBottomOffset = DarkTheme.AddCardNumeric(cardStyle, 140, cy - 2, 55, 22, 0, 100);
+        _nudBottomOffset = DarkTheme.AddCardNumeric(cardStyle, 140, cy, 55, 22, 0, 100);
         DarkTheme.AddCardHint(cardStyle, "Game render height reduction", hintX, cy);
         cy += 22;
 
@@ -547,16 +529,6 @@ public class SettingsForm : Form
             }
             _lblStyleDisabledHint.Visible = !slim;
         };
-
-        y += 203;
-
-        // ─── Window Title card ───────────────────────────────────
-        var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 65);
-        cy = 32;
-
-        DarkTheme.AddCardLabel(cardTitle, "Template:", L, cy);
-        _txtWindowTitleTemplate = DarkTheme.AddCardTextBox(cardTitle, 75, cy - 2, 280, 100);
-        DarkTheme.AddCardHint(cardTitle, "{SLOT} {PID}", 365, cy);
 
         return page;
     }
@@ -638,7 +610,7 @@ public class SettingsForm : Form
         int cy = 32;
 
         DarkTheme.AddCardLabel(cardPaths, "GINA Path:", L, cy);
-        _txtGinaPath = DarkTheme.AddCardTextBox(cardPaths, I, cy - 2, IW);
+        _txtGinaPath = DarkTheme.AddCardTextBox(cardPaths, I, cy, IW);
         var btnBrowseGina = DarkTheme.AddCardButton(cardPaths, "Browse...", BRW, cy - 3, 75);
         btnBrowseGina.Click += (_, _) =>
         {
@@ -653,7 +625,7 @@ public class SettingsForm : Form
         cy += R;
 
         DarkTheme.AddCardLabel(cardPaths, "Notes File:", L, cy);
-        _txtNotesPath = DarkTheme.AddCardTextBox(cardPaths, I, cy - 2, IW);
+        _txtNotesPath = DarkTheme.AddCardTextBox(cardPaths, I, cy, IW);
         var btnBrowseNotes = DarkTheme.AddCardButton(cardPaths, "Browse...", BRW, cy - 3, 75);
         btnBrowseNotes.Click += (_, _) =>
         {
@@ -665,11 +637,11 @@ public class SettingsForm : Form
             };
             if (ofd.ShowDialog() == DialogResult.OK) _txtNotesPath.Text = ofd.FileName;
         };
-        DarkTheme.AddCardHint(cardPaths, "Leave blank to auto-create eqnotes.txt next to EQSwitch", L, cy + 22);
-        cy += R + 10;
+        DarkTheme.AddCardHint(cardPaths, "Leave blank to auto-create eqnotes.txt next to EQSwitch", L, cy + 26);
+        cy += 42;
 
         DarkTheme.AddCardLabel(cardPaths, "Dalaya Patcher:", L, cy);
-        _txtDalayaPatcherPath = DarkTheme.AddCardTextBox(cardPaths, I, cy - 2, IW);
+        _txtDalayaPatcherPath = DarkTheme.AddCardTextBox(cardPaths, I, cy, IW);
         var btnBrowsePatcher = DarkTheme.AddCardButton(cardPaths, "Browse...", BRW, cy - 3, 75);
         btnBrowsePatcher.Click += (_, _) =>
         {
@@ -681,9 +653,7 @@ public class SettingsForm : Form
             };
             if (ofd.ShowDialog() == DialogResult.OK) _txtDalayaPatcherPath.Text = ofd.FileName;
         };
-        cy += R - 4;
-
-        DarkTheme.AddCardHint(cardPaths, "Patcher may be deleted by antivirus — re-download from SoD if missing.", L, cy);
+        DarkTheme.AddCardHint(cardPaths, "Patcher may be deleted by antivirus — re-download from SoD if missing.", L, cy + 26);
 
         y += 168;
 
@@ -692,7 +662,7 @@ public class SettingsForm : Form
         cy = 32;
 
         DarkTheme.AddCardLabel(cardIcon, "Custom Icon:", L, cy);
-        _txtCustomIconPath = DarkTheme.AddCardTextBox(cardIcon, I, cy - 2, IW);
+        _txtCustomIconPath = DarkTheme.AddCardTextBox(cardIcon, I, cy, IW);
         var btnBrowseIcon = DarkTheme.AddCardButton(cardIcon, "Browse...", BRW, cy - 3, 75);
         btnBrowseIcon.Click += (_, _) =>
         {
@@ -758,6 +728,16 @@ public class SettingsForm : Form
         btnHelp.Click += (_, _) => HelpForm.Show(_config);
         page.Controls.Add(btnHelp);
 
+        // ─── Update button ──────────────────────────────────────
+        var btnUpdate = DarkTheme.MakeButton("⬆ Update", DarkTheme.BgMedium, 195, y);
+        btnUpdate.Size = new Size(100, 30);
+        btnUpdate.Click += (_, _) =>
+        {
+            using var dlg = new UpdateDialog();
+            dlg.ShowDialog(this);
+        };
+        page.Controls.Add(btnUpdate);
+
         // ─── Uninstall button (right-aligned) ───────────────────
         var btnUninstall = DarkTheme.MakeButton("🗑 Uninstall", DarkTheme.CardWarn, 380, y);
         btnUninstall.Size = new Size(110, 30);
@@ -782,7 +762,7 @@ public class SettingsForm : Form
         cy += R;
 
         DarkTheme.AddCardLabel(cardPip, "Size Preset:", L, cy);
-        _cboPipSize = DarkTheme.AddCardComboBox(cardPip, I, cy - 2, 170, new[] {
+        _cboPipSize = DarkTheme.AddCardComboBox(cardPip, I, cy, 170, new[] {
             "Small (256x144)", "Medium (384x216)", "Large (512x288)",
             "XL (768x432)", "XXL (1024x576)", "XXXL (1600x900)", "Custom"
         });
@@ -811,20 +791,20 @@ public class SettingsForm : Form
                 _nudPipMaxWindows.Maximum = 3;
             }
         };
-        DarkTheme.AddCardLabel(cardPip, "Max", 310, cy - 12);
-        DarkTheme.AddCardLabel(cardPip, "Windows:", 298, cy + 2);
-        _nudPipMaxWindows = DarkTheme.AddCardNumeric(cardPip, 365, cy - 2, 40, 3, 1, 3);
+        DarkTheme.AddCardLabel(cardPip, "Max", 338, cy - 12);
+        DarkTheme.AddCardLabel(cardPip, "Windows:", 323, cy + 2);
+        _nudPipMaxWindows = DarkTheme.AddCardNumeric(cardPip, 393, cy, 40, 3, 1, 3);
         _nudPipMaxWindows.TextAlign = HorizontalAlignment.Center;
         cy += R;
 
         DarkTheme.AddCardLabel(cardPip, "Custom W:", L, cy);
-        _nudPipWidth = DarkTheme.AddCardNumeric(cardPip, 80, cy - 2, 50, 320, 100, 1920);
+        _nudPipWidth = DarkTheme.AddCardNumeric(cardPip, I, cy, 55, 320, 100, 1920);
         _nudPipWidth.Enabled = false;
-        DarkTheme.AddCardLabel(cardPip, "H:", 140, cy);
-        _nudPipHeight = DarkTheme.AddCardNumeric(cardPip, 160, cy - 2, 50, 240, 75, 1080);
+        DarkTheme.AddCardLabel(cardPip, "H:", 185, cy);
+        _nudPipHeight = DarkTheme.AddCardNumeric(cardPip, 205, cy, 55, 240, 75, 1080);
         _nudPipHeight.Enabled = false;
-        DarkTheme.AddCardLabel(cardPip, "Layout:", 330, cy);
-        _cboPipOrientation = DarkTheme.AddCardComboBox(cardPip, 385, cy - 2, 85, new[] { "Vertical", "Horizontal" });
+        DarkTheme.AddCardLabel(cardPip, "Layout:", 323, cy);
+        _cboPipOrientation = DarkTheme.AddCardComboBox(cardPip, 385, cy, 85, new[] { "Vertical", "Horizontal" });
 
         y += 128;
 
@@ -833,7 +813,8 @@ public class SettingsForm : Form
         cy = 32;
 
         DarkTheme.AddCardLabel(cardLook, "Opacity:", L, cy);
-        _nudPipOpacity = DarkTheme.AddCardNumeric(cardLook, I, cy - 2, 60, 245, 0, 255);
+        _nudPipOpacity = DarkTheme.AddCardNumeric(cardLook, I, cy, 60, 245, 0, 255);
+        _nudPipOpacity.Increment = 5;
         DarkTheme.AddCardHint(cardLook, "0-255", I + 65, cy + 2);
 
         _chkPipBorder = DarkTheme.AddCardCheckBox(cardLook, "Show Border", 230, cy);
@@ -844,7 +825,10 @@ public class SettingsForm : Form
         cy += R;
 
         DarkTheme.AddCardLabel(cardLook, "Border Color:", L, cy);
-        _cboPipBorderColor = DarkTheme.AddCardComboBox(cardLook, I, cy - 2, 100, new[] { "Green", "Blue", "Red", "Black" });
+        _cboPipBorderColor = DarkTheme.AddCardComboBox(cardLook, I, cy, 100, new[] { "Green", "Blue", "Red", "Black" });
+
+        y += 95;
+        DarkTheme.AddHint(page, "Hold Ctrl + Left Click to drag PiP window to a new position", 20, y);
 
         return page;
     }
@@ -927,11 +911,6 @@ public class SettingsForm : Form
         _txtLaunchAll.Text = _config.Hotkeys.LaunchAll;
 
         // Layout
-        var targetIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, _cboTargetMonitor.Items.Count - 1);
-        _cboTargetMonitor.SelectedIndex = targetIdx;
-        // SecondaryMonitor: -1 = Auto (index 0), 0+ = monitor index (offset by 1 in dropdown)
-        var secIdx = _config.Layout.SecondaryMonitor < 0 ? 0 : _config.Layout.SecondaryMonitor + 1;
-        _cboSecondaryMonitor.SelectedIndex = Math.Clamp(secIdx, 0, _cboSecondaryMonitor.Items.Count - 1);
         _chkSlimTitlebar.Checked = _config.Layout.SlimTitlebar;
         _nudTitlebarOffset.Value = DarkTheme.ClampNud(_nudTitlebarOffset, _config.Layout.TitlebarOffset);
         _nudBottomOffset.Value = DarkTheme.ClampNud(_nudBottomOffset, _config.Layout.BottomOffset);
@@ -1025,8 +1004,8 @@ public class SettingsForm : Form
             Layout = new WindowLayout
             {
                 Mode = _chkVideoMultiMon.Checked ? "multimonitor" : "single",
-                TargetMonitor = _cboTargetMonitor.SelectedIndex >= 0 ? _cboTargetMonitor.SelectedIndex : 0,
-                SecondaryMonitor = _cboSecondaryMonitor.SelectedIndex <= 0 ? -1 : _cboSecondaryMonitor.SelectedIndex - 1,
+                TargetMonitor = _cboVideoPrimaryMon.SelectedIndex >= 0 ? _cboVideoPrimaryMon.SelectedIndex : 0,
+                SecondaryMonitor = _cboVideoSecondaryMon.SelectedIndex <= 0 ? -1 : _cboVideoSecondaryMon.SelectedIndex - 1,
                 TopOffset = (int)_nudVideoTopOffset.Value,
                 SlimTitlebar = _chkSlimTitlebar.Checked,
                 TitlebarOffset = (int)_nudTitlebarOffset.Value,
@@ -1399,7 +1378,7 @@ public class SettingsForm : Form
         y += 158;
 
         // ─── Monitor card ─────────────────────────────────────────
-        var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 95);
+        var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 118);
         cy = 32;
 
         _chkVideoMultiMon = DarkTheme.AddCheckBox(cardMon, "Multi-Monitor Mode", L, cy);
@@ -1442,7 +1421,12 @@ public class SettingsForm : Form
         cardMon.Controls.Add(_cboVideoSecondaryMon);
         DarkTheme.WrapWithBorder(_cboVideoSecondaryMon);
 
-        y += 103;
+        cy += 28;
+        var btnIdentify = DarkTheme.AddCardButton(cardMon, "🔍 Identify", L, cy - 3, 90);
+        btnIdentify.Click += (_, _) => ShowMonitorIdentifiers();
+        DarkTheme.AddCardHint(cardMon, "Primary = active client. Secondary = background client (multimonitor mode).", 110, cy);
+
+        y += 125;
 
         return page;
     }
@@ -1554,16 +1538,6 @@ public class SettingsForm : Form
                 _config.Hotkeys.MultiMonitorEnabled = true;
             VideoSaveCustomPreset();
             ConfigManager.Save(_config);
-
-            // Sync Layout tab controls to reflect Video tab's committed values
-            // _chkVideoMultiMon already synced via PopulateVideoFromIni
-            if (_cboTargetMonitor != null)
-                _cboTargetMonitor.SelectedIndex = Math.Clamp(_config.Layout.TargetMonitor, 0, _cboTargetMonitor.Items.Count - 1);
-            if (_cboSecondaryMonitor != null)
-            {
-                var secIdx = _config.Layout.SecondaryMonitor < 0 ? 0 : _config.Layout.SecondaryMonitor + 1;
-                _cboSecondaryMonitor.SelectedIndex = Math.Clamp(secIdx, 0, _cboSecondaryMonitor.Items.Count - 1);
-            }
 
             if (!File.Exists(iniPath))
             {
@@ -1822,6 +1796,8 @@ public class SettingsForm : Form
     {
         if (disposing)
         {
+            _eqClientSettingsForm?.Close();
+            _eqClientSettingsForm = null;
             DismissMonitorOverlays();
             // Dispose inline Font objects on hotkey TextBoxes and other controls
             // that were created with new Font() — base.Dispose doesn't clean these up
