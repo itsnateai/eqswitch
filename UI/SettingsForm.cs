@@ -52,7 +52,7 @@ public class SettingsForm : Form
     private TextBox _txtToggleMultiMon = null!;
     private TextBox _txtLaunchOne = null!;
     private TextBox _txtLaunchAll = null!;
-    private CheckBox _chkMultiMonEnabled = null!;
+    // Multi-monitor mode controlled by _chkVideoMultiMon on Video tab
     private ComboBox _cboSwitchKeyMode = null!;
 
     // ─── Layout tab controls
@@ -418,7 +418,7 @@ public class SettingsForm : Form
         y += 138;
 
         // ─── Actions card ────────────────────────────────────────
-        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 125);
+        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 120);
         cy = 32;
         const int col2 = 250, col2I = 370;
 
@@ -434,13 +434,12 @@ public class SettingsForm : Form
         _txtLaunchAll = MakeHotkeyBox(cardActions, col2I, cy - 2);
         cy += R + 2;
 
-        _chkMultiMonEnabled = DarkTheme.AddCardCheckBox(cardActions, "Multi-monitor mode enabled", L, cy);
-        DarkTheme.AddCardLabel(cardActions, "Tooltip Delay:", col2, cy + 2);
-        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardActions, col2I, cy, 55, 1000, 0, 10000);
+        DarkTheme.AddCardLabel(cardActions, "Tooltip Delay:", L, cy + 2);
+        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardActions, I, cy, 55, 1000, 0, 10000);
         _nudTooltipDuration.Increment = 100;
-        DarkTheme.AddCardHint(cardActions, "ms", col2I + 60, cy + 4);
+        DarkTheme.AddCardHint(cardActions, "ms", I + 60, cy + 4);
 
-        y += 133;
+        y += 128;
 
         DarkTheme.AddHint(page, "Press key combo to capture. Leave blank to disable. Backspace/Delete to clear. Hit Apply to update changes.", 15, y);
 
@@ -914,7 +913,6 @@ public class SettingsForm : Form
         _txtToggleMultiMon.Text = _config.Hotkeys.ToggleMultiMonitor;
         _txtLaunchOne.Text = _config.Hotkeys.LaunchOne;
         _txtLaunchAll.Text = _config.Hotkeys.LaunchAll;
-        _chkMultiMonEnabled.Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
 
         // Layout
         var targetIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, _cboTargetMonitor.Items.Count - 1);
@@ -1014,7 +1012,7 @@ public class SettingsForm : Form
             CustomIconPath = _txtCustomIconPath.Text.Trim(),
             Layout = new WindowLayout
             {
-                Mode = _chkMultiMonEnabled.Checked ? "multimonitor" : "single",
+                Mode = _chkVideoMultiMon.Checked ? "multimonitor" : "single",
                 TargetMonitor = _cboTargetMonitor.SelectedIndex >= 0 ? _cboTargetMonitor.SelectedIndex : 0,
                 SecondaryMonitor = _cboSecondaryMonitor.SelectedIndex <= 0 ? -1 : _cboSecondaryMonitor.SelectedIndex - 1,
                 TopOffset = (int)_nudVideoTopOffset.Value,
@@ -1035,7 +1033,7 @@ public class SettingsForm : Form
                 LaunchOne = _txtLaunchOne.Text.Trim(),
                 LaunchAll = _txtLaunchAll.Text.Trim(),
                 // Once enabled, the hotkey is unlocked permanently
-                MultiMonitorEnabled = _chkMultiMonEnabled.Checked || _config.Hotkeys.MultiMonitorEnabled,
+                MultiMonitorEnabled = _chkVideoMultiMon.Checked || _config.Hotkeys.MultiMonitorEnabled,
                 DirectSwitchKeys = _config.Hotkeys.DirectSwitchKeys,
                 SwitchKeyMode = _cboSwitchKeyMode.SelectedItem?.ToString() == "Cycle All" ? "cycleAll" : "swapLast"
             },
@@ -1546,8 +1544,7 @@ public class SettingsForm : Form
             ConfigManager.Save(_config);
 
             // Sync Layout tab controls to reflect Video tab's committed values
-            if (_chkMultiMonEnabled != null)
-                _chkMultiMonEnabled.Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+            // _chkVideoMultiMon already synced via PopulateVideoFromIni
             if (_cboTargetMonitor != null)
                 _cboTargetMonitor.SelectedIndex = Math.Clamp(_config.Layout.TargetMonitor, 0, _cboTargetMonitor.Items.Count - 1);
             if (_cboSecondaryMonitor != null)
