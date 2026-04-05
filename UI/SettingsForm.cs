@@ -828,7 +828,7 @@ public class SettingsForm : Form
         cy += R;
 
         DarkTheme.AddCardLabel(cardLook, "Border Color:", L, cy);
-        _cboPipBorderColor = DarkTheme.AddCardComboBox(cardLook, I, cy, 100, new[] { "Green", "Blue", "Red", "Black" });
+        _cboPipBorderColor = DarkTheme.AddCardComboBox(cardLook, I, cy, 100, new[] { "Blue", "Green", "Red" });
         DarkTheme.AddCardLabel(cardLook, "Thickness:", 230, cy);
         _nudPipBorderThickness = DarkTheme.AddCardNumeric(cardLook, 310, cy, 50, 3, 1, 10);
 
@@ -1154,9 +1154,8 @@ public class SettingsForm : Form
             EnableHeadersVisualStyles = false
         };
 
-        _dgvAccounts.Columns.Add("Name", "Name");
-        _dgvAccounts.Columns.Add("Username", "Username");
         _dgvAccounts.Columns.Add("Character", "Character");
+        _dgvAccounts.Columns.Add("Username", "Username");
         _dgvAccounts.Columns.Add("Server", "Server");
         _dgvAccounts.Columns.Add("Slot", "Slot");
         _dgvAccounts.Columns["Slot"]!.Width = 40;
@@ -1234,7 +1233,7 @@ public class SettingsForm : Form
     {
         _dgvAccounts.Rows.Clear();
         foreach (var a in _pendingAccounts)
-            _dgvAccounts.Rows.Add(a.Name, a.Username, a.CharacterName, a.Server, a.CharacterSlot);
+            _dgvAccounts.Rows.Add(a.CharacterName, a.Username, a.Server, a.CharacterSlot);
     }
 
     private void ShowAccountDialog(int? editIndex)
@@ -1244,7 +1243,7 @@ public class SettingsForm : Form
         using var dlg = new Form
         {
             Text = existing != null ? "Edit Account" : "Add Account",
-            Size = new Size(380, 340),
+            Size = new Size(380, 305),
             FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition = FormStartPosition.CenterParent,
             MaximizeBox = false,
@@ -1264,8 +1263,8 @@ public class SettingsForm : Form
             return tb;
         }
 
-        DarkTheme.AddLabel(dlg, "Display Name:", L, y);
-        var txtName = MakeTextBox(I, y - 2, W, existing?.Name ?? "");
+        DarkTheme.AddLabel(dlg, "Character:", L, y);
+        var txtCharName = MakeTextBox(I, y - 2, W, existing?.CharacterName ?? "");
         y += R;
 
         DarkTheme.AddLabel(dlg, "Username:", L, y);
@@ -1283,10 +1282,6 @@ public class SettingsForm : Form
         var txtServer = MakeTextBox(I, y - 2, W, existing?.Server ?? "Dalaya");
         y += R;
 
-        DarkTheme.AddLabel(dlg, "Character Name:", L, y);
-        var txtCharName = MakeTextBox(I, y - 2, W, existing?.CharacterName ?? "");
-        y += R;
-
         DarkTheme.AddLabel(dlg, "Character Slot:", L, y);
         var nudSlot = DarkTheme.AddNumeric(dlg, I, y - 2, 60, existing?.CharacterSlot ?? 1, 1, 8);
         y += R;
@@ -1299,14 +1294,14 @@ public class SettingsForm : Form
         btnOK.Width = 100;
         btnOK.Click += (_, _) =>
         {
-            if (string.IsNullOrWhiteSpace(txtName.Text) || string.IsNullOrWhiteSpace(txtUsername.Text))
+            if (string.IsNullOrWhiteSpace(txtUsername.Text))
             {
-                MessageBox.Show("Name and Username are required.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("Username is required.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
             var account = existing ?? new LoginAccount();
-            account.Name = txtName.Text.Trim();
+            account.Name = txtCharName.Text.Trim(); // sync Name from Character for backwards compat
             account.Username = txtUsername.Text.Trim();
             account.Server = txtServer.Text.Trim();
             account.CharacterName = txtCharName.Text.Trim();

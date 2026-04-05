@@ -31,6 +31,7 @@ public class PipOverlay : Form
     // Border rendering — paint border color only in padding area, keep black behind thumbnails
     private readonly Color _borderColor;
     private readonly int _borderPad;
+    private const int InnerGap = 1; // 1px divider between PiPs
 
     // Ctrl+drag state
     private bool _dragging;
@@ -58,12 +59,13 @@ public class PipOverlay : Form
         var maxWin = Math.Clamp(config.Pip.MaxWindows, 1, 3);
         bool horizontal = config.Pip.IsHorizontal;
 
-        // Flush thumbnails — border only on outside edges
+        // Outer border + 1px inner gaps between PiPs
         int borderPad = config.Pip.ShowBorder ? Math.Clamp(config.Pip.BorderThickness, 1, 10) : 0;
+        int gaps = borderPad > 0 ? InnerGap * (maxWin - 1) : 0;
         if (horizontal)
-            Size = new Size(borderPad + w * maxWin + borderPad, h + borderPad * 2);
+            Size = new Size(borderPad * 2 + w * maxWin + gaps, h + borderPad * 2);
         else
-            Size = new Size(w + borderPad * 2, borderPad + h * maxWin + borderPad);
+            Size = new Size(w + borderPad * 2, borderPad * 2 + h * maxWin + gaps);
 
         // Default position: top-right corner
         var screen = (Screen.PrimaryScreen ?? Screen.AllScreens.FirstOrDefault())?.WorkingArea
@@ -119,13 +121,10 @@ public class PipOverlay : Form
         base.OnPaint(e);
         if (_borderPad <= 0 || _borderColor.IsEmpty) return;
 
-        // Paint border color only in the padding strips around the edges
+        // Fill entire background with border color — eliminates any subpixel gaps
+        // between DWM thumbnails and border edges. Thumbnails render on top.
         using var brush = new SolidBrush(_borderColor);
-        int w = ClientSize.Width, h = ClientSize.Height, p = _borderPad;
-        e.Graphics.FillRectangle(brush, 0, 0, w, p);           // top
-        e.Graphics.FillRectangle(brush, 0, h - p, w, p);       // bottom
-        e.Graphics.FillRectangle(brush, 0, p, p, h - p * 2);   // left
-        e.Graphics.FillRectangle(brush, w - p, p, p, h - p * 2); // right
+        e.Graphics.FillRectangle(brush, 0, 0, ClientSize.Width, ClientSize.Height);
     }
 
     /// <summary>
@@ -208,42 +207,32 @@ public class PipOverlay : Form
                 continue;
             }
 
+            int gap = (borderPad > 0 && idx > 0) ? InnerGap : 0;
             int xPos, yPos;
             if (horizontal)
             {
-                xPos = idx * w + borderPad;
+                xPos = borderPad + idx * w + (idx > 0 ? idx * InnerGap : 0);
                 yPos = borderPad;
             }
             else
             {
                 xPos = borderPad;
-                yPos = idx * h + borderPad;
+                yPos = borderPad + idx * h + (idx > 0 ? idx * InnerGap : 0);
             }
 
-            // Query source size and letterbox to preserve aspect ratio
-            var destRect = new NativeMethods.RECT { Left = xPos, Top = yPos, Right = xPos + w, Bottom = yPos + h };
-            if (NativeMethods.DwmQueryThumbnailSourceSize(thumbId, out var srcSize) == 0
-                && srcSize.cx > 0 && srcSize.cy > 0)
+            // Exact fit — thumbnail fills its slot edge to edge
+            var destRect = new NativeMethods.RECT
             {
-                double srcAspect = (double)srcSize.cx / srcSize.cy;
-                double dstAspect = (double)w / h;
+                Left = xPos, Top = yPos,
+                Right = xPos + w, Bottom = yPos + h
+            };
 
-                if (dstAspect > srcAspect)
-                {
-                    // Pillarbox: destination is wider than source — shrink width
-                    int fitW = (int)(h * srcAspect);
-                    int pad = (w - fitW) / 2;
-                    destRect.Left = xPos + pad;
-                    destRect.Right = xPos + pad + fitW;
-                }
-                else if (dstAspect < srcAspect)
-                {
-                    // Letterbox: destination is taller than source — shrink height
-                    int fitH = (int)(w / srcAspect);
-                    int pad = (h - fitH) / 2;
-                    destRect.Top = yPos + pad;
-                    destRect.Bottom = yPos + pad + fitH;
-                }
+            // Crop 2px from each edge of the source to trim EQ's client border artifacts
+            var srcCrop = new NativeMethods.RECT();
+            if (NativeMethods.DwmQueryThumbnailSourceSize(thumbId, out var srcSz) == 0
+                && srcSz.cx > 4 && srcSz.cy > 4)
+            {
+                srcCrop = new NativeMethods.RECT { Left = 2, Top = 2, Right = srcSz.cx - 2, Bottom = srcSz.cy - 2 };
             }
 
             var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
@@ -251,8 +240,10 @@ public class PipOverlay : Form
                 dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION
                         | NativeMethods.DWM_TNP_VISIBLE
                         | NativeMethods.DWM_TNP_OPACITY
-                        | NativeMethods.DWM_TNP_SOURCECLIENTAREAONLY,
+                        | NativeMethods.DWM_TNP_SOURCECLIENTAREAONLY
+                        | (srcCrop.Right > 0 ? NativeMethods.DWM_TNP_RECTSOURCE : 0),
                 rcDestination = destRect,
+                rcSource = srcCrop,
                 opacity = _config.Pip.Opacity,
                 fVisible = true,
                 fSourceClientAreaOnly = true
@@ -275,9 +266,10 @@ public class PipOverlay : Form
         int oldHeight = Height;
         int newWidth, newHeight;
         int count = _thumbnailIds.Count;
+        int innerGaps = borderPad > 0 ? InnerGap * Math.Max(count - 1, 0) : 0;
         if (horizontal)
         {
-            newWidth = borderPad + w * count + borderPad;
+            newWidth = borderPad * 2 + w * count + innerGaps;
             newHeight = h + borderPad * 2;
             Size = new Size(newWidth, newHeight);
             if (oldWidth != newWidth)
@@ -289,7 +281,7 @@ public class PipOverlay : Form
         else
         {
             newWidth = w + borderPad * 2;
-            newHeight = borderPad + h * count + borderPad;
+            newHeight = borderPad * 2 + h * count + innerGaps;
             Size = new Size(newWidth, newHeight);
             if (oldHeight != newHeight)
             {
@@ -318,6 +310,7 @@ public class PipOverlay : Form
         }
 
         // Check if any source windows are gone
+        int beforeCount = _sourceWindows.Count;
         for (int i = _sourceWindows.Count - 1; i >= 0; i--)
         {
             if (!NativeMethods.IsWindow(_sourceWindows[i]))
@@ -327,6 +320,54 @@ public class PipOverlay : Form
                 _thumbnailIds.RemoveAt(i);
                 _sourceWindows.RemoveAt(i);
             }
+        }
+
+        // A source window disappeared — resize overlay to fit remaining
+        if (_sourceWindows.Count != beforeCount)
+        {
+            if (_sourceWindows.Count == 0)
+            {
+                Hide();
+                return;
+            }
+
+            var (w, h) = _config.Pip.GetSize();
+            int bp = _borderPad;
+            bool horizontal = _config.Pip.IsHorizontal;
+            int count = _sourceWindows.Count;
+            int oldW = Width, oldH = Height;
+
+            int ig = bp > 0 ? InnerGap * Math.Max(count - 1, 0) : 0;
+            if (horizontal)
+            {
+                Size = new Size(bp * 2 + w * count + ig, h + bp * 2);
+                Location = new Point(Location.X + (oldW - Width), Location.Y);
+            }
+            else
+            {
+                Size = new Size(w + bp * 2, bp * 2 + h * count + ig);
+                Location = new Point(Location.X, Location.Y + (oldH - Height));
+            }
+
+            // Reposition remaining thumbnails
+            for (int i = 0; i < _thumbnailIds.Count; i++)
+            {
+                int xPos = horizontal ? bp + i * w + (i > 0 ? i * InnerGap : 0) : bp;
+                int yPos = horizontal ? bp : bp + i * h + (i > 0 ? i * InnerGap : 0);
+                var destRect = new NativeMethods.RECT
+                {
+                    Left = xPos, Top = yPos,
+                    Right = xPos + w, Bottom = yPos + h
+                };
+                var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
+                {
+                    dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION,
+                    rcDestination = destRect
+                };
+                NativeMethods.DwmUpdateThumbnailProperties(_thumbnailIds[i], ref props);
+            }
+
+            Invalidate();
         }
     }
 
@@ -547,8 +588,8 @@ public class PipOverlay : Form
         for (int i = 0; i < _thumbnailIds.Count; i++)
         {
             int xPos, yPos;
-            if (horizontal) { xPos = i * thumbW + bp; yPos = bp; }
-            else { xPos = bp; yPos = i * thumbH + bp; }
+            if (horizontal) { xPos = bp + i * thumbW + (i > 0 ? i * InnerGap : 0); yPos = bp; }
+            else { xPos = bp; yPos = bp + i * thumbH + (i > 0 ? i * InnerGap : 0); }
 
             var destRect = new NativeMethods.RECT
             {
