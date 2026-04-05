@@ -222,6 +222,7 @@ public static class DarkTheme
             Font = FontUI9
         };
         parent.Controls.Add(nud);
+        SetNumericMargins(nud);
         return nud;
     }
 
@@ -450,6 +451,22 @@ public static class DarkTheme
             (IntPtr)(NativeMethods.EC_LEFTMARGIN | NativeMethods.EC_RIGHTMARGIN), lParam);
     }
 
+    /// <summary>Add left padding to a NumericUpDown's inner TextBox via EM_SETMARGINS.</summary>
+    private static void SetNumericMargins(NumericUpDown nud)
+    {
+        nud.HandleCreated += (_, _) =>
+        {
+            foreach (Control c in nud.Controls)
+            {
+                if (c is TextBox tb)
+                {
+                    SetTextBoxMargins(tb, 4);
+                    break;
+                }
+            }
+        };
+    }
+
     /// <summary>Add a dark-styled ComboBox inside a card panel.</summary>
     public static ComboBox AddCardComboBox(Panel card, int x, int y, int width, string[] items)
     {
@@ -486,6 +503,7 @@ public static class DarkTheme
         };
         card.Controls.Add(nud);
         WrapWithBorder(nud);
+        SetNumericMargins(nud);
         return nud;
     }
 
