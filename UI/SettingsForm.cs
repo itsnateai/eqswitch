@@ -790,8 +790,16 @@ public class SettingsForm : Form
             bool isCustom = selected.StartsWith("Custom");
             _nudPipWidth.Enabled = isCustom;
             _nudPipHeight.Enabled = isCustom;
-            // XXXXL is nearly full-screen — enforce max 1 PiP window
-            if (selected.StartsWith("XXXXL"))
+            // Sync custom W/H to reflect current preset dimensions
+            if (!isCustom)
+            {
+                var presetName = ExtractPipPresetName(selected);
+                var pip = new PipConfig { SizePreset = presetName };
+                var (w, h) = pip.GetSize();
+                if (w > 0) { _nudPipWidth.Value = w; _nudPipHeight.Value = h; }
+            }
+            // XXXL is nearly full-screen — enforce max 1 PiP window
+            if (selected.StartsWith("XXXL"))
             {
                 _nudPipMaxWindows.Value = 1;
                 _nudPipMaxWindows.Maximum = 1;
@@ -808,10 +816,10 @@ public class SettingsForm : Form
         cy += R;
 
         DarkTheme.AddCardLabel(cardPip, "Custom W:", L, cy);
-        _nudPipWidth = DarkTheme.AddCardNumeric(cardPip, I, cy - 2, 50, 320, 100, 1920);
+        _nudPipWidth = DarkTheme.AddCardNumeric(cardPip, 80, cy - 2, 50, 320, 100, 1920);
         _nudPipWidth.Enabled = false;
-        DarkTheme.AddCardLabel(cardPip, "Custom H:", 190, cy);
-        _nudPipHeight = DarkTheme.AddCardNumeric(cardPip, 260, cy - 2, 50, 240, 75, 1080);
+        DarkTheme.AddCardLabel(cardPip, "H:", 140, cy);
+        _nudPipHeight = DarkTheme.AddCardNumeric(cardPip, 160, cy - 2, 50, 240, 75, 1080);
         _nudPipHeight.Enabled = false;
         DarkTheme.AddCardLabel(cardPip, "Layout:", 330, cy);
         _cboPipOrientation = DarkTheme.AddCardComboBox(cardPip, 385, cy - 2, 85, new[] { "Vertical", "Horizontal" });
