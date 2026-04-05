@@ -1119,7 +1119,7 @@ public class SettingsForm : Form
         var page = DarkTheme.MakeTabPage("Accounts");
         int y = 8;
 
-        var card = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Login Accounts", DarkTheme.CardGold, 10, y, 480, 300);
+        var card = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Login Accounts", DarkTheme.CardGold, 10, y, 480, 315);
 
         _dgvAccounts = new DataGridView
         {
@@ -1221,7 +1221,7 @@ public class SettingsForm : Form
         DarkTheme.AddCardHint(card, "Character slot is 1-based position on the character select screen", 10, 295);
 
         // ─── Background Login Card ───
-        y += 348;
+        y += 323;
         var bgCard = DarkTheme.MakeCard(page, "\uD83D\uDD12", "Background Login", DarkTheme.CardPurple, 10, y, 480, 80);
         _chkBackgroundLogin = DarkTheme.AddCardCheckBox(bgCard, "Background login (no focus stealing)", 10, 30);
         _chkBackgroundLogin.Checked = _config.BackgroundLogin;
