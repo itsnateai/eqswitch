@@ -259,7 +259,7 @@ public class SettingsForm : Form
         const int L = 10, I = 120, I2 = 310, BRW = 370, IW = 240, R = 28;
 
         // ─── EverQuest Setup card ────────────────────────────────
-        var cardEQ = DarkTheme.MakeCard(page, "⚔", "EverQuest Setup", DarkTheme.CardGreen, 10, y, 480, 130);
+        var cardEQ = DarkTheme.MakeCard(page, "⚔", "EverQuest Setup", DarkTheme.CardGreen, 10, y, 480, 118);
         int cy = 30;
 
         // Switch key — prominent, right under card title
@@ -302,7 +302,7 @@ public class SettingsForm : Form
         DarkTheme.AddCardLabel(cardEQ, "Args:", 240, cy);
         _txtArgs = DarkTheme.AddCardTextBox(cardEQ, I2, cy - 2, 100);
 
-        y += 138;
+        y += 126;
 
         // ─── Preferences card ────────────────────────────────────
         var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 65);
@@ -418,7 +418,7 @@ public class SettingsForm : Form
         y += 138;
 
         // ─── Actions card ────────────────────────────────────────
-        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 145);
+        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 125);
         cy = 32;
         const int col2 = 250, col2I = 370;
 
@@ -440,7 +440,7 @@ public class SettingsForm : Form
         _nudTooltipDuration.Increment = 100;
         DarkTheme.AddCardHint(cardActions, "ms", col2I + 60, cy + 4);
 
-        y += 160;
+        y += 133;
 
         DarkTheme.AddHint(page, "Press key combo to capture. Leave blank to disable. Backspace/Delete to clear. Hit Apply to update changes.", 15, y);
 
@@ -454,7 +454,7 @@ public class SettingsForm : Form
         const int L = 10, R = 30;
 
         // ─── Monitor card ────────────────────────────────────────
-        var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 100);
+        var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 90);
         int cy = 32;
 
         var screens = Screen.AllScreens.OrderBy(s => s.Bounds.Left).ToArray();
@@ -480,10 +480,10 @@ public class SettingsForm : Form
         btnIdentify.Click += (_, _) => ShowMonitorIdentifiers();
         DarkTheme.AddCardHint(cardMon, "Primary = active client. Secondary = background client (multimonitor mode).", 110, cy);
 
-        y += 108;
+        y += 98;
 
         // ─── Window Style card ───────────────────────────────────
-        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 195);
+        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 185);
         cy = 32;
 
         const int hintX = 260;
@@ -545,7 +545,7 @@ public class SettingsForm : Form
             _lblStyleDisabledHint.Visible = !slim;
         };
 
-        y += 203;
+        y += 193;
 
         // ─── Window Title card ───────────────────────────────────
         var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 65);
@@ -1096,7 +1096,7 @@ public class SettingsForm : Form
         var page = DarkTheme.MakeTabPage("Accounts");
         int y = 8;
 
-        var card = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Login Accounts", DarkTheme.CardGold, 10, y, 480, 340);
+        var card = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Login Accounts", DarkTheme.CardGold, 10, y, 480, 300);
 
         _dgvAccounts = new DataGridView
         {
