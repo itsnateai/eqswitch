@@ -406,4 +406,13 @@ internal static class NativeMethods
         public uint time;
         public IntPtr dwExtraInfo;
     }
+
+    // ─── Generic Message ───────────────────────────────────────────
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    public const uint EM_SETMARGINS = 0xD3;
+    public const int EC_LEFTMARGIN = 0x0001;
+    public const int EC_RIGHTMARGIN = 0x0002;
 }
