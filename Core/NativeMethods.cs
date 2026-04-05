@@ -421,4 +421,37 @@ internal static class NativeMethods
     public const uint EM_SETMARGINS = 0xD3;
     public const int EC_LEFTMARGIN = 0x0001;
     public const int EC_RIGHTMARGIN = 0x0002;
+
+    // ─── Cursor ────────────────────────────────────────────────────
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr LoadCursor(IntPtr hInstance, IntPtr lpCursorName);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetCursor(IntPtr hCursor);
+
+    public static readonly IntPtr IDC_SIZENESW = (IntPtr)32643;
+    public static readonly IntPtr IDC_SIZENWSE = (IntPtr)32642;
+    public static readonly IntPtr IDC_SIZEWE   = (IntPtr)32644;
+    public static readonly IntPtr IDC_SIZENS   = (IntPtr)32645;
+    public static readonly IntPtr IDC_ARROW    = (IntPtr)32512;
+
+    // ─── DWM Window Corner Preference (Win11+) ────────────────────
+
+    [DllImport("dwmapi.dll", PreserveSig = true)]
+    public static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
+
+    public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+    public const int DWMWCP_ROUND = 2;
+    public const int DWMWCP_ROUNDSMALL = 3;
+    public const int DWMWCP_DEFAULT = 0;
+    public const int DWMWCP_DONOTROUND = 1;
+
+    // ─── GDI Region (custom rounded corners) ──────────────────────
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr CreateRoundRectRgn(int x1, int y1, int x2, int y2, int cx, int cy);
+
+    [DllImport("gdi32.dll")]
+    public static extern bool DeleteObject(IntPtr hObject);
 }

@@ -12,12 +12,16 @@ namespace EQSwitch.UI;
 /// - Click-through (WS_EX_TRANSPARENT)
 /// - Always-on-top
 /// - Ctrl+drag repositioning
+/// - Ctrl+edge/corner drag resizing (16:9 locked)
 /// - Auto-swap sources when active client changes
-/// - Auto-destroy when <2 windows remain
+/// - Auto-hide when no background clients
 /// </summary>
 public class PipOverlay : Form
 {
     private const int RefreshIntervalMs = 500;
+    private const int ResizeZone = 8; // pixels from edge for resize detection
+    private const double AspectRatio = 16.0 / 9.0;
+    private const int MinThumbnailWidth = 128;
 
     private readonly AppConfig _config;
     private readonly List<IntPtr> _thumbnailIds = new();
@@ -31,6 +35,14 @@ public class PipOverlay : Form
     // Ctrl+drag state
     private bool _dragging;
     private Point _dragStart;
+
+    // Ctrl+edge resize state
+    private enum ResizeEdge { None, N, S, E, W, NE, NW, SE, SW }
+    private ResizeEdge _resizeEdge = ResizeEdge.None;
+    private bool _resizing;
+    private Point _resizeStart;
+    private Size _resizeStartSize;
+    private Point _resizeStartLoc;
 
     public PipOverlay(AppConfig config)
     {
@@ -71,7 +83,16 @@ public class PipOverlay : Form
 
         // Make the layered window opaque so BackColor renders as the border
         HandleCreated += (_, _) =>
+        {
             NativeMethods.SetLayeredWindowAttributes(Handle, 0, 255, NativeMethods.LWA_ALPHA);
+            // Disable DWM rounding — we use a GDI region for a larger radius
+            int pref = NativeMethods.DWMWCP_DONOTROUND;
+            NativeMethods.DwmSetWindowAttribute(Handle,
+                NativeMethods.DWMWA_WINDOW_CORNER_PREFERENCE, ref pref, sizeof(int));
+            ApplyRoundedRegion();
+        };
+
+        Resize += (_, _) => ApplyRoundedRegion();
 
         // Ctrl+drag support
         MouseDown += OnMouseDown;
@@ -81,6 +102,16 @@ public class PipOverlay : Form
         _refreshTimer = new System.Windows.Forms.Timer { Interval = RefreshIntervalMs };
         _refreshTimer.Tick += (_, _) => RefreshIfNeeded();
         _refreshTimer.Start();
+    }
+
+    private const int CornerRadius = 16;
+
+    private void ApplyRoundedRegion()
+    {
+        var rgn = NativeMethods.CreateRoundRectRgn(
+            0, 0, Width + 1, Height + 1, CornerRadius, CornerRadius);
+        Region = Region.FromHrgn(rgn);
+        NativeMethods.DeleteObject(rgn);
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -148,8 +179,11 @@ public class PipOverlay : Form
         if (bgCount == 0)
         {
             UnregisterAll();
+            if (Visible) Hide();
             return;
         }
+
+        if (!Visible) Show();
 
         if (!changed) return;
 
@@ -318,12 +352,56 @@ public class PipOverlay : Form
         _ => $"0x{hr:X}"
     };
 
-    // ─── Ctrl+Drag ────────────────────────────────────────────────
+    // ─── Ctrl+Drag (move) and Ctrl+Edge Drag (resize) ──────────────
+
+    private static ResizeEdge HitTestEdge(Point pt, Size size)
+    {
+        bool left   = pt.X < ResizeZone;
+        bool right  = pt.X >= size.Width - ResizeZone;
+        bool top    = pt.Y < ResizeZone;
+        bool bottom = pt.Y >= size.Height - ResizeZone;
+
+        return (left, right, top, bottom) switch
+        {
+            (true, _, true, _)  => ResizeEdge.NW,
+            (true, _, _, true)  => ResizeEdge.SW,
+            (_, true, true, _)  => ResizeEdge.NE,
+            (_, true, _, true)  => ResizeEdge.SE,
+            (true, _, _, _)     => ResizeEdge.W,
+            (_, true, _, _)     => ResizeEdge.E,
+            (_, _, true, _)     => ResizeEdge.N,
+            (_, _, _, true)     => ResizeEdge.S,
+            _                   => ResizeEdge.None
+        };
+    }
+
+    private static IntPtr CursorForEdge(ResizeEdge edge) => edge switch
+    {
+        ResizeEdge.N or ResizeEdge.S     => NativeMethods.LoadCursor(IntPtr.Zero, NativeMethods.IDC_SIZENS),
+        ResizeEdge.E or ResizeEdge.W     => NativeMethods.LoadCursor(IntPtr.Zero, NativeMethods.IDC_SIZEWE),
+        ResizeEdge.NW or ResizeEdge.SE   => NativeMethods.LoadCursor(IntPtr.Zero, NativeMethods.IDC_SIZENWSE),
+        ResizeEdge.NE or ResizeEdge.SW   => NativeMethods.LoadCursor(IntPtr.Zero, NativeMethods.IDC_SIZENESW),
+        _                                => NativeMethods.LoadCursor(IntPtr.Zero, NativeMethods.IDC_ARROW)
+    };
 
     private void OnMouseDown(object? sender, MouseEventArgs e)
     {
-        if (e.Button == MouseButtons.Left && (ModifierKeys & Keys.Control) == Keys.Control)
+        if (e.Button != MouseButtons.Left || (ModifierKeys & Keys.Control) != Keys.Control)
+            return;
+
+        var edge = HitTestEdge(e.Location, Size);
+        if (edge != ResizeEdge.None)
         {
+            // Start resize drag
+            _resizing = true;
+            _resizeEdge = edge;
+            _resizeStart = PointToScreen(e.Location);
+            _resizeStartSize = Size;
+            _resizeStartLoc = Location;
+        }
+        else
+        {
+            // Start move drag
             _dragging = true;
             _dragStart = e.Location;
         }
@@ -331,22 +409,196 @@ public class PipOverlay : Form
 
     private void OnMouseMove(object? sender, MouseEventArgs e)
     {
+        bool ctrlHeld = (ModifierKeys & Keys.Control) == Keys.Control;
+
+        if (_resizing)
+        {
+            var screenPt = PointToScreen(e.Location);
+            int dx = screenPt.X - _resizeStart.X;
+            int dy = screenPt.Y - _resizeStart.Y;
+            ApplyResize(dx, dy);
+            return;
+        }
+
         if (_dragging)
         {
             Location = new Point(
                 Location.X + e.X - _dragStart.X,
                 Location.Y + e.Y - _dragStart.Y);
+            return;
+        }
+
+        // Update cursor when Ctrl is held and hovering edges
+        if (ctrlHeld)
+        {
+            var edge = HitTestEdge(e.Location, Size);
+            NativeMethods.SetCursor(CursorForEdge(edge));
         }
     }
 
     private void OnMouseUp(object? sender, MouseEventArgs e)
     {
+        if (_resizing)
+        {
+            _resizing = false;
+            _resizeEdge = ResizeEdge.None;
+            SaveSizeAndPosition();
+            return;
+        }
+
         if (_dragging)
         {
             _dragging = false;
-            // Save position to config
             SavePosition();
         }
+    }
+
+    private void ApplyResize(int dx, int dy)
+    {
+        int maxWin = Math.Clamp(_config.Pip.MaxWindows, 1, 3);
+        bool horizontal = _config.Pip.IsHorizontal;
+        int bp = _borderPad;
+
+        // Determine new thumbnail width from the drag delta.
+        // For edges that affect width, use dx; for height-only edges, derive from dy.
+        int startW = _resizeStartSize.Width;
+        int startH = _resizeStartSize.Height;
+
+        int newW = startW;
+        int newH = startH;
+
+        // Apply delta based on which edge is being dragged
+        switch (_resizeEdge)
+        {
+            case ResizeEdge.E or ResizeEdge.NE or ResizeEdge.SE:
+                newW = startW + dx;
+                break;
+            case ResizeEdge.W or ResizeEdge.NW or ResizeEdge.SW:
+                newW = startW - dx;
+                break;
+            case ResizeEdge.N:
+                newH = startH - dy;
+                break;
+            case ResizeEdge.S:
+                newH = startH + dy;
+                break;
+        }
+
+        // Derive single-thumbnail size from total overlay size
+        int thumbW, thumbH;
+        if (horizontal)
+        {
+            thumbW = (newW - bp * 2) / maxWin;
+            thumbH = (int)(thumbW / AspectRatio);
+        }
+        else
+        {
+            // For height-only edges (N/S) on vertical layout, derive from height
+            if (_resizeEdge is ResizeEdge.N or ResizeEdge.S)
+            {
+                int thumbCount = Math.Max(_sourceWindows.Count, 1);
+                thumbH = (newH - bp * 2) / thumbCount;
+                thumbW = (int)(thumbH * AspectRatio);
+            }
+            else
+            {
+                thumbW = newW - bp * 2;
+                thumbH = (int)(thumbW / AspectRatio);
+            }
+        }
+
+        // Enforce minimum
+        if (thumbW < MinThumbnailWidth) thumbW = MinThumbnailWidth;
+        thumbH = (int)(thumbW / AspectRatio);
+        if (thumbH < 1) thumbH = 1;
+
+        // Calculate new overlay size
+        int thumbCount2 = Math.Max(_sourceWindows.Count, 1);
+        Size newSize;
+        if (horizontal)
+            newSize = new Size(bp + thumbW * maxWin + bp, thumbH + bp * 2);
+        else
+            newSize = new Size(thumbW + bp * 2, bp + thumbH * thumbCount2 + bp);
+
+        // Anchor the edge opposite to the one being dragged
+        var newLoc = _resizeStartLoc;
+        switch (_resizeEdge)
+        {
+            case ResizeEdge.W or ResizeEdge.NW or ResizeEdge.SW:
+                newLoc.X = _resizeStartLoc.X + (_resizeStartSize.Width - newSize.Width);
+                break;
+            case ResizeEdge.N or ResizeEdge.NW or ResizeEdge.NE:
+                newLoc.Y = _resizeStartLoc.Y + (_resizeStartSize.Height - newSize.Height);
+                break;
+        }
+
+        Size = newSize;
+        Location = newLoc;
+
+        // Update DWM thumbnail destination rects
+        UpdateThumbnailRects(thumbW, thumbH);
+    }
+
+    private void UpdateThumbnailRects(int thumbW, int thumbH)
+    {
+        bool horizontal = _config.Pip.IsHorizontal;
+        int bp = _borderPad;
+
+        for (int i = 0; i < _thumbnailIds.Count; i++)
+        {
+            int xPos, yPos;
+            if (horizontal) { xPos = i * thumbW + bp; yPos = bp; }
+            else { xPos = bp; yPos = i * thumbH + bp; }
+
+            var destRect = new NativeMethods.RECT
+            {
+                Left = xPos, Top = yPos,
+                Right = xPos + thumbW, Bottom = yPos + thumbH
+            };
+
+            var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
+            {
+                dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION,
+                rcDestination = destRect
+            };
+            NativeMethods.DwmUpdateThumbnailProperties(_thumbnailIds[i], ref props);
+        }
+
+        Invalidate(); // repaint border
+    }
+
+    private void SaveSizeAndPosition()
+    {
+        ClampToScreen();
+
+        // Derive single-thumbnail dimensions from current overlay size
+        int bp = _borderPad;
+        int maxWin = Math.Clamp(_config.Pip.MaxWindows, 1, 3);
+        int thumbW, thumbH;
+        if (_config.Pip.IsHorizontal)
+        {
+            thumbW = (Width - bp * 2) / maxWin;
+            thumbH = Height - bp * 2;
+        }
+        else
+        {
+            thumbW = Width - bp * 2;
+            int count = Math.Max(_sourceWindows.Count, 1);
+            thumbH = (Height - bp * 2) / count;
+        }
+
+        // Save as Custom preset
+        _config.Pip.SizePreset = "Custom";
+        _config.Pip.CustomWidth = Math.Max(thumbW, MinThumbnailWidth);
+        _config.Pip.CustomHeight = Math.Max(thumbH, 1);
+
+        // Save position
+        if (_config.Pip.SavedPositions.Count == 0)
+            _config.Pip.SavedPositions.Add(new[] { Location.X, Location.Y });
+        else
+            _config.Pip.SavedPositions[0] = new[] { Location.X, Location.Y };
+
+        ConfigManager.Save(_config);
     }
 
     private void SavePosition()
