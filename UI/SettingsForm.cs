@@ -454,7 +454,7 @@ public class SettingsForm : Form
         const int L = 10, R = 30;
 
         // ─── Monitor card ────────────────────────────────────────
-        var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 125);
+        var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 100);
         int cy = 32;
 
         var screens = Screen.AllScreens.OrderBy(s => s.Bounds.Left).ToArray();
@@ -467,23 +467,23 @@ public class SettingsForm : Form
         }
 
         DarkTheme.AddCardLabel(cardMon, "Primary:", L, cy);
-        _cboTargetMonitor = DarkTheme.AddCardComboBox(cardMon, 75, cy - 2, 185, monitorItems);
-        DarkTheme.AddCardLabel(cardMon, "Secondary:", 270, cy);
+        _cboTargetMonitor = DarkTheme.AddCardComboBox(cardMon, 75, cy - 2, 155, monitorItems);
+        DarkTheme.AddCardLabel(cardMon, "Secondary:", 245, cy);
         var secondaryItems = new string[screens.Length + 1];
         secondaryItems[0] = "Auto (first non-primary)";
         for (int i = 0; i < screens.Length; i++)
             secondaryItems[i + 1] = monitorItems[i];
-        _cboSecondaryMonitor = DarkTheme.AddCardComboBox(cardMon, 340, cy - 2, 130, secondaryItems);
+        _cboSecondaryMonitor = DarkTheme.AddCardComboBox(cardMon, 320, cy - 2, 150, secondaryItems);
         cy += R;
 
         var btnIdentify = DarkTheme.AddCardButton(cardMon, "🔍 Identify", L, cy - 3, 90);
         btnIdentify.Click += (_, _) => ShowMonitorIdentifiers();
         DarkTheme.AddCardHint(cardMon, "Primary = active client. Secondary = background client (multimonitor mode).", 110, cy);
 
-        y += 133;
+        y += 108;
 
         // ─── Window Style card ───────────────────────────────────
-        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 215);
+        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 195);
         cy = 32;
 
         const int hintX = 260;
@@ -545,7 +545,7 @@ public class SettingsForm : Form
             _lblStyleDisabledHint.Visible = !slim;
         };
 
-        y += 223;
+        y += 203;
 
         // ─── Window Title card ───────────────────────────────────
         var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 65);
@@ -1349,6 +1349,9 @@ public class SettingsForm : Form
         _nudVideoHeight = DarkTheme.AddNumeric(cardRes, 195, cy, 70, 1080, 200, 4320);
         _nudVideoHeight.ValueChanged += (_, _) => SyncVideoPresetToCustom();
 
+        var btnReset = DarkTheme.AddCardButton(cardRes, "🔄 Reset", 370, cy, 95);
+        btnReset.Click += (_, _) => VideoResetDefaults();
+
         cy += 30;
         DarkTheme.AddLabel(cardRes, "Offset X:", L, cy + 2);
         _nudVideoOffsetX = DarkTheme.AddNumeric(cardRes, 80, cy, 55, 0, -5000, 5000);
@@ -1378,7 +1381,7 @@ public class SettingsForm : Form
         DarkTheme.AddLabel(cardMon, "Primary:", L + 10, cy + 2);
         _cboVideoPrimaryMon = new ComboBox
         {
-            Location = new Point(95, cy), Size = new Size(160, 25),
+            Location = new Point(80, cy), Size = new Size(155, 25),
             BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
             DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat
         };
@@ -1391,10 +1394,10 @@ public class SettingsForm : Form
         secItems[0] = "Auto (first non-primary)";
         for (int i = 0; i < monItems.Length; i++) secItems[i + 1] = monItems[i];
 
-        DarkTheme.AddLabel(cardMon, "Secondary:", 270, cy + 2);
+        DarkTheme.AddLabel(cardMon, "Secondary:", 250, cy + 2);
         _cboVideoSecondaryMon = new ComboBox
         {
-            Location = new Point(345, cy), Size = new Size(120, 25),
+            Location = new Point(325, cy), Size = new Size(145, 25),
             BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
             DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat
         };
@@ -1429,9 +1432,6 @@ public class SettingsForm : Form
 
         var btnRestore = DarkTheme.AddCardButton(cardActions, "📂 Restore", 185, cy, 110);
         btnRestore.Click += (_, _) => VideoRestoreIni();
-
-        var btnReset = DarkTheme.AddCardButton(cardActions, "🔄 Reset", 323, cy, 110);
-        btnReset.Click += (_, _) => VideoResetDefaults();
 
         return page;
     }
