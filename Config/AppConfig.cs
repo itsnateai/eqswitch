@@ -290,10 +290,10 @@ public class PipConfig
     public string SizePreset { get; set; } = "Large";
 
     /// <summary>Custom width (used when SizePreset = "Custom").</summary>
-    public int CustomWidth { get; set; } = 480;
+    public int CustomWidth { get; set; } = 512;
 
     /// <summary>Custom height (used when SizePreset = "Custom").</summary>
-    public int CustomHeight { get; set; } = 270;
+    public int CustomHeight { get; set; } = 288;
 
     /// <summary>Stacking orientation: "Vertical" (top-to-bottom) or "Horizontal" (left-to-right).</summary>
     public string Orientation { get; set; } = "Vertical";
@@ -315,11 +315,11 @@ public class PipConfig
 
     public (int w, int h) GetSize() => SizePreset switch
     {
-        "Small" => (200, 150),
-        "Medium" => (320, 240),
-        "Large" => (480, 360),
-        "XL" => (720, 540),
-        "XXL" => (1024, 768),
+        "Small" => (256, 144),
+        "Medium" => (384, 216),
+        "Large" => (512, 288),
+        "XL" => (768, 432),
+        "XXL" => (1024, 576),
         "XXXL" => (1600, 900),
         _ => (CustomWidth, CustomHeight)
     };
