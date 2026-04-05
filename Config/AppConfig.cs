@@ -307,6 +307,9 @@ public class PipConfig
     /// <summary>Border color name: "Green", "Blue", "Red", "Black".</summary>
     public string BorderColor { get; set; } = "Green";
 
+    /// <summary>Border thickness in pixels (1-10). Default 3.</summary>
+    public int BorderThickness { get; set; } = 3;
+
     /// <summary>Max number of PiP windows to show (1-3).</summary>
     public int MaxWindows { get; set; } = 2;
 

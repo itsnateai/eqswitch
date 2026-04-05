@@ -13,6 +13,8 @@
 
 ---
 
+> **Fan-made project.** EQSwitch is an independent, open-source utility and is not affiliated with, endorsed by, or connected to Daybreak Game Company, Darkpaw Games, or the Shards of Dalaya team. EverQuest is a registered trademark of Daybreak Game Company LLC. This tool does not distribute, modify, or host any game content — it is a client-side window manager only.
+
 A lightweight EverQuest multiboxer — hotkey switching, encrypted auto-login, PiP overlays, CPU affinity, multi-monitor support, and zero-telemetry privacy for Shards of Dalaya.
 
 ## Download

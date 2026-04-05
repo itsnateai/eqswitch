@@ -37,6 +37,7 @@ public class SettingsForm : Form
     private TextBox _txtCustomIconPath = null!;
     private TextBox _txtSwitchKeyGeneral = null!;
     private Label _lblSwitchKey = null!;
+    private Label _lblSwitchKeyHotkey = null!;
 
     // ─── Tray Click controls (Left)
     private ComboBox _cboSingleClick = null!;
@@ -89,6 +90,7 @@ public class SettingsForm : Form
     private NumericUpDown _nudPipOpacity = null!;
     private CheckBox _chkPipBorder = null!;
     private ComboBox _cboPipBorderColor = null!;
+    private NumericUpDown _nudPipBorderThickness = null!;
     private NumericUpDown _nudPipMaxWindows = null!;
     private ComboBox _cboPipOrientation = null!;
 
@@ -395,7 +397,7 @@ public class SettingsForm : Form
         var cardSwitch = DarkTheme.MakeCard(page, "⚔", "Window Switching", DarkTheme.CardGreen, 10, y, 480, 118);
         int cy = 32;
 
-        DarkTheme.AddCardLabel(cardSwitch, "Switch Key (EQ-only):", L, cy);
+        _lblSwitchKeyHotkey = DarkTheme.AddCardLabel(cardSwitch, "Switch Key (EQ-only):", L, cy);
         _txtSwitchKey = MakeHotkeyBox(cardSwitch, I, cy - 2);
         _txtSwitchKey.TextChanged += (_, _) =>
         {
@@ -717,7 +719,7 @@ public class SettingsForm : Form
         var btnBackup = DarkTheme.AddCardButton(cardIni, "📋 Backup", 47, cy, 110);
         btnBackup.Click += (_, _) => VideoBackupIni();
 
-        var btnRestore = DarkTheme.AddCardButton(cardIni, "📂 Restore", 185, cy, 110);
+        var btnRestore = DarkTheme.AddCardButton(cardIni, "📂 Restore", 280, cy, 110);
         btnRestore.Click += (_, _) => VideoRestoreIni();
 
         y += 78;
@@ -821,11 +823,14 @@ public class SettingsForm : Form
         _chkPipBorder.CheckedChanged += (_, _) =>
         {
             _cboPipBorderColor.Enabled = _chkPipBorder.Checked;
+            _nudPipBorderThickness.Enabled = _chkPipBorder.Checked;
         };
         cy += R;
 
         DarkTheme.AddCardLabel(cardLook, "Border Color:", L, cy);
         _cboPipBorderColor = DarkTheme.AddCardComboBox(cardLook, I, cy, 100, new[] { "Green", "Blue", "Red", "Black" });
+        DarkTheme.AddCardLabel(cardLook, "Thickness:", 230, cy);
+        _nudPipBorderThickness = DarkTheme.AddCardNumeric(cardLook, 310, cy, 50, 3, 1, 10);
 
         y += 95;
         DarkTheme.AddHint(page, "Hold Ctrl + Left Click to drag PiP window to a new position", 20, y);
@@ -842,13 +847,16 @@ public class SettingsForm : Form
     private void UpdateSwitchKeyColor()
     {
         bool hasKey = !string.IsNullOrWhiteSpace(_txtSwitchKeyGeneral.Text);
-        _txtSwitchKeyGeneral.ForeColor = hasKey
+        var color = hasKey
             ? Color.FromArgb(220, 190, 100)   // gold — key is set
             : Color.FromArgb(220, 100, 100);  // red — not set
-        _lblSwitchKey.ForeColor = hasKey
-            ? Color.FromArgb(220, 190, 100)
-            : Color.FromArgb(220, 100, 100);
+        _txtSwitchKeyGeneral.ForeColor = color;
+        _lblSwitchKey.ForeColor = color;
         _lblSwitchKey.Text = hasKey ? "EQ Switch Key:" : "EQ Switch Key: (not set!)";
+
+        // Mirror gold highlight to the Hotkeys tab copy
+        _lblSwitchKeyHotkey.ForeColor = color;
+        _txtSwitchKey.ForeColor = color;
     }
 
     private void HotkeyBoxKeyDown(object? sender, KeyEventArgs e)
@@ -948,7 +956,9 @@ public class SettingsForm : Form
         _cboPipOrientation.SelectedItem = _config.Pip.IsHorizontal ? "Horizontal" : "Vertical";
         _nudPipWidth.Enabled = _config.Pip.SizePreset == "Custom";
         _nudPipHeight.Enabled = _config.Pip.SizePreset == "Custom";
+        _nudPipBorderThickness.Value = Math.Clamp(_config.Pip.BorderThickness, 1, 10);
         _cboPipBorderColor.Enabled = _config.Pip.ShowBorder;
+        _nudPipBorderThickness.Enabled = _config.Pip.ShowBorder;
 
         // Video (reads from eqclient.ini)
         _chkVideoWindowed.Checked = _config.EQClientIni.ForceWindowedMode;
@@ -1044,6 +1054,7 @@ public class SettingsForm : Form
                 Opacity = (byte)_nudPipOpacity.Value,
                 ShowBorder = _chkPipBorder.Checked,
                 BorderColor = _cboPipBorderColor.SelectedItem?.ToString() ?? "Green",
+                BorderThickness = (int)_nudPipBorderThickness.Value,
                 MaxWindows = (int)_nudPipMaxWindows.Value,
                 Orientation = _cboPipOrientation.SelectedItem?.ToString() ?? "Vertical",
                 SavedPositions = _config.Pip.SavedPositions // preserve existing positions
@@ -1332,7 +1343,7 @@ public class SettingsForm : Form
         const int L = 10;
 
         // ─── Resolution card ──────────────────────────────────────
-        var cardRes = DarkTheme.MakeCard(page, "📺", "EQ Resolution", DarkTheme.CardPurple, 10, y, 480, 150);
+        var cardRes = DarkTheme.MakeCard(page, "📺", "EQ Resolution", DarkTheme.CardPurple, 10, y, 480, 140);
         int cy = 32;
 
         DarkTheme.AddLabel(cardRes, "Preset:", L, cy + 2);
@@ -1375,7 +1386,7 @@ public class SettingsForm : Form
         cy += 28;
         DarkTheme.AddHint(cardRes, "Resolution & offsets save to eqclient.ini on Apply. Changes require EQ restart.", L, cy + 2);
 
-        y += 158;
+        y += 148;
 
         // ─── Monitor card ─────────────────────────────────────────
         var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 118);

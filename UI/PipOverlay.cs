@@ -47,7 +47,7 @@ public class PipOverlay : Form
         bool horizontal = config.Pip.IsHorizontal;
 
         // Flush thumbnails — border only on outside edges
-        int borderPad = config.Pip.ShowBorder ? 3 : 0;
+        int borderPad = config.Pip.ShowBorder ? Math.Clamp(config.Pip.BorderThickness, 1, 10) : 0;
         if (horizontal)
             Size = new Size(borderPad + w * maxWin + borderPad, h + borderPad * 2);
         else
@@ -157,7 +157,7 @@ public class PipOverlay : Form
         UnregisterAll();
 
         var (w, h) = _config.Pip.GetSize();
-        int borderPad = _config.Pip.ShowBorder ? 3 : 0;
+        int borderPad = _config.Pip.ShowBorder ? Math.Clamp(_config.Pip.BorderThickness, 1, 10) : 0;
         bool horizontal = _config.Pip.IsHorizontal;
         int idx = 0;
 
