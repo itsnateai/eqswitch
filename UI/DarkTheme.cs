@@ -559,15 +559,19 @@ public static class DarkTheme
     /// Dispose all non-shared Font objects on a control tree.
     /// WinForms does NOT own or dispose fonts assigned to controls — call this
     /// from Dispose(bool) in any form that creates fonts via new Font().
-    /// Skips the shared static FontUI9 to avoid destroying it for other forms.
+    /// Skips all shared static fonts to avoid destroying them for other forms.
     /// </summary>
+    private static readonly HashSet<Font> SharedFonts = new(ReferenceEqualityComparer.Instance)
+    {
+        TabFontBold, TabFontRegular, FontUI9, FontUI85, FontUI75, FontUI75Italic, FontSemibold9, FontSemibold95
+    };
+
     public static void DisposeControlFonts(Control root)
     {
         foreach (Control c in root.Controls)
         {
             DisposeControlFonts(c);
-            // Skip shared static fonts — disposing them would crash other forms
-            if (c.Font != null && !ReferenceEquals(c.Font, FontUI9))
+            if (c.Font != null && !SharedFonts.Contains(c.Font))
                 try { c.Font.Dispose(); } catch { }
         }
     }
