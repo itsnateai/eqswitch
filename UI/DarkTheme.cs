@@ -426,7 +426,7 @@ public static class DarkTheme
     }
 
     /// <summary>Add a dark-styled TextBox inside a card panel with proper borders.</summary>
-    public static TextBox AddCardTextBox(Panel card, int x, int y, int width)
+    public static TextBox AddCardTextBox(Panel card, int x, int y, int width, int maxLength = 260)
     {
         var tb = new TextBox
         {
@@ -435,7 +435,8 @@ public static class DarkTheme
             BackColor = BgInput,
             ForeColor = FgWhite,
             BorderStyle = BorderStyle.FixedSingle,
-            Font = FontUI9
+            Font = FontUI9,
+            MaxLength = maxLength
         };
         card.Controls.Add(tb);
         WrapWithBorder(tb);
