@@ -298,9 +298,9 @@ public class SettingsForm : Form
 
         // Exe / Args on same row
         DarkTheme.AddCardLabel(cardEQ, "Exe:", L, cy);
-        _txtExeName = DarkTheme.AddCardTextBox(cardEQ, I, cy - 2, 100);
+        _txtExeName = DarkTheme.AddCardTextBox(cardEQ, I, cy - 2, 100, 50);
         DarkTheme.AddCardLabel(cardEQ, "Args:", 240, cy);
-        _txtArgs = DarkTheme.AddCardTextBox(cardEQ, I2, cy - 2, 100);
+        _txtArgs = DarkTheme.AddCardTextBox(cardEQ, I2, cy - 2, 100, 100);
 
         y += 126;
 
@@ -551,7 +551,7 @@ public class SettingsForm : Form
         cy = 32;
 
         DarkTheme.AddCardLabel(cardTitle, "Template:", L, cy);
-        _txtWindowTitleTemplate = DarkTheme.AddCardTextBox(cardTitle, 75, cy - 2, 280);
+        _txtWindowTitleTemplate = DarkTheme.AddCardTextBox(cardTitle, 75, cy - 2, 280, 100);
         DarkTheme.AddCardHint(cardTitle, "{SLOT} {PID}", 365, cy);
 
         return page;
