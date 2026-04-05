@@ -137,12 +137,16 @@ public static class DarkTheme
 
     public static TabPage MakeTabPage(string title)
     {
-        return new TabPage(title)
+        var page = new TabPage(title)
         {
             BackColor = BgDark,
             ForeColor = FgWhite,
             Padding = new Padding(8)
         };
+        typeof(Control).GetProperty("DoubleBuffered",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            ?.SetValue(page, true);
+        return page;
     }
 
     // ─── Section Headers ─────────────────────────────────────────
