@@ -1320,7 +1320,7 @@ public class SettingsForm : Form
         const int L = 10;
 
         // ─── Resolution card ──────────────────────────────────────
-        var cardRes = DarkTheme.MakeCard(page, "📺", "EQ Resolution", DarkTheme.CardPurple, 10, y, 480, 155);
+        var cardRes = DarkTheme.MakeCard(page, "📺", "EQ Resolution", DarkTheme.CardPurple, 10, y, 480, 150);
         int cy = 32;
 
         DarkTheme.AddLabel(cardRes, "Preset:", L, cy + 2);
@@ -1360,10 +1360,10 @@ public class SettingsForm : Form
         DarkTheme.AddLabel(cardRes, "Top:", 230, cy + 2);
         _nudVideoTopOffset = DarkTheme.AddNumeric(cardRes, 260, cy, 55, _config.Layout.TopOffset, -100, 200);
         DarkTheme.AddHint(cardRes, "px down from top edge", 320, cy + 4);
-        cy += 22;
+        cy += 28;
         DarkTheme.AddHint(cardRes, "Resolution & offsets save to eqclient.ini on Apply. Changes require EQ restart.", L, cy + 2);
 
-        y += 163;
+        y += 158;
 
         // ─── Monitor card ─────────────────────────────────────────
         var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 110);
