@@ -418,7 +418,7 @@ public class SettingsForm : Form
         y += 138;
 
         // ─── Actions card ────────────────────────────────────────
-        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 120);
+        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 95);
         cy = 32;
         const int col2 = 250, col2I = 370;
 
@@ -432,14 +432,16 @@ public class SettingsForm : Form
         _txtToggleMultiMon = MakeHotkeyBox(cardActions, I, cy - 2);
         DarkTheme.AddCardLabel(cardActions, "Launch All:", col2, cy);
         _txtLaunchAll = MakeHotkeyBox(cardActions, col2I, cy - 2);
-        cy += R + 2;
 
-        DarkTheme.AddCardLabel(cardActions, "Tooltip Delay:", L, cy + 2);
-        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardActions, I, cy, 55, 1000, 0, 10000);
+        y += 103;
+
+        // ─── Tooltip delay (slim, no title) ─────────────────────
+        DarkTheme.AddLabel(page, "Tooltip Delay:", 15, y + 2);
+        _nudTooltipDuration = DarkTheme.AddNumeric(page, I, y, 55, 1000, 0, 10000);
         _nudTooltipDuration.Increment = 100;
-        DarkTheme.AddCardHint(cardActions, "ms", I + 60, cy + 4);
+        DarkTheme.AddHint(page, "ms", I + 60, y + 4);
 
-        y += 128;
+        y += 30;
 
         DarkTheme.AddHint(page, "Press key combo to capture. Leave blank to disable. Backspace/Delete to clear. Hit Apply to update changes.", 15, y);
 
