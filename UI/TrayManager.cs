@@ -190,7 +190,7 @@ public class TrayManager : IDisposable
             UpdateHookConfig();
 
             // Auto-show PiP overlay when enabled and 2+ clients are present
-            if (_config.Pip.Enabled && _processManager.Clients.Count >= 1
+            if (_config.Pip.Enabled && _processManager.Clients.Count >= 2
                 && (_pipOverlay == null || _pipOverlay.IsDisposed))
             {
                 TogglePip();
@@ -797,7 +797,14 @@ public class TrayManager : IDisposable
             ShowSettings(1); // Video tab
         });
         videoMenu.DropDownItems.Add(new ToolStripSeparator());
-        videoMenu.DropDownItems.Add("Toggle PiP  \uD83D\uDC41", null, (_, _) => TogglePip());
+        var pipItem = new ToolStripMenuItem(
+            $"{(_config.Pip.Enabled ? "\u2705" : "\u2B1C")}  Picture in Picture");
+        pipItem.Click += (_, _) =>
+        {
+            TogglePip();
+            BuildContextMenu();
+        };
+        videoMenu.DropDownItems.Add(pipItem);
         videoMenu.DropDownItems.Add(new ToolStripSeparator());
         videoMenu.DropDownItems.Add($"Fix Windows  \uD83D\uDD27{HkSuffix(hk.ArrangeWindows)}", null, (_, _) => OnArrangeWindows());
         bool isMultiMon = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
@@ -906,27 +913,34 @@ public class TrayManager : IDisposable
 
     private void TogglePip()
     {
-        FileLogger.Info($"TogglePip: called, clients={_processManager.Clients.Count}, overlay={_pipOverlay != null}");
-        if (_pipOverlay != null && !_pipOverlay.IsDisposed)
+        FileLogger.Info($"TogglePip: called, clients={_processManager.Clients.Count}, overlay={_pipOverlay != null}, enabled={_config.Pip.Enabled}");
+
+        // Toggle the enabled state
+        _config.Pip.Enabled = !_config.Pip.Enabled;
+        ConfigManager.Save(_config);
+
+        if (!_config.Pip.Enabled)
         {
-            _pipOverlay.Close();
-            _pipOverlay.Dispose();
-            _pipOverlay = null;
-            ShowBalloon("PiP overlay hidden");
+            // Disable — destroy overlay if showing
+            if (_pipOverlay != null && !_pipOverlay.IsDisposed)
+            {
+                _pipOverlay.Close();
+                _pipOverlay.Dispose();
+                _pipOverlay = null;
+            }
+            ShowBalloon("PiP overlay disabled");
             return;
         }
 
+        // Enable — create overlay if clients exist, otherwise auto-show will handle it later
         var clients = _processManager.Clients;
-        if (clients.Count < 1)
+        if (clients.Count >= 1)
         {
-            ShowBalloon("No EQ clients detected for PiP overlay");
-            return;
+            _pipOverlay = new PipOverlay(_config);
+            _pipOverlay.Show();
+            _pipOverlay.UpdateSources(clients, _processManager.GetActiveClient());
         }
-
-        _pipOverlay = new PipOverlay(_config);
-        _pipOverlay.Show();
-        _pipOverlay.UpdateSources(clients, _processManager.GetActiveClient());
-        ShowBalloon("PiP overlay shown");
+        ShowBalloon("PiP overlay enabled");
     }
 
     // Reusable deferred timer for ShowBalloon/ShowHelpTooltip — avoids allocating
@@ -1286,20 +1300,19 @@ public class TrayManager : IDisposable
         BuildContextMenu();
         UpdateClientMenu();
 
-        // Recreate PiP overlay if it's active (picks up size/orientation/max changes)
+        // Sync PiP overlay with config
         if (_pipOverlay != null && !_pipOverlay.IsDisposed)
         {
             _pipOverlay.Close();
             _pipOverlay.Dispose();
             _pipOverlay = null;
+        }
 
-            // Only recreate if still enabled
-            if (_config.Pip.Enabled)
-            {
-                _pipOverlay = new PipOverlay(_config);
-                _pipOverlay.Show();
-                _pipOverlay.UpdateSources(_processManager.Clients, _processManager.GetActiveClient());
-            }
+        if (_config.Pip.Enabled && _processManager.Clients.Count >= 1)
+        {
+            _pipOverlay = new PipOverlay(_config);
+            _pipOverlay.Show();
+            _pipOverlay.UpdateSources(_processManager.Clients, _processManager.GetActiveClient());
         }
 
         // Re-install foreground hook (in case it was lost) and restart retry timer

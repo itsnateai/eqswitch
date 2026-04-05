@@ -284,7 +284,7 @@ public class LaunchConfig
 
 public class PipConfig
 {
-    public bool Enabled { get; set; } = false;
+    public bool Enabled { get; set; } = true;
 
     /// <summary>Size preset: "Small", "Medium", "Large", "XL", "XXL", "XXXL", "Custom"</summary>
     public string SizePreset { get; set; } = "Large";
@@ -299,7 +299,7 @@ public class PipConfig
     public string Orientation { get; set; } = "Vertical";
 
     /// <summary>Opacity (0-255). 255 = fully opaque.</summary>
-    public byte Opacity { get; set; } = 245;
+    public byte Opacity { get; set; } = 220;
 
     /// <summary>Show colored border around PiP windows.</summary>
     public bool ShowBorder { get; set; } = true;

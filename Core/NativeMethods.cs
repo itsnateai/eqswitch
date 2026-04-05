@@ -239,7 +239,9 @@ internal static class NativeMethods
         public RECT rcDestination;
         public RECT rcSource;
         public byte opacity;
+        [MarshalAs(UnmanagedType.Bool)]
         public bool fVisible;
+        [MarshalAs(UnmanagedType.Bool)]
         public bool fSourceClientAreaOnly;
     }
 
