@@ -1326,7 +1326,7 @@ public class SettingsForm : Form
         DarkTheme.AddLabel(cardRes, "Preset:", L, cy + 2);
         _cboVideoPreset = new ComboBox
         {
-            Location = new Point(65, cy),
+            Location = new Point(80, cy),
             Size = new Size(150, 25),
             BackColor = DarkTheme.BgInput,
             ForeColor = DarkTheme.FgWhite,
@@ -1342,7 +1342,7 @@ public class SettingsForm : Form
 
         cy += 30;
         DarkTheme.AddLabel(cardRes, "Width:", L, cy + 2);
-        _nudVideoWidth = DarkTheme.AddNumeric(cardRes, 65, cy, 70, 1920, 320, 7680);
+        _nudVideoWidth = DarkTheme.AddNumeric(cardRes, 80, cy, 70, 1920, 320, 7680);
         _nudVideoWidth.ValueChanged += (_, _) => SyncVideoPresetToCustom();
 
         DarkTheme.AddLabel(cardRes, "Height:", 145, cy + 2);
