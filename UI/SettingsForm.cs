@@ -483,7 +483,7 @@ public class SettingsForm : Form
         y += 98;
 
         // ─── Window Style card ───────────────────────────────────
-        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 185);
+        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 195);
         cy = 32;
 
         const int hintX = 260;
@@ -545,7 +545,7 @@ public class SettingsForm : Form
             _lblStyleDisabledHint.Visible = !slim;
         };
 
-        y += 193;
+        y += 203;
 
         // ─── Window Title card ───────────────────────────────────
         var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 65);
