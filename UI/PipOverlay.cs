@@ -46,9 +46,9 @@ public class PipOverlay : Form
         int gap = config.Pip.ShowBorder ? 6 : 2;
         int borderPad = config.Pip.ShowBorder ? 3 : 0;
         if (horizontal)
-            Size = new Size((w + gap) * maxWin + borderPad, h + (borderPad * 2));
+            Size = new Size(borderPad + (w + gap) * maxWin - gap + borderPad, h + borderPad * 2);
         else
-            Size = new Size(w + (borderPad * 2), (h + gap) * maxWin + borderPad);
+            Size = new Size(w + borderPad * 2, borderPad + (h + gap) * maxWin - gap + borderPad);
 
         // Default position: top-right corner
         var screen = (Screen.PrimaryScreen ?? Screen.AllScreens.FirstOrDefault())?.WorkingArea
@@ -218,10 +218,11 @@ public class PipOverlay : Form
         int oldWidth = Width;
         int oldHeight = Height;
         int newWidth, newHeight;
+        int count = _thumbnailIds.Count;
         if (horizontal)
         {
-            newWidth = (w + gap) * _thumbnailIds.Count + borderPad;
-            newHeight = h + (borderPad * 2);
+            newWidth = borderPad + (w + gap) * count - gap + borderPad;
+            newHeight = h + borderPad * 2;
             Size = new Size(newWidth, newHeight);
             if (oldWidth != newWidth)
             {
@@ -231,8 +232,8 @@ public class PipOverlay : Form
         }
         else
         {
-            newWidth = w + (borderPad * 2);
-            newHeight = (h + gap) * _thumbnailIds.Count + borderPad;
+            newWidth = w + borderPad * 2;
+            newHeight = borderPad + (h + gap) * count - gap + borderPad;
             Size = new Size(newWidth, newHeight);
             if (oldHeight != newHeight)
             {
