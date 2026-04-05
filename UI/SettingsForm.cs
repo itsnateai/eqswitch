@@ -410,9 +410,9 @@ public class SettingsForm : Form
         cy += R + 2;
 
         DarkTheme.AddCardLabel(cardSwitch, "Clients (Launch All):", L, cy);
-        _nudNumClients = DarkTheme.AddCardNumeric(cardSwitch, I, cy - 2, 55, 2, 1, 6);
-        DarkTheme.AddCardLabel(cardSwitch, "Delay between:", 250, cy);
-        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardSwitch, I2 + 50, cy - 2, 55, 3, 1, 30);
+        _nudNumClients = DarkTheme.AddCardNumeric(cardSwitch, I, cy - 2, 40, 2, 1, 6);
+        DarkTheme.AddCardLabel(cardSwitch, "Delay between launches:", 220, cy);
+        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardSwitch, I2 + 50, cy - 2, 40, 3, 1, 30);
         DarkTheme.AddCardHint(cardSwitch, "sec", I2 + 110, cy + 2);
 
         y += 138;
