@@ -507,7 +507,6 @@ public static class DarkTheme
             Font = FontUI9
         };
         card.Controls.Add(nud);
-        WrapWithBorder(nud);
         SetNumericMargins(nud);
         return nud;
     }

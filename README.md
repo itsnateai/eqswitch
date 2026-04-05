@@ -13,7 +13,7 @@
 
 ---
 
-A system tray utility for managing multiple EverQuest clients — window switching, arrangement, CPU affinity, PiP overlays, and more.
+A lightweight EverQuest multiboxer — hotkey switching, encrypted auto-login, PiP overlays, CPU affinity, multi-monitor support, and zero-telemetry privacy for Shards of Dalaya.
 
 ## Download
 
@@ -28,9 +28,6 @@ A system tray utility for managing multiple EverQuest clients — window switchi
 > [!TIP]
 > Place in any folder and run — no installation needed. Config is stored as `eqswitch-config.json` next to the exe.
 
-> [!NOTE]
-> **Migrating from the AHK version?** Place the exe next to your old `eqswitch.cfg` and it will auto-import your settings on first run.
-
 ## Screenshots
 
 <!-- TODO: Add screenshots — tray menu, settings GUI, PiP overlay, grid layout -->
@@ -39,9 +36,9 @@ A system tray utility for managing multiple EverQuest clients — window switchi
 
 ## Features
 
+- **Window Switching** — Cycle EQ clients with hotkeys (keyboard hook for single keys, RegisterHotKey for combos)
 - **Fullscreen Window** — WinEQ2-style borderless mode that hides the titlebar above the screen edge
 - **DLL Hook Injection** — Hooks SetWindowPos/MoveWindow inside eqgame.exe for zero-flicker window positioning
-- **Window Switching** — Cycle EQ clients with hotkeys (keyboard hook for single keys, RegisterHotKey for combos)
 - **Multi-Monitor** — One client per physical monitor with automatic arrangement
 - **Process Priority** — Active client on High, background on AboveNormal (configurable per-character)
 - **CPU Core Assignment** — CPUAffinity0-5 slots written to eqclient.ini for per-client core pinning
@@ -57,6 +54,7 @@ A system tray utility for managing multiple EverQuest clients — window switchi
 - **Background Auto-Login** — Types passwords in background windows via DirectInput shared memory injection — no focus stealing, true one-click multi-login
 - **DirectInput Proxy** — dinput8.dll hooks IAT for focus faking (GetForegroundWindow, GetAsyncKeyState, etc.) and injects keyboard state via per-PID shared memory
 - **Portable** — Single exe + 2 DLLs, config stored next to it, no installer needed
+- **Privacy First** — Zero telemetry, no network calls, no data collection. Saved passwords are encrypted with Windows DPAPI and can only be decrypted by your Windows account on your machine
 
 ## Requirements
 
