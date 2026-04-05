@@ -1290,8 +1290,10 @@ public class TrayManager : IDisposable
             _pipOverlay.Close();
             _pipOverlay.Dispose();
             _pipOverlay = null;
-            if (_config.Pip.Enabled && _processManager.Clients.Count >= 2)
-                TogglePip();
+            // Silently recreate — no balloon, no client count check (it was already showing)
+            _pipOverlay = new PipOverlay(_config);
+            _pipOverlay.Show();
+            _pipOverlay.UpdateSources(_processManager.Clients, _processManager.GetActiveClient());
         }
 
         // Re-install foreground hook (in case it was lost) and restart retry timer
