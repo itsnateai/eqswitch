@@ -298,7 +298,7 @@ public class TrayManager : IDisposable
         var (cores, sysMask) = AffinityManager.DetectCores();
         FileLogger.Info($"Startup: {cores} cores detected, system mask 0x{sysMask:X}");
 
-        ShowBalloon("EQSwitch started. Watching for EQ clients...");
+        FileLogger.Info("EQSwitch started. Watching for EQ clients...");
     }
 
     /// <summary>
