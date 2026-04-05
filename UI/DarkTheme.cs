@@ -438,7 +438,16 @@ public static class DarkTheme
         };
         card.Controls.Add(tb);
         WrapWithBorder(tb);
+        tb.HandleCreated += (_, _) => SetTextBoxMargins(tb, 4);
         return tb;
+    }
+
+    /// <summary>Add left/right internal padding to a TextBox via EM_SETMARGINS.</summary>
+    private static void SetTextBoxMargins(TextBox tb, int margin)
+    {
+        var lParam = (IntPtr)(margin | (margin << 16));
+        NativeMethods.SendMessage(tb.Handle, NativeMethods.EM_SETMARGINS,
+            (IntPtr)(NativeMethods.EC_LEFTMARGIN | NativeMethods.EC_RIGHTMARGIN), lParam);
     }
 
     /// <summary>Add a dark-styled ComboBox inside a card panel.</summary>
