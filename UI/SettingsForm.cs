@@ -1345,8 +1345,8 @@ public class SettingsForm : Form
         _nudVideoWidth = DarkTheme.AddNumeric(cardRes, 80, cy, 70, 1920, 320, 7680);
         _nudVideoWidth.ValueChanged += (_, _) => SyncVideoPresetToCustom();
 
-        DarkTheme.AddLabel(cardRes, "Height:", 145, cy + 2);
-        _nudVideoHeight = DarkTheme.AddNumeric(cardRes, 195, cy, 70, 1080, 200, 4320);
+        DarkTheme.AddLabel(cardRes, "Height:", 160, cy + 2);
+        _nudVideoHeight = DarkTheme.AddNumeric(cardRes, 210, cy, 70, 1080, 200, 4320);
         _nudVideoHeight.ValueChanged += (_, _) => SyncVideoPresetToCustom();
 
         var btnReset = DarkTheme.AddCardButton(cardRes, "🔄 Reset", 370, cy, 95);
