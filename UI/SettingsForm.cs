@@ -783,8 +783,8 @@ public class SettingsForm : Form
 
         DarkTheme.AddCardLabel(cardPip, "Size Preset:", L, cy);
         _cboPipSize = DarkTheme.AddCardComboBox(cardPip, I, cy - 2, 170, new[] {
-            "Small (200x150)", "Medium (320x240)", "Large (480x360)",
-            "XL (720x540)", "XXL (1024x768)", "XXXL (1600x900)", "Custom"
+            "Small (256x144)", "Medium (384x216)", "Large (512x288)",
+            "XL (768x432)", "XXL (1024x576)", "XXXL (1600x900)", "Custom"
         });
         _cboPipSize.SelectedIndexChanged += (_, _) =>
         {
