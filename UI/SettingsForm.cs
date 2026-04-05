@@ -435,13 +435,15 @@ public class SettingsForm : Form
 
         y += 103;
 
-        // ─── Tooltip delay (slim, no title) ─────────────────────
-        DarkTheme.AddLabel(page, "Tooltip Delay:", 15, y + 2);
-        _nudTooltipDuration = DarkTheme.AddNumeric(page, I, y, 55, 1000, 0, 10000);
+        // ─── Tooltip card ───────────────────────────────────────
+        var cardTooltip = DarkTheme.MakeCard(page, "💬", "Tooltip", DarkTheme.CardCyan, 10, y, 480, 55);
+        cy = 28;
+        DarkTheme.AddCardLabel(cardTooltip, "Delay:", L, cy);
+        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardTooltip, 55, cy - 2, 55, 1000, 0, 10000);
         _nudTooltipDuration.Increment = 100;
-        DarkTheme.AddHint(page, "ms", I + 60, y + 4);
+        DarkTheme.AddCardHint(cardTooltip, "ms — hover time before showing tooltip", 120, cy);
 
-        y += 30;
+        y += 63;
 
         DarkTheme.AddHint(page, "Press key combo to capture. Leave blank to disable. Backspace/Delete to clear. Hit Apply to update changes.", 15, y);
 
