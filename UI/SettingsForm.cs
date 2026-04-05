@@ -756,11 +756,11 @@ public class SettingsForm : Form
         const int L = 10, I = 120, R = 28;
 
         // ─── PiP Overlay card ────────────────────────────────────
-        var cardPip = DarkTheme.MakeCard(page, "👁", "PiP Overlay", DarkTheme.CardCyan, 10, y, 480, 120);
+        var cardPip = DarkTheme.MakeCard(page, "👁", "Picture in Picture Overlay", DarkTheme.CardCyan, 10, y, 480, 120);
         int cy = 32;
 
         _chkPipEnabled = DarkTheme.AddCardCheckBox(cardPip, "Enable PiP Overlay", L, cy);
-        DarkTheme.AddCardHint(cardPip, "DWM thumbnail — zero CPU, GPU composited", 200, cy + 2);
+        DarkTheme.AddCardHint(cardPip, "DWM thumbnail — zero CPU, GPU composited", L, cy + 2);
         cy += R;
 
         DarkTheme.AddCardLabel(cardPip, "Size Preset:", L, cy);

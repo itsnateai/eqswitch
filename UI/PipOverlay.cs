@@ -220,30 +220,21 @@ public class PipOverlay : Form
                 yPos = borderPad + idx * h + (idx > 0 ? idx * InnerGap : 0);
             }
 
-            // Exact fit — thumbnail fills its slot edge to edge
             var destRect = new NativeMethods.RECT
             {
                 Left = xPos, Top = yPos,
                 Right = xPos + w, Bottom = yPos + h
             };
 
-            // Crop 2px from each edge of the source to trim EQ's client border artifacts
-            var srcCrop = new NativeMethods.RECT();
-            if (NativeMethods.DwmQueryThumbnailSourceSize(thumbId, out var srcSz) == 0
-                && srcSz.cx > 4 && srcSz.cy > 4)
-            {
-                srcCrop = new NativeMethods.RECT { Left = 2, Top = 2, Right = srcSz.cx - 2, Bottom = srcSz.cy - 2 };
-            }
+            FileLogger.Info($"PiP: thumb[{idx}] dest=({destRect.Left},{destRect.Top})-({destRect.Right},{destRect.Bottom}) overlay={Width}x{Height} bp={borderPad}");
 
             var props = new NativeMethods.DWM_THUMBNAIL_PROPERTIES
             {
                 dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION
                         | NativeMethods.DWM_TNP_VISIBLE
                         | NativeMethods.DWM_TNP_OPACITY
-                        | NativeMethods.DWM_TNP_SOURCECLIENTAREAONLY
-                        | (srcCrop.Right > 0 ? NativeMethods.DWM_TNP_RECTSOURCE : 0),
+                        | NativeMethods.DWM_TNP_SOURCECLIENTAREAONLY,
                 rcDestination = destRect,
-                rcSource = srcCrop,
                 opacity = _config.Pip.Opacity,
                 fVisible = true,
                 fSourceClientAreaOnly = true
@@ -295,6 +286,8 @@ public class PipOverlay : Form
 
     private void RefreshIfNeeded()
     {
+        if (IsDisposed || !IsHandleCreated) return;
+
         // Dynamic click-through toggle: remove WS_EX_TRANSPARENT when Ctrl is held
         // so the overlay accepts mouse input for drag repositioning
         bool ctrlNow = (NativeMethods.GetAsyncKeyState(NativeMethods.VK_CONTROL) & 0x8000) != 0;
@@ -538,7 +531,8 @@ public class PipOverlay : Form
             if (_resizeEdge is ResizeEdge.N or ResizeEdge.S)
             {
                 int thumbCount = Math.Max(_sourceWindows.Count, 1);
-                thumbH = (newH - bp * 2) / thumbCount;
+                int igV = bp > 0 ? InnerGap * Math.Max(thumbCount - 1, 0) : 0;
+                thumbH = (newH - bp * 2 - igV) / thumbCount;
                 thumbW = (int)(thumbH * AspectRatio);
             }
             else
@@ -553,13 +547,14 @@ public class PipOverlay : Form
         thumbH = (int)(thumbW / AspectRatio);
         if (thumbH < 1) thumbH = 1;
 
-        // Calculate new overlay size
+        // Calculate new overlay size (include inner gaps between PiPs)
         int thumbCount2 = Math.Max(_sourceWindows.Count, 1);
+        int ig = bp > 0 ? InnerGap * Math.Max(thumbCount2 - 1, 0) : 0;
         Size newSize;
         if (horizontal)
-            newSize = new Size(bp + thumbW * maxWin + bp, thumbH + bp * 2);
+            newSize = new Size(bp * 2 + thumbW * maxWin + (bp > 0 ? InnerGap * (maxWin - 1) : 0), thumbH + bp * 2);
         else
-            newSize = new Size(thumbW + bp * 2, bp + thumbH * thumbCount2 + bp);
+            newSize = new Size(thumbW + bp * 2, bp * 2 + thumbH * thumbCount2 + ig);
 
         // Anchor the edge opposite to the one being dragged
         var newLoc = _resizeStartLoc;
