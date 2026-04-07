@@ -153,8 +153,9 @@ public class AutoLoginManager
 
             // Step 2: Wait for login screen to become input-ready.
             // EQ's login screen takes several seconds after the window appears.
+            // Configurable via Settings → Accounts → Login Screen Delay.
             Report("Waiting for login screen...");
-            Thread.Sleep(5000);
+            Thread.Sleep(_config.LoginScreenDelayMs);
 
             // Step 3: Flash the EQ window to foreground for typing.
             // EQ's login screen uses standard Windows message input (WM_CHAR/WM_KEYDOWN),
