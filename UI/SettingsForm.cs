@@ -80,6 +80,7 @@ public class SettingsForm : Form
     // ─── Accounts tab controls
     private List<LoginAccount> _pendingAccounts = new();
     private DataGridView _dgvAccounts = null!;
+    private NumericUpDown _nudLoginScreenDelay = null!;
 
     // ─── PiP tab controls
     private CheckBox _chkPipEnabled = null!;
@@ -1071,7 +1072,8 @@ public class SettingsForm : Form
             DalayaPatcherPath = _txtDalayaPatcherPath.Text.Trim(),
             RunAtStartup = _chkRunAtStartup.Checked,
             Characters = _config.Characters,
-            Accounts = _pendingAccounts
+            Accounts = _pendingAccounts,
+            LoginScreenDelayMs = (int)(_nudLoginScreenDelay.Value * 1000)
         };
 
         // Apply startup registry change
@@ -1217,6 +1219,16 @@ public class SettingsForm : Form
 
         DarkTheme.AddCardHint(card, "Passwords are encrypted with Windows DPAPI (tied to your user account)", 10, 275);
         DarkTheme.AddCardHint(card, "Character slot is 1-based position on the character select screen", 10, 295);
+
+        // Login timing card
+        y += 325;
+        var timingCard = DarkTheme.MakeCard(page, "\u23F1", "Login Timing", DarkTheme.CardBlue, 10, y, 480, 70);
+        DarkTheme.AddLabel(timingCard, "Login screen delay (seconds):", 10, 32);
+        _nudLoginScreenDelay = DarkTheme.AddNumeric(timingCard, 250, 30, 70,
+            _config.LoginScreenDelayMs / 1000m, 1, 15);
+        _nudLoginScreenDelay.DecimalPlaces = 1;
+        _nudLoginScreenDelay.Increment = 0.5m;
+        DarkTheme.AddCardHint(timingCard, "Time to wait for the login screen before typing credentials", 10, 52);
 
         return page;
     }

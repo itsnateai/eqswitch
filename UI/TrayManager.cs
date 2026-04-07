@@ -766,7 +766,7 @@ public class TrayManager : IDisposable
         // Login submenu (auto-login accounts)
         if (_config.Accounts.Count > 0)
         {
-            var loginMenu = new ToolStripMenuItem("\uD83D\uDD11  Login") { Font = _boldMenuFont };
+            var loginMenu = new ToolStripMenuItem("\uD83D\uDD11  Accounts") { Font = _boldMenuFont };
             foreach (var account in _config.Accounts)
             {
                 var label = string.IsNullOrEmpty(account.CharacterName)
