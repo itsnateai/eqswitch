@@ -373,10 +373,27 @@ internal static class NativeMethods
         public INPUTUNION U;
     }
 
+    // All three union variants must be present so the CLR computes the correct
+    // union size (32 bytes on x64, matching MOUSEINPUT — the largest member).
+    // Without MOUSEINPUT, Marshal.SizeOf<INPUT>() returns 32 instead of 40,
+    // and SendInput rejects the call with ERROR_INVALID_PARAMETER.
     [StructLayout(LayoutKind.Explicit)]
     public struct INPUTUNION
     {
+        [FieldOffset(0)] public MOUSEINPUT mi;
         [FieldOffset(0)] public KEYBDINPUT ki;
+        [FieldOffset(0)] public HARDWAREINPUT hi;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -387,6 +404,14 @@ internal static class NativeMethods
         public uint dwFlags;
         public uint time;
         public IntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct HARDWAREINPUT
+    {
+        public uint uMsg;
+        public ushort wParamL;
+        public ushort wParamH;
     }
 
     // ─── Generic Message ───────────────────────────────────────────
