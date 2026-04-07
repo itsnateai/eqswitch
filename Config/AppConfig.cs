@@ -46,6 +46,9 @@ public class AppConfig
     // Login Accounts (auto-login presets)
     public List<LoginAccount> Accounts { get; set; } = new();
 
+    /// <summary>Delay in ms after EQ window appears before typing credentials (default 5s).</summary>
+    public int LoginScreenDelayMs { get; set; } = 5000;
+
     // Tray Click Actions
     public TrayClickConfig TrayClick { get; set; } = new();
 
@@ -110,6 +113,8 @@ public class AppConfig
         Launch.NumClients = Math.Clamp(Launch.NumClients, 1, 6);
         Launch.LaunchDelayMs = Math.Clamp(Launch.LaunchDelayMs, 500, 30000);
         Launch.FixDelayMs = Math.Clamp(Launch.FixDelayMs, 1000, 120000);
+
+        LoginScreenDelayMs = Math.Clamp(LoginScreenDelayMs, 1000, 15000);
 
         Pip.Opacity = Math.Clamp(Pip.Opacity, (byte)10, (byte)255);
         Pip.MaxWindows = Math.Clamp(Pip.MaxWindows, 1, 3);
