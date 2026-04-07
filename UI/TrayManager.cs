@@ -348,6 +348,8 @@ public class TrayManager : IDisposable
         TryRegister(hk.ToggleMultiMonitor, OnToggleMultiMonitor, "MultiMon");
         TryRegister(hk.LaunchOne, OnLaunchOne, "LaunchOne");
         TryRegister(hk.LaunchAll, OnLaunchAll, "LaunchAll");
+        TryRegister(hk.AutoLogin1, () => ExecuteTrayAction("AutoLogin1"), "AutoLogin1");
+        TryRegister(hk.AutoLogin2, () => ExecuteTrayAction("AutoLogin2"), "AutoLogin2");
 
         FileLogger.Info($"RegisterHotKey: {registered} registered, {failed} failed" +
             (failedKeys.Count > 0 ? $" [{string.Join(", ", failedKeys)}]" : ""));
@@ -775,6 +777,11 @@ public class TrayManager : IDisposable
                 loginMenu.DropDownItems.Add($"\uD83D\uDC64  {label}", null, (_, _) =>
                     _autoLoginManager.LoginAccount(account));
             }
+            if (!string.IsNullOrEmpty(_config.QuickLogin1) && !string.IsNullOrEmpty(_config.QuickLogin2))
+            {
+                loginMenu.DropDownItems.Add(new ToolStripSeparator());
+                loginMenu.DropDownItems.Add("\uD83D\uDE80  Login All", null, (_, _) => ExecuteTrayAction("LoginAll"));
+            }
             loginMenu.DropDownItems.Add(new ToolStripSeparator());
             loginMenu.DropDownItems.Add("\u2699  Manage Accounts...", null, (_, _) => ShowSettings(3));
             _contextMenu.Items.Add(loginMenu);
@@ -1196,6 +1203,16 @@ public class TrayManager : IDisposable
                 ShowBalloon($"Launching {_config.Launch.NumClients} clients...");
                 OnLaunchAll();
                 break;
+            case "AutoLogin1":
+                ExecuteQuickLogin(_config.QuickLogin1, "Quick Login 1");
+                break;
+            case "AutoLogin2":
+                ExecuteQuickLogin(_config.QuickLogin2, "Quick Login 2");
+                break;
+            case "LoginAll":
+                ExecuteQuickLogin(_config.QuickLogin1, "Quick Login 1");
+                ExecuteQuickLogin(_config.QuickLogin2, "Quick Login 2");
+                break;
             case "Settings":
                 ShowSettings();
                 break;
@@ -1217,6 +1234,24 @@ public class TrayManager : IDisposable
         }
     }
 
+
+    private void ExecuteQuickLogin(string username, string slotName)
+    {
+        if (string.IsNullOrEmpty(username))
+        {
+            ShowBalloon($"{slotName}: no account assigned");
+            return;
+        }
+        var account = _config.Accounts.FirstOrDefault(a => a.Username == username);
+        if (account == null)
+        {
+            ShowBalloon($"{slotName}: account '{username}' not found");
+            return;
+        }
+        var label = string.IsNullOrEmpty(account.CharacterName) ? account.Username : account.CharacterName;
+        ShowBalloon($"Logging in {label}...");
+        _autoLoginManager.LoginAccount(account);
+    }
 
     // ─── Config Reload ─────────────────────────────────────────────
 
@@ -1277,6 +1312,9 @@ public class TrayManager : IDisposable
         _config.DalayaPatcherPath = newConfig.DalayaPatcherPath;
         _config.Characters = newConfig.Characters;
         _config.Accounts = newConfig.Accounts;
+        _config.QuickLogin1 = newConfig.QuickLogin1;
+        _config.QuickLogin2 = newConfig.QuickLogin2;
+        _config.LoginScreenDelayMs = newConfig.LoginScreenDelayMs;
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
         _config.ShowTooltipErrors = newConfig.ShowTooltipErrors;
         _config.MinimizeToTray = newConfig.MinimizeToTray;

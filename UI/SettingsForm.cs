@@ -81,6 +81,10 @@ public class SettingsForm : Form
     private List<LoginAccount> _pendingAccounts = new();
     private DataGridView _dgvAccounts = null!;
     private NumericUpDown _nudLoginScreenDelay = null!;
+    private ComboBox _cboQuickLogin1 = null!;
+    private ComboBox _cboQuickLogin2 = null!;
+    private TextBox _txtAutoLogin1Hotkey = null!;
+    private TextBox _txtAutoLogin2Hotkey = null!;
 
     // ─── PiP tab controls
     private CheckBox _chkPipEnabled = null!;
@@ -328,7 +332,7 @@ public class SettingsForm : Form
         y += 73;
 
         // ─── Tray Click Actions card ─────────────────────────────
-        var clickActions = new[] { "None", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp" };
+        var clickActions = new[] { "None", "AutoLogin1", "AutoLogin2", "LoginAll", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp" };
         const int cboW = 140;
 
         var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 105);
@@ -917,6 +921,8 @@ public class SettingsForm : Form
         _txtToggleMultiMon.Text = _config.Hotkeys.ToggleMultiMonitor;
         _txtLaunchOne.Text = _config.Hotkeys.LaunchOne;
         _txtLaunchAll.Text = _config.Hotkeys.LaunchAll;
+        _txtAutoLogin1Hotkey.Text = _config.Hotkeys.AutoLogin1;
+        _txtAutoLogin2Hotkey.Text = _config.Hotkeys.AutoLogin2;
 
         // Layout
         _chkSlimTitlebar.Checked = _config.Layout.SlimTitlebar;
@@ -1033,6 +1039,8 @@ public class SettingsForm : Form
                 ToggleMultiMonitor = _txtToggleMultiMon.Text.Trim(),
                 LaunchOne = _txtLaunchOne.Text.Trim(),
                 LaunchAll = _txtLaunchAll.Text.Trim(),
+                AutoLogin1 = _txtAutoLogin1Hotkey.Text.Trim(),
+                AutoLogin2 = _txtAutoLogin2Hotkey.Text.Trim(),
                 // Once enabled, the hotkey is unlocked permanently
                 MultiMonitorEnabled = _chkVideoMultiMon.Checked || _config.Hotkeys.MultiMonitorEnabled,
                 DirectSwitchKeys = _config.Hotkeys.DirectSwitchKeys,
@@ -1073,7 +1081,9 @@ public class SettingsForm : Form
             RunAtStartup = _chkRunAtStartup.Checked,
             Characters = _config.Characters,
             Accounts = _pendingAccounts,
-            LoginScreenDelayMs = (int)(_nudLoginScreenDelay.Value * 1000)
+            LoginScreenDelayMs = (int)(_nudLoginScreenDelay.Value * 1000),
+            QuickLogin1 = GetQuickLoginUsername(_cboQuickLogin1),
+            QuickLogin2 = GetQuickLoginUsername(_cboQuickLogin2)
         };
 
         // Apply startup registry change
@@ -1155,6 +1165,9 @@ public class SettingsForm : Form
             EnableHeadersVisualStyles = false
         };
 
+        _dgvAccounts.Columns.Add("Num", "#");
+        _dgvAccounts.Columns["Num"]!.Width = 30;
+        _dgvAccounts.Columns["Num"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
         _dgvAccounts.Columns.Add("Character", "Character");
         _dgvAccounts.Columns.Add("Username", "Username");
         _dgvAccounts.Columns.Add("Server", "Server");
@@ -1230,14 +1243,78 @@ public class SettingsForm : Form
         _nudLoginScreenDelay.Increment = 0.5m;
         DarkTheme.AddCardHint(timingCard, "Time to wait for the login screen before typing credentials", 10, 52);
 
+        // Quick Login Slots card
+        y += 80;
+        var slotsCard = DarkTheme.MakeCard(page, "\u26A1", "Quick Login Slots", DarkTheme.CardGold, 10, y, 480, 90);
+        DarkTheme.AddCardLabel(slotsCard, "Slot 1:", 10, 32);
+        _cboQuickLogin1 = DarkTheme.AddCardComboBox(slotsCard, 60, 29, 160, Array.Empty<string>());
+        DarkTheme.AddCardLabel(slotsCard, "Slot 2:", 250, 32);
+        _cboQuickLogin2 = DarkTheme.AddCardComboBox(slotsCard, 300, 29, 160, Array.Empty<string>());
+        RefreshQuickLoginCombos();
+        // Set initial selection from config
+        SelectQuickLoginCombo(_cboQuickLogin1, _config.QuickLogin1);
+        SelectQuickLoginCombo(_cboQuickLogin2, _config.QuickLogin2);
+        DarkTheme.AddCardHint(slotsCard, "Assign accounts to quick slots for tray click actions and hotkeys", 10, 62);
+
+        // Auto-Login Hotkeys card
+        y += 100;
+        var hkCard = DarkTheme.MakeCard(page, "\u2328", "Auto-Login Hotkeys", DarkTheme.CardGreen, 10, y, 480, 90);
+        DarkTheme.AddCardLabel(hkCard, "Quick Login 1:", 10, 32);
+        _txtAutoLogin1Hotkey = MakeHotkeyBox(hkCard, 120, 30);
+        DarkTheme.AddCardLabel(hkCard, "Quick Login 2:", 250, 32);
+        _txtAutoLogin2Hotkey = MakeHotkeyBox(hkCard, 370, 30);
+        DarkTheme.AddCardHint(hkCard, "Press key combo to capture. Backspace to clear. Leave blank to disable.", 10, 62);
+
         return page;
     }
 
     private void RefreshAccountsGrid()
     {
         _dgvAccounts.Rows.Clear();
-        foreach (var a in _pendingAccounts)
-            _dgvAccounts.Rows.Add(a.CharacterName, a.Username, a.Server, a.CharacterSlot);
+        for (int i = 0; i < _pendingAccounts.Count; i++)
+        {
+            var a = _pendingAccounts[i];
+            _dgvAccounts.Rows.Add(i + 1, a.CharacterName, a.Username, a.Server, a.CharacterSlot);
+        }
+        RefreshQuickLoginCombos();
+    }
+
+    private void RefreshQuickLoginCombos()
+    {
+        if (_cboQuickLogin1 == null) return; // not built yet
+        var labels = _pendingAccounts.Select(a =>
+            string.IsNullOrEmpty(a.CharacterName) ? a.Username : a.CharacterName).ToList();
+        labels.Insert(0, "(None)");
+
+        var saved1 = _cboQuickLogin1.SelectedItem?.ToString();
+        var saved2 = _cboQuickLogin2.SelectedItem?.ToString();
+        _cboQuickLogin1.Items.Clear();
+        _cboQuickLogin2.Items.Clear();
+        _cboQuickLogin1.Items.AddRange(labels.ToArray<object>());
+        _cboQuickLogin2.Items.AddRange(labels.ToArray<object>());
+        _cboQuickLogin1.SelectedItem = saved1 ?? "(None)";
+        _cboQuickLogin2.SelectedItem = saved2 ?? "(None)";
+        if (_cboQuickLogin1.SelectedIndex < 0) _cboQuickLogin1.SelectedIndex = 0;
+        if (_cboQuickLogin2.SelectedIndex < 0) _cboQuickLogin2.SelectedIndex = 0;
+    }
+
+    /// <summary>Select the combo item matching a username from config.</summary>
+    private void SelectQuickLoginCombo(ComboBox cbo, string username)
+    {
+        if (string.IsNullOrEmpty(username)) { cbo.SelectedIndex = 0; return; }
+        var account = _pendingAccounts.FirstOrDefault(a => a.Username == username);
+        if (account == null) { cbo.SelectedIndex = 0; return; }
+        var label = string.IsNullOrEmpty(account.CharacterName) ? account.Username : account.CharacterName;
+        cbo.SelectedItem = label;
+        if (cbo.SelectedIndex < 0) cbo.SelectedIndex = 0;
+    }
+
+    /// <summary>Get the username for the selected quick login combo item.</summary>
+    private string GetQuickLoginUsername(ComboBox cbo)
+    {
+        if (cbo.SelectedIndex <= 0) return ""; // (None) or nothing selected
+        int accountIdx = cbo.SelectedIndex - 1; // offset by (None) at index 0
+        return accountIdx < _pendingAccounts.Count ? _pendingAccounts[accountIdx].Username : "";
     }
 
     private void ShowAccountDialog(int? editIndex)
