@@ -355,6 +355,11 @@ public static class DllInjector
             else
             {
                 var kernel32Base = FindModule32InProcess(hProcess, "kernel32.dll");
+                if (kernel32Base == IntPtr.Zero)
+                {
+                    FileLogger.Error("DllInjector.Eject: couldn't find kernel32.dll in target process");
+                    return false;
+                }
                 string kernel32Path = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.Windows),
                     "SysWOW64", "kernel32.dll");

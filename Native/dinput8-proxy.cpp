@@ -11,6 +11,8 @@
 #include "di8_proxy.h"
 #include "iat_hook.h"
 
+extern "C" void DeviceProxy_Shutdown();
+
 typedef HRESULT(WINAPI *PFN_DirectInput8Create)(
     HINSTANCE, DWORD, REFIID, LPVOID *, LPUNKNOWN);
 
@@ -59,7 +61,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
             snprintf(g_logPath, MAX_PATH, "eqswitch-dinput8.log");
         }
 
-        DI8Log("DllMain: PROCESS_ATTACH (EQSwitch dinput8 proxy v1)");
+        // Do NOT call DI8Log here — fopen inside DllMain risks loader lock deadlock.
+        // First log entry fires naturally in DirectInput8Create (outside DllMain).
 
         // Build path to real dinput8.dll dynamically.
         // GetSystemDirectoryA returns System32; WoW64 redirects 32-bit
@@ -96,7 +99,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
         // Restore IAT patches FIRST — before code pages are unmapped
         IatHook::RemoveKeyboardHooks();
         // Signal background threads to exit and release handles (no wait — loader lock held)
-        extern "C" void DeviceProxy_Shutdown();
         DeviceProxy_Shutdown();
         // Release the real dinput8.dll reference
         if (g_realDll) { FreeLibrary(g_realDll); g_realDll = nullptr; }

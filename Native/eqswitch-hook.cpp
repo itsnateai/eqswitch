@@ -337,17 +337,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
         g_hModule = hModule;
         DisableThreadLibraryCalls(hModule);
         // Build log path now (safe — GetModuleFileNameA(NULL,...) doesn't re-acquire loader lock).
-        // Actual fopen is deferred to first LogMessage call outside DllMain.
+        // fopen is deferred — do NOT call LogMessage inside DllMain (loader lock deadlock risk).
         BuildLogPath();
-        LogMessage("=== eqswitch-hook.dll loaded into PID %lu ===", GetCurrentProcessId());
 
         if (!OpenSharedMemory()) {
-            LogMessage("Shared memory not available — hooks NOT installed");
             return TRUE;
         }
 
         if (!InstallHooks()) {
-            LogMessage("Hook installation failed");
             if (g_pConfig) { UnmapViewOfFile((LPCVOID)g_pConfig); g_pConfig = NULL; }
             if (g_hMapFile) { CloseHandle(g_hMapFile); g_hMapFile = NULL; }
             return TRUE;

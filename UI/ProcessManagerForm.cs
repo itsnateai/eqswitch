@@ -32,7 +32,7 @@ public class ProcessManagerForm : Form
     private ToolTip _tooltip = null!;
     private System.Windows.Forms.Timer _refreshTimer = null!;
     private bool _isRefreshing;
-    private bool _forceNextRefresh;
+
 
     // Card 1: Priority preset (applies to all clients, or "None" for per-row manual)
     private ComboBox _cboPriority = null!;
@@ -45,9 +45,6 @@ public class ProcessManagerForm : Form
     // Card 3: FPS
     private NumericUpDown _nudMaxFPS = null!;
     private NumericUpDown _nudMaxBGFPS = null!;
-
-    // Track selected PID across refreshes so selection survives auto-refresh
-    private int _selectedPid;
 
     // Snapshot of config at form open — for Reset
     private readonly string _initialPriority;
@@ -262,7 +259,6 @@ public class ProcessManagerForm : Form
             ApplyAllSettings();
             ConfigManager.Save(_config);
             ConfigManager.FlushSave();
-            _forceNextRefresh = true;
             RefreshList();
         };
         Controls.Add(btnApply);
@@ -383,8 +379,7 @@ public class ProcessManagerForm : Form
             {
                 using var proc = System.Diagnostics.Process.GetProcessById(pid);
                 proc.Kill();
-                _selectedPid = 0;
-                _forceNextRefresh = true;
+
                 RefreshList();
             }
             catch (ArgumentException) { /* process already exited */ }
@@ -405,8 +400,7 @@ public class ProcessManagerForm : Form
     private void RefreshList()
     {
         if (_isRefreshing) return;
-        if (_selectedPid > 0 && !_forceNextRefresh) return;
-        _forceNextRefresh = false;
+
         _isRefreshing = true;
         try
         {
@@ -453,18 +447,6 @@ public class ProcessManagerForm : Form
             };
             _statusLabel.ForeColor = count > 0 ? DarkTheme.FgGray : DarkTheme.FgDimGray;
 
-            // Restore selection by PID
-            if (_selectedPid > 0)
-            {
-                foreach (DataGridViewRow row in _grid.Rows)
-                {
-                    if (row.Cells["PID"].Value?.ToString() == _selectedPid.ToString())
-                    {
-                        row.Selected = true;
-                        return;
-                    }
-                }
-            }
             _grid.ClearSelection();
         }
         finally

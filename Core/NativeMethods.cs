@@ -47,9 +47,6 @@ internal static class NativeMethods
     public static extern bool IsIconic(IntPtr hWnd);
 
     [DllImport("user32.dll")]
-    public static extern bool IsWindowVisible(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
     // ─── Deferred Window Positioning (atomic batch moves) ───────────
@@ -75,9 +72,6 @@ internal static class NativeMethods
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool SetProcessAffinityMask(IntPtr hProcess, IntPtr dwProcessAffinityMask);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool GetProcessAffinityMask(IntPtr hProcess, out IntPtr lpProcessAffinityMask, out IntPtr lpSystemAffinityMask);
@@ -305,16 +299,6 @@ internal static class NativeMethods
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern uint RegisterWindowMessageW(string lpString);
 
-    // ─── Process Suspension (Background FPS Throttling) ──────────────
-
-    [DllImport("ntdll.dll", SetLastError = true)]
-    public static extern int NtSuspendProcess(IntPtr processHandle);
-
-    [DllImport("ntdll.dll", SetLastError = true)]
-    public static extern int NtResumeProcess(IntPtr processHandle);
-
-    public const uint PROCESS_SUSPEND_RESUME = 0x0800;
-
     // ─── DLL Injection ──────────────────────────────────────────────
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -359,9 +343,6 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool IsWow64Process(IntPtr hProcess, out bool wow64Process);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool ReadProcessMemory(IntPtr hProcess, IntPtr lpBaseAddress, byte[] lpBuffer, int dwSize, out int lpNumberOfBytesRead);
-
     [DllImport("psapi.dll", SetLastError = true)]
     public static extern bool EnumProcessModulesEx(IntPtr hProcess, IntPtr[] lphModule, int cb, out int lpcbNeeded, uint dwFilterFlag);
 
@@ -370,15 +351,7 @@ internal static class NativeMethods
 
     public const uint LIST_MODULES_32BIT = 0x01;
 
-    // ─── PostMessage (Background Keystroke Injection) ──────────────
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern bool PostMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
-
-    // ─── SendInput (Auto-Login Keystroke Injection) ────────────────
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+    // ─── DirectInput Key Mapping (Auto-Login) ────────────────────
 
     [DllImport("user32.dll")]
     public static extern short VkKeyScanW(char ch);
@@ -386,34 +359,7 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern uint MapVirtualKeyW(uint uCode, uint uMapType);
 
-    public const uint INPUT_KEYBOARD = 1;
-    public const uint KEYEVENTF_KEYUP = 0x0002;
-    public const uint KEYEVENTF_UNICODE = 0x0004;
-    public const uint KEYEVENTF_SCANCODE = 0x0008;
     public const uint MAPVK_VK_TO_VSC = 0;
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct INPUT
-    {
-        public uint type;
-        public INPUTUNION u;
-    }
-
-    [StructLayout(LayoutKind.Explicit)]
-    public struct INPUTUNION
-    {
-        [FieldOffset(0)] public KEYBDINPUT ki;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct KEYBDINPUT
-    {
-        public ushort wVk;
-        public ushort wScan;
-        public uint dwFlags;
-        public uint time;
-        public IntPtr dwExtraInfo;
-    }
 
     // ─── Generic Message ───────────────────────────────────────────
 

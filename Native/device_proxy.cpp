@@ -42,12 +42,16 @@ static DWORD WINAPI ActivateThread(LPVOID) {
             // when shared memory first activates (background login starting).
             // Doing this at startup causes EQ to minimize itself.
             if (!g_coopSwitched && g_realKeyboardDevice) {
+                // Must Unacquire before changing cooperative level — otherwise ERROR_BUSY
+                g_realKeyboardDevice->Unacquire();
                 DWORD bgFlags = (g_originalCoopFlags & ~(DISCL_EXCLUSIVE | DISCL_FOREGROUND))
                               | DISCL_NONEXCLUSIVE | DISCL_BACKGROUND;
                 HRESULT hr = g_realKeyboardDevice->SetCooperativeLevel(hwnd, bgFlags);
+                // Re-acquire with new cooperative level
+                HRESULT acqHr = g_realKeyboardDevice->Acquire();
                 g_coopSwitched = true;
-                DI8Log("wm_activate: deferred switch to BACKGROUND|NONEXCLUSIVE (hr=0x%08X)",
-                       (unsigned)hr);
+                DI8Log("wm_activate: Unacquire → SetCoopLevel(BACKGROUND|NONEXCLUSIVE)=0x%08X → Acquire=0x%08X",
+                       (unsigned)hr, (unsigned)acqHr);
             }
 
             PostMessageW(hwnd, WM_ACTIVATEAPP, TRUE, 0);
@@ -172,14 +176,16 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::GetDeviceState(DWORD cbData, LPVOID lpvDa
     HRESULT hr = m_real->GetDeviceState(cbData, lpvData);
 
     if (m_isKeyboard) {
+        // Cap to 256 — DirectInput keyboard state is always 256 bytes
+        DWORD kbLen = (cbData > 256) ? 256 : cbData;
         if (SUCCEEDED(hr)) {
             if (KeyShm::ShouldSuppress())
-                memset(lpvData, 0, cbData);
-            KeyShm::InjectKeys((uint8_t *)lpvData, cbData);
+                memset(lpvData, 0, kbLen);
+            KeyShm::InjectKeys((uint8_t *)lpvData, kbLen);
         } else {
             // Device lost or not acquired — provide synthetic state anyway
-            memset(lpvData, 0, cbData);
-            if (KeyShm::InjectKeys((uint8_t *)lpvData, cbData))
+            memset(lpvData, 0, kbLen);
+            if (KeyShm::InjectKeys((uint8_t *)lpvData, kbLen))
                 return DI_OK;
         }
     }
@@ -226,12 +232,19 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::GetDeviceData(
 
     if (numChanges == 0) {
         *pdwInOut = realCount;
-        return hr;
+        return SUCCEEDED(hr) ? hr : DI_OK; // keep device "alive" for background windows
     }
 
     // NULL rgdod = just querying count
     if (!rgdod) {
         *pdwInOut = realCount + (DWORD)numChanges;
+        if (!peek) memcpy(m_prevShmKeys, curKeys, 256);
+        return DI_OK;
+    }
+
+    // Guard against undersized object data structs (e.g. legacy DX3 callers)
+    if (cbObjectData < sizeof(DIDEVICEOBJECTDATA)) {
+        *pdwInOut = realCount;
         if (!peek) memcpy(m_prevShmKeys, curKeys, 256);
         return hr;
     }
@@ -254,7 +267,10 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::GetDeviceData(
 
     *pdwInOut = realCount + toInject;
     if (!peek) memcpy(m_prevShmKeys, curKeys, 256);
-    return hr;
+    // Return DI_OK when we injected synthetic events — even if the real device
+    // failed (DIERR_NOTACQUIRED for background windows). Without this, EQ sees
+    // the error code and discards all injected keystroke data.
+    return (toInject > 0) ? DI_OK : hr;
 }
 
 HRESULT STDMETHODCALLTYPE DeviceProxy::SetEventNotification(HANDLE hEvent) {
@@ -271,13 +287,17 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::SetEventNotification(HANDLE hEvent) {
 HRESULT STDMETHODCALLTYPE DeviceProxy::SetCooperativeLevel(HWND hwnd, DWORD dwFlags) {
     if (m_isKeyboard) {
         g_eqHwnd = hwnd;
-        // Store original flags — we'll switch to BACKGROUND later when SHM activates.
-        // Changing to BACKGROUND at startup causes EQ to minimize itself.
         g_originalCoopFlags = dwFlags;
         g_coopSwitched = false;
-        DI8Log("SetCooperativeLevel: keyboard hwnd=0x%X flags=0x%X (keeping FOREGROUND)",
-               (unsigned)(uintptr_t)hwnd, dwFlags);
+
+        // Always strip EXCLUSIVE — EQ works fine with NONEXCLUSIVE, and EXCLUSIVE
+        // blocks other EQ instances from switching to BACKGROUND cooperative level.
+        // Keep FOREGROUND initially (switching to BACKGROUND at startup makes EQ minimize).
+        DWORD safeFlags = (dwFlags & ~DISCL_EXCLUSIVE) | DISCL_NONEXCLUSIVE;
+        DI8Log("SetCooperativeLevel: keyboard hwnd=0x%X flags=0x%X → 0x%X (stripped EXCLUSIVE)",
+               (unsigned)(uintptr_t)hwnd, dwFlags, safeFlags);
         StartActivateThread();
+        return m_real->SetCooperativeLevel(hwnd, safeFlags);
     }
     return m_real->SetCooperativeLevel(hwnd, dwFlags);
 }

@@ -208,8 +208,8 @@ public class TrayManager : IDisposable
             _affinityManager.ScheduleRetry(c);
 
             // Defer all window manipulation when auto-login is active —
-            // SetWindowPos/SetWindowLongPtr/CreateRemoteThread can steal focus
-            // and cause SendInput keystrokes to go nowhere.
+            // SetWindowPos/SetWindowLongPtr/CreateRemoteThread can interfere
+            // with the DirectInput login sequence.
             if (_autoLoginManager.IsLoginActive(c.ProcessId))
                 return;
 
@@ -649,9 +649,10 @@ public class TrayManager : IDisposable
             if (_foregroundDebounceTimer == null)
             {
                 _foregroundDebounceTimer = new System.Windows.Forms.Timer { Interval = ForegroundDebounceMs };
-                _foregroundDebounceTimer.Tick += (_, _) =>
+                var timer = _foregroundDebounceTimer; // capture for closure — survives field nulling
+                timer.Tick += (_, _) =>
                 {
-                    _foregroundDebounceTimer.Stop();
+                    timer.Stop();
                     try { OnForegroundChangedCore(); }
                     catch (Exception ex2) { FileLogger.Error("Foreground hook callback error", ex2); }
                 };
@@ -768,12 +769,11 @@ public class TrayManager : IDisposable
             var loginMenu = new ToolStripMenuItem("\uD83D\uDD11  Login") { Font = _boldMenuFont };
             foreach (var account in _config.Accounts)
             {
-                var acct = account; // capture for closure
-                var label = string.IsNullOrEmpty(acct.CharacterName)
-                    ? acct.Username
-                    : acct.CharacterName;
+                var label = string.IsNullOrEmpty(account.CharacterName)
+                    ? account.Username
+                    : account.CharacterName;
                 loginMenu.DropDownItems.Add($"\uD83D\uDC64  {label}", null, (_, _) =>
-                    _autoLoginManager.LoginAccount(acct));
+                    _autoLoginManager.LoginAccount(account));
             }
             loginMenu.DropDownItems.Add(new ToolStripSeparator());
             loginMenu.DropDownItems.Add("\u2699  Manage Accounts...", null, (_, _) => ShowSettings(3));
@@ -1199,6 +1199,11 @@ public class TrayManager : IDisposable
             case "Settings":
                 ShowSettings();
                 break;
+            case "SwapWindows":
+                var swapClients = _processManager.Clients;
+                if (swapClients.Count >= 2)
+                    _windowManager.SwapWindows(swapClients);
+                break;
             case "RefreshClients":
                 _processManager.RefreshClients();
                 ShowBalloon($"Found {_processManager.ClientCount} EQ client(s)");
@@ -1272,7 +1277,6 @@ public class TrayManager : IDisposable
         _config.DalayaPatcherPath = newConfig.DalayaPatcherPath;
         _config.Characters = newConfig.Characters;
         _config.Accounts = newConfig.Accounts;
-        _config.BackgroundLogin = newConfig.BackgroundLogin;
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
         _config.ShowTooltipErrors = newConfig.ShowTooltipErrors;
         _config.MinimizeToTray = newConfig.MinimizeToTray;
@@ -1322,6 +1326,18 @@ public class TrayManager : IDisposable
         _retryTimer?.Dispose();
         _retryTimer = null;
         StartRetryTimer();
+
+        // Restart slim titlebar guard if clients are already present — StopForegroundHook
+        // disposed the old guard and it won't be recreated until the next ClientListChanged.
+        if (_config.Layout.SlimTitlebar && _processManager.Clients.Count > 0 && _slimTitlebarGuard == null)
+        {
+            bool hookActive = _injectedPids.Count > 0;
+            _slimTitlebarGuard = new System.Windows.Forms.Timer { Interval = hookActive ? 5000 : 500 };
+            _slimTitlebarGuard.Tick += (_, _) =>
+                _windowManager.ApplySlimTitlebarToAll(_processManager.Clients, _injectedPids);
+            if (!_processManager.Clients.Any(c => _autoLoginManager.IsLoginActive(c.ProcessId)))
+                _slimTitlebarGuard.Start();
+        }
 
         // Auto-arrange when multimonitor mode is toggled on
         bool isMultiMon = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
@@ -1575,13 +1591,14 @@ public class TrayManager : IDisposable
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
         _launchManager.CancelLaunch();
+        _launchManager.Dispose();
         _pipOverlay?.Dispose();
         _pipOverlay = null;
         _boldMenuFont?.Dispose();
         _boldMenuFont = null;
         _hotkeyManager.Dispose();
         _keyboardHook.Dispose();
-        _processManager.StopPolling();
+        _processManager.Dispose();
         _contextMenu?.Dispose();
         if (_trayIcon != null)
         {

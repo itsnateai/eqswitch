@@ -27,8 +27,11 @@ public static class DarkTheme
         }
         catch
         {
+            var old = s_defaultFontField?.GetValue(null) as Font;
             var fresh = new Font("Segoe UI", 9f);
             s_defaultFontField?.SetValue(null, fresh);
+            if (old != null && !SharedFonts.Contains(old))
+                try { old.Dispose(); } catch { /* already invalidated */ }
             FileLogger.Warn("RepairDefaultFont: replaced invalidated Control.DefaultFont");
         }
     }

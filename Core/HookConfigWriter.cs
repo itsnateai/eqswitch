@@ -40,7 +40,7 @@ public class HookConfigWriter : IDisposable
 
     // Verify struct size matches C++ side (7 ints * 4 bytes + 256 byte title = 284 total).
     // Runtime check — not Debug.Assert which is stripped in Release builds.
-    private static readonly bool _ = VerifyStructSize();
+    private static readonly bool _structSizeVerified = VerifyStructSize();
     private static bool VerifyStructSize()
     {
         if (StructSize != 284)
@@ -53,8 +53,8 @@ public class HookConfigWriter : IDisposable
 
     private sealed class MappingEntry : IDisposable
     {
-        public MemoryMappedFile Mmf;
-        public MemoryMappedViewAccessor Accessor;
+        public readonly MemoryMappedFile Mmf;
+        public readonly MemoryMappedViewAccessor Accessor;
 
         public MappingEntry(MemoryMappedFile mmf, MemoryMappedViewAccessor accessor)
         {
@@ -185,8 +185,13 @@ public class HookConfigWriter : IDisposable
     {
         if (_mappings.Remove(pid, out var entry))
         {
-            var config = new HookConfig { Enabled = 0 };
-            try { entry.Accessor.Write(0, ref config); }
+            try
+            {
+                var config = new HookConfig { Enabled = 0 };
+                entry.Accessor.Write(0, ref config);
+                // Zero the title buffer to prevent stale titles on PID reuse
+                entry.Accessor.WriteArray(Marshal.SizeOf<HookConfig>(), new byte[256], 0, 256);
+            }
             catch (Exception ex) { FileLogger.Warn($"HookConfigWriter.Close: failed to disable hook for PID {pid}: {ex.Message}"); }
             entry.Dispose();
             FileLogger.Info($"HookConfigWriter: closed mapping for PID {pid}");
@@ -200,8 +205,12 @@ public class HookConfigWriter : IDisposable
 
         foreach (var (pid, entry) in _mappings)
         {
-            var config = new HookConfig { Enabled = 0 };
-            try { entry.Accessor.Write(0, ref config); }
+            try
+            {
+                var config = new HookConfig { Enabled = 0 };
+                entry.Accessor.Write(0, ref config);
+                entry.Accessor.WriteArray(Marshal.SizeOf<HookConfig>(), new byte[256], 0, 256);
+            }
             catch (Exception ex) { FileLogger.Warn($"HookConfigWriter.Dispose: failed to disable hook for PID {pid}: {ex.Message}"); }
             entry.Dispose();
         }
