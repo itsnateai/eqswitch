@@ -4,9 +4,15 @@ REM Run from Native/ directory or via: cd Native && build.cmd
 
 setlocal
 
-REM Find MSVC tools
-set "VSDIR=C:\Program Files\Microsoft Visual Studio\18\Community"
-set "VCTOOLS=%VSDIR%\VC\Tools\MSVC\14.50.35717"
+REM Find MSVC tools via vswhere (works with any VS version)
+for /f "delims=" %%i in ('"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath 2^>nul') do set "VSDIR=%%i"
+if not defined VSDIR (
+    echo ERROR: Visual Studio not found. Install VS with C++ workload.
+    exit /b 1
+)
+
+REM Find the latest MSVC toolset
+for /d %%i in ("%VSDIR%\VC\Tools\MSVC\*") do set "VCTOOLS=%%i"
 set "CL=%VCTOOLS%\bin\Hostx64\x86\cl.exe"
 set "LINK=%VCTOOLS%\bin\Hostx64\x86\link.exe"
 set "INCLUDE=%VCTOOLS%\include"

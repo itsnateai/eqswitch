@@ -5,12 +5,25 @@
 set -e
 
 NATIVE="$(cd "$(dirname "$0")" && pwd)"
-VCTOOLS="C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.50.35717"
+
+# Find MSVC via vswhere
+VSDIR=$(MSYS_NO_PATHCONV=1 "C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property installationPath 2>/dev/null || true)
+if [ -z "$VSDIR" ]; then
+    echo "ERROR: Visual Studio not found. Install VS with C++ workload."
+    exit 1
+fi
+
+# Find latest MSVC toolset
+VCTOOLS=$(ls -d "$VSDIR/VC/Tools/MSVC/"* 2>/dev/null | sort -V | tail -1)
 CL="$VCTOOLS/bin/Hostx64/x86/cl.exe"
-SDKVER="10.0.26100.0"
+
+# Find latest Windows SDK version
 WINSDK="C:/Program Files (x86)/Windows Kits/10"
+SDKVER=$(ls "$WINSDK/Include/" 2>/dev/null | sort -V | tail -1)
 
 echo "Building eqswitch-hook.dll (x86)..."
+echo "MSVC: $CL"
+echo "SDK: $SDKVER"
 
 cd "$NATIVE"
 

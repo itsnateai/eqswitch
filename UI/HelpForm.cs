@@ -98,11 +98,9 @@ CUSTOM TRAY ICON:
   Set a custom .ico file in Settings → Paths tab
 
 AUTO-LOGIN:
-  Background Login: {(config.BackgroundLogin ? "ON" : "OFF")}
-  When ON, types passwords via DirectInput shared memory
+  Types passwords via DirectInput shared memory
   (no focus stealing — all clients stay in background)
   Requires dinput8.dll in EQ directory (auto-deployed)
-  Toggle in Settings → Accounts → Background Login card
 
 LAUNCHING:
   EQ Path: {config.EQPath}
@@ -114,8 +112,8 @@ DLL HOOK (eqswitch-hook.dll):
   window management. Memory-only — auto-ejected on exit.
   No files are dropped into your EQ folder by the hook.
 
-DINPUT8.DLL (Background Login only):
-  Copied to your EQ folder when Background Login is enabled.
+DINPUT8.DLL (Auto-Login):
+  Copied to your EQ folder when auto-login is used.
   If an existing dinput8.dll was present, it is backed up
   as dinput8.dll.old and can be restored via Uninstall.
 

@@ -51,13 +51,6 @@ public class AppConfig
 
 
     /// <summary>
-    /// When true, auto-login uses DirectInput shared memory to type in background
-    /// windows instead of SendInput+focus-stealing. Requires dinput8.dll deployed
-    /// to the EQ directory (provides IAT focus-faking hooks + DirectInput proxy).
-    /// </summary>
-    public bool BackgroundLogin { get; set; } = false;
-
-    /// <summary>
     /// Custom tray icon path. Empty = use built-in Stone icon (default).
     /// Users can browse to any .ico file on their system.
     /// </summary>
@@ -72,7 +65,7 @@ public class AppConfig
     /// <summary>Last Settings window position [x, y]. Empty = center screen.</summary>
     public int[] SettingsWindowPos { get; set; } = Array.Empty<int>();
 
-    /// <summary>Duration in ms for floating tooltips (default 1500ms).</summary>
+    /// <summary>Duration in ms for floating tooltips (default 1000ms).</summary>
     public int TooltipDurationMs { get; set; } = 1000;
 
     /// <summary>Show help tooltip when Ctrl+hovering the tray icon.</summary>
@@ -100,6 +93,10 @@ public class AppConfig
         EQClientIni ??= new();
 
         Characters ??= new();
+        Accounts ??= new();
+        Accounts.RemoveAll(a => a == null!);
+        Characters.RemoveAll(c => c == null!);
+        TooltipDurationMs = Math.Clamp(TooltipDurationMs, 100, 30000);
 
         Layout.TargetMonitor = Math.Clamp(Layout.TargetMonitor, 0, 8);
         Layout.SecondaryMonitor = Math.Clamp(Layout.SecondaryMonitor, -1, 8);
@@ -115,8 +112,7 @@ public class AppConfig
         Launch.FixDelayMs = Math.Clamp(Launch.FixDelayMs, 1000, 120000);
 
         Pip.Opacity = Math.Clamp(Pip.Opacity, (byte)10, (byte)255);
-        int maxPip = Pip.SizePreset == "XXXXL" ? 1 : 3;
-        Pip.MaxWindows = Math.Clamp(Pip.MaxWindows, 1, maxPip);
+        Pip.MaxWindows = Math.Clamp(Pip.MaxWindows, 1, 3);
         Pip.CustomWidth = Math.Clamp(Pip.CustomWidth, 100, 3840);
         Pip.CustomHeight = Math.Clamp(Pip.CustomHeight, 75, 2160);
         // Migrate old 4:3 default (320x240) to 16:9 (480x270)
@@ -130,8 +126,6 @@ public class AppConfig
 
 public class WindowLayout
 {
-    public bool RemoveTitleBars { get; set; } = false;
-    public bool BorderlessFullscreen { get; set; } = false;
     public bool SnapToMonitor { get; set; } = true;
     public int TargetMonitor { get; set; } = 0; // 0 = primary
 
@@ -474,6 +468,7 @@ public class EQClientIniConfig
     public bool RaidInviteConfirm { get; set; } = true;
 
     /// <summary>Disable AA confirmation dialog (AANoConfirm=0 in [Defaults]). EQ default: FALSE.</summary>
+    [JsonPropertyName("aaNoConfirm")]
     public bool AANoConfirm { get; set; } = false;
 
     /// <summary>Disable chat server (ChatServerPort=0 in [Options]). EQSwitch default: TRUE (chat server disabled for multiboxing).</summary>
@@ -531,6 +526,7 @@ public class EQClientIniConfig
     /// CPU core assignments for EQ's 6 affinity slots (CPUAffinity0-5 in eqclient.ini).
     /// Each value is a physical core number (0-based). Default: cores 1,2,3,1,2,3 (skip core 0 for OS).
     /// </summary>
+    [JsonPropertyName("cpuAffinitySlots")]
     public int[] CPUAffinitySlots { get; set; } = { 1, 2, 3, 1, 2, 3 };
 
     /// <summary>
@@ -673,9 +669,6 @@ public class EQClientIniConfig
                         case "maxbgfps":
                             if (int.TryParse(val, out int bgfps))
                                 cfg.MaxBGFPS = Math.Clamp(bgfps, 0, 99);
-                            break;
-                        case "windowedmode":
-                            cfg.ForceWindowedMode = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
                             break;
                         case "maximized":
                             cfg.MaximizeWindow = val == "1";

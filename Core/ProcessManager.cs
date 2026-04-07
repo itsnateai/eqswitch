@@ -27,7 +27,7 @@ public class ProcessManager : IDisposable
     /// </summary>
     private const int IdlePollingMs = 10000;
 
-    private bool _isRefreshing;
+    private volatile bool _isRefreshing;
 
     public event EventHandler<EQClient>? ClientDiscovered;
     public event EventHandler<EQClient>? ClientLost;

@@ -18,7 +18,6 @@ public class EQClient
     /// </summary>
     public string OriginalTitle { get; set; } = "";
     public int SlotIndex { get; set; }
-    public bool IsActive { get; set; }
 
     public EQClient(int processId, IntPtr windowHandle, int slotIndex)
     {

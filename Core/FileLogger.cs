@@ -9,7 +9,7 @@ public static class FileLogger
 {
     private static StreamWriter? _writer;
     private static readonly object _lock = new();
-    private static bool _initialized;
+    private static volatile bool _initialized;
     private static int _consecutiveWriteFailures;
 
     private const long MaxLogSize = 1_048_576; // 1MB

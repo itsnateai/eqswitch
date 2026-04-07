@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using EQSwitch.Config;
@@ -9,11 +8,10 @@ using EQSwitch.Models;
 namespace EQSwitch.Core;
 
 /// <summary>
-/// Launches an EQ client and auto-types credentials.
-/// Two modes:
-///   - Legacy (BackgroundLogin=false): SendInput + focus-stealing (original behavior)
-///   - Background (BackgroundLogin=true): PostMessage to type in background windows,
-///     requires dinput8.dll deployed to EQ directory for IAT focus-faking hooks.
+/// Launches an EQ client and auto-types credentials via DirectInput shared memory.
+/// Requires dinput8.dll deployed to the EQ directory (auto-deployed on login).
+/// The proxy DLL intercepts GetDeviceState/GetDeviceData and injects scan codes
+/// from per-PID shared memory, enabling background input without focus stealing.
 /// Runs the wait/type sequence on a background thread.
 /// </summary>
 public class AutoLoginManager
@@ -22,6 +20,10 @@ public class AutoLoginManager
 
     /// <summary>PIDs currently in the login sequence — DLL injection should be deferred for these.</summary>
     private readonly ConcurrentDictionary<int, byte> _activeLoginPids = new();
+
+    /// <summary>Serializes login sequences — only one login types credentials at a time.
+    /// Multiple logins are queued and run sequentially to avoid timing issues under CPU load.</summary>
+    private readonly SemaphoreSlim _loginGate = new(1, 1);
 
     /// <summary>UI thread sync context — captured at construction for marshaling events back to the UI thread.</summary>
     private readonly SynchronizationContext? _syncContext;
@@ -82,17 +84,13 @@ public class AutoLoginManager
             args += $" /login:{account.Username}";
 
         StatusUpdate?.Invoke(this, $"Launching {account.Name}...");
-        LoginStarting?.Invoke(this, 0);
 
-        bool backgroundMode = _config.BackgroundLogin;
-
-        // Deploy dinput8.dll to EQ directory before launching if background mode is on.
+        // Deploy dinput8.dll to EQ directory before launching.
         // The DLL must be present at launch time — EQ loads it via DLL search order.
-        if (backgroundMode && !DeployDinput8ToEQPath())
+        if (!DeployDinput8ToEQPath())
         {
-            FileLogger.Warn("AutoLogin: dinput8 deploy failed, falling back to legacy mode");
-            Report("Background login unavailable — falling back to foreground mode");
-            backgroundMode = false;
+            Report("Error: dinput8.dll deployment failed — cannot auto-login");
+            return;
         }
 
         int pid;
@@ -119,7 +117,7 @@ public class AutoLoginManager
                 return;
             }
             pid = proc.Id;
-            FileLogger.Info($"AutoLogin: launched PID {pid} for {account.Name} (background={backgroundMode})");
+            FileLogger.Info($"AutoLogin: launched PID {pid} for {account.Name}");
         }
         catch (Exception ex)
         {
@@ -130,19 +128,44 @@ public class AutoLoginManager
 
         // Track PID so DLL injection is deferred until login completes
         _activeLoginPids.TryAdd(pid, 0);
+        LoginStarting?.Invoke(this, pid);
 
-        // Run the login sequence on a background thread
+        // Run the login sequence on a background thread — serialized via _loginGate
+        // so only one login types credentials at a time (avoids timing issues under CPU load).
         var loginAccount = account;
-        Task.Run(() => RunLoginSequence(pid, loginAccount, password, backgroundMode));
+        Task.Run(async () =>
+        {
+            await _loginGate.WaitAsync();
+            try
+            {
+                RunLoginSequence(pid, loginAccount, password);
+            }
+            finally
+            {
+                _loginGate.Release();
+            }
+        });
     }
 
-    private void RunLoginSequence(int pid, LoginAccount account, string password, bool background)
+    private void RunLoginSequence(int pid, LoginAccount account, string password)
     {
         // Local writer eliminates shared-state race when two logins run concurrently
-        KeyInputWriter? loginWriter = null;
+        var loginWriter = new KeyInputWriter();
         try
         {
-            // Step 1: Wait for EQ window to appear
+            // Step 1: Create shared memory FIRST, before waiting for the window.
+            // The dinput8.dll proxy retries opening shared memory every ~240 frames.
+            // At low fps during startup (~10fps with multiple clients), that's ~24 seconds
+            // between retries. Creating the mapping early gives the proxy the entire
+            // window-creation period + login screen wait to discover it.
+            if (!loginWriter.Open(pid))
+            {
+                Report("Error: failed to open DirectInput shared memory");
+                return;
+            }
+            loginWriter.Activate(pid);
+
+            // Step 2: Wait for EQ window to appear
             Report("Waiting for EQ window...");
             var hwnd = WaitForWindow(pid, TimeSpan.FromSeconds(30));
             if (hwnd == IntPtr.Zero)
@@ -151,102 +174,59 @@ public class AutoLoginManager
                 return;
             }
 
-            // Step 2: Wait for login screen to be ready
-            if (background)
-            {
-                // Background mode: open shared memory so dinput8.dll can read our keys.
-                // dinput8.dll lazy-opens the mapping with retry, so give it time to find it.
-                Report("Waiting for login screen (background)...");
-                loginWriter = new KeyInputWriter();
-                loginWriter.Open(pid);
-                loginWriter.Activate(pid);
-                Thread.Sleep(3000); // let EQ fully init + dinput8.dll find shared memory
-            }
-            else
-            {
-                // Legacy mode: bring to foreground
-                NativeMethods.ShowWindow(hwnd, NativeMethods.SW_RESTORE);
-                ForceForeground(hwnd);
-                Report("Waiting for login screen...");
-                Thread.Sleep(2000);
-            }
+            // Step 3: Wait for login screen to become input-ready.
+            // EQ's login screen takes several seconds after the window appears.
+            Report("Waiting for login screen...");
+            Thread.Sleep(5000);
 
-            // Step 3: Type username (if /login flag not used)
+            // Step 4: Type username (if /login flag not used)
+            // When UseLoginFlag is true, EQ pre-fills username and focuses password field.
+            // When false, we must Tab to username, type it, then Tab to password.
             if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
             {
-                if (background)
-                {
-                    Thread.Sleep(200);
-                    DiPressKey(loginWriter, pid, 0x09); // Tab to username field
-                    Thread.Sleep(100);
-                    DiTypeString(loginWriter, pid, account.Username);
-                    Thread.Sleep(100);
-                }
-                else
-                {
-                    ForceForeground(hwnd);
-                    Thread.Sleep(200);
-                    FocusAndSendKey(hwnd, 0x09);
-                    Thread.Sleep(100);
-                    TypeString(account.Username, hwnd);
-                    Thread.Sleep(100);
-                }
-            }
-
-            // Step 4: Tab to password field and type password
-            if (background)
-            {
-                DiPressKey(loginWriter, pid, 0x09); // Tab
+                Thread.Sleep(200);
+                DiPressKey(loginWriter, pid, 0x09); // Tab to username field
                 Thread.Sleep(100);
-                DiTypeString(loginWriter, pid, password);
-                Thread.Sleep(100);
-            }
-            else
-            {
-                FocusAndSendKey(hwnd, 0x09);
-                Thread.Sleep(100);
-                TypeString(password, hwnd);
+                DiTypeString(loginWriter, pid, account.Username);
                 Thread.Sleep(100);
             }
 
-            // Step 5: Press Enter to submit login
+            // Step 5: Tab to password field (only if we typed username — /login flag
+            // already places cursor on the password field) and type password
+            if (!account.UseLoginFlag)
+            {
+                DiPressKey(loginWriter, pid, 0x09); // Tab from username to password
+                Thread.Sleep(100);
+            }
+            DiTypeString(loginWriter, pid, password);
+            Thread.Sleep(100);
+
+            // Step 6: Press Enter to submit login
             Report("Submitting login...");
-            if (background)
-                DiPressKey(loginWriter, pid, 0x0D); // Enter
-            else
-                FocusAndSendKey(hwnd, 0x0D);
+            DiPressKey(loginWriter, pid, 0x0D);
             Thread.Sleep(3000);
 
-            // Step 6: Server select — press Enter to confirm pre-selected server
+            // Step 7: Server select — press Enter to confirm pre-selected server
             Report("Confirming server...");
-            if (background)
-                DiPressKey(loginWriter, pid, 0x0D);
-            else
-                FocusAndSendKey(hwnd, 0x0D);
+            DiPressKey(loginWriter, pid, 0x0D);
             Thread.Sleep(3000);
 
-            // Step 7: Character select — navigate to character slot
+            // Step 8: Character select — navigate to character slot
             Report($"Selecting character (slot {account.CharacterSlot})...");
             for (int i = 1; i < account.CharacterSlot; i++)
             {
-                if (background)
-                    DiPressKey(loginWriter, pid, 0x28); // VK_DOWN
-                else
-                    FocusAndSendKey(hwnd, 0x28);
+                DiPressKey(loginWriter, pid, 0x28); // VK_DOWN
                 Thread.Sleep(200);
             }
             Thread.Sleep(300);
 
-            // Step 8: Enter World
+            // Step 9: Enter World
             Report("Entering world...");
-            if (background)
-                DiPressKey(loginWriter, pid, 0x0D);
-            else
-                FocusAndSendKey(hwnd, 0x0D);
+            DiPressKey(loginWriter, pid, 0x0D);
             Thread.Sleep(1000);
 
             Report($"{account.Name} logged in!");
-            FileLogger.Info($"AutoLogin: {account.Name} login sequence complete (PID {pid}, background={background})");
+            FileLogger.Info($"AutoLogin: {account.Name} login sequence complete (PID {pid})");
         }
         catch (Exception ex)
         {
@@ -255,13 +235,11 @@ public class AutoLoginManager
         }
         finally
         {
-            // Clean up shared memory for this login session
-            if (background && loginWriter != null)
-            {
-                loginWriter.Deactivate(pid);
-                loginWriter.Close(pid);
-                loginWriter.Dispose();
-            }
+            // Each statement is independently guarded so TryRemove and LoginComplete
+            // always fire — a throw in Close must never leave a phantom PID in
+            // _activeLoginPids (which would permanently block injection for that client).
+            try { loginWriter.Close(pid); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Close failed: {ex.Message}"); }
+            try { loginWriter.Dispose(); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Dispose failed: {ex.Message}"); }
             _activeLoginPids.TryRemove(pid, out _);
             if (_syncContext != null)
                 _syncContext.Post(_ => LoginComplete?.Invoke(this, pid), null);
@@ -303,40 +281,28 @@ public class AutoLoginManager
         return IntPtr.Zero;
     }
 
-    /// <summary>
-    /// Bring window to foreground. This runs on a Task.Run background thread,
-    /// so AttachThreadInput is not used (it requires the calling thread to own
-    /// an input queue / message pump). SetForegroundWindow + BringWindowToTop
-    /// is sufficient when paired with ShowWindow(SW_RESTORE).
-    /// </summary>
-    private static void ForceForeground(IntPtr hwnd)
-    {
-        NativeMethods.SetForegroundWindow(hwnd);
-        NativeMethods.BringWindowToTop(hwnd);
-    }
-
-    // ─── DirectInput Shared Memory Helpers (Background Mode) ────────
+    // ─── DirectInput Shared Memory Helpers ──────────────────────────
     //
     // EQ uses DirectInput for ALL keyboard input, including the login screen.
-    // PostMessage/WM_CHAR does NOT work. We must write scan codes to the
-    // per-PID shared memory that dinput8.dll's DeviceProxy reads on each
+    // PostMessage/WM_CHAR does NOT work. We write scan codes to the per-PID
+    // shared memory that dinput8.dll's DeviceProxy reads on each
     // GetDeviceState/GetDeviceData call.
 
     /// <summary>
     /// Set a scan code state in shared memory. The dinput8.dll proxy picks
     /// this up on the next GetDeviceState call (~60Hz).
     /// </summary>
-    private static void DiSetKey(KeyInputWriter? writer, int pid, ushort vk, bool pressed)
+    private static void DiSetKey(KeyInputWriter writer, int pid, ushort vk, bool pressed)
     {
         uint scan = NativeMethods.MapVirtualKeyW(vk, NativeMethods.MAPVK_VK_TO_VSC);
         if (scan > 0 && scan < 256)
-            writer?.SetKey(pid, (byte)scan, pressed);
+            writer.SetKey(pid, (byte)scan, pressed);
     }
 
     /// <summary>
     /// Press and release a single key via DirectInput shared memory.
     /// </summary>
-    private static void DiPressKey(KeyInputWriter? writer, int pid, ushort vk)
+    private static void DiPressKey(KeyInputWriter writer, int pid, ushort vk)
     {
         DiSetKey(writer, pid, vk, true);
         Thread.Sleep(80);
@@ -348,21 +314,32 @@ public class AutoLoginManager
     /// Type a string by converting each character to its VK + scan code.
     /// Handles Shift for uppercase and symbols (e.g. '!' = Shift+'1').
     /// </summary>
-    private static void DiTypeString(KeyInputWriter? writer, int pid, string text)
+    private static void DiTypeString(KeyInputWriter writer, int pid, string text)
     {
         foreach (char c in text)
         {
             short vkScan = NativeMethods.VkKeyScanW(c);
             if (vkScan == -1) continue; // unmappable character
 
-            ushort vk = (ushort)(vkScan & 0xFF);
-            bool needShift = (vkScan & 0x100) != 0;
+            byte modifiers = (byte)(vkScan >> 8);
+            if ((modifiers & ~0x01) != 0) continue; // skip chars needing Ctrl/Alt (non-US layouts)
 
-            if (needShift) DiSetKey(writer, pid, 0x10, true); // VK_SHIFT down
+            ushort vk = (ushort)(vkScan & 0xFF);
+            bool needShift = (modifiers & 0x01) != 0;
+
+            if (needShift)
+            {
+                DiSetKey(writer, pid, 0x10, true); // VK_SHIFT down
+                Thread.Sleep(20); // let proxy see Shift before the character key
+            }
             DiSetKey(writer, pid, vk, true);
             Thread.Sleep(80);
             DiSetKey(writer, pid, vk, false);
-            if (needShift) DiSetKey(writer, pid, 0x10, false); // VK_SHIFT up
+            if (needShift)
+            {
+                Thread.Sleep(20); // let proxy see key-up before Shift release
+                DiSetKey(writer, pid, 0x10, false); // VK_SHIFT up
+            }
             Thread.Sleep(50);
         }
     }
@@ -426,8 +403,9 @@ public class AutoLoginManager
         }
         catch (IOException ex) when (ex.HResult == unchecked((int)0x80070020)) // sharing violation
         {
-            FileLogger.Warn("AutoLogin: dinput8.dll in use — EQ restart needed to update");
-            return true; // file exists, may be the right version — proceed
+            FileLogger.Warn("AutoLogin: dinput8.dll in use and outdated — close EQ then retry");
+            StatusUpdate?.Invoke(this, "Error: dinput8.dll in use — close all EQ clients and retry");
+            return false;
         }
         catch (Exception ex)
         {
@@ -444,139 +422,6 @@ public class AutoLoginManager
     {
         var dstPath = Path.Combine(_config.EQPath, "dinput8.dll");
         return File.Exists(dstPath);
-    }
-
-    // ─── SendInput Helpers (Legacy Mode) ─────────────────────────────
-
-    /// <summary>
-    /// Send a single INPUT event, checking the return value.
-    /// Returns false if the input was blocked (UIPI — target runs at higher integrity).
-    /// </summary>
-    private static bool SendInputChecked(NativeMethods.INPUT input)
-    {
-        uint sent = NativeMethods.SendInput(1, new[] { input }, Marshal.SizeOf<NativeMethods.INPUT>());
-        if (sent == 0)
-        {
-            var err = Marshal.GetLastWin32Error();
-            FileLogger.Warn($"AutoLogin: SendInput failed (error={err}) — is EQ running as administrator?");
-            return false;
-        }
-        return true;
-    }
-
-    /// <summary>
-    /// Type a string using KEYEVENTF_UNICODE. This generates WM_CHAR messages
-    /// which EQ's login screen text fields respond to (scan codes alone don't
-    /// produce WM_CHAR, so the old approach failed on the login screen).
-    /// Re-focuses the target window before each character to survive focus theft.
-    /// </summary>
-    private static void TypeString(string text, IntPtr hwnd)
-    {
-        foreach (char c in text)
-        {
-            ForceForeground(hwnd);
-            Thread.Sleep(30);
-
-            var down = new NativeMethods.INPUT
-            {
-                type = NativeMethods.INPUT_KEYBOARD,
-                u = new NativeMethods.INPUTUNION
-                {
-                    ki = new NativeMethods.KEYBDINPUT
-                    {
-                        wVk = 0,
-                        wScan = c,
-                        dwFlags = NativeMethods.KEYEVENTF_UNICODE,
-                        time = 0,
-                        dwExtraInfo = IntPtr.Zero
-                    }
-                }
-            };
-            var up = new NativeMethods.INPUT
-            {
-                type = NativeMethods.INPUT_KEYBOARD,
-                u = new NativeMethods.INPUTUNION
-                {
-                    ki = new NativeMethods.KEYBDINPUT
-                    {
-                        wVk = 0,
-                        wScan = c,
-                        dwFlags = NativeMethods.KEYEVENTF_UNICODE | NativeMethods.KEYEVENTF_KEYUP,
-                        time = 0,
-                        dwExtraInfo = IntPtr.Zero
-                    }
-                }
-            };
-
-            if (!SendInputChecked(down)) return;
-            Thread.Sleep(50);
-            SendInputChecked(up);
-            Thread.Sleep(50);
-        }
-    }
-
-    /// <summary>
-    /// Re-focus the target window then press a key. Survives focus theft.
-    /// </summary>
-    private static void FocusAndSendKey(IntPtr hwnd, ushort vk)
-    {
-        ForceForeground(hwnd);
-        Thread.Sleep(30);
-        SendKey(vk);
-    }
-
-    /// <summary>
-    /// Press and release a single key by VK code.
-    /// </summary>
-    private static void SendKey(ushort vk)
-    {
-        ushort scan = (ushort)NativeMethods.MapVirtualKeyW(vk, NativeMethods.MAPVK_VK_TO_VSC);
-        if (!SendKeyDown(vk, scan))
-            FileLogger.Warn($"AutoLogin: SendKeyDown failed for VK 0x{vk:X2}");
-        Thread.Sleep(50);
-        if (!SendKeyUp(vk, scan))
-            FileLogger.Warn($"AutoLogin: SendKeyUp failed for VK 0x{vk:X2}");
-        Thread.Sleep(50);
-    }
-
-    private static bool SendKeyDown(ushort vk, ushort scan)
-    {
-        var input = new NativeMethods.INPUT
-        {
-            type = NativeMethods.INPUT_KEYBOARD,
-            u = new NativeMethods.INPUTUNION
-            {
-                ki = new NativeMethods.KEYBDINPUT
-                {
-                    wVk = vk,
-                    wScan = scan,
-                    dwFlags = NativeMethods.KEYEVENTF_SCANCODE,
-                    time = 0,
-                    dwExtraInfo = IntPtr.Zero
-                }
-            }
-        };
-        return SendInputChecked(input);
-    }
-
-    private static bool SendKeyUp(ushort vk, ushort scan)
-    {
-        var input = new NativeMethods.INPUT
-        {
-            type = NativeMethods.INPUT_KEYBOARD,
-            u = new NativeMethods.INPUTUNION
-            {
-                ki = new NativeMethods.KEYBDINPUT
-                {
-                    wVk = vk,
-                    wScan = scan,
-                    dwFlags = NativeMethods.KEYEVENTF_SCANCODE | NativeMethods.KEYEVENTF_KEYUP,
-                    time = 0,
-                    dwExtraInfo = IntPtr.Zero
-                }
-            }
-        };
-        return SendInputChecked(input);
     }
 
     // ─── EQ INI Helpers ──────────────────────────────────────────────

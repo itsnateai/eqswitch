@@ -13,14 +13,30 @@ public static class CredentialManager
     public static string Encrypt(string plaintext)
     {
         var bytes = Encoding.UTF8.GetBytes(plaintext);
-        var encrypted = ProtectedData.Protect(bytes, null, DataProtectionScope.CurrentUser);
-        return Convert.ToBase64String(encrypted);
+        try
+        {
+            var encrypted = ProtectedData.Protect(bytes, null, DataProtectionScope.CurrentUser);
+            return Convert.ToBase64String(encrypted);
+        }
+        finally
+        {
+            Array.Clear(bytes);
+        }
     }
 
     public static string Decrypt(string base64Encrypted)
     {
         var encrypted = Convert.FromBase64String(base64Encrypted);
         var decrypted = ProtectedData.Unprotect(encrypted, null, DataProtectionScope.CurrentUser);
-        return Encoding.UTF8.GetString(decrypted);
+        try
+        {
+            return Encoding.UTF8.GetString(decrypted);
+        }
+        finally
+        {
+            // Zero the plaintext byte array to reduce exposure in crash dumps.
+            // The returned string copy is unavoidable in managed .NET.
+            Array.Clear(decrypted);
+        }
     }
 }
