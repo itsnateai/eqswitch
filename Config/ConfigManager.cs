@@ -78,6 +78,17 @@ public static class ConfigManager
     }
 
     /// <summary>
+    /// Drain pending saves and dispose the coalescing timer. Safe to call multiple times.
+    /// </summary>
+    public static void Shutdown()
+    {
+        FlushSave();
+        _saveTimer?.Stop();
+        _saveTimer?.Dispose();
+        _saveTimer = null;
+    }
+
+    /// <summary>
     /// Flush any pending save immediately. Returns true on success.
     /// Guards against lost saves: if Save() is called during the write, the new pending
     /// config is detected and re-queued after the write completes.
@@ -151,25 +162,6 @@ public static class ConfigManager
         {
             FileLogger.Warn($"Backup failed: {ex.Message}");
         }
-    }
-
-    /// <summary>
-    /// Export character profiles to a standalone backup file.
-    /// </summary>
-    public static void ExportCharacters(AppConfig config, string exportPath)
-    {
-        var characters = config.Characters;
-        var json = JsonSerializer.Serialize(characters, JsonOptions);
-        File.WriteAllText(exportPath, json);
-    }
-
-    /// <summary>
-    /// Import character profiles from a backup file.
-    /// </summary>
-    public static List<CharacterProfile> ImportCharacters(string importPath)
-    {
-        var json = File.ReadAllText(importPath);
-        return JsonSerializer.Deserialize<List<CharacterProfile>>(json, JsonOptions) ?? new();
     }
 
     private static void TryBackupCorruptConfig()

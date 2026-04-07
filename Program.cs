@@ -139,6 +139,7 @@ static class Program
         finally
         {
             ConfigManager.FlushSave();
+            ConfigManager.Shutdown();
             FileLogger.Shutdown();
             if (createdNew) _mutex?.ReleaseMutex();
             _mutex?.Dispose();

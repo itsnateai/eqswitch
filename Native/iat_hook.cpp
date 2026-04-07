@@ -122,6 +122,9 @@ static void *PatchIat(const uint8_t *base, const char *targetDll,
             uint32_t origFirstThunk = *(uint32_t *)desc;        // OriginalFirstThunk
             uint32_t firstThunkRva  = *(uint32_t *)(desc + 16); // FirstThunk (IAT)
 
+            // Bound imports have OriginalFirstThunk == 0 — no hint/name table to walk
+            if (origFirstThunk == 0) { desc += 20; continue; }
+
             const uint32_t *orig = (const uint32_t *)(base + origFirstThunk);
             uint32_t *thunk = (uint32_t *)(base + firstThunkRva);
 

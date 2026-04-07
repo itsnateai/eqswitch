@@ -12,12 +12,12 @@ namespace EQSwitch.Core;
 ///   suppress  — 1 = zero physical keyboard state before injecting
 ///   keys[]    — scan code to press state (0x00=up, 0x80=down)
 /// </summary>
-public class KeyInputWriter : IDisposable
+public sealed class KeyInputWriter : IDisposable
 {
     private const string SharedMemoryPrefix = "Local\\EQSwitchDI8_";
     private const uint Magic = 0x45534B53; // "ESKS"
     private const uint Version = 1;
-    private const int ShmSize = 276; // 5 x uint32 + 256 bytes
+    private const int KeysSize = 256;
 
     // Must match the C++ SharedKeyState struct exactly (packed, sequential)
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -32,14 +32,15 @@ public class KeyInputWriter : IDisposable
     }
 
     private static readonly int HeaderSize = Marshal.SizeOf<SharedKeyState>();
+    private static readonly int ShmSize = HeaderSize + KeysSize;
     private static readonly int ActiveOffset = (int)Marshal.OffsetOf<SharedKeyState>(nameof(SharedKeyState.Active));
     private static readonly int SuppressOffset = (int)Marshal.OffsetOf<SharedKeyState>(nameof(SharedKeyState.Suppress));
     private static readonly int SeqOffset = (int)Marshal.OffsetOf<SharedKeyState>(nameof(SharedKeyState.Seq));
 
     private sealed class MappingEntry : IDisposable
     {
-        public MemoryMappedFile Mmf;
-        public MemoryMappedViewAccessor Accessor;
+        public readonly MemoryMappedFile Mmf;
+        public readonly MemoryMappedViewAccessor Accessor;
         public uint Seq;
 
         public MappingEntry(MemoryMappedFile mmf, MemoryMappedViewAccessor accessor)
@@ -93,7 +94,7 @@ public class KeyInputWriter : IDisposable
             };
             accessor.Write(0, ref header);
             // Zero out keys
-            accessor.WriteArray(HeaderSize, new byte[256], 0, 256);
+            accessor.WriteArray(HeaderSize, new byte[KeysSize], 0, KeysSize);
 
             FileLogger.Info($"KeyInputWriter: opened {name} ({ShmSize} bytes)");
             return true;
@@ -122,38 +123,7 @@ public class KeyInputWriter : IDisposable
     }
 
     /// <summary>
-    /// Deactivate key injection for a process. Sets active=0 and clears all keys.
-    /// </summary>
-    public void Deactivate(int pid)
-    {
-        if (!_mappings.TryGetValue(pid, out var entry)) return;
-        try
-        {
-            entry.Accessor.Write(ActiveOffset, (uint)0);
-            entry.Accessor.WriteArray(HeaderSize, new byte[256], 0, 256);
-        }
-        catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Deactivate failed: {ex.Message}"); }
-    }
-
-    /// <summary>
-    /// Write a full key state snapshot.
-    /// </summary>
-    public void WriteKeys(int pid, byte[] keys)
-    {
-        if (!_mappings.TryGetValue(pid, out var entry)) return;
-        if (keys.Length < 256) return;
-
-        try
-        {
-            entry.Seq++;
-            entry.Accessor.Write(SeqOffset, entry.Seq);
-            entry.Accessor.WriteArray(HeaderSize, keys, 0, 256);
-        }
-        catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.WriteKeys failed: {ex.Message}"); }
-    }
-
-    /// <summary>
-    /// Set a single key's state. More efficient than WriteKeys for individual key events.
+    /// Set a single key's state.
     /// </summary>
     public void SetKey(int pid, byte scanCode, bool pressed)
     {
@@ -175,7 +145,7 @@ public class KeyInputWriter : IDisposable
             try
             {
                 entry.Accessor.Write(ActiveOffset, (uint)0);
-                entry.Accessor.WriteArray(HeaderSize, new byte[256], 0, 256);
+                entry.Accessor.WriteArray(HeaderSize, new byte[KeysSize], 0, KeysSize);
             }
             catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Close: cleanup failed for PID {pid}: {ex.Message}"); }
             entry.Dispose();

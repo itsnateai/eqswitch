@@ -76,7 +76,6 @@ public class SettingsForm : Form
     private TextBox _txtNotesPath = null!;
     private TextBox _txtDalayaPatcherPath = null!;
     private CheckBox _chkRunAtStartup = null!;
-    private CheckBox _chkBackgroundLogin = null!;
 
     // ─── Accounts tab controls
     private List<LoginAccount> _pendingAccounts = new();
@@ -1043,7 +1042,8 @@ public class SettingsForm : Form
                 ExeName = _txtExeName.Text.Trim(),
                 Arguments = _txtArgs.Text.Trim(),
                 NumClients = (int)_nudNumClients.Value,
-                LaunchDelayMs = (int)_nudLaunchDelay.Value * 1000
+                LaunchDelayMs = (int)_nudLaunchDelay.Value * 1000,
+                FixDelayMs = _config.Launch.FixDelayMs
             },
             Pip = new PipConfig
             {
@@ -1071,8 +1071,7 @@ public class SettingsForm : Form
             DalayaPatcherPath = _txtDalayaPatcherPath.Text.Trim(),
             RunAtStartup = _chkRunAtStartup.Checked,
             Characters = _config.Characters,
-            Accounts = _pendingAccounts,
-            BackgroundLogin = _chkBackgroundLogin.Checked
+            Accounts = _pendingAccounts
         };
 
         // Apply startup registry change
@@ -1218,13 +1217,6 @@ public class SettingsForm : Form
 
         DarkTheme.AddCardHint(card, "Passwords are encrypted with Windows DPAPI (tied to your user account)", 10, 275);
         DarkTheme.AddCardHint(card, "Character slot is 1-based position on the character select screen", 10, 295);
-
-        // ─── Background Login Card ───
-        y += 323;
-        var bgCard = DarkTheme.MakeCard(page, "\uD83D\uDD12", "Background Login", DarkTheme.CardPurple, 10, y, 480, 80);
-        _chkBackgroundLogin = DarkTheme.AddCardCheckBox(bgCard, "Background login (no focus stealing)", 10, 30);
-        _chkBackgroundLogin.Checked = _config.BackgroundLogin;
-        DarkTheme.AddCardHint(bgCard, "Uses dinput8.dll to type passwords without switching windows", 10, 55);
 
         return page;
     }
