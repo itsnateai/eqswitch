@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Security.Cryptography;
+using System.Runtime.InteropServices;
 using System.Text;
 using EQSwitch.Config;
 using EQSwitch.Models;
@@ -8,10 +8,9 @@ using EQSwitch.Models;
 namespace EQSwitch.Core;
 
 /// <summary>
-/// Launches an EQ client and auto-types credentials via DirectInput shared memory.
-/// Requires dinput8.dll deployed to the EQ directory (auto-deployed on login).
-/// The proxy DLL intercepts GetDeviceState/GetDeviceData and injects scan codes
-/// from per-PID shared memory, enabling background input without focus stealing.
+/// Launches an EQ client and auto-types credentials via foreground flash + SendInput.
+/// Briefly brings each EQ window to the foreground during its typing phase, uses
+/// SendInput for reliable keystroke delivery, then restores the previous window.
 /// Runs the wait/type sequence on a background thread.
 /// </summary>
 public class AutoLoginManager
@@ -85,14 +84,6 @@ public class AutoLoginManager
 
         StatusUpdate?.Invoke(this, $"Launching {account.Name}...");
 
-        // Deploy dinput8.dll to EQ directory before launching.
-        // The DLL must be present at launch time — EQ loads it via DLL search order.
-        if (!DeployDinput8ToEQPath())
-        {
-            Report("Error: dinput8.dll deployment failed — cannot auto-login");
-            return;
-        }
-
         int pid;
         try
         {
@@ -149,23 +140,9 @@ public class AutoLoginManager
 
     private void RunLoginSequence(int pid, LoginAccount account, string password)
     {
-        // Local writer eliminates shared-state race when two logins run concurrently
-        var loginWriter = new KeyInputWriter();
         try
         {
-            // Step 1: Create shared memory FIRST, before waiting for the window.
-            // The dinput8.dll proxy retries opening shared memory every ~240 frames.
-            // At low fps during startup (~10fps with multiple clients), that's ~24 seconds
-            // between retries. Creating the mapping early gives the proxy the entire
-            // window-creation period + login screen wait to discover it.
-            if (!loginWriter.Open(pid))
-            {
-                Report("Error: failed to open DirectInput shared memory");
-                return;
-            }
-            loginWriter.Activate(pid);
-
-            // Step 2: Wait for EQ window to appear
+            // Step 1: Wait for EQ window to appear
             Report("Waiting for EQ window...");
             var hwnd = WaitForWindow(pid, TimeSpan.FromSeconds(30));
             if (hwnd == IntPtr.Zero)
@@ -174,10 +151,21 @@ public class AutoLoginManager
                 return;
             }
 
-            // Step 3: Wait for login screen to become input-ready.
+            // Step 2: Wait for login screen to become input-ready.
             // EQ's login screen takes several seconds after the window appears.
             Report("Waiting for login screen...");
             Thread.Sleep(5000);
+
+            // Step 3: Flash the EQ window to foreground for typing.
+            // EQ's login screen uses standard Windows message input (WM_CHAR/WM_KEYDOWN),
+            // NOT DirectInput, for text fields. SendInput requires foreground focus.
+            var previousForeground = NativeMethods.GetForegroundWindow();
+            Report("Typing credentials...");
+            if (!BringToForeground(hwnd))
+            {
+                FileLogger.Warn($"AutoLogin: SetForegroundWindow failed for PID {pid}, attempting anyway");
+            }
+            Thread.Sleep(300); // let EQ process the focus change
 
             // Step 4: Type username (if /login flag not used)
             // When UseLoginFlag is true, EQ pre-fills username and focuses password field.
@@ -185,9 +173,9 @@ public class AutoLoginManager
             if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
             {
                 Thread.Sleep(200);
-                DiPressKey(loginWriter, pid, 0x09); // Tab to username field
+                SendPressKey(0x09); // Tab to username field
                 Thread.Sleep(100);
-                DiTypeString(loginWriter, pid, account.Username);
+                SendTypeString(account.Username);
                 Thread.Sleep(100);
             }
 
@@ -195,34 +183,46 @@ public class AutoLoginManager
             // already places cursor on the password field) and type password
             if (!account.UseLoginFlag)
             {
-                DiPressKey(loginWriter, pid, 0x09); // Tab from username to password
+                SendPressKey(0x09); // Tab from username to password
                 Thread.Sleep(100);
             }
-            DiTypeString(loginWriter, pid, password);
+            SendTypeString(password);
             Thread.Sleep(100);
 
             // Step 6: Press Enter to submit login
             Report("Submitting login...");
-            DiPressKey(loginWriter, pid, 0x0D);
+            SendPressKey(0x0D);
+
+            // Restore previous foreground window while we wait for server select.
+            // The long waits don't need focus — only the keystroke moments do.
+            RestoreForeground(previousForeground);
             Thread.Sleep(3000);
 
-            // Step 7: Server select — press Enter to confirm pre-selected server
+            // Step 7: Server select — flash back, press Enter, restore
             Report("Confirming server...");
-            DiPressKey(loginWriter, pid, 0x0D);
+            previousForeground = NativeMethods.GetForegroundWindow();
+            BringToForeground(hwnd);
+            Thread.Sleep(200);
+            SendPressKey(0x0D);
+            RestoreForeground(previousForeground);
             Thread.Sleep(3000);
 
-            // Step 8: Character select — navigate to character slot
+            // Step 8: Character select — flash, navigate to slot, restore
             Report($"Selecting character (slot {account.CharacterSlot})...");
+            previousForeground = NativeMethods.GetForegroundWindow();
+            BringToForeground(hwnd);
+            Thread.Sleep(200);
             for (int i = 1; i < account.CharacterSlot; i++)
             {
-                DiPressKey(loginWriter, pid, 0x28); // VK_DOWN
+                SendPressKey(0x28); // VK_DOWN
                 Thread.Sleep(200);
             }
             Thread.Sleep(300);
 
             // Step 9: Enter World
             Report("Entering world...");
-            DiPressKey(loginWriter, pid, 0x0D);
+            SendPressKey(0x0D);
+            RestoreForeground(previousForeground);
             Thread.Sleep(1000);
 
             Report($"{account.Name} logged in!");
@@ -235,11 +235,6 @@ public class AutoLoginManager
         }
         finally
         {
-            // Each statement is independently guarded so TryRemove and LoginComplete
-            // always fire — a throw in Close must never leave a phantom PID in
-            // _activeLoginPids (which would permanently block injection for that client).
-            try { loginWriter.Close(pid); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Close failed: {ex.Message}"); }
-            try { loginWriter.Dispose(); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Dispose failed: {ex.Message}"); }
             _activeLoginPids.TryRemove(pid, out _);
             if (_syncContext != null)
                 _syncContext.Post(_ => LoginComplete?.Invoke(this, pid), null);
@@ -281,40 +276,53 @@ public class AutoLoginManager
         return IntPtr.Zero;
     }
 
-    // ─── DirectInput Shared Memory Helpers ──────────────────────────
+    // ─── Foreground Flash + SendInput Helpers ──────────────────────
     //
-    // EQ uses DirectInput for ALL keyboard input, including the login screen.
-    // PostMessage/WM_CHAR does NOT work. We write scan codes to the per-PID
-    // shared memory that dinput8.dll's DeviceProxy reads on each
-    // GetDeviceState/GetDeviceData call.
+    // EQ's login screen uses standard Windows message input (WM_CHAR/WM_KEYDOWN)
+    // for text fields, NOT DirectInput. SendInput synthesizes keystrokes at the
+    // kernel level — works with any input method, but requires foreground focus.
+    // We briefly flash each EQ window to the front during its typing phase.
+
+    private static readonly int InputSize = Marshal.SizeOf<NativeMethods.INPUT>();
 
     /// <summary>
-    /// Set a scan code state in shared memory. The dinput8.dll proxy picks
-    /// this up on the next GetDeviceState call (~60Hz).
+    /// Send a single key down or up event via SendInput.
     /// </summary>
-    private static void DiSetKey(KeyInputWriter writer, int pid, ushort vk, bool pressed)
+    private static void SendKeyEvent(ushort vk, bool down)
     {
-        uint scan = NativeMethods.MapVirtualKeyW(vk, NativeMethods.MAPVK_VK_TO_VSC);
-        if (scan > 0 && scan < 256)
-            writer.SetKey(pid, (byte)scan, pressed);
+        var input = new NativeMethods.INPUT
+        {
+            type = NativeMethods.INPUT_KEYBOARD,
+            U = new NativeMethods.INPUTUNION
+            {
+                ki = new NativeMethods.KEYBDINPUT
+                {
+                    wVk = vk,
+                    wScan = (ushort)NativeMethods.MapVirtualKeyW(vk, NativeMethods.MAPVK_VK_TO_VSC),
+                    dwFlags = down ? 0u : NativeMethods.KEYEVENTF_KEYUP,
+                    time = 0,
+                    dwExtraInfo = IntPtr.Zero
+                }
+            }
+        };
+        NativeMethods.SendInput(1, [input], InputSize);
     }
 
     /// <summary>
-    /// Press and release a single key via DirectInput shared memory.
+    /// Press and release a single key via SendInput.
     /// </summary>
-    private static void DiPressKey(KeyInputWriter writer, int pid, ushort vk)
+    private static void SendPressKey(ushort vk)
     {
-        DiSetKey(writer, pid, vk, true);
-        Thread.Sleep(80);
-        DiSetKey(writer, pid, vk, false);
-        Thread.Sleep(80);
+        SendKeyEvent(vk, true);
+        Thread.Sleep(60);
+        SendKeyEvent(vk, false);
+        Thread.Sleep(60);
     }
 
     /// <summary>
-    /// Type a string by converting each character to its VK + scan code.
-    /// Handles Shift for uppercase and symbols (e.g. '!' = Shift+'1').
+    /// Type a string via SendInput. Handles Shift for uppercase and symbols.
     /// </summary>
-    private static void DiTypeString(KeyInputWriter writer, int pid, string text)
+    private static void SendTypeString(string text)
     {
         foreach (char c in text)
         {
@@ -322,106 +330,59 @@ public class AutoLoginManager
             if (vkScan == -1) continue; // unmappable character
 
             byte modifiers = (byte)(vkScan >> 8);
-            if ((modifiers & ~0x01) != 0) continue; // skip chars needing Ctrl/Alt (non-US layouts)
+            if ((modifiers & ~0x01) != 0) continue; // skip chars needing Ctrl/Alt
 
             ushort vk = (ushort)(vkScan & 0xFF);
             bool needShift = (modifiers & 0x01) != 0;
 
             if (needShift)
-            {
-                DiSetKey(writer, pid, 0x10, true); // VK_SHIFT down
-                Thread.Sleep(20); // let proxy see Shift before the character key
-            }
-            DiSetKey(writer, pid, vk, true);
-            Thread.Sleep(80);
-            DiSetKey(writer, pid, vk, false);
-            if (needShift)
-            {
-                Thread.Sleep(20); // let proxy see key-up before Shift release
-                DiSetKey(writer, pid, 0x10, false); // VK_SHIFT up
-            }
+                SendKeyEvent(0x10, true); // VK_SHIFT down
+            SendKeyEvent(vk, true);
             Thread.Sleep(50);
-        }
-    }
-
-    // ─── dinput8.dll Deployment ──────────────────────────────────────
-
-    /// <summary>
-    /// Copy dinput8.dll to the EQ game directory so it's loaded on next launch.
-    /// Returns true on success. Handles antivirus blocks and existing files
-    /// from other tools. The proxy DLL provides IAT hooks that fake window
-    /// focus, enabling background input during auto-login.
-    /// </summary>
-    private bool DeployDinput8ToEQPath()
-    {
-        var srcPath = Path.Combine(AppContext.BaseDirectory, "dinput8.dll");
-        if (!File.Exists(srcPath))
-        {
-            FileLogger.Warn("AutoLogin: dinput8.dll not found next to EQSwitch.exe");
-            StatusUpdate?.Invoke(this, "Error: dinput8.dll missing from EQSwitch folder");
-            return false;
-        }
-
-        var dstPath = Path.Combine(_config.EQPath, "dinput8.dll");
-
-        // Check if already deployed and up to date (SHA256 hash comparison)
-        if (File.Exists(dstPath))
-        {
-            var srcHash = SHA256.HashData(File.ReadAllBytes(srcPath));
-            var dstHash = SHA256.HashData(File.ReadAllBytes(dstPath));
-            if (srcHash.AsSpan().SequenceEqual(dstHash))
-            {
-                FileLogger.Info("AutoLogin: dinput8.dll already deployed and up to date (hash match)");
-                return true;
-            }
-            // Different hash = different version (ours vs another tool's).
-            // Back up the existing one before overwriting.
-            var backupPath = dstPath + ".old";
-            try
-            {
-                File.Copy(dstPath, backupPath, overwrite: true);
-                FileLogger.Info("AutoLogin: backed up existing dinput8.dll to .old");
-            }
-            catch (Exception ex)
-            {
-                FileLogger.Warn($"AutoLogin: couldn't back up existing dinput8.dll: {ex.Message}");
-            }
-        }
-
-        try
-        {
-            File.Copy(srcPath, dstPath, overwrite: true);
-            FileLogger.Info($"AutoLogin: deployed dinput8.dll to {dstPath}");
-            return true;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            FileLogger.Error("AutoLogin: blocked deploying dinput8.dll — antivirus or permissions");
-            StatusUpdate?.Invoke(this,
-                "Blocked: add EQ folder to Windows Defender exclusions, then retry");
-            return false;
-        }
-        catch (IOException ex) when (ex.HResult == unchecked((int)0x80070020)) // sharing violation
-        {
-            FileLogger.Warn("AutoLogin: dinput8.dll in use and outdated — close EQ then retry");
-            StatusUpdate?.Invoke(this, "Error: dinput8.dll in use — close all EQ clients and retry");
-            return false;
-        }
-        catch (Exception ex)
-        {
-            FileLogger.Error($"AutoLogin: failed to deploy dinput8.dll: {ex.Message}");
-            StatusUpdate?.Invoke(this, $"Error deploying dinput8.dll: {ex.Message}");
-            return false;
+            SendKeyEvent(vk, false);
+            if (needShift)
+                SendKeyEvent(0x10, false); // VK_SHIFT up
+            Thread.Sleep(40);
         }
     }
 
     /// <summary>
-    /// Check if dinput8.dll is deployed to the EQ directory.
+    /// Bring a window to the foreground using the AttachThreadInput trick.
+    /// Returns true if the window is now the foreground window.
     /// </summary>
-    public bool IsDinput8Deployed()
+    private static bool BringToForeground(IntPtr hwnd)
     {
-        var dstPath = Path.Combine(_config.EQPath, "dinput8.dll");
-        return File.Exists(dstPath);
+        var curForeground = NativeMethods.GetForegroundWindow();
+        if (curForeground == hwnd) return true;
+
+        var foreThread = NativeMethods.GetWindowThreadProcessId(curForeground, out _);
+        var curThread = NativeMethods.GetCurrentThreadId();
+        bool attached = false;
+
+        // Attach to the foreground thread so Windows allows us to steal focus
+        if (foreThread != curThread)
+            attached = NativeMethods.AttachThreadInput(curThread, foreThread, true);
+
+        NativeMethods.ShowWindow(hwnd, NativeMethods.SW_RESTORE);
+        NativeMethods.BringWindowToTop(hwnd);
+        NativeMethods.SetForegroundWindow(hwnd);
+
+        if (attached)
+            NativeMethods.AttachThreadInput(curThread, foreThread, false);
+
+        // Verify focus arrived
+        Thread.Sleep(100);
+        return NativeMethods.GetForegroundWindow() == hwnd;
+    }
+
+    /// <summary>
+    /// Restore a previously saved foreground window. Best-effort — if the
+    /// window was closed in the meantime, this is a no-op.
+    /// </summary>
+    private static void RestoreForeground(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || !NativeMethods.IsWindow(hwnd)) return;
+        NativeMethods.SetForegroundWindow(hwnd);
     }
 
     // ─── EQ INI Helpers ──────────────────────────────────────────────

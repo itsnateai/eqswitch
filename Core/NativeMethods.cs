@@ -351,7 +351,10 @@ internal static class NativeMethods
 
     public const uint LIST_MODULES_32BIT = 0x01;
 
-    // ─── DirectInput Key Mapping (Auto-Login) ────────────────────
+    // ─── SendInput (Auto-Login Typing) ────────────────────────────
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
     [DllImport("user32.dll")]
     public static extern short VkKeyScanW(char ch);
@@ -360,6 +363,31 @@ internal static class NativeMethods
     public static extern uint MapVirtualKeyW(uint uCode, uint uMapType);
 
     public const uint MAPVK_VK_TO_VSC = 0;
+    public const uint INPUT_KEYBOARD = 1;
+    public const uint KEYEVENTF_KEYUP = 0x0002;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct INPUT
+    {
+        public uint type;
+        public INPUTUNION U;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    public struct INPUTUNION
+    {
+        [FieldOffset(0)] public KEYBDINPUT ki;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KEYBDINPUT
+    {
+        public ushort wVk;
+        public ushort wScan;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
 
     // ─── Generic Message ───────────────────────────────────────────
 
