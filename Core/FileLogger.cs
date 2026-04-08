@@ -35,7 +35,8 @@ public static class FileLogger
             return;
         }
 
-        // Truly no logging available — Debug output for development only
+        // Truly no logging available — write to stderr (visible from console launch) + Debug
+        Console.Error.WriteLine("EQSwitch: FileLogger failed to initialize at both primary and temp paths");
         System.Diagnostics.Debug.WriteLine("FileLogger: failed to initialize at both primary and temp paths");
     }
 

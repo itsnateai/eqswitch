@@ -69,6 +69,10 @@ public class TrayManager : IDisposable
     private int _lastActivePid;
     private int _previousActivePid;
 
+    // Guard against stale timer ticks during ReloadConfig() — foreground debounce
+    // callbacks queued on the message pump can fire between Stop/Start cycles.
+    private bool _reloading;
+
     // DLL hook injection — hooks SetWindowPos/MoveWindow inside eqgame.exe
     private HookConfigWriter? _hookConfig;
     private readonly HashSet<int> _injectedPids = new();
@@ -85,6 +89,7 @@ public class TrayManager : IDisposable
         _launchManager = new LaunchManager(config, _affinityManager, EQClientSettingsForm.EnforceOverrides);
         _autoLoginManager = new AutoLoginManager(config, EQClientSettingsForm.EnforceOverrides);
         _autoLoginManager.StatusUpdate += (_, msg) => ShowBalloon(msg);
+        ConfigManager.SaveFailed += msg => ShowBalloon($"⚠ Settings save failed: {msg}");
         _autoLoginManager.LoginStarting += (_, _) =>
         {
             // Pause guard timer during auto-login to prevent focus theft
@@ -685,6 +690,7 @@ public class TrayManager : IDisposable
     /// </summary>
     private void OnForegroundChangedCore()
     {
+        if (_reloading) return; // stale tick during ReloadConfig — managers are partially reset
         var active = _processManager.GetActiveClient();
         var clients = _processManager.Clients;
 
@@ -776,10 +782,10 @@ public class TrayManager : IDisposable
         launchAllItem.Click += (_, _) => OnLaunchAll();
         _contextMenu.Items.Add(launchAllItem);
 
-        // Login submenu (auto-login accounts)
+        // Login submenu (always visible, like Clients menu)
+        var loginMenu = new ToolStripMenuItem("\uD83D\uDD11  Accounts") { Font = _boldMenuFont };
         if (_config.Accounts.Count > 0)
         {
-            var loginMenu = new ToolStripMenuItem("\uD83D\uDD11  Accounts") { Font = _boldMenuFont };
             foreach (var account in _config.Accounts)
             {
                 var label = string.IsNullOrEmpty(account.CharacterName)
@@ -796,9 +802,9 @@ public class TrayManager : IDisposable
                 loginMenu.DropDownItems.Add("\uD83D\uDE80  Auto-Login Two Clients", null, (_, _) => ExecuteTrayAction("LoginAll"));
             }
             loginMenu.DropDownItems.Add(new ToolStripSeparator());
-            loginMenu.DropDownItems.Add("\u2699  Manage Accounts...", null, (_, _) => ShowSettings(2));
-            _contextMenu.Items.Add(loginMenu);
         }
+        loginMenu.DropDownItems.Add("\u2699  Manage Accounts...", null, (_, _) => ShowSettings(2));
+        _contextMenu.Items.Add(loginMenu);
 
         _contextMenu.Items.Add(new ToolStripSeparator());
 
@@ -1279,6 +1285,7 @@ public class TrayManager : IDisposable
     /// </summary>
     public void ReloadConfig(AppConfig newConfig)
     {
+        _reloading = true;
         // Update the config reference (AppConfig is a class, so updating fields in-place)
         _config.EQPath = newConfig.EQPath;
         _config.EQProcessName = newConfig.EQProcessName;
@@ -1410,6 +1417,7 @@ public class TrayManager : IDisposable
         // supports both single and multimonitor modes)
         UpdateHookConfig();
 
+        _reloading = false;
         FileLogger.Info("Config reloaded and applied");
         ShowBalloon("Settings applied");
     }
@@ -1631,7 +1639,11 @@ public class TrayManager : IDisposable
             NativeMethods.UnhookWinEvent(_foregroundHook);
             _foregroundHook = IntPtr.Zero;
         }
-        _foregroundHookProc = null;
+        // NOTE: _foregroundHookProc is intentionally NOT nulled here.
+        // With WINEVENT_OUTOFCONTEXT, callbacks are dispatched via PostMessage.
+        // UnhookWinEvent stops future events but can't cancel already-queued ones.
+        // Nulling the delegate lets GC collect it before the pump drains → AccessViolation.
+        // The delegate is only nulled in Dispose() after full shutdown.
         _foregroundDebounceTimer?.Stop();
         _foregroundDebounceTimer?.Dispose();
         _foregroundDebounceTimer = null;
@@ -1736,6 +1748,7 @@ public class TrayManager : IDisposable
         _deferTimer?.Stop();
         _deferTimer?.Dispose();
         // _foregroundDebounceTimer already disposed by StopForegroundHook() above
+        _foregroundHookProc = null; // safe to release now — message pump fully drained at shutdown
         _boldMenuFont?.Dispose();
         _pipOverlay?.Dispose();
         _hotkeyManager.Dispose();

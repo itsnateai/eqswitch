@@ -65,6 +65,9 @@ public static class DarkTheme
     };
 
     // ─── Cached Fonts (shared across all controls — prevents GDI handle leaks) ──
+    // WARNING: These are static shared fonts — NEVER dispose them from control Dispose paths.
+    // DisposeControlFonts() checks SharedFonts before disposing to prevent double-free.
+    // They live for the app lifetime; GDI handles are released at AppDomain teardown.
     private static readonly Font TabFontBold = new("Segoe UI Semibold", 9f, FontStyle.Bold);
     private static readonly Font TabFontRegular = new("Segoe UI", 8.5f, FontStyle.Regular);
     public static readonly Font FontUI9 = new("Segoe UI", 9f);

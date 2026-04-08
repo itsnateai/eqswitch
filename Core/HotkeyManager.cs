@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 namespace EQSwitch.Core;
 
 /// <summary>
@@ -43,7 +45,7 @@ public class HotkeyManager : IDisposable
         bool result = NativeMethods.RegisterHotKey(_messageWindow.Handle, id, modifiers, vk);
         if (!result)
         {
-            Core.FileLogger.Warn($"RegisterHotKey failed for: {hotkeyString}");
+            Core.FileLogger.Warn($"RegisterHotKey failed for: {hotkeyString}, error={Marshal.GetLastWin32Error()}");
             return -1;
         }
 
