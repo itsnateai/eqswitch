@@ -112,8 +112,10 @@ public class PipOverlay : Form
     {
         var rgn = NativeMethods.CreateRoundRectRgn(
             0, 0, Width + 1, Height + 1, CornerRadius, CornerRadius);
+        var oldRegion = Region;
         Region = Region.FromHrgn(rgn);
         NativeMethods.DeleteObject(rgn);
+        oldRegion?.Dispose(); // WinForms Region setter does NOT dispose the old one
     }
 
     protected override void OnPaint(PaintEventArgs e)

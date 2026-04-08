@@ -1355,7 +1355,11 @@ public class TrayManager : IDisposable
         _config.CustomIconPath = newConfig.CustomIconPath;
         if (iconChanged && _trayIcon != null)
         {
+            var oldIcon = _trayIcon.Icon;
             _trayIcon.Icon = LoadIcon();
+            // Dispose AFTER assignment so _trayIcon.Icon never points to a freed handle
+            if (oldIcon != null && oldIcon != SystemIcons.Application)
+                try { oldIcon.Dispose(); } catch { }
         }
 
         // Cancel any in-flight launch sequence before reload
@@ -1686,52 +1690,38 @@ public class TrayManager : IDisposable
         Application.Exit();
     }
 
+    /// <summary>
+    /// Load the tray icon. Does NOT dispose the previous icon — caller must handle that
+    /// to avoid a freed-GDI-handle gap where _trayIcon.Icon points to a disposed icon.
+    /// </summary>
     private Icon LoadIcon()
     {
-        // Dispose previous custom icon to prevent handle leak on reload
-        var oldIcon = _trayIcon?.Icon;
-
-        Icon newIcon;
         try
         {
             // Priority 1: User-selected custom icon path from settings
             if (!string.IsNullOrEmpty(_config.CustomIconPath) && File.Exists(_config.CustomIconPath))
             {
-                newIcon = new Icon(_config.CustomIconPath, 32, 32);
                 FileLogger.Info($"Icon: loaded custom icon from {_config.CustomIconPath}");
+                return new Icon(_config.CustomIconPath, 32, 32);
             }
-            else
-            {
-                // Priority 2: Default embedded Stone icon (eqswitch.ico — the primary embedded icon)
-                using var stream = typeof(TrayManager).Assembly.GetManifestResourceStream("EQSwitch.eqswitch.ico");
-                if (stream != null)
-                {
-                    newIcon = new Icon(stream, 32, 32);
-                }
-                else
-                {
-                    // Priority 3: Fall back to file on disk (dev/debug builds)
-                    var baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                    var iconPath = Path.Combine(baseDir, "eqswitch-alt.ico");
-                    if (!File.Exists(iconPath))
-                        iconPath = Path.Combine(baseDir, "eqswitch.ico");
-                    newIcon = File.Exists(iconPath) ? new Icon(iconPath, 32, 32) : SystemIcons.Application;
-                }
-            }
+
+            // Priority 2: Default embedded Stone icon (eqswitch.ico — the primary embedded icon)
+            using var stream = typeof(TrayManager).Assembly.GetManifestResourceStream("EQSwitch.eqswitch.ico");
+            if (stream != null)
+                return new Icon(stream, 32, 32);
+
+            // Priority 3: Fall back to file on disk (dev/debug builds)
+            var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            var iconPath = Path.Combine(baseDir, "eqswitch-alt.ico");
+            if (!File.Exists(iconPath))
+                iconPath = Path.Combine(baseDir, "eqswitch.ico");
+            return File.Exists(iconPath) ? new Icon(iconPath, 32, 32) : SystemIcons.Application;
         }
         catch (Exception ex)
         {
             FileLogger.Warn($"Icon loading failed, using default: {ex.Message}");
-            newIcon = SystemIcons.Application;
+            return SystemIcons.Application;
         }
-
-        // Only dispose if it was a custom icon (not a system icon)
-        if (oldIcon != null && oldIcon != SystemIcons.Application)
-        {
-            try { oldIcon.Dispose(); } catch { }
-        }
-
-        return newIcon;
     }
 
     public void Dispose()

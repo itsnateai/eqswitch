@@ -59,7 +59,7 @@ public static class ConfigMigration
             }
 
             if (values.TryGetValue("EQ_ARGS", out var args))
-                config.Launch.Arguments = args.TrimStart('-');
+                config.Launch.Arguments = args.StartsWith('-') ? args[1..] : args;
 
             // Hotkeys — convert AHK syntax to our format
             if (values.TryGetValue("EQ_HOTKEY", out var switchKey))
@@ -208,6 +208,9 @@ public static class ConfigMigration
         done:
 
         string key = ahkKey[i..].ToUpperInvariant();
+
+        // Guard: modifier-only string (e.g., "^" with no key) → empty, skip
+        if (string.IsNullOrEmpty(key)) return "";
 
         if (modifiers.Count == 0)
             return key;

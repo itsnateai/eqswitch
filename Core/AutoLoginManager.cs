@@ -204,10 +204,18 @@ public class AutoLoginManager
             CombinedPressKey(writer, pid, hwnd, 0x0D);
             Thread.Sleep(3000);
 
+            // Re-resolve handle — EQ recreates its window on login→server select transition
+            hwnd = RefreshHandle(pid, hwnd);
+            if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window after login"); return; }
+
             // Step 8: Server select
             Report("Confirming server...");
             CombinedPressKey(writer, pid, hwnd, 0x0D);
             Thread.Sleep(3000);
+
+            // Re-resolve handle — EQ recreates its window on server select→character select
+            hwnd = RefreshHandle(pid, hwnd);
+            if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window after server select"); return; }
 
             // Step 9: Character select
             Report($"Selecting character (slot {account.CharacterSlot})...");
@@ -235,11 +243,23 @@ public class AutoLoginManager
         {
             try { writer.Close(pid); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Close failed: {ex.Message}"); }
             try { writer.Dispose(); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Dispose failed: {ex.Message}"); }
-            _activeLoginPids.TryRemove(pid, out _);
+            // Remove PID and fire LoginComplete atomically on the UI thread.
+            // If TryRemove runs here (background thread) before Post, there's a gap
+            // where IsLoginActive returns false but LoginComplete hasn't fired yet —
+            // ClientDiscovered could bypass the "don't touch window during login" guard.
             if (_syncContext != null)
-                _syncContext.Post(_ => LoginComplete?.Invoke(this, pid), null);
+            {
+                _syncContext.Post(_ =>
+                {
+                    _activeLoginPids.TryRemove(pid, out byte _);
+                    LoginComplete?.Invoke(this, pid);
+                }, null);
+            }
             else
+            {
+                _activeLoginPids.TryRemove(pid, out byte _);
                 LoginComplete?.Invoke(this, pid);
+            }
         }
     }
 
@@ -358,6 +378,34 @@ public class AutoLoginManager
             }
             Thread.Sleep(500);
         }
+        return IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// Re-resolve window handle for a PID. EQ recreates its window on screen transitions
+    /// (login → server select → character select). Returns the new handle, or the original
+    /// if the process still owns it. Returns IntPtr.Zero if the process exited.
+    /// </summary>
+    private static IntPtr RefreshHandle(int pid, IntPtr currentHwnd)
+    {
+        // If current handle is still valid, keep it (avoids unnecessary Process lookup)
+        if (NativeMethods.IsWindow(currentHwnd)) return currentHwnd;
+
+        try
+        {
+            using var proc = Process.GetProcessById(pid);
+            var newHwnd = proc.MainWindowHandle;
+            if (newHwnd != IntPtr.Zero && NativeMethods.IsWindow(newHwnd))
+            {
+                FileLogger.Info($"AutoLogin: window handle refreshed for PID {pid} (0x{currentHwnd:X} → 0x{newHwnd:X})");
+                return newHwnd;
+            }
+        }
+        catch (ArgumentException)
+        {
+            FileLogger.Warn($"AutoLogin: process {pid} exited during login sequence");
+        }
+
         return IntPtr.Zero;
     }
 
