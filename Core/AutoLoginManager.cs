@@ -144,24 +144,25 @@ public class AutoLoginManager
 
     private void RunLoginSequence(int pid, LoginAccount account, string password)
     {
-        // Create shared memory so dinput8.dll proxy can log diagnostics.
-        // The DLL hooks GetAsyncKeyState/GetDeviceState and reads keys from SHM.
-        // Even while we use foreground flash for typing, this lets us trace
-        // which hooks EQ calls during login (debugging true background input).
-        var diagWriter = new KeyInputWriter();
+        // Per-login KeyInputWriter — writes scan codes to per-PID shared memory
+        // that dinput8.dll's device proxy reads on each GetDeviceState/GetDeviceData call.
+        // The DLL also hooks GetAsyncKeyState/GetKeyState to return synthetic state,
+        // and posts WM_ACTIVATEAPP to trick EQ into processing background input.
+        var writer = new KeyInputWriter();
         try
         {
-            if (diagWriter.Open(pid))
+            // Step 1: Create shared memory FIRST, before waiting for the window.
+            // The DLL retries opening SHM periodically. Creating it early gives
+            // the proxy the entire startup period to discover it.
+            if (!writer.Open(pid))
             {
-                diagWriter.Activate(pid);
-                FileLogger.Info($"AutoLogin: SHM created for PID {pid} (diagnostic + DI injection)");
+                Report("Error: failed to create DirectInput shared memory");
+                return;
             }
-            else
-            {
-                FileLogger.Warn($"AutoLogin: SHM creation failed for PID {pid}");
-            }
+            writer.Activate(pid);
+            FileLogger.Info($"AutoLogin: SHM active for PID {pid}");
 
-            // Step 1: Wait for EQ window to appear
+            // Step 2: Wait for EQ window to appear
             Report("Waiting for EQ window...");
             var hwnd = WaitForWindow(pid, TimeSpan.FromSeconds(30));
             if (hwnd == IntPtr.Zero)
@@ -170,79 +171,52 @@ public class AutoLoginManager
                 return;
             }
 
-            // Step 2: Wait for login screen to become input-ready.
-            // EQ's login screen takes several seconds after the window appears.
-            // Configurable via Settings → Accounts → Login Screen Delay.
+            // Step 3: Wait for login screen to become input-ready.
             Report("Waiting for login screen...");
             Thread.Sleep(_config.LoginScreenDelayMs);
 
-            // Step 3: Flash the EQ window to foreground for typing.
-            // EQ's login screen uses standard Windows message input (WM_CHAR/WM_KEYDOWN),
-            // NOT DirectInput, for text fields. SendInput requires foreground focus.
-            var previousForeground = NativeMethods.GetForegroundWindow();
-            Report("Typing credentials...");
-            if (!BringToForeground(hwnd))
-            {
-                FileLogger.Warn($"AutoLogin: SetForegroundWindow failed for PID {pid}, attempting anyway");
-            }
-            Thread.Sleep(300); // let EQ process the focus change
-
             // Step 4: Type username (if /login flag not used)
-            // When UseLoginFlag is true, EQ pre-fills username and focuses password field.
-            // When false, we must Tab to username, type it, then Tab to password.
+            Report("Typing credentials...");
             if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
             {
                 Thread.Sleep(200);
-                SendPressKey(0x09); // Tab to username field
+                DiPressKey(writer, pid, 0x09); // Tab to username field
                 Thread.Sleep(100);
-                SendTypeString(account.Username);
+                DiTypeString(writer, pid, account.Username);
                 Thread.Sleep(100);
             }
 
-            // Step 5: Tab to password field (only if we typed username — /login flag
-            // already places cursor on the password field) and type password
+            // Step 5: Tab to password field and type password
             if (!account.UseLoginFlag)
             {
-                SendPressKey(0x09); // Tab from username to password
+                DiPressKey(writer, pid, 0x09); // Tab from username to password
                 Thread.Sleep(100);
             }
-            SendTypeString(password);
+            DiTypeString(writer, pid, password);
             Thread.Sleep(100);
 
             // Step 6: Press Enter to submit login
             Report("Submitting login...");
-            SendPressKey(0x0D);
-
-            // Restore previous foreground window while we wait for server select.
-            // The long waits don't need focus — only the keystroke moments do.
-            RestoreForeground(previousForeground);
+            DiPressKey(writer, pid, 0x0D);
             Thread.Sleep(3000);
 
-            // Step 7: Server select — flash back, press Enter, restore
+            // Step 7: Server select — press Enter to confirm pre-selected server
             Report("Confirming server...");
-            previousForeground = NativeMethods.GetForegroundWindow();
-            BringToForeground(hwnd);
-            Thread.Sleep(200);
-            SendPressKey(0x0D);
-            RestoreForeground(previousForeground);
+            DiPressKey(writer, pid, 0x0D);
             Thread.Sleep(3000);
 
-            // Step 8: Character select — flash, navigate to slot, restore
+            // Step 8: Character select — navigate to character slot
             Report($"Selecting character (slot {account.CharacterSlot})...");
-            previousForeground = NativeMethods.GetForegroundWindow();
-            BringToForeground(hwnd);
-            Thread.Sleep(200);
             for (int i = 1; i < account.CharacterSlot; i++)
             {
-                SendPressKey(0x28); // VK_DOWN
+                DiPressKey(writer, pid, 0x28); // VK_DOWN
                 Thread.Sleep(200);
             }
             Thread.Sleep(300);
 
             // Step 9: Enter World
             Report("Entering world...");
-            SendPressKey(0x0D);
-            RestoreForeground(previousForeground);
+            DiPressKey(writer, pid, 0x0D);
             Thread.Sleep(1000);
 
             Report($"{account.Name} logged in!");
@@ -255,13 +229,64 @@ public class AutoLoginManager
         }
         finally
         {
-            try { diagWriter.Close(pid); } catch { /* best effort */ }
-            try { diagWriter.Dispose(); } catch { /* best effort */ }
+            try { writer.Close(pid); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Close failed: {ex.Message}"); }
+            try { writer.Dispose(); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Dispose failed: {ex.Message}"); }
             _activeLoginPids.TryRemove(pid, out _);
             if (_syncContext != null)
                 _syncContext.Post(_ => LoginComplete?.Invoke(this, pid), null);
             else
                 LoginComplete?.Invoke(this, pid);
+        }
+    }
+
+    // ─── DirectInput Shared Memory Helpers ──────────────────────────
+    //
+    // Write scan codes to per-PID shared memory that dinput8.dll reads.
+    // The DLL injects these into DirectInput's keyboard buffer AND
+    // returns them from hooked GetAsyncKeyState/GetKeyState/GetKeyboardState.
+
+    private static void DiSetKey(KeyInputWriter writer, int pid, ushort vk, bool pressed)
+    {
+        uint scan = NativeMethods.MapVirtualKeyW(vk, NativeMethods.MAPVK_VK_TO_VSC);
+        if (scan > 0 && scan < 256)
+            writer.SetKey(pid, (byte)scan, pressed);
+    }
+
+    private static void DiPressKey(KeyInputWriter writer, int pid, ushort vk)
+    {
+        DiSetKey(writer, pid, vk, true);
+        Thread.Sleep(80);
+        DiSetKey(writer, pid, vk, false);
+        Thread.Sleep(80);
+    }
+
+    private static void DiTypeString(KeyInputWriter writer, int pid, string text)
+    {
+        foreach (char c in text)
+        {
+            short vkScan = NativeMethods.VkKeyScanW(c);
+            if (vkScan == -1) continue;
+
+            byte modifiers = (byte)(vkScan >> 8);
+            if ((modifiers & ~0x01) != 0) continue;
+
+            ushort vk = (ushort)(vkScan & 0xFF);
+            bool needShift = (modifiers & 0x01) != 0;
+
+            if (needShift)
+            {
+                DiSetKey(writer, pid, 0x10, true); // VK_SHIFT down
+                Thread.Sleep(20);
+            }
+            DiSetKey(writer, pid, vk, true);
+            Thread.Sleep(80);
+            DiSetKey(writer, pid, vk, false);
+            if (needShift)
+            {
+                Thread.Sleep(20);
+                DiSetKey(writer, pid, 0x10, false); // VK_SHIFT up
+            }
+            Thread.Sleep(50);
         }
     }
 
