@@ -763,7 +763,7 @@ public class TrayManager : IDisposable
         launchOneItem.Click += (_, _) => OnLaunchOne();
         _contextMenu.Items.Add(launchOneItem);
 
-        var launchAllItem = new ToolStripMenuItem($"\uD83C\uDFAE  Launch All ({_config.Launch.NumClients}){HkSuffix(hk.LaunchAll)}") { Font = _boldMenuFont };
+        var launchAllItem = new ToolStripMenuItem($"\uD83C\uDFAE  Launch Two{HkSuffix(hk.LaunchAll)}") { Font = _boldMenuFont };
         launchAllItem.Click += (_, _) => OnLaunchAll();
         _contextMenu.Items.Add(launchAllItem);
 
@@ -784,7 +784,7 @@ public class TrayManager : IDisposable
             if (assignedSlots >= 2)
             {
                 loginMenu.DropDownItems.Add(new ToolStripSeparator());
-                loginMenu.DropDownItems.Add("\uD83D\uDE80  Login All", null, (_, _) => ExecuteTrayAction("LoginAll"));
+                loginMenu.DropDownItems.Add("\uD83D\uDE80  Auto-Login Two Clients", null, (_, _) => ExecuteTrayAction("LoginAll"));
             }
             loginMenu.DropDownItems.Add(new ToolStripSeparator());
             loginMenu.DropDownItems.Add("\u2699  Manage Accounts...", null, (_, _) => ShowSettings(3));
@@ -818,6 +818,7 @@ public class TrayManager : IDisposable
         videoMenu.DropDownItems.Add(pipItem);
         videoMenu.DropDownItems.Add(new ToolStripSeparator());
         videoMenu.DropDownItems.Add($"Fix Windows  \uD83D\uDD27{HkSuffix(hk.ArrangeWindows)}", null, (_, _) => OnArrangeWindows());
+        videoMenu.DropDownItems.Add("Swap Windows  \uD83D\uDD00", null, (_, _) => ExecuteTrayAction("SwapWindows"));
         bool isMultiMon = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
         var multiMonItem = new ToolStripMenuItem(
             $"{(isMultiMon ? "\u2705" : "\u2B1C")}  Multi-Monitor Mode");
@@ -1059,7 +1060,8 @@ public class TrayManager : IDisposable
         "SwapWindows" => "Swap positions",
         "TogglePiP" => "Toggle PiP",
         "LaunchOne" => "Launch one",
-        "LaunchAll" => "Launch all",
+        "LaunchAll" => "Launch two",
+        "LoginAll" => "Auto-login two clients",
         "Settings" => "Open settings",
         "ShowHelp" => "Show this help",
         _ => action
@@ -1243,7 +1245,11 @@ public class TrayManager : IDisposable
             case "SwapWindows":
                 var swapClients = _processManager.Clients;
                 if (swapClients.Count >= 2)
+                {
                     _windowManager.SwapWindows(swapClients);
+                    _windowManager.ResizeToCurrentMonitors(swapClients);
+                    UpdateHookConfig();
+                }
                 break;
             case "RefreshClients":
                 _processManager.RefreshClients();
