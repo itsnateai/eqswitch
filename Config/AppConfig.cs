@@ -11,6 +11,10 @@ namespace EQSwitch.Config;
 /// </summary>
 public class AppConfig
 {
+    /// <summary>Schema version for config migration. Bump when making breaking changes.</summary>
+    public const int CurrentConfigVersion = 1;
+
+    public int ConfigVersion { get; set; } = CurrentConfigVersion;
     public bool IsFirstRun { get; set; } = true;
     public string EQPath { get; set; } = @"C:\EverQuest";
     public string EQProcessName { get; set; } = "eqgame";

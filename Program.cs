@@ -37,6 +37,8 @@ static class Program
             return;
         }
 
+        bool isAfterUpdate = args.Contains("--after-update");
+
         FileLogger.Initialize();
         CleanupUpdateArtifacts();
 
@@ -125,6 +127,36 @@ static class Program
             if (isNewUser)
                 trayApp.OpenSettingsAfterDelay();
 
+            // Show confirmation after successful self-update (delayed so tray is ready)
+            if (isAfterUpdate)
+            {
+                var postUpdateTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+                postUpdateTimer.Tick += (_, _) =>
+                {
+                    postUpdateTimer.Stop();
+                    postUpdateTimer.Dispose();
+                    var version = System.Reflection.Assembly.GetExecutingAssembly()
+                        .GetName().Version?.ToString(3) ?? "?";
+                    FloatingTooltip.Show($"✅ EQSwitch updated to v{version}!", 5000);
+                };
+                postUpdateTimer.Start();
+            }
+
+            // --test-update: simulate update flow without hitting GitHub
+            if (args.Contains("--test-update"))
+            {
+                UpdateDialog.TestMode = true;
+                var timer = new System.Windows.Forms.Timer { Interval = 500 };
+                timer.Tick += (_, _) =>
+                {
+                    timer.Stop();
+                    timer.Dispose();
+                    using var dlg = new UpdateDialog();
+                    dlg.ShowDialog();
+                };
+                timer.Start();
+            }
+
             Application.Run();
         }
         catch (Exception ex)
@@ -170,22 +202,31 @@ static class Program
             return;
         }
 
-        // Clean up each artifact independently so one locked file doesn't block the rest
+        // Clean up each artifact independently so one locked file doesn't block the rest.
+        // Retry exe.old — the old process may still be releasing the memory-mapped file.
         foreach (var pattern in new[] { "EQSwitch.exe.old", "EQSwitch.exe.new",
-                                        "eqswitch-hook.dll.old", "eqswitch-hook.dll.new" })
+                                        "eqswitch-hook.dll.old", "eqswitch-hook.dll.new",
+                                        "dinput8.dll.old", "dinput8.dll.new" })
         {
-            try
+            var path = Path.Combine(dir, pattern);
+            if (!File.Exists(path)) continue;
+
+            for (int attempt = 0; attempt < 3; attempt++)
             {
-                var path = Path.Combine(dir, pattern);
-                if (File.Exists(path))
+                try
                 {
                     File.Delete(path);
                     FileLogger.Info($"Cleaned up update artifact: {pattern}");
+                    break;
                 }
-            }
-            catch (Exception ex)
-            {
-                FileLogger.Warn($"Failed to clean up {pattern}: {ex.Message}");
+                catch (Exception) when (attempt < 2)
+                {
+                    Thread.Sleep(500);
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Warn($"Failed to clean up {pattern}: {ex.Message}");
+                }
             }
         }
     }
