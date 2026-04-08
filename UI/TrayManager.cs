@@ -57,9 +57,9 @@ public class TrayManager : IDisposable
     // Process Manager (single-instance)
     private ProcessManagerForm? _processManagerForm;
 
-    // Tray click detection
+    // Tray click detection — both left and middle use MouseUp counting
+    private int _leftClickCount;
     private System.Windows.Forms.Timer? _leftClickTimer;
-    // Middle button: counted via MouseUp (reliable for every click)
     private int _middleClickCount;
     private System.Windows.Forms.Timer? _middleClickTimer;
 
@@ -122,25 +122,29 @@ public class TrayManager : IDisposable
         };
 
         // Assign context menu only on right-click, remove on left/middle to prevent
-        // Windows from showing the menu and stealing focus from double-click detection
+        // Windows from showing the menu and stealing focus from click detection
         _trayIcon.MouseDown += (_, e) =>
         {
             _trayIcon.ContextMenuStrip = e.Button == MouseButtons.Right ? _contextMenu : null;
         };
-        // Middle button: count on MouseUp — it fires after EVERY click including
-        // when Windows converts the 2nd press into WM_MBUTTONDBLCLK (which skips
+        // Count all clicks via MouseUp — it fires after EVERY click including
+        // when Windows converts the 2nd press into WM_xBUTTONDBLCLK (which skips
         // MouseDown entirely, losing the click). MouseUp always fires.
         _trayIcon.MouseUp += (_, e) =>
         {
-            if (e.Button == MouseButtons.Middle)
+            if (e.Button == MouseButtons.Left)
+            {
+                _leftClickCount++;
+                FileLogger.Info($"TrayClick: left click #{_leftClickCount}");
+                EnsureTimer(ref _leftClickTimer, LeftClickResolveMs, OnLeftResolved);
+            }
+            else if (e.Button == MouseButtons.Middle)
             {
                 _middleClickCount++;
                 FileLogger.Info($"TrayClick: middle click #{_middleClickCount}");
                 EnsureTimer(ref _middleClickTimer, MiddleClickResolveMs, OnMiddleResolved);
             }
         };
-        _trayIcon.MouseClick += OnTrayMouseClick;
-        _trayIcon.MouseDoubleClick += OnTrayMouseDoubleClick;
 
         // Listen for TaskbarCreated to recover tray icon after explorer.exe restarts
         _taskbarMessageWindow = new TaskbarMessageWindow(() =>
@@ -1040,6 +1044,7 @@ public class TrayManager : IDisposable
         lines.Add("🖱  TRAY CLICKS");
         AddClickLine(lines, "Left single", tc.SingleClick);
         AddClickLine(lines, "Left double", tc.DoubleClick);
+        AddClickLine(lines, "Left triple", tc.TripleClick);
         AddClickLine(lines, "Middle single", tc.MiddleClick);
         AddClickLine(lines, "Middle triple", tc.MiddleDoubleClick);
 
@@ -1123,32 +1128,8 @@ public class TrayManager : IDisposable
         _settingsForm.Show();
     }
 
-    /// <summary>
-    /// Left: single click starts a timer. MouseDoubleClick cancels it.
-    /// Middle: handled via MouseUp handler (see Initialize).
-    /// </summary>
-    private void OnTrayMouseClick(object? sender, MouseEventArgs e)
-    {
-        if (e.Button == MouseButtons.Left)
-        {
-            FileLogger.Info("TrayClick: left click");
-            EnsureTimer(ref _leftClickTimer, LeftClickResolveMs, OnLeftSingleResolved);
-        }
-    }
-
-    /// <summary>
-    /// Double-click: cancels pending single-click timer. Only fires for left button.
-    /// Middle button is handled via MouseUp which fires reliably for every click.
-    /// </summary>
-    private void OnTrayMouseDoubleClick(object? sender, MouseEventArgs e)
-    {
-        if (e.Button == MouseButtons.Left)
-        {
-            _leftClickTimer?.Stop();
-            FileLogger.Info($"TrayClick: left double → {_config.TrayClick.DoubleClick}");
-            ExecuteTrayAction(_config.TrayClick.DoubleClick);
-        }
-    }
+    // MouseClick and MouseDoubleClick are no longer used — all click detection
+    // is handled via MouseUp counting (see Initialize).
 
     private void EnsureTimer(ref System.Windows.Forms.Timer? timer, int intervalMs, EventHandler handler)
     {
@@ -1164,11 +1145,19 @@ public class TrayManager : IDisposable
         timer.Start();
     }
 
-    private void OnLeftSingleResolved(object? sender, EventArgs e)
+    private void OnLeftResolved(object? sender, EventArgs e)
     {
         _leftClickTimer!.Stop();
-        FileLogger.Info($"TrayClick: left single → {_config.TrayClick.SingleClick}");
-        ExecuteTrayAction(_config.TrayClick.SingleClick);
+        int clicks = _leftClickCount;
+        _leftClickCount = 0;
+        if (clicks == 0) return;
+        string action = clicks >= 3
+            ? _config.TrayClick.TripleClick
+            : clicks >= 2
+                ? _config.TrayClick.DoubleClick
+                : _config.TrayClick.SingleClick;
+        FileLogger.Info($"TrayClick: resolved {clicks} left click(s) → {action}");
+        ExecuteTrayAction(action);
     }
 
     private void OnMiddleResolved(object? sender, EventArgs e)
@@ -1331,6 +1320,7 @@ public class TrayManager : IDisposable
         _config.Pip.MaxWindows = newConfig.Pip.MaxWindows;
         _config.TrayClick.SingleClick = newConfig.TrayClick.SingleClick;
         _config.TrayClick.DoubleClick = newConfig.TrayClick.DoubleClick;
+        _config.TrayClick.TripleClick = newConfig.TrayClick.TripleClick;
         _config.TrayClick.MiddleClick = newConfig.TrayClick.MiddleClick;
         _config.TrayClick.MiddleDoubleClick = newConfig.TrayClick.MiddleDoubleClick;
         _config.GinaPath = newConfig.GinaPath;

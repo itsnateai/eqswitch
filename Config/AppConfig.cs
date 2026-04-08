@@ -375,6 +375,11 @@ public class TrayClickConfig
     public string DoubleClick { get; set; } = "None";
 
     /// <summary>
+    /// Action for triple left-click on tray icon.
+    /// </summary>
+    public string TripleClick { get; set; } = "None";
+
+    /// <summary>
     /// Action for single middle-click on tray icon.
     /// </summary>
     public string MiddleClick { get; set; } = "TogglePiP";

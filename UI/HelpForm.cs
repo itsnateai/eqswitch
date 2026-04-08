@@ -65,6 +65,7 @@ TRAY ICON:
   Right-click        Context menu
   Single-click       {config.TrayClick.SingleClick}
   Double-click       {config.TrayClick.DoubleClick}
+  Triple-click       {config.TrayClick.TripleClick}
   Middle-click       {config.TrayClick.MiddleClick}
   Middle-triple      {config.TrayClick.MiddleDoubleClick}
   (Configurable in Settings → General tab)
