@@ -82,10 +82,11 @@ public static class ConfigManager
     /// </summary>
     public static void Shutdown()
     {
-        FlushSave();
+        FlushSave();           // drain any pending save
         _saveTimer?.Stop();
         _saveTimer?.Dispose();
         _saveTimer = null;
+        FlushSave();           // catch any save queued between first flush and timer disposal
     }
 
     /// <summary>

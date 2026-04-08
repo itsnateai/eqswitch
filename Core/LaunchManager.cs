@@ -73,6 +73,15 @@ public class LaunchManager : IDisposable
             return;
         }
 
+        // Share debounce with LaunchOne — prevents LaunchOne then immediate LaunchAll
+        long now = Environment.TickCount64;
+        if (now - _lastLaunchTime < LaunchDebounceMs)
+        {
+            FileLogger.Info("LaunchAll: debounced (too soon after last launch)");
+            return;
+        }
+        _lastLaunchTime = now;
+
         int count = Math.Clamp(_config.Launch.NumClients, 1, 8);
         _launchActive = true;
         _launchedPids.Clear();
