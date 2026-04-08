@@ -37,8 +37,20 @@ public static class ConfigManager
             }
 
             var json = File.ReadAllText(ConfigPath);
-            var config = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? new AppConfig();
+
+            // Run versioned migrations on raw JSON before deserialization
+            var (migratedJson, didMigrate) = ConfigVersionMigrator.MigrateIfNeeded(json);
+
+            var config = JsonSerializer.Deserialize<AppConfig>(migratedJson, JsonOptions) ?? new AppConfig();
             config.Validate();
+
+            // Persist migrated config so migration doesn't re-run
+            if (didMigrate)
+            {
+                _pendingSave = config;
+                FlushSave();
+            }
+
             return config;
         }
         catch (Exception ex)
