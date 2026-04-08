@@ -357,7 +357,9 @@ public class PipOverlay : Form
                     dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION,
                     rcDestination = destRect
                 };
-                NativeMethods.DwmUpdateThumbnailProperties(_thumbnailIds[i], ref props);
+                int hr = NativeMethods.DwmUpdateThumbnailProperties(_thumbnailIds[i], ref props);
+                if (hr != 0)
+                    FileLogger.Warn($"PiP: DwmUpdateThumbnailProperties failed in refresh ({MapDwmError(hr)})");
             }
 
             Invalidate();
@@ -597,7 +599,9 @@ public class PipOverlay : Form
                 dwFlags = NativeMethods.DWM_TNP_RECTDESTINATION,
                 rcDestination = destRect
             };
-            NativeMethods.DwmUpdateThumbnailProperties(_thumbnailIds[i], ref props);
+            int hr = NativeMethods.DwmUpdateThumbnailProperties(_thumbnailIds[i], ref props);
+            if (hr != 0)
+                FileLogger.Warn($"PiP: DwmUpdateThumbnailProperties failed in reposition ({MapDwmError(hr)})");
         }
 
         Invalidate(); // repaint border

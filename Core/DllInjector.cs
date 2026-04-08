@@ -109,11 +109,13 @@ public static class DllInjector
         {
             if (hThread != IntPtr.Zero)
                 NativeMethods.CloseHandle(hThread);
-            // Only free remote memory if the thread completed — if it timed out,
-            // the remote thread may still be using the allocation. Leak the small
-            // buffer (~260 bytes) rather than crash eqgame.exe.
+            // Free remote memory when safe:
+            //  - Thread completed (WAIT_OBJECT_0): LoadLibraryA is done with the buffer
+            //  - Thread never created (hThread == Zero): no one is using the allocation
+            // If the thread timed out, we intentionally leak ~260 bytes rather than
+            // crash eqgame.exe by freeing memory a running thread may reference.
             if (allocAddr != IntPtr.Zero && hProcess != IntPtr.Zero
-                && waitResult == NativeMethods.WAIT_OBJECT_0)
+                && (waitResult == NativeMethods.WAIT_OBJECT_0 || hThread == IntPtr.Zero))
                 NativeMethods.VirtualFreeEx(hProcess, allocAddr, 0, NativeMethods.MEM_RELEASE);
             if (hProcess != IntPtr.Zero)
                 NativeMethods.CloseHandle(hProcess);
@@ -330,20 +332,22 @@ public static class DllInjector
                 return false;
             }
 
-            // Find the DLL module in the target process
-            var dllBase = FindModule32InProcess(hProcess, dllName);
-            if (dllBase == IntPtr.Zero)
-            {
-                FileLogger.Info($"DllInjector.Eject: DLL not found in process (already unloaded?)");
-                return true;
-            }
-
-            // Resolve FreeLibrary in the target process
+            // Determine target architecture first — module enumeration flag depends on it
             bool targetIsWow64 = false;
             if (!NativeMethods.IsWow64Process(hProcess, out targetIsWow64))
             {
                 FileLogger.Error($"DllInjector.Eject: IsWow64Process failed, error={Marshal.GetLastWin32Error()}");
                 return false;
+            }
+
+            // Find the DLL module in the target process.
+            // eqgame.exe is always WoW64 (32-bit on 64-bit Windows), so LIST_MODULES_32BIT
+            // is correct. If we ever support a non-WoW64 target, this needs LIST_MODULES_ALL.
+            var dllBase = FindModule32InProcess(hProcess, dllName);
+            if (dllBase == IntPtr.Zero)
+            {
+                FileLogger.Info($"DllInjector.Eject: DLL not found in process (already unloaded?)");
+                return true;
             }
 
             IntPtr freeLibrary;

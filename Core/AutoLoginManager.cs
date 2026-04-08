@@ -258,6 +258,14 @@ public class AutoLoginManager
     private static IntPtr MakeKeyUpLParam(uint scanCode)
         => (IntPtr)(1 | ((int)scanCode << 16) | (1 << 30) | unchecked((int)(1u << 31)));
 
+    /// <summary>PostMessage wrapper that logs on failure (window may have closed mid-login).</summary>
+    private static bool Post(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
+    {
+        if (NativeMethods.PostMessage(hwnd, msg, wParam, lParam)) return true;
+        FileLogger.Warn($"AutoLogin: PostMessage failed (hwnd=0x{hwnd:X}, msg=0x{msg:X}), window may have closed");
+        return false;
+    }
+
     /// <summary>Press a key via SHM (for DLL hooks) AND PostMessage (for message queue).</summary>
     private static void CombinedPressKey(KeyInputWriter writer, int pid, IntPtr hwnd, ushort vk)
     {
@@ -266,12 +274,12 @@ public class AutoLoginManager
         // SHM: set key down (DLL hooks see it via GetAsyncKeyState/GetDeviceState)
         if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, true);
         // PostMessage: deliver WM_KEYDOWN to EQ's message queue
-        NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
+        Post(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
         Thread.Sleep(80);
 
         // Release
         if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, false);
-        NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYUP, (IntPtr)vk, MakeKeyUpLParam(scan));
+        Post(hwnd, NativeMethods.WM_KEYUP, (IntPtr)vk, MakeKeyUpLParam(scan));
         Thread.Sleep(80);
     }
 
@@ -295,26 +303,26 @@ public class AutoLoginManager
             if (needShift)
             {
                 if (shiftScan > 0 && shiftScan < 256) writer.SetKey(pid, (byte)shiftScan, true);
-                NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)0x10, MakeKeyDownLParam(shiftScan));
+                Post(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)0x10, MakeKeyDownLParam(shiftScan));
                 Thread.Sleep(20);
             }
 
             // Key down (both layers) + WM_CHAR for text field
             if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, true);
-            NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
-            NativeMethods.PostMessage(hwnd, (uint)NativeMethods.WM_CHAR, (IntPtr)c, MakeKeyDownLParam(scan));
+            Post(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
+            Post(hwnd, (uint)NativeMethods.WM_CHAR, (IntPtr)c, MakeKeyDownLParam(scan));
             Thread.Sleep(80);
 
             // Key up (both layers)
             if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, false);
-            NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYUP, (IntPtr)vk, MakeKeyUpLParam(scan));
+            Post(hwnd, NativeMethods.WM_KEYUP, (IntPtr)vk, MakeKeyUpLParam(scan));
 
             // Shift up
             if (needShift)
             {
                 Thread.Sleep(40);
                 if (shiftScan > 0 && shiftScan < 256) writer.SetKey(pid, (byte)shiftScan, false);
-                NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYUP, (IntPtr)0x10, MakeKeyUpLParam(shiftScan));
+                Post(hwnd, NativeMethods.WM_KEYUP, (IntPtr)0x10, MakeKeyUpLParam(shiftScan));
             }
             Thread.Sleep(50);
         }

@@ -138,6 +138,27 @@ public class AppConfig
             Pip.CustomWidth = 480;
             Pip.CustomHeight = 270;
         }
+
+        // String-enum validation — fall back to defaults on garbage values from hand-edited JSON
+        if (Layout.Mode is not ("single" or "multimonitor")) Layout.Mode = "single";
+        if (Pip.SizePreset is not ("Small" or "Medium" or "Large" or "Custom")) Pip.SizePreset = "Large";
+        if (Pip.Orientation is not ("Horizontal" or "Vertical")) Pip.Orientation = "Vertical";
+        if (Affinity.ActivePriority is not ("Normal" or "AboveNormal" or "High" or "BelowNormal"))
+            Affinity.ActivePriority = "AboveNormal";
+        if (Affinity.BackgroundPriority is not ("Normal" or "AboveNormal" or "High" or "BelowNormal"))
+            Affinity.BackgroundPriority = "AboveNormal";
+        if (Hotkeys.SwitchKeyMode is not ("swapLast" or "cycleFocused" or "cycleAll"))
+            Hotkeys.SwitchKeyMode = "swapLast";
+
+        // Array shape validation
+        if (SettingsWindowPos is { Length: not (0 or 2) }) SettingsWindowPos = Array.Empty<int>();
+        if (EQClientIni.CPUAffinitySlots is not { Length: 6 }) EQClientIni.CPUAffinitySlots = new[] { 1, 2, 3, 1, 2, 3 };
+        for (int i = 0; i < 6; i++)
+            EQClientIni.CPUAffinitySlots[i] = Math.Clamp(EQClientIni.CPUAffinitySlots[i], 0, 31);
+
+        // LoginAccount field validation
+        foreach (var a in Accounts)
+            a.CharacterSlot = Math.Clamp(a.CharacterSlot, 1, 8);
     }
 }
 

@@ -27,7 +27,7 @@ public class ProcessManager : IDisposable
     /// </summary>
     private const int IdlePollingMs = 10000;
 
-    private volatile bool _isRefreshing;
+    private bool _isRefreshing; // UI-thread-only re-entrancy guard (not cross-thread)
 
     public event EventHandler<EQClient>? ClientDiscovered;
     public event EventHandler<EQClient>? ClientLost;

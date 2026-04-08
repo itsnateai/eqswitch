@@ -115,6 +115,7 @@ public static class ConfigManager
         {
             FileLogger.Error("Config save failed", ex);
             LastSaveError = ex.Message;
+            SaveFailed?.Invoke(ex.Message);
             return false;
         }
 
@@ -131,6 +132,9 @@ public static class ConfigManager
 
     /// <summary>Error message from the last failed save, or null if last save succeeded.</summary>
     public static string? LastSaveError { get; private set; }
+
+    /// <summary>Raised when FlushSave fails. Subscribers can show user-facing warnings.</summary>
+    public static event Action<string>? SaveFailed;
 
     /// <summary>
     /// Create a timestamped backup of the current config.
@@ -155,7 +159,8 @@ public static class ConfigManager
 
             foreach (var old in backups)
             {
-                try { File.Delete(old); } catch { /* best effort */ }
+                try { File.Delete(old); }
+                catch (Exception ex) { FileLogger.Info($"Backup prune skipped ({Path.GetFileName(old)}): {ex.Message}"); }
             }
         }
         catch (Exception ex)
@@ -174,6 +179,12 @@ public static class ConfigManager
             File.Move(ConfigPath, corruptPath);
             FileLogger.Warn($"Corrupt config backed up to {corruptPath}");
         }
-        catch { /* best effort */ }
+        catch (Exception ex)
+        {
+            FileLogger.Error($"TryBackupCorruptConfig: failed to move corrupt config: {ex.Message}");
+            // Last resort: delete the corrupt file so Load() doesn't hit it on every launch
+            try { File.Delete(ConfigPath); }
+            catch (Exception ex2) { FileLogger.Error($"TryBackupCorruptConfig: also failed to delete: {ex2.Message}"); }
+        }
     }
 }
