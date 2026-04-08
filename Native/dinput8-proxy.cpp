@@ -20,8 +20,29 @@ static PFN_DirectInput8Create g_realCreate = nullptr;
 static HMODULE g_realDll = nullptr;
 static FILE *g_logFile = nullptr;
 static bool g_logInitAttempted = false;
+static INIT_ONCE g_initOnce = INIT_ONCE_STATIC_INIT;
+static bool g_proxyInitDone = false;  // set after InitOnceExecuteOnce returns
 // Log path built from hModule during DLL_PROCESS_ATTACH (no loader-lock concern)
 static char g_logPath[MAX_PATH] = {};
+
+// Message queue for DllMain — fopen is unsafe under loader lock,
+// so we buffer messages and flush on first DirectInput8Create call.
+static char g_earlyMessages[4][256];
+static int g_earlyMsgCount = 0;
+
+static void QueueEarlyMsg(const char *msg) {
+    if (g_earlyMsgCount < 4) {
+        strncpy(g_earlyMessages[g_earlyMsgCount], msg, 255);
+        g_earlyMessages[g_earlyMsgCount][255] = '\0';
+        g_earlyMsgCount++;
+    }
+}
+
+static void FlushEarlyMessages() {
+    for (int i = 0; i < g_earlyMsgCount; i++)
+        DI8Log("%s", g_earlyMessages[i]);
+    g_earlyMsgCount = 0;
+}
 
 // Open log file using the path prepared during DLL_PROCESS_ATTACH.
 // Deferred from DllMain because fopen calls CreateFileA internally.
@@ -45,12 +66,56 @@ void DI8Log(const char *fmt, ...) {
     fflush(f);
 }
 
+// ─── Lazy Init ──────────────────────────────────────────────────
+// LoadLibraryA and fopen are unsafe under the loader lock (DllMain).
+// Defer real DLL loading, IAT hooks, and logging to first DirectInput8Create call.
+static bool InitProxy() {
+    FlushEarlyMessages();
+
+    char sysDir[MAX_PATH];
+    GetSystemDirectoryA(sysDir, MAX_PATH);
+    char realPath[MAX_PATH];
+    snprintf(realPath, MAX_PATH, "%s\\dinput8.dll", sysDir);
+
+    g_realDll = LoadLibraryA(realPath);
+    if (!g_realDll) {
+        DI8Log("FATAL: failed to load real dinput8.dll from %s", realPath);
+        return false;
+    }
+    DI8Log("Loaded real dinput8.dll from %s", realPath);
+
+    g_realCreate = (PFN_DirectInput8Create)
+        GetProcAddress(g_realDll, "DirectInput8Create");
+    if (!g_realCreate) {
+        DI8Log("FATAL: failed to resolve DirectInput8Create");
+        FreeLibrary(g_realDll);
+        g_realDll = nullptr;
+        return false;
+    }
+    DI8Log("Resolved real DirectInput8Create");
+
+    IatHook::InstallKeyboardHooks();
+    DI8Log("Proxy initialized (deferred from DllMain)");
+    return true;
+}
+
+// INIT_ONCE callback — thread-safe even if DirectInput8Create is called concurrently.
+// If InitProxy fails, INIT_ONCE will retry on the next call (returns FALSE).
+// g_proxyInitDone is only set on success so DLL_PROCESS_DETACH doesn't clean up
+// resources that were never created.
+static BOOL CALLBACK InitProxyOnce(INIT_ONCE *, PVOID, PVOID *) {
+    if (!InitProxy())
+        return FALSE;
+    g_proxyInitDone = true;
+    return TRUE;
+}
+
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
 
-        // Build log path from hModule (safe in DllMain — no loader lock re-entry).
-        // Actual fopen is deferred to first DI8Log call.
+        // Build log path from hModule (safe — no loader lock re-entry).
+        // Everything else deferred to InitProxy() on first DirectInput8Create.
         if (GetModuleFileNameA(hModule, g_logPath, MAX_PATH)) {
             char *lastSlash = strrchr(g_logPath, '\\');
             if (lastSlash && (size_t)(lastSlash + 1 - g_logPath) + 21 < MAX_PATH)
@@ -61,47 +126,17 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
             snprintf(g_logPath, MAX_PATH, "eqswitch-dinput8.log");
         }
 
-        // Do NOT call DI8Log here — fopen inside DllMain risks loader lock deadlock.
-        // First log entry fires naturally in DirectInput8Create (outside DllMain).
-
-        // Build path to real dinput8.dll dynamically.
-        // GetSystemDirectoryA returns System32; WoW64 redirects 32-bit
-        // processes to SysWOW64 transparently.
-        char sysDir[MAX_PATH];
-        GetSystemDirectoryA(sysDir, MAX_PATH);
-        char realPath[MAX_PATH];
-        snprintf(realPath, MAX_PATH, "%s\\dinput8.dll", sysDir);
-
-        g_realDll = LoadLibraryA(realPath);
-        if (!g_realDll) {
-            DI8Log("FATAL: failed to load real dinput8.dll from %s", realPath);
-            return FALSE;
-        }
-        DI8Log("Loaded real dinput8.dll from %s", realPath);
-
-        g_realCreate = (PFN_DirectInput8Create)
-            GetProcAddress(g_realDll, "DirectInput8Create");
-        if (!g_realCreate) {
-            DI8Log("FATAL: failed to resolve DirectInput8Create");
-            FreeLibrary(g_realDll);
-            g_realDll = nullptr;
-            return FALSE;
-        }
-        DI8Log("Resolved real DirectInput8Create");
-
-        // Install IAT hooks on eqgame.exe's import table for keyboard
-        // state and window focus queries (Phase 4).
-        IatHook::InstallKeyboardHooks();
-        DI8Log("DllMain: proxy ready");
+        QueueEarlyMsg("DllMain: DLL_PROCESS_ATTACH (init deferred)");
     }
     else if (reason == DLL_PROCESS_DETACH) {
-        DI8Log("DllMain: PROCESS_DETACH");
-        // Restore IAT patches FIRST — before code pages are unmapped
-        IatHook::RemoveKeyboardHooks();
-        // Signal background threads to exit and release handles (no wait — loader lock held)
-        DeviceProxy_Shutdown();
-        // Release the real dinput8.dll reference
-        if (g_realDll) { FreeLibrary(g_realDll); g_realDll = nullptr; }
+        // Only clean up if init completed (reserved==NULL means FreeLibrary,
+        // reserved!=NULL means process exit — OS handles cleanup).
+        if (g_proxyInitDone && reserved == NULL) {
+            DI8Log("PROCESS_DETACH: cleaning up");
+            IatHook::RemoveKeyboardHooks();
+            DeviceProxy_Shutdown();
+            if (g_realDll) { FreeLibrary(g_realDll); g_realDll = nullptr; }
+        }
         // Close log file — null before fclose so racing threads see nullptr
         FILE *lf = g_logFile;
         g_logFile = nullptr;
@@ -120,6 +155,11 @@ extern "C" HRESULT WINAPI DirectInput8Create(
     HINSTANCE hinst, DWORD dwVersion, REFIID riidltf,
     LPVOID *ppvOut, LPUNKNOWN punkOuter)
 {
+    // Lazy init: load real DLL + install hooks on first call (outside loader lock).
+    // INIT_ONCE guarantees thread-safe one-shot execution. If InitProxy fails,
+    // INIT_ONCE will retry on next call (callback returned FALSE).
+    InitOnceExecuteOnce(&g_initOnce, InitProxyOnce, nullptr, nullptr);
+
     DI8Log("DirectInput8Create: version=0x%04X", dwVersion);
 
     if (!g_realCreate) return E_FAIL;
