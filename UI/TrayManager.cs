@@ -12,8 +12,9 @@ public class TrayManager : IDisposable
     private const int AffinityPollIntervalMs = 250;
     // Left: MouseDoubleClick handles it, so this just delays single-click resolution.
     private static readonly int LeftClickResolveMs = SystemInformation.DoubleClickTime + 50;
-    // Middle: no MouseDoubleClick event, so we count clicks. Longer window for reliability.
-    private static readonly int MiddleClickResolveMs = SystemInformation.DoubleClickTime * 2;
+    // Middle: counted via MouseUp (fires reliably for every click, unlike MouseDown
+    // which Windows skips on the 2nd press, converting it to DBLCLK instead).
+    private static readonly int MiddleClickResolveMs = SystemInformation.DoubleClickTime + 100;
 
     private readonly AppConfig _config;
     private readonly ProcessManager _processManager;
@@ -58,7 +59,7 @@ public class TrayManager : IDisposable
 
     // Tray click detection
     private System.Windows.Forms.Timer? _leftClickTimer;
-    // Middle button: MouseDoubleClick doesn't fire, so we count clicks manually
+    // Middle button: counted via MouseUp (reliable for every click)
     private int _middleClickCount;
     private System.Windows.Forms.Timer? _middleClickTimer;
 
@@ -125,9 +126,12 @@ public class TrayManager : IDisposable
         _trayIcon.MouseDown += (_, e) =>
         {
             _trayIcon.ContextMenuStrip = e.Button == MouseButtons.Right ? _contextMenu : null;
-            // Handle middle button on MouseDown — MouseClick swallows rapid
-            // middle clicks on the tiny tray icon because any slight movement
-            // between press and release kills the Click event.
+        };
+        // Middle button: count on MouseUp — it fires after EVERY click including
+        // when Windows converts the 2nd press into WM_MBUTTONDBLCLK (which skips
+        // MouseDown entirely, losing the click). MouseUp always fires.
+        _trayIcon.MouseUp += (_, e) =>
+        {
             if (e.Button == MouseButtons.Middle)
             {
                 _middleClickCount++;
@@ -1037,7 +1041,7 @@ public class TrayManager : IDisposable
         AddClickLine(lines, "Left single", tc.SingleClick);
         AddClickLine(lines, "Left double", tc.DoubleClick);
         AddClickLine(lines, "Middle single", tc.MiddleClick);
-        AddClickLine(lines, "Middle triple", tc.MiddleDoubleClick);
+        AddClickLine(lines, "Middle double", tc.MiddleDoubleClick);
 
         // Status
         lines.Add("");
@@ -1121,7 +1125,7 @@ public class TrayManager : IDisposable
 
     /// <summary>
     /// Left: single click starts a timer. MouseDoubleClick cancels it.
-    /// Middle: MouseDoubleClick doesn't fire, so we count clicks with a timer.
+    /// Middle: handled via MouseUp handler (see Initialize).
     /// </summary>
     private void OnTrayMouseClick(object? sender, MouseEventArgs e)
     {
@@ -1130,11 +1134,11 @@ public class TrayManager : IDisposable
             FileLogger.Info("TrayClick: left click");
             EnsureTimer(ref _leftClickTimer, LeftClickResolveMs, OnLeftSingleResolved);
         }
-        // Middle button handled in MouseDown for reliability — see comment there
     }
 
     /// <summary>
     /// Double-click: cancels pending single-click timer. Only fires for left button.
+    /// Middle button is handled via MouseUp which fires reliably for every click.
     /// </summary>
     private void OnTrayMouseDoubleClick(object? sender, MouseEventArgs e)
     {
@@ -1143,14 +1147,6 @@ public class TrayManager : IDisposable
             _leftClickTimer?.Stop();
             FileLogger.Info($"TrayClick: left double → {_config.TrayClick.DoubleClick}");
             ExecuteTrayAction(_config.TrayClick.DoubleClick);
-        }
-        else if (e.Button == MouseButtons.Middle)
-        {
-            // Windows converts the 2nd middle click into MouseDoubleClick
-            // instead of a 2nd MouseDown — count it here too
-            _middleClickCount++;
-            FileLogger.Info($"TrayClick: middle click #{_middleClickCount} (via dblclick)");
-            EnsureTimer(ref _middleClickTimer, MiddleClickResolveMs, OnMiddleResolved);
         }
     }
 
