@@ -1655,6 +1655,9 @@ public class TrayManager : IDisposable
         _leftClickTimer?.Dispose();
         _middleClickTimer?.Stop();
         _middleClickTimer?.Dispose();
+        _deferTimer?.Stop();
+        _deferTimer?.Dispose();
+        _taskbarMessageWindow?.DestroyHandle();
         _pipOverlay?.Dispose();
         _pipOverlay = null;
         _boldMenuFont?.Dispose();
