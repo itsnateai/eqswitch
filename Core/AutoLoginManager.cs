@@ -216,11 +216,19 @@ public class AutoLoginManager
             // Re-resolve handle — EQ recreates its window on server select→character select
             hwnd = RefreshHandle(pid, hwnd);
             if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window after server select"); return; }
+            FileLogger.Info($"AutoLogin: [DEBUG] charselect hwnd=0x{hwnd:X} for PID {pid}");
+
+            // Re-activate SHM — EQ's 3D character select screen may have
+            // reset DirectInput coop level during the server→charselect transition
+            writer.Activate(pid);
+            FileLogger.Info($"AutoLogin: [DEBUG] SHM re-activated before character select");
+            Thread.Sleep(500);
 
             // Step 9: Character select
             Report($"Selecting character (slot {account.CharacterSlot})...");
             for (int i = 1; i < account.CharacterSlot; i++)
             {
+                FileLogger.Info($"AutoLogin: [DEBUG] pressing DOWN arrow ({i}/{account.CharacterSlot - 1})");
                 CombinedPressKey(writer, pid, hwnd, 0x28); // VK_DOWN
                 Thread.Sleep(200);
             }
@@ -228,8 +236,15 @@ public class AutoLoginManager
 
             // Step 10: Enter World
             Report("Entering world...");
+            FileLogger.Info($"AutoLogin: [DEBUG] pressing ENTER for Enter World (hwnd=0x{hwnd:X}, pid={pid})");
             CombinedPressKey(writer, pid, hwnd, 0x0D);
             Thread.Sleep(1000);
+
+            // Verify: check if window title changed (indicates successful world entry)
+            int titleLen = NativeMethods.GetWindowTextLength(hwnd);
+            var titleSb = new System.Text.StringBuilder(titleLen + 1);
+            NativeMethods.GetWindowText(hwnd, titleSb, titleSb.Capacity);
+            FileLogger.Info($"AutoLogin: [DEBUG] post-enter title=\"{titleSb}\" (len={titleLen})");
 
             Report($"{account.Name} logged in!");
             FileLogger.Info($"AutoLogin: {account.Name} login sequence complete (PID {pid})");

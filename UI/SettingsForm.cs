@@ -336,7 +336,7 @@ public class SettingsForm : Form
         y += 73;
 
         // ─── Tray Click Actions card ─────────────────────────────
-        var clickActions = new[] { "None", "AutoLogin1", "LoginAll", "TogglePiP", "LaunchOne", "LaunchAll", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4" };
+        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam", "TogglePiP", "LaunchOne", "LaunchTwo", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4" };
         const int cboW = 140;
 
         var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 131);
@@ -367,6 +367,12 @@ public class SettingsForm : Form
         var lblTriple = DarkTheme.AddCardLabel(cardTray, "Triple", 260, 78);
         lblTriple.Font = TrackFont(new Font("Segoe UI Semibold", 9f));
         _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 325, 75, cboW, clickActions);
+
+        y += 139;
+
+        // ─── Window Title card ───────────────────────────────────
+        var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 40);
+        _txtWindowTitleTemplate = DarkTheme.AddCardTextBox(cardTitle, 130, 6, 330, 100);
 
         return page;
     }
@@ -445,26 +451,32 @@ public class SettingsForm : Form
 
         var combos = new[] { _cboQuickLogin1, _cboQuickLogin2, _cboQuickLogin3, _cboQuickLogin4 };
         var seen = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        var dupes = new List<string>();
+        bool reverted = false;
 
         for (int i = 0; i < combos.Length; i++)
         {
             var username = GetQuickLoginUsername(combos[i]);
             if (string.IsNullOrEmpty(username)) continue;
-            if (seen.TryGetValue(username, out int first))
-                dupes.Add($"Slot {first + 1} and {i + 1} share an account");
+            if (seen.ContainsKey(username))
+            {
+                // Revert the duplicate back to (None) — SoD crashes on duplicate logins
+                combos[i].SelectedIndex = 0;
+                reverted = true;
+            }
             else
+            {
                 seen[username] = i;
+            }
         }
 
-        if (dupes.Count > 0)
+        if (reverted)
         {
-            _lblSlotDuplicateWarn.Text = "\u26A0 " + string.Join("  |  ", dupes);
+            _lblSlotDuplicateWarn.Text = "\u26A0 Same account can't be in multiple slots (SoD limitation)";
             _lblSlotDuplicateWarn.ForeColor = DarkTheme.CardWarn;
         }
         else
         {
-            _lblSlotDuplicateWarn.Text = "Bind to tray click actions or hotkeys below";
+            _lblSlotDuplicateWarn.Text = "Bind to tray click actions or hotkeys above";
             _lblSlotDuplicateWarn.ForeColor = DarkTheme.FgDimGray;
         }
     }
@@ -544,6 +556,25 @@ public class SettingsForm : Form
 
         y += 120;
 
+        // ─── Auto-Login Hotkeys ─────────────────────────────────
+        var hkCard = DarkTheme.MakeCard(page, "\u2328", "Auto-Login Hotkeys", DarkTheme.CardGreen, 10, y, 480, 90);
+        DarkTheme.AddCardLabel(hkCard, "Slot 1:", 10, 30);
+        _txtAutoLogin1Hotkey = MakeHotkeyBox(hkCard, 55, 28);
+        DarkTheme.AddCardLabel(hkCard, "Slot 2:", 160, 30);
+        _txtAutoLogin2Hotkey = MakeHotkeyBox(hkCard, 205, 28);
+        DarkTheme.AddCardHint(hkCard, "Press combo to set. Backspace = clear.", 290, 30);
+        DarkTheme.AddCardLabel(hkCard, "Slot 3:", 10, 54);
+        _txtAutoLogin3Hotkey = MakeHotkeyBox(hkCard, 55, 52);
+        DarkTheme.AddCardLabel(hkCard, "Slot 4:", 160, 54);
+        _txtAutoLogin4Hotkey = MakeHotkeyBox(hkCard, 205, 52);
+        _lblAutoLoginHotkeyWarn = DarkTheme.AddCardHint(hkCard, "", 10, 74);
+        _txtAutoLogin1Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
+        _txtAutoLogin2Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
+        _txtAutoLogin3Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
+        _txtAutoLogin4Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
+
+        y += 98;
+
         // ─── Tooltip card ───────────────────────────────────────
         var cardTooltip = DarkTheme.MakeCard(page, "💬", "Tooltip", DarkTheme.CardCyan, 10, y, 480, 60);
         cy = 32;
@@ -551,12 +582,6 @@ public class SettingsForm : Form
         _nudTooltipDuration = DarkTheme.AddCardNumeric(cardTooltip, 55, cy, 55, 1000, 0, 10000);
         _nudTooltipDuration.Increment = 100;
         DarkTheme.AddCardHint(cardTooltip, "ms — hover time before showing tooltip", 120, cy);
-
-        y += 68;
-
-        // ─── Window Title card ───────────────────────────────────
-        var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 40);
-        _txtWindowTitleTemplate = DarkTheme.AddCardTextBox(cardTitle, 130, 6, 330, 100);
 
         return page;
     }
@@ -946,12 +971,12 @@ public class SettingsForm : Form
         _nudTooltipDuration.Value = Math.Clamp(_config.TooltipDurationMs, (int)_nudTooltipDuration.Minimum, (int)_nudTooltipDuration.Maximum);
         _txtCustomIconPath.Text = _config.CustomIconPath;
 
-        // Tray Click Actions
-        _cboSingleClick.SelectedItem = _config.TrayClick.SingleClick;
-        _cboDoubleClick.SelectedItem = _config.TrayClick.DoubleClick;
-        _cboTripleClick.SelectedItem = _config.TrayClick.TripleClick;
-        _cboMiddleClick.SelectedItem = _config.TrayClick.MiddleClick;
-        _cboMiddleDoubleClick.SelectedItem = _config.TrayClick.MiddleDoubleClick;
+        // Tray Click Actions — map config values to display names
+        _cboSingleClick.SelectedItem = TrayActionToDisplay(_config.TrayClick.SingleClick);
+        _cboDoubleClick.SelectedItem = TrayActionToDisplay(_config.TrayClick.DoubleClick);
+        _cboTripleClick.SelectedItem = TrayActionToDisplay(_config.TrayClick.TripleClick);
+        _cboMiddleClick.SelectedItem = TrayActionToDisplay(_config.TrayClick.MiddleClick);
+        _cboMiddleDoubleClick.SelectedItem = TrayActionToDisplay(_config.TrayClick.MiddleDoubleClick);
 
         // Hotkeys
         _txtSwitchKeyGeneral.Text = _config.Hotkeys.SwitchKey;
@@ -1115,11 +1140,11 @@ public class SettingsForm : Form
             },
             TrayClick = new TrayClickConfig
             {
-                SingleClick = _cboSingleClick.SelectedItem?.ToString() ?? "LaunchOne",
-                DoubleClick = _cboDoubleClick.SelectedItem?.ToString() ?? "None",
-                TripleClick = _cboTripleClick.SelectedItem?.ToString() ?? "None",
-                MiddleClick = _cboMiddleClick.SelectedItem?.ToString() ?? "TogglePiP",
-                MiddleDoubleClick = _cboMiddleDoubleClick.SelectedItem?.ToString() ?? "Settings"
+                SingleClick = TrayDisplayToAction(_cboSingleClick.SelectedItem?.ToString() ?? "LaunchOne"),
+                DoubleClick = TrayDisplayToAction(_cboDoubleClick.SelectedItem?.ToString() ?? "None"),
+                TripleClick = TrayDisplayToAction(_cboTripleClick.SelectedItem?.ToString() ?? "None"),
+                MiddleClick = TrayDisplayToAction(_cboMiddleClick.SelectedItem?.ToString() ?? "TogglePiP"),
+                MiddleDoubleClick = TrayDisplayToAction(_cboMiddleDoubleClick.SelectedItem?.ToString() ?? "Settings")
             },
             GinaPath = _txtGinaPath.Text.Trim(),
             NotesPath = _txtNotesPath.Text.Trim(),
@@ -1310,29 +1335,11 @@ public class SettingsForm : Form
         SelectQuickLoginCombo(_cboQuickLogin2, _config.QuickLogin2);
         SelectQuickLoginCombo(_cboQuickLogin3, _config.QuickLogin3);
         SelectQuickLoginCombo(_cboQuickLogin4, _config.QuickLogin4);
-        _lblSlotDuplicateWarn = DarkTheme.AddCardHint(slotsCard, "Bind to tray click actions or hotkeys below", 10, 82);
+        _lblSlotDuplicateWarn = DarkTheme.AddCardHint(slotsCard, "Bind to tray click actions or hotkeys on Hotkeys tab", 10, 82);
         _cboQuickLogin1.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
         _cboQuickLogin2.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
         _cboQuickLogin3.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
         _cboQuickLogin4.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
-
-        // ─── Auto-Login Hotkeys ──────────────────────────────────────
-        y += 108;
-        var hkCard = DarkTheme.MakeCard(page, "\u2328", "Auto-Login Hotkeys", DarkTheme.CardGreen, 10, y, 480, 90);
-        DarkTheme.AddCardLabel(hkCard, "Slot 1:", 10, 30);
-        _txtAutoLogin1Hotkey = MakeHotkeyBox(hkCard, 55, 28);
-        DarkTheme.AddCardLabel(hkCard, "Slot 2:", 160, 30);
-        _txtAutoLogin2Hotkey = MakeHotkeyBox(hkCard, 205, 28);
-        DarkTheme.AddCardHint(hkCard, "Press combo to set. Backspace = clear.", 290, 30);
-        DarkTheme.AddCardLabel(hkCard, "Slot 3:", 10, 54);
-        _txtAutoLogin3Hotkey = MakeHotkeyBox(hkCard, 55, 52);
-        DarkTheme.AddCardLabel(hkCard, "Slot 4:", 160, 54);
-        _txtAutoLogin4Hotkey = MakeHotkeyBox(hkCard, 205, 52);
-        _lblAutoLoginHotkeyWarn = DarkTheme.AddCardHint(hkCard, "", 10, 74);
-        _txtAutoLogin1Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
-        _txtAutoLogin2Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
-        _txtAutoLogin3Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
-        _txtAutoLogin4Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
 
         return page;
     }
@@ -1440,9 +1447,7 @@ public class SettingsForm : Form
         var nudSlot = DarkTheme.AddNumeric(dlg, I, y - 2, 60, existing?.CharacterSlot ?? 1, 1, 8);
         y += R;
 
-        var chkLoginFlag = DarkTheme.AddCheckBox(dlg, "Use /login: flag", L, y);
-        chkLoginFlag.Checked = existing?.UseLoginFlag ?? true;
-        y += R + 5;
+        y += 5;
 
         var btnOK = DarkTheme.MakePrimaryButton("Save", L, y);
         btnOK.Width = 100;
@@ -1460,7 +1465,7 @@ public class SettingsForm : Form
             account.Server = txtServer.Text.Trim();
             account.CharacterName = txtCharName.Text.Trim();
             account.CharacterSlot = (int)nudSlot.Value;
-            account.UseLoginFlag = chkLoginFlag.Checked;
+            account.UseLoginFlag = true;
 
             // Only update password if user typed something new
             if (!string.IsNullOrEmpty(txtPassword.Text))
@@ -2045,4 +2050,26 @@ public class SettingsForm : Form
         foreach (var c in controls)
             c?.Font?.Dispose();
     }
+
+    // ─── Tray Action Display ↔ Config Mapping ───────────────────
+
+    private static readonly Dictionary<string, string> _trayActionDisplayMap = new()
+    {
+        ["LaunchAll"] = "LaunchTwo",
+        ["LoginAll"] = "AutoLoginTeam"
+    };
+
+    private static readonly Dictionary<string, string> _trayDisplayActionMap = new()
+    {
+        ["LaunchTwo"] = "LaunchAll",
+        ["AutoLoginTeam"] = "LoginAll"
+    };
+
+    /// <summary>Convert config action name to dropdown display name.</summary>
+    private static string TrayActionToDisplay(string action) =>
+        _trayActionDisplayMap.TryGetValue(action, out var display) ? display : action;
+
+    /// <summary>Convert dropdown display name back to config action name.</summary>
+    private static string TrayDisplayToAction(string display) =>
+        _trayDisplayActionMap.TryGetValue(display, out var action) ? action : display;
 }
