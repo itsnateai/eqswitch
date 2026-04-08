@@ -181,6 +181,162 @@ static void *PatchIat(const uint8_t *base, const char *targetDll,
     return nullptr;
 }
 
+// --- Inline hook infrastructure (patches function body, not just IAT) ---
+// Catches calls via GetProcAddress, delay-loaded imports, and any other resolution path.
+// Uses NtUser* from win32u.dll as the "real" implementation to avoid trampolines.
+
+// Track inline patches for cleanup
+struct InlinePatchEntry {
+    uint8_t *addr;      // patched function address
+    uint8_t  original[8]; // saved original bytes
+    int      patchLen;  // number of bytes patched (7 for x86 MOV+JMP)
+};
+static InlinePatchEntry g_inlinePatches[4];
+static int g_inlinePatchCount = 0;
+
+// Real NtUser functions (from win32u.dll) — bypass our inline patches
+typedef HWND (WINAPI *PFN_NtUserGetForegroundWindow)();
+typedef HWND (WINAPI *PFN_NtUserGetFocus)();
+typedef HWND (WINAPI *PFN_NtUserGetActiveWindow)(); // actually GetThreadState-based
+
+static PFN_NtUserGetForegroundWindow g_ntGetForegroundWindow = nullptr;
+static PFN_NtUserGetFocus g_ntGetFocus = nullptr;
+
+// Inline-hooked replacements: these get called regardless of how EQ resolved the function.
+// They use the same logic as the IAT hooks but call NtUser* as fallback.
+
+static volatile int g_inlineGfwLogCount = 0;
+
+static HWND WINAPI InlineHookedGetForegroundWindow() {
+    HWND hwnd = GetEqHwnd();
+    bool active = KeyShm::IsActive();
+
+    int count = InterlockedIncrement((volatile LONG*)&g_inlineGfwLogCount);
+    if (count <= 5)
+        DI8Log("inline_gfw: hwnd=0x%X active=%d #%d", (unsigned)(uintptr_t)hwnd, active, count);
+
+    if (hwnd && active)
+        return hwnd;
+    return g_ntGetForegroundWindow ? g_ntGetForegroundWindow() : nullptr;
+}
+
+static HWND WINAPI InlineHookedGetFocus() {
+    HWND hwnd = GetEqHwnd();
+    if (hwnd && KeyShm::IsActive())
+        return hwnd;
+    return g_ntGetFocus ? g_ntGetFocus() : nullptr;
+}
+
+static HWND WINAPI InlineHookedGetActiveWindow() {
+    HWND hwnd = GetEqHwnd();
+    if (hwnd && KeyShm::IsActive())
+        return hwnd;
+    // GetActiveWindow has no direct NtUser equivalent, but for our purpose
+    // the real GetForegroundWindow is a safe substitute when not active
+    return g_ntGetForegroundWindow ? g_ntGetForegroundWindow() : nullptr;
+}
+
+// Patch a function's first bytes with MOV EAX, <hook>; JMP EAX (7 bytes, x86)
+static bool InstallInlineHook(const char *fnName, uint8_t *target, void *hook) {
+    if (!target || !hook) return false;
+
+    // Save original bytes
+    if (g_inlinePatchCount >= 4) {
+        DI8Log("inline: patch table full, skipping %s", fnName);
+        return false;
+    }
+
+    InlinePatchEntry &entry = g_inlinePatches[g_inlinePatchCount];
+    entry.addr = target;
+    entry.patchLen = 7;
+    memcpy(entry.original, target, 7);
+
+    // Make the page writable
+    DWORD oldProtect, dummy;
+    if (!VirtualProtect(target, 7, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        DI8Log("inline: VirtualProtect failed for %s (err=%lu)", fnName, GetLastError());
+        return false;
+    }
+
+    // Write: MOV EAX, <hook_addr32>; JMP EAX
+    target[0] = 0xB8; // MOV EAX, imm32
+    *(uint32_t *)(target + 1) = (uint32_t)(uintptr_t)hook;
+    target[5] = 0xFF; // JMP EAX
+    target[6] = 0xE0;
+
+    VirtualProtect(target, 7, oldProtect, &dummy);
+
+    // Flush instruction cache so CPU sees new code
+    FlushInstructionCache(GetCurrentProcess(), target, 7);
+
+    g_inlinePatchCount++;
+    DI8Log("inline: patched %s at %p", fnName, target);
+    return true;
+}
+
+static void InstallInlineHooks() {
+    // Load win32u.dll — on WoW64 (32-bit process on 64-bit Windows), this loads
+    // the 32-bit thunk version from SysWOW64. It contains the actual syscall stubs.
+    HMODULE win32u = LoadLibraryA("win32u.dll");
+    if (!win32u) {
+        DI8Log("inline: win32u.dll not found — inline hooks unavailable");
+        return;
+    }
+
+    // Resolve NtUser real implementations
+    g_ntGetForegroundWindow = (PFN_NtUserGetForegroundWindow)
+        GetProcAddress(win32u, "NtUserGetForegroundWindow");
+    if (!g_ntGetForegroundWindow)
+        DI8Log("inline: NtUserGetForegroundWindow not found in win32u.dll");
+
+    g_ntGetFocus = (PFN_NtUserGetFocus)
+        GetProcAddress(win32u, "NtUserGetFocus");
+
+    // Resolve user32.dll functions to patch
+    HMODULE user32 = GetModuleHandleA("user32.dll");
+    if (!user32) {
+        DI8Log("inline: user32.dll not loaded?!");
+        return;
+    }
+
+    // Inline hook GetForegroundWindow — THE critical hook
+    uint8_t *gfwAddr = (uint8_t *)GetProcAddress(user32, "GetForegroundWindow");
+    if (gfwAddr && g_ntGetForegroundWindow) {
+        InstallInlineHook("GetForegroundWindow", gfwAddr, (void *)InlineHookedGetForegroundWindow);
+    } else {
+        DI8Log("inline: cannot hook GetForegroundWindow (addr=%p ntReal=%p)", gfwAddr, g_ntGetForegroundWindow);
+    }
+
+    // Inline hook GetFocus — IAT hook failed (not in EQ's import table),
+    // but EQ may call it via GetProcAddress
+    uint8_t *focusAddr = (uint8_t *)GetProcAddress(user32, "GetFocus");
+    if (focusAddr && g_ntGetFocus) {
+        InstallInlineHook("GetFocus", focusAddr, (void *)InlineHookedGetFocus);
+    }
+
+    // Inline hook GetActiveWindow — also missing from IAT
+    uint8_t *activeAddr = (uint8_t *)GetProcAddress(user32, "GetActiveWindow");
+    if (activeAddr) {
+        InstallInlineHook("GetActiveWindow", activeAddr, (void *)InlineHookedGetActiveWindow);
+    }
+
+    DI8Log("inline: %d function(s) patched", g_inlinePatchCount);
+}
+
+static void RemoveInlineHooks() {
+    for (int i = 0; i < g_inlinePatchCount; i++) {
+        InlinePatchEntry &entry = g_inlinePatches[i];
+        DWORD oldProtect, dummy;
+        if (VirtualProtect(entry.addr, entry.patchLen, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            memcpy(entry.addr, entry.original, entry.patchLen);
+            VirtualProtect(entry.addr, entry.patchLen, oldProtect, &dummy);
+            FlushInstructionCache(GetCurrentProcess(), entry.addr, entry.patchLen);
+        }
+    }
+    DI8Log("inline: restored %d function(s)", g_inlinePatchCount);
+    g_inlinePatchCount = 0;
+}
+
 // --- Public API ---
 
 void IatHook::InstallKeyboardHooks() {
@@ -217,10 +373,16 @@ void IatHook::InstallKeyboardHooks() {
     p = PatchIat(basePtr, "user32.dll", "GetActiveWindow", (void *)HookedGetActiveWindow);
     if (p) { g_realGetActiveWindow = (PFN_GetActiveWindow)p; hooked++; DI8Log("iat_hook: hooked GetActiveWindow"); }
 
-    DI8Log("iat_hook: %d function(s) hooked", hooked);
+    DI8Log("iat_hook: %d IAT function(s) hooked", hooked);
+
+    // Install inline hooks on function bodies — catches GetProcAddress calls
+    // that bypass the IAT. This is THE critical fix for background input.
+    InstallInlineHooks();
 }
 
 void IatHook::RemoveKeyboardHooks() {
+    // Remove inline hooks FIRST (patches function bodies in user32.dll)
+    RemoveInlineHooks();
     for (int i = 0; i < g_patchCount; i++) {
         DWORD oldProtect, dummy;
         VirtualProtect(g_patches[i].slot, 4, PAGE_READWRITE, &oldProtect);
