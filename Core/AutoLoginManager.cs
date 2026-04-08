@@ -144,27 +144,9 @@ public class AutoLoginManager
 
     private void RunLoginSequence(int pid, LoginAccount account, string password)
     {
-        // Per-login KeyInputWriter — writes scan codes to per-PID shared memory
-        // that dinput8.dll's device proxy reads on each GetDeviceState/GetDeviceData call.
-        // The DLL also hooks GetAsyncKeyState/GetKeyState to return synthetic state,
-        // and posts WM_ACTIVATEAPP to trick EQ into processing background input.
-        var writer = new KeyInputWriter();
         try
         {
-            // Step 1: Create shared memory FIRST, before waiting for the window.
-            // The DLL retries opening SHM periodically. Creating it early gives
-            // the proxy the entire startup period to discover it.
-            if (!writer.Open(pid))
-            {
-                Report("Error: failed to create DirectInput shared memory");
-                return;
-            }
-            // DON'T activate yet — the DLL's ActivateThread has a rising-edge
-            // detector that only fires once. If we set active=1 before g_eqHwnd
-            // is populated (via SetCooperativeLevel), the thread skips the
-            // cooperative level switch to BACKGROUND and never retries.
-
-            // Step 2: Wait for EQ window to appear
+            // Step 1: Wait for EQ window to appear
             Report("Waiting for EQ window...");
             var hwnd = WaitForWindow(pid, TimeSpan.FromSeconds(30));
             if (hwnd == IntPtr.Zero)
@@ -173,59 +155,57 @@ public class AutoLoginManager
                 return;
             }
 
-            // Step 3: Wait for login screen to become input-ready.
+            // Step 2: Wait for login screen to become input-ready.
             Report("Waiting for login screen...");
             Thread.Sleep(_config.LoginScreenDelayMs);
 
-            // NOW activate — g_eqHwnd is set (EQ called SetCooperativeLevel
-            // during startup), so ActivateThread will fire the rising edge
-            // with a valid HWND and switch to BACKGROUND cooperative level.
-            writer.Activate(pid);
-            FileLogger.Info($"AutoLogin: SHM activated for PID {pid} (after window ready)");
-            Thread.Sleep(300); // let ActivateThread post WM_ACTIVATEAPP and switch coop level
+            // All input is sent via PostMessage — delivers WM_KEYDOWN/WM_CHAR
+            // directly to the EQ window's message queue without needing focus.
+            // DLL diagnostic confirmed EQ's login screen reads from the message
+            // queue, NOT DirectInput or GetAsyncKeyState.
 
-            // Step 4: Type username (if /login flag not used)
+            // Step 3: Type username (if /login flag not used)
             Report("Typing credentials...");
             if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
             {
                 Thread.Sleep(200);
-                DiPressKey(writer, pid, 0x09); // Tab to username field
+                PostPressKey(hwnd, 0x09); // Tab to username field
                 Thread.Sleep(100);
-                DiTypeString(writer, pid, account.Username);
+                PostTypeString(hwnd, account.Username);
                 Thread.Sleep(100);
             }
 
-            // Step 5: Tab to password field and type password
+            // Step 4: Tab to password field and type password
             if (!account.UseLoginFlag)
             {
-                DiPressKey(writer, pid, 0x09); // Tab from username to password
+                PostPressKey(hwnd, 0x09); // Tab from username to password
                 Thread.Sleep(100);
             }
-            DiTypeString(writer, pid, password);
+            PostTypeString(hwnd, password);
             Thread.Sleep(100);
 
-            // Step 6: Press Enter to submit login
+            // Step 5: Press Enter to submit login
             Report("Submitting login...");
-            DiPressKey(writer, pid, 0x0D);
+            PostPressKey(hwnd, 0x0D);
             Thread.Sleep(3000);
 
-            // Step 7: Server select — press Enter to confirm pre-selected server
+            // Step 6: Server select — press Enter to confirm pre-selected server
             Report("Confirming server...");
-            DiPressKey(writer, pid, 0x0D);
+            PostPressKey(hwnd, 0x0D);
             Thread.Sleep(3000);
 
-            // Step 8: Character select — navigate to character slot
+            // Step 7: Character select — navigate to character slot
             Report($"Selecting character (slot {account.CharacterSlot})...");
             for (int i = 1; i < account.CharacterSlot; i++)
             {
-                DiPressKey(writer, pid, 0x28); // VK_DOWN
+                PostPressKey(hwnd, 0x28); // VK_DOWN
                 Thread.Sleep(200);
             }
             Thread.Sleep(300);
 
-            // Step 9: Enter World
+            // Step 8: Enter World
             Report("Entering world...");
-            DiPressKey(writer, pid, 0x0D);
+            PostPressKey(hwnd, 0x0D);
             Thread.Sleep(1000);
 
             Report($"{account.Name} logged in!");
@@ -238,8 +218,6 @@ public class AutoLoginManager
         }
         finally
         {
-            try { writer.Close(pid); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Close failed: {ex.Message}"); }
-            try { writer.Dispose(); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Dispose failed: {ex.Message}"); }
             _activeLoginPids.TryRemove(pid, out _);
             if (_syncContext != null)
                 _syncContext.Post(_ => LoginComplete?.Invoke(this, pid), null);
@@ -248,28 +226,38 @@ public class AutoLoginManager
         }
     }
 
-    // ─── DirectInput Shared Memory Helpers ──────────────────────────
+    // ─── PostMessage Background Typing Helpers ──────────────────────
     //
-    // Write scan codes to per-PID shared memory that dinput8.dll reads.
-    // The DLL injects these into DirectInput's keyboard buffer AND
-    // returns them from hooked GetAsyncKeyState/GetKeyState/GetKeyboardState.
+    // EQ's login screen reads input from the Windows message queue
+    // (WM_KEYDOWN/WM_CHAR), NOT DirectInput or GetAsyncKeyState.
+    // PostMessage delivers messages to any window without needing focus.
+    // Confirmed by DLL diagnostic: zero GetAsyncKeyState/GetDeviceState
+    // calls during the login screen.
 
-    private static void DiSetKey(KeyInputWriter writer, int pid, ushort vk, bool pressed)
+    /// <summary>Build the lParam for WM_KEYDOWN (repeat=1, scan code, no extended flag).</summary>
+    private static IntPtr MakeKeyDownLParam(uint scanCode)
+    {
+        return (IntPtr)(1 | ((int)scanCode << 16));
+    }
+
+    /// <summary>Build the lParam for WM_KEYUP (repeat=1, scan code, previous=1, transition=1).</summary>
+    private static IntPtr MakeKeyUpLParam(uint scanCode)
+    {
+        return (IntPtr)(1 | ((int)scanCode << 16) | (1 << 30) | unchecked((int)(1u << 31)));
+    }
+
+    /// <summary>Post a key press and release to the EQ window via PostMessage.</summary>
+    private static void PostPressKey(IntPtr hwnd, ushort vk)
     {
         uint scan = NativeMethods.MapVirtualKeyW(vk, NativeMethods.MAPVK_VK_TO_VSC);
-        if (scan > 0 && scan < 256)
-            writer.SetKey(pid, (byte)scan, pressed);
+        NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
+        Thread.Sleep(60);
+        NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYUP, (IntPtr)vk, MakeKeyUpLParam(scan));
+        Thread.Sleep(60);
     }
 
-    private static void DiPressKey(KeyInputWriter writer, int pid, ushort vk)
-    {
-        DiSetKey(writer, pid, vk, true);
-        Thread.Sleep(80);
-        DiSetKey(writer, pid, vk, false);
-        Thread.Sleep(80);
-    }
-
-    private static void DiTypeString(KeyInputWriter writer, int pid, string text)
+    /// <summary>Type a string by posting WM_KEYDOWN + WM_CHAR + WM_KEYUP for each character.</summary>
+    private static void PostTypeString(IntPtr hwnd, string text)
     {
         foreach (char c in text)
         {
@@ -277,25 +265,32 @@ public class AutoLoginManager
             if (vkScan == -1) continue;
 
             byte modifiers = (byte)(vkScan >> 8);
-            if ((modifiers & ~0x01) != 0) continue;
+            if ((modifiers & ~0x01) != 0) continue; // skip chars needing Ctrl/Alt
 
             ushort vk = (ushort)(vkScan & 0xFF);
             bool needShift = (modifiers & 0x01) != 0;
+            uint scan = NativeMethods.MapVirtualKeyW(vk, NativeMethods.MAPVK_VK_TO_VSC);
 
             if (needShift)
             {
-                DiSetKey(writer, pid, 0x10, true); // VK_SHIFT down
+                uint shiftScan = NativeMethods.MapVirtualKeyW(0x10, NativeMethods.MAPVK_VK_TO_VSC);
+                NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)0x10, MakeKeyDownLParam(shiftScan));
                 Thread.Sleep(20);
             }
-            DiSetKey(writer, pid, vk, true);
-            Thread.Sleep(80);
-            DiSetKey(writer, pid, vk, false);
+
+            NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
+            // WM_CHAR carries the actual character code — this is what text fields read
+            NativeMethods.PostMessage(hwnd, (uint)NativeMethods.WM_CHAR, (IntPtr)c, MakeKeyDownLParam(scan));
+            Thread.Sleep(50);
+            NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYUP, (IntPtr)vk, MakeKeyUpLParam(scan));
+
             if (needShift)
             {
-                Thread.Sleep(40); // full 60Hz frame for DLL to see key-up before Shift clears
-                DiSetKey(writer, pid, 0x10, false); // VK_SHIFT up
+                uint shiftScan = NativeMethods.MapVirtualKeyW(0x10, NativeMethods.MAPVK_VK_TO_VSC);
+                Thread.Sleep(20);
+                NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYUP, (IntPtr)0x10, MakeKeyUpLParam(shiftScan));
             }
-            Thread.Sleep(50);
+            Thread.Sleep(40);
         }
     }
 
