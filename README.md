@@ -46,7 +46,7 @@ A lightweight EverQuest multiboxer — hotkey switching, encrypted auto-login, P
 - **CPU Core Assignment** — CPUAffinity0-5 slots written to eqclient.ini for per-client core pinning
 - **PiP Overlay** — Live DWM thumbnail previews (zero CPU, GPU composited). Vertical or horizontal layout, 7 size presets + custom
 - **Staggered Launch** — Multi-client launch with configurable delay and auto-arrange
-- **Settings GUI** — Dark-themed tabbed settings (General, Hotkeys, Layout, PiP, Paths, Characters)
+- **Settings GUI** — Dark-themed tabbed settings (General, Video, Accounts, PiP, Hotkeys, Paths)
 - **EQ Client Settings** — Sub-forms for editing eqclient.ini (Video, Key Mappings, Chat, Particles, Models)
 - **Video Settings** — Resolution presets, custom presets, windowed mode enforcement
 - **Configurable Tray Actions** — Left/double/middle click actions are fully customizable

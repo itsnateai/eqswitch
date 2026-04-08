@@ -58,7 +58,7 @@ public class SettingsForm : Form
     // Multi-monitor mode controlled by _chkVideoMultiMon on Video tab
     private ComboBox _cboSwitchKeyMode = null!;
 
-    // ─── Layout tab controls
+    // ─── Window Style controls (on Video tab)
     private CheckBox _chkSlimTitlebar = null!;
     private NumericUpDown _nudTitlebarOffset = null!;
     private NumericUpDown _nudBottomOffset = null!;
