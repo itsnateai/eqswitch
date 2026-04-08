@@ -350,6 +350,8 @@ public class TrayManager : IDisposable
         TryRegister(hk.LaunchAll, OnLaunchAll, "LaunchAll");
         TryRegister(hk.AutoLogin1, () => ExecuteTrayAction("AutoLogin1"), "AutoLogin1");
         TryRegister(hk.AutoLogin2, () => ExecuteTrayAction("AutoLogin2"), "AutoLogin2");
+        TryRegister(hk.AutoLogin3, () => ExecuteTrayAction("AutoLogin3"), "AutoLogin3");
+        TryRegister(hk.AutoLogin4, () => ExecuteTrayAction("AutoLogin4"), "AutoLogin4");
 
         FileLogger.Info($"RegisterHotKey: {registered} registered, {failed} failed" +
             (failedKeys.Count > 0 ? $" [{string.Join(", ", failedKeys)}]" : ""));
@@ -777,7 +779,9 @@ public class TrayManager : IDisposable
                 loginMenu.DropDownItems.Add($"\uD83D\uDC64  {label}", null, (_, _) =>
                     _autoLoginManager.LoginAccount(account));
             }
-            if (!string.IsNullOrEmpty(_config.QuickLogin1) && !string.IsNullOrEmpty(_config.QuickLogin2))
+            var assignedSlots = new[] { _config.QuickLogin1, _config.QuickLogin2, _config.QuickLogin3, _config.QuickLogin4 }
+                .Count(s => !string.IsNullOrEmpty(s));
+            if (assignedSlots >= 2)
             {
                 loginMenu.DropDownItems.Add(new ToolStripSeparator());
                 loginMenu.DropDownItems.Add("\uD83D\uDE80  Login All", null, (_, _) => ExecuteTrayAction("LoginAll"));
@@ -1209,9 +1213,17 @@ public class TrayManager : IDisposable
             case "AutoLogin2":
                 ExecuteQuickLogin(_config.QuickLogin2, "Quick Login 2");
                 break;
+            case "AutoLogin3":
+                ExecuteQuickLogin(_config.QuickLogin3, "Quick Login 3");
+                break;
+            case "AutoLogin4":
+                ExecuteQuickLogin(_config.QuickLogin4, "Quick Login 4");
+                break;
             case "LoginAll":
                 ExecuteQuickLogin(_config.QuickLogin1, "Quick Login 1");
                 ExecuteQuickLogin(_config.QuickLogin2, "Quick Login 2");
+                ExecuteQuickLogin(_config.QuickLogin3, "Quick Login 3");
+                ExecuteQuickLogin(_config.QuickLogin4, "Quick Login 4");
                 break;
             case "Settings":
                 ShowSettings();
@@ -1314,6 +1326,8 @@ public class TrayManager : IDisposable
         _config.Accounts = newConfig.Accounts;
         _config.QuickLogin1 = newConfig.QuickLogin1;
         _config.QuickLogin2 = newConfig.QuickLogin2;
+        _config.QuickLogin3 = newConfig.QuickLogin3;
+        _config.QuickLogin4 = newConfig.QuickLogin4;
         _config.LoginScreenDelayMs = newConfig.LoginScreenDelayMs;
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
         _config.ShowTooltipErrors = newConfig.ShowTooltipErrors;
