@@ -159,8 +159,10 @@ public class AutoLoginManager
                 Report("Error: failed to create DirectInput shared memory");
                 return;
             }
-            writer.Activate(pid);
-            FileLogger.Info($"AutoLogin: SHM active for PID {pid}");
+            // DON'T activate yet — the DLL's ActivateThread has a rising-edge
+            // detector that only fires once. If we set active=1 before g_eqHwnd
+            // is populated (via SetCooperativeLevel), the thread skips the
+            // cooperative level switch to BACKGROUND and never retries.
 
             // Step 2: Wait for EQ window to appear
             Report("Waiting for EQ window...");
@@ -174,6 +176,13 @@ public class AutoLoginManager
             // Step 3: Wait for login screen to become input-ready.
             Report("Waiting for login screen...");
             Thread.Sleep(_config.LoginScreenDelayMs);
+
+            // NOW activate — g_eqHwnd is set (EQ called SetCooperativeLevel
+            // during startup), so ActivateThread will fire the rising edge
+            // with a valid HWND and switch to BACKGROUND cooperative level.
+            writer.Activate(pid);
+            FileLogger.Info($"AutoLogin: SHM activated for PID {pid} (after window ready)");
+            Thread.Sleep(300); // let ActivateThread post WM_ACTIVATEAPP and switch coop level
 
             // Step 4: Type username (if /login flag not used)
             Report("Typing credentials...");
@@ -283,7 +292,7 @@ public class AutoLoginManager
             DiSetKey(writer, pid, vk, false);
             if (needShift)
             {
-                Thread.Sleep(20);
+                Thread.Sleep(40); // full 60Hz frame for DLL to see key-up before Shift clears
                 DiSetKey(writer, pid, 0x10, false); // VK_SHIFT up
             }
             Thread.Sleep(50);
