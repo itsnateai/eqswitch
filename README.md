@@ -94,6 +94,7 @@ Output: `bin/Release/net8.0-windows/win-x64/publish/EQSwitch.exe` + `eqswitch-ho
 |--------|--------|
 | Right-click | Context menu |
 | Double-click | Launch one EQ client |
+| Triple-click | (configurable) |
 | Middle-click | Toggle PiP overlay |
 | Middle-triple-click | Open Settings |
 

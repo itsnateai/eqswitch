@@ -42,6 +42,7 @@ public class SettingsForm : Form
     // ─── Tray Click controls (Left)
     private ComboBox _cboSingleClick = null!;
     private ComboBox _cboDoubleClick = null!;
+    private ComboBox _cboTripleClick = null!;
     // ─── Tray Click controls (Middle)
     private ComboBox _cboMiddleClick = null!;
     private ComboBox _cboMiddleDoubleClick = null!;
@@ -341,7 +342,7 @@ public class SettingsForm : Form
         var clickActions = new[] { "None", "AutoLogin1", "LoginAll", "TogglePiP", "LaunchOne", "LaunchAll", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4" };
         const int cboW = 140;
 
-        var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 105);
+        var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 131);
 
         // ── Left Click section ──
         var lblLeft = DarkTheme.AddCardLabel(cardTray, "Left Click", 10, 30);
@@ -353,6 +354,10 @@ public class SettingsForm : Form
 
         DarkTheme.AddCardLabel(cardTray, "Double", 20, 78);
         _cboDoubleClick = DarkTheme.AddCardComboBox(cardTray, 85, 75, cboW, clickActions);
+
+        var lblLeftTriple = DarkTheme.AddCardLabel(cardTray, "Triple", 20, 104);
+        lblLeftTriple.Font = TrackFont(new Font("Segoe UI Semibold", 9f));
+        _cboTripleClick = DarkTheme.AddCardComboBox(cardTray, 85, 101, cboW, clickActions);
 
         // ── Middle Click section ──
         var lblMiddle = DarkTheme.AddCardLabel(cardTray, "Middle Click", 250, 30);
@@ -1004,6 +1009,7 @@ public class SettingsForm : Form
         // Tray Click Actions
         _cboSingleClick.SelectedItem = _config.TrayClick.SingleClick;
         _cboDoubleClick.SelectedItem = _config.TrayClick.DoubleClick;
+        _cboTripleClick.SelectedItem = _config.TrayClick.TripleClick;
         _cboMiddleClick.SelectedItem = _config.TrayClick.MiddleClick;
         _cboMiddleDoubleClick.SelectedItem = _config.TrayClick.MiddleDoubleClick;
 
@@ -1171,6 +1177,7 @@ public class SettingsForm : Form
             {
                 SingleClick = _cboSingleClick.SelectedItem?.ToString() ?? "LaunchOne",
                 DoubleClick = _cboDoubleClick.SelectedItem?.ToString() ?? "None",
+                TripleClick = _cboTripleClick.SelectedItem?.ToString() ?? "None",
                 MiddleClick = _cboMiddleClick.SelectedItem?.ToString() ?? "TogglePiP",
                 MiddleDoubleClick = _cboMiddleDoubleClick.SelectedItem?.ToString() ?? "Settings"
             },
