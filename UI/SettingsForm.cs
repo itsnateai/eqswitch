@@ -181,11 +181,10 @@ public class SettingsForm : Form
 
         tabs.TabPages.Add(BuildGeneralTab());      // 0
         tabs.TabPages.Add(BuildVideoTab());        // 1
-        tabs.TabPages.Add(BuildLayoutTab());       // 2
-        tabs.TabPages.Add(BuildAccountsTab());     // 3
-        tabs.TabPages.Add(BuildPipTab());          // 4
-        tabs.TabPages.Add(BuildHotkeysTab());      // 5
-        tabs.TabPages.Add(BuildPathsTab());        // 6
+        tabs.TabPages.Add(BuildAccountsTab());     // 2
+        tabs.TabPages.Add(BuildPipTab());          // 3
+        tabs.TabPages.Add(BuildHotkeysTab());      // 4
+        tabs.TabPages.Add(BuildPathsTab());        // 5
 
         if (_initialTab > 0 && _initialTab < tabs.TabCount)
             tabs.SelectedIndex = _initialTab;
@@ -564,77 +563,6 @@ public class SettingsForm : Form
         return page;
     }
 
-    private TabPage BuildLayoutTab()
-    {
-        var page = DarkTheme.MakeTabPage("Layout");
-        int y = 8;
-        const int L = 10;
-
-        // ─── Window Style card ───────────────────────────────────
-        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 175);
-        int cy = 32;
-
-        const int hintX = 260;
-
-        _chkSlimTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Fullscreen Window (WinEQ2 mode)", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "Auto-sets resolution + hides titlebar", hintX, cy + 2);
-        cy += 24;
-
-        DarkTheme.AddCardLabel(cardStyle, "Titlebar hidden (px):", L, cy);
-        _nudTitlebarOffset = DarkTheme.AddCardNumeric(cardStyle, 140, cy, 55, 22, 0, 40);
-        DarkTheme.AddCardHint(cardStyle, "22 = thin strip, 30 = fully hidden", hintX, cy);
-        cy += 26;
-
-        DarkTheme.AddCardLabel(cardStyle, "Bottom margin (px):", L, cy);
-        _nudBottomOffset = DarkTheme.AddCardNumeric(cardStyle, 140, cy, 55, 22, 0, 100);
-        DarkTheme.AddCardHint(cardStyle, "Game render height reduction", hintX, cy);
-        cy += 22;
-
-        DarkTheme.AddCardHint(cardStyle, "WinEQ2 mode: hidden 13, margin 21 — keep margin > hidden", L, cy);
-        cy += 22;
-
-        _chkUseHook = DarkTheme.AddCardCheckBox(cardStyle, "DLL Hook (zero flicker)", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "Hooks SetWindowPos inside EQ", hintX, cy + 2);
-        cy += 24;
-
-        _chkMaximizeWindow = DarkTheme.AddCardCheckBox(cardStyle, "Maximize on Launch", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "Sets Maximized=1 in eqclient.ini", hintX, cy + 2);
-        cy += 26;
-
-        _lblStyleDisabledHint = new Label
-        {
-            Text = "If disabled, set EQ video resolution to fit above the taskbar",
-            Location = new Point(L, cy),
-            AutoSize = true,
-            ForeColor = Color.FromArgb(230, 190, 60),
-            Font = DarkTheme.FontUI75,
-            Visible = true,
-        };
-        cardStyle.Controls.Add(_lblStyleDisabledHint);
-
-        _chkSlimTitlebar.CheckedChanged += (_, _) =>
-        {
-            bool slim = _chkSlimTitlebar.Checked;
-            _nudTitlebarOffset.Enabled = slim;
-            _nudBottomOffset.Enabled = slim;
-            _chkUseHook.Enabled = slim;
-            if (!slim) _chkUseHook.Checked = false;
-            // Slim titlebar and Maximize are incompatible — maximized windows
-            // are constrained to the work area, defeating the WinEQ2 trick
-            if (slim)
-            {
-                _chkMaximizeWindow.Checked = false;
-                _chkMaximizeWindow.Enabled = false;
-            }
-            else
-            {
-                _chkMaximizeWindow.Enabled = true;
-            }
-            _lblStyleDisabledHint.Visible = !slim;
-        };
-
-        return page;
-    }
 
     private void ShowMonitorIdentifiers()
     {
@@ -1665,6 +1593,69 @@ public class SettingsForm : Form
         DarkTheme.AddCardHint(cardMon, "Primary = active client. Secondary = background client (multimonitor mode).", 110, cy);
 
         y += 125;
+
+        // ─── Window Style card ───────────────────────────────────
+        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 175);
+        cy = 32;
+
+        const int hintX = 260;
+
+        _chkSlimTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Fullscreen Window (WinEQ2 mode)", L, cy);
+        DarkTheme.AddCardHint(cardStyle, "Auto-sets resolution + hides titlebar", hintX, cy + 2);
+        cy += 24;
+
+        DarkTheme.AddCardLabel(cardStyle, "Titlebar hidden (px):", L, cy);
+        _nudTitlebarOffset = DarkTheme.AddCardNumeric(cardStyle, 140, cy, 55, 22, 0, 40);
+        DarkTheme.AddCardHint(cardStyle, "22 = thin strip, 30 = fully hidden", hintX, cy);
+        cy += 26;
+
+        DarkTheme.AddCardLabel(cardStyle, "Bottom margin (px):", L, cy);
+        _nudBottomOffset = DarkTheme.AddCardNumeric(cardStyle, 140, cy, 55, 22, 0, 100);
+        DarkTheme.AddCardHint(cardStyle, "Game render height reduction", hintX, cy);
+        cy += 22;
+
+        DarkTheme.AddCardHint(cardStyle, "WinEQ2 mode: hidden 13, margin 21 — keep margin > hidden", L, cy);
+        cy += 22;
+
+        _chkUseHook = DarkTheme.AddCardCheckBox(cardStyle, "DLL Hook (zero flicker)", L, cy);
+        DarkTheme.AddCardHint(cardStyle, "Hooks SetWindowPos inside EQ", hintX, cy + 2);
+        cy += 24;
+
+        _chkMaximizeWindow = DarkTheme.AddCardCheckBox(cardStyle, "Maximize on Launch", L, cy);
+        DarkTheme.AddCardHint(cardStyle, "Sets Maximized=1 in eqclient.ini", hintX, cy + 2);
+        cy += 26;
+
+        _lblStyleDisabledHint = new Label
+        {
+            Text = "If disabled, set EQ video resolution to fit above the taskbar",
+            Location = new Point(L, cy),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(230, 190, 60),
+            Font = DarkTheme.FontUI75,
+            Visible = true,
+        };
+        cardStyle.Controls.Add(_lblStyleDisabledHint);
+
+        _chkSlimTitlebar.CheckedChanged += (_, _) =>
+        {
+            bool slim = _chkSlimTitlebar.Checked;
+            _nudTitlebarOffset.Enabled = slim;
+            _nudBottomOffset.Enabled = slim;
+            _chkUseHook.Enabled = slim;
+            if (!slim) _chkUseHook.Checked = false;
+            // Slim titlebar and Maximize are incompatible — maximized windows
+            // are constrained to the work area, defeating the WinEQ2 trick
+            if (slim)
+            {
+                _chkMaximizeWindow.Checked = false;
+                _chkMaximizeWindow.Enabled = false;
+            }
+            else
+            {
+                _chkMaximizeWindow.Enabled = true;
+            }
+            _lblStyleDisabledHint.Visible = !slim;
+        };
 
         return page;
     }
