@@ -1130,12 +1130,13 @@ public class SettingsForm : Form
         var page = DarkTheme.MakeTabPage("Accounts");
         int y = 8;
 
-        var card = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Login Accounts", DarkTheme.CardGold, 10, y, 480, 315);
+        page.AutoScroll = true;
+        var card = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Login Accounts", DarkTheme.CardGold, 10, y, 480, 230);
 
         _dgvAccounts = new DataGridView
         {
             Location = new Point(10, 32),
-            Size = new Size(458, 200),
+            Size = new Size(458, 120),
             BackgroundColor = DarkTheme.BgDark,
             ForeColor = DarkTheme.FgWhite,
             GridColor = DarkTheme.Border,
@@ -1178,7 +1179,7 @@ public class SettingsForm : Form
         RefreshAccountsGrid();
         card.Controls.Add(_dgvAccounts);
 
-        int btnY = 240;
+        int btnY = 160;
         var btnAdd = DarkTheme.AddCardButton(card, "Add", 10, btnY, 70);
         btnAdd.Click += (_, _) => ShowAccountDialog(null);
 
@@ -1230,40 +1231,36 @@ public class SettingsForm : Form
             }
         };
 
-        DarkTheme.AddCardHint(card, "Passwords are encrypted with Windows DPAPI (tied to your user account)", 10, 275);
-        DarkTheme.AddCardHint(card, "Character slot is 1-based position on the character select screen", 10, 295);
-
-        // Login timing card
-        y += 325;
-        var timingCard = DarkTheme.MakeCard(page, "\u23F1", "Login Timing", DarkTheme.CardBlue, 10, y, 480, 70);
-        DarkTheme.AddLabel(timingCard, "Login screen delay (seconds):", 10, 32);
-        _nudLoginScreenDelay = DarkTheme.AddNumeric(timingCard, 250, 30, 70,
+        // Login delay — compact, next to the move buttons
+        DarkTheme.AddCardLabel(card, "Delay:", 340, btnY + 3);
+        _nudLoginScreenDelay = DarkTheme.AddNumeric(card, 385, btnY, 55,
             _config.LoginScreenDelayMs / 1000m, 1, 15);
         _nudLoginScreenDelay.DecimalPlaces = 1;
         _nudLoginScreenDelay.Increment = 0.5m;
-        DarkTheme.AddCardHint(timingCard, "Time to wait for the login screen before typing credentials", 10, 52);
+        DarkTheme.AddCardLabel(card, "s", 442, btnY + 3);
 
-        // Quick Login Slots card
-        y += 80;
-        var slotsCard = DarkTheme.MakeCard(page, "\u26A1", "Quick Login Slots", DarkTheme.CardGold, 10, y, 480, 90);
-        DarkTheme.AddCardLabel(slotsCard, "Slot 1:", 10, 32);
-        _cboQuickLogin1 = DarkTheme.AddCardComboBox(slotsCard, 60, 29, 160, Array.Empty<string>());
-        DarkTheme.AddCardLabel(slotsCard, "Slot 2:", 250, 32);
-        _cboQuickLogin2 = DarkTheme.AddCardComboBox(slotsCard, 300, 29, 160, Array.Empty<string>());
+        DarkTheme.AddCardHint(card, "DPAPI-encrypted passwords. Delay = seconds before typing credentials.", 10, 190);
+
+        // ─── Quick Login Slots ───────────────────────────────────────
+        y += 240;
+        var slotsCard = DarkTheme.MakeCard(page, "\u26A1", "Quick Login Slots", DarkTheme.CardGold, 10, y, 480, 80);
+        DarkTheme.AddCardLabel(slotsCard, "Slot 1:", 10, 30);
+        _cboQuickLogin1 = DarkTheme.AddCardComboBox(slotsCard, 55, 27, 150, Array.Empty<string>());
+        DarkTheme.AddCardLabel(slotsCard, "Slot 2:", 215, 30);
+        _cboQuickLogin2 = DarkTheme.AddCardComboBox(slotsCard, 260, 27, 150, Array.Empty<string>());
         RefreshQuickLoginCombos();
-        // Set initial selection from config
         SelectQuickLoginCombo(_cboQuickLogin1, _config.QuickLogin1);
         SelectQuickLoginCombo(_cboQuickLogin2, _config.QuickLogin2);
-        DarkTheme.AddCardHint(slotsCard, "Assign accounts to quick slots for tray click actions and hotkeys", 10, 62);
+        DarkTheme.AddCardHint(slotsCard, "Bind to tray click actions or hotkeys below", 10, 55);
 
-        // Auto-Login Hotkeys card
-        y += 100;
-        var hkCard = DarkTheme.MakeCard(page, "\u2328", "Auto-Login Hotkeys", DarkTheme.CardGreen, 10, y, 480, 90);
-        DarkTheme.AddCardLabel(hkCard, "Quick Login 1:", 10, 32);
-        _txtAutoLogin1Hotkey = MakeHotkeyBox(hkCard, 120, 30);
-        DarkTheme.AddCardLabel(hkCard, "Quick Login 2:", 250, 32);
-        _txtAutoLogin2Hotkey = MakeHotkeyBox(hkCard, 370, 30);
-        DarkTheme.AddCardHint(hkCard, "Press key combo to capture. Backspace to clear. Leave blank to disable.", 10, 62);
+        // ─── Auto-Login Hotkeys ──────────────────────────────────────
+        y += 88;
+        var hkCard = DarkTheme.MakeCard(page, "\u2328", "Auto-Login Hotkeys", DarkTheme.CardGreen, 10, y, 480, 58);
+        DarkTheme.AddCardLabel(hkCard, "Slot 1:", 10, 28);
+        _txtAutoLogin1Hotkey = MakeHotkeyBox(hkCard, 55, 26);
+        DarkTheme.AddCardLabel(hkCard, "Slot 2:", 160, 28);
+        _txtAutoLogin2Hotkey = MakeHotkeyBox(hkCard, 205, 26);
+        DarkTheme.AddCardHint(hkCard, "Press combo to set. Backspace = clear.", 310, 28);
 
         return page;
     }

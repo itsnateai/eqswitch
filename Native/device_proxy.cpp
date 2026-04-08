@@ -173,8 +173,8 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::Acquire() {
 }
 
 // Diagnostic: log injection activity during login
-static int g_gdsLogCount = 0;
-static bool g_gdsWasActive = false;
+static volatile int g_gdsLogCount = 0;
+static volatile bool g_gdsWasActive = false;
 
 HRESULT STDMETHODCALLTYPE DeviceProxy::GetDeviceState(DWORD cbData, LPVOID lpvData) {
     HRESULT hr = m_real->GetDeviceState(cbData, lpvData);
