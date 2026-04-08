@@ -144,9 +144,22 @@ public class AutoLoginManager
 
     private void RunLoginSequence(int pid, LoginAccount account, string password)
     {
+        // Combined approach: DLL hooks fake window focus + SHM provides key state
+        // + PostMessage delivers WM_KEYDOWN/WM_CHAR to the message queue.
+        // EQ checks GetForegroundWindow before processing input — the DLL must
+        // return the EQ HWND. EQ also reads WM_CHAR from the message queue for
+        // login text fields. Both layers are needed for true background login.
+        var writer = new KeyInputWriter();
         try
         {
-            // Step 1: Wait for EQ window to appear
+            // Step 1: Create SHM early so DLL discovers it during EQ startup
+            if (!writer.Open(pid))
+            {
+                Report("Error: failed to create DirectInput shared memory");
+                return;
+            }
+
+            // Step 2: Wait for EQ window to appear
             Report("Waiting for EQ window...");
             var hwnd = WaitForWindow(pid, TimeSpan.FromSeconds(30));
             if (hwnd == IntPtr.Zero)
@@ -155,57 +168,59 @@ public class AutoLoginManager
                 return;
             }
 
-            // Step 2: Wait for login screen to become input-ready.
+            // Step 3: Wait for login screen
             Report("Waiting for login screen...");
             Thread.Sleep(_config.LoginScreenDelayMs);
 
-            // All input is sent via PostMessage — delivers WM_KEYDOWN/WM_CHAR
-            // directly to the EQ window's message queue without needing focus.
-            // DLL diagnostic confirmed EQ's login screen reads from the message
-            // queue, NOT DirectInput or GetAsyncKeyState.
+            // Step 4: Activate SHM AFTER window is ready — DLL's ActivateThread
+            // fires the rising edge, switches coop to BACKGROUND, posts WM_ACTIVATEAPP(1),
+            // and makes GetForegroundWindow/GetFocus return EQ's HWND.
+            writer.Activate(pid);
+            FileLogger.Info($"AutoLogin: SHM activated for PID {pid}");
+            Thread.Sleep(500); // let DLL switch coop level + post WM_ACTIVATEAPP
 
-            // Step 3: Type username (if /login flag not used)
+            // Step 5: Type username (if /login flag not used)
             Report("Typing credentials...");
             if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
             {
                 Thread.Sleep(200);
-                PostPressKey(hwnd, 0x09); // Tab to username field
+                CombinedPressKey(writer, pid, hwnd, 0x09); // Tab
                 Thread.Sleep(100);
-                PostTypeString(hwnd, account.Username);
+                CombinedTypeString(writer, pid, hwnd, account.Username);
                 Thread.Sleep(100);
             }
 
-            // Step 4: Tab to password field and type password
+            // Step 6: Tab to password field and type password
             if (!account.UseLoginFlag)
             {
-                PostPressKey(hwnd, 0x09); // Tab from username to password
+                CombinedPressKey(writer, pid, hwnd, 0x09);
                 Thread.Sleep(100);
             }
-            PostTypeString(hwnd, password);
+            CombinedTypeString(writer, pid, hwnd, password);
             Thread.Sleep(100);
 
-            // Step 5: Press Enter to submit login
+            // Step 7: Press Enter to submit login
             Report("Submitting login...");
-            PostPressKey(hwnd, 0x0D);
+            CombinedPressKey(writer, pid, hwnd, 0x0D);
             Thread.Sleep(3000);
 
-            // Step 6: Server select — press Enter to confirm pre-selected server
+            // Step 8: Server select
             Report("Confirming server...");
-            PostPressKey(hwnd, 0x0D);
+            CombinedPressKey(writer, pid, hwnd, 0x0D);
             Thread.Sleep(3000);
 
-            // Step 7: Character select — navigate to character slot
+            // Step 9: Character select
             Report($"Selecting character (slot {account.CharacterSlot})...");
             for (int i = 1; i < account.CharacterSlot; i++)
             {
-                PostPressKey(hwnd, 0x28); // VK_DOWN
+                CombinedPressKey(writer, pid, hwnd, 0x28); // VK_DOWN
                 Thread.Sleep(200);
             }
             Thread.Sleep(300);
 
-            // Step 8: Enter World
+            // Step 10: Enter World
             Report("Entering world...");
-            PostPressKey(hwnd, 0x0D);
+            CombinedPressKey(writer, pid, hwnd, 0x0D);
             Thread.Sleep(1000);
 
             Report($"{account.Name} logged in!");
@@ -218,6 +233,8 @@ public class AutoLoginManager
         }
         finally
         {
+            try { writer.Close(pid); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Close failed: {ex.Message}"); }
+            try { writer.Dispose(); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Dispose failed: {ex.Message}"); }
             _activeLoginPids.TryRemove(pid, out _);
             if (_syncContext != null)
                 _syncContext.Post(_ => LoginComplete?.Invoke(this, pid), null);
@@ -226,38 +243,40 @@ public class AutoLoginManager
         }
     }
 
-    // ─── PostMessage Background Typing Helpers ──────────────────────
+    // ─── Combined Background Typing (SHM + PostMessage) ─────────────
     //
-    // EQ's login screen reads input from the Windows message queue
-    // (WM_KEYDOWN/WM_CHAR), NOT DirectInput or GetAsyncKeyState.
-    // PostMessage delivers messages to any window without needing focus.
-    // Confirmed by DLL diagnostic: zero GetAsyncKeyState/GetDeviceState
-    // calls during the login screen.
+    // Two-layer approach for true background login:
+    // 1. DLL hooks (GetForegroundWindow/GetAsyncKeyState) — SHM makes EQ think
+    //    it's the active window and provides synthetic key state
+    // 2. PostMessage (WM_KEYDOWN/WM_CHAR) — delivers actual key events to the
+    //    message queue for login text field processing
+    // Both layers are needed because EQ checks focus before processing input.
 
-    /// <summary>Build the lParam for WM_KEYDOWN (repeat=1, scan code, no extended flag).</summary>
     private static IntPtr MakeKeyDownLParam(uint scanCode)
-    {
-        return (IntPtr)(1 | ((int)scanCode << 16));
-    }
+        => (IntPtr)(1 | ((int)scanCode << 16));
 
-    /// <summary>Build the lParam for WM_KEYUP (repeat=1, scan code, previous=1, transition=1).</summary>
     private static IntPtr MakeKeyUpLParam(uint scanCode)
-    {
-        return (IntPtr)(1 | ((int)scanCode << 16) | (1 << 30) | unchecked((int)(1u << 31)));
-    }
+        => (IntPtr)(1 | ((int)scanCode << 16) | (1 << 30) | unchecked((int)(1u << 31)));
 
-    /// <summary>Post a key press and release to the EQ window via PostMessage.</summary>
-    private static void PostPressKey(IntPtr hwnd, ushort vk)
+    /// <summary>Press a key via SHM (for DLL hooks) AND PostMessage (for message queue).</summary>
+    private static void CombinedPressKey(KeyInputWriter writer, int pid, IntPtr hwnd, ushort vk)
     {
         uint scan = NativeMethods.MapVirtualKeyW(vk, NativeMethods.MAPVK_VK_TO_VSC);
+
+        // SHM: set key down (DLL hooks see it via GetAsyncKeyState/GetDeviceState)
+        if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, true);
+        // PostMessage: deliver WM_KEYDOWN to EQ's message queue
         NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
-        Thread.Sleep(60);
+        Thread.Sleep(80);
+
+        // Release
+        if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, false);
         NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYUP, (IntPtr)vk, MakeKeyUpLParam(scan));
-        Thread.Sleep(60);
+        Thread.Sleep(80);
     }
 
-    /// <summary>Type a string by posting WM_KEYDOWN + WM_CHAR + WM_KEYUP for each character.</summary>
-    private static void PostTypeString(IntPtr hwnd, string text)
+    /// <summary>Type a string via SHM + PostMessage. Posts WM_KEYDOWN + WM_CHAR + WM_KEYUP.</summary>
+    private static void CombinedTypeString(KeyInputWriter writer, int pid, IntPtr hwnd, string text)
     {
         foreach (char c in text)
         {
@@ -265,32 +284,39 @@ public class AutoLoginManager
             if (vkScan == -1) continue;
 
             byte modifiers = (byte)(vkScan >> 8);
-            if ((modifiers & ~0x01) != 0) continue; // skip chars needing Ctrl/Alt
+            if ((modifiers & ~0x01) != 0) continue;
 
             ushort vk = (ushort)(vkScan & 0xFF);
             bool needShift = (modifiers & 0x01) != 0;
             uint scan = NativeMethods.MapVirtualKeyW(vk, NativeMethods.MAPVK_VK_TO_VSC);
+            uint shiftScan = NativeMethods.MapVirtualKeyW(0x10, NativeMethods.MAPVK_VK_TO_VSC);
 
+            // Shift down (both layers)
             if (needShift)
             {
-                uint shiftScan = NativeMethods.MapVirtualKeyW(0x10, NativeMethods.MAPVK_VK_TO_VSC);
+                if (shiftScan > 0 && shiftScan < 256) writer.SetKey(pid, (byte)shiftScan, true);
                 NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)0x10, MakeKeyDownLParam(shiftScan));
                 Thread.Sleep(20);
             }
 
+            // Key down (both layers) + WM_CHAR for text field
+            if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, true);
             NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
-            // WM_CHAR carries the actual character code — this is what text fields read
             NativeMethods.PostMessage(hwnd, (uint)NativeMethods.WM_CHAR, (IntPtr)c, MakeKeyDownLParam(scan));
-            Thread.Sleep(50);
+            Thread.Sleep(80);
+
+            // Key up (both layers)
+            if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, false);
             NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYUP, (IntPtr)vk, MakeKeyUpLParam(scan));
 
+            // Shift up
             if (needShift)
             {
-                uint shiftScan = NativeMethods.MapVirtualKeyW(0x10, NativeMethods.MAPVK_VK_TO_VSC);
-                Thread.Sleep(20);
+                Thread.Sleep(40);
+                if (shiftScan > 0 && shiftScan < 256) writer.SetKey(pid, (byte)shiftScan, false);
                 NativeMethods.PostMessage(hwnd, NativeMethods.WM_KEYUP, (IntPtr)0x10, MakeKeyUpLParam(shiftScan));
             }
-            Thread.Sleep(40);
+            Thread.Sleep(50);
         }
     }
 
