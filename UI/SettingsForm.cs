@@ -587,7 +587,7 @@ public class SettingsForm : Form
             };
             // Rounded region — eliminates the boxy look
             var radius = 20;
-            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            using var path = new System.Drawing.Drawing2D.GraphicsPath();
             path.AddArc(0, 0, radius, radius, 180, 90);
             path.AddArc(size.Width - radius, 0, radius, radius, 270, 90);
             path.AddArc(size.Width - radius, size.Height - radius, radius, radius, 0, 90);
@@ -616,8 +616,6 @@ public class SettingsForm : Form
                 e.Graphics.DrawString(labelText, labelFont, dimBrush,
                     (size.Width - labelSize.Width) / 2, 68);
             };
-            // Set BackColor before Show to prevent white flash
-            overlay.Visible = false;
             overlay.Show();
             _monitorOverlays.Add(overlay);
         }
@@ -637,9 +635,7 @@ public class SettingsForm : Form
         {
             foreach (var o in _monitorOverlays)
             {
-                // Dispose fonts on child controls — Form.Dispose doesn't do this
-                foreach (Control c in o.Controls)
-                    c.Font?.Dispose();
+                o.Region?.Dispose();
                 o.Close();
                 o.Dispose();
             }

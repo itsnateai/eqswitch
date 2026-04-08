@@ -10,7 +10,8 @@ public class TrayManager : IDisposable
     // ─── Constants ───────────────────────────────────────────────────
     private const int MultiMonToggleDebounceMs = 500;
     private const int AffinityPollIntervalMs = 250;
-    // Left: MouseDoubleClick handles it, so this just delays single-click resolution.
+    // Left: all clicks counted via MouseUp. This interval lets rapid clicks
+    // accumulate before resolving single/double/triple.
     private static readonly int LeftClickResolveMs = SystemInformation.DoubleClickTime + 50;
     // Middle: counted via MouseUp (fires reliably for every click, unlike MouseDown
     // which Windows skips on the 2nd press, converting it to DBLCLK instead).
@@ -1150,6 +1151,8 @@ public class TrayManager : IDisposable
         _leftClickTimer!.Stop();
         int clicks = _leftClickCount;
         _leftClickCount = 0;
+        // Guard: a stale Tick can fire after Stop() if it was already queued
+        // on the UI message pump. Ignore ticks with zero clicks.
         if (clicks == 0) return;
         string action = clicks >= 3
             ? _config.TrayClick.TripleClick
@@ -1648,6 +1651,10 @@ public class TrayManager : IDisposable
         _retryTimer?.Dispose();
         _launchManager.CancelLaunch();
         _launchManager.Dispose();
+        _leftClickTimer?.Stop();
+        _leftClickTimer?.Dispose();
+        _middleClickTimer?.Stop();
+        _middleClickTimer?.Dispose();
         _pipOverlay?.Dispose();
         _pipOverlay = null;
         _boldMenuFont?.Dispose();
