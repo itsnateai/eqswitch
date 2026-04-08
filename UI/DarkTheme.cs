@@ -87,7 +87,7 @@ public static class DarkTheme
             Dock = DockStyle.Fill,
             DrawMode = TabDrawMode.OwnerDrawFixed,
             SizeMode = TabSizeMode.Fixed,
-            ItemSize = new Size(72, 30),
+            ItemSize = new Size(84, 30),
             Padding = new Point(12, 6),
             Font = FontUI85
         };
