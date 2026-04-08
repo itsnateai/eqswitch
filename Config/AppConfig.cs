@@ -55,6 +55,12 @@ public class AppConfig
     /// <summary>Username of the account bound to Quick Login slot 2 (empty = unbound).</summary>
     public string QuickLogin2 { get; set; } = "";
 
+    /// <summary>Username of the account bound to Quick Login slot 3 (empty = unbound).</summary>
+    public string QuickLogin3 { get; set; } = "";
+
+    /// <summary>Username of the account bound to Quick Login slot 4 (empty = unbound).</summary>
+    public string QuickLogin4 { get; set; } = "";
+
     // Tray Click Actions
     public TrayClickConfig TrayClick { get; set; } = new();
 
@@ -262,6 +268,12 @@ public class HotkeyConfig
     /// <summary>Auto-login Quick Login slot 2.</summary>
     public string AutoLogin2 { get; set; } = "";
 
+    /// <summary>Auto-login Quick Login slot 3.</summary>
+    public string AutoLogin3 { get; set; } = "";
+
+    /// <summary>Auto-login Quick Login slot 4.</summary>
+    public string AutoLogin4 { get; set; } = "";
+
     /// <summary>
     /// Set true once the user has enabled multimonitor mode at least once.
     /// Unlocks Alt+M hotkey permanently. Won't work until user tries
@@ -353,7 +365,7 @@ public class TrayClickConfig
 {
     /// <summary>
     /// Action for single left-click on tray icon.
-    /// Values: "None", "AutoLogin1", "AutoLogin2", "LoginAll", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp"
+    /// Values: "None", "AutoLogin1", "AutoLogin2", "AutoLogin3", "AutoLogin4", "LoginAll", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp"
     /// </summary>
     public string SingleClick { get; set; } = "LaunchOne";
 

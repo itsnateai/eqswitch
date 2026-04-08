@@ -83,8 +83,13 @@ public class SettingsForm : Form
     private NumericUpDown _nudLoginScreenDelay = null!;
     private ComboBox _cboQuickLogin1 = null!;
     private ComboBox _cboQuickLogin2 = null!;
+    private ComboBox _cboQuickLogin3 = null!;
+    private ComboBox _cboQuickLogin4 = null!;
     private TextBox _txtAutoLogin1Hotkey = null!;
     private TextBox _txtAutoLogin2Hotkey = null!;
+    private TextBox _txtAutoLogin3Hotkey = null!;
+    private TextBox _txtAutoLogin4Hotkey = null!;
+    private Label _lblAutoLoginHotkeyWarn = null!;
 
     // ─── PiP tab controls
     private CheckBox _chkPipEnabled = null!;
@@ -332,7 +337,7 @@ public class SettingsForm : Form
         y += 73;
 
         // ─── Tray Click Actions card ─────────────────────────────
-        var clickActions = new[] { "None", "AutoLogin1", "AutoLogin2", "LoginAll", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp" };
+        var clickActions = new[] { "None", "AutoLogin1", "LoginAll", "TogglePiP", "LaunchOne", "LaunchAll", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4" };
         const int cboW = 140;
 
         var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 105);
@@ -373,6 +378,61 @@ public class SettingsForm : Form
             ? "⚠ Same as Switch Key — global will override"
             : "Works from any app, cycles thru all";
         _lblDuplicateKeyWarn.ForeColor = dup ? DarkTheme.CardWarn : DarkTheme.FgDimGray;
+    }
+
+    private void CheckAutoLoginHotkeyConflicts()
+    {
+        if (_lblAutoLoginHotkeyWarn == null) return;
+
+        var slots = new[] {
+            _txtAutoLogin1Hotkey?.Text.Trim() ?? "",
+            _txtAutoLogin2Hotkey?.Text.Trim() ?? "",
+            _txtAutoLogin3Hotkey?.Text.Trim() ?? "",
+            _txtAutoLogin4Hotkey?.Text.Trim() ?? ""
+        };
+
+        // Collect all other hotkeys in the form for conflict checking
+        var otherHotkeys = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (_txtSwitchKey?.Text.Trim() is { Length: > 0 } sk) otherHotkeys[sk] = "Switch Key";
+        if (_txtGlobalSwitchKey?.Text.Trim() is { Length: > 0 } gsk) otherHotkeys[gsk] = "Global Switch Key";
+        if (_txtArrangeWindows?.Text.Trim() is { Length: > 0 } aw) otherHotkeys[aw] = "Arrange Windows";
+        if (_txtToggleMultiMon?.Text.Trim() is { Length: > 0 } mm) otherHotkeys[mm] = "Toggle Multi-Mon";
+        if (_txtLaunchOne?.Text.Trim() is { Length: > 0 } lo) otherHotkeys[lo] = "Launch One";
+        if (_txtLaunchAll?.Text.Trim() is { Length: > 0 } la) otherHotkeys[la] = "Launch All";
+
+        var warnings = new List<string>();
+
+        for (int i = 0; i < slots.Length; i++)
+        {
+            var s = slots[i];
+            if (s.Length == 0) continue;
+            int num = i + 1;
+
+            // Needs modifier
+            if (!s.Contains('+'))
+                warnings.Add($"Slot {num}: needs modifier");
+
+            // Conflicts with other hotkeys
+            if (otherHotkeys.TryGetValue(s, out var conflict))
+                warnings.Add($"Slot {num} conflicts with {conflict}");
+
+            // Conflicts with another slot
+            for (int j = i + 1; j < slots.Length; j++)
+            {
+                if (slots[j].Length > 0 && string.Equals(s, slots[j], StringComparison.OrdinalIgnoreCase))
+                    warnings.Add($"Slot {num} and {j + 1} are the same");
+            }
+        }
+
+        if (warnings.Count > 0)
+        {
+            _lblAutoLoginHotkeyWarn.Text = "\u26A0 " + string.Join("  |  ", warnings);
+            _lblAutoLoginHotkeyWarn.ForeColor = DarkTheme.CardWarn;
+        }
+        else
+        {
+            _lblAutoLoginHotkeyWarn.Text = "";
+        }
     }
 
     private TextBox MakeHotkeyBox(Panel card, int x, int y, int width = 80)
@@ -923,6 +983,8 @@ public class SettingsForm : Form
         _txtLaunchAll.Text = _config.Hotkeys.LaunchAll;
         _txtAutoLogin1Hotkey.Text = _config.Hotkeys.AutoLogin1;
         _txtAutoLogin2Hotkey.Text = _config.Hotkeys.AutoLogin2;
+        _txtAutoLogin3Hotkey.Text = _config.Hotkeys.AutoLogin3;
+        _txtAutoLogin4Hotkey.Text = _config.Hotkeys.AutoLogin4;
 
         // Layout
         _chkSlimTitlebar.Checked = _config.Layout.SlimTitlebar;
@@ -1041,6 +1103,8 @@ public class SettingsForm : Form
                 LaunchAll = _txtLaunchAll.Text.Trim(),
                 AutoLogin1 = _txtAutoLogin1Hotkey.Text.Trim(),
                 AutoLogin2 = _txtAutoLogin2Hotkey.Text.Trim(),
+                AutoLogin3 = _txtAutoLogin3Hotkey.Text.Trim(),
+                AutoLogin4 = _txtAutoLogin4Hotkey.Text.Trim(),
                 // Once enabled, the hotkey is unlocked permanently
                 MultiMonitorEnabled = _chkVideoMultiMon.Checked || _config.Hotkeys.MultiMonitorEnabled,
                 DirectSwitchKeys = _config.Hotkeys.DirectSwitchKeys,
@@ -1083,7 +1147,9 @@ public class SettingsForm : Form
             Accounts = _pendingAccounts,
             LoginScreenDelayMs = (int)(_nudLoginScreenDelay.Value * 1000),
             QuickLogin1 = GetQuickLoginUsername(_cboQuickLogin1),
-            QuickLogin2 = GetQuickLoginUsername(_cboQuickLogin2)
+            QuickLogin2 = GetQuickLoginUsername(_cboQuickLogin2),
+            QuickLogin3 = GetQuickLoginUsername(_cboQuickLogin3),
+            QuickLogin4 = GetQuickLoginUsername(_cboQuickLogin4)
         };
 
         // Apply startup registry change
@@ -1148,7 +1214,7 @@ public class SettingsForm : Form
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
             MultiSelect = false,
             ReadOnly = true,
-            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
             ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
             {
                 BackColor = DarkTheme.BgMedium,
@@ -1168,13 +1234,17 @@ public class SettingsForm : Form
 
         _dgvAccounts.Columns.Add("Num", "#");
         _dgvAccounts.Columns["Num"]!.Width = 30;
-        _dgvAccounts.Columns["Num"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
         _dgvAccounts.Columns.Add("Character", "Character");
+        _dgvAccounts.Columns["Character"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        _dgvAccounts.Columns["Character"]!.FillWeight = 30;
         _dgvAccounts.Columns.Add("Username", "Username");
+        _dgvAccounts.Columns["Username"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        _dgvAccounts.Columns["Username"]!.FillWeight = 30;
         _dgvAccounts.Columns.Add("Server", "Server");
+        _dgvAccounts.Columns["Server"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        _dgvAccounts.Columns["Server"]!.FillWeight = 25;
         _dgvAccounts.Columns.Add("Slot", "Slot");
         _dgvAccounts.Columns["Slot"]!.Width = 40;
-        _dgvAccounts.Columns["Slot"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
 
         RefreshAccountsGrid();
         card.Controls.Add(_dgvAccounts);
@@ -1239,28 +1309,44 @@ public class SettingsForm : Form
         _nudLoginScreenDelay.Increment = 0.5m;
         DarkTheme.AddCardLabel(card, "s", 442, btnY + 3);
 
-        DarkTheme.AddCardHint(card, "DPAPI-encrypted passwords. Delay = seconds before typing credentials.", 10, 190);
+        DarkTheme.AddCardHint(card, "DPAPI-encrypted passwords.", 10, 190);
+        DarkTheme.AddCardHint(card, "Delay = seconds before typing credentials.", 250, 190);
 
         // ─── Quick Login Slots ───────────────────────────────────────
         y += 240;
-        var slotsCard = DarkTheme.MakeCard(page, "\u26A1", "Quick Login Slots", DarkTheme.CardGold, 10, y, 480, 80);
+        var slotsCard = DarkTheme.MakeCard(page, "\u26A1", "Quick Login Slots", DarkTheme.CardGold, 10, y, 480, 105);
         DarkTheme.AddCardLabel(slotsCard, "Slot 1:", 10, 30);
         _cboQuickLogin1 = DarkTheme.AddCardComboBox(slotsCard, 55, 27, 150, Array.Empty<string>());
         DarkTheme.AddCardLabel(slotsCard, "Slot 2:", 215, 30);
         _cboQuickLogin2 = DarkTheme.AddCardComboBox(slotsCard, 260, 27, 150, Array.Empty<string>());
+        DarkTheme.AddCardLabel(slotsCard, "Slot 3:", 10, 56);
+        _cboQuickLogin3 = DarkTheme.AddCardComboBox(slotsCard, 55, 53, 150, Array.Empty<string>());
+        DarkTheme.AddCardLabel(slotsCard, "Slot 4:", 215, 56);
+        _cboQuickLogin4 = DarkTheme.AddCardComboBox(slotsCard, 260, 53, 150, Array.Empty<string>());
         RefreshQuickLoginCombos();
         SelectQuickLoginCombo(_cboQuickLogin1, _config.QuickLogin1);
         SelectQuickLoginCombo(_cboQuickLogin2, _config.QuickLogin2);
-        DarkTheme.AddCardHint(slotsCard, "Bind to tray click actions or hotkeys below", 10, 55);
+        SelectQuickLoginCombo(_cboQuickLogin3, _config.QuickLogin3);
+        SelectQuickLoginCombo(_cboQuickLogin4, _config.QuickLogin4);
+        DarkTheme.AddCardHint(slotsCard, "Bind to tray click actions or hotkeys below", 10, 80);
 
         // ─── Auto-Login Hotkeys ──────────────────────────────────────
-        y += 88;
-        var hkCard = DarkTheme.MakeCard(page, "\u2328", "Auto-Login Hotkeys", DarkTheme.CardGreen, 10, y, 480, 58);
+        y += 113;
+        var hkCard = DarkTheme.MakeCard(page, "\u2328", "Auto-Login Hotkeys", DarkTheme.CardGreen, 10, y, 480, 98);
         DarkTheme.AddCardLabel(hkCard, "Slot 1:", 10, 28);
         _txtAutoLogin1Hotkey = MakeHotkeyBox(hkCard, 55, 26);
         DarkTheme.AddCardLabel(hkCard, "Slot 2:", 160, 28);
         _txtAutoLogin2Hotkey = MakeHotkeyBox(hkCard, 205, 26);
-        DarkTheme.AddCardHint(hkCard, "Press combo to set. Backspace = clear.", 310, 28);
+        DarkTheme.AddCardHint(hkCard, "Press combo to set. Backspace = clear.", 290, 28);
+        DarkTheme.AddCardLabel(hkCard, "Slot 3:", 10, 54);
+        _txtAutoLogin3Hotkey = MakeHotkeyBox(hkCard, 55, 52);
+        DarkTheme.AddCardLabel(hkCard, "Slot 4:", 160, 54);
+        _txtAutoLogin4Hotkey = MakeHotkeyBox(hkCard, 205, 52);
+        _lblAutoLoginHotkeyWarn = DarkTheme.AddCardHint(hkCard, "", 10, 76);
+        _txtAutoLogin1Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
+        _txtAutoLogin2Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
+        _txtAutoLogin3Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
+        _txtAutoLogin4Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
 
         return page;
     }
@@ -1283,16 +1369,20 @@ public class SettingsForm : Form
             string.IsNullOrEmpty(a.CharacterName) ? a.Username : a.CharacterName).ToList();
         labels.Insert(0, "(None)");
 
-        var saved1 = _cboQuickLogin1.SelectedItem?.ToString();
-        var saved2 = _cboQuickLogin2.SelectedItem?.ToString();
-        _cboQuickLogin1.Items.Clear();
-        _cboQuickLogin2.Items.Clear();
-        _cboQuickLogin1.Items.AddRange(labels.ToArray<object>());
-        _cboQuickLogin2.Items.AddRange(labels.ToArray<object>());
-        _cboQuickLogin1.SelectedItem = saved1 ?? "(None)";
-        _cboQuickLogin2.SelectedItem = saved2 ?? "(None)";
-        if (_cboQuickLogin1.SelectedIndex < 0) _cboQuickLogin1.SelectedIndex = 0;
-        if (_cboQuickLogin2.SelectedIndex < 0) _cboQuickLogin2.SelectedIndex = 0;
+        var combos = new[] { _cboQuickLogin1, _cboQuickLogin2, _cboQuickLogin3, _cboQuickLogin4 };
+        var saved = combos.Select(c => c?.SelectedItem?.ToString()).ToArray();
+        foreach (var cbo in combos)
+        {
+            if (cbo == null) continue;
+            cbo.Items.Clear();
+            cbo.Items.AddRange(labels.ToArray<object>());
+        }
+        for (int i = 0; i < combos.Length; i++)
+        {
+            if (combos[i] == null) continue;
+            combos[i]!.SelectedItem = saved[i] ?? "(None)";
+            if (combos[i]!.SelectedIndex < 0) combos[i]!.SelectedIndex = 0;
+        }
     }
 
     /// <summary>Select the combo item matching a username from config.</summary>
