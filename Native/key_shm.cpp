@@ -36,6 +36,8 @@ static bool TryOpen() {
 }
 
 // Returns the shared state if open, magic valid, and active. Lazy-opens on first call.
+static bool g_diagFirstActive = true;
+
 static const SharedKeyState *GetState() {
     if (!g_shmPtr) {
         if (g_retryCountdown > 0) {
@@ -52,6 +54,18 @@ static const SharedKeyState *GetState() {
     uint32_t active = *(volatile uint32_t *)&g_shmPtr->active;
     if (magic != KEY_SHM_MAGIC || active == 0)
         return nullptr;
+
+    // Log once when SHM first becomes active
+    if (g_diagFirstActive) {
+        g_diagFirstActive = false;
+        uint32_t seq = *(volatile uint32_t *)&g_shmPtr->seq;
+        uint32_t suppress = *(volatile uint32_t *)&g_shmPtr->suppress;
+        int keyCount = 0;
+        for (int i = 0; i < 256; i++)
+            if (*(volatile uint8_t *)&g_shmPtr->keys[i]) keyCount++;
+        DI8Log("key_shm: FIRST ACTIVE magic=0x%08X active=%u suppress=%u seq=%u keysDown=%d",
+               magic, active, suppress, seq, keyCount);
+    }
 
     return g_shmPtr;
 }

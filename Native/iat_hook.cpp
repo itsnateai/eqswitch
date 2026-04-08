@@ -35,11 +35,33 @@ static PFN_GetActiveWindow    g_realGetActiveWindow    = nullptr;
 
 // --- Hook implementations ---
 
+// Diagnostic: log first N calls per active session to identify what EQ queries during login
+static int g_diagLogCount = 0;
+static bool g_diagWasActive = false;
+
 static SHORT WINAPI HookedGetAsyncKeyState(int vKey) {
+    bool active = KeyShm::IsActive();
+    // Reset counter on active edge (new login session)
+    if (active && !g_diagWasActive) {
+        g_diagLogCount = 0;
+        DI8Log("iat_hook: === LOGIN SESSION START — GetAsyncKeyState logging enabled ===");
+    }
+    g_diagWasActive = active;
+
     if (vKey >= 0 && vKey <= 255) {
         UINT scan = MapVirtualKeyW(vKey, MAPVK_VK_TO_VSC);
-        if (scan > 0 && scan < 256 && KeyShm::IsKeyPressed((uint8_t)scan))
-            return (SHORT)0x8001; // key down + was pressed since last call
+        if (scan > 0 && scan < 256 && KeyShm::IsKeyPressed((uint8_t)scan)) {
+            if (active && g_diagLogCount < 200) {
+                g_diagLogCount++;
+                DI8Log("iat_hook: GetAsyncKeyState HIT vk=0x%02X scan=0x%02X → 0x8001", vKey, scan);
+            }
+            return (SHORT)0x8001;
+        }
+        // Log misses too (first 50 per session) to see what EQ polls
+        if (active && g_diagLogCount < 50) {
+            g_diagLogCount++;
+            DI8Log("iat_hook: GetAsyncKeyState MISS vk=0x%02X scan=0x%02X", vKey, scan);
+        }
     }
     return g_realGetAsyncKeyState ? g_realGetAsyncKeyState(vKey) : 0;
 }
