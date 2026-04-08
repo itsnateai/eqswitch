@@ -647,31 +647,49 @@ public class SettingsForm : Form
         for (int i = 0; i < screens.Length; i++)
         {
             var screen = screens[i];
+            var size = new Size(160, 100);
             var overlay = new Form
             {
                 FormBorderStyle = FormBorderStyle.None,
-                BackColor = DarkTheme.BgOverlay,
-                Opacity = 0.85,
+                BackColor = DarkTheme.BgDark,
                 TopMost = true,
                 ShowInTaskbar = false,
                 StartPosition = FormStartPosition.Manual,
-                Size = new Size(180, 120),
+                Size = size,
             };
+            // Rounded region — eliminates the boxy look
+            var radius = 20;
+            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            path.AddArc(0, 0, radius, radius, 180, 90);
+            path.AddArc(size.Width - radius, 0, radius, radius, 270, 90);
+            path.AddArc(size.Width - radius, size.Height - radius, radius, radius, 0, 90);
+            path.AddArc(0, size.Height - radius, radius, radius, 90, 90);
+            path.CloseFigure();
+            overlay.Region = new Region(path);
+
             overlay.Location = new Point(
                 screen.Bounds.Left + (screen.Bounds.Width - overlay.Width) / 2,
                 screen.Bounds.Top + (screen.Bounds.Height - overlay.Height) / 2);
 
-            var lbl = new Label
+            // Paint directly to avoid white flash from child controls
+            var monitorNum = i + 1;
+            overlay.Paint += (_, e) =>
             {
-                Text = $"Monitor {i + 1}",
-                Font = new Font("Segoe UI", 24, FontStyle.Bold),
-                ForeColor = DarkTheme.CardGreen,
-                BackColor = Color.Transparent,
-                AutoSize = false,
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleCenter
+                using var numFont = new Font("Segoe UI", 36, FontStyle.Bold);
+                using var labelFont = new Font("Segoe UI", 10);
+                using var brush = new SolidBrush(DarkTheme.CardGreen);
+                using var dimBrush = new SolidBrush(DarkTheme.FgGray);
+                var numText = monitorNum.ToString();
+                var numSize = e.Graphics.MeasureString(numText, numFont);
+                e.Graphics.DrawString(numText, numFont, brush,
+                    (size.Width - numSize.Width) / 2, 12);
+                var labelText = screen.Primary ? "Primary" : $"Monitor";
+                var labelSize = e.Graphics.MeasureString(labelText, labelFont);
+                e.Graphics.DrawString(labelText, labelFont, dimBrush,
+                    (size.Width - labelSize.Width) / 2, 68);
             };
-            overlay.Controls.Add(lbl);
+            // Set BackColor before Show to prevent white flash
+            overlay.Visible = false;
             overlay.Show();
             _monitorOverlays.Add(overlay);
         }
