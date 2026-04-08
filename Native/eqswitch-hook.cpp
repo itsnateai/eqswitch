@@ -37,6 +37,9 @@ static HANDLE g_hMapFile = NULL;
 static volatile HookConfig* g_pConfig = NULL;
 static HWND g_cachedEqHwnd = NULL;
 static HMODULE g_hModule = NULL;
+static HANDLE g_initThread = NULL;
+static volatile LONG g_initialized = 0;
+static volatile LONG g_hooksInstalled = 0;  // set only if MH_EnableHook succeeded
 
 // Original function pointers (trampolines)
 typedef BOOL(WINAPI* PFN_SetWindowPos)(HWND, HWND, int, int, int, int, UINT);
@@ -310,14 +313,20 @@ static BOOL InstallHooks() {
         return FALSE;
     }
 
+    InterlockedExchange(&g_hooksInstalled, 1);
     LogMessage("All hooks installed (SetWindowPos, MoveWindow, SetWindowTextA, ShowWindow)");
     return TRUE;
 }
 
 // ─── Cleanup ─────────────────────────────────────────────────────
 static void Cleanup() {
-    MH_DisableHook(MH_ALL_HOOKS);
-    MH_Uninitialize();
+    // Only tear down MinHook if it was successfully initialized and hooks enabled.
+    // If OpenSharedMemory failed, MH_Initialize was never called — calling
+    // MH_Uninitialize on uninitialized state is undefined behavior.
+    if (g_hooksInstalled) {
+        MH_DisableHook(MH_ALL_HOOKS);
+        MH_Uninitialize();
+    }
 
     if (g_pConfig) {
         UnmapViewOfFile((LPCVOID)g_pConfig);
@@ -328,7 +337,32 @@ static void Cleanup() {
         g_hMapFile = NULL;
     }
 
-    LogMessage("Hooks removed, cleanup complete");
+    LogMessage("Cleanup complete (hooks=%s)", g_hooksInstalled ? "removed" : "never installed");
+}
+
+// ─── Deferred Init Thread ───────────────────────────────────────
+// DllMain holds the loader lock. OpenSharedMemory calls LogMessage (fopen)
+// and InstallHooks calls MH_Initialize (VirtualAlloc) — both can deadlock
+// under the loader lock. Defer to a thread that runs after DllMain returns.
+static DWORD WINAPI InitThread(LPVOID param) {
+    (void)param;
+
+    LogMessage("Init thread started (outside loader lock)");
+
+    if (!OpenSharedMemory()) {
+        LogMessage("Shared memory not available — hooks not installed");
+        InterlockedExchange(&g_initialized, 1);
+        return 0;
+    }
+
+    if (!InstallHooks()) {
+        LogMessage("Hook installation failed");
+        if (g_pConfig) { UnmapViewOfFile((LPCVOID)g_pConfig); g_pConfig = NULL; }
+        if (g_hMapFile) { CloseHandle(g_hMapFile); g_hMapFile = NULL; }
+    }
+
+    InterlockedExchange(&g_initialized, 1);
+    return 0;
 }
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
@@ -336,24 +370,31 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     case DLL_PROCESS_ATTACH:
         g_hModule = hModule;
         DisableThreadLibraryCalls(hModule);
-        // Build log path now (safe — GetModuleFileNameA(NULL,...) doesn't re-acquire loader lock).
-        // fopen is deferred — do NOT call LogMessage inside DllMain (loader lock deadlock risk).
+        // Build log path (safe — GetModuleFileNameA doesn't re-acquire loader lock).
         BuildLogPath();
-
-        if (!OpenSharedMemory()) {
-            return TRUE;
-        }
-
-        if (!InstallHooks()) {
-            if (g_pConfig) { UnmapViewOfFile((LPCVOID)g_pConfig); g_pConfig = NULL; }
-            if (g_hMapFile) { CloseHandle(g_hMapFile); g_hMapFile = NULL; }
-            return TRUE;
-        }
+        // Spawn init thread — runs after DllMain releases the loader lock.
+        // CreateThread in DLL_PROCESS_ATTACH is safe; the new thread simply
+        // blocks on the loader lock until DllMain returns.
+        g_initThread = CreateThread(NULL, 0, InitThread, NULL, 0, NULL);
         break;
 
     case DLL_PROCESS_DETACH:
-        LogMessage("DLL_PROCESS_DETACH — cleaning up");
-        Cleanup();
+        // reserved != NULL → process exiting: OS reclaims everything, skip cleanup
+        //   (can't safely wait on threads — ExitProcess in progress).
+        // reserved == NULL → FreeLibrary: wait for init thread, then clean up.
+        if (reserved == NULL) {
+            if (g_initThread) {
+                // Wait for init thread to finish before cleanup — prevents race
+                // where C# host ejects DLL before hooks are fully installed.
+                // Safe: loader lock is NOT re-acquired for FreeLibrary detach on Win8+.
+                WaitForSingleObject(g_initThread, 3000);
+                CloseHandle(g_initThread);
+                g_initThread = NULL;
+            }
+            if (g_initialized) {
+                Cleanup();
+            }
+        }
         break;
     }
     return TRUE;

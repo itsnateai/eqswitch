@@ -9,6 +9,13 @@
 #include <windows.h>
 #include <stdint.h>
 #include <string.h>
+// _ReturnAddress() — MSVC intrinsic; GCC/MinGW uses __builtin_return_address(0)
+#ifdef _MSC_VER
+#include <intrin.h>
+#define GET_RETURN_ADDRESS() _ReturnAddress()
+#else
+#define GET_RETURN_ADDRESS() __builtin_return_address(0)
+#endif
 #include "iat_hook.h"
 #include "key_shm.h"
 
@@ -16,6 +23,56 @@ void DI8Log(const char *fmt, ...);
 
 // Defined in device_proxy.cpp
 HWND GetEqHwnd();
+
+// --- eqgame.exe address range for caller checks ---
+// Inline hooks patch user32.dll globally (process-wide). Without a caller
+// check, Discord overlay, Steam, audio drivers, etc. all get fake results.
+// We only want to fake focus for calls originating from eqgame.exe code.
+static uintptr_t g_eqBase = 0;
+static uintptr_t g_eqEnd = 0;
+
+static void ComputeEqImageRange() {
+    HMODULE base = GetModuleHandleW(nullptr); // eqgame.exe
+    if (!base) return;
+    const uint8_t *p = (const uint8_t *)base;
+
+    // Validate DOS header magic
+    if (*(uint16_t *)p != 0x5A4D) {  // "MZ"
+        DI8Log("iat_hook: invalid DOS header — ComputeEqImageRange aborted");
+        return;
+    }
+
+    int32_t eLfanew = *(int32_t *)(p + 0x3C);
+    // Sanity: e_lfanew should point into the first 4KB (typical range 0x80-0x200)
+    if (eLfanew < 0x40 || eLfanew > 0x1000) {
+        DI8Log("iat_hook: e_lfanew=0x%X out of sane range — aborted", eLfanew);
+        return;
+    }
+
+    // Validate PE signature ("PE\0\0")
+    if (*(uint32_t *)(p + eLfanew) != 0x00004550) {
+        DI8Log("iat_hook: invalid PE signature at e_lfanew=0x%X — aborted", eLfanew);
+        return;
+    }
+
+    // PE32 optional header starts at eLfanew + 24; SizeOfImage is at offset 56
+    uint32_t sizeOfImage = *(uint32_t *)(p + eLfanew + 24 + 56);
+    // Sanity: eqgame.exe is typically 4-64 MB; reject >256 MB to prevent wrap-around
+    if (sizeOfImage == 0 || sizeOfImage > 0x10000000) {
+        DI8Log("iat_hook: SizeOfImage=0x%X looks wrong — aborted", sizeOfImage);
+        return;
+    }
+
+    g_eqBase = (uintptr_t)base;
+    g_eqEnd = g_eqBase + sizeOfImage;
+    DI8Log("iat_hook: eqgame.exe range 0x%08X-0x%08X (%u KB)",
+           (unsigned)g_eqBase, (unsigned)g_eqEnd, sizeOfImage / 1024);
+}
+
+static __forceinline bool IsCallerInEq(void *retAddr) {
+    uintptr_t a = (uintptr_t)retAddr;
+    return a >= g_eqBase && a < g_eqEnd;
+}
 
 // --- Original function pointers ---
 
@@ -113,7 +170,7 @@ static HWND WINAPI HookedGetActiveWindow() {
 // --- IAT patch tracking (for removal on detach) ---
 
 struct IatPatchEntry { uint32_t *slot; uint32_t original; };
-static IatPatchEntry g_patches[8];
+static IatPatchEntry g_patches[12];
 static int g_patchCount = 0;
 
 // --- IAT patching engine (x86 PE32 only) ---
@@ -164,7 +221,7 @@ static void *PatchIat(const uint8_t *base, const char *targetDll,
                         *thunk = (uint32_t)(uintptr_t)newFn;
                         VirtualProtect(thunk, 4, oldProtect, &dummy);
                         // Track for removal on DLL detach
-                        if (g_patchCount < 8) {
+                        if (g_patchCount < 12) {
                             g_patches[g_patchCount].slot = thunk;
                             g_patches[g_patchCount].original = (uint32_t)(uintptr_t)original;
                             g_patchCount++;
@@ -208,6 +265,11 @@ static PFN_NtUserGetFocus g_ntGetFocus = nullptr;
 static volatile int g_inlineGfwLogCount = 0;
 
 static HWND WINAPI InlineHookedGetForegroundWindow() {
+    // Only fake results for calls from eqgame.exe — pass through for
+    // Discord overlay, Steam, audio drivers, and other in-process modules.
+    if (!IsCallerInEq(GET_RETURN_ADDRESS()))
+        return g_ntGetForegroundWindow ? g_ntGetForegroundWindow() : nullptr;
+
     HWND hwnd = GetEqHwnd();
     bool active = KeyShm::IsActive();
 
@@ -221,6 +283,9 @@ static HWND WINAPI InlineHookedGetForegroundWindow() {
 }
 
 static HWND WINAPI InlineHookedGetFocus() {
+    if (!IsCallerInEq(GET_RETURN_ADDRESS()))
+        return g_ntGetFocus ? g_ntGetFocus() : nullptr;
+
     HWND hwnd = GetEqHwnd();
     if (hwnd && KeyShm::IsActive())
         return hwnd;
@@ -228,6 +293,9 @@ static HWND WINAPI InlineHookedGetFocus() {
 }
 
 static HWND WINAPI InlineHookedGetActiveWindow() {
+    if (!IsCallerInEq(GET_RETURN_ADDRESS()))
+        return g_ntGetForegroundWindow ? g_ntGetForegroundWindow() : nullptr;
+
     HWND hwnd = GetEqHwnd();
     if (hwnd && KeyShm::IsActive())
         return hwnd;
@@ -275,9 +343,9 @@ static bool InstallInlineHook(const char *fnName, uint8_t *target, void *hook) {
 }
 
 static void InstallInlineHooks() {
-    // Load win32u.dll — on WoW64 (32-bit process on 64-bit Windows), this loads
-    // the 32-bit thunk version from SysWOW64. It contains the actual syscall stubs.
-    HMODULE win32u = LoadLibraryA("win32u.dll");
+    // win32u.dll is always loaded in any modern Win32 process (it contains syscall stubs).
+    // Use GetModuleHandle to avoid bumping the refcount — LoadLibraryA would leak a ref.
+    HMODULE win32u = GetModuleHandleA("win32u.dll");
     if (!win32u) {
         DI8Log("inline: win32u.dll not found — inline hooks unavailable");
         return;
@@ -346,6 +414,12 @@ void IatHook::InstallKeyboardHooks() {
         return;
     }
     const uint8_t *basePtr = (const uint8_t *)base;
+
+    // Compute eqgame.exe's address range for inline hook caller checks (SF12).
+    // If this fails, inline hooks install but silently pass through all calls.
+    ComputeEqImageRange();
+    if (g_eqBase == 0 || g_eqEnd == 0)
+        DI8Log("iat_hook: WARNING — eqgame.exe range unknown, inline hooks will pass through all callers");
 
     int hooked = 0;
 
