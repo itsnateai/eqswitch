@@ -362,7 +362,8 @@ public class SettingsForm : Form
         DarkTheme.AddCardLabel(cardTray, "Single", 260, 52);
         _cboMiddleClick = DarkTheme.AddCardComboBox(cardTray, 325, 49, cboW, clickActions);
 
-        DarkTheme.AddCardLabel(cardTray, "Triple", 260, 78);
+        var lblTriple = DarkTheme.AddCardLabel(cardTray, "Triple", 260, 78);
+        lblTriple.Font = TrackFont(new Font("Segoe UI Semibold", 9f));
         _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 325, 75, cboW, clickActions);
 
         return page;

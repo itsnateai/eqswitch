@@ -1252,7 +1252,7 @@ public class TrayManager : IDisposable
                 ShowBalloon($"Found {_processManager.ClientCount} EQ client(s)");
                 break;
             case "ShowHelp":
-                ShowHelpTooltip();
+                HelpForm.Show(_config);
                 break;
             case "None":
             default:
