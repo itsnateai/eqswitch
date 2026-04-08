@@ -56,13 +56,12 @@ public static class DarkTheme
     // ─── Tab Colors (one per tab for visual identity) ───────────
     private static readonly Color[] TabAccents =
     {
-        Color.FromArgb(100, 220, 130),  // General — green
-        Color.FromArgb(220, 190, 100),  // Hotkeys — gold
-        Color.FromArgb(140, 160, 220),  // Layout — blue
-        Color.FromArgb(220, 120, 120),  // Affinity — red
-        Color.FromArgb(100, 200, 210),  // Launch — cyan
-        Color.FromArgb(180, 140, 220),  // PiP — purple
-        Color.FromArgb(220, 180, 140),  // Paths — warm
+        Color.FromArgb(100, 220, 130),  // 0 General — green
+        Color.FromArgb(180, 140, 220),  // 1 Video — purple
+        Color.FromArgb(220, 190, 100),  // 2 Accounts — gold
+        Color.FromArgb(100, 200, 210),  // 3 PiP — cyan
+        Color.FromArgb(220, 120, 120),  // 4 Hotkeys — red
+        Color.FromArgb(220, 180, 140),  // 5 Paths — warm
     };
 
     // ─── Cached Fonts (shared across all controls — prevents GDI handle leaks) ──
@@ -396,6 +395,8 @@ public static class DarkTheme
     public static readonly Color CardPurple = Color.FromArgb(180, 140, 220);
     public static readonly Color CardCyan = Color.FromArgb(100, 200, 210);
     public static readonly Color CardWarn = Color.FromArgb(200, 100, 100);
+
+    public static readonly Color FgWarn = Color.FromArgb(230, 190, 60);
 
     // ─── Semantic Colors (specialized use cases) ──────────────
     public static readonly Color BgOverlay = Color.FromArgb(20, 18, 28);

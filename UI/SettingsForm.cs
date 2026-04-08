@@ -1619,14 +1619,14 @@ public class SettingsForm : Form
 
         _chkMaximizeWindow = DarkTheme.AddCardCheckBox(cardStyle, "Maximize on Launch", L, cy);
         DarkTheme.AddCardHint(cardStyle, "Sets Maximized=1 in eqclient.ini", hintX, cy + 2);
-        cy += 26;
+        cy += 22;
 
         _lblStyleDisabledHint = new Label
         {
             Text = "If disabled, set EQ video resolution to fit above the taskbar",
             Location = new Point(L, cy),
             AutoSize = true,
-            ForeColor = Color.FromArgb(230, 190, 60),
+            ForeColor = DarkTheme.FgWarn,
             Font = DarkTheme.FontUI75,
             Visible = true,
         };
