@@ -1220,10 +1220,22 @@ public class TrayManager : IDisposable
                 ExecuteQuickLogin(_config.QuickLogin4, "Quick Login 4");
                 break;
             case "LoginAll":
-                ExecuteQuickLogin(_config.QuickLogin1, "Quick Login 1");
-                ExecuteQuickLogin(_config.QuickLogin2, "Quick Login 2");
-                ExecuteQuickLogin(_config.QuickLogin3, "Quick Login 3");
-                ExecuteQuickLogin(_config.QuickLogin4, "Quick Login 4");
+                var allSlots = new[] {
+                    (_config.QuickLogin1, "Quick Login 1"),
+                    (_config.QuickLogin2, "Quick Login 2"),
+                    (_config.QuickLogin3, "Quick Login 3"),
+                    (_config.QuickLogin4, "Quick Login 4")
+                };
+                int fired = 0;
+                foreach (var (user, name) in allSlots)
+                {
+                    if (!string.IsNullOrEmpty(user))
+                    {
+                        ExecuteQuickLogin(user, name);
+                        fired++;
+                    }
+                }
+                if (fired == 0) ShowBalloon("No accounts assigned to quick login slots");
                 break;
             case "Settings":
                 ShowSettings();
