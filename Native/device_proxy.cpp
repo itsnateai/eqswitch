@@ -172,21 +172,44 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::Acquire() {
     return hr;
 }
 
+// Diagnostic: log injection activity during login
+static int g_gdsLogCount = 0;
+static bool g_gdsWasActive = false;
+
 HRESULT STDMETHODCALLTYPE DeviceProxy::GetDeviceState(DWORD cbData, LPVOID lpvData) {
     HRESULT hr = m_real->GetDeviceState(cbData, lpvData);
 
     if (m_isKeyboard) {
-        // Cap to 256 — DirectInput keyboard state is always 256 bytes
+        bool active = KeyShm::IsActive();
+        if (active && !g_gdsWasActive) {
+            g_gdsLogCount = 0;
+            DI8Log("GetDeviceState: === SHM active, injection enabled ===");
+        }
+        g_gdsWasActive = active;
+
         DWORD kbLen = (cbData > 256) ? 256 : cbData;
         if (SUCCEEDED(hr)) {
             if (KeyShm::ShouldSuppress())
                 memset(lpvData, 0, kbLen);
-            KeyShm::InjectKeys((uint8_t *)lpvData, kbLen);
+            bool injected = KeyShm::InjectKeys((uint8_t *)lpvData, kbLen);
+            if (injected && g_gdsLogCount < 100) {
+                g_gdsLogCount++;
+                // Log which scan codes are being injected
+                for (DWORD i = 0; i < kbLen; i++) {
+                    if (((uint8_t *)lpvData)[i] & 0x80)
+                        DI8Log("GetDeviceState: scan 0x%02X=0x80 (injected) hr=0x%08X", i, (unsigned)hr);
+                }
+            }
         } else {
-            // Device lost or not acquired — provide synthetic state anyway
             memset(lpvData, 0, kbLen);
-            if (KeyShm::InjectKeys((uint8_t *)lpvData, kbLen))
+            bool injected = KeyShm::InjectKeys((uint8_t *)lpvData, kbLen);
+            if (injected) {
+                if (g_gdsLogCount < 100) {
+                    g_gdsLogCount++;
+                    DI8Log("GetDeviceState: device FAILED (0x%08X) but injected synthetic keys", (unsigned)hr);
+                }
                 return DI_OK;
+            }
         }
     }
     return hr;

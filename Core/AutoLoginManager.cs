@@ -84,6 +84,10 @@ public class AutoLoginManager
 
         StatusUpdate?.Invoke(this, $"Launching {account.Name}...");
 
+        // Deploy dinput8.dll to EQ directory before launching.
+        // The DLL provides IAT hooks for background input during auto-login.
+        DeployDinput8ToEQPath();
+
         int pid;
         try
         {
@@ -140,8 +144,23 @@ public class AutoLoginManager
 
     private void RunLoginSequence(int pid, LoginAccount account, string password)
     {
+        // Create shared memory so dinput8.dll proxy can log diagnostics.
+        // The DLL hooks GetAsyncKeyState/GetDeviceState and reads keys from SHM.
+        // Even while we use foreground flash for typing, this lets us trace
+        // which hooks EQ calls during login (debugging true background input).
+        var diagWriter = new KeyInputWriter();
         try
         {
+            if (diagWriter.Open(pid))
+            {
+                diagWriter.Activate(pid);
+                FileLogger.Info($"AutoLogin: SHM created for PID {pid} (diagnostic + DI injection)");
+            }
+            else
+            {
+                FileLogger.Warn($"AutoLogin: SHM creation failed for PID {pid}");
+            }
+
             // Step 1: Wait for EQ window to appear
             Report("Waiting for EQ window...");
             var hwnd = WaitForWindow(pid, TimeSpan.FromSeconds(30));
@@ -236,6 +255,8 @@ public class AutoLoginManager
         }
         finally
         {
+            try { diagWriter.Close(pid); } catch { /* best effort */ }
+            try { diagWriter.Dispose(); } catch { /* best effort */ }
             _activeLoginPids.TryRemove(pid, out _);
             if (_syncContext != null)
                 _syncContext.Post(_ => LoginComplete?.Invoke(this, pid), null);
@@ -384,6 +405,43 @@ public class AutoLoginManager
     {
         if (hwnd == IntPtr.Zero || !NativeMethods.IsWindow(hwnd)) return;
         NativeMethods.SetForegroundWindow(hwnd);
+    }
+
+    // ─── dinput8.dll Deployment ──────────────────────────────────────
+
+    /// <summary>
+    /// Copy dinput8.dll to the EQ game directory so it's loaded on next launch.
+    /// Best-effort — logs but doesn't block login if deployment fails.
+    /// </summary>
+    private void DeployDinput8ToEQPath()
+    {
+        var srcPath = Path.Combine(AppContext.BaseDirectory, "dinput8.dll");
+        if (!File.Exists(srcPath))
+        {
+            FileLogger.Warn("AutoLogin: dinput8.dll not found next to EQSwitch.exe — background input unavailable");
+            return;
+        }
+
+        var dstPath = Path.Combine(_config.EQPath, "dinput8.dll");
+
+        // Skip if already deployed and up to date
+        if (File.Exists(dstPath))
+        {
+            var srcInfo = new FileInfo(srcPath);
+            var dstInfo = new FileInfo(dstPath);
+            if (srcInfo.Length == dstInfo.Length && srcInfo.LastWriteTimeUtc <= dstInfo.LastWriteTimeUtc)
+                return; // same size and not newer — skip
+        }
+
+        try
+        {
+            File.Copy(srcPath, dstPath, overwrite: true);
+            FileLogger.Info($"AutoLogin: deployed dinput8.dll to {dstPath}");
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Warn($"AutoLogin: couldn't deploy dinput8.dll: {ex.Message}");
+        }
     }
 
     // ─── EQ INI Helpers ──────────────────────────────────────────────
