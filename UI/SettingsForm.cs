@@ -362,7 +362,7 @@ public class SettingsForm : Form
         DarkTheme.AddCardLabel(cardTray, "Single", 260, 52);
         _cboMiddleClick = DarkTheme.AddCardComboBox(cardTray, 325, 49, cboW, clickActions);
 
-        DarkTheme.AddCardLabel(cardTray, "Triple", 260, 78);
+        DarkTheme.AddCardLabel(cardTray, "Double", 260, 78);
         _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 325, 75, cboW, clickActions);
 
         return page;
