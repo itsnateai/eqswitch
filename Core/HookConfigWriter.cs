@@ -117,12 +117,17 @@ public class HookConfigWriter : IDisposable
 
     /// <summary>
     /// Write full config for a specific process.
+    /// Returns false if no mapping exists or the write fails.
     /// </summary>
-    public void WriteConfig(int pid, int x, int y, int w, int h,
+    public bool WriteConfig(int pid, int x, int y, int w, int h,
         bool enabled, bool stripThickFrame = true,
         bool blockMinimize = false, string windowTitle = "")
     {
-        if (!_mappings.TryGetValue(pid, out var entry)) return;
+        if (!_mappings.TryGetValue(pid, out var entry))
+        {
+            FileLogger.Warn($"HookConfigWriter.WriteConfig: no mapping for PID {pid}");
+            return false;
+        }
 
         var config = new HookConfig
         {
@@ -152,10 +157,12 @@ public class HookConfigWriter : IDisposable
                 Array.Copy(encoded, titleBuffer, copyLen);
             }
             entry.Accessor.WriteArray(titleOffset, titleBuffer, 0, 256);
+            return true;
         }
         catch (Exception ex)
         {
             FileLogger.Error($"HookConfigWriter: write failed for PID {pid}", ex);
+            return false;
         }
     }
 
