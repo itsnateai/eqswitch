@@ -1041,7 +1041,7 @@ public class TrayManager : IDisposable
         AddClickLine(lines, "Left single", tc.SingleClick);
         AddClickLine(lines, "Left double", tc.DoubleClick);
         AddClickLine(lines, "Middle single", tc.MiddleClick);
-        AddClickLine(lines, "Middle double", tc.MiddleDoubleClick);
+        AddClickLine(lines, "Middle triple", tc.MiddleDoubleClick);
 
         // Status
         lines.Add("");
