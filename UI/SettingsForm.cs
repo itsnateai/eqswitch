@@ -1,5 +1,3 @@
-using System.Diagnostics;
-using System.Text.Json;
 using EQSwitch.Config;
 using EQSwitch.Core;
 using EQSwitch.Models;
