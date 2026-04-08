@@ -90,6 +90,7 @@ public class SettingsForm : Form
     private TextBox _txtAutoLogin3Hotkey = null!;
     private TextBox _txtAutoLogin4Hotkey = null!;
     private Label _lblAutoLoginHotkeyWarn = null!;
+    private Label _lblSlotDuplicateWarn = null!;
 
     // ─── PiP tab controls
     private CheckBox _chkPipEnabled = null!;
@@ -432,6 +433,36 @@ public class SettingsForm : Form
         else
         {
             _lblAutoLoginHotkeyWarn.Text = "";
+        }
+    }
+
+    private void CheckDuplicateSlotAccounts()
+    {
+        if (_lblSlotDuplicateWarn == null) return;
+
+        var combos = new[] { _cboQuickLogin1, _cboQuickLogin2, _cboQuickLogin3, _cboQuickLogin4 };
+        var seen = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var dupes = new List<string>();
+
+        for (int i = 0; i < combos.Length; i++)
+        {
+            var username = GetQuickLoginUsername(combos[i]);
+            if (string.IsNullOrEmpty(username)) continue;
+            if (seen.TryGetValue(username, out int first))
+                dupes.Add($"Slot {first + 1} and {i + 1} share an account");
+            else
+                seen[username] = i;
+        }
+
+        if (dupes.Count > 0)
+        {
+            _lblSlotDuplicateWarn.Text = "\u26A0 " + string.Join("  |  ", dupes);
+            _lblSlotDuplicateWarn.ForeColor = DarkTheme.CardWarn;
+        }
+        else
+        {
+            _lblSlotDuplicateWarn.Text = "Bind to tray click actions or hotkeys below";
+            _lblSlotDuplicateWarn.ForeColor = DarkTheme.FgDimGray;
         }
     }
 
@@ -939,6 +970,9 @@ public class SettingsForm : Form
             return;
         }
 
+        // Require at least one modifier — bare keys are not valid hotkey combos
+        if (!e.Control && !e.Alt && !e.Shift) return;
+
         var parts = new List<string>();
         if (e.Control) parts.Add("Ctrl");
         if (e.Alt) parts.Add("Alt");
@@ -1328,7 +1362,11 @@ public class SettingsForm : Form
         SelectQuickLoginCombo(_cboQuickLogin2, _config.QuickLogin2);
         SelectQuickLoginCombo(_cboQuickLogin3, _config.QuickLogin3);
         SelectQuickLoginCombo(_cboQuickLogin4, _config.QuickLogin4);
-        DarkTheme.AddCardHint(slotsCard, "Bind to tray click actions or hotkeys below", 10, 80);
+        _lblSlotDuplicateWarn = DarkTheme.AddCardHint(slotsCard, "Bind to tray click actions or hotkeys below", 10, 80);
+        _cboQuickLogin1.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
+        _cboQuickLogin2.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
+        _cboQuickLogin3.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
+        _cboQuickLogin4.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
 
         // ─── Auto-Login Hotkeys ──────────────────────────────────────
         y += 113;
