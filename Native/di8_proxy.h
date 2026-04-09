@@ -8,7 +8,7 @@
 #include <windows.h>
 #include <dinput.h>
 
-// Log to eqswitch-dinput8.log (defined in dinput8-proxy.cpp)
+// Log to eqswitch-dinput8.log (defined in the DLL entry point — eqswitch-di8.cpp)
 void DI8Log(const char *fmt, ...);
 
 class DI8Proxy : public IDirectInput8W {
