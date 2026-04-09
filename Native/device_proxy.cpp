@@ -73,20 +73,33 @@ static DWORD WINAPI ActivateThread(LPVOID) {
 
 static void StartActivateThread() {
     if (g_activateThreadStarted) return;
-    g_activateThreadStarted = true;
     g_hActivateThread = CreateThread(nullptr, 0, ActivateThread, nullptr, 0, nullptr);
+    if (g_hActivateThread)
+        g_activateThreadStarted = true;
+    else
+        DI8Log("StartActivateThread: CreateThread failed (%lu)", GetLastError());
 }
 
-// Called from dinput8-proxy DLL_PROCESS_DETACH to signal threads to exit.
-// MUST NOT call WaitForSingleObject here — DllMain holds the loader lock,
-// and the threads may call DI8Log→EnsureLogOpen which touches the loader.
-// The OS terminates threads on process exit; on FreeLibrary, the threads
-// will see g_shutdown and exit within one sleep cycle (~16ms).
+// Signal background threads to exit and wait for them before releasing resources.
+// Safe to wait here because Cleanup() in eqswitch-di8.cpp calls this AFTER
+// WaitForSingleObject on the init thread — the loader lock is NOT held.
+// On process exit (DLL_PROCESS_DETACH with reserved != NULL), Cleanup is
+// skipped entirely — the OS reclaims everything.
 extern "C" void DeviceProxy_Shutdown() {
     g_shutdown = true;
-    KeyShm::Close(); // release shared memory handles
-    if (g_hActivateThread) { CloseHandle(g_hActivateThread); g_hActivateThread = nullptr; }
-    if (g_hShmThread) { CloseHandle(g_hShmThread); g_hShmThread = nullptr; }
+    // Wait for threads to observe g_shutdown and exit before releasing SHM.
+    // ActivateThread sleeps 16ms, ShmPollingThread sleeps 8ms — 100ms is plenty.
+    if (g_hActivateThread) {
+        WaitForSingleObject(g_hActivateThread, 100);
+        CloseHandle(g_hActivateThread);
+        g_hActivateThread = nullptr;
+    }
+    if (g_hShmThread) {
+        WaitForSingleObject(g_hShmThread, 50);
+        CloseHandle(g_hShmThread);
+        g_hShmThread = nullptr;
+    }
+    KeyShm::Close(); // now safe — threads have stopped
 }
 
 // --- SHM polling thread (Phase 3) ---
@@ -117,8 +130,11 @@ static DWORD WINAPI ShmPollingThread(LPVOID) {
 
 static void StartShmPollingThread() {
     if (g_shmThreadStarted) return;
-    g_shmThreadStarted = true;
     g_hShmThread = CreateThread(nullptr, 0, ShmPollingThread, nullptr, 0, nullptr);
+    if (g_hShmThread)
+        g_shmThreadStarted = true;
+    else
+        DI8Log("StartShmPollingThread: CreateThread failed (%lu)", GetLastError());
 }
 
 // --- Constructor ---
