@@ -229,6 +229,10 @@ Window switching (hotkeys + keyboard hook), grid/stacked/multi-monitor arrangeme
 
 ## Status
 
+**v3.5.0 — Suspended-Process Injection Architecture (2026-04-09)**
+
+Replaced dinput8.dll proxy with CREATE_SUSPENDED process injection. EQSwitch now injects eqswitch-di8.dll (148KB) and eqswitch-hook.dll (133KB) directly into eqgame.exe after resuming the loader (~50ms). Dalaya's 1.3MB MQ2 dinput8.dll stays untouched — no patcher conflicts, no server hash validation failures. Char select Enter World now uses 250ms key holds with 3 retry attempts and real title-change verification. ActivateThread continuously re-posts WM_ACTIVATEAPP(1) while SHM active to defend against focus loss. Dead proxy files removed, README updated.
+
 **v3.4.3 — Auto-Login Past Character Select (2026-04-08)**
 
 Auto-login now fully completes through Enter World. Two fixes: (1) dinput8.dll proxy forces BACKGROUND|NONEXCLUSIVE on mid-login SetCooperativeLevel re-calls when SHM is active, (2) C# AutoLoginManager replaces fixed 3s sleep after server select with adaptive WaitForScreenTransition() — polls IsHungAppWindow + GetWindowRect stability, handles any load time (5s–90s). Both verified in-game with dual-box login.
