@@ -41,6 +41,12 @@ public class AutoLoginManager
     /// <summary>True if the given PID is currently running through the login sequence.</summary>
     public bool IsLoginActive(int pid) => _activeLoginPids.ContainsKey(pid);
 
+    /// <summary>
+    /// Callback invoked after process creation but before ResumeThread.
+    /// Use for DLL injection into the suspended process.
+    /// </summary>
+    public Func<SuspendedProcess, bool>? PreResumeCallback { get; set; }
+
     public AutoLoginManager(AppConfig config, Action<AppConfig>? enforceOverrides = null)
     {
         _config = config;
@@ -84,10 +90,6 @@ public class AutoLoginManager
 
         StatusUpdate?.Invoke(this, $"Launching {account.Name}...");
 
-        // Deploy dinput8.dll to EQ directory before launching.
-        // The DLL provides IAT hooks for background input during auto-login.
-        DeployDinput8ToEQPath();
-
         int pid;
         try
         {
@@ -97,22 +99,48 @@ public class AutoLoginManager
             else
                 FileLogger.Warn("AutoLogin: no enforceOverrides callback registered, skipping INI overrides");
 
-            var startInfo = new ProcessStartInfo
+            // Launch with CREATE_SUSPENDED so DLLs are injected before the process starts
+            var commandLine = string.IsNullOrEmpty(args)
+                ? $"\"{exePath}\""
+                : $"\"{exePath}\" {args}";
+
+            var si = new NativeMethods.STARTUPINFOA
             {
-                FileName = exePath,
-                Arguments = args,
-                WorkingDirectory = _config.EQPath,
-                UseShellExecute = true
+                cb = Marshal.SizeOf<NativeMethods.STARTUPINFOA>()
             };
 
-            using var proc = Process.Start(startInfo);
-            if (proc == null)
+            bool created = NativeMethods.CreateProcessA(
+                null, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                NativeMethods.CREATE_SUSPENDED, IntPtr.Zero, _config.EQPath,
+                ref si, out var pi);
+
+            if (!created)
             {
+                var error = Marshal.GetLastWin32Error();
+                FileLogger.Error($"AutoLogin: CreateProcessA failed (error {error})");
                 StatusUpdate?.Invoke(this, "Error: failed to start process");
                 return;
             }
-            pid = proc.Id;
-            FileLogger.Info($"AutoLogin: launched PID {pid} for {account.Name}");
+
+            pid = pi.dwProcessId;
+            FileLogger.Info($"AutoLogin: created suspended PID {pid} for {account.Name}");
+
+            // Inject DLLs while process is frozen
+            try
+            {
+                var sp = new SuspendedProcess(pid, pi.hProcess, pi.hThread);
+                PreResumeCallback?.Invoke(sp);
+            }
+            catch (Exception ex2)
+            {
+                FileLogger.Warn($"AutoLogin: pre-resume injection error: {ex2.Message}");
+            }
+
+            // Resume — Windows loader starts, imports processed, EQ runs
+            NativeMethods.ResumeThread(pi.hThread);
+            NativeMethods.CloseHandle(pi.hThread);
+            NativeMethods.CloseHandle(pi.hProcess);
+            FileLogger.Info($"AutoLogin: resumed PID {pid}");
         }
         catch (Exception ex)
         {
@@ -601,72 +629,6 @@ public class AutoLoginManager
     {
         if (hwnd == IntPtr.Zero || !NativeMethods.IsWindow(hwnd)) return;
         NativeMethods.SetForegroundWindow(hwnd);
-    }
-
-    // ─── dinput8.dll Deployment ──────────────────────────────────────
-
-    /// <summary>
-    /// Copy dinput8.dll to the EQ game directory so it's loaded on next launch.
-    /// Best-effort — logs but doesn't block login if deployment fails.
-    /// </summary>
-    private void DeployDinput8ToEQPath()
-    {
-        var srcPath = Path.Combine(AppContext.BaseDirectory, "dinput8.dll");
-        if (!File.Exists(srcPath))
-        {
-            FileLogger.Warn("AutoLogin: dinput8.dll not found next to EQSwitch.exe — background input unavailable");
-            return;
-        }
-
-        var dstPath = Path.Combine(_config.EQPath, "dinput8.dll");
-        var dalayaPath = Path.Combine(_config.EQPath, "dinput8_dalaya.dll");
-
-        // Chain-load setup: if dinput8.dll in the game dir is NOT our proxy
-        // (Dalaya's is ~1.3MB, ours is ~150KB), we need to set up the chain.
-        // This also handles patcher coexistence: after the Dalaya patcher runs,
-        // it overwrites our proxy with Dalaya's DLL (MD5 mismatch). We detect
-        // this and re-establish the chain by moving the fresh copy over.
-        if (File.Exists(dstPath))
-        {
-            var existingInfo = new FileInfo(dstPath);
-            var ourInfo = new FileInfo(srcPath);
-            bool existingIsDalaya = existingInfo.Length != ourInfo.Length;
-
-            if (existingIsDalaya)
-            {
-                try
-                {
-                    // Replace the dalaya backup with the fresh patcher copy
-                    File.Copy(dstPath, dalayaPath, overwrite: true);
-                    File.Delete(dstPath);
-                    FileLogger.Info($"AutoLogin: {(File.Exists(dalayaPath) ? "refreshed" : "created")} dinput8_dalaya.dll ({existingInfo.Length:N0} bytes)");
-                }
-                catch (Exception ex)
-                {
-                    FileLogger.Warn($"AutoLogin: couldn't set up chain-load: {ex.Message}");
-                    return;
-                }
-            }
-        }
-
-        // Skip if already deployed and up to date
-        if (File.Exists(dstPath))
-        {
-            var srcInfo = new FileInfo(srcPath);
-            var dstInfo = new FileInfo(dstPath);
-            if (srcInfo.Length == dstInfo.Length && srcInfo.LastWriteTimeUtc <= dstInfo.LastWriteTimeUtc)
-                return; // same size and not newer — skip
-        }
-
-        try
-        {
-            File.Copy(srcPath, dstPath, overwrite: true);
-            FileLogger.Info($"AutoLogin: deployed dinput8.dll to {dstPath}");
-        }
-        catch (Exception ex)
-        {
-            FileLogger.Warn($"AutoLogin: couldn't deploy dinput8.dll: {ex.Message}");
-        }
     }
 
     // ─── EQ INI Helpers ──────────────────────────────────────────────

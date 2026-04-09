@@ -8,10 +8,10 @@ obj/
 *.exe
 *.pdb
 
-# DLLs — ignore build output but keep native hook source DLL
+# DLLs — ignore build output but keep native hook DLLs
 *.dll
 !Native/eqswitch-hook.dll
-!Native/dinput8.dll
+!Native/eqswitch-di8.dll
 
 ## IDE
 .vs/
