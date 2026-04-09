@@ -90,6 +90,7 @@ public class SettingsForm : Form
     private TextBox _txtAutoLogin4Hotkey = null!;
     private Label _lblAutoLoginHotkeyWarn = null!;
     private Label _lblSlotDuplicateWarn = null!;
+    private CheckBox _chkAutoEnterWorld = null!;
 
     // ─── PiP tab controls
     private CheckBox _chkPipEnabled = null!;
@@ -826,7 +827,7 @@ public class SettingsForm : Form
         int cy = 32;
 
         _chkPipEnabled = DarkTheme.AddCardCheckBox(cardPip, "Enable PiP Overlay", L, cy);
-        DarkTheme.AddCardHint(cardPip, "DWM thumbnail — zero CPU, GPU composited", L, cy + 2);
+        DarkTheme.AddCardHint(cardPip, "DWM thumbnail — zero CPU, GPU composited", 170, cy + 2);
         cy += R;
 
         DarkTheme.AddCardLabel(cardPip, "Size Preset:", L, cy);
@@ -1156,7 +1157,8 @@ public class SettingsForm : Form
             QuickLogin1 = GetQuickLoginUsername(_cboQuickLogin1),
             QuickLogin2 = GetQuickLoginUsername(_cboQuickLogin2),
             QuickLogin3 = GetQuickLoginUsername(_cboQuickLogin3),
-            QuickLogin4 = GetQuickLoginUsername(_cboQuickLogin4)
+            QuickLogin4 = GetQuickLoginUsername(_cboQuickLogin4),
+            AutoEnterWorld = _chkAutoEnterWorld.Checked
         };
 
         // Apply startup registry change
@@ -1341,6 +1343,13 @@ public class SettingsForm : Form
         _cboQuickLogin3.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
         _cboQuickLogin4.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
 
+        // ─── Autologin Preferences ──────────────────────────────────
+        y += 110;
+        var prefsCard = DarkTheme.MakeCard(page, "\u2699", "Autologin Preferences", DarkTheme.CardCyan, 10, y, 480, 72);
+        _chkAutoEnterWorld = DarkTheme.AddCheckBox(prefsCard, "Auto Enter World", 10, 30);
+        _chkAutoEnterWorld.Checked = _config.AutoEnterWorld;
+        DarkTheme.AddCardHint(prefsCard, "Enters world as last-loaded character. Uncheck to stop at character select.", 10, 48);
+
         return page;
     }
 
@@ -1444,7 +1453,7 @@ public class SettingsForm : Form
         y += R;
 
         DarkTheme.AddLabel(dlg, "Character Slot:", L, y);
-        var nudSlot = DarkTheme.AddNumeric(dlg, I, y - 2, 60, existing?.CharacterSlot ?? 1, 1, 8);
+        var nudSlot = DarkTheme.AddNumeric(dlg, I, y - 2, 60, existing?.CharacterSlot ?? 1, 1, 10);
         y += R;
 
         y += 5;

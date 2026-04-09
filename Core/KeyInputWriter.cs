@@ -123,6 +123,23 @@ public sealed class KeyInputWriter : IDisposable
     }
 
     /// <summary>
+    /// Deactivate then re-activate SHM to create a rising edge. The DLL's
+    /// ActivateThread only blasts activation messages on false→true transitions,
+    /// so toggling forces it to re-blast even if SHM was already active.
+    /// </summary>
+    public void Reactivate(int pid, int gapMs = 50)
+    {
+        if (!_mappings.TryGetValue(pid, out var entry)) return;
+        try
+        {
+            entry.Accessor.Write(ActiveOffset, (uint)0);
+            Thread.Sleep(gapMs);
+            entry.Accessor.Write(ActiveOffset, (uint)1);
+        }
+        catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Reactivate failed: {ex.Message}"); }
+    }
+
+    /// <summary>
     /// Set a single key's state.
     /// </summary>
     public void SetKey(int pid, byte scanCode, bool pressed)

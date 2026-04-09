@@ -53,6 +53,10 @@ public class AppConfig
     /// <summary>Delay in ms after EQ window appears before typing credentials (default 5s).</summary>
     public int LoginScreenDelayMs { get; set; } = 5000;
 
+    /// <summary>When true, auto-login continues past character select into the world.
+    /// When false, stops at the character select screen.</summary>
+    public bool AutoEnterWorld { get; set; } = false;
+
     /// <summary>Username of the account bound to Quick Login slot 1 (empty = unbound).</summary>
     public string QuickLogin1 { get; set; } = "";
 
@@ -162,7 +166,7 @@ public class AppConfig
 
         // LoginAccount field validation
         foreach (var a in Accounts)
-            a.CharacterSlot = Math.Clamp(a.CharacterSlot, 1, 8);
+            a.CharacterSlot = Math.Clamp(a.CharacterSlot, 1, 10);
     }
 }
 
