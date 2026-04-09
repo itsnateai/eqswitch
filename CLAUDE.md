@@ -1,4 +1,4 @@
-# EQSwitch v3.4.3 — Claude Code Context
+# EQSwitch v3.5.0 — Claude Code Context
 
 ## What This Is
 C# (.NET 8 WinForms) EverQuest multiboxing window manager for the Shards of Dalaya emulator. Features DLL hook injection, DPAPI-encrypted auto-login, slim titlebar mode, PiP overlays, and comprehensive eqclient.ini management. ~30 C# files + native C++ hook DLL, ~12,000 lines.
@@ -175,7 +175,7 @@ EQ can recreate its window during gameplay. All Win32 calls on window handles sh
 ```
 eqswitch/
   Program.cs                    # Entry point, mutex, migration
-  EQSwitch.csproj               # .NET 8 WinForms, v3.4.3
+  EQSwitch.csproj               # .NET 8 WinForms, v3.5.0
   Core/
     NativeMethods.cs             # All P/Invoke (385 lines)
     ProcessManager.cs            # EQ process detection
@@ -229,7 +229,11 @@ Window switching (hotkeys + keyboard hook), grid/stacked/multi-monitor arrangeme
 
 ## Status
 
-**v3.5.0 — Suspended-Process Injection Architecture (2026-04-09)**
+**v3.5.0 — Background Input & 3-Layer Activation Defense (2026-04-09)**
+
+Background auto-login now works end-to-end while EQ is unfocused. Root cause: inline GetForegroundWindow hook in iat_hook.cpp only spoofed for callers within eqgame.exe's address range — EQ's game loop calls from loaded DLLs (0x716xxxxx, 0x669xxxxx) fell outside that range and got the real foreground HWND. Fix: 3-layer defense — (1) inline hooks skip caller check when SHM active so all GetForegroundWindow/GetFocus/GetActiveWindow return EQ's HWND, (2) persistent WndProc subclass blocks WM_ACTIVATEAPP(FALSE)/WM_ACTIVATE(WA_INACTIVE)/WM_KILLFOCUS/WM_NCACTIVATE with 16ms re-install timer, (3) activation blast on re-install after EQ's 3D char select overwrites subclass. Also: unconditional 200ms re-post (old code's self-check defeated by own hook), CallWindowProcA→W for Unicode compat, runtime pattern scanner (diagnostic). CREATE_SUSPENDED injection architecture from prior commits retained.
+
+**v3.4.3 — Suspended-Process Injection Architecture (2026-04-08)**
 
 Replaced dinput8.dll proxy with CREATE_SUSPENDED process injection. EQSwitch now injects eqswitch-di8.dll (148KB) and eqswitch-hook.dll (133KB) directly into eqgame.exe after resuming the loader (~50ms). Dalaya's 1.3MB MQ2 dinput8.dll stays untouched — no patcher conflicts, no server hash validation failures. Char select Enter World now uses 250ms key holds with 3 retry attempts and real title-change verification. ActivateThread continuously re-posts WM_ACTIVATEAPP(1) while SHM active to defend against focus loss. Dead proxy files removed, README updated.
 
