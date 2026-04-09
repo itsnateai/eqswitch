@@ -258,6 +258,8 @@ public class AutoLoginManager
 
             // Step 7: Press Enter to submit login
             Report("Submitting login...");
+            writer.Reactivate(pid);
+            Thread.Sleep(200);
             CombinedPressKey(writer, pid, hwnd, 0x0D);
             Thread.Sleep(3000);
 
@@ -265,8 +267,10 @@ public class AutoLoginManager
             hwnd = RefreshHandle(pid, hwnd);
             if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window after login"); return; }
 
-            // Step 8: Server select
+            // Step 8: Server select — reactivate SHM before confirming
             Report("Confirming server...");
+            writer.Reactivate(pid);
+            Thread.Sleep(200);
             CombinedPressKey(writer, pid, hwnd, 0x0D);
 
             // Wait for server→charselect transition (loading screen).
@@ -278,30 +282,28 @@ public class AutoLoginManager
             if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window during charselect load"); return; }
             FileLogger.Info($"AutoLogin: charselect ready, hwnd=0x{hwnd:X} for PID {pid}");
 
-            // Re-activate SHM — EQ re-initializes DirectInput for the 3D character
-            // select screen, which resets cooperative level. Our dinput8 proxy handles
-            // this if SHM is still active, but re-activate as belt-and-suspenders.
-            writer.Activate(pid);
-            Thread.Sleep(500);
-
-            // Step 9: Character select — 3D scene uses GetDeviceState polling,
-            // needs longer key holds than the 2D login screen's WM_KEYDOWN.
-            Report($"Selecting character (slot {account.CharacterSlot})...");
-            for (int i = 1; i < account.CharacterSlot; i++)
+            // Step 9: Auto Enter World gate
+            if (!_config.AutoEnterWorld)
             {
-                CombinedPressKeyLong(writer, pid, hwnd, 0x28); // VK_DOWN
-                Thread.Sleep(300);
+                Report($"{account.Name} reached character select.");
+                FileLogger.Info($"AutoLogin: {account.Name} stopped at char select (AutoEnterWorld disabled)");
+                return;
             }
-            Thread.Sleep(500);
 
-            // Step 10: Enter World — retry up to 3 times since the 3D char select
-            // input polling may miss a single press
+            // Reactivate SHM — creates rising edge so DLL re-blasts activation
+            // messages after EQ overwrites WndProc subclass during 3D scene init.
+            writer.Reactivate(pid);
+            Thread.Sleep(2000); // let DLL re-install WndProc subclass + resume polling
+
+            // Step 10: Enter World — retry up to 5 times with pulsed key holds
             Report("Entering world...");
             bool entered = false;
-            for (int attempt = 0; attempt < 3; attempt++)
+            for (int attempt = 0; attempt < 5; attempt++)
             {
-                CombinedPressKeyLong(writer, pid, hwnd, 0x0D);
-                Thread.Sleep(2000);
+                writer.Reactivate(pid);
+                Thread.Sleep(500);
+                PulseKey3D(writer, pid, hwnd, 0x0D);
+                Thread.Sleep(4000);
 
                 // Check if we left char select — window title changes to "EverQuest - CharName"
                 hwnd = RefreshHandle(pid, hwnd);
@@ -319,7 +321,7 @@ public class AutoLoginManager
                     break;
                 }
 
-                if (attempt < 2)
+                if (attempt < 4)
                     FileLogger.Info($"AutoLogin: enter-world attempt {attempt + 1} — title still '{title}', retrying...");
             }
 
@@ -331,7 +333,7 @@ public class AutoLoginManager
             else
             {
                 Report($"{account.Name}: reached char select but Enter World didn't register");
-                FileLogger.Warn($"AutoLogin: {account.Name} enter-world failed after 3 attempts (PID {pid})");
+                FileLogger.Warn($"AutoLogin: {account.Name} enter-world failed after 5 attempts (PID {pid})");
             }
         }
         catch (Exception ex)
@@ -386,36 +388,51 @@ public class AutoLoginManager
         return false;
     }
 
+    /// <summary>PostMessage with retry. On failure, re-activates SHM to trigger the DLL's
+    /// ActivateThread rising-edge blast, then retries.</summary>
+    private static bool PostR(KeyInputWriter writer, int pid, IntPtr hwnd,
+        uint msg, IntPtr wParam, IntPtr lParam)
+    {
+        if (Post(hwnd, msg, wParam, lParam)) return true;
+        for (int r = 0; r < 3; r++)
+        {
+            writer.Reactivate(pid, 50);
+            Thread.Sleep(200);
+            if (Post(hwnd, msg, wParam, lParam)) return true;
+        }
+        FileLogger.Warn($"AutoLogin: PostMessage failed after 3 retries (hwnd=0x{hwnd:X}, msg=0x{msg:X})");
+        return false;
+    }
+
     /// <summary>Press a key via SHM (for DLL hooks) AND PostMessage (for message queue).</summary>
     private static void CombinedPressKey(KeyInputWriter writer, int pid, IntPtr hwnd, ushort vk)
     {
         uint scan = NativeMethods.MapVirtualKeyW(vk, NativeMethods.MAPVK_VK_TO_VSC);
 
-        // SHM: set key down (DLL hooks see it via GetAsyncKeyState/GetDeviceState)
         if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, true);
-        // PostMessage: deliver WM_KEYDOWN to EQ's message queue
-        Post(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
+        PostR(writer, pid, hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
         Thread.Sleep(80);
 
-        // Release
         if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, false);
-        Post(hwnd, NativeMethods.WM_KEYUP, (IntPtr)vk, MakeKeyUpLParam(scan));
+        PostR(writer, pid, hwnd, NativeMethods.WM_KEYUP, (IntPtr)vk, MakeKeyUpLParam(scan));
         Thread.Sleep(80);
     }
 
-    /// <summary>Press a key with longer hold — for 3D scenes where GetDeviceState
-    /// polling may run at a slower tick rate than the 2D login screen.</summary>
-    private static void CombinedPressKeyLong(KeyInputWriter writer, int pid, IntPtr hwnd, ushort vk)
+    /// <summary>Pulse a key 3 times with 500ms holds — for the 3D char select where
+    /// GetDeviceData polling is very infrequent.</summary>
+    private static void PulseKey3D(KeyInputWriter writer, int pid, IntPtr hwnd, ushort vk)
     {
         uint scan = NativeMethods.MapVirtualKeyW(vk, NativeMethods.MAPVK_VK_TO_VSC);
+        for (int p = 0; p < 3; p++)
+        {
+            if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, true);
+            PostR(writer, pid, hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
+            Thread.Sleep(500);
 
-        if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, true);
-        Post(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
-        Thread.Sleep(250); // longer hold for 3D input polling
-
-        if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, false);
-        Post(hwnd, NativeMethods.WM_KEYUP, (IntPtr)vk, MakeKeyUpLParam(scan));
-        Thread.Sleep(100);
+            if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, false);
+            PostR(writer, pid, hwnd, NativeMethods.WM_KEYUP, (IntPtr)vk, MakeKeyUpLParam(scan));
+            Thread.Sleep(150);
+        }
     }
 
     /// <summary>Type a string via SHM + PostMessage. Posts WM_KEYDOWN + WM_CHAR + WM_KEYUP.</summary>
@@ -438,26 +455,26 @@ public class AutoLoginManager
             if (needShift)
             {
                 if (shiftScan > 0 && shiftScan < 256) writer.SetKey(pid, (byte)shiftScan, true);
-                Post(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)0x10, MakeKeyDownLParam(shiftScan));
+                PostR(writer, pid, hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)0x10, MakeKeyDownLParam(shiftScan));
                 Thread.Sleep(20);
             }
 
             // Key down (both layers) + WM_CHAR for text field
             if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, true);
-            Post(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
-            Post(hwnd, (uint)NativeMethods.WM_CHAR, (IntPtr)c, MakeKeyDownLParam(scan));
+            PostR(writer, pid, hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
+            PostR(writer, pid, hwnd, (uint)NativeMethods.WM_CHAR, (IntPtr)c, MakeKeyDownLParam(scan));
             Thread.Sleep(80);
 
             // Key up (both layers)
             if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, false);
-            Post(hwnd, NativeMethods.WM_KEYUP, (IntPtr)vk, MakeKeyUpLParam(scan));
+            PostR(writer, pid, hwnd, NativeMethods.WM_KEYUP, (IntPtr)vk, MakeKeyUpLParam(scan));
 
             // Shift up
             if (needShift)
             {
                 Thread.Sleep(40);
                 if (shiftScan > 0 && shiftScan < 256) writer.SetKey(pid, (byte)shiftScan, false);
-                Post(hwnd, NativeMethods.WM_KEYUP, (IntPtr)0x10, MakeKeyUpLParam(shiftScan));
+                PostR(writer, pid, hwnd, NativeMethods.WM_KEYUP, (IntPtr)0x10, MakeKeyUpLParam(shiftScan));
             }
             Thread.Sleep(50);
         }

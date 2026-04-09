@@ -181,14 +181,11 @@ static DWORD WINAPI ActivateThread(LPVOID) {
                 *g_pActiveFlag = 1;
 
             // Layer 3: re-post activation every ~200ms as fallback
-            // NOTE: must call NtUserGetForegroundWindow (real, not hooked) here,
-            // because our inline hook on GetForegroundWindow returns hwnd when
-            // SHM is active — which would make this check always false.
+            // Only WM_ACTIVATEAPP here — spamming WM_ACTIVATE/WM_SETFOCUS
+            // every 200ms disrupts EQ's normal input processing.
             ticksSinceRepost++;
             if (ticksSinceRepost >= 12) {
                 ticksSinceRepost = 0;
-                // Always re-post when SHM is active — we can't reliably check
-                // real foreground status because our own hooks intercept the call
                 PostMessageW(hwnd, WM_ACTIVATEAPP, TRUE, 0);
             }
         } else if (!active && wasActive && hwnd) {
