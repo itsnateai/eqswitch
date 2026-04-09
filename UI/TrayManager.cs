@@ -1695,23 +1695,21 @@ public class TrayManager : IDisposable
     }
 
     /// <summary>
-    /// Eject hook DLL from all injected EQ processes and close all shared memory mappings.
-    /// </summary>
-    /// <summary>
     /// Remove legacy proxy DLL files from the game directory and app directory.
     /// Restores Dalaya's original dinput8.dll if we renamed it during chain-load era.
+    /// Each operation is independent — failure of one doesn't block the others.
     /// </summary>
     private void CleanupLegacyProxyFiles()
     {
+        var eqPath = _config.EQPath;
+        if (string.IsNullOrEmpty(eqPath) || !Directory.Exists(eqPath)) return;
+
+        var dinput8Path = Path.Combine(eqPath, "dinput8.dll");
+        var dalayaPath = Path.Combine(eqPath, "dinput8_dalaya.dll");
+
+        // 1. If we renamed Dalaya's DLL to dinput8_dalaya.dll, restore it
         try
         {
-            var eqPath = _config.EQPath;
-            if (string.IsNullOrEmpty(eqPath) || !Directory.Exists(eqPath)) return;
-
-            var dinput8Path = Path.Combine(eqPath, "dinput8.dll");
-            var dalayaPath = Path.Combine(eqPath, "dinput8_dalaya.dll");
-
-            // If we renamed Dalaya's DLL to dinput8_dalaya.dll, restore it
             if (File.Exists(dalayaPath))
             {
                 if (!File.Exists(dinput8Path))
@@ -1721,14 +1719,17 @@ public class TrayManager : IDisposable
                 }
                 else
                 {
-                    // Both exist — delete our renamed copy, Dalaya's original is already back
                     File.Delete(dalayaPath);
                     FileLogger.Info("Cleanup: removed stale dinput8_dalaya.dll");
                 }
             }
-            // If dinput8.dll in game dir is our old proxy (~141-148KB), remove it
-            // so the patcher can restore Dalaya's original
-            else if (File.Exists(dinput8Path))
+        }
+        catch (Exception ex) { FileLogger.Warn($"Cleanup: dalaya DLL restore failed: {ex.Message}"); }
+
+        // 2. If dinput8.dll in game dir is our old proxy (~141-148KB), remove it
+        try
+        {
+            if (File.Exists(dinput8Path) && !File.Exists(dalayaPath))
             {
                 var info = new FileInfo(dinput8Path);
                 if (info.Length < 200_000) // Ours is ~148KB, Dalaya's is ~1.3MB
@@ -1737,8 +1738,12 @@ public class TrayManager : IDisposable
                     FileLogger.Info($"Cleanup: removed legacy proxy dinput8.dll from game folder ({info.Length:N0} bytes)");
                 }
             }
+        }
+        catch (Exception ex) { FileLogger.Warn($"Cleanup: game dir proxy removal failed: {ex.Message}"); }
 
-            // Remove legacy dinput8.dll from app directory (no longer shipped)
+        // 3. Remove legacy dinput8.dll from app directory (no longer shipped)
+        try
+        {
             var appDinput8 = Path.Combine(AppContext.BaseDirectory, "dinput8.dll");
             if (File.Exists(appDinput8))
             {
@@ -1746,10 +1751,7 @@ public class TrayManager : IDisposable
                 FileLogger.Info("Cleanup: removed legacy dinput8.dll from app folder");
             }
         }
-        catch (Exception ex)
-        {
-            FileLogger.Warn($"Cleanup: legacy proxy cleanup failed: {ex.Message}");
-        }
+        catch (Exception ex) { FileLogger.Warn($"Cleanup: app dir proxy removal failed: {ex.Message}"); }
     }
 
     private void CleanupHookInjection()
