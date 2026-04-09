@@ -1466,7 +1466,7 @@ public class TrayManager : IDisposable
     /// Inject DLLs into a suspended process before its main thread starts.
     /// Called by LaunchManager and AutoLoginManager via their PreResumeCallback.
     /// </summary>
-    private bool InjectPreResume(SuspendedProcess sp)
+    private void InjectPreResume(SuspendedProcess sp)
     {
         var exeDir = AppContext.BaseDirectory;
 
@@ -1517,8 +1517,6 @@ public class TrayManager : IDisposable
                 FileLogger.Warn($"PreResume: shared memory unavailable for PID {sp.Pid}");
             }
         }
-
-        return true;
     }
 
     /// <summary>
