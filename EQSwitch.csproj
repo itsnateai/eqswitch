@@ -38,7 +38,7 @@
        separate file — it needs to exist on disk for injection into eqgame.exe. -->
   <ItemGroup>
     <Content Include="Native\eqswitch-hook.dll" Link="eqswitch-hook.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
-    <Content Include="Native\dinput8.dll" Link="dinput8.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Content Include="Native\eqswitch-di8.dll" Link="eqswitch-di8.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.5" />
