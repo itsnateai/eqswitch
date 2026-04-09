@@ -39,7 +39,7 @@ jobs:
         run: |
           cp bin/Release/net8.0-windows/win-x64/publish/EQSwitch.exe EQSwitch.exe
           cp Native/eqswitch-hook.dll eqswitch-hook.dll
-          cp Native/dinput8.dll dinput8.dll
+          cp Native/eqswitch-di8.dll eqswitch-di8.dll
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -48,4 +48,4 @@ jobs:
           files: |
             EQSwitch.exe
             eqswitch-hook.dll
-            dinput8.dll
+            eqswitch-di8.dll
