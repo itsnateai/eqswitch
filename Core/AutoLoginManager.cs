@@ -284,26 +284,55 @@ public class AutoLoginManager
             writer.Activate(pid);
             Thread.Sleep(500);
 
-            // Step 9: Character select
+            // Step 9: Character select — 3D scene uses GetDeviceState polling,
+            // needs longer key holds than the 2D login screen's WM_KEYDOWN.
             Report($"Selecting character (slot {account.CharacterSlot})...");
             for (int i = 1; i < account.CharacterSlot; i++)
             {
-                CombinedPressKey(writer, pid, hwnd, 0x28); // VK_DOWN
-                Thread.Sleep(200);
+                CombinedPressKeyLong(writer, pid, hwnd, 0x28); // VK_DOWN
+                Thread.Sleep(300);
             }
-            Thread.Sleep(300);
+            Thread.Sleep(500);
 
-            // Step 10: Enter World
+            // Step 10: Enter World — retry up to 3 times since the 3D char select
+            // input polling may miss a single press
             Report("Entering world...");
-            CombinedPressKey(writer, pid, hwnd, 0x0D);
-            Thread.Sleep(1000);
+            bool entered = false;
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                CombinedPressKeyLong(writer, pid, hwnd, 0x0D);
+                Thread.Sleep(2000);
 
-            // Verify: check if window title changed (indicates successful world entry)
-            int titleLen = NativeMethods.GetWindowTextLength(hwnd);
-            var titleSb = new System.Text.StringBuilder(titleLen + 1);
-            NativeMethods.GetWindowText(hwnd, titleSb, titleSb.Capacity);
-            Report($"{account.Name} logged in!");
-            FileLogger.Info($"AutoLogin: {account.Name} login sequence complete (PID {pid})");
+                // Check if we left char select — window title changes to "EverQuest - CharName"
+                hwnd = RefreshHandle(pid, hwnd);
+                if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window"); return; }
+
+                int titleLen = NativeMethods.GetWindowTextLength(hwnd);
+                var titleSb = new System.Text.StringBuilder(titleLen + 1);
+                NativeMethods.GetWindowText(hwnd, titleSb, titleSb.Capacity);
+                string title = titleSb.ToString();
+
+                if (title.Contains(" - "))
+                {
+                    entered = true;
+                    FileLogger.Info($"AutoLogin: enter-world confirmed (title: {title})");
+                    break;
+                }
+
+                if (attempt < 2)
+                    FileLogger.Info($"AutoLogin: enter-world attempt {attempt + 1} — title still '{title}', retrying...");
+            }
+
+            if (entered)
+            {
+                Report($"{account.Name} logged in!");
+                FileLogger.Info($"AutoLogin: {account.Name} login sequence complete (PID {pid})");
+            }
+            else
+            {
+                Report($"{account.Name}: reached char select but Enter World didn't register");
+                FileLogger.Warn($"AutoLogin: {account.Name} enter-world failed after 3 attempts (PID {pid})");
+            }
         }
         catch (Exception ex)
         {
@@ -372,6 +401,21 @@ public class AutoLoginManager
         if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, false);
         Post(hwnd, NativeMethods.WM_KEYUP, (IntPtr)vk, MakeKeyUpLParam(scan));
         Thread.Sleep(80);
+    }
+
+    /// <summary>Press a key with longer hold — for 3D scenes where GetDeviceState
+    /// polling may run at a slower tick rate than the 2D login screen.</summary>
+    private static void CombinedPressKeyLong(KeyInputWriter writer, int pid, IntPtr hwnd, ushort vk)
+    {
+        uint scan = NativeMethods.MapVirtualKeyW(vk, NativeMethods.MAPVK_VK_TO_VSC);
+
+        if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, true);
+        Post(hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
+        Thread.Sleep(250); // longer hold for 3D input polling
+
+        if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, false);
+        Post(hwnd, NativeMethods.WM_KEYUP, (IntPtr)vk, MakeKeyUpLParam(scan));
+        Thread.Sleep(100);
     }
 
     /// <summary>Type a string via SHM + PostMessage. Posts WM_KEYDOWN + WM_CHAR + WM_KEYUP.</summary>
