@@ -311,8 +311,24 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::SetCooperativeLevel(HWND hwnd, DWORD dwFl
     if (m_isKeyboard) {
         g_eqHwnd = hwnd;
         g_originalCoopFlags = dwFlags;
-        g_coopSwitched = false;
 
+        if (KeyShm::IsActive()) {
+            // Mid-login: EQ is re-setting coop level (e.g. server→charselect transition).
+            // Apply BACKGROUND immediately — the ActivateThread won't catch this because
+            // SHM was already active (no false→true transition to trigger it).
+            DWORD bgFlags = (dwFlags & ~(DISCL_EXCLUSIVE | DISCL_FOREGROUND))
+                          | DISCL_NONEXCLUSIVE | DISCL_BACKGROUND;
+            g_coopSwitched = true;
+            DI8Log("SetCooperativeLevel: keyboard hwnd=0x%X flags=0x%X → 0x%X (SHM active, forced BACKGROUND)",
+                   (unsigned)(uintptr_t)hwnd, dwFlags, bgFlags);
+            StartActivateThread();
+            HRESULT hr = m_real->SetCooperativeLevel(hwnd, bgFlags);
+            // Re-post WM_ACTIVATEAPP — EQ may have processed a deactivation during transition
+            PostMessageW(hwnd, WM_ACTIVATEAPP, TRUE, 0);
+            return hr;
+        }
+
+        g_coopSwitched = false;
         // Always strip EXCLUSIVE — EQ works fine with NONEXCLUSIVE, and EXCLUSIVE
         // blocks other EQ instances from switching to BACKGROUND cooperative level.
         // Keep FOREGROUND initially (switching to BACKGROUND at startup makes EQ minimize).

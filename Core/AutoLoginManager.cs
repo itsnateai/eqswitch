@@ -211,24 +211,26 @@ public class AutoLoginManager
             // Step 8: Server select
             Report("Confirming server...");
             CombinedPressKey(writer, pid, hwnd, 0x0D);
-            Thread.Sleep(3000);
 
-            // Re-resolve handle — EQ recreates its window on server select→character select
-            hwnd = RefreshHandle(pid, hwnd);
-            if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window after server select"); return; }
-            FileLogger.Info($"AutoLogin: [DEBUG] charselect hwnd=0x{hwnd:X} for PID {pid}");
+            // Wait for server→charselect transition (loading screen).
+            // EQ's message pump blocks during 3D scene load — IsHungAppWindow
+            // detects this. We wait for hung→responsive, with GetWindowRect
+            // changes as a fallback signal. Handles any load time (5s–60s+).
+            Report("Loading character select...");
+            hwnd = WaitForScreenTransition(pid, hwnd);
+            if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window during charselect load"); return; }
+            FileLogger.Info($"AutoLogin: charselect ready, hwnd=0x{hwnd:X} for PID {pid}");
 
-            // Re-activate SHM — EQ's 3D character select screen may have
-            // reset DirectInput coop level during the server→charselect transition
+            // Re-activate SHM — EQ re-initializes DirectInput for the 3D character
+            // select screen, which resets cooperative level. Our dinput8 proxy handles
+            // this if SHM is still active, but re-activate as belt-and-suspenders.
             writer.Activate(pid);
-            FileLogger.Info($"AutoLogin: [DEBUG] SHM re-activated before character select");
             Thread.Sleep(500);
 
             // Step 9: Character select
             Report($"Selecting character (slot {account.CharacterSlot})...");
             for (int i = 1; i < account.CharacterSlot; i++)
             {
-                FileLogger.Info($"AutoLogin: [DEBUG] pressing DOWN arrow ({i}/{account.CharacterSlot - 1})");
                 CombinedPressKey(writer, pid, hwnd, 0x28); // VK_DOWN
                 Thread.Sleep(200);
             }
@@ -236,7 +238,6 @@ public class AutoLoginManager
 
             // Step 10: Enter World
             Report("Entering world...");
-            FileLogger.Info($"AutoLogin: [DEBUG] pressing ENTER for Enter World (hwnd=0x{hwnd:X}, pid={pid})");
             CombinedPressKey(writer, pid, hwnd, 0x0D);
             Thread.Sleep(1000);
 
@@ -244,8 +245,6 @@ public class AutoLoginManager
             int titleLen = NativeMethods.GetWindowTextLength(hwnd);
             var titleSb = new System.Text.StringBuilder(titleLen + 1);
             NativeMethods.GetWindowText(hwnd, titleSb, titleSb.Capacity);
-            FileLogger.Info($"AutoLogin: [DEBUG] post-enter title=\"{titleSb}\" (len={titleLen})");
-
             Report($"{account.Name} logged in!");
             FileLogger.Info($"AutoLogin: {account.Name} login sequence complete (PID {pid})");
         }
@@ -394,6 +393,77 @@ public class AutoLoginManager
             Thread.Sleep(500);
         }
         return IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// Wait for a screen transition to complete by detecting when EQ's window goes
+    /// unresponsive (loading 3D scene) and becomes responsive again. Falls back on
+    /// window rect instability detection if the window never fully hangs.
+    /// Returns the (possibly refreshed) window handle, or IntPtr.Zero if the process died.
+    /// </summary>
+    private static IntPtr WaitForScreenTransition(int pid, IntPtr hwnd, int maxWaitMs = 90000)
+    {
+        var sw = Stopwatch.StartNew();
+        bool sawHung = false;
+        bool sawRectChange = false;
+        NativeMethods.GetWindowRect(hwnd, out var initialRect);
+        var lastRect = initialRect;
+        long lastRectChangeMs = 0;
+
+        // Give EQ a moment to start the transition before polling
+        Thread.Sleep(1000);
+
+        while (sw.ElapsedMilliseconds < maxWaitMs)
+        {
+            // Refresh handle — EQ may recreate its window during transition
+            hwnd = RefreshHandle(pid, hwnd);
+            if (hwnd == IntPtr.Zero) return IntPtr.Zero;
+
+            bool hung = NativeMethods.IsHungAppWindow(hwnd);
+
+            if (hung)
+            {
+                sawHung = true;
+                FileLogger.Info($"AutoLogin: EQ window hung (loading), elapsed={sw.ElapsedMilliseconds}ms");
+            }
+            else if (sawHung)
+            {
+                // Was hung, now responsive — transition complete
+                FileLogger.Info($"AutoLogin: EQ responsive after loading, elapsed={sw.ElapsedMilliseconds}ms");
+                Thread.Sleep(1000); // brief settle time for render
+                return RefreshHandle(pid, hwnd);
+            }
+
+            // Fallback: track window rect changes (distortion + snap-back pattern)
+            if (NativeMethods.GetWindowRect(hwnd, out var currentRect))
+            {
+                bool rectChanged = currentRect.Left != lastRect.Left ||
+                                   currentRect.Top != lastRect.Top ||
+                                   currentRect.Width != lastRect.Width ||
+                                   currentRect.Height != lastRect.Height;
+                if (rectChanged)
+                {
+                    sawRectChange = true;
+                    lastRectChangeMs = sw.ElapsedMilliseconds;
+                    lastRect = currentRect;
+                }
+                else if (sawRectChange && !sawHung &&
+                         sw.ElapsedMilliseconds - lastRectChangeMs > 3000)
+                {
+                    // Rect changed and has been stable for 3s without a hung period —
+                    // the transition completed without fully hanging the message pump
+                    FileLogger.Info($"AutoLogin: rect stable after change, elapsed={sw.ElapsedMilliseconds}ms");
+                    Thread.Sleep(500);
+                    return RefreshHandle(pid, hwnd);
+                }
+            }
+
+            Thread.Sleep(500);
+        }
+
+        // Timeout — proceed anyway (better than hanging forever)
+        FileLogger.Warn($"AutoLogin: screen transition timeout ({maxWaitMs}ms), proceeding anyway");
+        return RefreshHandle(pid, hwnd);
     }
 
     /// <summary>
