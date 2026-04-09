@@ -1,11 +1,18 @@
-using System.Diagnostics;
+using System.Runtime.InteropServices;
 using EQSwitch.Config;
 
 namespace EQSwitch.Core;
 
 /// <summary>
+/// Info about a process created with CREATE_SUSPENDED, before ResumeThread.
+/// </summary>
+public record SuspendedProcess(int Pid, IntPtr ProcessHandle, IntPtr ThreadHandle);
+
+/// <summary>
 /// Handles launching EQ client processes with staggered delays,
 /// automatic affinity/priority application, and window arrangement.
+/// Launches with CREATE_SUSPENDED so DLLs can be injected before
+/// the main thread starts.
 /// </summary>
 public class LaunchManager : IDisposable
 {
@@ -32,6 +39,12 @@ public class LaunchManager : IDisposable
 
     /// <summary>Fires with progress messages during launch.</summary>
     public event EventHandler<string>? ProgressUpdate;
+
+    /// <summary>
+    /// Callback invoked after process creation but before ResumeThread.
+    /// Use for DLL injection into the suspended process.
+    /// </summary>
+    public Func<SuspendedProcess, bool>? PreResumeCallback { get; set; }
 
     public LaunchManager(AppConfig config, AffinityManager affinityManager, Action<AppConfig>? enforceOverrides = null)
     {
@@ -152,6 +165,10 @@ public class LaunchManager : IDisposable
         CancelLaunch();
     }
 
+    /// <summary>
+    /// Launch eqgame.exe with CREATE_SUSPENDED, invoke PreResumeCallback for DLL
+    /// injection, then ResumeThread to let the process start.
+    /// </summary>
     private int StartEQProcess()
     {
         try
@@ -179,23 +196,7 @@ public class LaunchManager : IDisposable
                 return -1;
             }
 
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = exePath,
-                Arguments = _config.Launch.Arguments,
-                WorkingDirectory = _config.EQPath,
-                UseShellExecute = true
-            };
-
-            using var proc = Process.Start(startInfo);
-            if (proc == null)
-            {
-                FileLogger.Warn("LaunchManager: Process.Start returned null");
-                return -1;
-            }
-
-            FileLogger.Info($"LaunchManager: started PID {proc.Id}");
-            return proc.Id;
+            return LaunchSuspendedAndInject(exePath, _config.Launch.Arguments, _config.EQPath);
         }
         catch (Exception ex)
         {
@@ -203,5 +204,66 @@ public class LaunchManager : IDisposable
             ProgressUpdate?.Invoke(this, $"Launch error: {ex.Message}");
             return -1;
         }
+    }
+
+    /// <summary>
+    /// Create the process suspended, run the pre-resume injection callback,
+    /// then resume the main thread. Returns PID on success, -1 on failure.
+    /// </summary>
+    private int LaunchSuspendedAndInject(string exePath, string arguments, string workingDir)
+    {
+        // CreateProcessA needs the full command line as a single string
+        var commandLine = string.IsNullOrEmpty(arguments)
+            ? $"\"{exePath}\""
+            : $"\"{exePath}\" {arguments}";
+
+        var si = new NativeMethods.STARTUPINFOA
+        {
+            cb = Marshal.SizeOf<NativeMethods.STARTUPINFOA>()
+        };
+
+        bool created = NativeMethods.CreateProcessA(
+            null,
+            commandLine,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            false,
+            NativeMethods.CREATE_SUSPENDED,
+            IntPtr.Zero,
+            workingDir,
+            ref si,
+            out var pi);
+
+        if (!created)
+        {
+            var error = Marshal.GetLastWin32Error();
+            FileLogger.Error($"LaunchManager: CreateProcessA failed (error {error})");
+            ProgressUpdate?.Invoke(this, $"Launch error: CreateProcess failed ({error})");
+            return -1;
+        }
+
+        FileLogger.Info($"LaunchManager: created suspended PID {pi.dwProcessId}");
+
+        // Inject DLLs while the process is frozen
+        var sp = new SuspendedProcess(pi.dwProcessId, pi.hProcess, pi.hThread);
+        try
+        {
+            PreResumeCallback?.Invoke(sp);
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Warn($"LaunchManager: pre-resume injection error: {ex.Message}");
+            // Continue anyway — EQ can still run without our hooks
+        }
+
+        // Resume the main thread — Windows loader starts, imports are processed
+        NativeMethods.ResumeThread(pi.hThread);
+        FileLogger.Info($"LaunchManager: resumed PID {pi.dwProcessId}");
+
+        // Close our copies of the handles — the process keeps running
+        NativeMethods.CloseHandle(pi.hThread);
+        NativeMethods.CloseHandle(pi.hProcess);
+
+        return pi.dwProcessId;
     }
 }

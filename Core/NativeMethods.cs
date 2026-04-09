@@ -338,6 +338,52 @@ internal static class NativeMethods
     public const uint WAIT_TIMEOUT = 0x00000102;
     public const uint INFINITE = 0xFFFFFFFF;
 
+    // ─── Suspended Process Creation ──────────────────────────────────
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+    public struct STARTUPINFOA
+    {
+        public int cb;
+        public string? lpReserved;
+        public string? lpDesktop;
+        public string? lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize;
+        public int dwXCountChars, dwYCountChars;
+        public int dwFillAttribute;
+        public int dwFlags;
+        public short wShowWindow;
+        public short cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public int dwProcessId;
+        public int dwThreadId;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+    public static extern bool CreateProcessA(
+        string? lpApplicationName,
+        string lpCommandLine,
+        IntPtr lpProcessAttributes,
+        IntPtr lpThreadAttributes,
+        bool bInheritHandles,
+        uint dwCreationFlags,
+        IntPtr lpEnvironment,
+        string? lpCurrentDirectory,
+        ref STARTUPINFOA lpStartupInfo,
+        out PROCESS_INFORMATION lpProcessInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint ResumeThread(IntPtr hThread);
+
+    public const uint CREATE_SUSPENDED = 0x00000004;
+
     // ─── Cross-architecture injection (64→32 bit) ──────────────────
 
     [DllImport("kernel32.dll", SetLastError = true)]
