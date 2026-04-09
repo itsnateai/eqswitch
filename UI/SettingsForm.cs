@@ -1502,6 +1502,7 @@ public class SettingsForm : Form
     private TabPage BuildVideoTab()
     {
         var page = DarkTheme.MakeTabPage("Video");
+        page.AutoScroll = true;
         int y = 8;
         const int L = 10;
 
