@@ -101,22 +101,17 @@ CUSTOM TRAY ICON:
 AUTO-LOGIN:
   Types passwords via DirectInput shared memory
   (no focus stealing — all clients stay in background)
-  Requires dinput8.dll in EQ directory (auto-deployed)
+  Injected into EQ at launch — no files placed in game folder.
 
 LAUNCHING:
   EQ Path: {config.EQPath}
   Delay between launches: {config.Launch.LaunchDelayMs / 1000.0:F1}s
   Auto-arrange after: {config.Launch.FixDelayMs / 1000.0:F0}s
 
-DLL HOOK (eqswitch-hook.dll):
-  Injected into eqgame.exe to prevent EQ from fighting
-  window management. Memory-only — auto-ejected on exit.
-  No files are dropped into your EQ folder by the hook.
-
-DINPUT8.DLL (Auto-Login):
-  Copied to your EQ folder when auto-login is used.
-  If an existing dinput8.dll was present, it is backed up
-  as dinput8.dll.old and can be restored via Uninstall.
+INJECTED DLLs (memory-only, auto-ejected on exit):
+  eqswitch-hook.dll — prevents EQ from fighting window management
+  eqswitch-di8.dll  — DirectInput hooks for background keyboard input
+  No files are placed in your EQ game folder.
 
 FIRST-RUN CONFIG SEEDING:
   On first launch, EQSwitch reads your actual eqclient.ini
@@ -126,9 +121,9 @@ FIRST-RUN CONFIG SEEDING:
 UNINSTALL / CLEAN UP:
   Settings → General → Uninstall button (or run uninstall.bat)
   Reverts all external changes:
-    • Restores original dinput8.dll from backup (if present)
     • Removes startup shortcut
     • Removes desktop shortcut
+    • Cleans up any legacy DLL artifacts from game folder
   Does NOT modify eqclient.ini settings or EQSwitch config.
 
 CONFIG:

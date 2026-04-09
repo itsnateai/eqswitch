@@ -383,6 +383,9 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern uint ResumeThread(IntPtr hThread);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
+
     public const uint CREATE_SUSPENDED = 0x00000004;
 
     // ─── Cross-architecture injection (64→32 bit) ──────────────────

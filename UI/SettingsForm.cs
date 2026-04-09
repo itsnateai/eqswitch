@@ -1045,7 +1045,7 @@ public class SettingsForm : Form
     {
         var result = MessageBox.Show(
             "This will revert all external changes made by EQSwitch:\n\n" +
-            "  • Restore original dinput8.dll in EQ folder (if backed up)\n" +
+            "  • Clean up any legacy DLL artifacts from EQ folder\n" +
             "  • Remove startup shortcut\n" +
             "  • Remove desktop shortcut\n\n" +
             "EQSwitch's own config and logs will NOT be deleted.\n" +
