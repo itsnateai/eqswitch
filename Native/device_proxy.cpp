@@ -26,9 +26,17 @@ static HANDLE g_hShmThread = nullptr;
 
 HWND GetEqHwnd() { return g_eqHwnd; }
 
-// --- WM_ACTIVATEAPP thread (Phase 2) ---
-// Posts WM_ACTIVATEAPP(TRUE) when shm goes active, tricking EQ's main loop
+// --- WM_ACTIVATEAPP defense (Phase 2a) ---
+// Posts WM_ACTIVATEAPP(TRUE) when SHM goes active, tricking EQ's main loop
 // into calling keyboard_process for background windows.
+//
+// NOTE: Message-level approaches (subclassing, WH_CALLWNDPROC/RET, DefWindowProcA
+// IAT hook, SendMessage, SetActiveWindow/SetFocus) have all been tested and FAIL
+// to make EQ process input when backgrounded. EQ's main loop checks an internal
+// g_bActive flag and stops calling GetDeviceData entirely when inactive.
+// The next approach is binary scanning to find and patch g_bActive directly.
+// For now, this code keeps the simple PostMessage approach that works for
+// foreground and doesn't interfere with normal operation.
 
 static DWORD WINAPI ActivateThread(LPVOID) {
     bool wasActive = false;
@@ -41,8 +49,6 @@ static DWORD WINAPI ActivateThread(LPVOID) {
         if (active && hwnd) {
             if (!wasActive) {
                 // Rising edge: deferred cooperative level switch to BACKGROUND
-                // when shared memory first activates (background login starting).
-                // Doing this at startup causes EQ to minimize itself.
                 if (!g_coopSwitched && g_realKeyboardDevice) {
                     g_realKeyboardDevice->Unacquire();
                     DWORD bgFlags = (g_originalCoopFlags & ~(DISCL_EXCLUSIVE | DISCL_FOREGROUND))
@@ -59,10 +65,7 @@ static DWORD WINAPI ActivateThread(LPVOID) {
                 ticksSinceRepost = 0;
             }
 
-            // While SHM is active, continuously defend against real WM_ACTIVATEAPP(0)
-            // that Windows sends when the user clicks another window. Without this,
-            // EQ stops processing input even though our hooks fake foreground status.
-            // Check every ~200ms (12 ticks at 16ms) to avoid message spam.
+            // Re-post activation every ~200ms when EQ is not foreground
             ticksSinceRepost++;
             if (ticksSinceRepost >= 12) {
                 ticksSinceRepost = 0;
@@ -72,7 +75,6 @@ static DWORD WINAPI ActivateThread(LPVOID) {
                 }
             }
         } else if (!active && wasActive && hwnd) {
-            // Only reset if EQ isn't actually foreground
             HWND fg = GetForegroundWindow();
             if (fg != hwnd) {
                 PostMessageW(hwnd, WM_ACTIVATEAPP, FALSE, 0);
@@ -206,16 +208,21 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::Acquire() {
 // Diagnostic: log injection activity during login
 static volatile int g_gdsLogCount = 0;
 static volatile bool g_gdsWasActive = false;
+static volatile int g_gdsCallCount = 0; // total calls for detecting if method is used
 
 HRESULT STDMETHODCALLTYPE DeviceProxy::GetDeviceState(DWORD cbData, LPVOID lpvData) {
     HRESULT hr = m_real->GetDeviceState(cbData, lpvData);
 
     if (m_isKeyboard) {
         bool active = KeyShm::IsActive();
+        int calls = InterlockedIncrement((volatile LONG*)&g_gdsCallCount);
         if (active && !g_gdsWasActive) {
             g_gdsLogCount = 0;
-            DI8Log("GetDeviceState: === SHM active, injection enabled ===");
+            DI8Log("GetDeviceState: === SHM active, injection enabled (callCount=%d) ===", calls);
         }
+        // Periodic call counter to detect if method is used at all
+        if (active && (calls % 500 == 0))
+            DI8Log("GetDeviceState: heartbeat callCount=%d hr=0x%08X", calls, (unsigned)hr);
         g_gdsWasActive = active;
 
         DWORD kbLen = (cbData > 256) ? 256 : cbData;
@@ -246,6 +253,11 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::GetDeviceState(DWORD cbData, LPVOID lpvDa
     return hr;
 }
 
+// Diagnostic: log GetDeviceData injection activity during login
+static volatile int g_gddLogCount = 0;
+static volatile bool g_gddWasActive = false;
+static volatile int g_gddCallCount = 0;
+
 HRESULT STDMETHODCALLTYPE DeviceProxy::GetDeviceData(
     DWORD cbObjectData, LPDIDEVICEOBJECTDATA rgdod,
     LPDWORD pdwInOut, DWORD dwFlags)
@@ -258,6 +270,18 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::GetDeviceData(
 
     HRESULT hr = m_real->GetDeviceData(cbObjectData, rgdod, pdwInOut, dwFlags);
     DWORD realCount = SUCCEEDED(hr) ? *pdwInOut : 0;
+
+    bool shmIsActive = KeyShm::IsActive();
+    int calls = InterlockedIncrement((volatile LONG*)&g_gddCallCount);
+    if (shmIsActive && !g_gddWasActive) {
+        g_gddLogCount = 0;
+        DI8Log("GetDeviceData: === SHM active, injection enabled (callCount=%d, hr=0x%08X, cap=%lu) ===",
+               calls, (unsigned)hr, originalCapacity);
+    }
+    // Periodic heartbeat to detect if method is used at all
+    if (shmIsActive && (calls % 500 == 0))
+        DI8Log("GetDeviceData: heartbeat callCount=%d hr=0x%08X realCount=%lu", calls, (unsigned)hr, realCount);
+    g_gddWasActive = shmIsActive;
 
     if (KeyShm::ShouldSuppress() && realCount > 0)
         realCount = 0;
@@ -321,6 +345,16 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::GetDeviceData(
 
     *pdwInOut = realCount + toInject;
     if (!peek) memcpy(m_prevShmKeys, curKeys, 256);
+
+    // Log injected events
+    if (toInject > 0 && g_gddLogCount < 200) {
+        g_gddLogCount++;
+        for (DWORD j = 0; j < toInject; j++) {
+            DI8Log("GetDeviceData: injected scan=0x%02X data=0x%02X (event %d/%d)",
+                   changes[j].scan, changes[j].value ? 0x80 : 0x00, j + 1, toInject);
+        }
+    }
+
     // Return DI_OK when we injected synthetic events — even if the real device
     // failed (DIERR_NOTACQUIRED for background windows). Without this, EQ sees
     // the error code and discards all injected keystroke data.
@@ -352,9 +386,10 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::SetCooperativeLevel(HWND hwnd, DWORD dwFl
             g_coopSwitched = true;
             DI8Log("SetCooperativeLevel: keyboard hwnd=0x%X flags=0x%X → 0x%X (SHM active, forced BACKGROUND)",
                    (unsigned)(uintptr_t)hwnd, dwFlags, bgFlags);
+            // TODO: binary scan for g_bActive and patch it here
             StartActivateThread();
             HRESULT hr = m_real->SetCooperativeLevel(hwnd, bgFlags);
-            // Re-post WM_ACTIVATEAPP — EQ may have processed a deactivation during transition
+            // Re-post activation — EQ may have deactivated during screen transition
             PostMessageW(hwnd, WM_ACTIVATEAPP, TRUE, 0);
             return hr;
         }
@@ -366,6 +401,7 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::SetCooperativeLevel(HWND hwnd, DWORD dwFl
         DWORD safeFlags = (dwFlags & ~DISCL_EXCLUSIVE) | DISCL_NONEXCLUSIVE;
         DI8Log("SetCooperativeLevel: keyboard hwnd=0x%X flags=0x%X → 0x%X (stripped EXCLUSIVE)",
                (unsigned)(uintptr_t)hwnd, dwFlags, safeFlags);
+        // TODO: binary scan for g_bActive when background input is implemented
         StartActivateThread();
         return m_real->SetCooperativeLevel(hwnd, safeFlags);
     }

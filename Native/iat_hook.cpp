@@ -82,6 +82,7 @@ typedef BOOL(WINAPI *PFN_GetKeyboardState)(PBYTE lpKeyState);
 typedef HWND(WINAPI *PFN_GetForegroundWindow)();
 typedef HWND(WINAPI *PFN_GetFocus)();
 typedef HWND(WINAPI *PFN_GetActiveWindow)();
+typedef LRESULT(WINAPI *PFN_DefWindowProcA)(HWND, UINT, WPARAM, LPARAM);
 
 static PFN_GetAsyncKeyState   g_realGetAsyncKeyState   = nullptr;
 static PFN_GetKeyState        g_realGetKeyState        = nullptr;
@@ -89,6 +90,7 @@ static PFN_GetKeyboardState   g_realGetKeyboardState   = nullptr;
 static PFN_GetForegroundWindow g_realGetForegroundWindow = nullptr;
 static PFN_GetFocus           g_realGetFocus           = nullptr;
 static PFN_GetActiveWindow    g_realGetActiveWindow    = nullptr;
+static PFN_DefWindowProcA     g_realDefWindowProcA     = nullptr;
 
 // --- Hook implementations ---
 
@@ -276,8 +278,11 @@ static HWND WINAPI InlineHookedGetForegroundWindow() {
     bool active = KeyShm::IsActive();
 
     int count = InterlockedIncrement((volatile LONG*)&g_inlineGfwLogCount);
-    if (count <= 5)
-        DI8Log("inline_gfw: hwnd=0x%X active=%d #%d", (unsigned)(uintptr_t)hwnd, active, count);
+    if (count <= 200)
+        DI8Log("inline_gfw: hwnd=0x%X active=%d fg=%d #%d",
+               (unsigned)(uintptr_t)hwnd, active,
+               (hwnd == (g_ntGetForegroundWindow ? g_ntGetForegroundWindow() : nullptr)) ? 1 : 0,
+               count);
 
     if (hwnd && active)
         return hwnd;

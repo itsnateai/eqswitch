@@ -21,6 +21,9 @@ struct SharedKeyState {
 #define KEY_SHM_MAGIC 0x45534B53
 
 namespace KeyShm {
+    // True if shared memory mapping exists (magic valid), regardless of active flag.
+    // Use for early defense: suppress deactivation from the moment EQSwitch connects.
+    bool IsOpen();
     // True if shared memory is open and active flag is set
     bool IsActive();
     // True if active + suppress flag is set (zero physical keys)

@@ -70,6 +70,15 @@ static const SharedKeyState *GetState() {
     return g_shmPtr;
 }
 
+bool KeyShm::IsOpen() {
+    if (!g_shmPtr) {
+        GetState(); // try to open
+        if (!g_shmPtr) return false;
+    }
+    uint32_t magic = *(volatile uint32_t *)&g_shmPtr->magic;
+    return magic == KEY_SHM_MAGIC;
+}
+
 bool KeyShm::IsActive() {
     if (!g_shmPtr) {
         GetState();
