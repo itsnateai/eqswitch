@@ -5,7 +5,8 @@ using EQSwitch.Config;
 namespace EQSwitch.Core;
 
 /// <summary>
-/// Info about a process created with CREATE_SUSPENDED, before ResumeThread.
+/// Info about a newly created process, after the loader has initialized
+/// but before the game's own code has meaningfully executed.
 /// </summary>
 public record SuspendedProcess(int Pid, IntPtr ProcessHandle, IntPtr ThreadHandle);
 
@@ -208,8 +209,9 @@ public class LaunchManager : IDisposable
     }
 
     /// <summary>
-    /// Create the process suspended, run the pre-resume injection callback,
-    /// then resume the main thread. Returns PID on success, -1 on failure.
+    /// Create the process suspended, resume to let the Windows loader initialize,
+    /// wait for kernel32.dll to appear, inject DLLs, then let the game continue.
+    /// Returns PID on success, -1 on failure.
     /// </summary>
     private int LaunchSuspendedAndInject(string exePath, string arguments, string workingDir)
     {
@@ -248,7 +250,24 @@ public class LaunchManager : IDisposable
         {
             FileLogger.Info($"LaunchManager: created suspended PID {pi.dwProcessId}");
 
-            // Inject DLLs while the process is frozen
+            // Resume the main thread so the Windows loader initializes (loads ntdll, kernel32, etc.)
+            // Without this, EnumProcessModulesEx finds no modules and cross-arch injection fails.
+            uint resumeResult = NativeMethods.ResumeThread(pi.hThread);
+            if (resumeResult == 0xFFFFFFFF)
+            {
+                var err = Marshal.GetLastWin32Error();
+                FileLogger.Error($"LaunchManager: ResumeThread failed (error {err}) — PID {pi.dwProcessId} left suspended");
+                return -1;
+            }
+            FileLogger.Info($"LaunchManager: resumed PID {pi.dwProcessId}, waiting for loader...");
+
+            // Wait for the loader to map kernel32.dll — injection needs it for LoadLibraryA
+            if (!DllInjector.WaitForLoader(pi.hProcess, pi.dwProcessId, timeoutMs: 5000))
+            {
+                FileLogger.Warn($"LaunchManager: loader timeout for PID {pi.dwProcessId} — injecting anyway");
+            }
+
+            // Inject DLLs now that the loader has initialized
             var sp = new SuspendedProcess(pi.dwProcessId, pi.hProcess, pi.hThread);
             try
             {
@@ -259,19 +278,8 @@ public class LaunchManager : IDisposable
             }
             catch (Exception ex)
             {
-                FileLogger.Warn($"LaunchManager: pre-resume injection error: {ex.Message}");
-                // Continue anyway — EQ can still run without our hooks
+                FileLogger.Warn($"LaunchManager: injection error: {ex.Message}");
             }
-
-            // Resume the main thread — Windows loader starts, imports are processed
-            uint resumeResult = NativeMethods.ResumeThread(pi.hThread);
-            if (resumeResult == 0xFFFFFFFF)
-            {
-                var err = Marshal.GetLastWin32Error();
-                FileLogger.Error($"LaunchManager: ResumeThread failed (error {err}) — PID {pi.dwProcessId} left suspended");
-                return -1;  // handles closed by finally block
-            }
-            FileLogger.Info($"LaunchManager: resumed PID {pi.dwProcessId}");
         }
         finally
         {

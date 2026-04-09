@@ -123,6 +123,33 @@ public static class DllInjector
     }
 
     /// <summary>
+    /// Poll until kernel32.dll appears in the target process's module list.
+    /// After CREATE_SUSPENDED + ResumeThread, the loader needs a moment to map DLLs.
+    /// Returns true once kernel32 is found, false on timeout.
+    /// </summary>
+    public static bool WaitForLoader(IntPtr hProcess, int pid, int timeoutMs = 5000)
+    {
+        const int pollIntervalMs = 50;
+        int elapsed = 0;
+
+        while (elapsed < timeoutMs)
+        {
+            var kernel32 = FindModule32InProcess(hProcess, "kernel32.dll");
+            if (kernel32 != IntPtr.Zero)
+            {
+                FileLogger.Info($"DllInjector: loader ready for PID {pid} after {elapsed}ms");
+                return true;
+            }
+
+            Thread.Sleep(pollIntervalMs);
+            elapsed += pollIntervalMs;
+        }
+
+        FileLogger.Warn($"DllInjector: loader timeout ({timeoutMs}ms) for PID {pid}");
+        return false;
+    }
+
+    /// <summary>
     /// Resolve LoadLibraryA's address in the target process.
     /// For same-architecture, uses GetProcAddress directly.
     /// For cross-architecture (64→32), finds 32-bit kernel32 base in the target
