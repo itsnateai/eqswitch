@@ -215,17 +215,19 @@ static void *PatchIat(const uint8_t *base, const char *targetDll,
                     // Hint/Name table entry: 2-byte hint + null-terminated name
                     const char *fnName = (const char *)(base + *orig + 2);
                     if (strcmp(fnName, targetFn) == 0) {
+                        // Check table space BEFORE patching — unrecorded patches can't be restored
+                        if (g_patchCount >= 12) {
+                            DI8Log("iat_hook: patch table full, skipping %s (would be unrestorable)", targetFn);
+                            return nullptr;
+                        }
                         void *original = (void *)(uintptr_t)*thunk;
                         DWORD oldProtect, dummy;
                         VirtualProtect(thunk, 4, PAGE_READWRITE, &oldProtect);
                         *thunk = (uint32_t)(uintptr_t)newFn;
                         VirtualProtect(thunk, 4, oldProtect, &dummy);
-                        // Track for removal on DLL detach
-                        if (g_patchCount < 12) {
-                            g_patches[g_patchCount].slot = thunk;
-                            g_patches[g_patchCount].original = (uint32_t)(uintptr_t)original;
-                            g_patchCount++;
-                        }
+                        g_patches[g_patchCount].slot = thunk;
+                        g_patches[g_patchCount].original = (uint32_t)(uintptr_t)original;
+                        g_patchCount++;
                         return original;
                     }
                 }
