@@ -24,11 +24,11 @@ A lightweight EverQuest multiboxer — hotkey switching, encrypted auto-login, P
 | File | Size | Notes |
 |------|------|-------|
 | **EQSwitch.exe** | ~179 MB | Self-contained — no runtime needed, click and go |
-| **eqswitch-hook.dll** | ~132 KB | Ships with exe — hooks SetWindowPos/MoveWindow inside eqgame.exe |
-| **dinput8.dll** | ~132 KB | Ships with exe — deployed to EQ directory for background auto-login |
+| **eqswitch-hook.dll** | ~133 KB | Window management hooks (SetWindowPos/MoveWindow) |
+| **eqswitch-di8.dll** | ~148 KB | DirectInput hooks for background auto-login |
 
 > [!TIP]
-> Place in any folder and run — no installation needed. Config is stored as `eqswitch-config.json` next to the exe.
+> Place all three files in the same folder and run — no installation needed. Config is stored as `eqswitch-config.json` next to the exe.
 
 ## Screenshots
 
@@ -53,8 +53,7 @@ A lightweight EverQuest multiboxer — hotkey switching, encrypted auto-login, P
 - **Character Profiles** — Per-character priority overrides, export/import
 - **Custom Tray Icon** — Custom .ico support
 - **Auto-Login** — Encrypted account presets with one-click launch, login, server select, and character enter world
-- **Background Auto-Login** — Types passwords in background windows via DirectInput shared memory injection — no focus stealing, true one-click multi-login
-- **DirectInput Proxy** — dinput8.dll hooks IAT for focus faking (GetForegroundWindow, GetAsyncKeyState, etc.) and injects keyboard state via per-PID shared memory
+- **Background Auto-Login** — Injects DirectInput hooks via suspended-process injection for true background input — no focus stealing, no game file modifications
 - **Portable** — Single exe + 2 DLLs, config stored next to it, no installer needed
 - **Privacy First** — Zero telemetry, no network calls, no data collection. Saved passwords are encrypted with Windows DPAPI and can only be decrypted by your Windows account on your machine
 
@@ -71,14 +70,14 @@ cd eqswitch
 # Build the native hook DLL (requires MSVC Build Tools, 32-bit x86 target)
 bash Native/build.sh
 
-# Build the DirectInput proxy DLL (32-bit x86)
-bash Native/build-dinput8.sh
+# Build the DirectInput injectable DLL (32-bit x86)
+bash Native/build-di8-inject.sh
 
 # Self-contained single-file (~179MB, no runtime needed)
 dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 ```
 
-Output: `bin/Release/net8.0-windows/win-x64/publish/EQSwitch.exe` + `eqswitch-hook.dll` + `dinput8.dll`
+Output: `bin/Release/net8.0-windows/win-x64/publish/EQSwitch.exe` + `eqswitch-hook.dll` + `eqswitch-di8.dll`
 
 ## Default Hotkeys
 
@@ -126,23 +125,23 @@ Place a file named `eqswitch-custom.ico` next to the exe to use your own icon.
 | `Config/` | JSON config model, load/save, AHK migration |
 | `Models/` | EQ client data model |
 | `UI/` | Tray manager, settings GUI, PiP overlay, dark theme, process manager |
-| `Native/` | C++ DLL sources — eqswitch-hook (MinHook) + dinput8 proxy (DirectInput + IAT hooks), 32-bit x86 |
+| `Native/` | C++ DLL sources — eqswitch-hook (MinHook) + eqswitch-di8 (DirectInput + IAT hooks), 32-bit x86 |
 
 ## Background Auto-Login
 
 When **Background Login** is enabled (Settings → Accounts), EQSwitch types passwords into background EQ windows without stealing focus. This allows true one-click multi-account login.
 
 **How it works:**
-1. `dinput8.dll` is deployed to your EQ directory before launching
-2. The DLL intercepts DirectInput and hooks keyboard state APIs (GetAsyncKeyState, GetForegroundWindow, etc.)
+1. EQSwitch launches eqgame.exe with `CREATE_SUSPENDED`, waits for the Windows loader to initialize, then injects `eqswitch-di8.dll` and `eqswitch-hook.dll` before the game runs
+2. `eqswitch-di8.dll` hooks DirectInput8Create (via MinHook) and patches keyboard state APIs (GetAsyncKeyState, GetForegroundWindow, etc.) so EQ processes input while backgrounded
 3. Per-PID shared memory injects scan codes directly into EQ's DirectInput keyboard device
-4. EQ processes the keystrokes as if it were the focused window
+4. EQ processes the keystrokes as if it were the focused window — no game files are modified
 
 > [!NOTE]
-> EQ must be restarted after enabling background login for the first time — the proxy DLL loads at startup.
+> No files are deployed to your EQ directory. The DLLs are injected at runtime and live alongside EQSwitch.exe.
 
 > [!WARNING]
-> Windows Defender may flag `dinput8.dll` as suspicious (DirectInput hooking is a common game-tool technique). Add your EQ folder to Defender's exclusion list if the DLL is blocked or quarantined.
+> Windows Defender may flag the injectable DLLs as suspicious (DLL injection is a common game-tool technique). Add your EQSwitch folder to Defender's exclusion list if DLLs are blocked or quarantined.
 
 ## Auto-Login Security
 
@@ -165,16 +164,14 @@ Settings are **not enforced** until you explicitly click Save in the EQ Client S
 
 ## Uninstall / Clean Up
 
-EQSwitch can be fully removed without leaving traces. Two options:
+EQSwitch can be fully removed without leaving traces:
 
 **From the GUI:** Settings → General tab → **Uninstall** button
 
-**From the command line:** Run `uninstall.bat` (ships next to `EQSwitch.exe`)
-
-Both options revert all external changes:
-- Restores original `dinput8.dll` from backup (if one was created)
-- Removes startup shortcut
-- Removes desktop shortcut
+This removes:
+- Startup shortcut
+- Desktop shortcut
+- Legacy proxy DLL from EQ directory (if one was deployed by an older version)
 
 Your `eqclient.ini` settings and EQSwitch config files are **not** modified — restore from `.bak` files in your EQ folder if needed.
 
@@ -190,7 +187,7 @@ Your `eqclient.ini` settings and EQSwitch config files are **not** modified — 
 | **PiP not showing** | Requires 2+ EQ clients running. Middle-click tray icon to toggle |
 | **CPU affinity not applying** | EQ resets affinity after launch — EQSwitch retries automatically. Use tray menu → Force Apply |
 | **Config lost after moving exe** | Move `eqswitch-config.json` with the exe. Backups in `backups/` subfolder |
-| **dinput8.dll blocked** | Add your EQ folder to Windows Defender exclusions |
+| **DLL blocked by antivirus** | Add your EQSwitch folder to Windows Defender exclusions |
 
 ## License
 

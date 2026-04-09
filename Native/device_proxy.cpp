@@ -32,31 +32,45 @@ HWND GetEqHwnd() { return g_eqHwnd; }
 
 static DWORD WINAPI ActivateThread(LPVOID) {
     bool wasActive = false;
+    int ticksSinceRepost = 0;
     while (!g_shutdown) {
         Sleep(16); // ~60Hz
         bool active = KeyShm::IsActive();
         HWND hwnd = g_eqHwnd;
 
-        if (active && !wasActive && hwnd) {
-            // Deferred cooperative level switch: only change to BACKGROUND
-            // when shared memory first activates (background login starting).
-            // Doing this at startup causes EQ to minimize itself.
-            if (!g_coopSwitched && g_realKeyboardDevice) {
-                // Must Unacquire before changing cooperative level — otherwise ERROR_BUSY
-                g_realKeyboardDevice->Unacquire();
-                DWORD bgFlags = (g_originalCoopFlags & ~(DISCL_EXCLUSIVE | DISCL_FOREGROUND))
-                              | DISCL_NONEXCLUSIVE | DISCL_BACKGROUND;
-                HRESULT hr = g_realKeyboardDevice->SetCooperativeLevel(hwnd, bgFlags);
-                // Re-acquire with new cooperative level
-                HRESULT acqHr = g_realKeyboardDevice->Acquire();
-                g_coopSwitched = true;
-                DI8Log("wm_activate: Unacquire → SetCoopLevel(BACKGROUND|NONEXCLUSIVE)=0x%08X → Acquire=0x%08X",
-                       (unsigned)hr, (unsigned)acqHr);
+        if (active && hwnd) {
+            if (!wasActive) {
+                // Rising edge: deferred cooperative level switch to BACKGROUND
+                // when shared memory first activates (background login starting).
+                // Doing this at startup causes EQ to minimize itself.
+                if (!g_coopSwitched && g_realKeyboardDevice) {
+                    g_realKeyboardDevice->Unacquire();
+                    DWORD bgFlags = (g_originalCoopFlags & ~(DISCL_EXCLUSIVE | DISCL_FOREGROUND))
+                                  | DISCL_NONEXCLUSIVE | DISCL_BACKGROUND;
+                    HRESULT hr = g_realKeyboardDevice->SetCooperativeLevel(hwnd, bgFlags);
+                    HRESULT acqHr = g_realKeyboardDevice->Acquire();
+                    g_coopSwitched = true;
+                    DI8Log("wm_activate: Unacquire → SetCoopLevel(BACKGROUND|NONEXCLUSIVE)=0x%08X → Acquire=0x%08X",
+                           (unsigned)hr, (unsigned)acqHr);
+                }
+                PostMessageW(hwnd, WM_ACTIVATEAPP, TRUE, 0);
+                DI8Log("wm_activate: posted WM_ACTIVATEAPP(1) hwnd=0x%X",
+                       (unsigned)(uintptr_t)hwnd);
+                ticksSinceRepost = 0;
             }
 
-            PostMessageW(hwnd, WM_ACTIVATEAPP, TRUE, 0);
-            DI8Log("wm_activate: posted WM_ACTIVATEAPP(1) hwnd=0x%X",
-                   (unsigned)(uintptr_t)hwnd);
+            // While SHM is active, continuously defend against real WM_ACTIVATEAPP(0)
+            // that Windows sends when the user clicks another window. Without this,
+            // EQ stops processing input even though our hooks fake foreground status.
+            // Check every ~200ms (12 ticks at 16ms) to avoid message spam.
+            ticksSinceRepost++;
+            if (ticksSinceRepost >= 12) {
+                ticksSinceRepost = 0;
+                HWND fg = GetForegroundWindow();
+                if (fg != hwnd) {
+                    PostMessageW(hwnd, WM_ACTIVATEAPP, TRUE, 0);
+                }
+            }
         } else if (!active && wasActive && hwnd) {
             // Only reset if EQ isn't actually foreground
             HWND fg = GetForegroundWindow();
@@ -65,6 +79,7 @@ static DWORD WINAPI ActivateThread(LPVOID) {
                 DI8Log("wm_activate: posted WM_ACTIVATEAPP(0) hwnd=0x%X",
                        (unsigned)(uintptr_t)hwnd);
             }
+            ticksSinceRepost = 0;
         }
         wasActive = active;
     }
