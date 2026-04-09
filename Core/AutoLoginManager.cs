@@ -101,8 +101,8 @@ public class AutoLoginManager
 
             // Launch with CREATE_SUSPENDED so DLLs are injected before the process starts
             var commandLine = string.IsNullOrEmpty(args)
-                ? $"\"{exePath}\""
-                : $"\"{exePath}\" {args}";
+                ? new StringBuilder($"\"{exePath}\"")
+                : new StringBuilder($"\"{exePath}\" {args}");
 
             var si = new NativeMethods.STARTUPINFOA
             {
@@ -123,24 +123,32 @@ public class AutoLoginManager
             }
 
             pid = pi.dwProcessId;
-            FileLogger.Info($"AutoLogin: created suspended PID {pid} for {account.Name}");
 
-            // Inject DLLs while process is frozen
+            // Ensure handles are always closed, even if injection or resume throws
             try
             {
-                var sp = new SuspendedProcess(pid, pi.hProcess, pi.hThread);
-                PreResumeCallback?.Invoke(sp);
-            }
-            catch (Exception ex2)
-            {
-                FileLogger.Warn($"AutoLogin: pre-resume injection error: {ex2.Message}");
-            }
+                FileLogger.Info($"AutoLogin: created suspended PID {pid} for {account.Name}");
 
-            // Resume — Windows loader starts, imports processed, EQ runs
-            NativeMethods.ResumeThread(pi.hThread);
-            NativeMethods.CloseHandle(pi.hThread);
-            NativeMethods.CloseHandle(pi.hProcess);
-            FileLogger.Info($"AutoLogin: resumed PID {pid}");
+                // Inject DLLs while process is frozen
+                try
+                {
+                    var sp = new SuspendedProcess(pid, pi.hProcess, pi.hThread);
+                    PreResumeCallback?.Invoke(sp);
+                }
+                catch (Exception ex2)
+                {
+                    FileLogger.Warn($"AutoLogin: pre-resume injection error: {ex2.Message}");
+                }
+
+                // Resume — Windows loader starts, imports processed, EQ runs
+                NativeMethods.ResumeThread(pi.hThread);
+                FileLogger.Info($"AutoLogin: resumed PID {pid}");
+            }
+            finally
+            {
+                NativeMethods.CloseHandle(pi.hThread);
+                NativeMethods.CloseHandle(pi.hProcess);
+            }
         }
         catch (Exception ex)
         {

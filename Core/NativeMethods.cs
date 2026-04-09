@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace EQSwitch.Core;
 
@@ -340,13 +341,13 @@ internal static class NativeMethods
 
     // ─── Suspended Process Creation ──────────────────────────────────
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+    [StructLayout(LayoutKind.Sequential)]
     public struct STARTUPINFOA
     {
         public int cb;
-        public string? lpReserved;
-        public string? lpDesktop;
-        public string? lpTitle;
+        public IntPtr lpReserved;   // LPSTR — use IntPtr for exact native layout
+        public IntPtr lpDesktop;    // LPSTR
+        public IntPtr lpTitle;      // LPSTR
         public int dwX, dwY, dwXSize, dwYSize;
         public int dwXCountChars, dwYCountChars;
         public int dwFillAttribute;
@@ -369,7 +370,7 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
     public static extern bool CreateProcessA(
         string? lpApplicationName,
-        string lpCommandLine,
+        StringBuilder lpCommandLine,  // MUST be mutable — CreateProcessA writes to it during argv parsing
         IntPtr lpProcessAttributes,
         IntPtr lpThreadAttributes,
         bool bInheritHandles,

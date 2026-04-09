@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using EQSwitch.Config;
 
 namespace EQSwitch.Core;
@@ -212,10 +213,10 @@ public class LaunchManager : IDisposable
     /// </summary>
     private int LaunchSuspendedAndInject(string exePath, string arguments, string workingDir)
     {
-        // CreateProcessA needs the full command line as a single string
+        // CreateProcessA needs a mutable command line buffer (it writes during argv parsing)
         var commandLine = string.IsNullOrEmpty(arguments)
-            ? $"\"{exePath}\""
-            : $"\"{exePath}\" {arguments}";
+            ? new StringBuilder($"\"{exePath}\"")
+            : new StringBuilder($"\"{exePath}\" {arguments}");
 
         var si = new NativeMethods.STARTUPINFOA
         {
@@ -242,27 +243,32 @@ public class LaunchManager : IDisposable
             return -1;
         }
 
-        FileLogger.Info($"LaunchManager: created suspended PID {pi.dwProcessId}");
-
-        // Inject DLLs while the process is frozen
-        var sp = new SuspendedProcess(pi.dwProcessId, pi.hProcess, pi.hThread);
+        // Ensure handles are always closed, even if injection or resume throws
         try
         {
-            PreResumeCallback?.Invoke(sp);
+            FileLogger.Info($"LaunchManager: created suspended PID {pi.dwProcessId}");
+
+            // Inject DLLs while the process is frozen
+            var sp = new SuspendedProcess(pi.dwProcessId, pi.hProcess, pi.hThread);
+            try
+            {
+                PreResumeCallback?.Invoke(sp);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Warn($"LaunchManager: pre-resume injection error: {ex.Message}");
+                // Continue anyway — EQ can still run without our hooks
+            }
+
+            // Resume the main thread — Windows loader starts, imports are processed
+            NativeMethods.ResumeThread(pi.hThread);
+            FileLogger.Info($"LaunchManager: resumed PID {pi.dwProcessId}");
         }
-        catch (Exception ex)
+        finally
         {
-            FileLogger.Warn($"LaunchManager: pre-resume injection error: {ex.Message}");
-            // Continue anyway — EQ can still run without our hooks
+            NativeMethods.CloseHandle(pi.hThread);
+            NativeMethods.CloseHandle(pi.hProcess);
         }
-
-        // Resume the main thread — Windows loader starts, imports are processed
-        NativeMethods.ResumeThread(pi.hThread);
-        FileLogger.Info($"LaunchManager: resumed PID {pi.dwProcessId}");
-
-        // Close our copies of the handles — the process keeps running
-        NativeMethods.CloseHandle(pi.hThread);
-        NativeMethods.CloseHandle(pi.hProcess);
 
         return pi.dwProcessId;
     }
