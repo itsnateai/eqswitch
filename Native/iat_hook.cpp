@@ -269,45 +269,48 @@ static PFN_NtUserGetFocus g_ntGetFocus = nullptr;
 static volatile int g_inlineGfwLogCount = 0;
 
 static HWND WINAPI InlineHookedGetForegroundWindow() {
-    // Only fake results for calls from eqgame.exe — pass through for
-    // Discord overlay, Steam, audio drivers, and other in-process modules.
-    if (!IsCallerInEq(GET_RETURN_ADDRESS()))
-        return g_ntGetForegroundWindow ? g_ntGetForegroundWindow() : nullptr;
-
     HWND hwnd = GetEqHwnd();
     bool active = KeyShm::IsActive();
 
-    int count = InterlockedIncrement((volatile LONG*)&g_inlineGfwLogCount);
-    if (count <= 200)
-        DI8Log("inline_gfw: hwnd=0x%X active=%d fg=%d #%d",
-               (unsigned)(uintptr_t)hwnd, active,
-               (hwnd == (g_ntGetForegroundWindow ? g_ntGetForegroundWindow() : nullptr)) ? 1 : 0,
-               count);
-
-    if (hwnd && active)
+    // When SHM is active (auto-login in progress), return EQ's HWND for ALL
+    // callers — not just eqgame.exe. EQ's game loop may call GetForegroundWindow
+    // from loaded DLLs (not just the main exe), and the old IsCallerInEq check
+    // rejected those calls, causing EQ to see itself as backgrounded.
+    if (hwnd && active) {
+        int count = InterlockedIncrement((volatile LONG*)&g_inlineGfwLogCount);
+        if (count <= 20)
+            DI8Log("inline_gfw: returning hwnd=0x%X (active, caller=0x%X) #%d",
+                   (unsigned)(uintptr_t)hwnd,
+                   (unsigned)(uintptr_t)GET_RETURN_ADDRESS(), count);
         return hwnd;
+    }
+
+    // SHM inactive — only fake for eqgame.exe callers (protect Discord etc.)
+    if (!IsCallerInEq(GET_RETURN_ADDRESS()))
+        return g_ntGetForegroundWindow ? g_ntGetForegroundWindow() : nullptr;
+
     return g_ntGetForegroundWindow ? g_ntGetForegroundWindow() : nullptr;
 }
 
 static HWND WINAPI InlineHookedGetFocus() {
-    if (!IsCallerInEq(GET_RETURN_ADDRESS()))
-        return g_ntGetFocus ? g_ntGetFocus() : nullptr;
-
     HWND hwnd = GetEqHwnd();
     if (hwnd && KeyShm::IsActive())
         return hwnd;
+
+    if (!IsCallerInEq(GET_RETURN_ADDRESS()))
+        return g_ntGetFocus ? g_ntGetFocus() : nullptr;
+
     return g_ntGetFocus ? g_ntGetFocus() : nullptr;
 }
 
 static HWND WINAPI InlineHookedGetActiveWindow() {
-    if (!IsCallerInEq(GET_RETURN_ADDRESS()))
-        return g_ntGetForegroundWindow ? g_ntGetForegroundWindow() : nullptr;
-
     HWND hwnd = GetEqHwnd();
     if (hwnd && KeyShm::IsActive())
         return hwnd;
-    // GetActiveWindow has no direct NtUser equivalent, but for our purpose
-    // the real GetForegroundWindow is a safe substitute when not active
+
+    if (!IsCallerInEq(GET_RETURN_ADDRESS()))
+        return g_ntGetForegroundWindow ? g_ntGetForegroundWindow() : nullptr;
+
     return g_ntGetForegroundWindow ? g_ntGetForegroundWindow() : nullptr;
 }
 
