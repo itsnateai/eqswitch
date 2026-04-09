@@ -99,7 +99,7 @@ public class AutoLoginManager
             else
                 FileLogger.Warn("AutoLogin: no enforceOverrides callback registered, skipping INI overrides");
 
-            // Launch with CREATE_SUSPENDED so DLLs are injected before the process starts
+            // Launch with CREATE_SUSPENDED, then resume to let the loader init before injection
             var commandLine = string.IsNullOrEmpty(args)
                 ? new StringBuilder($"\"{exePath}\"")
                 : new StringBuilder($"\"{exePath}\" {args}");
@@ -134,21 +134,8 @@ public class AutoLoginManager
             {
                 FileLogger.Info($"AutoLogin: created suspended PID {pid} for {account.Name}");
 
-                // Inject DLLs while process is frozen
-                try
-                {
-                    var sp = new SuspendedProcess(pid, pi.hProcess, pi.hThread);
-                    if (PreResumeCallback != null)
-                        PreResumeCallback.Invoke(sp);
-                    else
-                        FileLogger.Warn("AutoLogin: PreResumeCallback not set — launching without DLL injection");
-                }
-                catch (Exception ex2)
-                {
-                    FileLogger.Warn($"AutoLogin: pre-resume injection error: {ex2.Message}");
-                }
-
-                // Resume — Windows loader starts, imports processed, EQ runs
+                // Resume the main thread so the Windows loader initializes (loads kernel32, etc.)
+                // Without this, EnumProcessModulesEx finds no modules and cross-arch injection fails.
                 uint resumeResult = NativeMethods.ResumeThread(pi.hThread);
                 if (resumeResult == 0xFFFFFFFF)
                 {
@@ -159,7 +146,27 @@ public class AutoLoginManager
                     StatusUpdate?.Invoke(this, "Error: failed to resume process");
                     return;
                 }
-                FileLogger.Info($"AutoLogin: resumed PID {pid}");
+                FileLogger.Info($"AutoLogin: resumed PID {pid}, waiting for loader...");
+
+                // Wait for the loader to map kernel32.dll — injection needs it for LoadLibraryA
+                if (!DllInjector.WaitForLoader(pi.hProcess, pid, timeoutMs: 5000))
+                {
+                    FileLogger.Warn($"AutoLogin: loader timeout for PID {pid} — injecting anyway");
+                }
+
+                // Inject DLLs now that the loader has initialized
+                try
+                {
+                    var sp = new SuspendedProcess(pid, pi.hProcess, pi.hThread);
+                    if (PreResumeCallback != null)
+                        PreResumeCallback.Invoke(sp);
+                    else
+                        FileLogger.Warn("AutoLogin: PreResumeCallback not set — launching without DLL injection");
+                }
+                catch (Exception ex2)
+                {
+                    FileLogger.Warn($"AutoLogin: injection error: {ex2.Message}");
+                }
             }
             finally
             {
