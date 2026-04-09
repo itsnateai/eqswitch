@@ -84,7 +84,7 @@ public static class DarkTheme
     /// </summary>
     public static TabControl MakeTabControl()
     {
-        var tabs = new TabControl
+        var tabs = new FlickerFreeTabControl
         {
             Dock = DockStyle.Fill,
             DrawMode = TabDrawMode.OwnerDrawFixed,
@@ -100,6 +100,26 @@ public static class DarkTheme
         tabs.Selecting += (_, _) => tabs.Invalidate();
 
         return tabs;
+    }
+
+    /// <summary>TabControl with double-buffering and WS_EX_COMPOSITED to eliminate
+    /// white flash when switching tabs.</summary>
+    private class FlickerFreeTabControl : TabControl
+    {
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var cp = base.CreateParams;
+                cp.ExStyle |= 0x02000000; // WS_EX_COMPOSITED — all child painting composited
+                return cp;
+            }
+        }
+
+        public FlickerFreeTabControl()
+        {
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
+        }
     }
 
     private static void DrawTab(object? sender, DrawItemEventArgs e)
