@@ -26,7 +26,7 @@ public class UpdateDialog : Form
     private string? _remoteVersion;
     private string? _downloadUrl;
     private string? _hookDownloadUrl;
-    private string? _dinput8DownloadUrl;
+    private string? _di8DownloadUrl;
     private long _downloadSize;
 
     /// <summary>Set by --test-update flag to simulate the full update flow locally.</summary>
@@ -146,9 +146,9 @@ public class UpdateDialog : Form
                 if (File.Exists(hookPath))
                     _hookDownloadUrl = "TEST_LOCAL_HOOK";
 
-                var dinput8Path = Path.Combine(dir, "dinput8.dll");
+                var dinput8Path = Path.Combine(dir, "eqswitch-di8.dll");
                 if (File.Exists(dinput8Path))
-                    _dinput8DownloadUrl = "TEST_LOCAL_DINPUT8";
+                    _di8DownloadUrl = "TEST_LOCAL_DINPUT8";
 
                 ShowVersionComparison();
                 return;
@@ -201,9 +201,9 @@ public class UpdateDialog : Form
                     {
                         _hookDownloadUrl = url;
                     }
-                    else if (name.Equals("dinput8.dll", StringComparison.OrdinalIgnoreCase))
+                    else if (name.Equals("eqswitch-di8.dll", StringComparison.OrdinalIgnoreCase))
                     {
-                        _dinput8DownloadUrl = url;
+                        _di8DownloadUrl = url;
                     }
                 }
             }
@@ -288,7 +288,7 @@ public class UpdateDialog : Form
         var hookPath = Path.Combine(exeDir, "eqswitch-hook.dll");
         var newHookPath = hookPath + ".new";
         var oldHookPath = hookPath + ".old";
-        var dinput8Path = Path.Combine(exeDir, "dinput8.dll");
+        var dinput8Path = Path.Combine(exeDir, "eqswitch-di8.dll");
         var newDinput8Path = dinput8Path + ".new";
         var oldDinput8Path = dinput8Path + ".old";
 
@@ -309,11 +309,11 @@ public class UpdateDialog : Form
                     if (!success) return;
                 }
 
-                if (!string.IsNullOrEmpty(_dinput8DownloadUrl))
+                if (!string.IsNullOrEmpty(_di8DownloadUrl))
                 {
-                    _lblStatus.Text = "Downloading dinput8.dll...";
+                    _lblStatus.Text = "Downloading eqswitch-di8.dll...";
                     _progressFill.Size = new Size(0, 20);
-                    success = await CopyFileWithProgressAsync(dinput8Path, newDinput8Path, "dinput8.dll");
+                    success = await CopyFileWithProgressAsync(dinput8Path, newDinput8Path, "eqswitch-di8.dll");
                     if (!success) return;
                 }
             }
@@ -332,12 +332,12 @@ public class UpdateDialog : Form
                     if (!success) return;
                 }
 
-                // Download dinput8 proxy if available
-                if (!string.IsNullOrEmpty(_dinput8DownloadUrl))
+                // Download eqswitch-di8.dll if available
+                if (!string.IsNullOrEmpty(_di8DownloadUrl))
                 {
-                    _lblStatus.Text = "Downloading dinput8.dll...";
+                    _lblStatus.Text = "Downloading eqswitch-di8.dll...";
                     _progressFill.Size = new Size(0, 20);
-                    success = await DownloadFileAsync(_dinput8DownloadUrl, newDinput8Path, "dinput8.dll");
+                    success = await DownloadFileAsync(_di8DownloadUrl, newDinput8Path, "eqswitch-di8.dll");
                     if (!success) return;
                 }
             }
@@ -363,7 +363,7 @@ public class UpdateDialog : Form
                 File.Move(newHookPath, hookPath);
             }
 
-            // dinput8 proxy — if we downloaded a new one
+            // eqswitch-di8.dll — if we downloaded a new one
             if (File.Exists(newDinput8Path))
             {
                 if (File.Exists(dinput8Path))

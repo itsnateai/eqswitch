@@ -76,6 +76,7 @@ public class TrayManager : IDisposable
     // DLL hook injection — hooks SetWindowPos/MoveWindow inside eqgame.exe
     private HookConfigWriter? _hookConfig;
     private readonly HashSet<int> _injectedPids = new();
+    private readonly HashSet<int> _di8InjectedPids = new();
 
 
     public TrayManager(AppConfig config, ProcessManager processManager)
@@ -87,7 +88,9 @@ public class TrayManager : IDisposable
         _keyboardHook = new KeyboardHookManager();
         _affinityManager = new AffinityManager(config);
         _launchManager = new LaunchManager(config, _affinityManager, EQClientSettingsForm.EnforceOverrides);
+        _launchManager.PreResumeCallback = InjectPreResume;
         _autoLoginManager = new AutoLoginManager(config, EQClientSettingsForm.EnforceOverrides);
+        _autoLoginManager.PreResumeCallback = InjectPreResume;
         _autoLoginManager.StatusUpdate += (_, msg) => ShowBalloon(msg);
         ConfigManager.SaveFailed += msg => ShowBalloon($"⚠ Settings save failed: {msg}");
         _autoLoginManager.LoginStarting += (_, _) =>
@@ -113,13 +116,18 @@ public class TrayManager : IDisposable
                     _windowManager.GetTargetMonitorBounds(),
                     _config.Layout.TitlebarOffset);
             }
-            if (ShouldInjectHook())
-                InjectHookDll(pid);
+            // Hook DLL injection is now handled pre-resume (CREATE_SUSPENDED),
+            // so no need to inject here. Just ensure config is fresh.
+            if (_injectedPids.Contains(pid))
+                UpdateHookConfigForPid(pid);
         };
     }
 
     public void Initialize()
     {
+        // One-time cleanup: remove legacy proxy DLL files from game directory
+        CleanupLegacyProxyFiles();
+
         _trayIcon = new NotifyIcon
         {
             Icon = LoadIcon(),
@@ -237,12 +245,18 @@ public class TrayManager : IDisposable
                     _config.Layout.TitlebarOffset);
             }
 
-            // Inject hook DLL when any hook feature is needed:
-            //   - Slim titlebar + hook enabled: position enforcement from inside
-            //   - Custom window title: hook SetWindowTextA so EQ can't overwrite it
-            //   - Maximize on launch: hook ShowWindow to block self-minimize
-            if (ShouldInjectHook())
+            // For EQSwitch-launched clients, both DLLs are already injected pre-resume.
+            // For manually-launched clients (detected by ProcessManager poll), inject
+            // eqswitch-hook.dll only — DirectInput hooking requires pre-resume injection.
+            if (_injectedPids.Contains(c.ProcessId))
             {
+                // Already injected pre-resume — just refresh config
+                UpdateHookConfigForPid(c.ProcessId);
+            }
+            else if (ShouldInjectHook())
+            {
+                // Manually-launched EQ — inject window management hooks only
+                FileLogger.Info($"ClientDiscovered: PID {c.ProcessId} not launched by EQSwitch — injecting hook DLL only (no DirectInput)");
                 InjectHookDll(c.ProcessId);
             }
             // If hook not injected, apply title externally as fallback
@@ -259,6 +273,7 @@ public class TrayManager : IDisposable
 
             // Clean up injection tracking and per-process shared memory
             _injectedPids.Remove(c.ProcessId);
+            _di8InjectedPids.Remove(c.ProcessId);
             _hookConfig?.Close(c.ProcessId);
 
         };
@@ -1448,8 +1463,68 @@ public class TrayManager : IDisposable
     // ─── DLL Hook Injection ─────────────────────────────────────────
 
     /// <summary>
+    /// Inject DLLs into a suspended process before its main thread starts.
+    /// Called by LaunchManager and AutoLoginManager via their PreResumeCallback.
+    /// </summary>
+    private bool InjectPreResume(SuspendedProcess sp)
+    {
+        var exeDir = AppContext.BaseDirectory;
+
+        // 1. Always inject eqswitch-di8.dll (DirectInput hooking for background input)
+        var di8Path = Path.Combine(exeDir, "eqswitch-di8.dll");
+        if (File.Exists(di8Path))
+        {
+            if (DllInjector.Inject(sp.Pid, di8Path))
+            {
+                _di8InjectedPids.Add(sp.Pid);
+                FileLogger.Info($"PreResume: injected eqswitch-di8.dll into PID {sp.Pid}");
+            }
+            else
+            {
+                FileLogger.Warn($"PreResume: eqswitch-di8.dll injection failed for PID {sp.Pid}");
+            }
+        }
+        else
+        {
+            FileLogger.Warn($"PreResume: eqswitch-di8.dll not found at {di8Path}");
+        }
+
+        // 2. Inject eqswitch-hook.dll if any hook feature is enabled (window management)
+        if (ShouldInjectHook())
+        {
+            _hookConfig ??= new HookConfigWriter();
+            if (_hookConfig.Open(sp.Pid))
+            {
+                _injectedPids.Add(sp.Pid);
+                UpdateHookConfigForPid(sp.Pid);
+
+                var hookPath = Path.Combine(exeDir, "eqswitch-hook.dll");
+                if (File.Exists(hookPath))
+                {
+                    if (DllInjector.Inject(sp.Pid, hookPath))
+                    {
+                        FileLogger.Info($"PreResume: injected eqswitch-hook.dll into PID {sp.Pid}");
+                    }
+                    else
+                    {
+                        _injectedPids.Remove(sp.Pid);
+                        FileLogger.Warn($"PreResume: eqswitch-hook.dll injection failed for PID {sp.Pid}");
+                    }
+                }
+            }
+            else
+            {
+                FileLogger.Warn($"PreResume: shared memory unavailable for PID {sp.Pid}");
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// Inject eqswitch-hook.dll into a target EQ process.
     /// Opens per-process shared memory first so the DLL can read config on attach.
+    /// Used for manually-launched EQ processes detected by ProcessManager (post-launch).
     /// </summary>
     private void InjectHookDll(int pid)
     {
@@ -1624,16 +1699,71 @@ public class TrayManager : IDisposable
     /// <summary>
     /// Eject hook DLL from all injected EQ processes and close all shared memory mappings.
     /// </summary>
+    /// <summary>
+    /// Remove legacy proxy DLL files from the game directory and app directory.
+    /// Restores Dalaya's original dinput8.dll if we renamed it during chain-load era.
+    /// </summary>
+    private void CleanupLegacyProxyFiles()
+    {
+        try
+        {
+            var eqPath = _config.EQPath;
+            if (string.IsNullOrEmpty(eqPath) || !Directory.Exists(eqPath)) return;
+
+            var dinput8Path = Path.Combine(eqPath, "dinput8.dll");
+            var dalayaPath = Path.Combine(eqPath, "dinput8_dalaya.dll");
+
+            // If we renamed Dalaya's DLL to dinput8_dalaya.dll, restore it
+            if (File.Exists(dalayaPath))
+            {
+                if (!File.Exists(dinput8Path))
+                {
+                    File.Move(dalayaPath, dinput8Path);
+                    FileLogger.Info("Cleanup: restored dinput8_dalaya.dll → dinput8.dll");
+                }
+                else
+                {
+                    // Both exist — delete our renamed copy, Dalaya's original is already back
+                    File.Delete(dalayaPath);
+                    FileLogger.Info("Cleanup: removed stale dinput8_dalaya.dll");
+                }
+            }
+            // If dinput8.dll in game dir is our old proxy (~141-148KB), remove it
+            // so the patcher can restore Dalaya's original
+            else if (File.Exists(dinput8Path))
+            {
+                var info = new FileInfo(dinput8Path);
+                if (info.Length < 200_000) // Ours is ~148KB, Dalaya's is ~1.3MB
+                {
+                    File.Delete(dinput8Path);
+                    FileLogger.Info($"Cleanup: removed legacy proxy dinput8.dll from game folder ({info.Length:N0} bytes)");
+                }
+            }
+
+            // Remove legacy dinput8.dll from app directory (no longer shipped)
+            var appDinput8 = Path.Combine(AppContext.BaseDirectory, "dinput8.dll");
+            if (File.Exists(appDinput8))
+            {
+                File.Delete(appDinput8);
+                FileLogger.Info("Cleanup: removed legacy dinput8.dll from app folder");
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Warn($"Cleanup: legacy proxy cleanup failed: {ex.Message}");
+        }
+    }
+
     private void CleanupHookInjection()
     {
         foreach (var pid in _injectedPids.ToArray())
-        {
             DllInjector.Eject(pid, "eqswitch-hook.dll");
-        }
+        foreach (var pid in _di8InjectedPids.ToArray())
+            DllInjector.Eject(pid, "eqswitch-di8.dll");
         _injectedPids.Clear();
+        _di8InjectedPids.Clear();
         _hookConfig?.Dispose();
         _hookConfig = null;
-
     }
 
     private void StopForegroundHook()
