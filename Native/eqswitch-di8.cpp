@@ -39,12 +39,13 @@ static bool g_hookInstalled = false;
 // ─── Logging ────────────────────────────────────────────────────
 
 static FILE *g_logFile = nullptr;
-static bool g_logInitAttempted = false;
+static volatile LONG g_logInitAttempted = 0;
 static char g_logPath[MAX_PATH] = {};
 
 static void EnsureLogOpen() {
-    if (g_logFile || g_logInitAttempted) return;
-    g_logInitAttempted = true;
+    if (g_logFile) return;
+    // Atomic CAS — only one thread opens the file
+    if (InterlockedCompareExchange(&g_logInitAttempted, 1, 0) != 0) return;
     if (g_logPath[0])
         g_logFile = fopen(g_logPath, "w");
 }
@@ -94,10 +95,11 @@ static DWORD WINAPI InitThread(LPVOID) {
     DI8Log("Init thread started — waiting for dinput8.dll");
 
     // Poll for Dalaya's dinput8.dll to be loaded by the Windows loader.
-    // Our thread starts before ResumeThread (process is suspended), so
-    // GetModuleHandle will block on the loader lock until all imports are
-    // processed. Once it returns non-NULL, dinput8.dll is loaded and we
-    // can hook DirectInput8Create before EQ's WinMain calls it.
+    // Our thread starts before ResumeThread (process is suspended).
+    // GetModuleHandle returns NULL while dinput8.dll isn't loaded yet, so
+    // we poll with a short sleep. Once the main thread is resumed and the
+    // loader processes imports, GetModuleHandle will succeed and we can
+    // hook DirectInput8Create before EQ's WinMain calls it.
     HMODULE hDinput8 = nullptr;
     const DWORD startTick = GetTickCount();
     const DWORD timeoutMs = 30000;

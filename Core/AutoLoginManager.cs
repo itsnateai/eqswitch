@@ -45,7 +45,7 @@ public class AutoLoginManager
     /// Callback invoked after process creation but before ResumeThread.
     /// Use for DLL injection into the suspended process.
     /// </summary>
-    public Func<SuspendedProcess, bool>? PreResumeCallback { get; set; }
+    public Action<SuspendedProcess>? PreResumeCallback { get; set; }
 
     public AutoLoginManager(AppConfig config, Action<AppConfig>? enforceOverrides = null)
     {
@@ -133,7 +133,10 @@ public class AutoLoginManager
                 try
                 {
                     var sp = new SuspendedProcess(pid, pi.hProcess, pi.hThread);
-                    PreResumeCallback?.Invoke(sp);
+                    if (PreResumeCallback != null)
+                        PreResumeCallback.Invoke(sp);
+                    else
+                        FileLogger.Warn("AutoLogin: PreResumeCallback not set — launching without DLL injection");
                 }
                 catch (Exception ex2)
                 {
@@ -141,7 +144,14 @@ public class AutoLoginManager
                 }
 
                 // Resume — Windows loader starts, imports processed, EQ runs
-                NativeMethods.ResumeThread(pi.hThread);
+                uint resumeResult = NativeMethods.ResumeThread(pi.hThread);
+                if (resumeResult == 0xFFFFFFFF)
+                {
+                    var err = Marshal.GetLastWin32Error();
+                    FileLogger.Error($"AutoLogin: ResumeThread failed (error {err}) — PID {pid} left suspended");
+                    StatusUpdate?.Invoke(this, "Error: failed to resume process");
+                    return;
+                }
                 FileLogger.Info($"AutoLogin: resumed PID {pid}");
             }
             finally

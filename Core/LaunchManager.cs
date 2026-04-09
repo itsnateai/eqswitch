@@ -45,7 +45,7 @@ public class LaunchManager : IDisposable
     /// Callback invoked after process creation but before ResumeThread.
     /// Use for DLL injection into the suspended process.
     /// </summary>
-    public Func<SuspendedProcess, bool>? PreResumeCallback { get; set; }
+    public Action<SuspendedProcess>? PreResumeCallback { get; set; }
 
     public LaunchManager(AppConfig config, AffinityManager affinityManager, Action<AppConfig>? enforceOverrides = null)
     {
@@ -252,7 +252,10 @@ public class LaunchManager : IDisposable
             var sp = new SuspendedProcess(pi.dwProcessId, pi.hProcess, pi.hThread);
             try
             {
-                PreResumeCallback?.Invoke(sp);
+                if (PreResumeCallback != null)
+                    PreResumeCallback.Invoke(sp);
+                else
+                    FileLogger.Warn("LaunchManager: PreResumeCallback not set — launching without DLL injection");
             }
             catch (Exception ex)
             {
@@ -261,7 +264,13 @@ public class LaunchManager : IDisposable
             }
 
             // Resume the main thread — Windows loader starts, imports are processed
-            NativeMethods.ResumeThread(pi.hThread);
+            uint resumeResult = NativeMethods.ResumeThread(pi.hThread);
+            if (resumeResult == 0xFFFFFFFF)
+            {
+                var err = Marshal.GetLastWin32Error();
+                FileLogger.Error($"LaunchManager: ResumeThread failed (error {err}) — PID {pi.dwProcessId} left suspended");
+                return -1;  // handles closed by finally block
+            }
             FileLogger.Info($"LaunchManager: resumed PID {pi.dwProcessId}");
         }
         finally
