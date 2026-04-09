@@ -1318,12 +1318,12 @@ public class SettingsForm : Form
         _nudLoginScreenDelay.Increment = 0.5m;
         DarkTheme.AddCardLabel(card, "s", 442, btnY + 3);
 
-        DarkTheme.AddCardHint(card, "DPAPI-encrypted passwords.", 10, 190);
-        DarkTheme.AddCardHint(card, "Delay = seconds before typing credentials.", 250, 190);
+        DarkTheme.AddCardHint(card, "DPAPI-encrypted passwords.", 10, 196);
+        DarkTheme.AddCardHint(card, "Delay = seconds before typing credentials.", 250, 196);
 
         // ─── Quick Login Slots ───────────────────────────────────────
-        y += 240;
-        var slotsCard = DarkTheme.MakeCard(page, "\u26A1", "Quick Login Slots", DarkTheme.CardGold, 10, y, 480, 100);
+        y += 222;
+        var slotsCard = DarkTheme.MakeCard(page, "\u26A1", "Quick Login Slots", DarkTheme.CardGold, 10, y, 480, 106);
         DarkTheme.AddCardLabel(slotsCard, "Slot 1:", 10, 30);
         _cboQuickLogin1 = DarkTheme.AddCardComboBox(slotsCard, 55, 27, 150, Array.Empty<string>());
         DarkTheme.AddCardLabel(slotsCard, "Slot 2:", 215, 30);
@@ -1344,11 +1344,11 @@ public class SettingsForm : Form
         _cboQuickLogin4.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
 
         // ─── Autologin Preferences ──────────────────────────────────
-        y += 110;
-        var prefsCard = DarkTheme.MakeCard(page, "\u2699", "Autologin Preferences", DarkTheme.CardCyan, 10, y, 480, 72);
+        y += 114;
+        var prefsCard = DarkTheme.MakeCard(page, "\u2699", "Autologin Preferences", DarkTheme.CardCyan, 10, y, 480, 78);
         _chkAutoEnterWorld = DarkTheme.AddCheckBox(prefsCard, "Auto Enter World", 10, 30);
         _chkAutoEnterWorld.Checked = _config.AutoEnterWorld;
-        DarkTheme.AddCardHint(prefsCard, "Enters world as last-loaded character. Uncheck to stop at character select.", 10, 48);
+        DarkTheme.AddCardHint(prefsCard, "Enters world as last-loaded character. Uncheck to stop at character select.", 10, 50);
 
         return page;
     }
@@ -1552,7 +1552,7 @@ public class SettingsForm : Form
         y += 148;
 
         // ─── Monitor card ─────────────────────────────────────────
-        var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 118);
+        var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 128);
         cy = 32;
 
         _chkVideoMultiMon = DarkTheme.AddCheckBox(cardMon, "Multi-Monitor Mode", L, cy);
@@ -1595,12 +1595,12 @@ public class SettingsForm : Form
         cardMon.Controls.Add(_cboVideoSecondaryMon);
         DarkTheme.WrapWithBorder(_cboVideoSecondaryMon);
 
-        cy += 28;
+        cy += 36;
         var btnIdentify = DarkTheme.AddCardButton(cardMon, "🔍 Identify", L, cy - 3, 90);
         btnIdentify.Click += (_, _) => ShowMonitorIdentifiers();
         DarkTheme.AddCardHint(cardMon, "Primary = active client. Secondary = background client (multimonitor mode).", 110, cy);
 
-        y += 125;
+        y += 136;
 
         // ─── Window Style card ───────────────────────────────────
         var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 175);
