@@ -619,6 +619,35 @@ public class AutoLoginManager
         }
 
         var dstPath = Path.Combine(_config.EQPath, "dinput8.dll");
+        var dalayaPath = Path.Combine(_config.EQPath, "dinput8_dalaya.dll");
+
+        // Chain-load setup: if dinput8.dll in the game dir is NOT our proxy
+        // (Dalaya's is ~1.3MB, ours is ~150KB), we need to set up the chain.
+        // This also handles patcher coexistence: after the Dalaya patcher runs,
+        // it overwrites our proxy with Dalaya's DLL (MD5 mismatch). We detect
+        // this and re-establish the chain by moving the fresh copy over.
+        if (File.Exists(dstPath))
+        {
+            var existingInfo = new FileInfo(dstPath);
+            var ourInfo = new FileInfo(srcPath);
+            bool existingIsDalaya = existingInfo.Length != ourInfo.Length;
+
+            if (existingIsDalaya)
+            {
+                try
+                {
+                    // Replace the dalaya backup with the fresh patcher copy
+                    File.Copy(dstPath, dalayaPath, overwrite: true);
+                    File.Delete(dstPath);
+                    FileLogger.Info($"AutoLogin: {(File.Exists(dalayaPath) ? "refreshed" : "created")} dinput8_dalaya.dll ({existingInfo.Length:N0} bytes)");
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Warn($"AutoLogin: couldn't set up chain-load: {ex.Message}");
+                    return;
+                }
+            }
+        }
 
         // Skip if already deployed and up to date
         if (File.Exists(dstPath))
