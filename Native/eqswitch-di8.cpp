@@ -33,6 +33,7 @@ typedef HRESULT(WINAPI *PFN_DirectInput8Create)(
 static PFN_DirectInput8Create g_trampolineCreate = nullptr;  // MinHook trampoline → Dalaya's original
 static HMODULE g_hModule = nullptr;
 static HANDLE g_initThread = nullptr;
+static HANDLE g_stopEvent = nullptr;   // signaled on DLL_PROCESS_DETACH to stop init thread cooperatively
 static volatile LONG g_initialized = 0;
 static bool g_hookInstalled = false;
 
@@ -113,7 +114,15 @@ static DWORD WINAPI InitThread(LPVOID) {
             InterlockedExchange(&g_initialized, 1);
             return 1;
         }
-        Sleep(10);
+
+        // Wait 10ms or until stop event is signaled (DLL_PROCESS_DETACH).
+        // This replaces Sleep(10) so the thread exits cooperatively on unload
+        // instead of continuing to run after the DLL is unmapped.
+        if (WaitForSingleObject(g_stopEvent, 10) == WAIT_OBJECT_0) {
+            DI8Log("Init thread: stop requested during poll, exiting cleanly");
+            InterlockedExchange(&g_initialized, 1);
+            return 1;
+        }
     }
 
     DI8Log("GetModuleHandle succeeded: dinput8.dll at 0x%p", hDinput8);
@@ -207,6 +216,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
             snprintf(g_logPath, MAX_PATH, "eqswitch-dinput8.log");
         }
 
+        // Create stop event BEFORE init thread — manual-reset, initially non-signaled.
+        // The init thread checks this during its poll loop so it can exit cooperatively
+        // on DLL_PROCESS_DETACH instead of continuing after the DLL is unmapped.
+        g_stopEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+
         // Spawn init thread — defers all work outside the loader lock.
         // CreateThread in DLL_PROCESS_ATTACH is safe; the new thread blocks
         // on the loader lock until DllMain returns.
@@ -217,11 +231,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
         // reserved != NULL → process exiting: OS reclaims everything
         // reserved == NULL → FreeLibrary: wait for init, then clean up
         if (reserved == nullptr) {
+            // Signal init thread to stop, then wait for it to exit
+            if (g_stopEvent) SetEvent(g_stopEvent);
             if (g_initThread) {
                 WaitForSingleObject(g_initThread, 3000);
                 CloseHandle(g_initThread);
                 g_initThread = nullptr;
             }
+            if (g_stopEvent) { CloseHandle(g_stopEvent); g_stopEvent = nullptr; }
             if (g_initialized)
                 Cleanup();
         }
