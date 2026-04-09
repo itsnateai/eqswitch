@@ -90,7 +90,7 @@ public class AutoLoginManager
 
         StatusUpdate?.Invoke(this, $"Launching {account.Name}...");
 
-        int pid;
+        int pid = -1;
         try
         {
             // Write eqclient.ini overrides before launch
@@ -124,6 +124,11 @@ public class AutoLoginManager
 
             pid = pi.dwProcessId;
 
+            // Register as login-active BEFORE resume so ProcessManager's ClientDiscovered
+            // handler sees IsLoginActive=true and defers window manipulation.
+            _activeLoginPids.TryAdd(pid, 0);
+            LoginStarting?.Invoke(this, pid);
+
             // Ensure handles are always closed, even if injection or resume throws
             try
             {
@@ -148,7 +153,9 @@ public class AutoLoginManager
                 if (resumeResult == 0xFFFFFFFF)
                 {
                     var err = Marshal.GetLastWin32Error();
-                    FileLogger.Error($"AutoLogin: ResumeThread failed (error {err}) — PID {pid} left suspended");
+                    FileLogger.Error($"AutoLogin: ResumeThread failed (error {err}) — terminating zombie PID {pid}");
+                    NativeMethods.TerminateProcess(pi.hProcess, 1);
+                    _activeLoginPids.TryRemove(pid, out _);
                     StatusUpdate?.Invoke(this, "Error: failed to resume process");
                     return;
                 }
@@ -163,13 +170,10 @@ public class AutoLoginManager
         catch (Exception ex)
         {
             FileLogger.Error("AutoLogin: launch failed", ex);
+            if (pid > 0) _activeLoginPids.TryRemove(pid, out _);
             StatusUpdate?.Invoke(this, $"Error: {ex.Message}");
             return;
         }
-
-        // Track PID so DLL injection is deferred until login completes
-        _activeLoginPids.TryAdd(pid, 0);
-        LoginStarting?.Invoke(this, pid);
 
         // Run the login sequence on a background thread — serialized via _loginGate
         // so only one login types credentials at a time (avoids timing issues under CPU load).

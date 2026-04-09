@@ -26,37 +26,38 @@ public static class UninstallHelper
     }
 
     /// <summary>
-    /// Restore dinput8.dll.old → dinput8.dll if backup exists, otherwise delete our deployed copy.
+    /// Clean up any legacy DLL artifacts from the game directory.
+    /// With suspended-process injection, we no longer deploy to the game folder —
+    /// but old installs may have left dinput8.dll.old or dinput8_dalaya.dll behind.
+    /// Never delete dinput8.dll itself — that's Dalaya's MQ2 core (server-validated).
     /// </summary>
     public static List<string> RestoreDinput8(string eqPath)
     {
         var actions = new List<string>();
-        var dllPath = Path.Combine(eqPath, "dinput8.dll");
-        var backupPath = dllPath + ".old";
-
-        if (!File.Exists(dllPath) && !File.Exists(backupPath))
-            return actions;
 
         try
         {
-            if (File.Exists(backupPath))
+            // Remove legacy .old backup if present (from pre-injection era)
+            var oldBackup = Path.Combine(eqPath, "dinput8.dll.old");
+            if (File.Exists(oldBackup))
             {
-                // Restore the original DLL that was backed up when we deployed ours
-                File.Copy(backupPath, dllPath, overwrite: true);
-                File.Delete(backupPath);
-                actions.Add($"Restored original dinput8.dll from backup in {eqPath}");
-                FileLogger.Info($"Uninstall: restored dinput8.dll from .old in {eqPath}");
+                File.Delete(oldBackup);
+                actions.Add("Removed legacy dinput8.dll.old from EQ folder");
+                FileLogger.Info($"Uninstall: deleted {oldBackup}");
             }
-            else if (File.Exists(dllPath))
+
+            // Remove chain-load renamed DLL if present (from chain-load era)
+            var dalayaRenamed = Path.Combine(eqPath, "dinput8_dalaya.dll");
+            if (File.Exists(dalayaRenamed))
             {
-                File.Delete(dllPath);
-                actions.Add($"Removed dinput8.dll from {eqPath}");
-                FileLogger.Info($"Uninstall: deleted dinput8.dll from {eqPath}");
+                File.Delete(dalayaRenamed);
+                actions.Add("Removed dinput8_dalaya.dll from EQ folder");
+                FileLogger.Info($"Uninstall: deleted {dalayaRenamed}");
             }
         }
         catch (Exception ex)
         {
-            var msg = $"Could not clean up dinput8.dll: {ex.Message}";
+            var msg = $"Could not clean up legacy DLL artifacts: {ex.Message}";
             actions.Add(msg);
             FileLogger.Warn($"Uninstall: {msg}");
         }
