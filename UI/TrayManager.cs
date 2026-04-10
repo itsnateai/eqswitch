@@ -809,15 +809,18 @@ public class TrayManager : IDisposable
                 loginMenu.DropDownItems.Add($"\uD83D\uDC64  {label}", null, (_, _) =>
                     _autoLoginManager.LoginAccount(account));
             }
-            var hasTeam1 = !string.IsNullOrEmpty(_config.Team1Account1) || !string.IsNullOrEmpty(_config.Team1Account2);
-            var hasTeam2 = !string.IsNullOrEmpty(_config.Team2Account1) || !string.IsNullOrEmpty(_config.Team2Account2);
-            if (hasTeam1 || hasTeam2)
+            var teams = new[]
+            {
+                (Has: !string.IsNullOrEmpty(_config.Team1Account1) || !string.IsNullOrEmpty(_config.Team1Account2), Label: "Auto-Login Team 1", Action: "LoginAll"),
+                (Has: !string.IsNullOrEmpty(_config.Team2Account1) || !string.IsNullOrEmpty(_config.Team2Account2), Label: "Auto-Login Team 2", Action: "LoginAll2"),
+                (Has: !string.IsNullOrEmpty(_config.Team3Account1) || !string.IsNullOrEmpty(_config.Team3Account2), Label: "Auto-Login Team 3", Action: "LoginAll3"),
+                (Has: !string.IsNullOrEmpty(_config.Team4Account1) || !string.IsNullOrEmpty(_config.Team4Account2), Label: "Auto-Login Team 4", Action: "LoginAll4"),
+            };
+            if (teams.Any(t => t.Has))
             {
                 loginMenu.DropDownItems.Add(new ToolStripSeparator());
-                if (hasTeam1)
-                    loginMenu.DropDownItems.Add("\uD83D\uDE80  Auto-Login Team 1", null, (_, _) => ExecuteTrayAction("LoginAll"));
-                if (hasTeam2)
-                    loginMenu.DropDownItems.Add("\uD83D\uDE80  Auto-Login Team 2", null, (_, _) => ExecuteTrayAction("LoginAll2"));
+                foreach (var t in teams.Where(t => t.Has))
+                    loginMenu.DropDownItems.Add($"\uD83D\uDE80  {t.Label}", null, (_, _) => ExecuteTrayAction(t.Action));
             }
             loginMenu.DropDownItems.Add(new ToolStripSeparator());
         }
@@ -1097,6 +1100,8 @@ public class TrayManager : IDisposable
         "LaunchAll" => "Launch two",
         "LoginAll" => "Auto-login Team 1",
         "LoginAll2" => "Auto-login Team 2",
+        "LoginAll3" => "Auto-login Team 3",
+        "LoginAll4" => "Auto-login Team 4",
         "AutoLogin1" => "Quick Login 1",
         "AutoLogin2" => "Quick Login 2",
         "AutoLogin3" => "Quick Login 3",
@@ -1248,6 +1253,16 @@ public class TrayManager : IDisposable
                     new[] { (_config.Team2Account1, "Team 2 Slot 1"), (_config.Team2Account2, "Team 2 Slot 2") },
                     "Team 2");
                 break;
+            case "LoginAll3":
+                FireTeamLogin(
+                    new[] { (_config.Team3Account1, "Team 3 Slot 1"), (_config.Team3Account2, "Team 3 Slot 2") },
+                    "Team 3");
+                break;
+            case "LoginAll4":
+                FireTeamLogin(
+                    new[] { (_config.Team4Account1, "Team 4 Slot 1"), (_config.Team4Account2, "Team 4 Slot 2") },
+                    "Team 4");
+                break;
             case "Settings":
                 ShowSettings();
                 break;
@@ -1375,6 +1390,10 @@ public class TrayManager : IDisposable
         _config.Team1Account2 = newConfig.Team1Account2;
         _config.Team2Account1 = newConfig.Team2Account1;
         _config.Team2Account2 = newConfig.Team2Account2;
+        _config.Team3Account1 = newConfig.Team3Account1;
+        _config.Team3Account2 = newConfig.Team3Account2;
+        _config.Team4Account1 = newConfig.Team4Account1;
+        _config.Team4Account2 = newConfig.Team4Account2;
         _config.AutoEnterWorld = newConfig.AutoEnterWorld;
         _config.LoginScreenDelayMs = newConfig.LoginScreenDelayMs;
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
