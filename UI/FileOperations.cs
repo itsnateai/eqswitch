@@ -178,9 +178,13 @@ public static class FileOperations
     }
 
     /// <summary>
-    /// Trim EQ log files over 10MB by keeping only the last 10MB of each.
+    /// Trim EQ log files over the threshold. Archived data goes to Logs/archive/.
+    /// Stream-based: never loads the full file into memory.
     /// </summary>
     public static void TrimLogFiles(AppConfig config, Action<string> showBalloon)
+        => TrimLogFiles(config, config.LogTrimThresholdMB, showBalloon);
+
+    public static void TrimLogFiles(AppConfig config, int thresholdMB, Action<string> showBalloon)
     {
         var logsDir = Path.Combine(config.EQPath, "Logs");
         if (!Directory.Exists(logsDir))
@@ -190,59 +194,88 @@ public static class FileOperations
         }
 
         var logFiles = Directory.GetFiles(logsDir, "eqlog_*.txt");
-        const long maxSize = 10 * 1024 * 1024; // 10MB
-        int trimmed = 0;
-        long totalFreed = 0;
+        long maxSize = (long)thresholdMB * 1024 * 1024;
+        var archiveDir = Path.Combine(logsDir, "archive");
+        int thresholdCopy = thresholdMB;
 
-        foreach (var logFile in logFiles)
+        // Run on background thread so large files don't freeze the UI
+        showBalloon("Trimming log files...");
+        Task.Run(() =>
         {
-            try
+            int trimmed = 0;
+            long totalFreed = 0;
+
+            foreach (var logFile in logFiles)
             {
-                var fi = new FileInfo(logFile);
-                if (fi.Length <= maxSize) continue;
-
-                long originalSize = fi.Length;
-                long keepOffset = fi.Length - maxSize;
-
-                // Read the last 10MB
-                byte[] tail;
-                using (var fs = new FileStream(logFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                try
                 {
-                    fs.Seek(keepOffset, SeekOrigin.Begin);
-                    tail = new byte[fi.Length - keepOffset];
-                    int read = 0;
-                    while (read < tail.Length)
+                    using var fs = new FileStream(logFile, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+                    long fileLen = fs.Length;
+                    if (fileLen <= maxSize) continue;
+
+                    long splitAt = fileLen - maxSize;
+
+                    // Scan forward from splitAt to find a clean line boundary
+                    fs.Seek(splitAt, SeekOrigin.Begin);
+                    int b;
+                    while ((b = fs.ReadByte()) != -1)
                     {
-                        int n = fs.Read(tail, read, tail.Length - read);
-                        if (n == 0) break;
-                        read += n;
+                        splitAt++;
+                        if (b == '\n') break;
                     }
+
+                    // Archive the old portion (stream-copy in 64KB chunks)
+                    Directory.CreateDirectory(archiveDir);
+                    var baseName = Path.GetFileNameWithoutExtension(logFile);
+                    var timestamp = DateTime.Now.ToString("yyyy-MM-dd_HHmmss_fff");
+                    var archivePath = Path.Combine(archiveDir, $"{baseName}_{timestamp}.txt");
+
+                    fs.Seek(0, SeekOrigin.Begin);
+                    using (var archive = new FileStream(archivePath, FileMode.Create, FileAccess.Write))
+                    {
+                        var buf = new byte[65536];
+                        long remaining = splitAt;
+                        while (remaining > 0)
+                        {
+                            int toRead = (int)Math.Min(buf.Length, remaining);
+                            int n = fs.Read(buf, 0, toRead);
+                            if (n == 0) break;
+                            archive.Write(buf, 0, n);
+                            remaining -= n;
+                        }
+                    }
+
+                    // Read the tail we're keeping into a buffer, then overwrite the file
+                    fs.Seek(splitAt, SeekOrigin.Begin);
+                    long tailLen = fileLen - splitAt;
+                    using var tailStream = new MemoryStream((int)Math.Min(tailLen, int.MaxValue));
+                    fs.CopyTo(tailStream);
+
+                    fs.Seek(0, SeekOrigin.Begin);
+                    fs.SetLength(tailStream.Length);
+                    tailStream.Seek(0, SeekOrigin.Begin);
+                    tailStream.CopyTo(fs);
+
+                    totalFreed += splitAt;
+                    trimmed++;
+                    FileLogger.Info($"TrimLogFiles: {Path.GetFileName(logFile)} trimmed {fileLen / 1024 / 1024}MB → {tailStream.Length / 1024 / 1024}MB (archived {splitAt / 1024 / 1024}MB)");
                 }
-
-                // Find the first newline to avoid a partial line at the start
-                int start = Array.IndexOf(tail, (byte)'\n');
-                if (start < 0) start = 0; else start++;
-
-                // Write back
-                using (var fs = new FileStream(logFile, FileMode.Create, FileAccess.Write))
+                catch (Exception ex)
                 {
-                    fs.Write(tail, start, tail.Length - start);
+                    FileLogger.Warn($"TrimLogFiles: failed to trim {Path.GetFileName(logFile)} — {ex.Message}");
                 }
-
-                totalFreed += originalSize - (tail.Length - start);
-                trimmed++;
-                FileLogger.Info($"TrimLogFiles: {Path.GetFileName(logFile)} trimmed from {originalSize / 1024 / 1024}MB to {(tail.Length - start) / 1024 / 1024}MB");
             }
-            catch (Exception ex)
-            {
-                FileLogger.Warn($"TrimLogFiles: failed to trim {Path.GetFileName(logFile)} — {ex.Message}");
-            }
-        }
 
-        if (trimmed == 0)
-            showBalloon($"All {logFiles.Length} log files are under 10MB — nothing to trim");
-        else
-            showBalloon($"Trimmed {trimmed} log file(s), freed {totalFreed / 1024 / 1024}MB");
+            // Marshal result back to UI thread
+            string msg = trimmed == 0
+                ? $"All {logFiles.Length} log file(s) are under {thresholdCopy}MB — nothing to trim"
+                : $"Trimmed {trimmed} log file(s), freed {totalFreed / 1024 / 1024}MB\nArchived to Logs/archive/";
+
+            if (System.Windows.Forms.Application.OpenForms.Count > 0)
+                System.Windows.Forms.Application.OpenForms[0]!.BeginInvoke(() => showBalloon(msg));
+            else
+                FileLogger.Info($"TrimLogFiles: {msg}");
+        });
     }
 
     public static void OpenWithDefaultEditor(string path)
