@@ -1288,7 +1288,9 @@ public class SettingsForm : Form
             if (_dgvAccounts.SelectedRows.Count > 0)
             {
                 int idx = _dgvAccounts.SelectedRows[0].Index;
+                var removed = _pendingAccounts[idx].Username;
                 _pendingAccounts.RemoveAt(idx);
+                ClearStaleTeamSlots(removed);
                 RefreshAccountsGrid();
             }
         };
@@ -1485,11 +1487,17 @@ public class SettingsForm : Form
             }
 
             var account = existing ?? new LoginAccount();
+            var oldUsername = existing?.Username ?? "";
+            var newUsername = txtUsername.Text.Trim();
             account.Name = txtCharName.Text.Trim(); // sync Name from Character for backwards compat
-            account.Username = txtUsername.Text.Trim();
+            account.Username = newUsername;
             account.Server = txtServer.Text.Trim();
             account.CharacterName = txtCharName.Text.Trim();
             account.UseLoginFlag = true;
+
+            // Update team references if username changed
+            if (existing != null && oldUsername != newUsername)
+                UpdateTeamSlotUsername(oldUsername, newUsername);
 
             // Only update password if user typed something new
             if (!string.IsNullOrEmpty(txtPassword.Text))
@@ -1541,6 +1549,26 @@ public class SettingsForm : Form
             _pendingTeam2B = dlg.Team2Account2;
             _lblTeamSummary.Text = BuildTeamSummary();
         }
+    }
+
+    private void ClearStaleTeamSlots(string username)
+    {
+        bool changed = false;
+        if (_pendingTeam1A == username) { _pendingTeam1A = ""; changed = true; }
+        if (_pendingTeam1B == username) { _pendingTeam1B = ""; changed = true; }
+        if (_pendingTeam2A == username) { _pendingTeam2A = ""; changed = true; }
+        if (_pendingTeam2B == username) { _pendingTeam2B = ""; changed = true; }
+        if (changed) _lblTeamSummary.Text = BuildTeamSummary();
+    }
+
+    private void UpdateTeamSlotUsername(string oldUsername, string newUsername)
+    {
+        bool changed = false;
+        if (_pendingTeam1A == oldUsername) { _pendingTeam1A = newUsername; changed = true; }
+        if (_pendingTeam1B == oldUsername) { _pendingTeam1B = newUsername; changed = true; }
+        if (_pendingTeam2A == oldUsername) { _pendingTeam2A = newUsername; changed = true; }
+        if (_pendingTeam2B == oldUsername) { _pendingTeam2B = newUsername; changed = true; }
+        if (changed) _lblTeamSummary.Text = BuildTeamSummary();
     }
 
     // ─── Video Tab (eqclient.ini) ───────────────────────────────────
