@@ -194,6 +194,90 @@ static bool ValidateCharArrayOffset(const uint8_t *pEverQuest) {
     return false;
 }
 
+// ─── CListWnd cache ───────────────────────────────────────────
+// Cached pointer to the "Character_List" CListWnd in the char select screen.
+// Discovered once per char-select entry via FindCharacterListWnd().
+
+static void* g_pCharListWnd = nullptr;  // Cached CListWnd* for "Character_List"
+static bool g_charListSearched = false;
+
+// ─── FindCharacterListWnd ─────────────────────────────────────
+// Brute-force search through CXWndManager's window array to find the
+// "Character_List" CListWnd. The window array offset in CXWndManager is
+// version-dependent, so we try several common ROF2 x86 candidates.
+
+static void FindCharacterListWnd() {
+    g_charListSearched = true;
+    g_pCharListWnd = nullptr;
+
+    if (!g_fnGetChildItem || !g_ppWndMgr) {
+        DI8Log("mq2_bridge: FindCharacterListWnd — missing GetChildItem or ppWndMgr");
+        return;
+    }
+
+    void *pWndMgr = nullptr;
+    __try {
+        pWndMgr = *g_ppWndMgr;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: SEH reading ppWndMgr");
+        return;
+    }
+
+    if (!pWndMgr) {
+        DI8Log("mq2_bridge: FindCharacterListWnd — CXWndManager is null");
+        return;
+    }
+
+    // Common ROF2 x86 offsets for the ArrayClass<CXWnd*> inside CXWndManager
+    static const uint32_t candidateOffsets[] = { 0x58, 0x5C, 0x60, 0x54, 0x64, 0x50, 0x68 };
+    const int numCandidates = sizeof(candidateOffsets) / sizeof(candidateOffsets[0]);
+
+    const uint8_t *pMgr = (const uint8_t *)pWndMgr;
+
+    for (int c = 0; c < numCandidates; c++) {
+        uint32_t off = candidateOffsets[c];
+
+        __try {
+            // Read ArrayClass header at this offset
+            const ArrayClassHeader *arr = (const ArrayClassHeader *)(pMgr + off);
+
+            // Sanity check: total EQ windows should be 10-500
+            if (arr->Count < 10 || arr->Count > 500)
+                continue;
+            if (!arr->Data)
+                continue;
+
+            // Iterate all windows in this array
+            void **wndArray = (void **)arr->Data;
+
+            for (int i = 0; i < arr->Count; i++) {
+                void *wnd = wndArray[i];
+                if (!wnd) continue;
+
+                __try {
+                    void *child = g_fnGetChildItem(wnd, "Character_List");
+                    if (child) {
+                        g_pCharListWnd = child;
+                        DI8Log("mq2_bridge: FindCharacterListWnd — FOUND at offset 0x%X, window index %d",
+                               off, i);
+                        return;
+                    }
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER) {
+                    // Bad window pointer — skip silently
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            // Bad offset — try next candidate
+        }
+    }
+
+    DI8Log("mq2_bridge: FindCharacterListWnd — Character_List NOT FOUND (tried %d offsets)",
+           numCandidates);
+}
+
 // ─── MQ2Bridge::Init ───────────────────────────────────────────
 
 bool MQ2Bridge::Init() {
@@ -265,6 +349,17 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     }
 
     shm->gameState = gameState;
+
+    // Reset cached window pointers on game state transitions
+    static int lastGameState = -1;
+    if (gameState != lastGameState) {
+        if (lastGameState != -1) {
+            DI8Log("mq2_bridge: game state %d → %d — clearing window cache", lastGameState, gameState);
+        }
+        g_pCharListWnd = nullptr;
+        g_charListSearched = false;
+        lastGameState = gameState;
+    }
 
     // Not at character select? Clear char data and return.
     if (gameState != 1) {
@@ -367,12 +462,26 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                requestedIdx, ackSeq, reqSeq);
 
         if (requestedIdx >= 0 && requestedIdx < shm->charCount) {
-            // TODO: CListWnd lookup needed (Task 3)
-            // Need to find the CCharacterListWnd instance via ppWndMgr/GetChildItem,
-            // then call SetCurSel on the "Character_List" CListWnd child.
-            DI8Log("mq2_bridge: selection stub — CListWnd lookup needed (Task 3). "
-                   "Would select index %d (\"%s\")",
-                   requestedIdx, (const char *)shm->names[requestedIdx]);
+            // Find the Character_List CListWnd if we haven't yet
+            if (!g_charListSearched) {
+                FindCharacterListWnd();
+            }
+
+            if (g_pCharListWnd && g_fnSetCurSel) {
+                __try {
+                    g_fnSetCurSel(g_pCharListWnd, requestedIdx);
+                    shm->selectedIndex = requestedIdx;
+                    DI8Log("mq2_bridge: selected character index %d (\"%s\")",
+                           requestedIdx, (const char *)shm->names[requestedIdx]);
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER) {
+                    DI8Log("mq2_bridge: SEH in SetCurSel(%d) — invalidating cached pointer", requestedIdx);
+                    g_pCharListWnd = nullptr;
+                    g_charListSearched = false;
+                }
+            } else {
+                DI8Log("mq2_bridge: SetCurSel unavailable — Character_List not found or SetCurSel not exported");
+            }
         } else {
             DI8Log("mq2_bridge: selection request index %d out of range (charCount=%d)",
                    requestedIdx, (int)shm->charCount);
@@ -399,4 +508,7 @@ void MQ2Bridge::Shutdown() {
 
     g_offsetValidated = false;
     g_validatedOffset = 0;
+
+    g_pCharListWnd = nullptr;
+    g_charListSearched = false;
 }
