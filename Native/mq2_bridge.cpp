@@ -1,18 +1,18 @@
-// mq2_bridge.cpp — MQ2 bridge for character select via Dalaya's dinput8.dll exports
+// mq2_bridge.cpp -- MQ2 bridge for character select + in-process login
 //
-// Resolves MQ2 symbols exported by Dalaya's custom dinput8.dll (2,966 exports),
-// reads the character list from CEverQuest::charSelectPlayerArray, and handles
-// selection requests from C# via the CharSelectShm shared memory.
+// Resolves MQ2 symbols exported by Dalaya's dinput8.dll (2,966 exports),
+// reads the character list, handles character selection, and provides
+// in-process UI manipulation for login (SetWindowText, WndNotification).
 //
-// All memory access is wrapped in SEH (__try/__except) because the struct offsets
-// are from MQ2's Live 64-bit build and may differ on Dalaya's ROF2 x86.
-// ValidateCharArrayOffset scans +-0x200 bytes if the expected offset fails.
+// Two-tier resolution: Dalaya exports first, pattern scan fallback.
+// All memory access is wrapped in SEH (__try/__except).
 
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #include <stdint.h>
 #include <string.h>
 #include "mq2_bridge.h"
+#include "login_shm.h"
 
 // ─── Forward declarations ──────────────────────────────────────
 
@@ -21,7 +21,6 @@ void DI8Log(const char *fmt, ...);
 // ─── MQ2 Export Types ──────────────────────────────────────────
 
 // __thiscall on x86: 'this' in ECX, args on stack.
-// MSVC uses __thiscall natively; we declare as __thiscall member-call pointers.
 
 // void* CListWnd::GetItemText(CXStr* out, int row, int col)
 typedef void *(__thiscall *FN_GetItemText)(void *thisPtr, void *outCXStr, int row, int col);
@@ -35,20 +34,32 @@ typedef int (__thiscall *FN_GetCurSel)(void *thisPtr);
 // CXWnd* CSidlScreenWnd::GetChildItem(char* name)
 typedef void *(__thiscall *FN_GetChildItem)(void *thisPtr, const char *name);
 
+// void CXWnd::SetWindowText(CXStr& text) -- sets text on edit fields
+// On ROF2 x86, CXStr can be passed as const char* for simple strings
+typedef void (__thiscall *FN_SetWindowText)(void *thisPtr, const char *text);
+
+// CXStr CXWnd::GetWindowText() -- reads window text
+typedef void *(__thiscall *FN_GetWindowText)(void *thisPtr, void *outCXStr);
+
+// void CXWnd::WndNotification(CXWnd* sender, uint32_t msg, void* data)
+// Used as: SendWndNotification(button, button, XWM_LCLICK)
+typedef void (__thiscall *FN_WndNotification)(void *thisPtr, void *sender, uint32_t msg, void *data);
+
 // ─── Static globals ────────────────────────────────────────────
 
-static HMODULE        g_hMQ2            = nullptr;  // Dalaya's dinput8.dll handle
-static volatile int  *g_pGameState      = nullptr;   // gGameState export
-static void         **g_ppEverQuest     = nullptr;   // ppEverQuest export
-static void         **g_ppWndMgr        = nullptr;   // ppWndMgr export
-static FN_GetItemText g_fnGetItemText   = nullptr;
-static FN_SetCurSel   g_fnSetCurSel     = nullptr;
-static FN_GetCurSel   g_fnGetCurSel     = nullptr;
-static FN_GetChildItem g_fnGetChildItem = nullptr;
+static HMODULE        g_hMQ2            = nullptr;
+static volatile int  *g_pGameState      = nullptr;
+static void         **g_ppEverQuest     = nullptr;
+static void         **g_ppWndMgr        = nullptr;
+static FN_GetItemText   g_fnGetItemText   = nullptr;
+static FN_SetCurSel     g_fnSetCurSel     = nullptr;
+static FN_GetCurSel     g_fnGetCurSel     = nullptr;
+static FN_GetChildItem  g_fnGetChildItem  = nullptr;
+static FN_SetWindowText g_fnSetWindowText = nullptr;
+static FN_GetWindowText g_fnGetWindowText = nullptr;
+static FN_WndNotification g_fnWndNotification = nullptr;
 
 // ─── CXStr struct ──────────────────────────────────────────────
-// MQ2's CXStr is a ref-counted string. GetItemText returns a pointer to one.
-// We only need to read the Ptr field, then copy the C-string out.
 
 struct CXStr {
     char    *Ptr;
@@ -58,23 +69,19 @@ struct CXStr {
 };
 
 // ─── CEverQuest offset constants ───────────────────────────────
-// From MQ2 source (Live 64-bit). May differ on Dalaya's ROF2 x86 build.
-// ValidateCharArrayOffset will scan +-0x200 if these are wrong.
 
-static const uint32_t OFFSET_CHARSELECT_ARRAY = 0x18EC0;  // charSelectPlayerArray in CEverQuest
-static const uint32_t CSI_SIZE       = 0x170;  // CharSelectInfo struct size
-static const uint32_t CSI_NAME_OFF   = 0x00;   // char Name[64] at start
-static const uint32_t CSI_CLASS_OFF  = 0x40;   // int Class
-static const uint32_t CSI_LEVEL_OFF  = 0x48;   // byte/int Level
+static const uint32_t OFFSET_CHARSELECT_ARRAY = 0x18EC0;
+static const uint32_t CSI_SIZE       = 0x170;
+static const uint32_t CSI_NAME_OFF   = 0x00;
+static const uint32_t CSI_CLASS_OFF  = 0x40;
+static const uint32_t CSI_LEVEL_OFF  = 0x48;
 
 // ─── Offset validation state ───────────────────────────────────
 
 static bool     g_offsetValidated   = false;
-static uint32_t g_validatedOffset   = 0;  // Actual working offset (may differ from constant)
+static uint32_t g_validatedOffset   = 0;
 
 // ─── ReadListItemText helper ───────────────────────────────────
-// Calls g_fnGetItemText with a stack-allocated CXStr, copies result to buffer.
-// Returns true if text was read successfully.
 
 static bool ReadListItemText(void *listWnd, int row, int col, char *outBuf, int bufSize) {
     if (!g_fnGetItemText || !listWnd || bufSize <= 0) return false;
@@ -100,54 +107,35 @@ static bool ReadListItemText(void *listWnd, int row, int col, char *outBuf, int 
 }
 
 // ─── ArrayClass header ────────────────────────────────────────
-// MQ2's ArrayClass<T> has: T* Data; int Count; int Alloc;
-// We only need Data and Count.
 
 struct ArrayClassHeader {
-    uint8_t *Data;    // Pointer to array of CharSelectInfo structs
-    int      Count;   // Number of entries
-    int      Alloc;   // Allocated capacity (unused by us)
+    uint8_t *Data;
+    int      Count;
+    int      Alloc;
 };
 
 // ─── ValidateCharArrayOffset ───────────────────────────────────
-// SEH-wrapped validation: checks that the offset points to a plausible
-// charSelectPlayerArray. Criteria:
-//   - Count is 1-8 (EQ supports max 8 chars per server)
-//   - Data pointer is non-null and readable
-//   - First character name is printable ASCII with null termination
-//
-// If the expected offset fails, scans +-0x200 bytes in 4-byte steps.
 
 static bool IsValidCharArray(const uint8_t *pEverQuest, uint32_t offset) {
     __try {
         const ArrayClassHeader *arr = (const ArrayClassHeader *)(pEverQuest + offset);
 
-        // Count must be 1-8
         if (arr->Count < 1 || arr->Count > CHARSEL_MAX_CHARS)
             return false;
-
-        // Data must be non-null
         if (!arr->Data)
             return false;
 
-        // First name must be printable ASCII with null termination within 64 bytes
         const char *name = (const char *)(arr->Data + CSI_NAME_OFF);
-
-        // Check first char is printable letter (names start with A-Z)
         if (name[0] < 0x20 || name[0] > 0x7E)
             return false;
 
-        // Find null terminator within 64 bytes
         bool foundNull = false;
         for (int i = 0; i < 64; i++) {
             if (name[i] == '\0') { foundNull = true; break; }
-            // All chars must be printable ASCII
             if (name[i] < 0x20 || name[i] > 0x7E)
                 return false;
         }
         if (!foundNull) return false;
-
-        // Name must be at least 2 chars (EQ minimum)
         if (name[1] == '\0') return false;
 
         return true;
@@ -160,7 +148,6 @@ static bool IsValidCharArray(const uint8_t *pEverQuest, uint32_t offset) {
 static bool ValidateCharArrayOffset(const uint8_t *pEverQuest) {
     if (g_offsetValidated) return true;
 
-    // Try the expected offset first
     if (IsValidCharArray(pEverQuest, OFFSET_CHARSELECT_ARRAY)) {
         g_validatedOffset = OFFSET_CHARSELECT_ARRAY;
         g_offsetValidated = true;
@@ -168,19 +155,15 @@ static bool ValidateCharArrayOffset(const uint8_t *pEverQuest) {
         return true;
     }
 
-    DI8Log("mq2_bridge: expected offset 0x%X failed — scanning +-0x200", OFFSET_CHARSELECT_ARRAY);
+    DI8Log("mq2_bridge: expected offset 0x%X failed -- scanning +-0x200", OFFSET_CHARSELECT_ARRAY);
 
-    // Scan +-0x200 bytes in 4-byte aligned steps
     const uint32_t scanRange = 0x200;
     uint32_t baseOffset = OFFSET_CHARSELECT_ARRAY;
-
-    // Avoid underflow
     uint32_t startOffset = (baseOffset > scanRange) ? (baseOffset - scanRange) : 0;
     uint32_t endOffset = baseOffset + scanRange;
 
     for (uint32_t off = startOffset; off <= endOffset; off += 4) {
-        if (off == baseOffset) continue;  // Already tried
-
+        if (off == baseOffset) continue;
         if (IsValidCharArray(pEverQuest, off)) {
             g_validatedOffset = off;
             g_offsetValidated = true;
@@ -190,14 +173,11 @@ static bool ValidateCharArrayOffset(const uint8_t *pEverQuest) {
         }
     }
 
-    DI8Log("mq2_bridge: charSelectPlayerArray NOT FOUND in scan range — offsets may be wrong for this build");
+    DI8Log("mq2_bridge: charSelectPlayerArray NOT FOUND in scan range");
     return false;
 }
 
 // ─── Pointer validation ───────────────────────────────────────
-// GetChildItem is a CSidlScreenWnd method — calling it on a plain CXWnd
-// dispatches through the wrong vtable. Validate that the pointer and its
-// vtable are readable committed memory before calling.
 
 static bool IsReadablePtr(const void *ptr, size_t size) {
     if (!ptr) return false;
@@ -208,111 +188,165 @@ static bool IsReadablePtr(const void *ptr, size_t size) {
     return true;
 }
 
-// ─── CListWnd cache ───────────────────────────────────────────
-// Cached pointer to the "Character_List" CListWnd in the char select screen.
-// Discovered once per char-select entry via FindCharacterListWnd().
+// ─── WndMgr window iteration ─────────────────────────────────
+// Common ROF2 x86 offsets for ArrayClass<CXWnd*> inside CXWndManager
 
-static void* g_pCharListWnd = nullptr;  // Cached CListWnd* for "Character_List"
-static int g_charListRetryCount = 0;          // Retry counter (0 = not searched yet)
-static const int CHARLIST_MAX_RETRIES = 5;    // Max search attempts before giving up
+static const uint32_t g_wndMgrOffsets[] = { 0x58, 0x5C, 0x60, 0x54, 0x64, 0x50, 0x68 };
+static const int g_numWndMgrOffsets = sizeof(g_wndMgrOffsets) / sizeof(g_wndMgrOffsets[0]);
 
-// ─── FindCharacterListWnd ─────────────────────────────────────
-// Brute-force search through CXWndManager's window array to find the
-// "Character_List" CListWnd. The window array offset in CXWndManager is
-// version-dependent, so we try several common ROF2 x86 candidates.
+// Cached working offset for WndMgr window array
+static uint32_t g_wndMgrValidOffset = 0;
+static bool g_wndMgrOffsetFound = false;
 
-static void FindCharacterListWnd() {
-    g_charListRetryCount++;
-    g_pCharListWnd = nullptr;
+// Iterate all windows in WndMgr and call a callback.
+// Returns true if iteration succeeded.
+typedef bool (*WndIterCallback)(void *pWnd, void *context);
 
-    if (!g_fnGetChildItem || !g_ppWndMgr) {
-        DI8Log("mq2_bridge: FindCharacterListWnd — missing GetChildItem or ppWndMgr (attempt %d/%d)",
-               g_charListRetryCount, CHARLIST_MAX_RETRIES);
-        return;
-    }
+static bool IterateAllWindows(WndIterCallback callback, void *context) {
+    if (!g_ppWndMgr) return false;
 
     void *pWndMgr = nullptr;
-    __try {
-        pWndMgr = *g_ppWndMgr;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        DI8Log("mq2_bridge: SEH reading ppWndMgr");
-        return;
-    }
-
-    if (!pWndMgr) {
-        DI8Log("mq2_bridge: FindCharacterListWnd — CXWndManager is null");
-        return;
-    }
-
-    // Common ROF2 x86 offsets for the ArrayClass<CXWnd*> inside CXWndManager
-    static const uint32_t candidateOffsets[] = { 0x58, 0x5C, 0x60, 0x54, 0x64, 0x50, 0x68 };
-    const int numCandidates = sizeof(candidateOffsets) / sizeof(candidateOffsets[0]);
+    __try { pWndMgr = *g_ppWndMgr; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    if (!pWndMgr) return false;
 
     const uint8_t *pMgr = (const uint8_t *)pWndMgr;
 
-    for (int c = 0; c < numCandidates; c++) {
-        uint32_t off = candidateOffsets[c];
-
+    // If we found a working offset before, try it first
+    if (g_wndMgrOffsetFound) {
         __try {
-            // Read ArrayClass header at this offset
-            const ArrayClassHeader *arr = (const ArrayClassHeader *)(pMgr + off);
-
-            // Sanity check: total EQ windows should be 10-500
-            if (arr->Count < 10 || arr->Count > 500)
-                continue;
-            if (!arr->Data)
-                continue;
-
-            // Iterate all windows in this array
-            void **wndArray = (void **)arr->Data;
-
-            for (int i = 0; i < arr->Count; i++) {
-                void *wnd = wndArray[i];
-                if (!wnd) continue;
-
-                // Validate pointer and vtable before calling CSidlScreenWnd::GetChildItem
-                // on what might be a plain CXWnd (wrong vtable → silent corruption)
-                if (!IsReadablePtr(wnd, sizeof(void *))) continue;
-                void *vtable = *(void **)wnd;
-                if (!IsReadablePtr(vtable, sizeof(void *))) continue;
-
-                __try {
-                    void *child = g_fnGetChildItem(wnd, "Character_List");
-                    if (child) {
-                        g_pCharListWnd = child;
-                        DI8Log("mq2_bridge: FindCharacterListWnd — FOUND at offset 0x%X, window index %d",
-                               off, i);
-                        return;
-                    }
+            const ArrayClassHeader *arr = (const ArrayClassHeader *)(pMgr + g_wndMgrValidOffset);
+            if (arr->Count >= 10 && arr->Count <= 500 && arr->Data) {
+                void **wndArray = (void **)arr->Data;
+                for (int i = 0; i < arr->Count; i++) {
+                    if (!wndArray[i]) continue;
+                    if (!IsReadablePtr(wndArray[i], sizeof(void *))) continue;
+                    void *vtable = *(void **)wndArray[i];
+                    if (!IsReadablePtr(vtable, sizeof(void *))) continue;
+                    if (callback(wndArray[i], context)) return true;
                 }
-                __except (EXCEPTION_EXECUTE_HANDLER) {
-                    // Bad window pointer — skip silently
-                }
+                return false; // iterated but callback didn't stop early
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
-            // Bad offset — try next candidate
+            g_wndMgrOffsetFound = false;
         }
     }
 
-    DI8Log("mq2_bridge: FindCharacterListWnd — Character_List NOT FOUND (tried %d offsets, attempt %d/%d)",
-           numCandidates, g_charListRetryCount, CHARLIST_MAX_RETRIES);
+    // Scan all candidate offsets
+    for (int c = 0; c < g_numWndMgrOffsets; c++) {
+        uint32_t off = g_wndMgrOffsets[c];
+        __try {
+            const ArrayClassHeader *arr = (const ArrayClassHeader *)(pMgr + off);
+            if (arr->Count < 10 || arr->Count > 500) continue;
+            if (!arr->Data) continue;
+
+            void **wndArray = (void **)arr->Data;
+            bool found = false;
+
+            for (int i = 0; i < arr->Count; i++) {
+                if (!wndArray[i]) continue;
+                if (!IsReadablePtr(wndArray[i], sizeof(void *))) continue;
+                void *vtable = *(void **)wndArray[i];
+                if (!IsReadablePtr(vtable, sizeof(void *))) continue;
+                if (callback(wndArray[i], context)) { found = true; break; }
+            }
+
+            // If we got through without crashing, cache this offset
+            g_wndMgrValidOffset = off;
+            g_wndMgrOffsetFound = true;
+
+            if (found) return true;
+            return false; // iterated successfully but didn't find target
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            // Bad offset, try next
+        }
+    }
+
+    return false;
+}
+
+// ─── FindWindowByName implementation ──────────────────────────
+
+struct FindByNameCtx {
+    const char *targetName;
+    void *result;
+};
+
+static bool FindByNameCallback(void *pWnd, void *context) {
+    FindByNameCtx *ctx = (FindByNameCtx *)context;
+    if (!g_fnGetChildItem) return false;
+
+    __try {
+        void *child = g_fnGetChildItem(pWnd, ctx->targetName);
+        if (child) {
+            ctx->result = child;
+            return true; // stop iteration
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        // Bad window, skip
+    }
+    return false;
+}
+
+// ─── Enumerate all windows (diagnostic) ───────────────────────
+// Tries to read the "name" field from each CXWnd. On ROF2 x86,
+// the window name (XMLIndex/ScreenID) is typically at offset 0xA8
+// or nearby as a CXStr. We also try GetChildItem with known names.
+
+struct EnumCtx {
+    int count;
+};
+
+static bool EnumCallback(void *pWnd, void *context) {
+    EnumCtx *ctx = (EnumCtx *)context;
+    ctx->count++;
+
+    // Try known widget names against this window
+    static const char *knownNames[] = {
+        "LOGIN_UsernameEdit", "LOGIN_PasswordEdit", "LOGIN_ConnectButton",
+        "OK_Display", "OK_OKButton",
+        "YESNO_Display", "YESNO_YesButton", "YESNO_NoButton",
+        "Character_List", "CLW_EnterWorldButton", "CLW_CharactersScreen",
+        "CONNECT_ConnectButton", "CONNECT_UsernameEdit", "CONNECT_PasswordEdit",
+        "serverselect", "connect", "CLW_CharactersScreen",
+        "MAIN_ConnectButton",
+        nullptr
+    };
+
+    if (g_fnGetChildItem) {
+        for (int i = 0; knownNames[i]; i++) {
+            __try {
+                void *child = g_fnGetChildItem(pWnd, knownNames[i]);
+                if (child) {
+                    DI8Log("mq2_bridge: ENUM wnd[%d] has child '%s' at %p",
+                           ctx->count - 1, knownNames[i], child);
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {
+                // Skip
+            }
+        }
+    }
+
+    return false; // continue iterating
 }
 
 // ─── MQ2Bridge::Init ───────────────────────────────────────────
 
 bool MQ2Bridge::Init() {
-    DI8Log("mq2_bridge: Init — resolving MQ2 exports from dinput8.dll");
+    DI8Log("mq2_bridge: Init -- resolving MQ2 exports from dinput8.dll");
 
     g_hMQ2 = GetModuleHandleA("dinput8.dll");
     if (!g_hMQ2) {
-        DI8Log("mq2_bridge: dinput8.dll not loaded — MQ2 bridge unavailable");
+        DI8Log("mq2_bridge: dinput8.dll not loaded -- MQ2 bridge unavailable");
         return false;
     }
     DI8Log("mq2_bridge: dinput8.dll at 0x%p", g_hMQ2);
 
-    // Resolve simple data exports
+    // Resolve data exports
     g_pGameState = (volatile int *)GetProcAddress(g_hMQ2, "gGameState");
     g_ppEverQuest = (void **)GetProcAddress(g_hMQ2, "ppEverQuest");
     g_ppWndMgr = (void **)GetProcAddress(g_hMQ2, "ppWndMgr");
@@ -333,23 +367,222 @@ bool MQ2Bridge::Init() {
     DI8Log("mq2_bridge: SetCurSel=%p  GetCurSel=%p  GetItemText=%p  GetChildItem=%p",
            g_fnSetCurSel, g_fnGetCurSel, g_fnGetItemText, g_fnGetChildItem);
 
-    // Core requirement: we need at least gGameState and ppEverQuest to read chars
-    bool ok = (g_pGameState != nullptr && g_ppEverQuest != nullptr);
-    if (ok) {
-        DI8Log("mq2_bridge: Init SUCCESS — core exports resolved");
-    } else {
-        DI8Log("mq2_bridge: Init PARTIAL — missing core exports, char list reading unavailable");
+    // ── NEW: Resolve login-related exports ──
+
+    // CXWnd::SetWindowText -- multiple mangled name candidates for ROF2 x86
+    // Try the most common variants
+    g_fnSetWindowText = (FN_SetWindowText)GetProcAddress(g_hMQ2,
+        "?SetWindowText@CXWnd@EQClasses@@QAEXABVCXStr@2@@Z");
+    if (!g_fnSetWindowText) {
+        // Alternative: SetWindowTextA variant
+        g_fnSetWindowText = (FN_SetWindowText)GetProcAddress(g_hMQ2,
+            "?SetWindowText@CXWnd@EQClasses@@QAEXABV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z");
     }
+    if (!g_fnSetWindowText) {
+        // Try the CEditWnd variant
+        g_fnSetWindowText = (FN_SetWindowText)GetProcAddress(g_hMQ2,
+            "?SetWindowText@CEditWnd@EQClasses@@QAEXPAD@Z");
+    }
+
+    // CXWnd::GetWindowText
+    g_fnGetWindowText = (FN_GetWindowText)GetProcAddress(g_hMQ2,
+        "?GetWindowText@CXWnd@EQClasses@@QBE?AVCXStr@2@XZ");
+
+    // CXWnd::WndNotification (for button clicks via XWM_LCLICK)
+    g_fnWndNotification = (FN_WndNotification)GetProcAddress(g_hMQ2,
+        "?WndNotification@CXWnd@EQClasses@@UAEXPAV12@IPW4@Z");
+    if (!g_fnWndNotification) {
+        // Try without the enum parameter type
+        g_fnWndNotification = (FN_WndNotification)GetProcAddress(g_hMQ2,
+            "?WndNotification@CXWnd@EQClasses@@UAEXPAV12@IPAX@Z");
+    }
+
+    DI8Log("mq2_bridge: SetWindowText=%p  GetWindowText=%p  WndNotification=%p",
+           g_fnSetWindowText, g_fnGetWindowText, g_fnWndNotification);
+
+    // Core requirement: gGameState and ppEverQuest for char reading;
+    // ppWndMgr + GetChildItem for login UI manipulation
+    bool ok = (g_pGameState != nullptr && g_ppEverQuest != nullptr);
+    bool loginReady = (g_ppWndMgr != nullptr && g_fnGetChildItem != nullptr &&
+                       g_fnSetWindowText != nullptr && g_fnWndNotification != nullptr);
+
+    if (ok && loginReady)
+        DI8Log("mq2_bridge: Init SUCCESS -- all exports resolved (char select + login)");
+    else if (ok)
+        DI8Log("mq2_bridge: Init PARTIAL -- char select OK, login exports missing (SetWindowText=%p WndNotification=%p)",
+               g_fnSetWindowText, g_fnWndNotification);
+    else
+        DI8Log("mq2_bridge: Init PARTIAL -- missing core exports");
 
     return ok;
 }
 
-// ─── MQ2Bridge::Poll ───────────────────────────────────────────
+// ─── MQ2Bridge::ReadGameState ──────────────────────────────────
+
+int MQ2Bridge::ReadGameState() {
+    if (!g_pGameState) return -99;
+    __try {
+        return *g_pGameState;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -99;
+    }
+}
+
+// ─── MQ2Bridge::FindWindowByName ───────────────────────────────
+
+void *MQ2Bridge::FindWindowByName(const char *name) {
+    if (!g_fnGetChildItem || !name) return nullptr;
+
+    FindByNameCtx ctx = { name, nullptr };
+    IterateAllWindows(FindByNameCallback, &ctx);
+    return ctx.result;
+}
+
+// ─── MQ2Bridge::SetEditText ────────────────────────────────────
+
+void MQ2Bridge::SetEditText(void *pEditWnd, const char *text) {
+    if (!g_fnSetWindowText || !pEditWnd || !text) return;
+
+    __try {
+        g_fnSetWindowText(pEditWnd, text);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: SEH in SetEditText");
+    }
+}
+
+// ─── MQ2Bridge::ClickButton ───────────────────────────────────
+
+void MQ2Bridge::ClickButton(void *pButton) {
+    if (!g_fnWndNotification || !pButton) return;
+
+    __try {
+        // XWM_LCLICK = 1, matching MQ2AutoLogin's SendWndNotification pattern
+        g_fnWndNotification(pButton, pButton, 1, nullptr);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: SEH in ClickButton");
+    }
+}
+
+// ─── MQ2Bridge::ReadWindowText ─────────────────────────────────
+
+void MQ2Bridge::ReadWindowText(void *pWnd, char *outBuf, int bufSize) {
+    if (!outBuf || bufSize <= 0) return;
+    outBuf[0] = '\0';
+
+    if (!g_fnGetWindowText || !pWnd) return;
+
+    __try {
+        CXStr str = {};
+        g_fnGetWindowText(pWnd, &str);
+        if (str.Ptr && str.Length > 0) {
+            int copyLen = (str.Length < bufSize - 1) ? str.Length : (bufSize - 1);
+            memcpy(outBuf, str.Ptr, copyLen);
+            outBuf[copyLen] = '\0';
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: SEH in ReadWindowText");
+    }
+}
+
+// ─── MQ2Bridge::SelectCharacter ────────────────────────────────
+
+void MQ2Bridge::SelectCharacter(void *pCharList, int index) {
+    if (!g_fnSetCurSel || !pCharList || index < 0) return;
+
+    __try {
+        g_fnSetCurSel(pCharList, index);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: SEH in SelectCharacter(%d)", index);
+    }
+}
+
+// ─── MQ2Bridge::PopulateCharacterData ──────────────────────────
+
+void MQ2Bridge::PopulateCharacterData(volatile LoginShm *shm) {
+    if (!shm || !g_ppEverQuest) {
+        if (shm) { shm->charCount = 0; shm->selectedIndex = -1; }
+        return;
+    }
+
+    void *pEverQuest = nullptr;
+    __try { pEverQuest = *g_ppEverQuest; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+    if (!pEverQuest) return;
+
+    const uint8_t *pEQ = (const uint8_t *)pEverQuest;
+
+    if (!ValidateCharArrayOffset(pEQ)) {
+        shm->charCount = 0;
+        shm->selectedIndex = -1;
+        return;
+    }
+
+    __try {
+        const ArrayClassHeader *arr = (const ArrayClassHeader *)(pEQ + g_validatedOffset);
+        int count = arr->Count;
+        const uint8_t *data = arr->Data;
+
+        if (count < 0 || count > LOGIN_MAX_CHARS || !data) {
+            shm->charCount = 0;
+            shm->selectedIndex = -1;
+            return;
+        }
+
+        for (int i = 0; i < count; i++) {
+            const uint8_t *entry = data + (i * CSI_SIZE);
+            const char *name = (const char *)(entry + CSI_NAME_OFF);
+
+            int nameLen = 0;
+            while (nameLen < LOGIN_NAME_LEN - 1 && name[nameLen] != '\0' &&
+                   name[nameLen] >= 0x20 && name[nameLen] <= 0x7E) {
+                nameLen++;
+            }
+            memcpy((void *)shm->charNames[i], name, nameLen);
+            ((char *)shm->charNames[i])[nameLen] = '\0';
+
+            shm->charLevels[i] = *(const int32_t *)(entry + CSI_LEVEL_OFF);
+            shm->charClasses[i] = *(const int32_t *)(entry + CSI_CLASS_OFF);
+        }
+
+        MemoryBarrier();
+        shm->charCount = count;
+
+        for (int i = count; i < LOGIN_MAX_CHARS; i++) {
+            ((char *)shm->charNames[i])[0] = '\0';
+            shm->charLevels[i] = 0;
+            shm->charClasses[i] = 0;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: SEH reading charSelectPlayerArray");
+        shm->charCount = 0;
+        shm->selectedIndex = -1;
+    }
+}
+
+// ─── MQ2Bridge::EnumerateAllWindows ────────────────────────────
+
+void MQ2Bridge::EnumerateAllWindows() {
+    if (!g_fnGetChildItem || !g_ppWndMgr) {
+        DI8Log("mq2_bridge: EnumerateAllWindows -- GetChildItem or ppWndMgr missing");
+        return;
+    }
+
+    EnumCtx ctx = { 0 };
+    IterateAllWindows(EnumCallback, &ctx);
+    DI8Log("mq2_bridge: EnumerateAllWindows -- iterated %d windows", ctx.count);
+}
+
+// ─── MQ2Bridge::Poll (existing -- CharSelectShm) ───────────────
 
 void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     if (!shm) return;
 
-    // No MQ2 exports? Nothing to do.
     if (!g_pGameState || !g_ppEverQuest) {
         shm->mq2Available = 0;
         return;
@@ -357,50 +590,29 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
 
     shm->mq2Available = 1;
 
-    // Read game state
-    int gameState = -1;
-    __try {
-        gameState = *g_pGameState;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        DI8Log("mq2_bridge: SEH reading gGameState");
-        shm->gameState = -1;
-        shm->charCount = 0;
-        shm->selectedIndex = -1;
-        return;
-    }
-
+    int gameState = ReadGameState();
     shm->gameState = gameState;
 
-    // Reset cached window pointers on game state transitions
+    // Reset cached state on game state transitions
     static int lastGameState = -1;
     if (gameState != lastGameState) {
         if (lastGameState != -1) {
-            DI8Log("mq2_bridge: game state %d → %d — clearing window cache", lastGameState, gameState);
+            DI8Log("mq2_bridge: game state %d -> %d", lastGameState, gameState);
         }
-        g_pCharListWnd = nullptr;
-        g_charListRetryCount = 0;
         lastGameState = gameState;
     }
 
-    // Not at character select? Clear char data and return.
     if (gameState != 1) {
         shm->charCount = 0;
         shm->selectedIndex = -1;
-        // Reset validation so we re-validate on next char select entry
         g_offsetValidated = false;
         return;
     }
 
-    // ── At character select (gameState == 1) ──
-
-    // Get CEverQuest pointer
+    // At character select -- read character data
     void *pEverQuest = nullptr;
-    __try {
-        pEverQuest = *g_ppEverQuest;
-    }
+    __try { pEverQuest = *g_ppEverQuest; }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        DI8Log("mq2_bridge: SEH reading ppEverQuest");
         shm->charCount = 0;
         shm->selectedIndex = -1;
         return;
@@ -414,14 +626,12 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
 
     const uint8_t *pEQ = (const uint8_t *)pEverQuest;
 
-    // Validate charSelectPlayerArray offset (first time at char select only)
     if (!ValidateCharArrayOffset(pEQ)) {
         shm->charCount = 0;
         shm->selectedIndex = -1;
         return;
     }
 
-    // Read ArrayClass header
     __try {
         const ArrayClassHeader *arr = (const ArrayClassHeader *)(pEQ + g_validatedOffset);
         int count = arr->Count;
@@ -433,11 +643,8 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
             return;
         }
 
-        // Read each CharSelectInfo entry
         for (int i = 0; i < count; i++) {
             const uint8_t *entry = data + (i * CSI_SIZE);
-
-            // Name: copy with safe null-termination
             const char *name = (const char *)(entry + CSI_NAME_OFF);
             int nameLen = 0;
             while (nameLen < CHARSEL_NAME_LEN - 1 && name[nameLen] != '\0' &&
@@ -446,27 +653,18 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
             }
             memcpy((void *)shm->names[i], name, nameLen);
             ((char *)shm->names[i])[nameLen] = '\0';
-
-            // Level: byte at CSI_LEVEL_OFF (MQ2 uses int but value fits in byte)
             shm->levels[i] = *(const int32_t *)(entry + CSI_LEVEL_OFF);
-
-            // Class: int at CSI_CLASS_OFF
             shm->classes[i] = *(const int32_t *)(entry + CSI_CLASS_OFF);
         }
 
-        // Ensure all name/level/class writes are visible before publishing count.
-        // C# reader checks charCount first — without a barrier, it could see
-        // the new count before the data writes complete.
         MemoryBarrier();
         shm->charCount = count;
 
-        // Clear unused slots
         for (int i = count; i < CHARSEL_MAX_CHARS; i++) {
             ((char *)shm->names[i])[0] = '\0';
             shm->levels[i] = 0;
             shm->classes[i] = 0;
         }
-
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         DI8Log("mq2_bridge: SEH reading charSelectPlayerArray");
@@ -475,45 +673,29 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         return;
     }
 
-    // ── Handle selection request ──
-    // C# sets requestedIndex and increments requestSeq.
-    // We process when requestSeq != ackSeq.
-
+    // Handle selection request from C#
     uint32_t reqSeq = shm->requestSeq;
     uint32_t ackSeq = shm->ackSeq;
 
     if (reqSeq != ackSeq) {
         int requestedIdx = shm->requestedIndex;
-        DI8Log("mq2_bridge: selection request — index=%d (seq %u→%u)",
+        DI8Log("mq2_bridge: selection request -- index=%d (seq %u->%u)",
                requestedIdx, ackSeq, reqSeq);
 
         if (requestedIdx >= 0 && requestedIdx < shm->charCount) {
-            // Find the Character_List CListWnd if we haven't found it yet
-            if (!g_pCharListWnd && g_charListRetryCount < CHARLIST_MAX_RETRIES) {
-                FindCharacterListWnd();
-            }
-
-            if (g_pCharListWnd && g_fnSetCurSel) {
+            void *pCharListWnd = FindWindowByName("Character_List");
+            if (pCharListWnd && g_fnSetCurSel) {
                 __try {
-                    g_fnSetCurSel(g_pCharListWnd, requestedIdx);
+                    g_fnSetCurSel(pCharListWnd, requestedIdx);
                     shm->selectedIndex = requestedIdx;
                     DI8Log("mq2_bridge: selected character index %d (\"%s\")",
                            requestedIdx, (const char *)shm->names[requestedIdx]);
                 }
                 __except (EXCEPTION_EXECUTE_HANDLER) {
-                    DI8Log("mq2_bridge: SEH in SetCurSel(%d) — invalidating cached pointer", requestedIdx);
-                    g_pCharListWnd = nullptr;
-                    g_charListRetryCount = 0;  // Allow fresh search after crash
+                    DI8Log("mq2_bridge: SEH in SetCurSel(%d)", requestedIdx);
                 }
-            } else {
-                DI8Log("mq2_bridge: SetCurSel unavailable — Character_List not found or SetCurSel not exported");
             }
-        } else {
-            DI8Log("mq2_bridge: selection request index %d out of range (charCount=%d)",
-                   requestedIdx, (int)shm->charCount);
         }
-
-        // Acknowledge the request (even if out of range — prevents re-processing)
         shm->ackSeq = reqSeq;
     }
 }
@@ -521,20 +703,21 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
 // ─── MQ2Bridge::Shutdown ───────────────────────────────────────
 
 void MQ2Bridge::Shutdown() {
-    DI8Log("mq2_bridge: Shutdown — nullifying pointers");
+    DI8Log("mq2_bridge: Shutdown -- nullifying pointers");
 
-    g_pGameState     = nullptr;
-    g_ppEverQuest    = nullptr;
-    g_ppWndMgr       = nullptr;
-    g_fnGetItemText  = nullptr;
-    g_fnSetCurSel    = nullptr;
-    g_fnGetCurSel    = nullptr;
-    g_fnGetChildItem = nullptr;
-    g_hMQ2           = nullptr;
+    g_pGameState       = nullptr;
+    g_ppEverQuest      = nullptr;
+    g_ppWndMgr         = nullptr;
+    g_fnGetItemText    = nullptr;
+    g_fnSetCurSel      = nullptr;
+    g_fnGetCurSel      = nullptr;
+    g_fnGetChildItem   = nullptr;
+    g_fnSetWindowText  = nullptr;
+    g_fnGetWindowText  = nullptr;
+    g_fnWndNotification = nullptr;
+    g_hMQ2             = nullptr;
 
-    g_offsetValidated = false;
-    g_validatedOffset = 0;
-
-    g_pCharListWnd = nullptr;
-    g_charListRetryCount = 0;
+    g_offsetValidated  = false;
+    g_validatedOffset  = 0;
+    g_wndMgrOffsetFound = false;
 }

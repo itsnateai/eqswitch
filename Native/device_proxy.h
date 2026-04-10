@@ -1,6 +1,6 @@
 #pragma once
-// EQSwitch dinput8 proxy — IDirectInputDevice8 COM wrapper
-// Intercepts keyboard device methods for background key injection.
+// EQSwitch dinput8 proxy -- IDirectInputDevice8 COM wrapper
+// Strips EXCLUSIVE from SetCooperativeLevel for multi-instance keyboard access.
 
 #ifndef DIRECTINPUT_VERSION
 #define DIRECTINPUT_VERSION 0x0800
@@ -9,7 +9,7 @@
 #include <dinput.h>
 #include <stdint.h>
 
-// EQ HWND captured from SetCooperativeLevel (used by iat_hook.cpp)
+// EQ HWND captured from SetCooperativeLevel
 HWND GetEqHwnd();
 
 class DeviceProxy : public IDirectInputDevice8W {
