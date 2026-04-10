@@ -313,6 +313,15 @@ public class HotkeyConfig
     /// <summary>Auto-login Quick Login slot 4.</summary>
     public string AutoLogin4 { get; set; } = "";
 
+    /// <summary>Auto-login Team 1.</summary>
+    public string TeamLogin1 { get; set; } = "";
+    /// <summary>Auto-login Team 2.</summary>
+    public string TeamLogin2 { get; set; } = "";
+    /// <summary>Auto-login Team 3.</summary>
+    public string TeamLogin3 { get; set; } = "";
+    /// <summary>Auto-login Team 4.</summary>
+    public string TeamLogin4 { get; set; } = "";
+
     /// <summary>
     /// Set true once the user has enabled multimonitor mode at least once.
     /// Unlocks Alt+M hotkey permanently. Won't work until user tries
