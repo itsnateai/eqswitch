@@ -381,6 +381,10 @@ public class TrayManager : IDisposable
         TryRegister(hk.AutoLogin2, () => ExecuteTrayAction("AutoLogin2"), "AutoLogin2");
         TryRegister(hk.AutoLogin3, () => ExecuteTrayAction("AutoLogin3"), "AutoLogin3");
         TryRegister(hk.AutoLogin4, () => ExecuteTrayAction("AutoLogin4"), "AutoLogin4");
+        TryRegister(hk.TeamLogin1, () => ExecuteTrayAction("LoginAll"), "TeamLogin1");
+        TryRegister(hk.TeamLogin2, () => ExecuteTrayAction("LoginAll2"), "TeamLogin2");
+        TryRegister(hk.TeamLogin3, () => ExecuteTrayAction("LoginAll3"), "TeamLogin3");
+        TryRegister(hk.TeamLogin4, () => ExecuteTrayAction("LoginAll4"), "TeamLogin4");
 
         FileLogger.Info($"RegisterHotKey: {registered} registered, {failed} failed" +
             (failedKeys.Count > 0 ? $" [{string.Join(", ", failedKeys)}]" : ""));
@@ -1358,6 +1362,14 @@ public class TrayManager : IDisposable
         _config.Hotkeys.MultiMonitorEnabled = newConfig.Hotkeys.MultiMonitorEnabled;
         _config.Hotkeys.DirectSwitchKeys = newConfig.Hotkeys.DirectSwitchKeys;
         _config.Hotkeys.SwitchKeyMode = newConfig.Hotkeys.SwitchKeyMode;
+        _config.Hotkeys.AutoLogin1 = newConfig.Hotkeys.AutoLogin1;
+        _config.Hotkeys.AutoLogin2 = newConfig.Hotkeys.AutoLogin2;
+        _config.Hotkeys.AutoLogin3 = newConfig.Hotkeys.AutoLogin3;
+        _config.Hotkeys.AutoLogin4 = newConfig.Hotkeys.AutoLogin4;
+        _config.Hotkeys.TeamLogin1 = newConfig.Hotkeys.TeamLogin1;
+        _config.Hotkeys.TeamLogin2 = newConfig.Hotkeys.TeamLogin2;
+        _config.Hotkeys.TeamLogin3 = newConfig.Hotkeys.TeamLogin3;
+        _config.Hotkeys.TeamLogin4 = newConfig.Hotkeys.TeamLogin4;
         _config.Launch.ExeName = newConfig.Launch.ExeName;
         _config.Launch.Arguments = newConfig.Launch.Arguments;
         _config.Launch.NumClients = newConfig.Launch.NumClients;
