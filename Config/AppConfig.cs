@@ -57,6 +57,9 @@ public class AppConfig
     /// When false, stops at the character select screen.</summary>
     public bool AutoEnterWorld { get; set; } = false;
 
+    /// <summary>Log file trim threshold in MB. Files over this size get trimmed to this size.</summary>
+    public int LogTrimThresholdMB { get; set; } = 50;
+
     /// <summary>Username of the account bound to Quick Login slot 1 (empty = unbound).</summary>
     public string QuickLogin1 { get; set; } = "";
 

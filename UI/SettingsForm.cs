@@ -37,6 +37,8 @@ public class SettingsForm : Form
     private Label _lblSwitchKey = null!;
     private Label _lblSwitchKeyHotkey = null!;
 
+    private NumericUpDown _nudLogTrimThreshold = null!;
+
     // ─── Tray Click controls (Left)
     private ComboBox _cboSingleClick = null!;
     private ComboBox _cboDoubleClick = null!;
@@ -390,12 +392,26 @@ public class SettingsForm : Form
         lblTriple.Font = TrackFont(new Font("Segoe UI Semibold", 9f));
         _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 325, 75, cboW, clickActions);
 
-        y += 180;
+        y += 139;
+
+        // ─── Log Trim card ──────────────────────────────────────
+        var cardLog = DarkTheme.MakeCard(page, "✂", "Log File Trimming", DarkTheme.CardCyan, 10, y, 480, 60);
+        DarkTheme.AddCardLabel(cardLog, "Trim threshold:", 10, 30);
+        _nudLogTrimThreshold = DarkTheme.AddCardNumeric(cardLog, 120, 28, 60, _config.LogTrimThresholdMB, 10, 500);
+        _nudLogTrimThreshold.Increment = 10;
+        DarkTheme.AddCardHint(cardLog, "MB", 185, 32);
+        var btnTrimNow = DarkTheme.MakeButton("✂ Trim Now", DarkTheme.BgInput, 370, 28);
+        btnTrimNow.Size = new Size(95, 22);
+        btnTrimNow.Font = DarkTheme.FontUI85;
+        cardLog.Controls.Add(btnTrimNow);
+        btnTrimNow.Click += (_, _) => FileOperations.TrimLogFiles(_config, (int)_nudLogTrimThreshold.Value, msg => MessageBox.Show(msg, "Trim Logs", MessageBoxButtons.OK, MessageBoxIcon.Information));
+
+        y += 68;
 
         // ─── Window Title card ───────────────────────────────────
-        var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 56);
-        _txtWindowTitleTemplate = DarkTheme.AddCardTextBox(cardTitle, 130, 6, 330, 100);
-        DarkTheme.AddCardHint(cardTitle, "Applied after client is in world", 10, 36);
+        var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 48);
+        _txtWindowTitleTemplate = DarkTheme.AddCardTextBox(cardTitle, 130, 4, 330, 100);
+        DarkTheme.AddCardHint(cardTitle, "Applied after client is in world", 10, 30);
 
         return page;
     }
@@ -1214,6 +1230,7 @@ public class SettingsForm : Form
             QuickLogin3 = GetQuickLoginUsername(_cboQuickLogin3),
             QuickLogin4 = GetQuickLoginUsername(_cboQuickLogin4),
             AutoEnterWorld = _chkAutoEnterWorld.Checked,
+            LogTrimThresholdMB = (int)_nudLogTrimThreshold.Value,
             Team1Account1 = _pendingTeam1A,
             Team1Account2 = _pendingTeam1B,
             Team2Account1 = _pendingTeam2A,
@@ -1415,10 +1432,26 @@ public class SettingsForm : Form
 
         // ─── Autologin Preferences ──────────────────────────────────
         y += 86;
-        var prefsCard = DarkTheme.MakeCard(page, "\u2699", "Autologin Preferences", DarkTheme.CardCyan, 10, y, 480, 78);
+        var prefsCard = DarkTheme.MakeCard(page, "\u2699", "Autologin Preferences", DarkTheme.CardCyan, 10, y, 480, 96);
         _chkAutoEnterWorld = DarkTheme.AddCheckBox(prefsCard, "Auto Enter World (experimental)", 10, 30);
         _chkAutoEnterWorld.Checked = _config.AutoEnterWorld;
-        DarkTheme.AddCardHint(prefsCard, "Enters world as last-loaded character. Uncheck to stop at character select.", 10, 50);
+        DarkTheme.AddCardHint(prefsCard, "Enters world as last-loaded character.", 10, 50);
+        DarkTheme.AddCardHint(prefsCard, "Uncheck to stop at character select.", 10, 62);
+
+        DarkTheme.AddCardLabel(prefsCard, "Accounts", 300, 30);
+        var btnBackup = DarkTheme.MakeButton("📤 Backup", DarkTheme.BgInput, 375, 28);
+        btnBackup.Size = new Size(80, 22);
+        btnBackup.Font = DarkTheme.FontUI85;
+        prefsCard.Controls.Add(btnBackup);
+        btnBackup.Click += (_, _) => ExportAccounts();
+
+        var btnImport = DarkTheme.MakeButton("📥 Import", DarkTheme.BgInput, 375, 54);
+        btnImport.Size = new Size(80, 22);
+        btnImport.Font = DarkTheme.FontUI85;
+        prefsCard.Controls.Add(btnImport);
+        btnImport.Click += (_, _) => ImportAccounts();
+
+        DarkTheme.AddCardHint(prefsCard, "Same Windows\ninstall only", 280, 52);
 
         return page;
     }
@@ -1637,6 +1670,93 @@ public class SettingsForm : Form
         if (_pendingTeam4A == oldUsername) { _pendingTeam4A = newUsername; changed = true; }
         if (_pendingTeam4B == oldUsername) { _pendingTeam4B = newUsername; changed = true; }
         if (changed) _lblTeamSummary.Text = BuildTeamSummary();
+    }
+
+    // ─── Account Export/Import ────────────────────────────────────────
+
+    private void ExportAccounts()
+    {
+        if (_pendingAccounts.Count == 0)
+        {
+            MessageBox.Show("No accounts to export.", "Export", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var dlg = new SaveFileDialog
+        {
+            Title = "Export Accounts",
+            Filter = "JSON files (*.json)|*.json",
+            FileName = "eqswitch-accounts.json",
+            DefaultExt = "json"
+        };
+
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+        try
+        {
+            var json = System.Text.Json.JsonSerializer.Serialize(_pendingAccounts,
+                new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(dlg.FileName, json);
+            MessageBox.Show($"Exported {_pendingAccounts.Count} account(s).\n\nPasswords are DPAPI-encrypted — this file only works on the same Windows user account.",
+                "Export Successful", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Export failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void ImportAccounts()
+    {
+        using var dlg = new OpenFileDialog
+        {
+            Title = "Import Accounts",
+            Filter = "JSON files (*.json)|*.json",
+            DefaultExt = "json"
+        };
+
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+        List<Models.LoginAccount> imported;
+        try
+        {
+            var json = File.ReadAllText(dlg.FileName);
+            imported = System.Text.Json.JsonSerializer.Deserialize<List<Models.LoginAccount>>(json) ?? new();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Import failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        if (imported.Count == 0)
+        {
+            MessageBox.Show("No accounts found in file.", "Import", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        // Check for duplicates by username
+        int added = 0, skipped = 0;
+        var existingUsernames = new HashSet<string>(_pendingAccounts.Select(a => a.Username), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var account in imported)
+        {
+            if (existingUsernames.Contains(account.Username))
+            {
+                skipped++;
+                continue;
+            }
+            _pendingAccounts.Add(account);
+            existingUsernames.Add(account.Username);
+            added++;
+        }
+
+        RefreshAccountsGrid();
+
+        var msg = $"Imported {added} account(s).";
+        if (skipped > 0) msg += $"\nSkipped {skipped} duplicate(s).";
+        msg += "\n\nClick Apply to save changes.";
+        MessageBox.Show(msg, "Import Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     // ─── Video Tab (eqclient.ini) ───────────────────────────────────
