@@ -3,32 +3,38 @@ using EQSwitch.Models;
 namespace EQSwitch.UI;
 
 /// <summary>
-/// Dialog for configuring Autologin Team 1 and Team 2 assignments.
-/// Each team has 2 account slots. Accounts can appear in both teams.
+/// Dialog for configuring Autologin Teams 1-4.
+/// Each team has 2 account slots. Accounts can appear in multiple teams.
 /// </summary>
 internal sealed class AutoLoginTeamsDialog : Form
 {
-    private readonly ComboBox _cboTeam1A;
-    private readonly ComboBox _cboTeam1B;
-    private readonly ComboBox _cboTeam2A;
-    private readonly ComboBox _cboTeam2B;
+    private readonly ComboBox _cboTeam1A, _cboTeam1B;
+    private readonly ComboBox _cboTeam2A, _cboTeam2B;
+    private readonly ComboBox _cboTeam3A, _cboTeam3B;
+    private readonly ComboBox _cboTeam4A, _cboTeam4B;
 
     public string Team1Account1 => GetUsername(_cboTeam1A);
     public string Team1Account2 => GetUsername(_cboTeam1B);
     public string Team2Account1 => GetUsername(_cboTeam2A);
     public string Team2Account2 => GetUsername(_cboTeam2B);
+    public string Team3Account1 => GetUsername(_cboTeam3A);
+    public string Team3Account2 => GetUsername(_cboTeam3B);
+    public string Team4Account1 => GetUsername(_cboTeam4A);
+    public string Team4Account2 => GetUsername(_cboTeam4B);
 
     private readonly List<LoginAccount> _accounts;
 
     public AutoLoginTeamsDialog(
         List<LoginAccount> accounts,
         string team1A, string team1B,
-        string team2A, string team2B)
+        string team2A, string team2B,
+        string team3A, string team3B,
+        string team4A, string team4B)
     {
         _accounts = accounts;
 
         StartPosition = FormStartPosition.CenterParent;
-        DarkTheme.StyleForm(this, "Autologin Teams", new Size(420, 210));
+        DarkTheme.StyleForm(this, "Autologin Teams", new Size(420, 280));
         MinimizeBox = false;
 
         const int L = 15, I = 80, CW = 145, gap = 10;
@@ -46,8 +52,20 @@ internal sealed class AutoLoginTeamsDialog : Form
         _cboTeam2B = MakeCombo(I + CW + gap, y, CW);
         y += 36;
 
+        // Team 3 row
+        DarkTheme.AddLabel(this, "Team 3:", L, y + 3);
+        _cboTeam3A = MakeCombo(I, y, CW);
+        _cboTeam3B = MakeCombo(I + CW + gap, y, CW);
+        y += 36;
+
+        // Team 4 row
+        DarkTheme.AddLabel(this, "Team 4:", L, y + 3);
+        _cboTeam4A = MakeCombo(I, y, CW);
+        _cboTeam4B = MakeCombo(I + CW + gap, y, CW);
+        y += 36;
+
         // Hint
-        var hint = DarkTheme.AddLabel(this, "Same account can be in both teams.", L, y + 2);
+        var hint = DarkTheme.AddLabel(this, "Same account can be in multiple teams.", L, y + 2);
         hint.ForeColor = DarkTheme.FgDimGray;
         hint.Font = DarkTheme.FontUI75;
         y += 28;
@@ -68,6 +86,10 @@ internal sealed class AutoLoginTeamsDialog : Form
         SelectByUsername(_cboTeam1B, team1B);
         SelectByUsername(_cboTeam2A, team2A);
         SelectByUsername(_cboTeam2B, team2B);
+        SelectByUsername(_cboTeam3A, team3A);
+        SelectByUsername(_cboTeam3B, team3B);
+        SelectByUsername(_cboTeam4A, team4A);
+        SelectByUsername(_cboTeam4B, team4B);
     }
 
     private ComboBox MakeCombo(int x, int y, int width)

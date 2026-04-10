@@ -95,6 +95,10 @@ public class SettingsForm : Form
     private string _pendingTeam1B = "";
     private string _pendingTeam2A = "";
     private string _pendingTeam2B = "";
+    private string _pendingTeam3A = "";
+    private string _pendingTeam3B = "";
+    private string _pendingTeam4A = "";
+    private string _pendingTeam4B = "";
     private CheckBox _chkAutoEnterWorld = null!;
 
     // ─── PiP tab controls
@@ -187,6 +191,10 @@ public class SettingsForm : Form
         _pendingTeam1B = _config.Team1Account2;
         _pendingTeam2A = _config.Team2Account1;
         _pendingTeam2B = _config.Team2Account2;
+        _pendingTeam3A = _config.Team3Account1;
+        _pendingTeam3B = _config.Team3Account2;
+        _pendingTeam4A = _config.Team4Account1;
+        _pendingTeam4B = _config.Team4Account2;
 
         tabs.TabPages.Add(BuildGeneralTab());      // 0
         tabs.TabPages.Add(BuildVideoTab());        // 1
@@ -347,7 +355,7 @@ public class SettingsForm : Form
         y += 73;
 
         // ─── Tray Click Actions card ─────────────────────────────
-        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam1", "TogglePiP", "LaunchOne", "LaunchTwo", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLoginTeam2", "AutoLogin2", "AutoLogin3", "AutoLogin4" };
+        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam1", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4", "TogglePiP", "LaunchOne", "LaunchTwo", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4" };
         const int cboW = 140;
 
         var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 131);
@@ -1173,7 +1181,11 @@ public class SettingsForm : Form
             Team1Account1 = _pendingTeam1A,
             Team1Account2 = _pendingTeam1B,
             Team2Account1 = _pendingTeam2A,
-            Team2Account2 = _pendingTeam2B
+            Team2Account2 = _pendingTeam2B,
+            Team3Account1 = _pendingTeam3A,
+            Team3Account2 = _pendingTeam3B,
+            Team4Account1 = _pendingTeam4A,
+            Team4Account2 = _pendingTeam4B
         };
 
         // Apply startup registry change
@@ -1532,7 +1544,13 @@ public class SettingsForm : Form
                 .ToList();
             return names.Count > 0 ? string.Join(" + ", names) : "(none)";
         }
-        return $"Team 1: {Fmt(_pendingTeam1A, _pendingTeam1B)}  |  Team 2: {Fmt(_pendingTeam2A, _pendingTeam2B)}";
+        var parts = new[] {
+            $"T1: {Fmt(_pendingTeam1A, _pendingTeam1B)}",
+            $"T2: {Fmt(_pendingTeam2A, _pendingTeam2B)}",
+            $"T3: {Fmt(_pendingTeam3A, _pendingTeam3B)}",
+            $"T4: {Fmt(_pendingTeam4A, _pendingTeam4B)}"
+        };
+        return string.Join("  |  ", parts);
     }
 
     private void ShowTeamsDialog()
@@ -1540,13 +1558,19 @@ public class SettingsForm : Form
         using var dlg = new AutoLoginTeamsDialog(
             _pendingAccounts,
             _pendingTeam1A, _pendingTeam1B,
-            _pendingTeam2A, _pendingTeam2B);
+            _pendingTeam2A, _pendingTeam2B,
+            _pendingTeam3A, _pendingTeam3B,
+            _pendingTeam4A, _pendingTeam4B);
         if (dlg.ShowDialog(this) == DialogResult.OK)
         {
             _pendingTeam1A = dlg.Team1Account1;
             _pendingTeam1B = dlg.Team1Account2;
             _pendingTeam2A = dlg.Team2Account1;
             _pendingTeam2B = dlg.Team2Account2;
+            _pendingTeam3A = dlg.Team3Account1;
+            _pendingTeam3B = dlg.Team3Account2;
+            _pendingTeam4A = dlg.Team4Account1;
+            _pendingTeam4B = dlg.Team4Account2;
             _lblTeamSummary.Text = BuildTeamSummary();
         }
     }
@@ -1558,6 +1582,10 @@ public class SettingsForm : Form
         if (_pendingTeam1B == username) { _pendingTeam1B = ""; changed = true; }
         if (_pendingTeam2A == username) { _pendingTeam2A = ""; changed = true; }
         if (_pendingTeam2B == username) { _pendingTeam2B = ""; changed = true; }
+        if (_pendingTeam3A == username) { _pendingTeam3A = ""; changed = true; }
+        if (_pendingTeam3B == username) { _pendingTeam3B = ""; changed = true; }
+        if (_pendingTeam4A == username) { _pendingTeam4A = ""; changed = true; }
+        if (_pendingTeam4B == username) { _pendingTeam4B = ""; changed = true; }
         if (changed) _lblTeamSummary.Text = BuildTeamSummary();
     }
 
@@ -1568,6 +1596,10 @@ public class SettingsForm : Form
         if (_pendingTeam1B == oldUsername) { _pendingTeam1B = newUsername; changed = true; }
         if (_pendingTeam2A == oldUsername) { _pendingTeam2A = newUsername; changed = true; }
         if (_pendingTeam2B == oldUsername) { _pendingTeam2B = newUsername; changed = true; }
+        if (_pendingTeam3A == oldUsername) { _pendingTeam3A = newUsername; changed = true; }
+        if (_pendingTeam3B == oldUsername) { _pendingTeam3B = newUsername; changed = true; }
+        if (_pendingTeam4A == oldUsername) { _pendingTeam4A = newUsername; changed = true; }
+        if (_pendingTeam4B == oldUsername) { _pendingTeam4B = newUsername; changed = true; }
         if (changed) _lblTeamSummary.Text = BuildTeamSummary();
     }
 
@@ -2209,14 +2241,18 @@ public class SettingsForm : Form
     {
         ["LaunchAll"] = "LaunchTwo",
         ["LoginAll"] = "AutoLoginTeam1",
-        ["LoginAll2"] = "AutoLoginTeam2"
+        ["LoginAll2"] = "AutoLoginTeam2",
+        ["LoginAll3"] = "AutoLoginTeam3",
+        ["LoginAll4"] = "AutoLoginTeam4"
     };
 
     private static readonly Dictionary<string, string> _trayDisplayActionMap = new()
     {
         ["LaunchTwo"] = "LaunchAll",
         ["AutoLoginTeam1"] = "LoginAll",
-        ["AutoLoginTeam2"] = "LoginAll2"
+        ["AutoLoginTeam2"] = "LoginAll2",
+        ["AutoLoginTeam3"] = "LoginAll3",
+        ["AutoLoginTeam4"] = "LoginAll4"
     };
 
     /// <summary>Convert config action name to dropdown display name.</summary>
