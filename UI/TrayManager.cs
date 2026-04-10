@@ -376,7 +376,7 @@ public class TrayManager : IDisposable
         TryRegister(hk.ArrangeWindows, OnArrangeWindows, "FixWindows");
         TryRegister(hk.ToggleMultiMonitor, OnToggleMultiMonitor, "MultiMon");
         TryRegister(hk.LaunchOne, OnLaunchOne, "LaunchOne");
-        TryRegister(hk.LaunchAll, OnLaunchAll, "LaunchAll");
+        TryRegister(hk.LaunchAll, () => ExecuteTrayAction("LoginAll"), "LaunchAll");
         TryRegister(hk.AutoLogin1, () => ExecuteTrayAction("AutoLogin1"), "AutoLogin1");
         TryRegister(hk.AutoLogin2, () => ExecuteTrayAction("AutoLogin2"), "AutoLogin2");
         TryRegister(hk.AutoLogin3, () => ExecuteTrayAction("AutoLogin3"), "AutoLogin3");
@@ -797,7 +797,7 @@ public class TrayManager : IDisposable
         launchOneItem.Click += (_, _) => OnLaunchOne();
         _contextMenu.Items.Add(launchOneItem);
 
-        var launchTeamItem = new ToolStripMenuItem($"\uD83C\uDFAE  Launch Team{HkSuffix(hk.LaunchAll)}") { Font = _boldMenuFont };
+        var launchTeamItem = new ToolStripMenuItem($"\uD83C\uDFAE  Launch Team{HkSuffix(hk.TeamLogin1)}") { Font = _boldMenuFont };
         launchTeamItem.Click += (_, _) => ExecuteTrayAction("LoginAll");
         _contextMenu.Items.Add(launchTeamItem);
 
@@ -1062,7 +1062,7 @@ public class TrayManager : IDisposable
         if (!string.IsNullOrEmpty(hk.LaunchOne))
             lines.Add($"  [{hk.LaunchOne}]  Launch one client");
         if (!string.IsNullOrEmpty(hk.LaunchAll))
-            lines.Add($"  [{hk.LaunchAll}]  Launch Team 1");
+            lines.Add($"  [{hk.LaunchAll}]  Auto-login Team 1");
 
         // Direct switch keys
         for (int i = 0; i < hk.DirectSwitchKeys.Count; i++)
