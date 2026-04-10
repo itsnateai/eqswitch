@@ -194,12 +194,27 @@ static bool ValidateCharArrayOffset(const uint8_t *pEverQuest) {
     return false;
 }
 
+// ─── Pointer validation ───────────────────────────────────────
+// GetChildItem is a CSidlScreenWnd method — calling it on a plain CXWnd
+// dispatches through the wrong vtable. Validate that the pointer and its
+// vtable are readable committed memory before calling.
+
+static bool IsReadablePtr(const void *ptr, size_t size) {
+    if (!ptr) return false;
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
+    return true;
+}
+
 // ─── CListWnd cache ───────────────────────────────────────────
 // Cached pointer to the "Character_List" CListWnd in the char select screen.
 // Discovered once per char-select entry via FindCharacterListWnd().
 
 static void* g_pCharListWnd = nullptr;  // Cached CListWnd* for "Character_List"
-static bool g_charListSearched = false;
+static int g_charListRetryCount = 0;          // Retry counter (0 = not searched yet)
+static const int CHARLIST_MAX_RETRIES = 5;    // Max search attempts before giving up
 
 // ─── FindCharacterListWnd ─────────────────────────────────────
 // Brute-force search through CXWndManager's window array to find the
@@ -207,11 +222,12 @@ static bool g_charListSearched = false;
 // version-dependent, so we try several common ROF2 x86 candidates.
 
 static void FindCharacterListWnd() {
-    g_charListSearched = true;
+    g_charListRetryCount++;
     g_pCharListWnd = nullptr;
 
     if (!g_fnGetChildItem || !g_ppWndMgr) {
-        DI8Log("mq2_bridge: FindCharacterListWnd — missing GetChildItem or ppWndMgr");
+        DI8Log("mq2_bridge: FindCharacterListWnd — missing GetChildItem or ppWndMgr (attempt %d/%d)",
+               g_charListRetryCount, CHARLIST_MAX_RETRIES);
         return;
     }
 
@@ -255,6 +271,12 @@ static void FindCharacterListWnd() {
                 void *wnd = wndArray[i];
                 if (!wnd) continue;
 
+                // Validate pointer and vtable before calling CSidlScreenWnd::GetChildItem
+                // on what might be a plain CXWnd (wrong vtable → silent corruption)
+                if (!IsReadablePtr(wnd, sizeof(void *))) continue;
+                void *vtable = *(void **)wnd;
+                if (!IsReadablePtr(vtable, sizeof(void *))) continue;
+
                 __try {
                     void *child = g_fnGetChildItem(wnd, "Character_List");
                     if (child) {
@@ -274,8 +296,8 @@ static void FindCharacterListWnd() {
         }
     }
 
-    DI8Log("mq2_bridge: FindCharacterListWnd — Character_List NOT FOUND (tried %d offsets)",
-           numCandidates);
+    DI8Log("mq2_bridge: FindCharacterListWnd — Character_List NOT FOUND (tried %d offsets, attempt %d/%d)",
+           numCandidates, g_charListRetryCount, CHARLIST_MAX_RETRIES);
 }
 
 // ─── MQ2Bridge::Init ───────────────────────────────────────────
@@ -357,7 +379,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
             DI8Log("mq2_bridge: game state %d → %d — clearing window cache", lastGameState, gameState);
         }
         g_pCharListWnd = nullptr;
-        g_charListSearched = false;
+        g_charListRetryCount = 0;
         lastGameState = gameState;
     }
 
@@ -432,6 +454,10 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
             shm->classes[i] = *(const int32_t *)(entry + CSI_CLASS_OFF);
         }
 
+        // Ensure all name/level/class writes are visible before publishing count.
+        // C# reader checks charCount first — without a barrier, it could see
+        // the new count before the data writes complete.
+        MemoryBarrier();
         shm->charCount = count;
 
         // Clear unused slots
@@ -462,8 +488,8 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                requestedIdx, ackSeq, reqSeq);
 
         if (requestedIdx >= 0 && requestedIdx < shm->charCount) {
-            // Find the Character_List CListWnd if we haven't yet
-            if (!g_charListSearched) {
+            // Find the Character_List CListWnd if we haven't found it yet
+            if (!g_pCharListWnd && g_charListRetryCount < CHARLIST_MAX_RETRIES) {
                 FindCharacterListWnd();
             }
 
@@ -477,7 +503,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 __except (EXCEPTION_EXECUTE_HANDLER) {
                     DI8Log("mq2_bridge: SEH in SetCurSel(%d) — invalidating cached pointer", requestedIdx);
                     g_pCharListWnd = nullptr;
-                    g_charListSearched = false;
+                    g_charListRetryCount = 0;  // Allow fresh search after crash
                 }
             } else {
                 DI8Log("mq2_bridge: SetCurSel unavailable — Character_List not found or SetCurSel not exported");
@@ -510,5 +536,5 @@ void MQ2Bridge::Shutdown() {
     g_validatedOffset = 0;
 
     g_pCharListWnd = nullptr;
-    g_charListSearched = false;
+    g_charListRetryCount = 0;
 }

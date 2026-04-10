@@ -59,11 +59,27 @@ static void CloseCharSelShm() {
 }
 
 // Called from device_proxy.cpp's ActivateThread (~60Hz, throttled to ~500ms internally)
+static bool g_mq2Initialized = false;
+static uint32_t g_mq2InitRetry = 0;
+
 void MQ2BridgePollTick() {
     static DWORD lastPoll = 0;
     DWORD now = GetTickCount();
     if (now - lastPoll < 500) return;
     lastPoll = now;
+
+    // Lazy MQ2 bridge init — retries every ~5 seconds until MQ2 globals are ready.
+    // Replaces the old Sleep(2000) one-shot that failed if MQ2 needed more time.
+    if (!g_mq2Initialized) {
+        if (g_mq2InitRetry == 0) {
+            g_mq2Initialized = MQ2Bridge::Init();
+            if (!g_mq2Initialized)
+                g_mq2InitRetry = 10;  // Retry in ~5 seconds (10 × 500ms)
+        } else {
+            g_mq2InitRetry--;
+        }
+        if (!g_mq2Initialized) return;
+    }
 
     if (!g_charSelShm) {
         if (g_charSelRetry == 0) {
@@ -226,11 +242,10 @@ static DWORD WINAPI InitThread(LPVOID) {
     NetDebug::Install();
     DI8Log("Winsock diagnostic hooks installed");
 
-    // Initialize MQ2 bridge (must happen after dinput8.dll is loaded by the game)
-    // Wait briefly for MQ2 to initialize its globals
-    Sleep(2000);  // Give MQ2 time to resolve its own pointers
-    bool mq2Ready = MQ2Bridge::Init();
-    DI8Log("MQ2 bridge init: %s", mq2Ready ? "OK" : "disabled");
+    // MQ2 bridge init deferred to Poll() — MQ2 needs time to resolve its own
+    // pointers after dinput8.dll loads, and a fixed Sleep() is unreliable.
+    // MQ2BridgePollTick() will lazy-init on each poll cycle.
+    DI8Log("MQ2 bridge init deferred to poll cycle (lazy retry)");
 
     InterlockedExchange(&g_initialized, 1);
     DI8Log("Init complete — all hooks active");
