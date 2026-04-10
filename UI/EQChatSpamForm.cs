@@ -14,29 +14,41 @@ public class EQChatSpamForm : Form
     private readonly string _iniPath;
     private readonly Dictionary<string, CheckBox> _checkBoxes = new();
 
-    // Define all chat spam settings with their display names and default INI values
-    private static readonly (string Key, string Label, int DefaultValue)[] SpamSettings =
+    // Grouped settings for card layout
+    private static readonly (string Key, string Label, int DefaultValue)[] CombatSettings =
     {
-        ("BadWord", "Bad Word Filter", 1),
-        ("PCSpells", "PC Spells", 0),
-        ("NPCSpells", "NPC Spells", 0),
         ("CriticalSpells", "Critical Spells", 0),
         ("CriticalMelee", "Critical Melee", 0),
         ("SpellDamage", "Spell Damage", 0),
-        ("HideDamageShield", "Hide Damage Shield", 1),
         ("DotDamage", "DoT Damage", 0),
-        ("PetAttacks", "Pet Attacks", 0),
-        ("PetMisses", "Pet Misses", 1),
-        ("FocusEffects", "Focus Effects", 0),
-        ("PetSpells", "Pet Spells", 0),
-        ("HealOverTimeSpells", "Heal Over Time Spells", 0),
-        ("ItemSpeech", "Item Speech", 0),
+        ("HideDamageShield", "Hide Damage Shield", 1),
         ("Strikethrough", "Strikethrough", 0),
         ("Stun", "Stun Messages", 0),
+    };
+
+    private static readonly (string Key, string Label, int DefaultValue)[] PetSettings =
+    {
+        ("PetAttacks", "Pet Attacks", 0),
+        ("PetMisses", "Pet Misses", 1),
+        ("PetSpells", "Pet Spells", 0),
         ("SwarmPetDeath", "Swarm Pet Death", 0),
+    };
+
+    private static readonly (string Key, string Label, int DefaultValue)[] SpellSettings =
+    {
+        ("PCSpells", "PC Spells", 0),
+        ("NPCSpells", "NPC Spells", 0),
+        ("FocusEffects", "Focus Effects", 0),
+        ("HealOverTimeSpells", "Heal Over Time", 0),
+    };
+
+    private static readonly (string Key, string Label, int DefaultValue)[] SocialSettings =
+    {
+        ("BadWord", "Bad Word Filter", 1),
+        ("Spam", "Spam Filter", 1),
         ("FellowshipChat", "Fellowship Chat", 0),
         ("MercenaryMessages", "Mercenary Messages", 1),
-        ("Spam", "Spam Filter", 1),
+        ("ItemSpeech", "Item Speech", 0),
         ("Achievements", "Achievements", 0),
         ("PvPMessages", "PvP Messages", 1),
     };
@@ -51,50 +63,77 @@ public class EQChatSpamForm : Form
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 Chat Spam Filters", new Size(380, 580));
+        DarkTheme.StyleForm(this, "EQSwitch \u2014 Chat Spam Filters", new Size(480, 530));
+        StartPosition = FormStartPosition.CenterParent;
+        AutoScroll = true;
 
-        int y = 12;
-        y = DarkTheme.AddSectionHeader(this, "\uD83D\uDCAC  Chat Spam Filter Settings", 15, y);
-        DarkTheme.AddHint(this, "Toggle which chat messages appear in your EQ chat window.\nChecked = enabled/shown, Unchecked = hidden/filtered.", 15, y);
-        y += 40;
+        int y = 8;
 
-        // Two columns of checkboxes
-        int col1X = 20;
-        int col2X = 200;
-        int halfCount = (SpamSettings.Length + 1) / 2;
+        // ─── Combat card ──────────────────────────────────────────
+        y = AddFilterCard(this, "\u2694", "Combat & Melee", DarkTheme.CardRed, y, CombatSettings);
 
-        for (int i = 0; i < SpamSettings.Length; i++)
+        // ─── Pets card ────────────────────────────────────────────
+        y = AddFilterCard(this, "\uD83D\uDC3E", "Pets", DarkTheme.CardGreen, y, PetSettings);
+
+        // ─── Spells card ──────────────────────────────────────────
+        y = AddFilterCard(this, "\u2728", "Spells & Effects", DarkTheme.CardPurple, y, SpellSettings);
+
+        // ─── Social card ──────────────────────────────────────────
+        y = AddFilterCard(this, "\uD83D\uDCAC", "Social & Misc", DarkTheme.CardGold, y, SocialSettings);
+
+        // ─── Docked bottom panel with Save/Apply/Cancel ──────────
+        var buttonPanel = new Panel
         {
-            var (key, label, defaultVal) = SpamSettings[i];
-            int x = i < halfCount ? col1X : col2X;
-            int row = i < halfCount ? i : i - halfCount;
+            Dock = DockStyle.Bottom,
+            Height = 50,
+            BackColor = DarkTheme.BgDark
+        };
 
-            var chk = new CheckBox
-            {
-                Text = label,
-                Location = new Point(x, y + row * 24),
-                AutoSize = true,
-                ForeColor = DarkTheme.FgWhite,
-                Checked = _config.EQClientIni.ChatSpamOverrides.TryGetValue(key, out int val)
-                    ? val == 1
-                    : defaultVal == 1
-            };
-            Controls.Add(chk);
-            _checkBoxes[key] = chk;
-        }
-
-        y += halfCount * 24 + 15;
-
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 60, y);
+        var btnSave = DarkTheme.MakePrimaryButton("Save", 110, 10);
         btnSave.Click += (_, _) => { SaveSettings(); Close(); };
 
-        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 150, y);
+        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 200, 10);
         btnApply.Click += (_, _) => { SaveSettings(); };
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 240, y);
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 290, 10);
         btnCancel.Click += (_, _) => Close();
 
-        Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
+        buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
+        Controls.Add(buttonPanel);
+    }
+
+    /// <summary>Add a card with two columns of filter checkboxes. Returns next Y.</summary>
+    private int AddFilterCard(Control parent, string emoji, string title, Color titleColor, int y,
+        (string Key, string Label, int DefaultValue)[] settings)
+    {
+        int rows = (settings.Length + 1) / 2;
+        int cardH = 30 + rows * 22 + 6;
+        var card = DarkTheme.MakeCard(parent, emoji, title, titleColor, 10, y, 440, cardH);
+        int cy = 30;
+
+        for (int i = 0; i < settings.Length; i += 2)
+        {
+            var (key1, label1, def1) = settings[i];
+            var chk1 = DarkTheme.AddCardCheckBox(card, label1, 10, cy);
+            chk1.Checked = _config.EQClientIni.ChatSpamOverrides.TryGetValue(key1, out int val1)
+                ? val1 == 1
+                : def1 == 1;
+            _checkBoxes[key1] = chk1;
+
+            if (i + 1 < settings.Length)
+            {
+                var (key2, label2, def2) = settings[i + 1];
+                var chk2 = DarkTheme.AddCardCheckBox(card, label2, 220, cy);
+                chk2.Checked = _config.EQClientIni.ChatSpamOverrides.TryGetValue(key2, out int val2)
+                    ? val2 == 1
+                    : def2 == 1;
+                _checkBoxes[key2] = chk2;
+            }
+
+            cy += 22;
+        }
+
+        return y + cardH + 8;
     }
 
     private void LoadFromIni()
@@ -124,11 +163,8 @@ public class EQChatSpamForm : Form
                 string key = parts[0].Trim();
                 string val = parts[1].Trim();
 
-                // Check if this is one of our spam settings
                 if (_checkBoxes.TryGetValue(key, out var chk))
-                {
                     chk.Checked = val == "1";
-                }
             }
 
             FileLogger.Info("EQChatSpam: loaded current values from eqclient.ini");
@@ -143,9 +179,7 @@ public class EQChatSpamForm : Form
     {
         // Save to config
         foreach (var (key, chk) in _checkBoxes)
-        {
             _config.EQClientIni.ChatSpamOverrides[key] = chk.Checked ? 1 : 0;
-        }
         ConfigManager.Save(_config);
 
         // Apply to eqclient.ini
@@ -165,9 +199,7 @@ public class EQChatSpamForm : Form
             var lines = File.ReadAllLines(_iniPath, Encoding.Default).ToList();
 
             foreach (var (key, chk) in _checkBoxes)
-            {
                 EQClientSettingsForm.SetIniValue(lines, "Options", key, chk.Checked ? "1" : "0");
-            }
 
             File.WriteAllLines(_iniPath, lines, Encoding.Default);
             FileLogger.Info("EQChatSpam: applied chat spam settings to eqclient.ini");
@@ -193,8 +225,6 @@ public class EQChatSpamForm : Form
     public static void EnforceOverrides(AppConfig config, List<string> lines)
     {
         foreach (var (key, value) in config.EQClientIni.ChatSpamOverrides)
-        {
             EQClientSettingsForm.SetIniValue(lines, "Options", key, value != 0 ? "1" : "0");
-        }
     }
 }

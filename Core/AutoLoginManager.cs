@@ -22,7 +22,8 @@ public class AutoLoginManager
 
     /// <summary>Serializes login sequences — only one login types credentials at a time.
     /// Multiple logins are queued and run sequentially to avoid timing issues under CPU load.</summary>
-    private readonly SemaphoreSlim _loginGate = new(1, 1);
+    // No serialization gate — each login uses per-PID resources (SHM, hwnd, DLL hooks)
+    // and can run concurrently. The old SemaphoreSlim was overly conservative.
 
     /// <summary>UI thread sync context — captured at construction for marshaling events back to the UI thread.</summary>
     private readonly SynchronizationContext? _syncContext;
@@ -57,8 +58,9 @@ public class AutoLoginManager
     /// <summary>
     /// Launch EQ and auto-login with the given account.
     /// Non-blocking — runs the login sequence on a background thread.
+    /// Returns a Task that completes when the full login sequence finishes.
     /// </summary>
-    public void LoginAccount(LoginAccount account)
+    public Task LoginAccount(LoginAccount account)
     {
         string password;
         try
@@ -69,7 +71,7 @@ public class AutoLoginManager
         {
             FileLogger.Error("AutoLogin: failed to decrypt password", ex);
             StatusUpdate?.Invoke(this, "Error: failed to decrypt password");
-            return;
+            return Task.CompletedTask;
         }
 
         // Write server to EQ INI files so server select is pre-filled
@@ -81,7 +83,7 @@ public class AutoLoginManager
         {
             FileLogger.Error($"AutoLogin: exe not found at {exePath}");
             StatusUpdate?.Invoke(this, "Error: eqgame.exe not found");
-            return;
+            return Task.CompletedTask;
         }
 
         var args = _config.Launch.Arguments;
@@ -119,7 +121,7 @@ public class AutoLoginManager
                 var error = Marshal.GetLastWin32Error();
                 FileLogger.Error($"AutoLogin: CreateProcessA failed (error {error})");
                 StatusUpdate?.Invoke(this, "Error: failed to start process");
-                return;
+                return Task.CompletedTask;
             }
 
             pid = pi.dwProcessId;
@@ -144,7 +146,7 @@ public class AutoLoginManager
                     NativeMethods.TerminateProcess(pi.hProcess, 1);
                     _activeLoginPids.TryRemove(pid, out _);
                     StatusUpdate?.Invoke(this, "Error: failed to resume process");
-                    return;
+                    return Task.CompletedTask;
                 }
                 FileLogger.Info($"AutoLogin: resumed PID {pid}, waiting for loader...");
 
@@ -179,24 +181,14 @@ public class AutoLoginManager
             FileLogger.Error("AutoLogin: launch failed", ex);
             if (pid > 0) _activeLoginPids.TryRemove(pid, out _);
             StatusUpdate?.Invoke(this, $"Error: {ex.Message}");
-            return;
+            return Task.CompletedTask;
         }
 
-        // Run the login sequence on a background thread — serialized via _loginGate
-        // so only one login types credentials at a time (avoids timing issues under CPU load).
+        // Run the login sequence on a background thread.
+        // Each login uses per-PID resources (SHM, window handle, DLL hooks)
+        // so multiple logins can run concurrently without interference.
         var loginAccount = account;
-        Task.Run(async () =>
-        {
-            await _loginGate.WaitAsync();
-            try
-            {
-                RunLoginSequence(pid, loginAccount, password);
-            }
-            finally
-            {
-                _loginGate.Release();
-            }
-        });
+        return Task.Run(() => RunLoginSequence(pid, loginAccount, password));
     }
 
     private void RunLoginSequence(int pid, LoginAccount account, string password)

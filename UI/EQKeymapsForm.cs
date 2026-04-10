@@ -19,9 +19,9 @@ public class EQKeymapsForm : Form
     private readonly Dictionary<string, long> _initialValues = new();
 
     // Grouped key mappings: (IniKey, DisplayLabel, DefaultCode)
-    private static readonly (string Header, (string Key, string Label, long DefaultCode)[] Entries)[] Groups =
+    private static readonly (string Header, string Emoji, (string Key, string Label, long DefaultCode)[] Entries)[] Groups =
     {
-        ("⚔  Targeting", new[]
+        ("Targeting", "⚔", new[]
         {
             ("KEYMAPPING_TARGETNPC_2", "Target NPC (Alt)", 209L),
             ("KEYMAPPING_CONSIDER_2", "Consider (Alt)", 83L),
@@ -29,12 +29,12 @@ public class EQKeymapsForm : Form
             ("KEYMAPPING_TOGGLETWOTARGETS_1", "Toggle Two Targets", 82L),
             ("KEYMAPPING_TOGGLETWOTARGETS_2", "Toggle Two Targets (Alt)", 0L),
         }),
-        ("\uD83D\uDEE1  Combat & Items", new[]
+        ("Combat & Items", "\uD83D\uDEE1", new[]
         {
             ("KEYMAPPING_AUTOPRIM_2", "Auto-Primary (Alt)", 211L),
             ("KEYMAPPING_POTION_SLOT_3_1", "Potion Slot 3", 0L),
         }),
-        ("\uD83D\uDD27  Utility", new[]
+        ("Utility", "\uD83D\uDD27", new[]
         {
             ("KEYMAPPING_CMD_CLIPBOARD_PASTE_1", "Clipboard Paste", 536870959L),
             ("KEYMAPPING_CMD_TOGGLE_AUDIO_TRIGGER_WINDOW_1", "Audio Triggers", 268435486L),
@@ -99,71 +99,64 @@ public class EQKeymapsForm : Form
         StartPosition = FormStartPosition.CenterParent;
         AutoScroll = true;
 
-        int y = 12;
-        y = DarkTheme.AddSectionHeader(this, "\u2328  EQ Key Mappings", 15, y);
-        DarkTheme.AddHint(this, "Reads current bindings from eqclient.ini.\nEdit the scan code \u2014 the key name updates live.", 15, y);
-        y += 35;
+        int y = 8;
 
-        foreach (var (header, entries) in Groups)
+        foreach (var (header, emoji, entries) in Groups)
         {
-            // Group header
-            var groupLabel = new Label
-            {
-                Text = header,
-                Location = new Point(15, y),
-                AutoSize = true,
-                ForeColor = DarkTheme.AccentBar,
-                Font = new Font("Segoe UI Semibold", 9)
-            };
-            Controls.Add(groupLabel);
-            y += 22;
+            int cardHeight = 30 + entries.Length * 26 + 4;
+            var card = DarkTheme.MakeCard(this, emoji, header, DarkTheme.CardGold, 10, y, 440, cardHeight);
+            int cy = 30;
 
             foreach (var (key, label, def) in entries)
             {
-                // Action label (left)
-                DarkTheme.AddLabel(this, label, 30, y + 3);
+                DarkTheme.AddCardLabel(card, label, 10, cy + 2);
 
-                // Decoded key name (prominent, right-aligned before the numeric)
-                var keyLabel = new Label
-                {
-                    Text = GetKeyName(def),
-                    Location = new Point(210, y + 3),
-                    Size = new Size(130, 16),
-                    ForeColor = DarkTheme.FgWhite,
-                    TextAlign = ContentAlignment.MiddleRight,
-                    Font = new Font("Consolas", 9)
-                };
-                Controls.Add(keyLabel);
+                // Decoded key name (right-aligned before numeric)
+                var keyLabel = DarkTheme.AddCardLabel(card, GetKeyName(def), 195, cy + 2);
+                keyLabel.AutoSize = false;
+                keyLabel.Size = new Size(130, 16);
+                keyLabel.TextAlign = ContentAlignment.MiddleRight;
+                keyLabel.ForeColor = DarkTheme.FgWhite;
                 _keyLabels[key] = keyLabel;
 
                 // Scan code numeric (small, secondary)
-                var nud = DarkTheme.AddNumeric(this, 350, y, 100, def, 0, 2000000000);
+                var nud = DarkTheme.AddCardNumeric(card, 335, cy, 95, def, 0, 2000000000);
                 nud.ForeColor = DarkTheme.FgGray;
-                nud.Font = new Font("Consolas", 8);
+                nud.Font = DarkTheme.FontUI85;
                 _nudValues[key] = nud;
 
                 // Live update decoded label
                 var lbl = keyLabel;
                 nud.ValueChanged += (_, _) => lbl.Text = GetKeyName((long)nud.Value);
 
-                y += 26;
+                cy += 26;
             }
 
-            y += 8; // gap between groups
+            y += cardHeight + 8;
         }
 
-        y += 10;
+        DarkTheme.AddHint(this, "Edit the scan code — the key name updates live. 0 = unbound.", 15, y);
+        y += 22;
 
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 80, y);
+        // ─── Docked bottom panel with Save/Apply/Cancel ──────────
+        var buttonPanel = new Panel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 50,
+            BackColor = DarkTheme.BgDark
+        };
+
+        var btnSave = DarkTheme.MakePrimaryButton("Save", 110, 10);
         btnSave.Click += (_, _) => { SaveSettings(); Close(); };
 
-        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 170, y);
+        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 200, 10);
         btnApply.Click += (_, _) => { SaveSettings(); };
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 260, y);
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 290, 10);
         btnCancel.Click += (_, _) => Close();
 
-        Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
+        buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
+        Controls.Add(buttonPanel);
     }
 
     /// <summary>

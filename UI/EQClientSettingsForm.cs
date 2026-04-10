@@ -85,6 +85,7 @@ public class EQClientSettingsForm : Form
         _chkDisableInspectOthers = DarkTheme.AddCardCheckBox(cardGame, "Disable Inspect Others", C3, cy);
         cy += RH;
         _chkForceWindowed = DarkTheme.AddCardCheckBox(cardGame, "Force Windowed Mode", C1, cy);
+        DarkTheme.AddCardHint(cardGame, "writes to [Defaults] + [VideoMode]", C1 + 165, cy + 2);
 
         y += 138;
 
@@ -100,7 +101,7 @@ public class EQClientSettingsForm : Form
         _chkDisableCombatMusic = DarkTheme.AddCardCheckBox(cardSound, "Disable Combat Music", C2, cy);
         DarkTheme.AddCardLabel(cardSound, "Volume:", C3, cy + 2);
         _nudSoundVolume = DarkTheme.AddCardNumeric(cardSound, C3 + 55, cy, 50, Math.Clamp(_config.EQClientIni.SoundVolume, -1, 100), -1, 100);
-        DarkTheme.AddCardHint(cardSound, "(-1 = skip)", C3 + 110, cy + 4);
+        DarkTheme.AddCardHint(cardSound, "(-1 = don't set)", C3 + 110, cy + 4);
 
         y += 93;
 
@@ -141,7 +142,7 @@ public class EQClientSettingsForm : Form
         DarkTheme.AddCardHint(cardPerf, "(0 = don't set)", 380, cy + 4);
         DarkTheme.AddCardLabel(cardPerf, "Mouse:", 500, cy + 2);
         _nudMouseSensitivity = DarkTheme.AddCardNumeric(cardPerf, 555, cy, 50, Math.Clamp(_config.EQClientIni.MouseSensitivity, -1, 100), -1, 100);
-        DarkTheme.AddCardHint(cardPerf, "(-1 = skip)", 610, cy + 4);
+        DarkTheme.AddCardHint(cardPerf, "(-1 = don't set)", 610, cy + 4);
 
         // Row 2: Clip | Shadow | Actor
         cy += RH + 6;
@@ -185,13 +186,13 @@ public class EQClientSettingsForm : Form
             BackColor = DarkTheme.BgDark
         };
 
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 250, 10);
+        var btnSave = DarkTheme.MakePrimaryButton("Save", 260, 10);
         btnSave.Click += (_, _) => { SaveSettings(); Close(); };
 
-        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 340, 10);
+        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 350, 10);
         btnApply.Click += (_, _) => { SaveSettings(); };
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 430, 10);
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 440, 10);
         btnCancel.Click += (_, _) => Close();
 
         buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });

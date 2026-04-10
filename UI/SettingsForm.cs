@@ -297,12 +297,12 @@ public class SettingsForm : Form
 
         // Switch key — prominent, right under card title
         _lblSwitchKey = DarkTheme.AddCardLabel(cardEQ, "EQ Switch Key:", L, cy);
-        _lblSwitchKey.Font = new Font("Segoe UI Semibold", 8.5f);
+        _lblSwitchKey.Font = TrackFont(new Font("Segoe UI Semibold", 8.5f));
         _txtSwitchKeyGeneral = new TextBox
         {
             Location = new Point(I, cy - 2), Size = new Size(80, 24),
             BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 10f, FontStyle.Bold),
+            BorderStyle = BorderStyle.FixedSingle, Font = TrackFont(new Font("Consolas", 10f, FontStyle.Bold)),
             TextAlign = HorizontalAlignment.Center,
             ShortcutsEnabled = false
         };
@@ -338,10 +338,9 @@ public class SettingsForm : Form
         y += 126;
 
         // ─── Preferences card ────────────────────────────────────
-        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardGold, 10, y, 480, 65);
-        cy = 32;
+        var cardPrefs = DarkTheme.MakeCard(page, "\u2699", "Preferences", DarkTheme.CardGold, 10, y, 480, 38);
 
-        var btnEQSettings = DarkTheme.AddCardButton(cardPrefs, "\uD83D\uDCDD EQ Client Settings...", 47, cy, 170);
+        var btnEQSettings = DarkTheme.AddCardButton(cardPrefs, "EQ Client Settings...", 143, 7, 140);
         btnEQSettings.Click += (_, _) =>
         {
             if (_eqClientSettingsForm != null && !_eqClientSettingsForm.IsDisposed)
@@ -354,10 +353,10 @@ public class SettingsForm : Form
             _eqClientSettingsForm.FormClosed += (_, _) => _eqClientSettingsForm = null;
             _eqClientSettingsForm.Show();
         };
-        var btnProcessMgr = DarkTheme.AddCardButton(cardPrefs, "⚡ Process Manager...", 264, cy, 170);
+        var btnProcessMgr = DarkTheme.AddCardButton(cardPrefs, "Process Manager...", 306, 7, 135);
         btnProcessMgr.Click += (_, _) => _openProcessManager?.Invoke();
 
-        y += 73;
+        y += 46;
 
         // ─── Tray Click Actions card ─────────────────────────────
         var clickActions = new[] { "None", "AutoLogin1", "AutoLogin2", "AutoLogin3", "AutoLogin4", "AutoLoginTeam1", "TogglePiP", "LaunchOne", "LaunchTwo", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4" };
@@ -395,23 +394,24 @@ public class SettingsForm : Form
         y += 139;
 
         // ─── Log Trim card ──────────────────────────────────────
-        var cardLog = DarkTheme.MakeCard(page, "✂", "Log File Trimming", DarkTheme.CardCyan, 10, y, 480, 60);
-        DarkTheme.AddCardLabel(cardLog, "Trim threshold:", 10, 30);
-        _nudLogTrimThreshold = DarkTheme.AddCardNumeric(cardLog, 120, 28, 60, _config.LogTrimThresholdMB, 10, 500);
+        var cardLog = DarkTheme.MakeCard(page, "✂", "Log File Trimming", DarkTheme.CardCyan, 10, y, 480, 48);
+        DarkTheme.AddCardLabel(cardLog, "Threshold:", 175, 10);
+        _nudLogTrimThreshold = DarkTheme.AddCardNumeric(cardLog, 248, 8, 55, _config.LogTrimThresholdMB, 10, 500);
         _nudLogTrimThreshold.Increment = 10;
-        DarkTheme.AddCardHint(cardLog, "MB", 185, 32);
-        var btnTrimNow = DarkTheme.MakeButton("✂ Trim Now", DarkTheme.BgInput, 370, 28);
-        btnTrimNow.Size = new Size(95, 22);
+        DarkTheme.AddCardHint(cardLog, "MB", 308, 12);
+        var btnTrimNow = DarkTheme.MakeButton("✂ Trim Now", DarkTheme.BgInput, 345, 7);
+        btnTrimNow.Size = new Size(85, 24);
         btnTrimNow.Font = DarkTheme.FontUI85;
         cardLog.Controls.Add(btnTrimNow);
         btnTrimNow.Click += (_, _) => FileOperations.TrimLogFiles(_config, (int)_nudLogTrimThreshold.Value, msg => MessageBox.Show(msg, "Trim Logs", MessageBoxButtons.OK, MessageBoxIcon.Information));
+        DarkTheme.AddCardHint(cardLog, "Async trim + archive old logs", 10, 30);
 
-        y += 68;
+        y += 56;
 
         // ─── Window Title card ───────────────────────────────────
-        var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 48);
-        _txtWindowTitleTemplate = DarkTheme.AddCardTextBox(cardTitle, 130, 4, 330, 100);
-        DarkTheme.AddCardHint(cardTitle, "Applied after client is in world", 10, 30);
+        var cardTitle = DarkTheme.MakeCard(page, "\uD83D\uDCDD", "Window Title", DarkTheme.CardGreen, 10, y, 480, 56);
+        _txtWindowTitleTemplate = DarkTheme.AddCardTextBox(cardTitle, 130, 8, 330, 100);
+        DarkTheme.AddCardHint(cardTitle, "Applied after client is in world", 10, 36);
 
         return page;
     }
@@ -529,7 +529,7 @@ public class SettingsForm : Form
         {
             Location = new Point(x, y), Size = new Size(width, 20),
             BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            BorderStyle = BorderStyle.None, Font = new Font("Consolas", 9f),
+            BorderStyle = BorderStyle.None, Font = TrackFont(new Font("Consolas", 9f)),
             TextAlign = HorizontalAlignment.Center,
             ShortcutsEnabled = false
         };
@@ -593,34 +593,34 @@ public class SettingsForm : Form
         y += 120;
 
         // ─── Auto-Login Hotkeys ─────────────────────────────────
-        var hkCard = DarkTheme.MakeCard(page, "\u2328", "Auto-Login Hotkeys", DarkTheme.CardGreen, 10, y, 480, 104);
+        var hkCard = DarkTheme.MakeCard(page, "\u2328", "Auto-Login Hotkeys", DarkTheme.CardGreen, 10, y, 480, 112);
 
         // Accounts row — 4 columns fit within 480px card
-        const int hkL = 65, hkW = 80, hkS = 100;  // label-start, box-width, column-stride
+        const int hkL = 65, hkW = 78, hkG = 18, hkS = 100;  // label-start, box-width, label-to-box gap, column-stride
         var lblAccounts = DarkTheme.AddCardLabel(hkCard, "Accounts", 10, 34);
         lblAccounts.Font = TrackFont(new Font("Segoe UI Semibold", 8f));
         lblAccounts.ForeColor = DarkTheme.FgDimGray;
         DarkTheme.AddCardLabel(hkCard, "1:", hkL, 34);
-        _txtAutoLogin1Hotkey = MakeHotkeyBox(hkCard, hkL + 15, 32, hkW);
+        _txtAutoLogin1Hotkey = MakeHotkeyBox(hkCard, hkL + hkG, 32, hkW);
         DarkTheme.AddCardLabel(hkCard, "2:", hkL + hkS, 34);
-        _txtAutoLogin2Hotkey = MakeHotkeyBox(hkCard, hkL + hkS + 15, 32, hkW);
+        _txtAutoLogin2Hotkey = MakeHotkeyBox(hkCard, hkL + hkS + hkG, 32, hkW);
         DarkTheme.AddCardLabel(hkCard, "3:", hkL + hkS * 2, 34);
-        _txtAutoLogin3Hotkey = MakeHotkeyBox(hkCard, hkL + hkS * 2 + 15, 32, hkW);
+        _txtAutoLogin3Hotkey = MakeHotkeyBox(hkCard, hkL + hkS * 2 + hkG, 32, hkW);
         DarkTheme.AddCardLabel(hkCard, "4:", hkL + hkS * 3, 34);
-        _txtAutoLogin4Hotkey = MakeHotkeyBox(hkCard, hkL + hkS * 3 + 15, 32, hkW);
+        _txtAutoLogin4Hotkey = MakeHotkeyBox(hkCard, hkL + hkS * 3 + hkG, 32, hkW);
 
         // Teams row
         var lblTeams = DarkTheme.AddCardLabel(hkCard, "Teams", 10, 62);
         lblTeams.Font = TrackFont(new Font("Segoe UI Semibold", 8f));
         lblTeams.ForeColor = DarkTheme.FgDimGray;
         DarkTheme.AddCardLabel(hkCard, "1:", hkL, 62);
-        _txtTeamLogin1Hotkey = MakeHotkeyBox(hkCard, hkL + 15, 60, hkW);
+        _txtTeamLogin1Hotkey = MakeHotkeyBox(hkCard, hkL + hkG, 60, hkW);
         DarkTheme.AddCardLabel(hkCard, "2:", hkL + hkS, 62);
-        _txtTeamLogin2Hotkey = MakeHotkeyBox(hkCard, hkL + hkS + 15, 60, hkW);
+        _txtTeamLogin2Hotkey = MakeHotkeyBox(hkCard, hkL + hkS + hkG, 60, hkW);
         DarkTheme.AddCardLabel(hkCard, "3:", hkL + hkS * 2, 62);
-        _txtTeamLogin3Hotkey = MakeHotkeyBox(hkCard, hkL + hkS * 2 + 15, 60, hkW);
+        _txtTeamLogin3Hotkey = MakeHotkeyBox(hkCard, hkL + hkS * 2 + hkG, 60, hkW);
         DarkTheme.AddCardLabel(hkCard, "4:", hkL + hkS * 3, 62);
-        _txtTeamLogin4Hotkey = MakeHotkeyBox(hkCard, hkL + hkS * 3 + 15, 60, hkW);
+        _txtTeamLogin4Hotkey = MakeHotkeyBox(hkCard, hkL + hkS * 3 + hkG, 60, hkW);
 
         // Hint + warning (same line — hint left, conflict warning right)
         DarkTheme.AddCardHint(hkCard, "Press combo to set. Backspace/Delete to clear.", 10, 88);
@@ -636,7 +636,7 @@ public class SettingsForm : Form
         _txtTeamLogin3Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
         _txtTeamLogin4Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
 
-        y += 112;
+        y += 120;
 
         // ─── Preferences card ────────────────────────────────────
         var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardCyan, 10, y, 480, 68);
@@ -980,8 +980,8 @@ public class SettingsForm : Form
     {
         bool hasKey = !string.IsNullOrWhiteSpace(_txtSwitchKeyGeneral.Text);
         var color = hasKey
-            ? Color.FromArgb(220, 190, 100)   // gold — key is set
-            : Color.FromArgb(220, 100, 100);  // red — not set
+            ? DarkTheme.CardGold    // gold — key is set
+            : DarkTheme.CardWarn;   // red — not set
         _txtSwitchKeyGeneral.ForeColor = color;
         _lblSwitchKey.ForeColor = color;
         _lblSwitchKey.Text = hasKey ? "EQ Switch Key:" : "EQ Switch Key: (not set!)";
@@ -1402,7 +1402,7 @@ public class SettingsForm : Form
         DarkTheme.AddCardHint(card, "Delay = seconds before typing credentials.", 250, 196);
 
         // ─── Quick Login Slots ───────────────────────────────────────
-        y += 226;
+        y += 224;
         var slotsCard = DarkTheme.MakeCard(page, "\u26A1", "Quick Individual Login Accounts", DarkTheme.CardGold, 10, y, 480, 110);
         DarkTheme.AddCardLabel(slotsCard, "Slot 1:", 10, 34);
         _cboQuickLogin1 = DarkTheme.AddCardComboBox(slotsCard, 55, 31, 150, Array.Empty<string>());
@@ -1424,34 +1424,27 @@ public class SettingsForm : Form
         _cboQuickLogin4.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
 
         // ─── Autologin Teams ─────────────────────────────────────────
-        y += 114;
+        y += 118;
         var teamsCard = DarkTheme.MakeCard(page, "\uD83D\uDC65", "Autologin Teams", DarkTheme.CardGold, 10, y, 480, 78);
-        var btnTeams = DarkTheme.AddCardButton(teamsCard, "Configure Teams...", 10, 28, 120);
+        var btnTeams = DarkTheme.AddCardButton(teamsCard, "Configure Teams...", 10, 32, 120);
         btnTeams.Click += (_, _) => ShowTeamsDialog();
-        _lblTeamSummary = DarkTheme.AddCardHint(teamsCard, BuildTeamSummary(), 10, 54);
+        _lblTeamSummary = DarkTheme.AddCardHint(teamsCard, BuildTeamSummary(), 140, 32);
+        _lblTeamSummary.Size = new Size(330, 28);
 
         // ─── Autologin Preferences ──────────────────────────────────
         y += 86;
-        var prefsCard = DarkTheme.MakeCard(page, "\u2699", "Autologin Preferences", DarkTheme.CardCyan, 10, y, 480, 96);
+        var prefsCard = DarkTheme.MakeCard(page, "\u2699", "Autologin Preferences", DarkTheme.CardCyan, 10, y, 480, 74);
         _chkAutoEnterWorld = DarkTheme.AddCheckBox(prefsCard, "Auto Enter World (experimental)", 10, 30);
         _chkAutoEnterWorld.Checked = _config.AutoEnterWorld;
-        DarkTheme.AddCardHint(prefsCard, "Enters world as last-loaded character.", 10, 50);
-        DarkTheme.AddCardHint(prefsCard, "Uncheck to stop at character select.", 10, 62);
+        DarkTheme.AddCardHint(prefsCard, "Enters world as last character. Uncheck to stop at char select.", 10, 50);
 
-        DarkTheme.AddCardLabel(prefsCard, "Accounts", 300, 30);
-        var btnBackup = DarkTheme.MakeButton("📤 Backup", DarkTheme.BgInput, 375, 28);
-        btnBackup.Size = new Size(80, 22);
-        btnBackup.Font = DarkTheme.FontUI85;
-        prefsCard.Controls.Add(btnBackup);
+        var btnBackup = DarkTheme.AddCardButton(prefsCard, "\uD83D\uDCE4 Backup", 310, 30, 75);
         btnBackup.Click += (_, _) => ExportAccounts();
 
-        var btnImport = DarkTheme.MakeButton("📥 Import", DarkTheme.BgInput, 375, 54);
-        btnImport.Size = new Size(80, 22);
-        btnImport.Font = DarkTheme.FontUI85;
-        prefsCard.Controls.Add(btnImport);
+        var btnImport = DarkTheme.AddCardButton(prefsCard, "\uD83D\uDCE5 Import", 390, 30, 75);
         btnImport.Click += (_, _) => ImportAccounts();
 
-        DarkTheme.AddCardHint(prefsCard, "Same Windows\ninstall only", 280, 52);
+        DarkTheme.AddCardHint(prefsCard, "DPAPI \u2014 same Windows user only", 310, 56);
 
         return page;
     }
@@ -1553,6 +1546,9 @@ public class SettingsForm : Form
 
         DarkTheme.AddLabel(dlg, "Server:", L, y);
         var txtServer = MakeTextBox(I, y - 2, W, existing?.Server ?? "Dalaya");
+        txtServer.ReadOnly = true;
+        txtServer.BackColor = DarkTheme.BgMedium;
+        txtServer.ForeColor = DarkTheme.FgDimGray;
         y += R;
 
         y += 5;
@@ -1613,13 +1609,11 @@ public class SettingsForm : Form
                 .ToList();
             return names.Count > 0 ? string.Join(" + ", names) : "(none)";
         }
-        var parts = new[] {
-            $"T1: {Fmt(_pendingTeam1A, _pendingTeam1B)}",
-            $"T2: {Fmt(_pendingTeam2A, _pendingTeam2B)}",
-            $"T3: {Fmt(_pendingTeam3A, _pendingTeam3B)}",
-            $"T4: {Fmt(_pendingTeam4A, _pendingTeam4B)}"
-        };
-        return string.Join("  |  ", parts);
+        var t1 = $"T1: {Fmt(_pendingTeam1A, _pendingTeam1B)}";
+        var t2 = $"T2: {Fmt(_pendingTeam2A, _pendingTeam2B)}";
+        var t3 = $"T3: {Fmt(_pendingTeam3A, _pendingTeam3B)}";
+        var t4 = $"T4: {Fmt(_pendingTeam4A, _pendingTeam4B)}";
+        return $"{t1}  |  {t2}\n{t3}  |  {t4}";
     }
 
     private void ShowTeamsDialog()
@@ -1868,8 +1862,8 @@ public class SettingsForm : Form
 
         const int hintX = 260;
 
-        var btnWrapper = DarkTheme.MakeButton("⚙ Advanced...", DarkTheme.BgInput, 385, 6);
-        btnWrapper.Size = new Size(80, 20);
+        var btnWrapper = DarkTheme.MakeButton("⚙ Advanced...", DarkTheme.BgInput, 385, 5);
+        btnWrapper.Size = new Size(80, 24);
         btnWrapper.Font = DarkTheme.FontUI85;
         cardStyle.Controls.Add(btnWrapper);
 

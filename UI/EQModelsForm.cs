@@ -16,59 +16,46 @@ public class EQModelsForm : Form
     // Snapshot of values loaded from INI — only write keys that changed
     private readonly Dictionary<string, bool> _initialValues = new();
 
-    // Use shared DarkTheme palette
-
     /// <summary>
     /// Model settings with display names and INI key names.
     /// Grouped: global toggles first, then by race.
     /// </summary>
-    private static readonly (string Key, string Label)[] ModelSettings =
+    private static readonly (string Key, string Label)[] GlobalSettings =
     {
-        // Global toggles
         ("LoadSocialAnimations", "Load Social Animations"),
         ("AllLuclinPcModelsOff", "All Luclin PC Models Off"),
         ("LoadVeliousArmorsWithLuclin", "Load Velious Armors with Luclin"),
         ("UseLuclinElementals", "Use Luclin Elementals"),
-        // Human
+    };
+
+    private static readonly (string Key, string Label)[] RaceSettings =
+    {
         ("UseLuclinHumanMale", "Human Male"),
         ("UseLuclinHumanFemale", "Human Female"),
-        // Barbarian
         ("UseLuclinBarbarianMale", "Barbarian Male"),
         ("UseLuclinBarbarianFemale", "Barbarian Female"),
-        // Erudite
         ("UseLuclinEruditeMale", "Erudite Male"),
         ("UseLuclinEruditeFemale", "Erudite Female"),
-        // Wood Elf
         ("UseLuclinWoodElfMale", "Wood Elf Male"),
         ("UseLuclinWoodElfFemale", "Wood Elf Female"),
-        // High Elf
         ("UseLuclinHighElfMale", "High Elf Male"),
         ("UseLuclinHighElfFemale", "High Elf Female"),
-        // Dark Elf
         ("UseLuclinDarkElfMale", "Dark Elf Male"),
         ("UseLuclinDarkElfFemale", "Dark Elf Female"),
-        // Half Elf
         ("UseLuclinHalfElfMale", "Half Elf Male"),
         ("UseLuclinHalfElfFemale", "Half Elf Female"),
-        // Dwarf
         ("UseLuclinDwarfMale", "Dwarf Male"),
         ("UseLuclinDwarfFemale", "Dwarf Female"),
-        // Troll
         ("UseLuclinTrollMale", "Troll Male"),
         ("UseLuclinTrollFemale", "Troll Female"),
-        // Ogre
         ("UseLuclinOgreMale", "Ogre Male"),
         ("UseLuclinOgreFemale", "Ogre Female"),
-        // Halfling
         ("UseLuclinHalflingMale", "Halfling Male"),
         ("UseLuclinHalflingFemale", "Halfling Female"),
-        // Gnome
         ("UseLuclinGnomeMale", "Gnome Male"),
         ("UseLuclinGnomeFemale", "Gnome Female"),
-        // Iksar
         ("UseLuclinIksarMale", "Iksar Male"),
         ("UseLuclinIksarFemale", "Iksar Female"),
-        // Vah Shir
         ("UseLuclinVahShirMale", "Vah Shir Male"),
         ("UseLuclinVahShirFemale", "Vah Shir Female"),
     };
@@ -83,124 +70,101 @@ public class EQModelsForm : Form
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 Luclin Model Settings", new Size(460, 600));
+        DarkTheme.StyleForm(this, "EQSwitch \u2014 Luclin Model Settings", new Size(480, 620));
         StartPosition = FormStartPosition.CenterParent;
 
-        // Scrollable panel for all the checkboxes
-        var panel = new Panel
+        // Scrollable content panel
+        var scrollPanel = new Panel
         {
             Location = new Point(0, 0),
-            Size = new Size(440, 510),
+            Dock = DockStyle.Fill,
             AutoScroll = true,
             BackColor = DarkTheme.BgDark
         };
 
-        int y = 10;
+        int y = 8;
 
-        var header = new Label
-        {
-            Text = "\uD83C\uDFAD  Luclin Model Overrides",
-            Location = new Point(15, y),
-            AutoSize = true,
-            Font = new Font("Segoe UI", 10, FontStyle.Bold),
-            ForeColor = DarkTheme.FgWhite
-        };
-        panel.Controls.Add(header);
+        // ─── Global Toggles card ──────────────────────────────────
+        int globalH = 30 + GlobalSettings.Length * 22 + 8;
+        var cardGlobal = DarkTheme.MakeCard(scrollPanel, "\u2699", "Global Toggles", DarkTheme.CardGold, 10, y, 430, globalH);
+        int cy = 30;
 
-        var hint = new Label
+        foreach (var (key, label) in GlobalSettings)
         {
-            Text = "Check = use Luclin model, Uncheck = use classic model.\nRead from eqclient.ini on open, saved on Save.",
-            Location = new Point(15, y += 25),
-            Size = new Size(400, 32),
-            ForeColor = DarkTheme.FgGray,
-            Font = new Font("Segoe UI", 8, FontStyle.Italic)
-        };
-        panel.Controls.Add(hint);
-        y += 40;
+            bool savedValue = _config.EQClientIni.ModelOverrides.TryGetValue(key, out bool v) && v;
+            var chk = DarkTheme.AddCardCheckBox(cardGlobal, label, 10, cy);
+            chk.Checked = savedValue;
+            _checkboxes[key] = chk;
+            cy += 22;
+        }
+
+        y += globalH + 8;
+
+        // ─── Race Models card ─────────────────────────────────────
+        int raceRows = (RaceSettings.Length + 1) / 2;
+        int raceH = 30 + raceRows * 22 + 38; // extra space for quick buttons
+        var cardRace = DarkTheme.MakeCard(scrollPanel, "\uD83C\uDFAD", "Race Models", DarkTheme.CardPurple, 10, y, 430, raceH);
+        cy = 30;
 
         // Quick buttons
-        var btnAll = DarkTheme.MakeButton("All Luclin", DarkTheme.BgMedium, 15, y);
-        btnAll.Size = new Size(90, 25);
+        var btnAll = DarkTheme.AddCardButton(cardRace, "All Luclin", 10, cy, 90);
         btnAll.Click += (_, _) => SetAllRaceModels(true);
-        panel.Controls.Add(btnAll);
 
-        var btnNone = DarkTheme.MakeButton("All Classic", DarkTheme.BgMedium, 115, y);
-        btnNone.Size = new Size(90, 25);
+        var btnNone = DarkTheme.AddCardButton(cardRace, "All Classic", 110, cy, 90);
         btnNone.Click += (_, _) => SetAllRaceModels(false);
-        panel.Controls.Add(btnNone);
-        y += 35;
 
-        // Generate checkboxes — two columns for race models
-        int col1X = 20;
-        int col2X = 230;
-        bool useCol2 = false;
-        int globalEnd = 4; // first 4 are global toggles, full width
+        DarkTheme.AddCardHint(cardRace, "Check = Luclin model, Uncheck = classic", 210, cy + 5);
+        cy += 30;
 
-        for (int i = 0; i < ModelSettings.Length; i++)
+        // Two columns of checkboxes
+        for (int i = 0; i < RaceSettings.Length; i += 2)
         {
-            var (key, label) = ModelSettings[i];
+            var (key1, label1) = RaceSettings[i];
+            bool saved1 = _config.EQClientIni.ModelOverrides.TryGetValue(key1, out bool v1) && v1;
+            var chk1 = DarkTheme.AddCardCheckBox(cardRace, label1, 10, cy);
+            chk1.Checked = saved1;
+            _checkboxes[key1] = chk1;
 
-            bool savedValue = _config.EQClientIni.ModelOverrides.TryGetValue(key, out bool v) && v;
-
-            var chk = new CheckBox
+            if (i + 1 < RaceSettings.Length)
             {
-                Text = label,
-                AutoSize = true,
-                ForeColor = DarkTheme.FgWhite,
-                Checked = savedValue
-            };
-
-            if (i < globalEnd)
-            {
-                // Global toggles — full width, single column
-                chk.Location = new Point(col1X, y);
-                y += 25;
-            }
-            else
-            {
-                // Race models — two columns
-                if (!useCol2)
-                {
-                    chk.Location = new Point(col1X, y);
-                    useCol2 = true;
-                }
-                else
-                {
-                    chk.Location = new Point(col2X, y);
-                    useCol2 = false;
-                    y += 25;
-                }
+                var (key2, label2) = RaceSettings[i + 1];
+                bool saved2 = _config.EQClientIni.ModelOverrides.TryGetValue(key2, out bool v2) && v2;
+                var chk2 = DarkTheme.AddCardCheckBox(cardRace, label2, 220, cy);
+                chk2.Checked = saved2;
+                _checkboxes[key2] = chk2;
             }
 
-            panel.Controls.Add(chk);
-            _checkboxes[key] = chk;
+            cy += 22;
         }
-        // Handle odd number of race entries
-        if (useCol2) y += 25;
 
-        Controls.Add(panel);
+        Controls.Add(scrollPanel);
 
-        // Buttons at bottom
-        int btnY = 520;
+        // ─── Docked bottom panel with Save/Apply/Cancel ──────────
+        var buttonPanel = new Panel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 50,
+            BackColor = DarkTheme.BgDark
+        };
 
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 150, btnY);
+        var btnSave = DarkTheme.MakePrimaryButton("Save", 110, 10);
         btnSave.Click += (_, _) => { SaveSettings(); Close(); };
 
-        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 240, btnY);
+        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 200, 10);
         btnApply.Click += (_, _) => { SaveSettings(); };
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 330, btnY);
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 290, 10);
         btnCancel.Click += (_, _) => Close();
 
-        Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
+        buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
+        Controls.Add(buttonPanel);
     }
 
     private void SetAllRaceModels(bool value)
     {
-        // Skip the first 4 global toggles
-        for (int i = 4; i < ModelSettings.Length; i++)
+        foreach (var (key, _) in RaceSettings)
         {
-            if (_checkboxes.TryGetValue(ModelSettings[i].Key, out var chk))
+            if (_checkboxes.TryGetValue(key, out var chk))
                 chk.Checked = value;
         }
     }
