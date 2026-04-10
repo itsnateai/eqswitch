@@ -1,10 +1,10 @@
-// Native/mq2_bridge.h — MQ2 bridge for character select via Dalaya's dinput8.dll exports
+// Native/mq2_bridge.h -- MQ2 bridge for character select + in-process login
 #pragma once
 #include <windows.h>
 #include <stdint.h>
 
+// ─── CharSelect Shared Memory (existing) ──────────────────────
 // Shared memory name: "Local\EQSwitchCharSel_{PID}"
-// C# creates it (like KeyInputWriter pattern), DLL reads/writes.
 
 #define CHARSEL_SHM_MAGIC 0x45534353  // "ESCS"
 #define CHARSEL_MAX_CHARS 8
@@ -19,7 +19,7 @@ struct CharSelectShm {
     int32_t  selectedIndex;    // Currently selected index in list (-1 = none)
     uint32_t mq2Available;     // 1 = MQ2 exports resolved, 0 = not found
 
-    // C# → DLL: request character selection
+    // C# -> DLL: request character selection
     int32_t  requestedIndex;   // Set by C# to index to select (-1 = no request)
     uint32_t requestSeq;       // Incremented by C# on each new request
     uint32_t ackSeq;           // Set by DLL when request is processed
@@ -30,19 +30,47 @@ struct CharSelectShm {
     int32_t  classes[CHARSEL_MAX_CHARS];
 };
 #pragma pack(pop)
-// Total struct size: 4+4+4+4+4+4 + 4+4+4 + (8*64)+(8*4)+(8*4) = 36 + 512 + 32 + 32 = 612 bytes
+
+// Forward declare LoginShm (defined in login_shm.h)
+struct LoginShm;
 
 namespace MQ2Bridge {
+    // ─── Lifecycle ─────────────────────────────────────────────
     // Call once from DLL init thread (after dinput8.dll is loaded).
-    // Resolves MQ2 exports. Returns true if exports found.
     bool Init();
-
-    // Call periodically (e.g., every 500ms from the existing SHM poll thread).
-    // Reads game state, populates char list when at char select,
-    // processes selection requests from C#.
-    // shm = pointer to the mapped CharSelectShm (created by C# CharSelectReader).
     void Poll(volatile CharSelectShm* shm);
-
-    // Cleanup. Call from DLL_PROCESS_DETACH.
     void Shutdown();
+
+    // ─── Game state ────────────────────────────────────────────
+    // Read gGameState safely (SEH-wrapped). Returns -99 if unavailable.
+    int ReadGameState();
+
+    // ─── Window finding ────────────────────────────────────────
+    // Find a top-level EQ window or child widget by name.
+    // Iterates ppWndMgr's window array, calls GetChildItem on each.
+    // Returns the widget pointer, or nullptr if not found.
+    void *FindWindowByName(const char *name);
+
+    // ─── UI manipulation (in-process login) ────────────────────
+    // Set text on a CEditWnd (username/password fields).
+    // Calls CXWnd::SetWindowText internally.
+    void SetEditText(void *pEditWnd, const char *text);
+
+    // Click a button via SendWndNotification(XWM_LCLICK).
+    void ClickButton(void *pButton);
+
+    // Read window text (for dialog messages like "password were not valid").
+    void ReadWindowText(void *pWnd, char *outBuf, int bufSize);
+
+    // ─── Character select helpers ──────────────────────────────
+    // Select a character by index in the Character_List CListWnd.
+    void SelectCharacter(void *pCharList, int index);
+
+    // Populate character data into LoginShm fields.
+    void PopulateCharacterData(volatile LoginShm *shm);
+
+    // ─── Diagnostics ───────────────────────────────────────────
+    // Enumerate all CXWnd windows and log their names.
+    // Used during Phase 0 to discover Dalaya's widget names.
+    void EnumerateAllWindows();
 }
