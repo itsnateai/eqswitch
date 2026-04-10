@@ -60,6 +60,7 @@ static HMODULE        g_hMQ2            = nullptr;
 static volatile int  *g_pGameState      = nullptr;
 static void         **g_ppEverQuest     = nullptr;
 static void         **g_ppWndMgr        = nullptr;
+static void         **g_ppWndMgr2       = nullptr;  // pinstCXWndManager (alternative)
 static FN_GetItemText   g_fnGetItemText   = nullptr;
 static FN_SetCurSel     g_fnSetCurSel     = nullptr;
 static FN_GetCurSel     g_fnGetCurSel     = nullptr;
@@ -200,9 +201,18 @@ static bool IsReadablePtr(const void *ptr, size_t size) {
 }
 
 // ─── WndMgr window iteration ─────────────────────────────────
-// Common ROF2 x86 offsets for ArrayClass<CXWnd*> inside CXWndManager
+// CXWndManager layout (from MQ2 CXWnd.h):
+//   64-bit: pWindows ArrayClass<CXWnd*> at offset 0x008
+//   32-bit (x86): vtable(4) then pWindows ArrayClass at offset 0x004
+// ArrayClass on x86 = {T* Data, int Count, int Alloc} = 12 bytes
+// We scan a range of offsets starting from the top of the struct.
 
-static const uint32_t g_wndMgrOffsets[] = { 0x58, 0x5C, 0x60, 0x54, 0x64, 0x50, 0x68 };
+static const uint32_t g_wndMgrOffsets[] = {
+    0x04, 0x08, 0x0C, 0x10, 0x14, 0x18, 0x1C, 0x20,
+    0x24, 0x28, 0x2C, 0x30, 0x34, 0x38, 0x3C, 0x40,
+    // Also try the old offsets in case of a different build
+    0x50, 0x54, 0x58, 0x5C, 0x60, 0x64, 0x68
+};
 static const int g_numWndMgrOffsets = sizeof(g_wndMgrOffsets) / sizeof(g_wndMgrOffsets[0]);
 
 // Cached working offset for WndMgr window array
@@ -213,12 +223,28 @@ static bool g_wndMgrOffsetFound = false;
 // Returns true if iteration succeeded.
 typedef bool (*WndIterCallback)(void *pWnd, void *context);
 
-static bool IterateAllWindows(WndIterCallback callback, void *context) {
-    if (!g_ppWndMgr) return false;
+static int g_iterLogCount = 0;
 
+static bool IterateAllWindows(WndIterCallback callback, void *context) {
+    // Try both WndMgr pointers — ppWndMgr and pinstCXWndManager may point
+    // to different things or one may be null at login screen
     void *pWndMgr = nullptr;
-    __try { pWndMgr = *g_ppWndMgr; }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+
+    if (g_ppWndMgr) {
+        __try { pWndMgr = *g_ppWndMgr; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { pWndMgr = nullptr; }
+    }
+
+    // Try pinstCXWndManager as alternative
+    if (!pWndMgr && g_ppWndMgr2) {
+        __try { pWndMgr = *g_ppWndMgr2; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { pWndMgr = nullptr; }
+        if (pWndMgr && g_iterLogCount < 3) {
+            DI8Log("mq2_bridge: IterateAllWindows using pinstCXWndManager=%p", pWndMgr);
+            g_iterLogCount++;
+        }
+    }
+
     if (!pWndMgr) return false;
 
     const uint8_t *pMgr = (const uint8_t *)pWndMgr;
@@ -264,6 +290,10 @@ static bool IterateAllWindows(WndIterCallback callback, void *context) {
             }
 
             // If we got through without crashing, cache this offset
+            if (!g_wndMgrOffsetFound) {
+                DI8Log("mq2_bridge: WndMgr window array found at offset 0x%X (%d windows)",
+                       off, arr->Count);
+            }
             g_wndMgrValidOffset = off;
             g_wndMgrOffsetFound = true;
 
@@ -361,9 +391,10 @@ bool MQ2Bridge::Init() {
     g_pGameState = (volatile int *)GetProcAddress(g_hMQ2, "gGameState");
     g_ppEverQuest = (void **)GetProcAddress(g_hMQ2, "ppEverQuest");
     g_ppWndMgr = (void **)GetProcAddress(g_hMQ2, "ppWndMgr");
+    g_ppWndMgr2 = (void **)GetProcAddress(g_hMQ2, "pinstCXWndManager");
 
-    DI8Log("mq2_bridge: gGameState=%p  ppEverQuest=%p  ppWndMgr=%p",
-           g_pGameState, g_ppEverQuest, g_ppWndMgr);
+    DI8Log("mq2_bridge: gGameState=%p  ppEverQuest=%p  ppWndMgr=%p  pinstCXWndMgr=%p",
+           g_pGameState, g_ppEverQuest, g_ppWndMgr, g_ppWndMgr2);
 
     // Resolve mangled C++ exports (__thiscall methods)
     g_fnSetCurSel = (FN_SetCurSel)GetProcAddress(g_hMQ2,
@@ -434,11 +465,26 @@ int MQ2Bridge::ReadGameState() {
 
 // ─── MQ2Bridge::FindWindowByName ───────────────────────────────
 
+static int g_findLogCount = 0;
+
 void *MQ2Bridge::FindWindowByName(const char *name) {
-    if (!g_fnGetChildItem || !name) return nullptr;
+    if (!g_fnGetChildItem || !name) {
+        if (g_findLogCount < 3) {
+            DI8Log("mq2_bridge: FindWindowByName('%s') — GetChildItem=%p", name ? name : "null", g_fnGetChildItem);
+            g_findLogCount++;
+        }
+        return nullptr;
+    }
 
     FindByNameCtx ctx = { name, nullptr };
-    IterateAllWindows(FindByNameCallback, &ctx);
+    bool iterated = IterateAllWindows(FindByNameCallback, &ctx);
+
+    if (g_findLogCount < 10 && !ctx.result) {
+        DI8Log("mq2_bridge: FindWindowByName('%s') — iterated=%d, result=%p, wndMgrFound=%d",
+               name, iterated, ctx.result, g_wndMgrOffsetFound);
+        g_findLogCount++;
+    }
+
     return ctx.result;
 }
 
@@ -462,7 +508,11 @@ void MQ2Bridge::SetEditText(void *pEditWnd, const char *text) {
 // ─── MQ2Bridge::ClickButton ───────────────────────────────────
 
 void MQ2Bridge::ClickButton(void *pButton) {
-    if (!g_fnWndNotification || !pButton) return;
+    if (!pButton) return;
+    if (!g_fnWndNotification) {
+        DI8Log("mq2_bridge: ClickButton SKIPPED — WndNotification export not resolved");
+        return;
+    }
 
     __try {
         // XWM_LCLICK = 1, matching MQ2AutoLogin's SendWndNotification pattern
@@ -721,6 +771,7 @@ void MQ2Bridge::Shutdown() {
     g_pGameState       = nullptr;
     g_ppEverQuest      = nullptr;
     g_ppWndMgr         = nullptr;
+    g_ppWndMgr2        = nullptr;
     g_fnGetItemText    = nullptr;
     g_fnSetCurSel      = nullptr;
     g_fnGetCurSel      = nullptr;
