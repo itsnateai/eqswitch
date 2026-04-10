@@ -19,16 +19,23 @@ A lightweight EverQuest multiboxer — hotkey switching, encrypted auto-login, P
 
 ## Download
 
-**[Download from Releases](https://github.com/itsnateai/eqswitch/releases/latest)**
+**[Download EQSwitch.zip from Releases](https://github.com/itsnateai/eqswitch/releases/latest)** — extract and run. No installer, no runtime needed.
 
-| File | Size | Notes |
-|------|------|-------|
-| **EQSwitch.exe** | ~179 MB | Self-contained — no runtime needed, click and go |
+> [!TIP]
+> Extract the zip to any folder and run `EQSwitch.exe`. Config is stored as `eqswitch-config.json` next to the exe.
+
+<details>
+<summary>What's in the zip?</summary>
+
+| File | Size | Purpose |
+|------|------|---------|
+| **EQSwitch.exe** | ~179 MB | Main app (self-contained, no .NET runtime needed) |
 | **eqswitch-hook.dll** | ~133 KB | Window management hooks (SetWindowPos/MoveWindow) |
 | **eqswitch-di8.dll** | ~148 KB | DirectInput hooks for background auto-login |
 
-> [!TIP]
-> Place all three files in the same folder and run — no installation needed. Config is stored as `eqswitch-config.json` next to the exe.
+All three files must be in the same folder.
+
+</details>
 
 ## Screenshots
 
@@ -54,7 +61,7 @@ A lightweight EverQuest multiboxer — hotkey switching, encrypted auto-login, P
 - **Custom Tray Icon** — Custom .ico support
 - **Auto-Login** — Encrypted account presets with one-click launch, login, server select, and character enter world
 - **Background Auto-Login** — Injects DirectInput hooks via suspended-process injection for true background input — no focus stealing, no game file modifications
-- **Portable** — Single exe + 2 DLLs, config stored next to it, no installer needed
+- **Portable** — One zip, extract anywhere, config stored next to the exe — no installer needed
 - **Privacy First** — Zero telemetry, no network calls, no data collection. Saved passwords are encrypted with Windows DPAPI and can only be decrypted by your Windows account on your machine
 
 ## Requirements
