@@ -90,6 +90,11 @@ public class SettingsForm : Form
     private TextBox _txtAutoLogin4Hotkey = null!;
     private Label _lblAutoLoginHotkeyWarn = null!;
     private Label _lblSlotDuplicateWarn = null!;
+    private Label _lblTeamSummary = null!;
+    private string _pendingTeam1A = "";
+    private string _pendingTeam1B = "";
+    private string _pendingTeam2A = "";
+    private string _pendingTeam2B = "";
     private CheckBox _chkAutoEnterWorld = null!;
 
     // ─── PiP tab controls
@@ -177,6 +182,11 @@ public class SettingsForm : Form
             Server = a.Server, CharacterName = a.CharacterName, CharacterSlot = a.CharacterSlot,
             UseLoginFlag = a.UseLoginFlag
         }).ToList();
+
+        _pendingTeam1A = _config.Team1Account1;
+        _pendingTeam1B = _config.Team1Account2;
+        _pendingTeam2A = _config.Team2Account1;
+        _pendingTeam2B = _config.Team2Account2;
 
         tabs.TabPages.Add(BuildGeneralTab());      // 0
         tabs.TabPages.Add(BuildVideoTab());        // 1
@@ -337,7 +347,7 @@ public class SettingsForm : Form
         y += 73;
 
         // ─── Tray Click Actions card ─────────────────────────────
-        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam", "TogglePiP", "LaunchOne", "LaunchTwo", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4" };
+        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam1", "TogglePiP", "LaunchOne", "LaunchTwo", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLoginTeam2", "AutoLogin2", "AutoLogin3", "AutoLogin4" };
         const int cboW = 140;
 
         var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 131);
@@ -1159,7 +1169,11 @@ public class SettingsForm : Form
             QuickLogin2 = GetQuickLoginUsername(_cboQuickLogin2),
             QuickLogin3 = GetQuickLoginUsername(_cboQuickLogin3),
             QuickLogin4 = GetQuickLoginUsername(_cboQuickLogin4),
-            AutoEnterWorld = _chkAutoEnterWorld.Checked
+            AutoEnterWorld = _chkAutoEnterWorld.Checked,
+            Team1Account1 = _pendingTeam1A,
+            Team1Account2 = _pendingTeam1B,
+            Team2Account1 = _pendingTeam2A,
+            Team2Account2 = _pendingTeam2B
         };
 
         // Apply startup registry change
@@ -1342,8 +1356,15 @@ public class SettingsForm : Form
         _cboQuickLogin3.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
         _cboQuickLogin4.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
 
-        // ─── Autologin Preferences ──────────────────────────────────
+        // ─── Autologin Teams ─────────────────────────────────────────
         y += 114;
+        var teamsCard = DarkTheme.MakeCard(page, "\uD83D\uDC65", "Autologin Teams", DarkTheme.CardGold, 10, y, 480, 65);
+        _lblTeamSummary = DarkTheme.AddCardHint(teamsCard, BuildTeamSummary(), 10, 32);
+        var btnTeams = DarkTheme.AddCardButton(teamsCard, "Configure Teams...", 340, 28, 120);
+        btnTeams.Click += (_, _) => ShowTeamsDialog();
+
+        // ─── Autologin Preferences ──────────────────────────────────
+        y += 69;
         var prefsCard = DarkTheme.MakeCard(page, "\u2699", "Autologin Preferences", DarkTheme.CardCyan, 10, y, 480, 78);
         _chkAutoEnterWorld = DarkTheme.AddCheckBox(prefsCard, "Auto Enter World", 10, 30);
         _chkAutoEnterWorld.Checked = _config.AutoEnterWorld;
@@ -1489,6 +1510,37 @@ public class SettingsForm : Form
 
         dlg.AcceptButton = (IButtonControl)btnOK;
         dlg.ShowDialog(this);
+    }
+
+    private string BuildTeamSummary()
+    {
+        string Fmt(string u1, string u2)
+        {
+            var names = new[] { u1, u2 }
+                .Where(u => !string.IsNullOrEmpty(u))
+                .Select(u => _pendingAccounts.FirstOrDefault(a => a.Username == u))
+                .Where(a => a != null)
+                .Select(a => string.IsNullOrEmpty(a!.CharacterName) ? a.Username : a.CharacterName)
+                .ToList();
+            return names.Count > 0 ? string.Join(" + ", names) : "(none)";
+        }
+        return $"Team 1: {Fmt(_pendingTeam1A, _pendingTeam1B)}  |  Team 2: {Fmt(_pendingTeam2A, _pendingTeam2B)}";
+    }
+
+    private void ShowTeamsDialog()
+    {
+        using var dlg = new AutoLoginTeamsDialog(
+            _pendingAccounts,
+            _pendingTeam1A, _pendingTeam1B,
+            _pendingTeam2A, _pendingTeam2B);
+        if (dlg.ShowDialog(this) == DialogResult.OK)
+        {
+            _pendingTeam1A = dlg.Team1Account1;
+            _pendingTeam1B = dlg.Team1Account2;
+            _pendingTeam2A = dlg.Team2Account1;
+            _pendingTeam2B = dlg.Team2Account2;
+            _lblTeamSummary.Text = BuildTeamSummary();
+        }
     }
 
     // ─── Video Tab (eqclient.ini) ───────────────────────────────────
@@ -2124,13 +2176,15 @@ public class SettingsForm : Form
     private static readonly Dictionary<string, string> _trayActionDisplayMap = new()
     {
         ["LaunchAll"] = "LaunchTwo",
-        ["LoginAll"] = "AutoLoginTeam"
+        ["LoginAll"] = "AutoLoginTeam1",
+        ["LoginAll2"] = "AutoLoginTeam2"
     };
 
     private static readonly Dictionary<string, string> _trayDisplayActionMap = new()
     {
         ["LaunchTwo"] = "LaunchAll",
-        ["AutoLoginTeam"] = "LoginAll"
+        ["AutoLoginTeam1"] = "LoginAll",
+        ["AutoLoginTeam2"] = "LoginAll2"
     };
 
     /// <summary>Convert config action name to dropdown display name.</summary>

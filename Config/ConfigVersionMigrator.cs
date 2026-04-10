@@ -44,10 +44,9 @@ public static class ConfigVersionMigrator
                     MigrateV0ToV1(root);
                     break;
 
-                // Future migrations:
-                // case 1:
-                //     MigrateV1ToV2(root);
-                //     break;
+                case 1:
+                    MigrateV1ToV2(root);
+                    break;
 
                 default:
                     // Unknown version ahead of us — don't touch it
@@ -102,5 +101,34 @@ public static class ConfigVersionMigrator
         //   root.Remove("deprecatedSetting");
 
         // No structural changes for v0→v1 — just establishing the version field.
+    }
+
+    /// <summary>
+    /// v1 → v2: Autologin Teams migration.
+    /// "LoginAll" tray action now fires Team 1 (not all QuickLogin slots).
+    /// Auto-populate Team 1/2 from QuickLogin slots so existing users
+    /// keep their behavior. Team 1 = slots 1+2, Team 2 = slots 3+4.
+    /// </summary>
+    private static void MigrateV1ToV2(JsonObject root)
+    {
+        var ql1 = root["quickLogin1"]?.GetValue<string>() ?? "";
+        var ql2 = root["quickLogin2"]?.GetValue<string>() ?? "";
+        var ql3 = root["quickLogin3"]?.GetValue<string>() ?? "";
+        var ql4 = root["quickLogin4"]?.GetValue<string>() ?? "";
+
+        // Only populate teams if user had quick login slots configured
+        if (!string.IsNullOrEmpty(ql1) || !string.IsNullOrEmpty(ql2))
+        {
+            root["team1Account1"] = ql1;
+            root["team1Account2"] = ql2;
+            FileLogger.Info($"ConfigMigrator v1→v2: Team 1 populated from QuickLogin 1+2");
+        }
+
+        if (!string.IsNullOrEmpty(ql3) || !string.IsNullOrEmpty(ql4))
+        {
+            root["team2Account1"] = ql3;
+            root["team2Account2"] = ql4;
+            FileLogger.Info($"ConfigMigrator v1→v2: Team 2 populated from QuickLogin 3+4");
+        }
     }
 }

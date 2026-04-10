@@ -12,7 +12,7 @@ namespace EQSwitch.Config;
 public class AppConfig
 {
     /// <summary>Schema version for config migration. Bump when making breaking changes.</summary>
-    public const int CurrentConfigVersion = 1;
+    public const int CurrentConfigVersion = 2;
 
     public int ConfigVersion { get; set; } = CurrentConfigVersion;
     public bool IsFirstRun { get; set; } = true;
@@ -68,6 +68,12 @@ public class AppConfig
 
     /// <summary>Username of the account bound to Quick Login slot 4 (empty = unbound).</summary>
     public string QuickLogin4 { get; set; } = "";
+
+    // Autologin Teams
+    public string Team1Account1 { get; set; } = "";
+    public string Team1Account2 { get; set; } = "";
+    public string Team2Account1 { get; set; } = "";
+    public string Team2Account2 { get; set; } = "";
 
     // Tray Click Actions
     public TrayClickConfig TrayClick { get; set; } = new();
@@ -394,7 +400,7 @@ public class TrayClickConfig
 {
     /// <summary>
     /// Action for single left-click on tray icon.
-    /// Values: "None", "AutoLogin1", "AutoLogin2", "AutoLogin3", "AutoLogin4", "LoginAll", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp"
+    /// Values: "None", "AutoLogin1", "AutoLogin2", "AutoLogin3", "AutoLogin4", "LoginAll", "LoginAll2", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp"
     /// </summary>
     public string SingleClick { get; set; } = "LaunchOne";
 
