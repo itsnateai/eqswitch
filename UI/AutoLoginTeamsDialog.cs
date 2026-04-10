@@ -110,9 +110,8 @@ internal sealed class AutoLoginTeamsDialog : Form
         cb.Items.AddRange(labels.ToArray<object>());
         cb.SelectedIndex = 0;
 
-        // Auto-size dropdown width to longest entry
-        using var g = cb.CreateGraphics();
-        int maxW = labels.Max(l => (int)g.MeasureString(l, cb.Font).Width) + 24;
+        // Auto-size dropdown width to longest entry (TextRenderer is DPI-safe without a live DC)
+        int maxW = labels.Max(l => TextRenderer.MeasureText(l, cb.Font).Width) + 8;
         if (maxW > width) cb.DropDownWidth = maxW;
 
         Controls.Add(cb);
