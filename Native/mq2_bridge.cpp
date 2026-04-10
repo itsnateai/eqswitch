@@ -34,16 +34,25 @@ typedef int (__thiscall *FN_GetCurSel)(void *thisPtr);
 // CXWnd* CSidlScreenWnd::GetChildItem(char* name)
 typedef void *(__thiscall *FN_GetChildItem)(void *thisPtr, const char *name);
 
-// void CXWnd::SetWindowText(CXStr& text) -- sets text on edit fields
-// On ROF2 x86, CXStr can be passed as const char* for simple strings
-typedef void (__thiscall *FN_SetWindowText)(void *thisPtr, const char *text);
+// void CXWnd::SetWindowTextA(CXStr& text)
+// Dalaya export: ?SetWindowTextA@CXWnd@EQClasses@@QAEXAAVCXStr@2@@Z
+typedef void (__thiscall *FN_SetWindowText)(void *thisPtr, void *pCXStr);
 
-// CXStr CXWnd::GetWindowText() -- reads window text
+// CXStr CXWnd::GetWindowTextA() — returns CXStr by value (hidden sret pointer)
+// Dalaya export: ?GetWindowTextA@CXWnd@EQClasses@@QBE?AVCXStr@2@XZ
 typedef void *(__thiscall *FN_GetWindowText)(void *thisPtr, void *outCXStr);
 
-// void CXWnd::WndNotification(CXWnd* sender, uint32_t msg, void* data)
-// Used as: SendWndNotification(button, button, XWM_LCLICK)
-typedef void (__thiscall *FN_WndNotification)(void *thisPtr, void *sender, uint32_t msg, void *data);
+// int CXWnd::WndNotification(CXWnd* sender, uint32_t msg, void* data)
+// Dalaya export: ?WndNotification@CXWnd@EQClasses@@QAEHPAV12@IPAX@Z
+typedef int (__thiscall *FN_WndNotification)(void *thisPtr, void *sender, uint32_t msg, void *data);
+
+// CXStr::CXStr(const char*) — constructor
+// Dalaya export: ??0CXStr@EQClasses@@QAE@PBD@Z
+typedef void (__thiscall *FN_CXStrCtor)(void *thisPtr, const char *text);
+
+// CXStr::~CXStr() — destructor
+// Dalaya export: ??1CXStr@EQClasses@@QAE@XZ
+typedef void (__thiscall *FN_CXStrDtor)(void *thisPtr);
 
 // ─── Static globals ────────────────────────────────────────────
 
@@ -58,6 +67,8 @@ static FN_GetChildItem  g_fnGetChildItem  = nullptr;
 static FN_SetWindowText g_fnSetWindowText = nullptr;
 static FN_GetWindowText g_fnGetWindowText = nullptr;
 static FN_WndNotification g_fnWndNotification = nullptr;
+static FN_CXStrCtor   g_fnCXStrCtor     = nullptr;
+static FN_CXStrDtor   g_fnCXStrDtor     = nullptr;
 
 // ─── CXStr struct ──────────────────────────────────────────────
 
@@ -367,44 +378,36 @@ bool MQ2Bridge::Init() {
     DI8Log("mq2_bridge: SetCurSel=%p  GetCurSel=%p  GetItemText=%p  GetChildItem=%p",
            g_fnSetCurSel, g_fnGetCurSel, g_fnGetItemText, g_fnGetChildItem);
 
-    // ── NEW: Resolve login-related exports ──
+    // ── Resolve login-related exports (exact Dalaya mangled names) ──
 
-    // CXWnd::SetWindowText -- multiple mangled name candidates for ROF2 x86
-    // Try the most common variants
+    // CXWnd::SetWindowTextA(CXStr&)
     g_fnSetWindowText = (FN_SetWindowText)GetProcAddress(g_hMQ2,
-        "?SetWindowText@CXWnd@EQClasses@@QAEXABVCXStr@2@@Z");
-    if (!g_fnSetWindowText) {
-        // Alternative: SetWindowTextA variant
-        g_fnSetWindowText = (FN_SetWindowText)GetProcAddress(g_hMQ2,
-            "?SetWindowText@CXWnd@EQClasses@@QAEXABV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z");
-    }
-    if (!g_fnSetWindowText) {
-        // Try the CEditWnd variant
-        g_fnSetWindowText = (FN_SetWindowText)GetProcAddress(g_hMQ2,
-            "?SetWindowText@CEditWnd@EQClasses@@QAEXPAD@Z");
-    }
+        "?SetWindowTextA@CXWnd@EQClasses@@QAEXAAVCXStr@2@@Z");
 
-    // CXWnd::GetWindowText
+    // CXWnd::GetWindowTextA() -> CXStr
     g_fnGetWindowText = (FN_GetWindowText)GetProcAddress(g_hMQ2,
-        "?GetWindowText@CXWnd@EQClasses@@QBE?AVCXStr@2@XZ");
+        "?GetWindowTextA@CXWnd@EQClasses@@QBE?AVCXStr@2@XZ");
 
-    // CXWnd::WndNotification (for button clicks via XWM_LCLICK)
+    // CXWnd::WndNotification(CXWnd*, uint, void*) -> int
     g_fnWndNotification = (FN_WndNotification)GetProcAddress(g_hMQ2,
-        "?WndNotification@CXWnd@EQClasses@@UAEXPAV12@IPW4@Z");
-    if (!g_fnWndNotification) {
-        // Try without the enum parameter type
-        g_fnWndNotification = (FN_WndNotification)GetProcAddress(g_hMQ2,
-            "?WndNotification@CXWnd@EQClasses@@UAEXPAV12@IPAX@Z");
-    }
+        "?WndNotification@CXWnd@EQClasses@@QAEHPAV12@IPAX@Z");
 
-    DI8Log("mq2_bridge: SetWindowText=%p  GetWindowText=%p  WndNotification=%p",
+    // CXStr constructor and destructor (needed for SetWindowTextA parameter)
+    g_fnCXStrCtor = (FN_CXStrCtor)GetProcAddress(g_hMQ2,
+        "??0CXStr@EQClasses@@QAE@PBD@Z");
+    g_fnCXStrDtor = (FN_CXStrDtor)GetProcAddress(g_hMQ2,
+        "??1CXStr@EQClasses@@QAE@XZ");
+
+    DI8Log("mq2_bridge: SetWindowTextA=%p  GetWindowTextA=%p  WndNotification=%p",
            g_fnSetWindowText, g_fnGetWindowText, g_fnWndNotification);
+    DI8Log("mq2_bridge: CXStr ctor=%p  dtor=%p", g_fnCXStrCtor, g_fnCXStrDtor);
 
     // Core requirement: gGameState and ppEverQuest for char reading;
     // ppWndMgr + GetChildItem for login UI manipulation
     bool ok = (g_pGameState != nullptr && g_ppEverQuest != nullptr);
     bool loginReady = (g_ppWndMgr != nullptr && g_fnGetChildItem != nullptr &&
-                       g_fnSetWindowText != nullptr && g_fnWndNotification != nullptr);
+                       g_fnSetWindowText != nullptr && g_fnWndNotification != nullptr &&
+                       g_fnCXStrCtor != nullptr && g_fnCXStrDtor != nullptr);
 
     if (ok && loginReady)
         DI8Log("mq2_bridge: Init SUCCESS -- all exports resolved (char select + login)");
@@ -442,10 +445,14 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
 // ─── MQ2Bridge::SetEditText ────────────────────────────────────
 
 void MQ2Bridge::SetEditText(void *pEditWnd, const char *text) {
-    if (!g_fnSetWindowText || !pEditWnd || !text) return;
+    if (!g_fnSetWindowText || !g_fnCXStrCtor || !g_fnCXStrDtor || !pEditWnd || !text) return;
 
     __try {
-        g_fnSetWindowText(pEditWnd, text);
+        // Construct a CXStr from const char*, pass it to SetWindowTextA, then destroy
+        uint8_t cxstrBuf[16] = {}; // CXStr is 16 bytes (Ptr, Length, Alloc, RefCount)
+        g_fnCXStrCtor(cxstrBuf, text);
+        g_fnSetWindowText(pEditWnd, cxstrBuf);
+        g_fnCXStrDtor(cxstrBuf);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         DI8Log("mq2_bridge: SEH in SetEditText");
@@ -472,16 +479,22 @@ void MQ2Bridge::ReadWindowText(void *pWnd, char *outBuf, int bufSize) {
     if (!outBuf || bufSize <= 0) return;
     outBuf[0] = '\0';
 
-    if (!g_fnGetWindowText || !pWnd) return;
+    if (!g_fnGetWindowText || !g_fnCXStrDtor || !pWnd) return;
 
     __try {
-        CXStr str = {};
-        g_fnGetWindowText(pWnd, &str);
-        if (str.Ptr && str.Length > 0) {
-            int copyLen = (str.Length < bufSize - 1) ? str.Length : (bufSize - 1);
-            memcpy(outBuf, str.Ptr, copyLen);
+        // GetWindowTextA returns CXStr by value via hidden sret pointer
+        uint8_t cxstrBuf[16] = {};
+        g_fnGetWindowText(pWnd, cxstrBuf);
+
+        CXStr *str = (CXStr *)cxstrBuf;
+        if (str->Ptr && str->Length > 0) {
+            int copyLen = (str->Length < bufSize - 1) ? str->Length : (bufSize - 1);
+            memcpy(outBuf, str->Ptr, copyLen);
             outBuf[copyLen] = '\0';
         }
+
+        // Destroy the returned CXStr to prevent memory leak
+        g_fnCXStrDtor(cxstrBuf);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         DI8Log("mq2_bridge: SEH in ReadWindowText");
@@ -715,6 +728,8 @@ void MQ2Bridge::Shutdown() {
     g_fnSetWindowText  = nullptr;
     g_fnGetWindowText  = nullptr;
     g_fnWndNotification = nullptr;
+    g_fnCXStrCtor      = nullptr;
+    g_fnCXStrDtor      = nullptr;
     g_hMQ2             = nullptr;
 
     g_offsetValidated  = false;
