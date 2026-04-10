@@ -41,11 +41,17 @@ jobs:
           cp Native/eqswitch-hook.dll eqswitch-hook.dll
           cp Native/eqswitch-di8.dll eqswitch-di8.dll
 
+      - name: Create zip bundle
+        shell: pwsh
+        run: |
+          Compress-Archive -Path EQSwitch.exe, eqswitch-hook.dll, eqswitch-di8.dll -DestinationPath "EQSwitch-${{ steps.version.outputs.VERSION }}.zip"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
+            EQSwitch-${{ steps.version.outputs.VERSION }}.zip
             EQSwitch.exe
             eqswitch-hook.dll
             eqswitch-di8.dll
