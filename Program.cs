@@ -206,7 +206,8 @@ static class Program
         // Retry exe.old — the old process may still be releasing the memory-mapped file.
         foreach (var pattern in new[] { "EQSwitch.exe.old", "EQSwitch.exe.new",
                                         "eqswitch-hook.dll.old", "eqswitch-hook.dll.new",
-                                        "eqswitch-di8.dll.old", "eqswitch-di8.dll.new" })
+                                        "eqswitch-di8.dll.old", "eqswitch-di8.dll.new",
+                                        "update.zip" })
         {
             var path = Path.Combine(dir, pattern);
             if (!File.Exists(path)) continue;
