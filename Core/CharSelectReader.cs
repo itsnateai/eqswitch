@@ -190,6 +190,7 @@ public sealed class CharSelectReader : IDisposable
     public bool IsSelectionAcknowledged(int pid)
     {
         if (!_mappings.TryGetValue(pid, out var entry)) return false;
+        if (entry.RequestSeq == 0) return false; // no request sent yet
         uint ackSeq = entry.Accessor.ReadUInt32(OFF_ACKSEQ);
         return ackSeq == entry.RequestSeq;
     }
