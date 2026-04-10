@@ -39,9 +39,7 @@ DeviceProxy::DeviceProxy(void *real, bool isKeyboard)
     : m_real(reinterpret_cast<IDirectInputDevice8W *>(real))
     , m_refCount(1)
     , m_isKeyboard(isKeyboard)
-    , m_synthSequence(0x80000000)
 {
-    memset(m_prevShmKeys, 0, sizeof(m_prevShmKeys));
     m_real->AddRef();
     if (isKeyboard)
         g_realKeyboardDevice = m_real;

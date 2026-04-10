@@ -17,10 +17,6 @@ class DeviceProxy : public IDirectInputDevice8W {
     volatile LONG m_refCount;
     bool m_isKeyboard;
 
-    // Per-device state for GetDeviceData synthetic event generation
-    uint8_t  m_prevShmKeys[256];
-    uint32_t m_synthSequence;
-
 public:
     DeviceProxy(void *real, bool isKeyboard);
 
