@@ -207,6 +207,7 @@ public class AutoLoginManager
         // return the EQ HWND. EQ also reads WM_CHAR from the message queue for
         // login text fields. Both layers are needed for true background login.
         var writer = new KeyInputWriter();
+        var charSelect = new CharSelectReader();
         try
         {
             // Step 1: Create SHM early so DLL discovers it during EQ startup
@@ -215,6 +216,7 @@ public class AutoLoginManager
                 Report("Error: failed to create DirectInput shared memory");
                 return;
             }
+            charSelect.Open(pid);
 
             // Step 2: Wait for EQ window to appear
             Report("Waiting for EQ window...");
@@ -293,9 +295,55 @@ public class AutoLoginManager
             // Reactivate SHM — creates rising edge so DLL re-blasts activation
             // messages after EQ overwrites WndProc subclass during 3D scene init.
             writer.Reactivate(pid);
-            Thread.Sleep(2000); // let DLL re-install WndProc subclass + resume polling
+            Thread.Sleep(2000); // let DLL re-install WndProc subclass + init MQ2 bridge
 
-            // Step 10: Enter World — retry up to 5 times with pulsed key holds
+            // Step 10: Select character by name (if MQ2 available)
+            if (!string.IsNullOrEmpty(account.CharacterName))
+            {
+                // Wait for MQ2 bridge to populate character list
+                bool charListReady = false;
+                for (int wait = 0; wait < 10; wait++)
+                {
+                    if (charSelect.IsMQ2Available(pid) && charSelect.ReadCharCount(pid) > 0)
+                    {
+                        charListReady = true;
+                        break;
+                    }
+                    Thread.Sleep(500);
+                }
+
+                if (charListReady)
+                {
+                    var charNames = charSelect.ReadAllCharNames(pid);
+                    FileLogger.Info($"AutoLogin: {charNames.Length} characters found: {string.Join(", ", charNames)}");
+
+                    int selIdx = charSelect.RequestSelectionByName(pid, account.CharacterName);
+                    if (selIdx >= 0)
+                    {
+                        // Wait for DLL to acknowledge the selection
+                        for (int ack = 0; ack < 10; ack++)
+                        {
+                            if (charSelect.IsSelectionAcknowledged(pid))
+                            {
+                                FileLogger.Info($"AutoLogin: character '{account.CharacterName}' selected (index {selIdx})");
+                                break;
+                            }
+                            Thread.Sleep(200);
+                        }
+                        Thread.Sleep(500); // Brief pause after selection
+                    }
+                    else
+                    {
+                        FileLogger.Warn($"AutoLogin: character '{account.CharacterName}' not found in list, entering world with default");
+                    }
+                }
+                else
+                {
+                    FileLogger.Warn($"AutoLogin: MQ2 bridge not ready (mq2={charSelect.IsMQ2Available(pid)}, chars={charSelect.ReadCharCount(pid)}), entering world with default");
+                }
+            }
+
+            // Step 11: Enter World — retry up to 5 times with pulsed key holds
             Report("Entering world...");
             bool entered = false;
             for (int attempt = 0; attempt < 5; attempt++)
@@ -310,7 +358,7 @@ public class AutoLoginManager
                 if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window"); return; }
 
                 int titleLen = NativeMethods.GetWindowTextLength(hwnd);
-                var titleSb = new System.Text.StringBuilder(titleLen + 1);
+                var titleSb = new StringBuilder(titleLen + 1);
                 NativeMethods.GetWindowText(hwnd, titleSb, titleSb.Capacity);
                 string title = titleSb.ToString();
 
@@ -343,6 +391,8 @@ public class AutoLoginManager
         }
         finally
         {
+            try { charSelect.Close(pid); } catch { }
+            try { charSelect.Dispose(); } catch { }
             try { writer.Close(pid); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Close failed: {ex.Message}"); }
             try { writer.Dispose(); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Dispose failed: {ex.Message}"); }
             // Remove PID and fire LoginComplete atomically on the UI thread.
