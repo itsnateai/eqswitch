@@ -1367,6 +1367,11 @@ public class TrayManager : IDisposable
         _config.QuickLogin2 = newConfig.QuickLogin2;
         _config.QuickLogin3 = newConfig.QuickLogin3;
         _config.QuickLogin4 = newConfig.QuickLogin4;
+        _config.Team1Account1 = newConfig.Team1Account1;
+        _config.Team1Account2 = newConfig.Team1Account2;
+        _config.Team2Account1 = newConfig.Team2Account1;
+        _config.Team2Account2 = newConfig.Team2Account2;
+        _config.AutoEnterWorld = newConfig.AutoEnterWorld;
         _config.LoginScreenDelayMs = newConfig.LoginScreenDelayMs;
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
         _config.ShowTooltipErrors = newConfig.ShowTooltipErrors;

@@ -337,7 +337,9 @@ public static class DarkTheme
         form.Size = size;
         form.FormBorderStyle = FormBorderStyle.FixedDialog;
         form.MaximizeBox = false;
-        form.StartPosition = FormStartPosition.CenterScreen;
+        // Only override if caller hasn't already set CenterParent (dialogs need it)
+        if (form.StartPosition != FormStartPosition.CenterParent)
+            form.StartPosition = FormStartPosition.CenterScreen;
         form.WindowState = FormWindowState.Normal;
         form.ShowInTaskbar = true;
         form.BackColor = BgDark;
