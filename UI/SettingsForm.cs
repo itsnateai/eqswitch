@@ -379,7 +379,7 @@ public class SettingsForm : Form
         lblTriple.Font = TrackFont(new Font("Segoe UI Semibold", 9f));
         _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 325, 75, cboW, clickActions);
 
-        y += 155;
+        y += 195;
 
         // ─── Window Title card ───────────────────────────────────
         var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 56);
@@ -797,7 +797,7 @@ public class SettingsForm : Form
         var btnBackup = DarkTheme.AddCardButton(cardIni, "📋 Backup", 47, cy, 110);
         btnBackup.Click += (_, _) => VideoBackupIni();
 
-        var btnRestore = DarkTheme.AddCardButton(cardIni, "📂 Restore", 280, cy, 110);
+        var btnRestore = DarkTheme.AddCardButton(cardIni, "📂 Restore", 340, cy, 110);
         btnRestore.Click += (_, _) => VideoRestoreIni();
 
         y += 78;
@@ -1682,9 +1682,13 @@ public class SettingsForm : Form
 
         const int hintX = 260;
 
+        var btnWrapper = DarkTheme.MakePrimaryButton("⚙ Advanced...", 355, 2);
+        btnWrapper.Size = new Size(110, 24);
+        btnWrapper.Font = DarkTheme.FontUI85;
+        cardStyle.Controls.Add(btnWrapper);
+
         _chkSlimTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Fullscreen Window (WinEQ2 mode)", L, cy);
         DarkTheme.AddCardHint(cardStyle, "Sets res + hides titlebar", hintX, cy + 2);
-        var btnWrapper = DarkTheme.AddCardButton(cardStyle, "⚙", 448, cy - 2, 24);
         cy += 26;
 
         _chkMaximizeWindow = DarkTheme.AddCardCheckBox(cardStyle, "Maximize on Launch", L, cy);
