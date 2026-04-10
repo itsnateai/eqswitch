@@ -87,6 +87,10 @@ public class SettingsForm : Form
     private TextBox _txtAutoLogin2Hotkey = null!;
     private TextBox _txtAutoLogin3Hotkey = null!;
     private TextBox _txtAutoLogin4Hotkey = null!;
+    private TextBox _txtTeamLogin1Hotkey = null!;
+    private TextBox _txtTeamLogin2Hotkey = null!;
+    private TextBox _txtTeamLogin3Hotkey = null!;
+    private TextBox _txtTeamLogin4Hotkey = null!;
     private Label _lblAutoLoginHotkeyWarn = null!;
     private Label _lblSlotDuplicateWarn = null!;
     private Label _lblTeamSummary = null!;
@@ -413,11 +417,15 @@ public class SettingsForm : Form
     {
         if (_lblAutoLoginHotkeyWarn == null) return;
 
-        var slots = new[] {
-            _txtAutoLogin1Hotkey?.Text.Trim() ?? "",
-            _txtAutoLogin2Hotkey?.Text.Trim() ?? "",
-            _txtAutoLogin3Hotkey?.Text.Trim() ?? "",
-            _txtAutoLogin4Hotkey?.Text.Trim() ?? ""
+        var entries = new (string Key, string Label)[] {
+            (_txtAutoLogin1Hotkey?.Text.Trim() ?? "", "Acct 1"),
+            (_txtAutoLogin2Hotkey?.Text.Trim() ?? "", "Acct 2"),
+            (_txtAutoLogin3Hotkey?.Text.Trim() ?? "", "Acct 3"),
+            (_txtAutoLogin4Hotkey?.Text.Trim() ?? "", "Acct 4"),
+            (_txtTeamLogin1Hotkey?.Text.Trim() ?? "", "Team 1"),
+            (_txtTeamLogin2Hotkey?.Text.Trim() ?? "", "Team 2"),
+            (_txtTeamLogin3Hotkey?.Text.Trim() ?? "", "Team 3"),
+            (_txtTeamLogin4Hotkey?.Text.Trim() ?? "", "Team 4"),
         };
 
         // Collect all other hotkeys in the form for conflict checking
@@ -431,25 +439,24 @@ public class SettingsForm : Form
 
         var warnings = new List<string>();
 
-        for (int i = 0; i < slots.Length; i++)
+        for (int i = 0; i < entries.Length; i++)
         {
-            var s = slots[i];
-            if (s.Length == 0) continue;
-            int num = i + 1;
+            var (key, label) = entries[i];
+            if (key.Length == 0) continue;
 
             // Needs modifier
-            if (!s.Contains('+'))
-                warnings.Add($"Slot {num}: needs modifier");
+            if (!key.Contains('+'))
+                warnings.Add($"{label}: needs modifier");
 
             // Conflicts with other hotkeys
-            if (otherHotkeys.TryGetValue(s, out var conflict))
-                warnings.Add($"Slot {num} conflicts with {conflict}");
+            if (otherHotkeys.TryGetValue(key, out var conflict))
+                warnings.Add($"{label} conflicts with {conflict}");
 
-            // Conflicts with another slot
-            for (int j = i + 1; j < slots.Length; j++)
+            // Conflicts with another entry
+            for (int j = i + 1; j < entries.Length; j++)
             {
-                if (slots[j].Length > 0 && string.Equals(s, slots[j], StringComparison.OrdinalIgnoreCase))
-                    warnings.Add($"Slot {num} and {j + 1} are the same");
+                if (entries[j].Key.Length > 0 && string.Equals(key, entries[j].Key, StringComparison.OrdinalIgnoreCase))
+                    warnings.Add($"{label} and {entries[j].Label} conflict");
             }
         }
 
