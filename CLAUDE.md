@@ -1,4 +1,4 @@
-# EQSwitch v3.5.0 — Claude Code Context
+# EQSwitch v3.6.0 — Claude Code Context
 
 ## What This Is
 C# (.NET 8 WinForms) EverQuest multiboxing window manager for the Shards of Dalaya emulator. Features DLL hook injection, DPAPI-encrypted auto-login, slim titlebar mode, PiP overlays, and comprehensive eqclient.ini management. ~30 C# files + native C++ hook DLL, ~12,000 lines.
@@ -175,7 +175,7 @@ EQ can recreate its window during gameplay. All Win32 calls on window handles sh
 ```
 eqswitch/
   Program.cs                    # Entry point, mutex, migration
-  EQSwitch.csproj               # .NET 8 WinForms, v3.5.0
+  EQSwitch.csproj               # .NET 8 WinForms, v3.6.0
   Core/
     NativeMethods.cs             # All P/Invoke (385 lines)
     ProcessManager.cs            # EQ process detection
@@ -228,6 +228,10 @@ eqswitch/
 Window switching (hotkeys + keyboard hook), grid/stacked/multi-monitor arrangement, slim titlebar (WinEQ2 mode), DLL hook injection (prevents EQ from fighting window management), DPAPI-encrypted auto-login with enter-world automation, process priority management, eqclient.ini CPU affinity slots, PiP DWM thumbnails with orientation support, staggered launch, 6-tab settings GUI, comprehensive eqclient.ini editor, config migration from AHK, config backup/restore, character profiles, process manager, desktop shortcut creation, run-at-startup.
 
 ## Status
+
+**v3.6.0 — UI Polish, Log Trimming, Account Backup (2026-04-10)**
+
+C++ native fixes: vtable validation before GetChildItem, retry counter for window search, lazy MQ2 init (replaces Sleep(2000)), MemoryBarrier before SHM charCount. UI polish across Hotkeys/Video/Accounts tabs — card padding, conflict warnings, Windowed Mode moved to Window Style card. Log trimming feature: async stream-based with archive to Logs/archive/, configurable threshold (default 50MB). Account backup/import (DPAPI portable on same Windows user). Tray menu rework: LaunchTwo for bare clients, Launch Team restored, all 4 teams in submenu.
 
 **v3.5.0 — Background Input & 3-Layer Activation Defense (2026-04-09)**
 
