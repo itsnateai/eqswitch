@@ -216,7 +216,8 @@ public class AutoLoginManager
                 Report("Error: failed to create DirectInput shared memory");
                 return;
             }
-            charSelect.Open(pid);
+            if (!charSelect.Open(pid))
+                FileLogger.Warn($"AutoLogin: CharSelectReader SHM open failed for PID {pid} — character selection unavailable");
 
             // Step 2: Wait for EQ window to appear
             Report("Waiting for EQ window...");
@@ -321,15 +322,19 @@ public class AutoLoginManager
                     if (selIdx >= 0)
                     {
                         // Wait for DLL to acknowledge the selection
+                        bool acked = false;
                         for (int ack = 0; ack < 10; ack++)
                         {
                             if (charSelect.IsSelectionAcknowledged(pid))
                             {
                                 FileLogger.Info($"AutoLogin: character '{account.CharacterName}' selected (index {selIdx})");
+                                acked = true;
                                 break;
                             }
                             Thread.Sleep(200);
                         }
+                        if (!acked)
+                            FileLogger.Warn($"AutoLogin: DLL did not acknowledge character selection for '{account.CharacterName}' — proceeding anyway");
                         Thread.Sleep(500); // Brief pause after selection
                     }
                     else
