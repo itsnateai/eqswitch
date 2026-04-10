@@ -793,9 +793,9 @@ public class TrayManager : IDisposable
         launchOneItem.Click += (_, _) => OnLaunchOne();
         _contextMenu.Items.Add(launchOneItem);
 
-        var launchAllItem = new ToolStripMenuItem($"\uD83C\uDFAE  Launch Two{HkSuffix(hk.LaunchAll)}") { Font = _boldMenuFont };
-        launchAllItem.Click += (_, _) => OnLaunchAll();
-        _contextMenu.Items.Add(launchAllItem);
+        var launchTeamItem = new ToolStripMenuItem($"\uD83C\uDFAE  Launch Team{HkSuffix(hk.LaunchAll)}") { Font = _boldMenuFont };
+        launchTeamItem.Click += (_, _) => ExecuteTrayAction("LoginAll");
+        _contextMenu.Items.Add(launchTeamItem);
 
         // Login submenu (always visible, like Clients menu)
         var loginMenu = new ToolStripMenuItem("\uD83D\uDD11  Accounts") { Font = _boldMenuFont };
@@ -1058,7 +1058,7 @@ public class TrayManager : IDisposable
         if (!string.IsNullOrEmpty(hk.LaunchOne))
             lines.Add($"  [{hk.LaunchOne}]  Launch one client");
         if (!string.IsNullOrEmpty(hk.LaunchAll))
-            lines.Add($"  [{hk.LaunchAll}]  Launch all clients");
+            lines.Add($"  [{hk.LaunchAll}]  Launch Team 1");
 
         // Direct switch keys
         for (int i = 0; i < hk.DirectSwitchKeys.Count; i++)
@@ -1097,7 +1097,7 @@ public class TrayManager : IDisposable
         "SwapWindows" => "Swap positions",
         "TogglePiP" => "Toggle PiP",
         "LaunchOne" => "Launch one",
-        "LaunchAll" => "Launch two",
+        "LaunchAll" => "Launch Team 1",
         "LoginAll" => "Auto-login Team 1",
         "LoginAll2" => "Auto-login Team 2",
         "LoginAll3" => "Auto-login Team 3",
@@ -1228,8 +1228,9 @@ public class TrayManager : IDisposable
                 OnLaunchOne();
                 break;
             case "LaunchAll":
-                ShowBalloon($"Launching {_config.Launch.NumClients} clients...");
-                OnLaunchAll();
+                FireTeamLogin(
+                    new[] { (_config.Team1Account1, "Team 1 Slot 1"), (_config.Team1Account2, "Team 1 Slot 2") },
+                    "Team 1");
                 break;
             case "AutoLogin1":
                 ExecuteQuickLogin(_config.QuickLogin1, "Quick Login 1");
