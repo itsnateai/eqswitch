@@ -577,23 +577,48 @@ public class SettingsForm : Form
         y += 120;
 
         // ─── Auto-Login Hotkeys ─────────────────────────────────
-        var hkCard = DarkTheme.MakeCard(page, "\u2328", "Auto-Login Hotkeys", DarkTheme.CardGreen, 10, y, 480, 90);
-        DarkTheme.AddCardLabel(hkCard, "Slot 1:", 10, 30);
-        _txtAutoLogin1Hotkey = MakeHotkeyBox(hkCard, 55, 28);
-        DarkTheme.AddCardLabel(hkCard, "Slot 2:", 160, 30);
-        _txtAutoLogin2Hotkey = MakeHotkeyBox(hkCard, 205, 28);
-        DarkTheme.AddCardHint(hkCard, "Press combo to set. Backspace = clear.", 290, 30);
-        DarkTheme.AddCardLabel(hkCard, "Slot 3:", 10, 54);
-        _txtAutoLogin3Hotkey = MakeHotkeyBox(hkCard, 55, 52);
-        DarkTheme.AddCardLabel(hkCard, "Slot 4:", 160, 54);
-        _txtAutoLogin4Hotkey = MakeHotkeyBox(hkCard, 205, 52);
-        _lblAutoLoginHotkeyWarn = DarkTheme.AddCardHint(hkCard, "", 10, 74);
+        var hkCard = DarkTheme.MakeCard(page, "\u2328", "Auto-Login Hotkeys", DarkTheme.CardGreen, 10, y, 480, 120);
+
+        // Accounts row
+        var lblAccounts = DarkTheme.AddCardLabel(hkCard, "Accounts", 10, 28);
+        lblAccounts.Font = TrackFont(new Font("Segoe UI Semibold", 8f));
+        lblAccounts.ForeColor = DarkTheme.FgDimGray;
+        DarkTheme.AddCardLabel(hkCard, "1:", 75, 28);
+        _txtAutoLogin1Hotkey = MakeHotkeyBox(hkCard, 90, 26);
+        DarkTheme.AddCardLabel(hkCard, "2:", 190, 28);
+        _txtAutoLogin2Hotkey = MakeHotkeyBox(hkCard, 205, 26);
+        DarkTheme.AddCardLabel(hkCard, "3:", 305, 28);
+        _txtAutoLogin3Hotkey = MakeHotkeyBox(hkCard, 320, 26);
+        DarkTheme.AddCardLabel(hkCard, "4:", 420, 28);
+        _txtAutoLogin4Hotkey = MakeHotkeyBox(hkCard, 435, 26);
+
+        // Teams row
+        var lblTeams = DarkTheme.AddCardLabel(hkCard, "Teams", 10, 56);
+        lblTeams.Font = TrackFont(new Font("Segoe UI Semibold", 8f));
+        lblTeams.ForeColor = DarkTheme.FgDimGray;
+        DarkTheme.AddCardLabel(hkCard, "1:", 75, 56);
+        _txtTeamLogin1Hotkey = MakeHotkeyBox(hkCard, 90, 54);
+        DarkTheme.AddCardLabel(hkCard, "2:", 190, 56);
+        _txtTeamLogin2Hotkey = MakeHotkeyBox(hkCard, 205, 54);
+        DarkTheme.AddCardLabel(hkCard, "3:", 305, 56);
+        _txtTeamLogin3Hotkey = MakeHotkeyBox(hkCard, 320, 54);
+        DarkTheme.AddCardLabel(hkCard, "4:", 420, 56);
+        _txtTeamLogin4Hotkey = MakeHotkeyBox(hkCard, 435, 54);
+
+        // Hint + warning
+        DarkTheme.AddCardHint(hkCard, "Press combo to set. Backspace = clear.", 10, 82);
+        _lblAutoLoginHotkeyWarn = DarkTheme.AddCardHint(hkCard, "", 10, 96);
+
         _txtAutoLogin1Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
         _txtAutoLogin2Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
         _txtAutoLogin3Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
         _txtAutoLogin4Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
+        _txtTeamLogin1Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
+        _txtTeamLogin2Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
+        _txtTeamLogin3Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
+        _txtTeamLogin4Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
 
-        y += 98;
+        y += 128;
 
         // ─── Preferences card ────────────────────────────────────
         var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardCyan, 10, y, 480, 68);
@@ -1014,6 +1039,10 @@ public class SettingsForm : Form
         _txtAutoLogin2Hotkey.Text = _config.Hotkeys.AutoLogin2;
         _txtAutoLogin3Hotkey.Text = _config.Hotkeys.AutoLogin3;
         _txtAutoLogin4Hotkey.Text = _config.Hotkeys.AutoLogin4;
+        _txtTeamLogin1Hotkey.Text = _config.Hotkeys.TeamLogin1;
+        _txtTeamLogin2Hotkey.Text = _config.Hotkeys.TeamLogin2;
+        _txtTeamLogin3Hotkey.Text = _config.Hotkeys.TeamLogin3;
+        _txtTeamLogin4Hotkey.Text = _config.Hotkeys.TeamLogin4;
 
         // Layout
         _chkSlimTitlebar.Checked = _config.Layout.SlimTitlebar;
@@ -1133,6 +1162,10 @@ public class SettingsForm : Form
                 AutoLogin2 = _txtAutoLogin2Hotkey.Text.Trim(),
                 AutoLogin3 = _txtAutoLogin3Hotkey.Text.Trim(),
                 AutoLogin4 = _txtAutoLogin4Hotkey.Text.Trim(),
+                TeamLogin1 = _txtTeamLogin1Hotkey.Text.Trim(),
+                TeamLogin2 = _txtTeamLogin2Hotkey.Text.Trim(),
+                TeamLogin3 = _txtTeamLogin3Hotkey.Text.Trim(),
+                TeamLogin4 = _txtTeamLogin4Hotkey.Text.Trim(),
                 // Once enabled, the hotkey is unlocked permanently
                 MultiMonitorEnabled = _chkVideoMultiMon.Checked || _config.Hotkeys.MultiMonitorEnabled,
                 DirectSwitchKeys = _config.Hotkeys.DirectSwitchKeys,
