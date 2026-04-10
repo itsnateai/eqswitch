@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Reflection;
 using System.Text.Json;
@@ -24,9 +25,7 @@ public class UpdateDialog : Form
 
     // Release info from GitHub
     private string? _remoteVersion;
-    private string? _downloadUrl;
-    private string? _hookDownloadUrl;
-    private string? _di8DownloadUrl;
+    private string? _downloadUrl;  // zip bundle URL
     private long _downloadSize;
 
     /// <summary>Set by --test-update flag to simulate the full update flow locally.</summary>
@@ -136,19 +135,9 @@ public class UpdateDialog : Form
                 // Simulate network delay
                 await Task.Delay(800, _cts.Token);
 
-                var exePath = Environment.ProcessPath ?? "";
                 _remoteVersion = "99.0.0";
                 _downloadUrl = "TEST_LOCAL";
-                _downloadSize = File.Exists(exePath) ? new FileInfo(exePath).Length : 0;
-
-                var dir = Path.GetDirectoryName(exePath)!;
-                var hookPath = Path.Combine(dir, "eqswitch-hook.dll");
-                if (File.Exists(hookPath))
-                    _hookDownloadUrl = "TEST_LOCAL_HOOK";
-
-                var dinput8Path = Path.Combine(dir, "eqswitch-di8.dll");
-                if (File.Exists(dinput8Path))
-                    _di8DownloadUrl = "TEST_LOCAL_DINPUT8";
+                _downloadSize = 0;
 
                 ShowVersionComparison();
                 return;
@@ -183,34 +172,26 @@ public class UpdateDialog : Form
 
             _remoteVersion = root.GetProperty("tag_name").GetString()?.TrimStart('v') ?? "";
 
-            // Scan assets for exe and hook DLL
+            // Scan assets for the zip bundle (EQSwitch-X.X.X.zip)
             if (root.TryGetProperty("assets", out var assets))
             {
                 foreach (var asset in assets.EnumerateArray())
                 {
                     var name = asset.GetProperty("name").GetString() ?? "";
-                    var url = asset.GetProperty("browser_download_url").GetString() ?? "";
-
-                    if (name.Equals("EQSwitch.exe", StringComparison.OrdinalIgnoreCase))
+                    if (name.StartsWith("EQSwitch-", StringComparison.OrdinalIgnoreCase)
+                        && name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
                     {
-                        _downloadUrl = url;
+                        _downloadUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
                         _downloadSize = asset.TryGetProperty("size", out var sizeEl)
                             ? sizeEl.GetInt64() : 0;
-                    }
-                    else if (name.Equals("eqswitch-hook.dll", StringComparison.OrdinalIgnoreCase))
-                    {
-                        _hookDownloadUrl = url;
-                    }
-                    else if (name.Equals("eqswitch-di8.dll", StringComparison.OrdinalIgnoreCase))
-                    {
-                        _di8DownloadUrl = url;
+                        break;
                     }
                 }
             }
 
             if (string.IsNullOrEmpty(_downloadUrl))
             {
-                ShowError("No executable found in the latest release.", "The release may be incomplete.");
+                ShowError("No update package found in the latest release.", "The release may be incomplete.");
                 return;
             }
 
@@ -283,95 +264,73 @@ public class UpdateDialog : Form
         var exePath = Environment.ProcessPath
             ?? throw new InvalidOperationException("Cannot determine executable path.");
         var exeDir = Path.GetDirectoryName(exePath)!;
-        var newExePath = exePath + ".new";
-        var oldExePath = exePath + ".old";
-        var hookPath = Path.Combine(exeDir, "eqswitch-hook.dll");
-        var newHookPath = hookPath + ".new";
-        var oldHookPath = hookPath + ".old";
-        var dinput8Path = Path.Combine(exeDir, "eqswitch-di8.dll");
-        var newDinput8Path = dinput8Path + ".new";
-        var oldDinput8Path = dinput8Path + ".old";
+        var zipPath = Path.Combine(exeDir, "update.zip");
+
+        // Files to update: (name in zip, local path)
+        var files = new[]
+        {
+            ("EQSwitch.exe", exePath),
+            ("eqswitch-hook.dll", Path.Combine(exeDir, "eqswitch-hook.dll")),
+            ("eqswitch-di8.dll", Path.Combine(exeDir, "eqswitch-di8.dll"))
+        };
 
         try
         {
+            // Download the zip bundle
             bool success;
             if (TestMode)
             {
-                // Copy current exe as the "downloaded" update
-                success = await CopyFileWithProgressAsync(exePath, newExePath, "EQSwitch.exe");
+                // Build a test zip from current files
+                TryDelete(zipPath);
+                using (var archive = ZipFile.Open(zipPath, ZipArchiveMode.Create))
+                {
+                    foreach (var (name, path) in files)
+                        if (File.Exists(path))
+                            archive.CreateEntryFromFile(path, name);
+                }
+                // Show fake progress
+                success = await CopyFileWithProgressAsync(zipPath, zipPath + ".tmp", "update package");
+                TryDelete(zipPath + ".tmp");
                 if (!success) return;
-
-                if (!string.IsNullOrEmpty(_hookDownloadUrl))
-                {
-                    _lblStatus.Text = "Downloading eqswitch-hook.dll...";
-                    _progressFill.Size = new Size(0, 20);
-                    success = await CopyFileWithProgressAsync(hookPath, newHookPath, "eqswitch-hook.dll");
-                    if (!success) return;
-                }
-
-                if (!string.IsNullOrEmpty(_di8DownloadUrl))
-                {
-                    _lblStatus.Text = "Downloading eqswitch-di8.dll...";
-                    _progressFill.Size = new Size(0, 20);
-                    success = await CopyFileWithProgressAsync(dinput8Path, newDinput8Path, "eqswitch-di8.dll");
-                    if (!success) return;
-                }
             }
             else
             {
-                // Download exe
-                success = await DownloadFileAsync(_downloadUrl!, newExePath, "EQSwitch.exe");
+                success = await DownloadFileAsync(_downloadUrl!, zipPath, "update package");
                 if (!success) return;
-
-                // Download hook DLL if available
-                if (!string.IsNullOrEmpty(_hookDownloadUrl))
-                {
-                    _lblStatus.Text = "Downloading eqswitch-hook.dll...";
-                    _progressFill.Size = new Size(0, 20);
-                    success = await DownloadFileAsync(_hookDownloadUrl, newHookPath, "eqswitch-hook.dll");
-                    if (!success) return;
-                }
-
-                // Download eqswitch-di8.dll if available
-                if (!string.IsNullOrEmpty(_di8DownloadUrl))
-                {
-                    _lblStatus.Text = "Downloading eqswitch-di8.dll...";
-                    _progressFill.Size = new Size(0, 20);
-                    success = await DownloadFileAsync(_di8DownloadUrl, newDinput8Path, "eqswitch-di8.dll");
-                    if (!success) return;
-                }
             }
 
-            // Rename dance
-            _lblStatus.Text = "Applying update...";
+            // Extract .new files from the zip
+            _lblStatus.Text = "Extracting update...";
             _lblDetail.Text = "";
             _progressOuter.Visible = false;
 
-            // Rename running exe → .old, then .new → exe
-            TryDelete(oldExePath);
-            File.Move(exePath, oldExePath);
-            File.Move(newExePath, exePath);
-
-            // Hook DLL — if we downloaded a new one
-            if (File.Exists(newHookPath))
+            using (var archive = ZipFile.OpenRead(zipPath))
             {
-                if (File.Exists(hookPath))
+                foreach (var (name, localPath) in files)
                 {
-                    TryDelete(oldHookPath);
-                    File.Move(hookPath, oldHookPath);
+                    var entry = archive.GetEntry(name);
+                    if (entry == null) continue;
+                    var newPath = localPath + ".new";
+                    TryDelete(newPath);
+                    entry.ExtractToFile(newPath);
                 }
-                File.Move(newHookPath, hookPath);
             }
+            TryDelete(zipPath);
 
-            // eqswitch-di8.dll — if we downloaded a new one
-            if (File.Exists(newDinput8Path))
+            // Rename dance: current → .old, .new → current
+            _lblStatus.Text = "Applying update...";
+            foreach (var (_, localPath) in files)
             {
-                if (File.Exists(dinput8Path))
+                var newPath = localPath + ".new";
+                var oldPath = localPath + ".old";
+                if (!File.Exists(newPath)) continue;
+
+                if (File.Exists(localPath))
                 {
-                    TryDelete(oldDinput8Path);
-                    File.Move(dinput8Path, oldDinput8Path);
+                    TryDelete(oldPath);
+                    File.Move(localPath, oldPath);
                 }
-                File.Move(newDinput8Path, dinput8Path);
+                File.Move(newPath, localPath);
             }
 
             // Relaunch and exit
@@ -386,9 +345,9 @@ public class UpdateDialog : Form
         catch (IOException ex)
         {
             // Try to roll back
-            TryRollback(exePath, oldExePath, newExePath);
-            TryRollback(hookPath, oldHookPath, newHookPath);
-            TryRollback(dinput8Path, oldDinput8Path, newDinput8Path);
+            foreach (var (_, localPath) in files)
+                TryRollback(localPath, localPath + ".old", localPath + ".new");
+            TryDelete(zipPath);
 
             if (ex.Message.Contains("being used by another process", StringComparison.OrdinalIgnoreCase))
                 ShowError("Cannot replace the executable.", "Your antivirus may be locking the file. Try again.");
@@ -397,16 +356,16 @@ public class UpdateDialog : Form
         }
         catch (TaskCanceledException)
         {
-            TryDelete(newExePath);
-            TryDelete(newHookPath);
-            TryDelete(newDinput8Path);
+            foreach (var (_, localPath) in files)
+                TryDelete(localPath + ".new");
+            TryDelete(zipPath);
             if (!IsDisposed) ShowVersionComparison();
         }
         catch (Exception ex)
         {
-            TryDelete(newExePath);
-            TryDelete(newHookPath);
-            TryDelete(newDinput8Path);
+            foreach (var (_, localPath) in files)
+                TryDelete(localPath + ".new");
+            TryDelete(zipPath);
             if (!IsDisposed) ShowError("Update failed.", ex.Message);
         }
     }
