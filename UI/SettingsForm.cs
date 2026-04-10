@@ -374,7 +374,7 @@ public class SettingsForm : Form
         // ─── Window Title card ───────────────────────────────────
         var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 56);
         _txtWindowTitleTemplate = DarkTheme.AddCardTextBox(cardTitle, 130, 6, 330, 100);
-        DarkTheme.AddCardHint(cardTitle, "Placeholders: {CHAR} {SLOT} {PID} — applied after client is detected", 10, 36);
+        DarkTheme.AddCardHint(cardTitle, "Applied after client is in world", 10, 36);
 
         return page;
     }
