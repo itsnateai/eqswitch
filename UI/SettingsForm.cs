@@ -386,7 +386,7 @@ public class SettingsForm : Form
         lblTriple.Font = TrackFont(new Font("Segoe UI Semibold", 9f));
         _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 325, 75, cboW, clickActions);
 
-        y += 195;
+        y += 180;
 
         // ─── Window Title card ───────────────────────────────────
         var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 56);
@@ -546,10 +546,6 @@ public class SettingsForm : Form
         _txtGlobalSwitchKey.TextChanged += (_, _) => CheckDuplicateSwitchKeys();
         cy += R + 2;
 
-        DarkTheme.AddCardLabel(cardSwitch, "Delay between launches:", L, cy);
-        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardSwitch, 180, cy, 40, 3, 1, 30);
-        DarkTheme.AddCardHint(cardSwitch, "sec", 230, cy + 2);
-
         y += 134;
 
         // ─── Actions card ────────────────────────────────────────
@@ -592,13 +588,16 @@ public class SettingsForm : Form
 
         y += 98;
 
-        // ─── Tooltip card ───────────────────────────────────────
-        var cardTooltip = DarkTheme.MakeCard(page, "💬", "Tooltip", DarkTheme.CardCyan, 10, y, 480, 68);
+        // ─── Preferences card ────────────────────────────────────
+        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardCyan, 10, y, 480, 68);
         cy = 32;
-        DarkTheme.AddCardLabel(cardTooltip, "Delay:", L, cy);
-        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardTooltip, 55, cy, 55, 1000, 0, 10000);
+        DarkTheme.AddCardLabel(cardPrefs, "Tooltip Delay:", L, cy);
+        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardPrefs, 110, cy, 55, 1000, 0, 10000);
         _nudTooltipDuration.Increment = 100;
-        DarkTheme.AddCardHint(cardTooltip, "ms — hover time before showing tooltip", 120, cy);
+        DarkTheme.AddCardHint(cardPrefs, "ms", 175, cy);
+        DarkTheme.AddCardLabel(cardPrefs, "Launch Delay:", 250, cy);
+        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardPrefs, 360, cy, 40, 3, 1, 30);
+        DarkTheme.AddCardHint(cardPrefs, "sec", 410, cy);
 
         return page;
     }
