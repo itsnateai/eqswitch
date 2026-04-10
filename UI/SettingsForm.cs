@@ -355,7 +355,7 @@ public class SettingsForm : Form
         y += 73;
 
         // ─── Tray Click Actions card ─────────────────────────────
-        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam1", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4", "TogglePiP", "LaunchOne", "LaunchTwo", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4" };
+        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam1", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4", "TogglePiP", "LaunchOne", "LaunchTeam", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4" };
         const int cboW = 140;
 
         var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 131);
@@ -2239,7 +2239,7 @@ public class SettingsForm : Form
 
     private static readonly Dictionary<string, string> _trayActionDisplayMap = new()
     {
-        ["LaunchAll"] = "LaunchTwo",
+        ["LaunchAll"] = "LaunchTeam",
         ["LoginAll"] = "AutoLoginTeam1",
         ["LoginAll2"] = "AutoLoginTeam2",
         ["LoginAll3"] = "AutoLoginTeam3",
@@ -2248,7 +2248,7 @@ public class SettingsForm : Form
 
     private static readonly Dictionary<string, string> _trayDisplayActionMap = new()
     {
-        ["LaunchTwo"] = "LaunchAll",
+        ["LaunchTeam"] = "LaunchAll",
         ["AutoLoginTeam1"] = "LoginAll",
         ["AutoLoginTeam2"] = "LoginAll2",
         ["AutoLoginTeam3"] = "LoginAll3",
