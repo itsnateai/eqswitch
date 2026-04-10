@@ -369,11 +369,12 @@ public class SettingsForm : Form
         lblTriple.Font = TrackFont(new Font("Segoe UI Semibold", 9f));
         _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 325, 75, cboW, clickActions);
 
-        y += 139;
+        y += 155;
 
         // ─── Window Title card ───────────────────────────────────
-        var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 40);
+        var cardTitle = DarkTheme.MakeCard(page, "📝", "Window Title", DarkTheme.CardGreen, 10, y, 480, 56);
         _txtWindowTitleTemplate = DarkTheme.AddCardTextBox(cardTitle, 130, 6, 330, 100);
+        DarkTheme.AddCardHint(cardTitle, "Placeholders: {CHAR} {SLOT} {PID} — applied after client is detected", 10, 36);
 
         return page;
     }
@@ -505,7 +506,7 @@ public class SettingsForm : Form
         const int L = 10, I = 150, I2 = 310, R = 28;
 
         // ─── Window Switching card ───────────────────────────────
-        var cardSwitch = DarkTheme.MakeCard(page, "⚔", "Window Switching", DarkTheme.CardGreen, 10, y, 480, 118);
+        var cardSwitch = DarkTheme.MakeCard(page, "⚔", "Window Switching", DarkTheme.CardGreen, 10, y, 480, 126);
         int cy = 32;
 
         _lblSwitchKeyHotkey = DarkTheme.AddCardLabel(cardSwitch, "Switch Key (EQ-only):", L, cy);
@@ -534,7 +535,7 @@ public class SettingsForm : Form
         _nudLaunchDelay = DarkTheme.AddCardNumeric(cardSwitch, I2 + 50, cy, 40, 3, 1, 30);
         DarkTheme.AddCardHint(cardSwitch, "sec", I2 + 110, cy + 2);
 
-        y += 126;
+        y += 134;
 
         // ─── Actions card ────────────────────────────────────────
         var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 110);
@@ -577,7 +578,7 @@ public class SettingsForm : Form
         y += 98;
 
         // ─── Tooltip card ───────────────────────────────────────
-        var cardTooltip = DarkTheme.MakeCard(page, "💬", "Tooltip", DarkTheme.CardCyan, 10, y, 480, 60);
+        var cardTooltip = DarkTheme.MakeCard(page, "💬", "Tooltip", DarkTheme.CardCyan, 10, y, 480, 68);
         cy = 32;
         DarkTheme.AddCardLabel(cardTooltip, "Delay:", L, cy);
         _nudTooltipDuration = DarkTheme.AddCardNumeric(cardTooltip, 55, cy, 55, 1000, 0, 10000);
@@ -675,7 +676,7 @@ public class SettingsForm : Form
         const int L = 10, I = 120, BRW = 380, IW = 250, R = 32;
 
         // ─── External Tools card ─────────────────────────────────
-        var cardPaths = DarkTheme.MakeCard(page, "📁", "External Tools", DarkTheme.CardGold, 10, y, 480, 160);
+        var cardPaths = DarkTheme.MakeCard(page, "📁", "External Tools", DarkTheme.CardGold, 10, y, 480, 170);
         int cy = 32;
 
         DarkTheme.AddCardLabel(cardPaths, "GINA Path:", L, cy);
@@ -707,7 +708,7 @@ public class SettingsForm : Form
             if (ofd.ShowDialog() == DialogResult.OK) _txtNotesPath.Text = ofd.FileName;
         };
         DarkTheme.AddCardHint(cardPaths, "Leave blank to auto-create eqnotes.txt next to EQSwitch", L, cy + 26);
-        cy += 42;
+        cy += 52;
 
         DarkTheme.AddCardLabel(cardPaths, "Dalaya Patcher:", L, cy);
         _txtDalayaPatcherPath = DarkTheme.AddCardTextBox(cardPaths, I, cy, IW);
@@ -724,7 +725,7 @@ public class SettingsForm : Form
         };
         DarkTheme.AddCardHint(cardPaths, "Patcher may be deleted by antivirus — re-download from SoD if missing.", L, cy + 26);
 
-        y += 168;
+        y += 178;
 
         // ─── Tray Icon card ─────────────────────────────────────
         var cardIcon = DarkTheme.MakeCard(page, "🎨", "Tray Icon", DarkTheme.CardPurple, 10, y, 480, 65);
@@ -1206,7 +1207,7 @@ public class SettingsForm : Form
         int y = 8;
 
         page.AutoScroll = true;
-        var card = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Login Accounts", DarkTheme.CardGold, 10, y, 480, 230);
+        var card = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Login Accounts", DarkTheme.CardGold, 10, y, 480, 216);
 
         _dgvAccounts = new DataGridView
         {
@@ -1243,17 +1244,15 @@ public class SettingsForm : Form
 
         _dgvAccounts.Columns.Add("Num", "#");
         _dgvAccounts.Columns["Num"]!.Width = 30;
-        _dgvAccounts.Columns.Add("Character", "Character");
-        _dgvAccounts.Columns["Character"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-        _dgvAccounts.Columns["Character"]!.FillWeight = 30;
+        _dgvAccounts.Columns.Add("Account", "Account");
+        _dgvAccounts.Columns["Account"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        _dgvAccounts.Columns["Account"]!.FillWeight = 30;
         _dgvAccounts.Columns.Add("Username", "Username");
         _dgvAccounts.Columns["Username"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
         _dgvAccounts.Columns["Username"]!.FillWeight = 30;
         _dgvAccounts.Columns.Add("Server", "Server");
         _dgvAccounts.Columns["Server"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
         _dgvAccounts.Columns["Server"]!.FillWeight = 25;
-        _dgvAccounts.Columns.Add("Slot", "Slot");
-        _dgvAccounts.Columns["Slot"]!.Width = 40;
 
         RefreshAccountsGrid();
         card.Controls.Add(_dgvAccounts);
@@ -1322,22 +1321,22 @@ public class SettingsForm : Form
         DarkTheme.AddCardHint(card, "Delay = seconds before typing credentials.", 250, 196);
 
         // ─── Quick Login Slots ───────────────────────────────────────
-        y += 222;
-        var slotsCard = DarkTheme.MakeCard(page, "\u26A1", "Quick Login Slots", DarkTheme.CardGold, 10, y, 480, 106);
-        DarkTheme.AddCardLabel(slotsCard, "Slot 1:", 10, 30);
-        _cboQuickLogin1 = DarkTheme.AddCardComboBox(slotsCard, 55, 27, 150, Array.Empty<string>());
-        DarkTheme.AddCardLabel(slotsCard, "Slot 2:", 215, 30);
-        _cboQuickLogin2 = DarkTheme.AddCardComboBox(slotsCard, 260, 27, 150, Array.Empty<string>());
-        DarkTheme.AddCardLabel(slotsCard, "Slot 3:", 10, 56);
-        _cboQuickLogin3 = DarkTheme.AddCardComboBox(slotsCard, 55, 53, 150, Array.Empty<string>());
-        DarkTheme.AddCardLabel(slotsCard, "Slot 4:", 215, 56);
-        _cboQuickLogin4 = DarkTheme.AddCardComboBox(slotsCard, 260, 53, 150, Array.Empty<string>());
+        y += 226;
+        var slotsCard = DarkTheme.MakeCard(page, "\u26A1", "Quick Login Accounts", DarkTheme.CardGold, 10, y, 480, 110);
+        DarkTheme.AddCardLabel(slotsCard, "Slot 1:", 10, 34);
+        _cboQuickLogin1 = DarkTheme.AddCardComboBox(slotsCard, 55, 31, 150, Array.Empty<string>());
+        DarkTheme.AddCardLabel(slotsCard, "Slot 2:", 215, 34);
+        _cboQuickLogin2 = DarkTheme.AddCardComboBox(slotsCard, 260, 31, 150, Array.Empty<string>());
+        DarkTheme.AddCardLabel(slotsCard, "Slot 3:", 10, 60);
+        _cboQuickLogin3 = DarkTheme.AddCardComboBox(slotsCard, 55, 57, 150, Array.Empty<string>());
+        DarkTheme.AddCardLabel(slotsCard, "Slot 4:", 215, 60);
+        _cboQuickLogin4 = DarkTheme.AddCardComboBox(slotsCard, 260, 57, 150, Array.Empty<string>());
         RefreshQuickLoginCombos();
         SelectQuickLoginCombo(_cboQuickLogin1, _config.QuickLogin1);
         SelectQuickLoginCombo(_cboQuickLogin2, _config.QuickLogin2);
         SelectQuickLoginCombo(_cboQuickLogin3, _config.QuickLogin3);
         SelectQuickLoginCombo(_cboQuickLogin4, _config.QuickLogin4);
-        _lblSlotDuplicateWarn = DarkTheme.AddCardHint(slotsCard, "Bind to tray click actions or hotkeys on Hotkeys tab", 10, 82);
+        _lblSlotDuplicateWarn = DarkTheme.AddCardHint(slotsCard, "Bind to tray click actions or hotkeys on Hotkeys tab", 10, 86);
         _cboQuickLogin1.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
         _cboQuickLogin2.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
         _cboQuickLogin3.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
@@ -1359,7 +1358,7 @@ public class SettingsForm : Form
         for (int i = 0; i < _pendingAccounts.Count; i++)
         {
             var a = _pendingAccounts[i];
-            _dgvAccounts.Rows.Add(i + 1, a.CharacterName, a.Username, a.Server, a.CharacterSlot);
+            _dgvAccounts.Rows.Add(i + 1, a.CharacterName, a.Username, a.Server);
         }
         RefreshQuickLoginCombos();
     }
@@ -1413,7 +1412,7 @@ public class SettingsForm : Form
         using var dlg = new Form
         {
             Text = existing != null ? "Edit Account" : "Add Account",
-            Size = new Size(380, 305),
+            Size = new Size(380, 270),
             FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition = FormStartPosition.CenterParent,
             MaximizeBox = false,
@@ -1433,7 +1432,7 @@ public class SettingsForm : Form
             return tb;
         }
 
-        DarkTheme.AddLabel(dlg, "Character:", L, y);
+        DarkTheme.AddLabel(dlg, "Account Name:", L, y);
         var txtCharName = MakeTextBox(I, y - 2, W, existing?.CharacterName ?? "");
         y += R;
 
@@ -1450,10 +1449,6 @@ public class SettingsForm : Form
 
         DarkTheme.AddLabel(dlg, "Server:", L, y);
         var txtServer = MakeTextBox(I, y - 2, W, existing?.Server ?? "Dalaya");
-        y += R;
-
-        DarkTheme.AddLabel(dlg, "Character Slot:", L, y);
-        var nudSlot = DarkTheme.AddNumeric(dlg, I, y - 2, 60, existing?.CharacterSlot ?? 1, 1, 10);
         y += R;
 
         y += 5;
@@ -1473,7 +1468,6 @@ public class SettingsForm : Form
             account.Username = txtUsername.Text.Trim();
             account.Server = txtServer.Text.Trim();
             account.CharacterName = txtCharName.Text.Trim();
-            account.CharacterSlot = (int)nudSlot.Value;
             account.UseLoginFlag = true;
 
             // Only update password if user typed something new
@@ -1502,7 +1496,6 @@ public class SettingsForm : Form
     private TabPage BuildVideoTab()
     {
         var page = DarkTheme.MakeTabPage("Video");
-        page.AutoScroll = true;
         int y = 8;
         const int L = 10;
 
@@ -1604,31 +1597,15 @@ public class SettingsForm : Form
         y += 136;
 
         // ─── Window Style card ───────────────────────────────────
-        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 175);
+        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 100);
         cy = 32;
 
         const int hintX = 260;
 
         _chkSlimTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Fullscreen Window (WinEQ2 mode)", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "Auto-sets resolution + hides titlebar", hintX, cy + 2);
-        cy += 24;
-
-        DarkTheme.AddCardLabel(cardStyle, "Titlebar hidden (px):", L, cy);
-        _nudTitlebarOffset = DarkTheme.AddCardNumeric(cardStyle, 140, cy, 55, 22, 0, 40);
-        DarkTheme.AddCardHint(cardStyle, "22 = thin strip, 30 = fully hidden", hintX, cy);
+        DarkTheme.AddCardHint(cardStyle, "Sets res + hides titlebar", hintX, cy + 2);
+        var btnWrapper = DarkTheme.AddCardButton(cardStyle, "⚙", 448, cy - 2, 24);
         cy += 26;
-
-        DarkTheme.AddCardLabel(cardStyle, "Bottom margin (px):", L, cy);
-        _nudBottomOffset = DarkTheme.AddCardNumeric(cardStyle, 140, cy, 55, 22, 0, 100);
-        DarkTheme.AddCardHint(cardStyle, "Game render height reduction", hintX, cy);
-        cy += 22;
-
-        DarkTheme.AddCardHint(cardStyle, "WinEQ2 mode: hidden 13, margin 21 — keep margin > hidden", L, cy);
-        cy += 22;
-
-        _chkUseHook = DarkTheme.AddCardCheckBox(cardStyle, "DLL Hook (zero flicker)", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "Hooks SetWindowPos inside EQ", hintX, cy + 2);
-        cy += 24;
 
         _chkMaximizeWindow = DarkTheme.AddCardCheckBox(cardStyle, "Maximize on Launch", L, cy);
         DarkTheme.AddCardHint(cardStyle, "Sets Maximized=1 in eqclient.ini", hintX, cy + 2);
@@ -1645,15 +1622,24 @@ public class SettingsForm : Form
         };
         cardStyle.Controls.Add(_lblStyleDisabledHint);
 
+        // Wrapper dialog — titlebar offset, bottom margin, DLL hook
+        // These are advanced settings that most users don't need to touch.
+        _nudTitlebarOffset = new NumericUpDown { Value = 22, Minimum = 0, Maximum = 40 };
+        _nudBottomOffset = new NumericUpDown { Value = 22, Minimum = 0, Maximum = 100 };
+        _chkUseHook = new CheckBox();
+        btnWrapper.Click += (_, _) => ShowWrapperDialog();
+
+        void UpdateStyleHint()
+        {
+            _lblStyleDisabledHint.Visible = !_chkSlimTitlebar.Checked && !_chkMaximizeWindow.Checked;
+        }
+
         _chkSlimTitlebar.CheckedChanged += (_, _) =>
         {
             bool slim = _chkSlimTitlebar.Checked;
-            _nudTitlebarOffset.Enabled = slim;
-            _nudBottomOffset.Enabled = slim;
+            btnWrapper.Enabled = slim;
             _chkUseHook.Enabled = slim;
             if (!slim) _chkUseHook.Checked = false;
-            // Slim titlebar and Maximize are incompatible — maximized windows
-            // are constrained to the work area, defeating the WinEQ2 trick
             if (slim)
             {
                 _chkMaximizeWindow.Checked = false;
@@ -1663,10 +1649,82 @@ public class SettingsForm : Form
             {
                 _chkMaximizeWindow.Enabled = true;
             }
-            _lblStyleDisabledHint.Visible = !slim;
+            UpdateStyleHint();
         };
 
+        _chkMaximizeWindow.CheckedChanged += (_, _) => UpdateStyleHint();
+
         return page;
+    }
+
+    private void ShowWrapperDialog()
+    {
+        using var dlg = new Form
+        {
+            Text = "Wrapper Settings",
+            Size = new Size(340, 280),
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            ShowInTaskbar = false
+        };
+        DarkTheme.StyleForm(dlg, dlg.Text, dlg.Size);
+
+        int y = 15;
+        const int L = 15, I = 160;
+
+        DarkTheme.AddLabel(dlg, "Titlebar hidden (px):", L, y + 2);
+        var nudTitle = DarkTheme.AddNumeric(dlg, I, y, 60, _nudTitlebarOffset.Value, 0, 40);
+        y += 24;
+        DarkTheme.AddHint(dlg, "22 = thin strip, 30 = fully hidden", L, y);
+        y += 18;
+
+        DarkTheme.AddLabel(dlg, "Bottom margin (px):", L, y + 2);
+        var nudBottom = DarkTheme.AddNumeric(dlg, I, y, 60, _nudBottomOffset.Value, 0, 100);
+        y += 24;
+        DarkTheme.AddHint(dlg, "Game render height reduction", L, y);
+        y += 18;
+
+        DarkTheme.AddHint(dlg, "Defaults: titlebar 13, margin 21. Keep margin > titlebar.", L, y);
+        y += 22;
+
+        var chkHook = DarkTheme.AddCheckBox(dlg, "DLL Hook (zero flicker)", L, y);
+        chkHook.Checked = _chkUseHook.Checked;
+        y += 20;
+        DarkTheme.AddHint(dlg, "Hooks SetWindowPos inside EQ", L, y);
+        y += 28;
+
+        var btnReset = DarkTheme.MakeButton("Reset Defaults", DarkTheme.BgMedium, L, y);
+        btnReset.Width = 110;
+        btnReset.Click += (_, _) =>
+        {
+            nudTitle.Value = 13;
+            nudBottom.Value = 21;
+            chkHook.Checked = true;
+        };
+        dlg.Controls.Add(btnReset);
+        y += 36;
+
+        var btnOK = DarkTheme.MakePrimaryButton("Save", L, y);
+        btnOK.Width = 90;
+        btnOK.Click += (_, _) =>
+        {
+            _nudTitlebarOffset.Value = nudTitle.Value;
+            _nudBottomOffset.Value = nudBottom.Value;
+            _chkUseHook.Checked = chkHook.Checked;
+            dlg.DialogResult = DialogResult.OK;
+        };
+        dlg.Controls.Add(btnOK);
+
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 120, y);
+        btnCancel.Width = 90;
+        btnCancel.Click += (_, _) => dlg.DialogResult = DialogResult.Cancel;
+        dlg.Controls.Add(btnCancel);
+
+        dlg.AcceptButton = (IButtonControl)btnOK;
+        dlg.CancelButton = (IButtonControl)btnCancel;
+        dlg.ShowDialog(this);
     }
 
     private void PopulateVideoFromIni()
