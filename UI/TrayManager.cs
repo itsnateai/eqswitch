@@ -376,7 +376,7 @@ public class TrayManager : IDisposable
         TryRegister(hk.ArrangeWindows, OnArrangeWindows, "FixWindows");
         TryRegister(hk.ToggleMultiMonitor, OnToggleMultiMonitor, "MultiMon");
         TryRegister(hk.LaunchOne, OnLaunchOne, "LaunchOne");
-        TryRegister(hk.LaunchAll, () => ExecuteTrayAction("LoginAll"), "LaunchAll");
+        TryRegister(hk.LaunchAll, () => ExecuteTrayAction("LaunchTwo"), "LaunchAll");
         TryRegister(hk.AutoLogin1, () => ExecuteTrayAction("AutoLogin1"), "AutoLogin1");
         TryRegister(hk.AutoLogin2, () => ExecuteTrayAction("AutoLogin2"), "AutoLogin2");
         TryRegister(hk.AutoLogin3, () => ExecuteTrayAction("AutoLogin3"), "AutoLogin3");
@@ -887,6 +887,7 @@ public class TrayManager : IDisposable
         launcherMenu.DropDownItems.Add("\uD83D\uDD27  Dalaya Patcher", null, (_, _) => FileOperations.OpenDalayaPatcher(_config, ShowBalloon, () => ShowSettings(5)));
         launcherMenu.DropDownItems.Add("\uD83D\uDCAC  Dalaya Discord", null, (_, _) => FileOperations.OpenUrl("discord://discord.com/channels/1233224126353768490/1249250739918864446"));
         launcherMenu.DropDownItems.Add(new ToolStripSeparator());
+        launcherMenu.DropDownItems.Add("✂  Trim Log Files", null, (_, _) => FileOperations.TrimLogFiles(_config, ShowBalloon));
         launcherMenu.DropDownItems.Add("\uD83D\uDCDC  Open Log File...", null, (_, _) => FileOperations.OpenLogFile(_config, ShowBalloon));
         launcherMenu.DropDownItems.Add("\uD83D\uDCC4  Open eqclient.ini", null, (_, _) => FileOperations.OpenEqClientIni(_config, ShowBalloon));
         launcherMenu.DropDownItems.Add(new ToolStripSeparator());
@@ -1062,7 +1063,7 @@ public class TrayManager : IDisposable
         if (!string.IsNullOrEmpty(hk.LaunchOne))
             lines.Add($"  [{hk.LaunchOne}]  Launch one client");
         if (!string.IsNullOrEmpty(hk.LaunchAll))
-            lines.Add($"  [{hk.LaunchAll}]  Auto-login Team 1");
+            lines.Add($"  [{hk.LaunchAll}]  Launch two clients");
 
         // Direct switch keys
         for (int i = 0; i < hk.DirectSwitchKeys.Count; i++)
@@ -1101,6 +1102,7 @@ public class TrayManager : IDisposable
         "SwapWindows" => "Swap positions",
         "TogglePiP" => "Toggle PiP",
         "LaunchOne" => "Launch one",
+        "LaunchTwo" => "Launch two clients",
         "LaunchAll" => "Launch Team 1",
         "LoginAll" => "Auto-login Team 1",
         "LoginAll2" => "Auto-login Team 2",
@@ -1235,6 +1237,10 @@ public class TrayManager : IDisposable
                 FireTeamLogin(
                     new[] { (_config.Team1Account1, "Team 1 Slot 1"), (_config.Team1Account2, "Team 1 Slot 2") },
                     "Team 1");
+                break;
+            case "LaunchTwo":
+                ShowBalloon("Launching two clients...");
+                OnLaunchAll();
                 break;
             case "AutoLogin1":
                 ExecuteQuickLogin(_config.QuickLogin1, "Quick Login 1");

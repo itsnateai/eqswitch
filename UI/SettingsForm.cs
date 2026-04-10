@@ -358,7 +358,7 @@ public class SettingsForm : Form
         y += 73;
 
         // ─── Tray Click Actions card ─────────────────────────────
-        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam1", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4", "TogglePiP", "LaunchOne", "LaunchTeam", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4" };
+        var clickActions = new[] { "None", "AutoLogin1", "AutoLogin2", "AutoLogin3", "AutoLogin4", "AutoLoginTeam1", "TogglePiP", "LaunchOne", "LaunchTwo", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4" };
         const int cboW = 140;
 
         var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 131);
@@ -435,7 +435,7 @@ public class SettingsForm : Form
         if (_txtArrangeWindows?.Text.Trim() is { Length: > 0 } aw) otherHotkeys[aw] = "Arrange Windows";
         if (_txtToggleMultiMon?.Text.Trim() is { Length: > 0 } mm) otherHotkeys[mm] = "Toggle Multi-Mon";
         if (_txtLaunchOne?.Text.Trim() is { Length: > 0 } lo) otherHotkeys[lo] = "Launch One";
-        if (_txtLaunchAll?.Text.Trim() is { Length: > 0 } la) otherHotkeys[la] = "Launch All";
+        if (_txtLaunchAll?.Text.Trim() is { Length: > 0 } la) otherHotkeys[la] = "Launch Two";
 
         var warnings = new List<string>();
 
@@ -513,7 +513,7 @@ public class SettingsForm : Form
         {
             Location = new Point(x, y), Size = new Size(width, 20),
             BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", 9f),
+            BorderStyle = BorderStyle.None, Font = new Font("Consolas", 9f),
             TextAlign = HorizontalAlignment.Center,
             ShortcutsEnabled = false
         };
@@ -530,7 +530,7 @@ public class SettingsForm : Form
         const int L = 10, I = 150, I2 = 310, R = 28;
 
         // ─── Window Switching card ───────────────────────────────
-        var cardSwitch = DarkTheme.MakeCard(page, "⚔", "Window Switching", DarkTheme.CardGreen, 10, y, 480, 126);
+        var cardSwitch = DarkTheme.MakeCard(page, "⚔", "Window Switching", DarkTheme.CardGreen, 10, y, 480, 100);
         int cy = 32;
 
         _lblSwitchKeyHotkey = DarkTheme.AddCardLabel(cardSwitch, "Switch Key (EQ-only):", L, cy);
@@ -553,7 +553,7 @@ public class SettingsForm : Form
         _txtGlobalSwitchKey.TextChanged += (_, _) => CheckDuplicateSwitchKeys();
         cy += R + 2;
 
-        y += 134;
+        y += 108;
 
         // ─── Actions card ────────────────────────────────────────
         var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 110);
@@ -568,7 +568,7 @@ public class SettingsForm : Form
 
         DarkTheme.AddCardLabel(cardActions, "Multi-Mon Toggle:", L, cy);
         _txtToggleMultiMon = MakeHotkeyBox(cardActions, I, cy - 2);
-        DarkTheme.AddCardLabel(cardActions, "Launch All:", col2, cy);
+        DarkTheme.AddCardLabel(cardActions, "Launch Two:", col2, cy);
         _txtLaunchAll = MakeHotkeyBox(cardActions, col2I, cy - 2);
         cy += R + 2;
 
@@ -577,37 +577,39 @@ public class SettingsForm : Form
         y += 120;
 
         // ─── Auto-Login Hotkeys ─────────────────────────────────
-        var hkCard = DarkTheme.MakeCard(page, "\u2328", "Auto-Login Hotkeys", DarkTheme.CardGreen, 10, y, 480, 120);
+        var hkCard = DarkTheme.MakeCard(page, "\u2328", "Auto-Login Hotkeys", DarkTheme.CardGreen, 10, y, 480, 104);
 
-        // Accounts row
-        var lblAccounts = DarkTheme.AddCardLabel(hkCard, "Accounts", 10, 28);
+        // Accounts row — 4 columns fit within 480px card
+        const int hkL = 65, hkW = 80, hkS = 100;  // label-start, box-width, column-stride
+        var lblAccounts = DarkTheme.AddCardLabel(hkCard, "Accounts", 10, 34);
         lblAccounts.Font = TrackFont(new Font("Segoe UI Semibold", 8f));
         lblAccounts.ForeColor = DarkTheme.FgDimGray;
-        DarkTheme.AddCardLabel(hkCard, "1:", 75, 28);
-        _txtAutoLogin1Hotkey = MakeHotkeyBox(hkCard, 90, 26);
-        DarkTheme.AddCardLabel(hkCard, "2:", 190, 28);
-        _txtAutoLogin2Hotkey = MakeHotkeyBox(hkCard, 205, 26);
-        DarkTheme.AddCardLabel(hkCard, "3:", 305, 28);
-        _txtAutoLogin3Hotkey = MakeHotkeyBox(hkCard, 320, 26);
-        DarkTheme.AddCardLabel(hkCard, "4:", 420, 28);
-        _txtAutoLogin4Hotkey = MakeHotkeyBox(hkCard, 435, 26);
+        DarkTheme.AddCardLabel(hkCard, "1:", hkL, 34);
+        _txtAutoLogin1Hotkey = MakeHotkeyBox(hkCard, hkL + 15, 32, hkW);
+        DarkTheme.AddCardLabel(hkCard, "2:", hkL + hkS, 34);
+        _txtAutoLogin2Hotkey = MakeHotkeyBox(hkCard, hkL + hkS + 15, 32, hkW);
+        DarkTheme.AddCardLabel(hkCard, "3:", hkL + hkS * 2, 34);
+        _txtAutoLogin3Hotkey = MakeHotkeyBox(hkCard, hkL + hkS * 2 + 15, 32, hkW);
+        DarkTheme.AddCardLabel(hkCard, "4:", hkL + hkS * 3, 34);
+        _txtAutoLogin4Hotkey = MakeHotkeyBox(hkCard, hkL + hkS * 3 + 15, 32, hkW);
 
         // Teams row
-        var lblTeams = DarkTheme.AddCardLabel(hkCard, "Teams", 10, 56);
+        var lblTeams = DarkTheme.AddCardLabel(hkCard, "Teams", 10, 62);
         lblTeams.Font = TrackFont(new Font("Segoe UI Semibold", 8f));
         lblTeams.ForeColor = DarkTheme.FgDimGray;
-        DarkTheme.AddCardLabel(hkCard, "1:", 75, 56);
-        _txtTeamLogin1Hotkey = MakeHotkeyBox(hkCard, 90, 54);
-        DarkTheme.AddCardLabel(hkCard, "2:", 190, 56);
-        _txtTeamLogin2Hotkey = MakeHotkeyBox(hkCard, 205, 54);
-        DarkTheme.AddCardLabel(hkCard, "3:", 305, 56);
-        _txtTeamLogin3Hotkey = MakeHotkeyBox(hkCard, 320, 54);
-        DarkTheme.AddCardLabel(hkCard, "4:", 420, 56);
-        _txtTeamLogin4Hotkey = MakeHotkeyBox(hkCard, 435, 54);
+        DarkTheme.AddCardLabel(hkCard, "1:", hkL, 62);
+        _txtTeamLogin1Hotkey = MakeHotkeyBox(hkCard, hkL + 15, 60, hkW);
+        DarkTheme.AddCardLabel(hkCard, "2:", hkL + hkS, 62);
+        _txtTeamLogin2Hotkey = MakeHotkeyBox(hkCard, hkL + hkS + 15, 60, hkW);
+        DarkTheme.AddCardLabel(hkCard, "3:", hkL + hkS * 2, 62);
+        _txtTeamLogin3Hotkey = MakeHotkeyBox(hkCard, hkL + hkS * 2 + 15, 60, hkW);
+        DarkTheme.AddCardLabel(hkCard, "4:", hkL + hkS * 3, 62);
+        _txtTeamLogin4Hotkey = MakeHotkeyBox(hkCard, hkL + hkS * 3 + 15, 60, hkW);
 
-        // Hint + warning
-        DarkTheme.AddCardHint(hkCard, "Press combo to set. Backspace = clear.", 10, 82);
-        _lblAutoLoginHotkeyWarn = DarkTheme.AddCardHint(hkCard, "", 10, 96);
+        // Hint + warning (same line — hint left, conflict warning right)
+        DarkTheme.AddCardHint(hkCard, "Press combo to set. Backspace/Delete to clear.", 10, 88);
+        _lblAutoLoginHotkeyWarn = DarkTheme.AddCardHint(hkCard, "", 240, 88);
+        _lblAutoLoginHotkeyWarn.ForeColor = DarkTheme.FgWarn;
 
         _txtAutoLogin1Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
         _txtAutoLogin2Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
@@ -618,7 +620,7 @@ public class SettingsForm : Form
         _txtTeamLogin3Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
         _txtTeamLogin4Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
 
-        y += 128;
+        y += 112;
 
         // ─── Preferences card ────────────────────────────────────
         var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardCyan, 10, y, 480, 68);
@@ -627,7 +629,7 @@ public class SettingsForm : Form
         _nudTooltipDuration = DarkTheme.AddCardNumeric(cardPrefs, 110, cy, 55, 1000, 0, 10000);
         _nudTooltipDuration.Increment = 100;
         DarkTheme.AddCardHint(cardPrefs, "ms", 175, cy);
-        DarkTheme.AddCardLabel(cardPrefs, "Launch Delay:", 250, cy);
+        DarkTheme.AddCardLabel(cardPrefs, "Client Launch Delay:", 240, cy);
         _nudLaunchDelay = DarkTheme.AddCardNumeric(cardPrefs, 360, cy, 40, 3, 1, 30);
         DarkTheme.AddCardHint(cardPrefs, "sec", 410, cy);
 
@@ -1055,7 +1057,6 @@ public class SettingsForm : Form
         _nudTitlebarOffset.Enabled = _config.Layout.SlimTitlebar;
         _nudBottomOffset.Enabled = _config.Layout.SlimTitlebar;
         _chkMaximizeWindow.Enabled = !_config.Layout.SlimTitlebar;
-        _lblStyleDisabledHint.Visible = !_config.Layout.SlimTitlebar;
 
         // Performance
 
@@ -1385,7 +1386,7 @@ public class SettingsForm : Form
 
         // ─── Quick Login Slots ───────────────────────────────────────
         y += 226;
-        var slotsCard = DarkTheme.MakeCard(page, "\u26A1", "Quick Login Accounts", DarkTheme.CardGold, 10, y, 480, 110);
+        var slotsCard = DarkTheme.MakeCard(page, "\u26A1", "Quick Individual Login Accounts", DarkTheme.CardGold, 10, y, 480, 110);
         DarkTheme.AddCardLabel(slotsCard, "Slot 1:", 10, 34);
         _cboQuickLogin1 = DarkTheme.AddCardComboBox(slotsCard, 55, 31, 150, Array.Empty<string>());
         DarkTheme.AddCardLabel(slotsCard, "Slot 2:", 215, 34);
@@ -1407,15 +1408,15 @@ public class SettingsForm : Form
 
         // ─── Autologin Teams ─────────────────────────────────────────
         y += 114;
-        var teamsCard = DarkTheme.MakeCard(page, "\uD83D\uDC65", "Autologin Teams", DarkTheme.CardGold, 10, y, 480, 65);
-        _lblTeamSummary = DarkTheme.AddCardHint(teamsCard, BuildTeamSummary(), 10, 32);
-        var btnTeams = DarkTheme.AddCardButton(teamsCard, "Configure Teams...", 340, 28, 120);
+        var teamsCard = DarkTheme.MakeCard(page, "\uD83D\uDC65", "Autologin Teams", DarkTheme.CardGold, 10, y, 480, 78);
+        var btnTeams = DarkTheme.AddCardButton(teamsCard, "Configure Teams...", 10, 28, 120);
         btnTeams.Click += (_, _) => ShowTeamsDialog();
+        _lblTeamSummary = DarkTheme.AddCardHint(teamsCard, BuildTeamSummary(), 10, 54);
 
         // ─── Autologin Preferences ──────────────────────────────────
-        y += 69;
+        y += 86;
         var prefsCard = DarkTheme.MakeCard(page, "\u2699", "Autologin Preferences", DarkTheme.CardCyan, 10, y, 480, 78);
-        _chkAutoEnterWorld = DarkTheme.AddCheckBox(prefsCard, "Auto Enter World", 10, 30);
+        _chkAutoEnterWorld = DarkTheme.AddCheckBox(prefsCard, "Auto Enter World (experimental)", 10, 30);
         _chkAutoEnterWorld.Checked = _config.AutoEnterWorld;
         DarkTheme.AddCardHint(prefsCard, "Enters world as last-loaded character. Uncheck to stop at character select.", 10, 50);
 
@@ -1647,7 +1648,7 @@ public class SettingsForm : Form
         const int L = 10;
 
         // ─── Resolution card ──────────────────────────────────────
-        var cardRes = DarkTheme.MakeCard(page, "📺", "EQ Resolution", DarkTheme.CardPurple, 10, y, 480, 140);
+        var cardRes = DarkTheme.MakeCard(page, "📺", "EQ Resolution", DarkTheme.CardPurple, 10, y, 480, 96);
         int cy = 32;
 
         DarkTheme.AddLabel(cardRes, "Preset:", L, cy + 2);
@@ -1665,7 +1666,11 @@ public class SettingsForm : Form
         cardRes.Controls.Add(_cboVideoPreset);
         DarkTheme.WrapWithBorder(_cboVideoPreset);
 
-        _chkVideoWindowed = DarkTheme.AddCheckBox(cardRes, "Windowed Mode", 245, cy + 2);
+        var btnOffsets = DarkTheme.MakeButton("📐 Offsets...", DarkTheme.BgInput, 370, cy - 2);
+        btnOffsets.Size = new Size(95, 24);
+        btnOffsets.Font = DarkTheme.FontUI85;
+        cardRes.Controls.Add(btnOffsets);
+        btnOffsets.Click += (_, _) => ShowOffsetsDialog();
 
         cy += 30;
         DarkTheme.AddLabel(cardRes, "Width:", L, cy + 2);
@@ -1676,21 +1681,15 @@ public class SettingsForm : Form
         _nudVideoHeight = DarkTheme.AddNumeric(cardRes, 210, cy, 70, 1080, 200, 4320);
         _nudVideoHeight.ValueChanged += (_, _) => SyncVideoPresetToCustom();
 
+        // Offset controls live in a popup dialog behind this button
+        _nudVideoOffsetX = new NumericUpDown { Minimum = -5000, Maximum = 5000, Value = 0 };
+        _nudVideoOffsetY = new NumericUpDown { Minimum = -5000, Maximum = 5000, Value = 0 };
+        _nudVideoTopOffset = new NumericUpDown { Minimum = -100, Maximum = 200, Value = _config.Layout.TopOffset };
+
         var btnReset = DarkTheme.AddCardButton(cardRes, "🔄 Reset", 370, cy, 95);
         btnReset.Click += (_, _) => VideoResetDefaults();
 
-        cy += 30;
-        DarkTheme.AddLabel(cardRes, "Offset X:", L, cy + 2);
-        _nudVideoOffsetX = DarkTheme.AddNumeric(cardRes, 80, cy, 55, 0, -5000, 5000);
-        DarkTheme.AddLabel(cardRes, "Y:", 145, cy + 2);
-        _nudVideoOffsetY = DarkTheme.AddNumeric(cardRes, 162, cy, 55, 0, -5000, 5000);
-        DarkTheme.AddLabel(cardRes, "Top:", 230, cy + 2);
-        _nudVideoTopOffset = DarkTheme.AddNumeric(cardRes, 260, cy, 55, _config.Layout.TopOffset, -100, 200);
-        DarkTheme.AddHint(cardRes, "px down from top edge", 320, cy + 4);
-        cy += 28;
-        DarkTheme.AddHint(cardRes, "Resolution & offsets save to eqclient.ini on Apply. Changes require EQ restart.", L, cy + 2);
-
-        y += 148;
+        y += 104;
 
         // ─── Monitor card ─────────────────────────────────────────
         var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 128);
@@ -1744,15 +1743,19 @@ public class SettingsForm : Form
         y += 136;
 
         // ─── Window Style card ───────────────────────────────────
-        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 100);
+        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 130);
         cy = 32;
 
         const int hintX = 260;
 
-        var btnWrapper = DarkTheme.MakePrimaryButton("⚙ Advanced...", 355, 2);
-        btnWrapper.Size = new Size(110, 24);
+        var btnWrapper = DarkTheme.MakeButton("⚙ Advanced...", DarkTheme.BgInput, 385, 6);
+        btnWrapper.Size = new Size(80, 20);
         btnWrapper.Font = DarkTheme.FontUI85;
         cardStyle.Controls.Add(btnWrapper);
+
+        _chkVideoWindowed = DarkTheme.AddCardCheckBox(cardStyle, "Windowed Mode", L, cy);
+        DarkTheme.AddCardHint(cardStyle, "Required for window switching", hintX, cy + 2);
+        cy += 26;
 
         _chkSlimTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Fullscreen Window (WinEQ2 mode)", L, cy);
         DarkTheme.AddCardHint(cardStyle, "Sets res + hides titlebar", hintX, cy + 2);
@@ -1764,14 +1767,36 @@ public class SettingsForm : Form
 
         _lblStyleDisabledHint = new Label
         {
-            Text = "If disabled, set EQ video resolution to fit above the taskbar",
+            Text = "",
             Location = new Point(L, cy),
             AutoSize = true,
             ForeColor = DarkTheme.FgWarn,
             Font = DarkTheme.FontUI75,
-            Visible = true,
+            Visible = false,
         };
         cardStyle.Controls.Add(_lblStyleDisabledHint);
+
+        // Unified style hint — shows conflict warning or general hint as needed
+        void UpdateStyleHint()
+        {
+            if (_chkSlimTitlebar.Checked && !_chkVideoWindowed.Checked)
+            {
+                _lblStyleDisabledHint.Text = "⚠ Fullscreen Window requires Windowed Mode to be enabled";
+                _lblStyleDisabledHint.ForeColor = DarkTheme.FgWarn;
+                _lblStyleDisabledHint.Visible = true;
+            }
+            else if (!_chkSlimTitlebar.Checked && !_chkMaximizeWindow.Checked)
+            {
+                _lblStyleDisabledHint.Text = "If disabled, set EQ video resolution to fit above the taskbar";
+                _lblStyleDisabledHint.ForeColor = DarkTheme.FgDimGray;
+                _lblStyleDisabledHint.Visible = true;
+            }
+            else
+            {
+                _lblStyleDisabledHint.Visible = false;
+            }
+        }
+        _chkVideoWindowed.CheckedChanged += (_, _) => UpdateStyleHint();
 
         // Wrapper dialog — titlebar offset, bottom margin, DLL hook
         // These are advanced settings that most users don't need to touch.
@@ -1780,19 +1805,14 @@ public class SettingsForm : Form
         _chkUseHook = new CheckBox();
         btnWrapper.Click += (_, _) => ShowWrapperDialog();
 
-        void UpdateStyleHint()
-        {
-            _lblStyleDisabledHint.Visible = !_chkSlimTitlebar.Checked && !_chkMaximizeWindow.Checked;
-        }
-
         _chkSlimTitlebar.CheckedChanged += (_, _) =>
         {
             bool slim = _chkSlimTitlebar.Checked;
             btnWrapper.Enabled = slim;
             _chkUseHook.Enabled = slim;
-            if (!slim) _chkUseHook.Checked = false;
             if (slim)
             {
+                _chkUseHook.Checked = true;  // DLL hook recommended with Fullscreen Window
                 _chkMaximizeWindow.Checked = false;
                 _chkMaximizeWindow.Enabled = false;
             }
@@ -1806,6 +1826,62 @@ public class SettingsForm : Form
         _chkMaximizeWindow.CheckedChanged += (_, _) => UpdateStyleHint();
 
         return page;
+    }
+
+    private void ShowOffsetsDialog()
+    {
+        using var dlg = new Form
+        {
+            Text = "Window Offsets",
+            Size = new Size(300, 240),
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            ShowInTaskbar = false
+        };
+        DarkTheme.StyleForm(dlg, dlg.Text, dlg.Size);
+
+        int y = 15;
+        const int L = 15, I = 120;
+
+        DarkTheme.AddLabel(dlg, "Offset X:", L, y + 2);
+        var nudX = DarkTheme.AddNumeric(dlg, I, y, 70, _nudVideoOffsetX.Value, -5000, 5000);
+        DarkTheme.AddHint(dlg, "px from left edge", 200, y + 4);
+        y += 28;
+
+        DarkTheme.AddLabel(dlg, "Offset Y:", L, y + 2);
+        var nudY = DarkTheme.AddNumeric(dlg, I, y, 70, _nudVideoOffsetY.Value, -5000, 5000);
+        DarkTheme.AddHint(dlg, "px from top edge", 200, y + 4);
+        y += 28;
+
+        DarkTheme.AddLabel(dlg, "Top Offset:", L, y + 2);
+        var nudTop = DarkTheme.AddNumeric(dlg, I, y, 70, _nudVideoTopOffset.Value, -100, 200);
+        DarkTheme.AddHint(dlg, "px down from top", 200, y + 4);
+        y += 32;
+
+        DarkTheme.AddHint(dlg, "Most users can leave these at 0.", L, y);
+        y += 16;
+        DarkTheme.AddHint(dlg, "Saves to eqclient.ini on Apply. Requires EQ restart.", L, y);
+        y += 22;
+
+        var btnOK = DarkTheme.MakePrimaryButton("Save", L, y);
+        btnOK.Width = 90;
+        btnOK.Click += (_, _) =>
+        {
+            _nudVideoOffsetX.Value = nudX.Value;
+            _nudVideoOffsetY.Value = nudY.Value;
+            _nudVideoTopOffset.Value = nudTop.Value;
+            dlg.DialogResult = DialogResult.OK;
+        };
+        dlg.Controls.Add(btnOK);
+
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, L + 100, y);
+        btnCancel.Width = 90;
+        btnCancel.Click += (_, _) => dlg.DialogResult = DialogResult.Cancel;
+        dlg.Controls.Add(btnCancel);
+
+        dlg.ShowDialog(this);
     }
 
     private void ShowWrapperDialog()
@@ -2274,7 +2350,6 @@ public class SettingsForm : Form
 
     private static readonly Dictionary<string, string> _trayActionDisplayMap = new()
     {
-        ["LaunchAll"] = "LaunchTeam",
         ["LoginAll"] = "AutoLoginTeam1",
         ["LoginAll2"] = "AutoLoginTeam2",
         ["LoginAll3"] = "AutoLoginTeam3",
@@ -2283,7 +2358,6 @@ public class SettingsForm : Form
 
     private static readonly Dictionary<string, string> _trayDisplayActionMap = new()
     {
-        ["LaunchTeam"] = "LaunchAll",
         ["AutoLoginTeam1"] = "LoginAll",
         ["AutoLoginTeam2"] = "LoginAll2",
         ["AutoLoginTeam3"] = "LoginAll3",
