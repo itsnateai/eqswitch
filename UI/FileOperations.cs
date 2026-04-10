@@ -177,6 +177,74 @@ public static class FileOperations
         }
     }
 
+    /// <summary>
+    /// Trim EQ log files over 10MB by keeping only the last 10MB of each.
+    /// </summary>
+    public static void TrimLogFiles(AppConfig config, Action<string> showBalloon)
+    {
+        var logsDir = Path.Combine(config.EQPath, "Logs");
+        if (!Directory.Exists(logsDir))
+        {
+            showBalloon("Logs folder not found");
+            return;
+        }
+
+        var logFiles = Directory.GetFiles(logsDir, "eqlog_*.txt");
+        const long maxSize = 10 * 1024 * 1024; // 10MB
+        int trimmed = 0;
+        long totalFreed = 0;
+
+        foreach (var logFile in logFiles)
+        {
+            try
+            {
+                var fi = new FileInfo(logFile);
+                if (fi.Length <= maxSize) continue;
+
+                long originalSize = fi.Length;
+                long keepOffset = fi.Length - maxSize;
+
+                // Read the last 10MB
+                byte[] tail;
+                using (var fs = new FileStream(logFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    fs.Seek(keepOffset, SeekOrigin.Begin);
+                    tail = new byte[fi.Length - keepOffset];
+                    int read = 0;
+                    while (read < tail.Length)
+                    {
+                        int n = fs.Read(tail, read, tail.Length - read);
+                        if (n == 0) break;
+                        read += n;
+                    }
+                }
+
+                // Find the first newline to avoid a partial line at the start
+                int start = Array.IndexOf(tail, (byte)'\n');
+                if (start < 0) start = 0; else start++;
+
+                // Write back
+                using (var fs = new FileStream(logFile, FileMode.Create, FileAccess.Write))
+                {
+                    fs.Write(tail, start, tail.Length - start);
+                }
+
+                totalFreed += originalSize - (tail.Length - start);
+                trimmed++;
+                FileLogger.Info($"TrimLogFiles: {Path.GetFileName(logFile)} trimmed from {originalSize / 1024 / 1024}MB to {(tail.Length - start) / 1024 / 1024}MB");
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Warn($"TrimLogFiles: failed to trim {Path.GetFileName(logFile)} — {ex.Message}");
+            }
+        }
+
+        if (trimmed == 0)
+            showBalloon($"All {logFiles.Length} log files are under 10MB — nothing to trim");
+        else
+            showBalloon($"Trimmed {trimmed} log file(s), freed {totalFreed / 1024 / 1024}MB");
+    }
+
     public static void OpenWithDefaultEditor(string path)
     {
         try
