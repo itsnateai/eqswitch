@@ -74,6 +74,10 @@ public class AppConfig
     public string Team1Account2 { get; set; } = "";
     public string Team2Account1 { get; set; } = "";
     public string Team2Account2 { get; set; } = "";
+    public string Team3Account1 { get; set; } = "";
+    public string Team3Account2 { get; set; } = "";
+    public string Team4Account1 { get; set; } = "";
+    public string Team4Account2 { get; set; } = "";
 
     // Tray Click Actions
     public TrayClickConfig TrayClick { get; set; } = new();
