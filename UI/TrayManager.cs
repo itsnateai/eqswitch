@@ -809,12 +809,15 @@ public class TrayManager : IDisposable
                 loginMenu.DropDownItems.Add($"\uD83D\uDC64  {label}", null, (_, _) =>
                     _autoLoginManager.LoginAccount(account));
             }
-            var assignedSlots = new[] { _config.QuickLogin1, _config.QuickLogin2, _config.QuickLogin3, _config.QuickLogin4 }
-                .Count(s => !string.IsNullOrEmpty(s));
-            if (assignedSlots >= 2)
+            var hasTeam1 = !string.IsNullOrEmpty(_config.Team1Account1) || !string.IsNullOrEmpty(_config.Team1Account2);
+            var hasTeam2 = !string.IsNullOrEmpty(_config.Team2Account1) || !string.IsNullOrEmpty(_config.Team2Account2);
+            if (hasTeam1 || hasTeam2)
             {
                 loginMenu.DropDownItems.Add(new ToolStripSeparator());
-                loginMenu.DropDownItems.Add("\uD83D\uDE80  Auto-Login Two Clients", null, (_, _) => ExecuteTrayAction("LoginAll"));
+                if (hasTeam1)
+                    loginMenu.DropDownItems.Add("\uD83D\uDE80  Auto-Login Team 1", null, (_, _) => ExecuteTrayAction("LoginAll"));
+                if (hasTeam2)
+                    loginMenu.DropDownItems.Add("\uD83D\uDE80  Auto-Login Team 2", null, (_, _) => ExecuteTrayAction("LoginAll2"));
             }
             loginMenu.DropDownItems.Add(new ToolStripSeparator());
         }
@@ -1092,7 +1095,8 @@ public class TrayManager : IDisposable
         "TogglePiP" => "Toggle PiP",
         "LaunchOne" => "Launch one",
         "LaunchAll" => "Launch two",
-        "LoginAll" => "Auto-login two clients",
+        "LoginAll" => "Auto-login Team 1",
+        "LoginAll2" => "Auto-login Team 2",
         "Settings" => "Open settings",
         "ShowHelp" => "Show this help",
         _ => action
@@ -1231,22 +1235,14 @@ public class TrayManager : IDisposable
                 ExecuteQuickLogin(_config.QuickLogin4, "Quick Login 4");
                 break;
             case "LoginAll":
-                var allSlots = new[] {
-                    (_config.QuickLogin1, "Quick Login 1"),
-                    (_config.QuickLogin2, "Quick Login 2"),
-                    (_config.QuickLogin3, "Quick Login 3"),
-                    (_config.QuickLogin4, "Quick Login 4")
-                };
-                int fired = 0;
-                foreach (var (user, name) in allSlots)
-                {
-                    if (!string.IsNullOrEmpty(user))
-                    {
-                        ExecuteQuickLogin(user, name);
-                        fired++;
-                    }
-                }
-                if (fired == 0) ShowBalloon("No accounts assigned to quick login slots");
+                FireTeamLogin(
+                    new[] { (_config.Team1Account1, "Team 1 Slot 1"), (_config.Team1Account2, "Team 1 Slot 2") },
+                    "Team 1");
+                break;
+            case "LoginAll2":
+                FireTeamLogin(
+                    new[] { (_config.Team2Account1, "Team 2 Slot 1"), (_config.Team2Account2, "Team 2 Slot 2") },
+                    "Team 2");
                 break;
             case "Settings":
                 ShowSettings();
@@ -1290,6 +1286,20 @@ public class TrayManager : IDisposable
         var label = string.IsNullOrEmpty(account.CharacterName) ? account.Username : account.CharacterName;
         ShowBalloon($"Logging in {label}...");
         _autoLoginManager.LoginAccount(account);
+    }
+
+    private void FireTeamLogin((string username, string label)[] slots, string teamName)
+    {
+        int fired = 0;
+        foreach (var (user, name) in slots)
+        {
+            if (!string.IsNullOrEmpty(user))
+            {
+                ExecuteQuickLogin(user, name);
+                fired++;
+            }
+        }
+        if (fired == 0) ShowBalloon($"No accounts assigned to {teamName}");
     }
 
     // ─── Config Reload ─────────────────────────────────────────────
