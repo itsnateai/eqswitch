@@ -27,8 +27,8 @@ internal sealed class AutoLoginTeamsDialog : Form
     {
         _accounts = accounts;
 
+        StartPosition = FormStartPosition.CenterParent;
         DarkTheme.StyleForm(this, "Autologin Teams", new Size(420, 210));
-        StartPosition = FormStartPosition.CenterParent;  // override StyleForm's CenterScreen
         MinimizeBox = false;
 
         const int L = 15, I = 80, CW = 145, gap = 10;
@@ -112,5 +112,11 @@ internal sealed class AutoLoginTeamsDialog : Form
         if (cbo.SelectedIndex <= 0) return "";
         int idx = cbo.SelectedIndex - 1; // offset by (None)
         return idx < _accounts.Count ? _accounts[idx].Username : "";
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) DarkTheme.DisposeControlFonts(this);
+        base.Dispose(disposing);
     }
 }
