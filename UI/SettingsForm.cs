@@ -67,7 +67,6 @@ public class SettingsForm : Form
 
 
     // ─── Launch tab controls
-    private NumericUpDown _nudNumClients = null!;
     private NumericUpDown _nudLaunchDelay = null!;
 
     // ─── Paths tab controls
@@ -547,11 +546,9 @@ public class SettingsForm : Form
         _txtGlobalSwitchKey.TextChanged += (_, _) => CheckDuplicateSwitchKeys();
         cy += R + 2;
 
-        DarkTheme.AddCardLabel(cardSwitch, "Clients (Launch All):", L, cy);
-        _nudNumClients = DarkTheme.AddCardNumeric(cardSwitch, I, cy, 40, 2, 1, 6);
-        DarkTheme.AddCardLabel(cardSwitch, "Delay between launches:", 220, cy);
-        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardSwitch, I2 + 50, cy, 40, 3, 1, 30);
-        DarkTheme.AddCardHint(cardSwitch, "sec", I2 + 110, cy + 2);
+        DarkTheme.AddCardLabel(cardSwitch, "Delay between launches:", L, cy);
+        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardSwitch, 180, cy, 40, 3, 1, 30);
+        DarkTheme.AddCardHint(cardSwitch, "sec", 230, cy + 2);
 
         y += 134;
 
@@ -1028,7 +1025,6 @@ public class SettingsForm : Form
         // Performance
 
         // Launch
-        _nudNumClients.Value = DarkTheme.ClampNud(_nudNumClients, _config.Launch.NumClients);
         _nudLaunchDelay.Value = DarkTheme.ClampNud(_nudLaunchDelay, _config.Launch.LaunchDelayMs / 1000);
 
         // Paths
@@ -1140,7 +1136,7 @@ public class SettingsForm : Form
             {
                 ExeName = _txtExeName.Text.Trim(),
                 Arguments = _txtArgs.Text.Trim(),
-                NumClients = (int)_nudNumClients.Value,
+                NumClients = _config.Launch.NumClients,
                 LaunchDelayMs = (int)_nudLaunchDelay.Value * 1000,
                 FixDelayMs = _config.Launch.FixDelayMs
             },
