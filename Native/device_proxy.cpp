@@ -11,6 +11,7 @@
 #include <string.h>
 
 void DI8Log(const char *fmt, ...);
+extern void MQ2BridgePollTick();
 
 // --- Global state (shared across all device instances) ---
 
@@ -124,6 +125,10 @@ static DWORD WINAPI ActivateThread(LPVOID) {
 
     while (!g_shutdown) {
         Sleep(16); // ~60Hz
+
+        // MQ2 bridge poll (throttled internally to ~500ms)
+        MQ2BridgePollTick();
+
         bool active = KeyShm::IsActive();
         HWND hwnd = g_eqHwnd;
 
