@@ -809,9 +809,9 @@ public class TrayManager : IDisposable
                 loginMenu.DropDownItems.Add($"\uD83D\uDC64  {label}", null, (_, _) =>
                     _autoLoginManager.LoginAccount(account));
             }
+            // Team 1 omitted — "Launch Team" on root menu handles it
             var teams = new[]
             {
-                (Has: !string.IsNullOrEmpty(_config.Team1Account1) || !string.IsNullOrEmpty(_config.Team1Account2), Label: "Auto-Login Team 1", Action: "LoginAll"),
                 (Has: !string.IsNullOrEmpty(_config.Team2Account1) || !string.IsNullOrEmpty(_config.Team2Account2), Label: "Auto-Login Team 2", Action: "LoginAll2"),
                 (Has: !string.IsNullOrEmpty(_config.Team3Account1) || !string.IsNullOrEmpty(_config.Team3Account2), Label: "Auto-Login Team 3", Action: "LoginAll3"),
                 (Has: !string.IsNullOrEmpty(_config.Team4Account1) || !string.IsNullOrEmpty(_config.Team4Account2), Label: "Auto-Login Team 4", Action: "LoginAll4"),
