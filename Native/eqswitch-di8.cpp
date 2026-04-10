@@ -22,8 +22,61 @@
 #include "di8_proxy.h"
 #include "iat_hook.h"
 #include "net_debug.h"
+#include "mq2_bridge.h"
 
 extern "C" void DeviceProxy_Shutdown();
+
+// ─── CharSelect Shared Memory ──────────────────────────────────
+// Opened lazily — created by C# CharSelectReader, DLL reads/writes.
+
+static HANDLE g_charSelMap = nullptr;
+static volatile CharSelectShm* g_charSelShm = nullptr;
+static uint32_t g_charSelRetry = 0;
+
+static bool TryOpenCharSelShm() {
+    DWORD pid = GetCurrentProcessId();
+    char name[64];
+    snprintf(name, sizeof(name), "Local\\EQSwitchCharSel_%lu", pid);
+
+    HANDLE h = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, name);
+    if (!h) return false;
+
+    void* view = MapViewOfFile(h, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(CharSelectShm));
+    if (!view) {
+        CloseHandle(h);
+        return false;
+    }
+
+    g_charSelMap = h;
+    g_charSelShm = (volatile CharSelectShm*)view;
+    DI8Log("mq2_bridge: opened CharSelect SHM (magic=0x%08X)", g_charSelShm->magic);
+    return true;
+}
+
+static void CloseCharSelShm() {
+    if (g_charSelShm) { UnmapViewOfFile((void*)g_charSelShm); g_charSelShm = nullptr; }
+    if (g_charSelMap) { CloseHandle(g_charSelMap); g_charSelMap = nullptr; }
+}
+
+// Called from device_proxy.cpp's ActivateThread (~60Hz, throttled to ~500ms internally)
+void MQ2BridgePollTick() {
+    static DWORD lastPoll = 0;
+    DWORD now = GetTickCount();
+    if (now - lastPoll < 500) return;
+    lastPoll = now;
+
+    if (!g_charSelShm) {
+        if (g_charSelRetry == 0) {
+            if (!TryOpenCharSelShm())
+                g_charSelRetry = 10;  // Retry every ~5 seconds
+        } else {
+            g_charSelRetry--;
+        }
+    }
+    if (g_charSelShm && g_charSelShm->magic == CHARSEL_SHM_MAGIC) {
+        MQ2Bridge::Poll(g_charSelShm);
+    }
+}
 
 // ─── Globals ────────────────────────────────────────────────────
 
@@ -173,6 +226,12 @@ static DWORD WINAPI InitThread(LPVOID) {
     NetDebug::Install();
     DI8Log("Winsock diagnostic hooks installed");
 
+    // Initialize MQ2 bridge (must happen after dinput8.dll is loaded by the game)
+    // Wait briefly for MQ2 to initialize its globals
+    Sleep(2000);  // Give MQ2 time to resolve its own pointers
+    bool mq2Ready = MQ2Bridge::Init();
+    DI8Log("MQ2 bridge init: %s", mq2Ready ? "OK" : "disabled");
+
     InterlockedExchange(&g_initialized, 1);
     DI8Log("Init complete — all hooks active");
     return 0;
@@ -192,6 +251,9 @@ static void Cleanup() {
         MH_Uninitialize();
         g_hookInstalled = false;
     }
+
+    MQ2Bridge::Shutdown();
+    CloseCharSelShm();
 
     DI8Log("Cleanup complete");
 }
