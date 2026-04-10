@@ -122,6 +122,26 @@ public static class DarkTheme
         }
     }
 
+    /// <summary>ComboBox that ignores mouse wheel when the dropdown is closed.
+    /// Prevents accidental value changes while scrolling a parent panel/tab.</summary>
+    private class ScrollGuardComboBox : ComboBox
+    {
+        private const int WM_MOUSEWHEEL = 0x020A;
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_MOUSEWHEEL && !DroppedDown)
+            {
+                // Forward the scroll to the parent so the tab/panel scrolls instead
+                var parent = Parent;
+                if (parent != null)
+                    NativeMethods.SendMessage(parent.Handle, (uint)m.Msg, m.WParam, m.LParam);
+                return;
+            }
+            base.WndProc(ref m);
+        }
+    }
+
     private static void DrawTab(object? sender, DrawItemEventArgs e)
     {
         if (sender is not TabControl tabs) return;
@@ -257,7 +277,7 @@ public static class DarkTheme
 
     public static ComboBox AddComboBox(Control parent, int x, int y, int width, string[] items)
     {
-        var cb = new ComboBox
+        var cb = new ScrollGuardComboBox
         {
             Location = new Point(x, y),
             Size = new Size(width, 26),
@@ -504,7 +524,7 @@ public static class DarkTheme
     /// <summary>Add a dark-styled ComboBox inside a card panel.</summary>
     public static ComboBox AddCardComboBox(Panel card, int x, int y, int width, string[] items)
     {
-        var cb = new ComboBox
+        var cb = new ScrollGuardComboBox
         {
             Location = new Point(x, y),
             Size = new Size(width, 24),

@@ -25,6 +25,7 @@ public class TrayManager : IDisposable
     private readonly AffinityManager _affinityManager;
     private readonly LaunchManager _launchManager;
     private readonly AutoLoginManager _autoLoginManager;
+    private readonly SynchronizationContext? _uiContext;
 
     private NotifyIcon? _trayIcon;
     private ContextMenuStrip? _contextMenu;
@@ -83,6 +84,7 @@ public class TrayManager : IDisposable
     {
         _config = config;
         _processManager = processManager;
+        _uiContext = SynchronizationContext.Current;
         _windowManager = new WindowManager(config);
         _hotkeyManager = new HotkeyManager();
         _keyboardHook = new KeyboardHookManager();
@@ -811,7 +813,7 @@ public class TrayManager : IDisposable
                     ? account.Username
                     : account.CharacterName;
                 loginMenu.DropDownItems.Add($"\uD83D\uDC64  {label}", null, (_, _) =>
-                    _autoLoginManager.LoginAccount(account));
+                    _ = _autoLoginManager.LoginAccount(account));
             }
             // Team 1 omitted — "Launch Team" on root menu handles it
             var teams = new[]
@@ -1026,6 +1028,12 @@ public class TrayManager : IDisposable
     private void ShowBalloon(string message)
     {
         if (_config.TooltipDurationMs <= 0) return;
+        // Marshal to UI thread if called from a background thread (e.g. FireTeamLogin)
+        if (_uiContext != null && SynchronizationContext.Current != _uiContext)
+        {
+            _uiContext.Post(_ => ShowBalloon(message), null);
+            return;
+        }
         // Defer to next message loop iteration so context menu handlers
         // fully complete before we create the tooltip window.
         DeferToNextTick(() => FloatingTooltip.Show(message, _config.TooltipDurationMs));
@@ -1243,16 +1251,16 @@ public class TrayManager : IDisposable
                 OnLaunchAll();
                 break;
             case "AutoLogin1":
-                ExecuteQuickLogin(_config.QuickLogin1, "Quick Login 1");
+                _ = ExecuteQuickLogin(_config.QuickLogin1, "Quick Login 1");
                 break;
             case "AutoLogin2":
-                ExecuteQuickLogin(_config.QuickLogin2, "Quick Login 2");
+                _ = ExecuteQuickLogin(_config.QuickLogin2, "Quick Login 2");
                 break;
             case "AutoLogin3":
-                ExecuteQuickLogin(_config.QuickLogin3, "Quick Login 3");
+                _ = ExecuteQuickLogin(_config.QuickLogin3, "Quick Login 3");
                 break;
             case "AutoLogin4":
-                ExecuteQuickLogin(_config.QuickLogin4, "Quick Login 4");
+                _ = ExecuteQuickLogin(_config.QuickLogin4, "Quick Login 4");
                 break;
             case "LoginAll":
                 FireTeamLogin(
@@ -1300,22 +1308,22 @@ public class TrayManager : IDisposable
     }
 
 
-    private void ExecuteQuickLogin(string username, string slotName)
+    private Task ExecuteQuickLogin(string username, string slotName)
     {
         if (string.IsNullOrEmpty(username))
         {
             ShowBalloon($"{slotName}: no account assigned");
-            return;
+            return Task.CompletedTask;
         }
         var account = _config.Accounts.FirstOrDefault(a => a.Username == username);
         if (account == null)
         {
             ShowBalloon($"{slotName}: account '{username}' not found");
-            return;
+            return Task.CompletedTask;
         }
         var label = string.IsNullOrEmpty(account.CharacterName) ? account.Username : account.CharacterName;
         ShowBalloon($"Logging in {label}...");
-        _autoLoginManager.LoginAccount(account);
+        return _autoLoginManager.LoginAccount(account);
     }
 
     private void FireTeamLogin((string username, string label)[] slots, string teamName)
@@ -1325,7 +1333,7 @@ public class TrayManager : IDisposable
         {
             if (!string.IsNullOrEmpty(user))
             {
-                ExecuteQuickLogin(user, name);
+                _ = ExecuteQuickLogin(user, name);
                 fired++;
             }
         }

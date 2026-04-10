@@ -15,20 +15,29 @@ public class EQVideoModeForm : Form
     private readonly Dictionary<string, NumericUpDown> _numerics = new();
     private readonly Dictionary<string, string> _initialValues = new();
 
-    private static readonly (string Key, string Label, int Default, int Min, int Max)[] VideoSettings =
+    // Grouped settings for card layout
+    private static readonly (string Key, string Label, int Default, int Min, int Max)[] ResolutionSettings =
     {
         ("Width", "Width", 1920, 640, 7680),
         ("Height", "Height", 1080, 480, 4320),
-        ("FullscreenRefreshRate", "Fullscreen Refresh Rate", 0, 0, 360),
-        ("FullscreenBitsPerPixel", "Fullscreen Bits Per Pixel", 32, 16, 32),
         ("WindowedWidth", "Windowed Width", 1920, 640, 7680),
         ("WindowedHeight", "Windowed Height", 1080, 480, 4320),
         ("WinEQWidth", "WinEQ Width", 1920, 640, 7680),
         ("WinEQHeight", "WinEQ Height", 1200, 480, 4320),
+    };
+
+    private static readonly (string Key, string Label, int Default, int Min, int Max)[] OffsetSettings =
+    {
         ("WindowedModeXOffset", "Windowed X Offset", 0, -9999, 9999),
         ("WindowedModeYOffset", "Windowed Y Offset", 0, -9999, 9999),
-        ("YOffset", "Y Offset", 0, -9999, 9999),
         ("XOffset", "X Offset", 0, -9999, 9999),
+        ("YOffset", "Y Offset", 0, -9999, 9999),
+    };
+
+    private static readonly (string Key, string Label, int Default, int Min, int Max)[] FullscreenSettings =
+    {
+        ("FullscreenRefreshRate", "Refresh Rate", 0, 0, 360),
+        ("FullscreenBitsPerPixel", "Bits Per Pixel", 32, 16, 32),
     };
 
     public EQVideoModeForm(AppConfig config)
@@ -41,41 +50,67 @@ public class EQVideoModeForm : Form
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 Video Mode (Experimental)", new Size(400, 520));
+        DarkTheme.StyleForm(this, "EQSwitch \u2014 Video Mode", new Size(480, 480));
         StartPosition = FormStartPosition.CenterParent;
 
-        int y = 12;
-        y = DarkTheme.AddSectionHeader(this, "\uD83D\uDCFA  [VideoMode] Settings", 15, y);
-        DarkTheme.AddHint(this, "Advanced video mode settings from eqclient.ini.\nOnly changed values are written on Save.\nChanges take effect on next EQ launch — not running clients.", 15, y);
-        y += 52;
+        int y = 8;
 
-        foreach (var (key, label, def, min, max) in VideoSettings)
+        // ─── Resolution card ──────────────────────────────────────
+        int resH = 30 + ResolutionSettings.Length * 26 + 4;
+        var cardRes = DarkTheme.MakeCard(this, "\uD83D\uDCFA", "Resolution", DarkTheme.CardBlue, 10, y, 440, resH);
+        int cy = 30;
+        foreach (var (key, label, def, min, max) in ResolutionSettings)
         {
-            DarkTheme.AddLabel(this, label + ":", 15, y + 3);
-            var nud = new NumericUpDown
-            {
-                Location = new Point(230, y), Size = new Size(100, 24),
-                BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-                Minimum = min, Maximum = max,
-                Value = def
-            };
-            Controls.Add(nud);
-            _numerics[key] = nud;
-            y += 28;
+            DarkTheme.AddCardLabel(cardRes, label, 10, cy + 2);
+            _numerics[key] = DarkTheme.AddCardNumeric(cardRes, 200, cy, 100, def, min, max);
+            cy += 26;
+        }
+        y += resH + 8;
+
+        // ─── Offsets card ─────────────────────────────────────────
+        int offH = 30 + OffsetSettings.Length * 26 + 4;
+        var cardOff = DarkTheme.MakeCard(this, "\u2195", "Window Offsets", DarkTheme.CardGreen, 10, y, 440, offH);
+        cy = 30;
+        foreach (var (key, label, def, min, max) in OffsetSettings)
+        {
+            DarkTheme.AddCardLabel(cardOff, label, 10, cy + 2);
+            _numerics[key] = DarkTheme.AddCardNumeric(cardOff, 200, cy, 100, def, min, max);
+            cy += 26;
+        }
+        y += offH + 8;
+
+        // ─── Fullscreen card ──────────────────────────────────────
+        int fsH = 30 + FullscreenSettings.Length * 26 + 20;
+        var cardFs = DarkTheme.MakeCard(this, "\uD83D\uDD33", "Fullscreen", DarkTheme.CardGold, 10, y, 440, fsH);
+        cy = 30;
+        foreach (var (key, label, def, min, max) in FullscreenSettings)
+        {
+            DarkTheme.AddCardLabel(cardFs, label, 10, cy + 2);
+            _numerics[key] = DarkTheme.AddCardNumeric(cardFs, 200, cy, 100, def, min, max);
+            cy += 26;
         }
 
-        y += 15;
+        DarkTheme.AddCardHint(cardFs, "Only changed values written. Apply on next EQ launch.", 10, cy + 2);
 
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 60, y);
+        // ─── Docked bottom panel with Save/Apply/Cancel ──────────
+        var buttonPanel = new Panel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 50,
+            BackColor = DarkTheme.BgDark
+        };
+
+        var btnSave = DarkTheme.MakePrimaryButton("Save", 110, 10);
         btnSave.Click += (_, _) => { SaveSettings(); Close(); };
 
-        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 150, y);
+        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 200, 10);
         btnApply.Click += (_, _) => { SaveSettings(); };
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 240, y);
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 290, 10);
         btnCancel.Click += (_, _) => Close();
 
-        Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
+        buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
+        Controls.Add(buttonPanel);
     }
 
     private void LoadFromIni()

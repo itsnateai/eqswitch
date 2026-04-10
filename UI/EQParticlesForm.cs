@@ -19,17 +19,17 @@ public class EQParticlesForm : Form
     // Opacity sliders (0.0 - 1.0 as 0-100%)
     private static readonly (string Key, string Label)[] OpacitySettings =
     {
-        ("SpellParticleOpacity", "Spell Particle Opacity"),
-        ("EnvironmentParticleOpacity", "Environment Particle Opacity"),
-        ("ActorParticleOpacity", "Actor Particle Opacity"),
+        ("SpellParticleOpacity", "Spell Particles"),
+        ("EnvironmentParticleOpacity", "Environment"),
+        ("ActorParticleOpacity", "Actor"),
     };
 
     // Density sliders (0.0 - 1.0 as 0-100%)
     private static readonly (string Key, string Label)[] DensitySettings =
     {
-        ("SpellParticleDensity", "Spell Particle Density"),
-        ("EnvironmentParticleDensity", "Environment Particle Density"),
-        ("ActorParticleDensity", "Actor Particle Density"),
+        ("SpellParticleDensity", "Spell Particles"),
+        ("EnvironmentParticleDensity", "Environment"),
+        ("ActorParticleDensity", "Actor"),
     };
 
     // Near clip plane numerics (float values)
@@ -64,136 +64,135 @@ public class EQParticlesForm : Form
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 Particles & Opacity (Experimental)", new Size(440, 700));
+        DarkTheme.StyleForm(this, "EQSwitch \u2014 Particles & Opacity", new Size(480, 700));
         StartPosition = FormStartPosition.CenterParent;
         AutoScroll = true;
 
-        int y = 12;
-        y = DarkTheme.AddSectionHeader(this, "\u2728  Particle Opacity (0% \u2013 100%)", 15, y);
-        DarkTheme.AddHint(this, "0% = no particles, 100% = full. Read from eqclient.ini on open.", 15, y);
-        y += 35;
+        int y = 8;
 
-        // Opacity sliders
+        // ─── Opacity card ─────────────────────────────────────────
+        var cardOpacity = DarkTheme.MakeCard(this, "\u2728", "Particle Opacity", DarkTheme.CardPurple, 10, y, 440, 30 + OpacitySettings.Length * 30 + 4);
+        int cy = 30;
+
         foreach (var (key, label) in OpacitySettings)
         {
-            DarkTheme.AddLabel(this, label + ":", 15, y);
-            var pctLabel = new Label
-            {
-                Text = "100%",
-                Location = new Point(370, y),
-                Size = new Size(45, 16),
-                ForeColor = DarkTheme.FgGray,
-                Font = new Font("Segoe UI", 8)
-            };
-            Controls.Add(pctLabel);
+            DarkTheme.AddCardLabel(cardOpacity, label, 10, cy + 2);
+            var pctLabel = DarkTheme.AddCardHint(cardOpacity, "100%", 370, cy + 2);
+            pctLabel.AutoSize = false;
+            pctLabel.Size = new Size(45, 16);
 
             var slider = new TrackBar
             {
-                Location = new Point(200, y - 3),
-                Size = new Size(170, 30),
+                Location = new Point(140, cy - 3),
+                Size = new Size(220, 30),
                 Minimum = 0,
                 Maximum = 100,
                 Value = 100,
                 TickFrequency = 25,
-                BackColor = DarkTheme.BgDark
+                BackColor = DarkTheme.BgPanel
             };
-            var pct = pctLabel; // capture for lambda
+            var pct = pctLabel;
             slider.ValueChanged += (_, _) => pct.Text = $"{slider.Value}%";
-            Controls.Add(slider);
+            cardOpacity.Controls.Add(slider);
             _sliders[key] = slider;
-            y += 30;
+            cy += 30;
         }
 
-        y += 5;
-        y = DarkTheme.AddSectionHeader(this, "Particle Density (0% \u2013 100%)", 15, y);
-        y += 5;
+        DarkTheme.AddCardHint(cardOpacity, "0% = no particles, 100% = full", 10, cy);
+        y += cardOpacity.Height + 8;
+
+        // ─── Density card ─────────────────────────────────────────
+        var cardDensity = DarkTheme.MakeCard(this, "\uD83C\uDF2B", "Particle Density", DarkTheme.CardBlue, 10, y, 440, 30 + DensitySettings.Length * 30 + 4);
+        cy = 30;
 
         foreach (var (key, label) in DensitySettings)
         {
-            DarkTheme.AddLabel(this, label + ":", 15, y);
-            var pctLabel = new Label
-            {
-                Text = "0%",
-                Location = new Point(370, y),
-                Size = new Size(45, 16),
-                ForeColor = DarkTheme.FgGray,
-                Font = new Font("Segoe UI", 8)
-            };
-            Controls.Add(pctLabel);
+            DarkTheme.AddCardLabel(cardDensity, label, 10, cy + 2);
+            var pctLabel = DarkTheme.AddCardHint(cardDensity, "0%", 370, cy + 2);
+            pctLabel.AutoSize = false;
+            pctLabel.Size = new Size(45, 16);
 
             var slider = new TrackBar
             {
-                Location = new Point(200, y - 3),
-                Size = new Size(170, 30),
+                Location = new Point(140, cy - 3),
+                Size = new Size(220, 30),
                 Minimum = 0,
                 Maximum = 100,
                 Value = 0,
                 TickFrequency = 25,
-                BackColor = DarkTheme.BgDark
+                BackColor = DarkTheme.BgPanel
             };
             var pct = pctLabel;
             slider.ValueChanged += (_, _) => pct.Text = $"{slider.Value}%";
-            Controls.Add(slider);
+            cardDensity.Controls.Add(slider);
             _sliders[key] = slider;
-            y += 30;
+            cy += 30;
         }
 
-        y += 5;
-        y = DarkTheme.AddSectionHeader(this, "Clip Planes & Filters", 15, y);
-        y += 5;
+        y += cardDensity.Height + 8;
+
+        // ─── Clip Planes & Filters card ───────────────────────────
+        int clipCardH = 30 + (ClipSettings.Length + FilterSettings.Length) * 26 + 8;
+        var cardClip = DarkTheme.MakeCard(this, "\u2702", "Clip Planes & Filters", DarkTheme.CardGreen, 10, y, 440, clipCardH);
+        cy = 30;
 
         foreach (var (key, label, def) in ClipSettings)
         {
-            DarkTheme.AddLabel(this, label + ":", 15, y + 3);
-            var nud = DarkTheme.AddNumeric(this, 200, y, 70, def, 0, 999);
+            DarkTheme.AddCardLabel(cardClip, label, 10, cy + 2);
+            var nud = DarkTheme.AddCardNumeric(cardClip, 180, cy, 70, def, 0, 999);
             nud.DecimalPlaces = 1;
             nud.Increment = 0.5m;
             _numerics[key] = nud;
-            y += 28;
+            cy += 26;
         }
 
         foreach (var (key, label, def) in FilterSettings)
         {
-            DarkTheme.AddLabel(this, label + ":", 15, y + 3);
-            var nud = DarkTheme.AddNumeric(this, 200, y, 70, def, 0, 999);
+            DarkTheme.AddCardLabel(cardClip, label, 10, cy + 2);
+            var nud = DarkTheme.AddCardNumeric(cardClip, 180, cy, 70, def, 0, 999);
             _numerics[key] = nud;
-            y += 28;
+            cy += 26;
         }
 
-        y += 5;
-        y = DarkTheme.AddSectionHeader(this, "Misc", 15, y);
-        y += 5;
+        y += cardClip.Height + 8;
 
-        DarkTheme.AddLabel(this, "FogScale:", 15, y + 3);
-        _nudFogScale = DarkTheme.AddNumeric(this, 200, y, 80, 2.80m, 0, 100);
+        // ─── Misc card ────────────────────────────────────────────
+        var cardMisc = DarkTheme.MakeCard(this, "\u2699", "Misc", DarkTheme.CardCyan, 10, y, 440, 100);
+        cy = 30;
+
+        DarkTheme.AddCardLabel(cardMisc, "FogScale:", 10, cy + 2);
+        _nudFogScale = DarkTheme.AddCardNumeric(cardMisc, 120, cy, 80, 2.80m, 0, 100);
         _nudFogScale.DecimalPlaces = 2;
         _nudFogScale.Increment = 0.1m;
 
-        DarkTheme.AddLabel(this, "LODBias:", 15, y += 28);
-        _nudLODBias = DarkTheme.AddNumeric(this, 200, y - 3, 80, 10, 0, 100);
+        DarkTheme.AddCardLabel(cardMisc, "LODBias:", 230, cy + 2);
+        _nudLODBias = DarkTheme.AddCardNumeric(cardMisc, 310, cy, 70, 10, 0, 100);
 
-        _chkSameResolution = new CheckBox
+        cy += 28;
+        _chkSameResolution = DarkTheme.AddCardCheckBox(cardMisc, "Same Resolution", 10, cy);
+        DarkTheme.AddCardHint(cardMisc, "[Options] SameResolution=1", 160, cy + 2);
+
+        y += cardMisc.Height + 8;
+
+        // ─── Docked bottom panel with Save/Apply/Cancel ──────────
+        var buttonPanel = new Panel
         {
-            Text = "Same Resolution  (SameResolution=1)",
-            Location = new Point(15, y += 28),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWhite,
-            Checked = false
+            Dock = DockStyle.Bottom,
+            Height = 50,
+            BackColor = DarkTheme.BgDark
         };
-        Controls.Add(_chkSameResolution);
 
-        y += 40;
-
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 80, y);
+        var btnSave = DarkTheme.MakePrimaryButton("Save", 110, 10);
         btnSave.Click += (_, _) => { SaveSettings(); Close(); };
 
-        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 170, y);
+        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 200, 10);
         btnApply.Click += (_, _) => { SaveSettings(); };
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 260, y);
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 290, 10);
         btnCancel.Click += (_, _) => Close();
 
-        Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
+        buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
+        Controls.Add(buttonPanel);
     }
 
     private void LoadFromIni()
@@ -202,70 +201,70 @@ public class EQParticlesForm : Form
         {
             try
             {
-            var lines = File.ReadAllLines(_iniPath, Encoding.Default);
-            string currentSection = "";
+                var lines = File.ReadAllLines(_iniPath, Encoding.Default);
+                string currentSection = "";
 
-            foreach (var line in lines)
-            {
-                var trimmed = line.Trim();
-                if (trimmed.StartsWith("["))
+                foreach (var line in lines)
                 {
-                    currentSection = trimmed;
-                    continue;
-                }
-
-                bool isDefaults = currentSection.Equals("[Defaults]", StringComparison.OrdinalIgnoreCase);
-                bool isOptions = currentSection.Equals("[Options]", StringComparison.OrdinalIgnoreCase);
-                if (!isDefaults && !isOptions)
-                    continue;
-
-                var parts = trimmed.Split('=', 2);
-                if (parts.Length != 2) continue;
-
-                string key = parts[0].Trim();
-                string val = parts[1].Trim();
-
-                // [Defaults] — opacity/density sliders and clip/filter numerics
-                if (isDefaults)
-                {
-                    if (_sliders.TryGetValue(key, out var slider))
+                    var trimmed = line.Trim();
+                    if (trimmed.StartsWith("["))
                     {
-                        if (double.TryParse(val, System.Globalization.NumberStyles.Float,
-                            System.Globalization.CultureInfo.InvariantCulture, out double d))
-                            slider.Value = Math.Clamp((int)(d * 100), 0, 100);
+                        currentSection = trimmed;
+                        continue;
                     }
 
-                    if (_numerics.TryGetValue(key, out var nud))
-                    {
-                        if (decimal.TryParse(val, System.Globalization.NumberStyles.Float,
-                            System.Globalization.CultureInfo.InvariantCulture, out decimal dec))
-                            nud.Value = Math.Clamp(dec, nud.Minimum, nud.Maximum);
-                    }
-                }
+                    bool isDefaults = currentSection.Equals("[Defaults]", StringComparison.OrdinalIgnoreCase);
+                    bool isOptions = currentSection.Equals("[Options]", StringComparison.OrdinalIgnoreCase);
+                    if (!isDefaults && !isOptions)
+                        continue;
 
-                // [Options] — FogScale, LODBias, SameResolution
-                if (isOptions)
-                {
-                    switch (key)
+                    var parts = trimmed.Split('=', 2);
+                    if (parts.Length != 2) continue;
+
+                    string key = parts[0].Trim();
+                    string val = parts[1].Trim();
+
+                    // [Defaults] — opacity/density sliders and clip/filter numerics
+                    if (isDefaults)
                     {
-                        case "FogScale":
+                        if (_sliders.TryGetValue(key, out var slider))
+                        {
+                            if (double.TryParse(val, System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out double d))
+                                slider.Value = Math.Clamp((int)(d * 100), 0, 100);
+                        }
+
+                        if (_numerics.TryGetValue(key, out var nud))
+                        {
                             if (decimal.TryParse(val, System.Globalization.NumberStyles.Float,
-                                System.Globalization.CultureInfo.InvariantCulture, out decimal fog))
-                                _nudFogScale.Value = Math.Clamp(fog, 0, 100);
-                            break;
-                        case "LODBias":
-                            if (int.TryParse(val, out int lod))
-                                _nudLODBias.Value = Math.Clamp(lod, 0, 100);
-                            break;
-                        case "SameResolution":
-                            _chkSameResolution.Checked = val == "1";
-                            break;
+                                System.Globalization.CultureInfo.InvariantCulture, out decimal dec))
+                                nud.Value = Math.Clamp(dec, nud.Minimum, nud.Maximum);
+                        }
+                    }
+
+                    // [Options] — FogScale, LODBias, SameResolution
+                    if (isOptions)
+                    {
+                        switch (key)
+                        {
+                            case "FogScale":
+                                if (decimal.TryParse(val, System.Globalization.NumberStyles.Float,
+                                    System.Globalization.CultureInfo.InvariantCulture, out decimal fog))
+                                    _nudFogScale.Value = Math.Clamp(fog, 0, 100);
+                                break;
+                            case "LODBias":
+                                if (int.TryParse(val, out int lod))
+                                    _nudLODBias.Value = Math.Clamp(lod, 0, 100);
+                                break;
+                            case "SameResolution":
+                                _chkSameResolution.Checked = val == "1";
+                                break;
+                        }
                     }
                 }
-            }
 
-            FileLogger.Info("EQParticles: loaded current values from eqclient.ini");
-        }
+                FileLogger.Info("EQParticles: loaded current values from eqclient.ini");
+            }
             catch (Exception ex)
             {
                 FileLogger.Error("EQParticles: load error", ex);
