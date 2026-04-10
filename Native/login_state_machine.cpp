@@ -20,11 +20,13 @@ void DI8Log(const char *fmt, ...);
 #define XWM_LMOUSEUP        2
 #define XWM_RCLICK          3
 
-// ─── Game state constants (from MQ2) ───────────────────────────
-#define GAMESTATE_PRECHARSELECT  -1
-#define GAMESTATE_CHARSELECT      1
-#define GAMESTATE_SOMETHING       4
-#define GAMESTATE_INGAME          5
+// ─── Game state constants ──────────────────────────────────────
+// Dalaya ROF2 uses different values from modern MQ2 (which changed
+// PRECHARSELECT from 6 to -1). We discover the actual values at runtime.
+// Known from DLL log: login screen = 0, charselect = ?, ingame = ?
+// Strategy: don't gate on gameState for login screen — gate on widget presence.
+#define GAMESTATE_CHARSELECT      1    // Verify via testing
+#define GAMESTATE_INGAME          5    // Verify via testing
 
 // ─── Internal state ────────────────────────────────────────────
 
@@ -67,6 +69,7 @@ static void SetError(volatile LoginShm *shm, const char *msg) {
     shm->phase = PHASE_ERROR;
     strncpy((char *)shm->errorMessage, msg, LOGIN_ERROR_LEN - 1);
     ((char *)shm->errorMessage)[LOGIN_ERROR_LEN - 1] = '\0';
+    memset(g_password, 0, sizeof(g_password)); // Clear password on error
     DI8Log("login_sm: ERROR: %s", msg);
 }
 
@@ -96,8 +99,11 @@ static void InvalidateWidgets() {
 // Uses MQ2Bridge's FindWindowByName to locate login screen widgets.
 // Widget names from MQ2AutoLogin (ROF2 emu -- matches Dalaya).
 
+static int g_discoverAttempts = 0;
+
 static void DiscoverLoginWidgets() {
     if (g_widgetsCached) return;
+    g_discoverAttempts++;
 
     g_pUsernameEdit  = MQ2Bridge::FindWindowByName("LOGIN_UsernameEdit");
     g_pPasswordEdit  = MQ2Bridge::FindWindowByName("LOGIN_PasswordEdit");
@@ -105,8 +111,18 @@ static void DiscoverLoginWidgets() {
 
     if (g_pUsernameEdit && g_pPasswordEdit && g_pConnectButton) {
         g_widgetsCached = true;
-        DI8Log("login_sm: login widgets found (user=%p pass=%p connect=%p)",
-               g_pUsernameEdit, g_pPasswordEdit, g_pConnectButton);
+        DI8Log("login_sm: login widgets found (user=%p pass=%p connect=%p) after %d attempts",
+               g_pUsernameEdit, g_pPasswordEdit, g_pConnectButton, g_discoverAttempts);
+    } else if (g_discoverAttempts <= 5 || g_discoverAttempts % 20 == 0) {
+        // Log first 5 attempts, then every 20th to avoid spam
+        DI8Log("login_sm: login widgets NOT found (user=%p pass=%p connect=%p) attempt %d",
+               g_pUsernameEdit, g_pPasswordEdit, g_pConnectButton, g_discoverAttempts);
+
+        // On 3rd attempt, run full diagnostic enumeration
+        if (g_discoverAttempts == 3) {
+            DI8Log("login_sm: running diagnostic enumeration...");
+            MQ2Bridge::EnumerateAllWindows();
+        }
     }
 }
 
@@ -220,8 +236,8 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
     switch (g_phase) {
 
     case PHASE_WAIT_LOGIN_SCREEN:
-        // Wait for login widgets to appear (gameState == PRECHARSELECT)
-        if (gameState != GAMESTATE_PRECHARSELECT) break;
+        // Wait for login widgets to appear — don't gate on gameState value
+        // (Dalaya ROF2 uses gameState=0 at login, not -1 like modern MQ2)
         if (SinceLastAction() < 500) break; // debounce
 
         DiscoverLoginWidgets();
@@ -235,16 +251,22 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         // Set username and password on edit fields, then click connect
         if (SinceLastAction() < 200) break;
 
-        if (g_pUsernameEdit && g_username[0]) {
+        // Abort if widgets disappeared (stale cache)
+        if (!g_pUsernameEdit || !g_pPasswordEdit) {
+            SetError(loginShm, "Login widgets disappeared before credentials could be set");
+            memset(g_password, 0, sizeof(g_password));
+            break;
+        }
+
+        if (g_username[0]) {
             MQ2Bridge::SetEditText(g_pUsernameEdit, g_username);
             DI8Log("login_sm: set username on LOGIN_UsernameEdit");
         }
 
-        if (g_pPasswordEdit && g_password[0]) {
+        if (g_password[0]) {
             MQ2Bridge::SetEditText(g_pPasswordEdit, g_password);
             DI8Log("login_sm: set password on LOGIN_PasswordEdit");
-            // Zero local copy immediately after setting
-            memset(g_password, 0, sizeof(g_password));
+            // Password stays in g_password until PHASE_COMPLETE in case retry is needed
         }
 
         SetPhase(loginShm, PHASE_CLICKING_CONNECT);
@@ -266,11 +288,18 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         if (SinceLastAction() < 500) break;
         g_lastActionTick = GetTickCount();
 
-        // Success: game state moved past PRECHARSELECT to something else
-        if (gameState != GAMESTATE_PRECHARSELECT) {
-            DI8Log("login_sm: connect response — gameState changed to %d", gameState);
-            SetPhase(loginShm, PHASE_SERVER_SELECT);
-            break;
+        // Track the gameState when we clicked connect
+        {
+            static int connectGameState = -99;
+            if (connectGameState == -99) connectGameState = gameState;
+
+            // Success: game state changed from what it was when we clicked connect
+            if (gameState != connectGameState && connectGameState != -99) {
+                DI8Log("login_sm: connect response — gameState changed %d -> %d", connectGameState, gameState);
+                connectGameState = -99; // reset for next login
+                SetPhase(loginShm, PHASE_SERVER_SELECT);
+                break;
+            }
         }
 
         // Check for error/confirmation dialogs
@@ -325,38 +354,28 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         }
         break;
 
-    case PHASE_SERVER_SELECT:
+    case PHASE_SERVER_SELECT: {
         // Dalaya has one server — just wait for charselect transition.
         // Server is pre-selected via eqlsPlayerData*.ini (WriteServerToIni in C#).
-        // On multi-server setups we'd need to find and click the server list.
         if (SinceLastAction() < 1000) break;
         g_lastActionTick = GetTickCount();
 
-        if (gameState == GAMESTATE_CHARSELECT) {
-            DI8Log("login_sm: reached char select (gameState=%d)", gameState);
+        // Check if Character_List widget appeared (= we're at char select)
+        DiscoverCharSelectWidgets();
+        if (g_pCharList) {
+            DI8Log("login_sm: Character_List found — at char select (gameState=%d)", gameState);
             SetPhase(loginShm, PHASE_WAIT_SERVER_LOAD);
             break;
         }
 
-        // Still at PRECHARSELECT — server select screen is showing.
-        // The server should auto-connect because WriteServerToIni pre-filled it.
-        // If we're stuck, try clicking any "Enter" button that might exist.
         DI8Log("login_sm: waiting for server select transition (gameState=%d)", gameState);
         break;
+    }
 
     case PHASE_WAIT_SERVER_LOAD:
         // Wait for charselect to fully load (3D scene, character list populated)
         if (SinceLastAction() < 1000) break;
         g_lastActionTick = GetTickCount();
-
-        if (gameState != GAMESTATE_CHARSELECT) {
-            // Might have gone to INGAME directly or back to precharselect
-            if (gameState == GAMESTATE_INGAME) {
-                SetPhase(loginShm, PHASE_COMPLETE);
-                break;
-            }
-            break;
-        }
 
         // Try to find character list widget
         DiscoverCharSelectWidgets();
@@ -399,19 +418,26 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         break;
     }
 
-    case PHASE_ENTERING_WORLD:
+    case PHASE_ENTERING_WORLD: {
         if (SinceLastAction() < 1000) break;
         g_lastActionTick = GetTickCount();
 
-        // Check if we made it in-game
-        if (gameState == GAMESTATE_INGAME) {
-            DI8Log("login_sm: INGAME reached! Login complete.");
+        // Detect in-game: Character_List widget disappears when we leave char select.
+        // Also check if gameState changed from what it was at char select.
+        static int charSelGameState = -99;
+        if (charSelGameState == -99) charSelGameState = gameState;
+
+        void *charListCheck = MQ2Bridge::FindWindowByName("Character_List");
+        if (!charListCheck && gameState != charSelGameState) {
+            DI8Log("login_sm: INGAME reached! (gameState=%d, no Character_List)", gameState);
+            charSelGameState = -99;
+            memset(g_password, 0, sizeof(g_password));
             SetPhase(loginShm, PHASE_COMPLETE);
             break;
         }
 
         // Still at char select — click Enter World button
-        if (gameState == GAMESTATE_CHARSELECT) {
+        {
             if (!g_pEnterWorldBtn) {
                 DiscoverCharSelectWidgets();
             }
@@ -430,6 +456,7 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
             }
         }
         break;
+    }
 
     default:
         break;

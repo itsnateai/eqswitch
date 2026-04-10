@@ -300,7 +300,7 @@ static void Cleanup() {
     // Stop bridge thread
     g_bridgeShutdown = true;
     if (g_hBridgeThread) {
-        WaitForSingleObject(g_hBridgeThread, 2000);
+        WaitForSingleObject(g_hBridgeThread, 5000);
         CloseHandle(g_hBridgeThread);
         g_hBridgeThread = nullptr;
     }
