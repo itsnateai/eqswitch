@@ -1088,7 +1088,7 @@ public class TrayManager : IDisposable
             lines.Add($"  {label}: {FormatActionName(action)}");
     }
 
-    private static string FormatActionName(string action) => action switch
+    internal static string FormatActionName(string action) => action switch
     {
         "FixWindows" => "Arrange windows",
         "SwapWindows" => "Swap positions",
@@ -1097,6 +1097,10 @@ public class TrayManager : IDisposable
         "LaunchAll" => "Launch two",
         "LoginAll" => "Auto-login Team 1",
         "LoginAll2" => "Auto-login Team 2",
+        "AutoLogin1" => "Quick Login 1",
+        "AutoLogin2" => "Quick Login 2",
+        "AutoLogin3" => "Quick Login 3",
+        "AutoLogin4" => "Quick Login 4",
         "Settings" => "Open settings",
         "ShowHelp" => "Show this help",
         _ => action

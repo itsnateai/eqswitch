@@ -63,11 +63,11 @@ HOTKEYS:
 
 TRAY ICON:
   Right-click        Context menu
-  Single-click       {config.TrayClick.SingleClick}
-  Double-click       {config.TrayClick.DoubleClick}
-  Triple-click       {config.TrayClick.TripleClick}
-  Middle-click       {config.TrayClick.MiddleClick}
-  Middle-triple      {config.TrayClick.MiddleDoubleClick}
+  Single-click       {TrayManager.FormatActionName(config.TrayClick.SingleClick)}
+  Double-click       {TrayManager.FormatActionName(config.TrayClick.DoubleClick)}
+  Triple-click       {TrayManager.FormatActionName(config.TrayClick.TripleClick)}
+  Middle-click       {TrayManager.FormatActionName(config.TrayClick.MiddleClick)}
+  Middle-triple      {TrayManager.FormatActionName(config.TrayClick.MiddleDoubleClick)}
   (Configurable in Settings → General tab)
 
 LAYOUT MODES:
@@ -102,6 +102,11 @@ AUTO-LOGIN:
   Types passwords via DirectInput shared memory
   (no focus stealing — all clients stay in background)
   Injected into EQ at launch — no files placed in game folder.
+
+  Autologin Teams: configure 2 teams of 2 accounts each.
+  Teams launch accounts sequentially via tray menu or hotkey.
+  Accounts can appear in both teams (overlap OK).
+  Configure in Settings → Accounts tab.
 
 LAUNCHING:
   EQ Path: {config.EQPath}
