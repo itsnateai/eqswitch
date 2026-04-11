@@ -136,8 +136,12 @@ static DWORD WINAPI ActivateThread(LPVOID) {
     while (!g_shutdown) {
         Sleep(16); // ~60Hz
 
-        // MQ2 bridge poll moved to WM_TIMER on game thread (ActivateWndProc)
-        // — __thiscall methods on game objects must run on the UI thread.
+        // MQ2 bridge: background poll until game-thread timer is installed.
+        // Once TIMERPROC is running on the game thread, this becomes a no-op
+        // (MQ2BridgePollTick has internal 500ms throttle — double-fire is harmless).
+        if (!g_mq2TimerInstalled) {
+            MQ2BridgePollTick();
+        }
 
         bool active = KeyShm::IsActive();
         HWND hwnd = g_eqHwnd;
