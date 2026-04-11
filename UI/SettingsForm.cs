@@ -1365,7 +1365,8 @@ public class SettingsForm : Form
             if (_dgvAccounts.SelectedRows.Count > 0)
             {
                 int idx = _dgvAccounts.SelectedRows[0].Index;
-                var removed = _pendingAccounts[idx].Username;
+                var acct = _pendingAccounts[idx];
+                var removed = !string.IsNullOrEmpty(acct.CharacterName) ? acct.CharacterName : acct.Username;
                 _pendingAccounts.RemoveAt(idx);
                 ClearStaleTeamSlots(removed);
                 RefreshAccountsGrid();
@@ -1478,22 +1479,23 @@ public class SettingsForm : Form
     }
 
     /// <summary>Select the combo item matching a username from config.</summary>
-    private void SelectQuickLoginCombo(ComboBox cbo, string username)
+    private void SelectQuickLoginCombo(ComboBox cbo, string identifier)
     {
-        if (string.IsNullOrEmpty(username)) { cbo.SelectedIndex = 0; return; }
-        var account = _pendingAccounts.FirstOrDefault(a => a.Username == username);
-        if (account == null) { cbo.SelectedIndex = 0; return; }
-        var label = string.IsNullOrEmpty(account.CharacterName) ? account.Username : account.CharacterName;
-        cbo.SelectedItem = label;
-        if (cbo.SelectedIndex < 0) cbo.SelectedIndex = 0;
+        if (string.IsNullOrEmpty(identifier)) { cbo.SelectedIndex = 0; return; }
+        // Match by CharacterName first (unique), fall back to Username (legacy)
+        int idx = _pendingAccounts.FindIndex(a => a.CharacterName == identifier);
+        if (idx < 0) idx = _pendingAccounts.FindIndex(a => a.Username == identifier);
+        cbo.SelectedIndex = idx >= 0 ? idx + 1 : 0; // +1 for (None) entry
     }
 
-    /// <summary>Get the username for the selected quick login combo item.</summary>
+    /// <summary>Get the unique identifier (CharacterName) for the selected quick login combo item.</summary>
     private string GetQuickLoginUsername(ComboBox cbo)
     {
-        if (cbo.SelectedIndex <= 0) return ""; // (None) or nothing selected
-        int accountIdx = cbo.SelectedIndex - 1; // offset by (None) at index 0
-        return accountIdx < _pendingAccounts.Count ? _pendingAccounts[accountIdx].Username : "";
+        if (cbo.SelectedIndex <= 0) return "";
+        int accountIdx = cbo.SelectedIndex - 1;
+        if (accountIdx >= _pendingAccounts.Count) return "";
+        var acct = _pendingAccounts[accountIdx];
+        return !string.IsNullOrEmpty(acct.CharacterName) ? acct.CharacterName : acct.Username;
     }
 
     private void ShowAccountDialog(int? editIndex)
@@ -1579,9 +1581,11 @@ public class SettingsForm : Form
             account.CharacterSlot = cboSlot.SelectedIndex; // 0=auto, 1-10=slot
             account.UseLoginFlag = true;
 
-            // Update team references if username changed
-            if (existing != null && oldUsername != newUsername)
-                UpdateTeamSlotUsername(oldUsername, newUsername);
+            // Update team references if character name changed
+            var oldCharName = existing?.CharacterName ?? "";
+            var newCharName = txtCharName.Text.Trim();
+            if (existing != null && oldCharName != newCharName && !string.IsNullOrEmpty(oldCharName))
+                UpdateTeamSlotUsername(oldCharName, newCharName);
 
             // Only update password if user typed something new
             if (!string.IsNullOrEmpty(txtPassword.Text))
