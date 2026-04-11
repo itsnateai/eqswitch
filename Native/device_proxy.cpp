@@ -58,7 +58,10 @@ static HWND g_timerHwnd = nullptr;  // track which HWND owns the timer
 
 // TIMERPROC callback — fires on game thread independent of WndProc subclass.
 // Subclass gets removed when focus-faking deactivates, but MQ2 poll must continue.
+// g_shutdown guard: KillTimer from a non-owner thread may silently fail (Win32 rule),
+// so a pending WM_TIMER can fire after Shutdown nullifies function pointers.
 static void CALLBACK MQ2TimerProc(HWND hwnd, UINT msg, UINT_PTR idTimer, DWORD dwTime) {
+    if (g_shutdown) return;
     MQ2BridgePollTick();
 }
 
