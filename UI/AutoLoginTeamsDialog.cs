@@ -71,9 +71,34 @@ internal sealed class AutoLoginTeamsDialog : Form
         y += 28;
 
         // Buttons
+        var lblWarn = DarkTheme.AddLabel(this, "", I, y + 2);
+        lblWarn.ForeColor = DarkTheme.FgWarn;
+        lblWarn.Font = DarkTheme.FontUI75;
+        lblWarn.AutoSize = true;
+        lblWarn.Visible = false;
+
         var btnOK = DarkTheme.MakePrimaryButton("Save", L, y);
         btnOK.Width = 100;
-        btnOK.Click += (_, _) => DialogResult = DialogResult.OK;
+        btnOK.Click += (_, _) =>
+        {
+            // Block same account in both slots of the same team
+            var teams = new[] {
+                (_cboTeam1A, _cboTeam1B, "Team 1"),
+                (_cboTeam2A, _cboTeam2B, "Team 2"),
+                (_cboTeam3A, _cboTeam3B, "Team 3"),
+                (_cboTeam4A, _cboTeam4B, "Team 4"),
+            };
+            foreach (var (a, b, name) in teams)
+            {
+                if (a.SelectedIndex > 0 && a.SelectedIndex == b.SelectedIndex)
+                {
+                    lblWarn.Text = $"\u26a0 {name}: same account in both slots";
+                    lblWarn.Visible = true;
+                    return;
+                }
+            }
+            DialogResult = DialogResult.OK;
+        };
         Controls.Add(btnOK);
 
         var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 130, y);
@@ -114,6 +139,8 @@ internal sealed class AutoLoginTeamsDialog : Form
         int maxW = labels.Max(l => TextRenderer.MeasureText(l, cb.Font).Width) + 8;
         if (maxW > width) cb.DropDownWidth = maxW;
 
+        // Block mouse wheel from changing selection on hover (prevents accidental changes)
+        cb.MouseWheel += (_, e) => ((HandledMouseEventArgs)e).Handled = true;
         Controls.Add(cb);
         return cb;
     }
