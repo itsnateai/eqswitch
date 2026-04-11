@@ -278,8 +278,11 @@ public class AutoLoginManager
             }
 
             // ── Character selection via MQ2 bridge (no focus-faking needed) ──
+            // Priority: slot > name > default
             Thread.Sleep(2000); // let MQ2 bridge init
-            if (!string.IsNullOrEmpty(account.CharacterName))
+
+            bool wantSelection = account.CharacterSlot > 0 || !string.IsNullOrEmpty(account.CharacterName);
+            if (wantSelection)
             {
                 bool charListReady = false;
                 for (int wait = 0; wait < 10; wait++)
@@ -294,8 +297,29 @@ public class AutoLoginManager
                     var charNames = charSelect.ReadAllCharNames(pid);
                     FileLogger.Info($"AutoLogin: {charNames.Length} characters found: {string.Join(", ", charNames)}");
 
-                    int selIdx = charSelect.RequestSelectionByName(pid, account.CharacterName);
-                    if (selIdx >= 0)
+                    bool selected = false;
+                    if (account.CharacterSlot > 0)
+                    {
+                        // Slot-based selection (1-10) — direct index, no name lookup
+                        if (account.CharacterSlot <= charSelect.ReadCharCount(pid))
+                        {
+                            charSelect.RequestSelectionBySlot(pid, account.CharacterSlot);
+                            FileLogger.Info($"AutoLogin: requested slot {account.CharacterSlot} for PID {pid}");
+                            selected = true;
+                        }
+                        else
+                            FileLogger.Warn($"AutoLogin: slot {account.CharacterSlot} exceeds char count {charSelect.ReadCharCount(pid)}");
+                    }
+                    else if (!string.IsNullOrEmpty(account.CharacterName))
+                    {
+                        // Name-based selection — search and select
+                        int selIdx = charSelect.RequestSelectionByName(pid, account.CharacterName);
+                        selected = selIdx >= 0;
+                        if (!selected)
+                            FileLogger.Warn($"AutoLogin: character '{account.CharacterName}' not found, using default");
+                    }
+
+                    if (selected)
                     {
                         bool acked = false;
                         for (int ack = 0; ack < 10; ack++)
@@ -304,35 +328,48 @@ public class AutoLoginManager
                             { acked = true; break; }
                             Thread.Sleep(200);
                         }
-                        if (acked)
-                            FileLogger.Info($"AutoLogin: character '{account.CharacterName}' selected (index {selIdx})");
-                        else
-                            FileLogger.Warn($"AutoLogin: DLL did not ack selection for '{account.CharacterName}'");
+                        if (!acked)
+                            FileLogger.Warn($"AutoLogin: DLL did not ack character selection");
                         Thread.Sleep(500);
                     }
-                    else
-                        FileLogger.Warn($"AutoLogin: character '{account.CharacterName}' not found, using default");
                 }
                 else
                     FileLogger.Warn($"AutoLogin: MQ2 bridge not ready, entering world with default");
             }
 
-            // ══════════════════════════════════════════════════════════
-            // BURST 3: Enter World (~3 seconds active per attempt)
-            // ══════════════════════════════════════════════════════════
+            // ── Enter World via in-process button click (no focus-faking!) ──
             Report("Entering world...");
             bool entered = false;
             for (int attempt = 0; attempt < 5; attempt++)
             {
-                writer.Activate(pid);
-                Thread.Sleep(500);
-                FileLogger.Info($"AutoLogin: BURST 3 activated for PID {pid} (attempt {attempt + 1})");
-                PulseKey3D(writer, pid, hwnd, 0x0D);
-                Thread.Sleep(500);
-                writer.Deactivate(pid); // ← OFF between attempts
-                FileLogger.Info($"AutoLogin: BURST 3 deactivated for PID {pid}");
+                charSelect.RequestEnterWorld(pid);
 
-                Thread.Sleep(3000); // wait for world load (no focus-faking)
+                // Wait for DLL to ack (up to 3s at 500ms poll rate)
+                bool acked = false;
+                for (int w = 0; w < 6; w++)
+                {
+                    if (charSelect.IsEnterWorldAcknowledged(pid))
+                    { acked = true; break; }
+                    Thread.Sleep(500);
+                }
+
+                if (!acked)
+                {
+                    FileLogger.Warn($"AutoLogin: Enter World not acked (attempt {attempt + 1})");
+                    Thread.Sleep(1000);
+                    continue;
+                }
+
+                int result = charSelect.ReadEnterWorldResult(pid);
+                if (result < 0)
+                {
+                    FileLogger.Warn($"AutoLogin: CLW_EnterWorldButton not found (attempt {attempt + 1})");
+                    Thread.Sleep(2000);
+                    continue;
+                }
+
+                // Wait for world load
+                Thread.Sleep(4000);
 
                 hwnd = RefreshHandle(pid, hwnd);
                 if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window"); return; }
@@ -349,8 +386,7 @@ public class AutoLoginManager
                     break;
                 }
 
-                if (attempt < 4)
-                    FileLogger.Info($"AutoLogin: enter-world attempt {attempt + 1} — title still '{title}', retrying...");
+                FileLogger.Info($"AutoLogin: enter-world attempt {attempt + 1} — title still '{title}', retrying...");
             }
 
             if (entered)
