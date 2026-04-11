@@ -120,7 +120,9 @@ internal sealed class AutoLoginTeamsDialog : Form
     private ComboBox MakeCombo(int x, int y, int width)
     {
         var labels = _accounts.Select(a =>
-            string.IsNullOrEmpty(a.CharacterName) ? a.Username : a.CharacterName).ToList();
+            string.IsNullOrEmpty(a.CharacterName) ? a.Username
+            : a.CharacterName == a.Username ? a.CharacterName
+            : $"{a.CharacterName} ({a.Username})").ToList();
         labels.Insert(0, "(None)");
 
         var cb = new ComboBox
@@ -145,21 +147,24 @@ internal sealed class AutoLoginTeamsDialog : Form
         return cb;
     }
 
-    private void SelectByUsername(ComboBox cbo, string username)
+    private void SelectByUsername(ComboBox cbo, string identifier)
     {
-        if (string.IsNullOrEmpty(username)) { cbo.SelectedIndex = 0; return; }
-        var account = _accounts.FirstOrDefault(a => a.Username == username);
-        if (account == null) { cbo.SelectedIndex = 0; return; }
-        var label = string.IsNullOrEmpty(account.CharacterName) ? account.Username : account.CharacterName;
-        cbo.SelectedItem = label;
-        if (cbo.SelectedIndex < 0) cbo.SelectedIndex = 0;
+        if (string.IsNullOrEmpty(identifier)) { cbo.SelectedIndex = 0; return; }
+        // Match by CharacterName first (unique key), fall back to Username (legacy)
+        int idx = _accounts.FindIndex(a => a.CharacterName == identifier);
+        if (idx < 0) idx = _accounts.FindIndex(a => a.Username == identifier);
+        cbo.SelectedIndex = idx >= 0 ? idx + 1 : 0; // +1 for (None) entry
     }
 
+    /// <summary>Returns CharacterName as the unique account identifier (not Username which may be shared).</summary>
     private string GetUsername(ComboBox cbo)
     {
         if (cbo.SelectedIndex <= 0) return "";
         int idx = cbo.SelectedIndex - 1; // offset by (None)
-        return idx < _accounts.Count ? _accounts[idx].Username : "";
+        if (idx >= _accounts.Count) return "";
+        // Store CharacterName — it's unique per account. Username is shared (e.g., gotquiz).
+        var acct = _accounts[idx];
+        return !string.IsNullOrEmpty(acct.CharacterName) ? acct.CharacterName : acct.Username;
     }
 
     protected override void Dispose(bool disposing)

@@ -1323,7 +1323,9 @@ public class TrayManager : IDisposable
             ShowBalloon($"{slotName}: no account assigned");
             return Task.CompletedTask;
         }
-        var account = _config.Accounts.FirstOrDefault(a => a.Username == username);
+        // Match by CharacterName first (unique), fall back to Username (legacy configs)
+        var account = _config.Accounts.FirstOrDefault(a => a.CharacterName == username)
+                   ?? _config.Accounts.FirstOrDefault(a => a.Username == username);
         if (account == null)
         {
             ShowBalloon($"{slotName}: account '{username}' not found");
@@ -1353,7 +1355,7 @@ public class TrayManager : IDisposable
         }
         if (fired == 0)
         {
-            ShowBalloon($"No accounts assigned to {teamName} — configure in Settings → Accounts");
+            ShowWarning($"No accounts assigned to {teamName} — configure in Settings → Accounts");
             FileLogger.Warn($"FireTeamLogin: {teamName} has no accounts assigned");
         }
     }
