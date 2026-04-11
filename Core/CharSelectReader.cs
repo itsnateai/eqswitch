@@ -8,20 +8,20 @@ namespace EQSwitch.Core;
 /// character select data exchange with the injected DLL's MQ2 bridge.
 ///
 /// DLL writes: gameState, charCount, character names/levels/classes, mq2Available
-/// C# writes: requestedIndex, requestSeq (to request character selection)
-/// DLL acks: ackSeq (confirms request processed)
+/// C# writes: requestedIndex, requestSeq, enterWorldReq
+/// DLL acks: ackSeq, enterWorldAck, enterWorldResult
 /// </summary>
 public sealed class CharSelectReader : IDisposable
 {
     private const string SharedMemoryPrefix = "Local\\EQSwitchCharSel_";
     private const uint Magic = 0x45534353; // "ESCS"
-    private const uint Version = 1;
-    private const int MaxChars = 8;
+    private const uint Version = 2;        // v2: 10 slots + Enter World fields
+    private const int MaxChars = 10;
     private const int NameLen = 64;
 
     // Must match Native/mq2_bridge.h CharSelectShm exactly
-    // Total: 612 bytes
-    private static readonly int ShmSize = 612;
+    // Total: 768 bytes
+    private static readonly int ShmSize = 768;
 
     // Field offsets (matching #pragma pack(push,1) C++ struct)
     private const int OFF_MAGIC = 0;
@@ -30,18 +30,26 @@ public sealed class CharSelectReader : IDisposable
     private const int OFF_CHARCOUNT = 12;
     private const int OFF_SELECTEDINDEX = 16;
     private const int OFF_MQ2AVAILABLE = 20;
+    // Character selection request
     private const int OFF_REQUESTEDINDEX = 24;
     private const int OFF_REQUESTSEQ = 28;
     private const int OFF_ACKSEQ = 32;
-    private const int OFF_NAMES = 36;          // 8 * 64 = 512 bytes
-    private const int OFF_LEVELS = 36 + 512;   // 8 * 4 = 32 bytes
-    private const int OFF_CLASSES = 36 + 512 + 32; // 8 * 4 = 32 bytes
+    // Enter World request (v2)
+    private const int OFF_ENTERWORLD_REQ = 36;
+    private const int OFF_ENTERWORLD_ACK = 40;
+    private const int OFF_ENTERWORLD_RESULT = 44;
+    // Character data arrays
+    private const int OFF_NAMES = 48;              // 10 * 64 = 640 bytes
+    private const int OFF_LEVELS = 48 + 640;       // 10 * 4 = 40 bytes  (= 688)
+    private const int OFF_CLASSES = 48 + 640 + 40; // 10 * 4 = 40 bytes  (= 728)
+    // Total: 728 + 40 = 768 ✓
 
     private sealed class MappingEntry : IDisposable
     {
         public readonly MemoryMappedFile Mmf;
         public readonly MemoryMappedViewAccessor Accessor;
         public uint RequestSeq;
+        public uint EnterWorldSeq;
 
         public MappingEntry(MemoryMappedFile mmf, MemoryMappedViewAccessor accessor)
         {
@@ -83,6 +91,9 @@ public sealed class CharSelectReader : IDisposable
             accessor.Write(OFF_REQUESTEDINDEX, -1);
             accessor.Write(OFF_REQUESTSEQ, (uint)0);
             accessor.Write(OFF_ACKSEQ, (uint)0);
+            accessor.Write(OFF_ENTERWORLD_REQ, (uint)0);
+            accessor.Write(OFF_ENTERWORLD_ACK, (uint)0);
+            accessor.Write(OFF_ENTERWORLD_RESULT, 0);
 
             _mappings[pid] = new MappingEntry(mmf, accessor);
             FileLogger.Info($"CharSelectReader: opened SHM for PID {pid}");
@@ -150,10 +161,9 @@ public sealed class CharSelectReader : IDisposable
         return names;
     }
 
-    /// <summary>
-    /// Request the DLL to select a character by index.
-    /// Returns true if the request was sent.
-    /// </summary>
+    // ─── Character Selection ─────────────────────────────────────
+
+    /// <summary>Request the DLL to select a character by 0-based index.</summary>
     public bool RequestSelection(int pid, int index)
     {
         if (!_mappings.TryGetValue(pid, out var entry)) return false;
@@ -164,6 +174,13 @@ public sealed class CharSelectReader : IDisposable
 
         FileLogger.Info($"CharSelectReader: requested selection index {index} for PID {pid} (seq={entry.RequestSeq})");
         return true;
+    }
+
+    /// <summary>Request selection by 1-based slot number (1-10). Converts to 0-based internally.</summary>
+    public bool RequestSelectionBySlot(int pid, int slot)
+    {
+        if (slot < 1 || slot > MaxChars) return false;
+        return RequestSelection(pid, slot - 1);
     }
 
     /// <summary>
@@ -190,10 +207,43 @@ public sealed class CharSelectReader : IDisposable
     public bool IsSelectionAcknowledged(int pid)
     {
         if (!_mappings.TryGetValue(pid, out var entry)) return false;
-        if (entry.RequestSeq == 0) return false; // no request sent yet
+        if (entry.RequestSeq == 0) return false;
         uint ackSeq = entry.Accessor.ReadUInt32(OFF_ACKSEQ);
         return ackSeq == entry.RequestSeq;
     }
+
+    // ─── Enter World ─────────────────────────────────────────────
+
+    /// <summary>Request the DLL to click CLW_EnterWorldButton (in-process, no focus-faking needed).</summary>
+    public bool RequestEnterWorld(int pid)
+    {
+        if (!_mappings.TryGetValue(pid, out var entry)) return false;
+
+        entry.Accessor.Write(OFF_ENTERWORLD_RESULT, 0); // reset result
+        entry.EnterWorldSeq++;
+        entry.Accessor.Write(OFF_ENTERWORLD_REQ, entry.EnterWorldSeq);
+
+        FileLogger.Info($"CharSelectReader: requested Enter World for PID {pid} (seq={entry.EnterWorldSeq})");
+        return true;
+    }
+
+    /// <summary>Check if the last Enter World request was acknowledged by the DLL.</summary>
+    public bool IsEnterWorldAcknowledged(int pid)
+    {
+        if (!_mappings.TryGetValue(pid, out var entry)) return false;
+        if (entry.EnterWorldSeq == 0) return false;
+        uint ackSeq = entry.Accessor.ReadUInt32(OFF_ENTERWORLD_ACK);
+        return ackSeq == entry.EnterWorldSeq;
+    }
+
+    /// <summary>Read Enter World result: 0=pending, 1=clicked, -1=button not found.</summary>
+    public int ReadEnterWorldResult(int pid)
+    {
+        if (!_mappings.TryGetValue(pid, out var entry)) return 0;
+        return entry.Accessor.ReadInt32(OFF_ENTERWORLD_RESULT);
+    }
+
+    // ─── Lifecycle ───────────────────────────────────────────────
 
     /// <summary>Close shared memory for a process.</summary>
     public void Close(int pid)

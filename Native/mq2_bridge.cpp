@@ -59,8 +59,10 @@ typedef void (__thiscall *FN_CXStrDtor)(void *thisPtr);
 static HMODULE        g_hMQ2            = nullptr;
 static volatile int  *g_pGameState      = nullptr;
 static void         **g_ppEverQuest     = nullptr;
-static void         **g_ppWndMgr        = nullptr;
-static void         **g_ppWndMgr2       = nullptr;  // pinstCXWndManager (alternative)
+static void         **g_ppWndMgr        = nullptr;    // ppWndMgr: double-ptr (deref once)
+static uintptr_t     *g_pinstWndMgr     = nullptr;    // pinstCXWndManager: uintptr_t (value IS the ptr)
+static uintptr_t     *g_pinstEQMainWnd  = nullptr;    // pinstCEQMainWnd: eqmain's window
+static HMODULE        g_hEQMain         = nullptr;    // eqmain.dll handle (login screen module)
 static FN_GetItemText   g_fnGetItemText   = nullptr;
 static FN_SetCurSel     g_fnSetCurSel     = nullptr;
 static FN_GetCurSel     g_fnGetCurSel     = nullptr;
@@ -224,36 +226,39 @@ static bool g_wndMgrOffsetFound = false;
 typedef bool (*WndIterCallback)(void *pWnd, void *context);
 
 static int g_iterLogCount = 0;
+static bool g_dumpedOnce = false;
 
-static bool IterateAllWindows(WndIterCallback callback, void *context) {
-    // Try both WndMgr pointers — ppWndMgr and pinstCXWndManager may point
-    // to different things or one may be null at login screen
-    void *pWndMgr = nullptr;
-
-    if (g_ppWndMgr) {
-        __try { pWndMgr = *g_ppWndMgr; }
-        __except (EXCEPTION_EXECUTE_HANDLER) { pWndMgr = nullptr; }
-    }
-
-    // Try pinstCXWndManager as alternative
-    if (!pWndMgr && g_ppWndMgr2) {
-        __try { pWndMgr = *g_ppWndMgr2; }
-        __except (EXCEPTION_EXECUTE_HANDLER) { pWndMgr = nullptr; }
-        if (pWndMgr && g_iterLogCount < 3) {
-            DI8Log("mq2_bridge: IterateAllWindows using pinstCXWndManager=%p", pWndMgr);
-            g_iterLogCount++;
-        }
-    }
-
+// Try a single WndMgr pointer with all offset candidates.
+// Returns true if callback stopped early (found target).
+static bool TryWndMgrPointer(void *pWndMgr, const char *label,
+                             WndIterCallback callback, void *context) {
     if (!pWndMgr) return false;
-
     const uint8_t *pMgr = (const uint8_t *)pWndMgr;
+
+    // One-time diagnostic dump: log raw memory at every candidate offset
+    if (!g_dumpedOnce) {
+        g_dumpedOnce = true;
+        DI8Log("mq2_bridge: === DIAGNOSTIC DUMP %s at %p ===", label, pWndMgr);
+        for (int c = 0; c < g_numWndMgrOffsets; c++) {
+            uint32_t off = g_wndMgrOffsets[c];
+            __try {
+                const ArrayClassHeader *arr = (const ArrayClassHeader *)(pMgr + off);
+                DI8Log("  offset 0x%02X: Data=%p Count=%d Alloc=%d",
+                       off, arr->Data, arr->Count, arr->Alloc);
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {
+                DI8Log("  offset 0x%02X: SEH EXCEPTION", off);
+            }
+        }
+        DI8Log("mq2_bridge: === END DUMP ===");
+    }
 
     // If we found a working offset before, try it first
     if (g_wndMgrOffsetFound) {
         __try {
             const ArrayClassHeader *arr = (const ArrayClassHeader *)(pMgr + g_wndMgrValidOffset);
-            if (arr->Count >= 10 && arr->Count <= 500 && arr->Data) {
+            // Login screen may have very few windows (< 10), so accept >= 1
+            if (arr->Count >= 1 && arr->Count <= 500 && arr->Data) {
                 void **wndArray = (void **)arr->Data;
                 for (int i = 0; i < arr->Count; i++) {
                     if (!wndArray[i]) continue;
@@ -262,7 +267,7 @@ static bool IterateAllWindows(WndIterCallback callback, void *context) {
                     if (!IsReadablePtr(vtable, sizeof(void *))) continue;
                     if (callback(wndArray[i], context)) return true;
                 }
-                return false; // iterated but callback didn't stop early
+                return false;
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -275,34 +280,187 @@ static bool IterateAllWindows(WndIterCallback callback, void *context) {
         uint32_t off = g_wndMgrOffsets[c];
         __try {
             const ArrayClassHeader *arr = (const ArrayClassHeader *)(pMgr + off);
-            if (arr->Count < 10 || arr->Count > 500) continue;
+            // Accept >= 1 window (login screen may have very few)
+            if (arr->Count < 1 || arr->Count > 500) continue;
             if (!arr->Data) continue;
+            if (!IsReadablePtr(arr->Data, sizeof(void *))) continue;
 
             void **wndArray = (void **)arr->Data;
             bool found = false;
+            int validCount = 0;
 
             for (int i = 0; i < arr->Count; i++) {
                 if (!wndArray[i]) continue;
                 if (!IsReadablePtr(wndArray[i], sizeof(void *))) continue;
                 void *vtable = *(void **)wndArray[i];
                 if (!IsReadablePtr(vtable, sizeof(void *))) continue;
+                validCount++;
                 if (callback(wndArray[i], context)) { found = true; break; }
             }
 
-            // If we got through without crashing, cache this offset
-            if (!g_wndMgrOffsetFound) {
-                DI8Log("mq2_bridge: WndMgr window array found at offset 0x%X (%d windows)",
-                       off, arr->Count);
+            // Only cache if we found some valid windows
+            if (validCount > 0) {
+                if (!g_wndMgrOffsetFound) {
+                    DI8Log("mq2_bridge: WndMgr window array found via %s at offset 0x%X (%d total, %d valid)",
+                           label, off, arr->Count, validCount);
+                }
+                g_wndMgrValidOffset = off;
+                g_wndMgrOffsetFound = true;
+                if (found) return true;
+                return false;
             }
-            g_wndMgrValidOffset = off;
-            g_wndMgrOffsetFound = true;
-
-            if (found) return true;
-            return false; // iterated successfully but didn't find target
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
             // Bad offset, try next
         }
+    }
+
+    return false;
+}
+
+// ─── eqmain.dll CXWndManager discovery ────────────────────────
+// At login, windows are in eqmain.dll's CXWndManager, not eqgame.exe's.
+// Dalaya doesn't export EQMain__pinstCXWndManager, so we scan eqmain.dll's
+// PE sections for a pointer that looks like a valid CXWndManager.
+
+static void *g_pEQMainWndMgr = nullptr;
+static bool g_eqmainScanned = false;
+
+static void *FindEQMainWndMgr() {
+    if (g_eqmainScanned) return g_pEQMainWndMgr;
+    g_eqmainScanned = true;
+
+    HMODULE hEQMain = GetModuleHandleA("eqmain.dll");
+    if (!hEQMain) {
+        DI8Log("mq2_bridge: eqmain.dll not loaded");
+        return nullptr;
+    }
+
+    // Scan eqmain.dll's .data section for pointers that look like CXWndManager instances.
+    // A valid CXWndManager has pWindows (ArrayClass<CXWnd*>) near the start with Count > 0.
+    uint8_t *base = (uint8_t *)hEQMain;
+    if (*(uint16_t *)base != 0x5A4D) return nullptr;
+    int32_t eLfanew = *(int32_t *)(base + 0x3C);
+    if (eLfanew < 0x40 || eLfanew > 0x1000) return nullptr;
+    if (*(uint32_t *)(base + eLfanew) != 0x00004550) return nullptr;
+
+    uint16_t numSections = *(uint16_t *)(base + eLfanew + 6);
+    uint16_t optSize = *(uint16_t *)(base + eLfanew + 20);
+    uint8_t *sh = base + eLfanew + 24 + optSize;
+
+    // Find .data section
+    uint8_t *dataBase = nullptr;
+    uint32_t dataSize = 0;
+    for (int i = 0; i < numSections && i < 64; i++, sh += 40) {
+        char name[9] = {};
+        memcpy(name, sh, 8);
+        if (strcmp(name, ".data") == 0) {
+            dataBase = base + *(uint32_t *)(sh + 12);
+            dataSize = *(uint32_t *)(sh + 8);
+            break;
+        }
+    }
+
+    if (!dataBase || dataSize < 16) {
+        DI8Log("mq2_bridge: eqmain.dll .data section not found");
+        return nullptr;
+    }
+
+    DI8Log("mq2_bridge: scanning eqmain.dll .data at %p (%u bytes) for CXWndManager",
+           dataBase, dataSize);
+
+    // Scan .data for pointers to potential CXWndManager objects.
+    // Each DWORD in .data could be a pointer to a CXWndManager.
+    // We look for: a pointer to an object that has a valid ArrayClass
+    // at various offsets with Count 1-500 and valid CXWnd* entries.
+    int candidates = 0;
+    for (uint32_t off = 0; off + 4 <= dataSize; off += 4) {
+        __try {
+            uintptr_t val = *(uintptr_t *)(dataBase + off);
+            if (val < 0x10000 || val > 0x7FFFFFFF) continue; // not a valid x86 pointer
+
+            uint8_t *candidate = (uint8_t *)val;
+            if (!IsReadablePtr(candidate, 0x80)) continue;
+
+            // Check for ArrayClass at small offsets (0x04-0x20)
+            for (uint32_t arrOff = 0x04; arrOff <= 0x20; arrOff += 4) {
+                const ArrayClassHeader *arr = (const ArrayClassHeader *)(candidate + arrOff);
+                if (arr->Count < 1 || arr->Count > 500) continue;
+                if (!arr->Data || !IsReadablePtr(arr->Data, arr->Count * 4)) continue;
+
+                // Validate first entry looks like a CXWnd* (has readable vtable)
+                void **wndArray = (void **)arr->Data;
+                if (!wndArray[0]) continue;
+                if (!IsReadablePtr(wndArray[0], 4)) continue;
+                void *vtable = *(void **)wndArray[0];
+                if (!IsReadablePtr(vtable, 4)) continue;
+
+                // This looks like a valid CXWndManager!
+                g_pEQMainWndMgr = candidate;
+                g_wndMgrValidOffset = arrOff;
+                g_wndMgrOffsetFound = true;
+                DI8Log("mq2_bridge: FOUND eqmain CXWndManager at %p (data+0x%X), pWindows at offset 0x%X (%d windows)",
+                       candidate, off, arrOff, arr->Count);
+                return g_pEQMainWndMgr;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            // Not a valid pointer, skip
+        }
+        candidates++;
+    }
+
+    DI8Log("mq2_bridge: eqmain CXWndManager NOT FOUND (scanned %d candidates)", candidates);
+    return nullptr;
+}
+
+// Direct iteration: given a CXWndManager pointer and the known pWindows offset,
+// iterate all windows and call callback. No shared globals — simple and correct.
+static bool IterateWindowsDirect(void *pWndMgr, uint32_t arrOffset,
+                                 WndIterCallback callback, void *context) {
+    if (!pWndMgr) return false;
+    const uint8_t *pMgr = (const uint8_t *)pWndMgr;
+
+    __try {
+        const ArrayClassHeader *arr = (const ArrayClassHeader *)(pMgr + arrOffset);
+        if (arr->Count < 1 || arr->Count > 500 || !arr->Data) return false;
+        if (!IsReadablePtr(arr->Data, arr->Count * 4)) return false;
+
+        void **wndArray = (void **)arr->Data;
+        for (int i = 0; i < arr->Count; i++) {
+            if (!wndArray[i]) continue;
+            if (!IsReadablePtr(wndArray[i], sizeof(void *))) continue;
+            void *vtable = *(void **)wndArray[i];
+            if (!IsReadablePtr(vtable, sizeof(void *))) continue;
+            if (callback(wndArray[i], context)) return true;
+        }
+        return false; // iterated all, callback didn't stop
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+static bool IterateAllWindows(WndIterCallback callback, void *context) {
+    // 1. Try eqmain.dll's CXWndManager (login screen)
+    //    FindEQMainWndMgr caches the result and sets g_wndMgrValidOffset
+    void *eqMainMgr = FindEQMainWndMgr();
+    if (eqMainMgr && g_eqmainScanned) {
+        // Use the offset discovered during scanning (stored in g_wndMgrValidOffset by FindEQMainWndMgr)
+        if (IterateWindowsDirect(eqMainMgr, g_wndMgrValidOffset, callback, context))
+            return true;
+    }
+
+    // 2. Try eqgame's CXWndManager (charselect and beyond)
+    void *pWndMgr1 = nullptr;
+    if (g_ppWndMgr) {
+        __try { pWndMgr1 = *g_ppWndMgr; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { pWndMgr1 = nullptr; }
+    }
+    if (pWndMgr1) {
+        // Scan all offsets for eqgame's WndMgr
+        if (TryWndMgrPointer(pWndMgr1, "ppWndMgr", callback, context))
+            return true;
     }
 
     return false;
@@ -344,6 +502,28 @@ struct EnumCtx {
 static bool EnumCallback(void *pWnd, void *context) {
     EnumCtx *ctx = (EnumCtx *)context;
     ctx->count++;
+
+    // Log the window address and try to read its text
+    if (g_fnGetWindowText && g_fnCXStrDtor) {
+        __try {
+            uint8_t cxstrBuf[16] = {};
+            g_fnGetWindowText(pWnd, cxstrBuf);
+            CXStr *str = (CXStr *)cxstrBuf;
+            if (str->Ptr && str->Length > 0 && str->Length < 256) {
+                char buf[256] = {};
+                memcpy(buf, str->Ptr, str->Length < 255 ? str->Length : 255);
+                DI8Log("mq2_bridge: ENUM wnd[%d] at %p text='%s'", ctx->count - 1, pWnd, buf);
+            } else {
+                DI8Log("mq2_bridge: ENUM wnd[%d] at %p (no text)", ctx->count - 1, pWnd);
+            }
+            g_fnCXStrDtor(cxstrBuf);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            DI8Log("mq2_bridge: ENUM wnd[%d] at %p (SEH reading text)", ctx->count - 1, pWnd);
+        }
+    } else {
+        DI8Log("mq2_bridge: ENUM wnd[%d] at %p", ctx->count - 1, pWnd);
+    }
 
     // Try known widget names against this window
     static const char *knownNames[] = {
@@ -391,10 +571,17 @@ bool MQ2Bridge::Init() {
     g_pGameState = (volatile int *)GetProcAddress(g_hMQ2, "gGameState");
     g_ppEverQuest = (void **)GetProcAddress(g_hMQ2, "ppEverQuest");
     g_ppWndMgr = (void **)GetProcAddress(g_hMQ2, "ppWndMgr");
-    g_ppWndMgr2 = (void **)GetProcAddress(g_hMQ2, "pinstCXWndManager");
+    // pinstCXWndManager is a uintptr_t — value IS the CXWndManager pointer (single deref)
+    g_pinstWndMgr = (uintptr_t *)GetProcAddress(g_hMQ2, "pinstCXWndManager");
+    g_pinstEQMainWnd = (uintptr_t *)GetProcAddress(g_hMQ2, "pinstCEQMainWnd");
 
-    DI8Log("mq2_bridge: gGameState=%p  ppEverQuest=%p  ppWndMgr=%p  pinstCXWndMgr=%p",
-           g_pGameState, g_ppEverQuest, g_ppWndMgr, g_ppWndMgr2);
+    // eqmain.dll is the login screen module — has its own CXWndManager
+    g_hEQMain = GetModuleHandleA("eqmain.dll");
+
+    DI8Log("mq2_bridge: gGameState=%p  ppEverQuest=%p  ppWndMgr=%p",
+           g_pGameState, g_ppEverQuest, g_ppWndMgr);
+    DI8Log("mq2_bridge: pinstCXWndMgr=%p  pinstCEQMainWnd=%p  eqmain.dll=%p",
+           g_pinstWndMgr, g_pinstEQMainWnd, g_hEQMain);
 
     // Resolve mangled C++ exports (__thiscall methods)
     g_fnSetCurSel = (FN_SetCurSel)GetProcAddress(g_hMQ2,
@@ -631,8 +818,8 @@ void MQ2Bridge::PopulateCharacterData(volatile LoginShm *shm) {
 // ─── MQ2Bridge::EnumerateAllWindows ────────────────────────────
 
 void MQ2Bridge::EnumerateAllWindows() {
-    if (!g_fnGetChildItem || !g_ppWndMgr) {
-        DI8Log("mq2_bridge: EnumerateAllWindows -- GetChildItem or ppWndMgr missing");
+    if (!g_fnGetChildItem) {
+        DI8Log("mq2_bridge: EnumerateAllWindows -- GetChildItem missing");
         return;
     }
 
@@ -761,6 +948,31 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         }
         shm->ackSeq = reqSeq;
     }
+
+    // Handle Enter World request from C# (in-process button click)
+    uint32_t ewReq = shm->enterWorldReq;
+    uint32_t ewAck = shm->enterWorldAck;
+
+    if (ewReq != ewAck) {
+        DI8Log("mq2_bridge: Enter World request (seq %u->%u)", ewAck, ewReq);
+
+        void *pEnterBtn = FindWindowByName("CLW_EnterWorldButton");
+        if (pEnterBtn) {
+            __try {
+                ClickButton(pEnterBtn);
+                shm->enterWorldResult = 1;  // clicked
+                DI8Log("mq2_bridge: clicked CLW_EnterWorldButton");
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {
+                shm->enterWorldResult = -1;
+                DI8Log("mq2_bridge: SEH clicking CLW_EnterWorldButton");
+            }
+        } else {
+            shm->enterWorldResult = -1;  // button not found
+            DI8Log("mq2_bridge: CLW_EnterWorldButton not found");
+        }
+        shm->enterWorldAck = ewReq;
+    }
 }
 
 // ─── MQ2Bridge::Shutdown ───────────────────────────────────────
@@ -771,7 +983,11 @@ void MQ2Bridge::Shutdown() {
     g_pGameState       = nullptr;
     g_ppEverQuest      = nullptr;
     g_ppWndMgr         = nullptr;
-    g_ppWndMgr2        = nullptr;
+    g_pinstWndMgr      = nullptr;
+    g_pinstEQMainWnd   = nullptr;
+    g_hEQMain          = nullptr;
+    g_pEQMainWndMgr    = nullptr;
+    g_eqmainScanned    = false;
     g_fnGetItemText    = nullptr;
     g_fnSetCurSel      = nullptr;
     g_fnGetCurSel      = nullptr;

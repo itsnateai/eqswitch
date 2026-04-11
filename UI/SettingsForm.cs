@@ -359,7 +359,7 @@ public class SettingsForm : Form
         y += 46;
 
         // ─── Tray Click Actions card ─────────────────────────────
-        var clickActions = new[] { "None", "AutoLogin1", "AutoLogin2", "AutoLogin3", "AutoLogin4", "AutoLoginTeam1", "TogglePiP", "LaunchOne", "LaunchTwo", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4" };
+        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam1", "TogglePiP", "LaunchOne", "LaunchTwo", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4" };
         const int cboW = 140;
 
         var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 131);
@@ -592,6 +592,29 @@ public class SettingsForm : Form
 
         y += 120;
 
+        // ─── Quick Login Slots (defines what the hotkeys below trigger) ──
+        var slotsCard = DarkTheme.MakeCard(page, "\u26A1", "Quick Individual Login Accounts", DarkTheme.CardGold, 10, y, 480, 110);
+        DarkTheme.AddCardLabel(slotsCard, "Slot 1:", 10, 34);
+        _cboQuickLogin1 = DarkTheme.AddCardComboBox(slotsCard, 55, 31, 150, Array.Empty<string>());
+        DarkTheme.AddCardLabel(slotsCard, "Slot 2:", 215, 34);
+        _cboQuickLogin2 = DarkTheme.AddCardComboBox(slotsCard, 260, 31, 150, Array.Empty<string>());
+        DarkTheme.AddCardLabel(slotsCard, "Slot 3:", 10, 60);
+        _cboQuickLogin3 = DarkTheme.AddCardComboBox(slotsCard, 55, 57, 150, Array.Empty<string>());
+        DarkTheme.AddCardLabel(slotsCard, "Slot 4:", 215, 60);
+        _cboQuickLogin4 = DarkTheme.AddCardComboBox(slotsCard, 260, 57, 150, Array.Empty<string>());
+        RefreshQuickLoginCombos();
+        SelectQuickLoginCombo(_cboQuickLogin1, _config.QuickLogin1);
+        SelectQuickLoginCombo(_cboQuickLogin2, _config.QuickLogin2);
+        SelectQuickLoginCombo(_cboQuickLogin3, _config.QuickLogin3);
+        SelectQuickLoginCombo(_cboQuickLogin4, _config.QuickLogin4);
+        _lblSlotDuplicateWarn = DarkTheme.AddCardHint(slotsCard, "Assign accounts to bind with hotkeys below", 10, 86);
+        _cboQuickLogin1.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
+        _cboQuickLogin2.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
+        _cboQuickLogin3.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
+        _cboQuickLogin4.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
+
+        y += 118;
+
         // ─── Auto-Login Hotkeys ─────────────────────────────────
         var hkCard = DarkTheme.MakeCard(page, "\u2328", "Auto-Login Hotkeys", DarkTheme.CardGreen, 10, y, 480, 112);
 
@@ -637,17 +660,6 @@ public class SettingsForm : Form
         _txtTeamLogin4Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
 
         y += 120;
-
-        // ─── Preferences card ────────────────────────────────────
-        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardCyan, 10, y, 480, 68);
-        cy = 32;
-        DarkTheme.AddCardLabel(cardPrefs, "Tooltip Delay:", L, cy);
-        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardPrefs, 110, cy, 55, 1000, 0, 10000);
-        _nudTooltipDuration.Increment = 100;
-        DarkTheme.AddCardHint(cardPrefs, "ms", 175, cy);
-        DarkTheme.AddCardLabel(cardPrefs, "Client Launch Delay:", 240, cy);
-        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardPrefs, 360, cy, 40, 3, 1, 30);
-        DarkTheme.AddCardHint(cardPrefs, "sec", 410, cy);
 
         return page;
     }
@@ -1401,30 +1413,8 @@ public class SettingsForm : Form
         DarkTheme.AddCardHint(card, "DPAPI-encrypted passwords.", 10, 196);
         DarkTheme.AddCardHint(card, "Delay = seconds before typing credentials.", 250, 196);
 
-        // ─── Quick Login Slots ───────────────────────────────────────
-        y += 224;
-        var slotsCard = DarkTheme.MakeCard(page, "\u26A1", "Quick Individual Login Accounts", DarkTheme.CardGold, 10, y, 480, 110);
-        DarkTheme.AddCardLabel(slotsCard, "Slot 1:", 10, 34);
-        _cboQuickLogin1 = DarkTheme.AddCardComboBox(slotsCard, 55, 31, 150, Array.Empty<string>());
-        DarkTheme.AddCardLabel(slotsCard, "Slot 2:", 215, 34);
-        _cboQuickLogin2 = DarkTheme.AddCardComboBox(slotsCard, 260, 31, 150, Array.Empty<string>());
-        DarkTheme.AddCardLabel(slotsCard, "Slot 3:", 10, 60);
-        _cboQuickLogin3 = DarkTheme.AddCardComboBox(slotsCard, 55, 57, 150, Array.Empty<string>());
-        DarkTheme.AddCardLabel(slotsCard, "Slot 4:", 215, 60);
-        _cboQuickLogin4 = DarkTheme.AddCardComboBox(slotsCard, 260, 57, 150, Array.Empty<string>());
-        RefreshQuickLoginCombos();
-        SelectQuickLoginCombo(_cboQuickLogin1, _config.QuickLogin1);
-        SelectQuickLoginCombo(_cboQuickLogin2, _config.QuickLogin2);
-        SelectQuickLoginCombo(_cboQuickLogin3, _config.QuickLogin3);
-        SelectQuickLoginCombo(_cboQuickLogin4, _config.QuickLogin4);
-        _lblSlotDuplicateWarn = DarkTheme.AddCardHint(slotsCard, "Bind to tray click actions or hotkeys on Hotkeys tab", 10, 86);
-        _cboQuickLogin1.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
-        _cboQuickLogin2.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
-        _cboQuickLogin3.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
-        _cboQuickLogin4.SelectedIndexChanged += (_, _) => CheckDuplicateSlotAccounts();
-
         // ─── Autologin Teams ─────────────────────────────────────────
-        y += 118;
+        y += 224;
         var teamsCard = DarkTheme.MakeCard(page, "\uD83D\uDC65", "Autologin Teams", DarkTheme.CardGold, 10, y, 480, 78);
         var btnTeams = DarkTheme.AddCardButton(teamsCard, "Configure Teams...", 10, 32, 120);
         btnTeams.Click += (_, _) => ShowTeamsDialog();
@@ -1509,7 +1499,7 @@ public class SettingsForm : Form
         using var dlg = new Form
         {
             Text = existing != null ? "Edit Account" : "Add Account",
-            Size = new Size(380, 270),
+            Size = new Size(380, 305),
             FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition = FormStartPosition.CenterParent,
             MaximizeBox = false,
@@ -1551,6 +1541,18 @@ public class SettingsForm : Form
         txtServer.ForeColor = DarkTheme.FgDimGray;
         y += R;
 
+        DarkTheme.AddLabel(dlg, "Character Slot:", L, y);
+        var cboSlot = new ComboBox
+        {
+            Location = new Point(I, y - 2), Size = new Size(W, 25),
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat
+        };
+        cboSlot.Items.AddRange(new object[] { "Auto (by name)", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10" });
+        cboSlot.SelectedIndex = Math.Clamp(existing?.CharacterSlot ?? 0, 0, 10);
+        dlg.Controls.Add(cboSlot);
+        y += R;
+
         y += 5;
 
         var btnOK = DarkTheme.MakePrimaryButton("Save", L, y);
@@ -1570,6 +1572,7 @@ public class SettingsForm : Form
             account.Username = newUsername;
             account.Server = txtServer.Text.Trim();
             account.CharacterName = txtCharName.Text.Trim();
+            account.CharacterSlot = cboSlot.SelectedIndex; // 0=auto, 1-10=slot
             account.UseLoginFlag = true;
 
             // Update team references if username changed
@@ -1857,7 +1860,7 @@ public class SettingsForm : Form
         y += 136;
 
         // ─── Window Style card ───────────────────────────────────
-        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 130);
+        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 112);
         cy = 32;
 
         const int hintX = 260;
@@ -1938,6 +1941,19 @@ public class SettingsForm : Form
         };
 
         _chkMaximizeWindow.CheckedChanged += (_, _) => UpdateStyleHint();
+
+        y += 120;
+
+        // ─── Preferences card ────────────────────────────────────
+        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardCyan, 10, y, 480, 68);
+        cy = 32;
+        DarkTheme.AddCardLabel(cardPrefs, "Tooltip Delay:", L, cy);
+        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardPrefs, 110, cy, 55, 1000, 0, 10000);
+        _nudTooltipDuration.Increment = 100;
+        DarkTheme.AddCardHint(cardPrefs, "ms", 175, cy);
+        DarkTheme.AddCardLabel(cardPrefs, "Client Launch Delay:", 240, cy);
+        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardPrefs, 360, cy, 40, 3, 1, 30);
+        DarkTheme.AddCardHint(cardPrefs, "sec", 410, cy);
 
         return page;
     }

@@ -7,13 +7,13 @@
 // Shared memory name: "Local\EQSwitchCharSel_{PID}"
 
 #define CHARSEL_SHM_MAGIC 0x45534353  // "ESCS"
-#define CHARSEL_MAX_CHARS 8
+#define CHARSEL_MAX_CHARS 10
 #define CHARSEL_NAME_LEN  64
 
 #pragma pack(push, 1)
 struct CharSelectShm {
     uint32_t magic;            // CHARSEL_SHM_MAGIC
-    uint32_t version;          // 1
+    uint32_t version;          // 2 (was 1 — struct layout changed)
     int32_t  gameState;        // Current EQ game state (-1=pre, 1=charsel, 5=ingame)
     int32_t  charCount;        // Number of characters found (0 if not at char select)
     int32_t  selectedIndex;    // Currently selected index in list (-1 = none)
@@ -24,11 +24,17 @@ struct CharSelectShm {
     uint32_t requestSeq;       // Incremented by C# on each new request
     uint32_t ackSeq;           // Set by DLL when request is processed
 
+    // C# -> DLL: request Enter World (in-process CLW_EnterWorldButton click)
+    uint32_t enterWorldReq;    // Incremented by C# to request Enter World
+    uint32_t enterWorldAck;    // Set by DLL when processed
+    int32_t  enterWorldResult; // 0=pending, 1=clicked, -1=button not found
+
     // Character data (DLL writes, C# reads)
-    char     names[CHARSEL_MAX_CHARS][CHARSEL_NAME_LEN];
-    int32_t  levels[CHARSEL_MAX_CHARS];
-    int32_t  classes[CHARSEL_MAX_CHARS];
+    char     names[CHARSEL_MAX_CHARS][CHARSEL_NAME_LEN];  // 10 * 64 = 640
+    int32_t  levels[CHARSEL_MAX_CHARS];                    // 10 * 4 = 40
+    int32_t  classes[CHARSEL_MAX_CHARS];                   // 10 * 4 = 40
 };
+// Total: 24 + 12 + 12 + 640 + 40 + 40 = 768 bytes
 #pragma pack(pop)
 
 // Forward declare LoginShm (defined in login_shm.h)

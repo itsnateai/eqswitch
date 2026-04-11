@@ -179,7 +179,7 @@ public class AppConfig
 
         // LoginAccount field validation
         foreach (var a in Accounts)
-            a.CharacterSlot = Math.Clamp(a.CharacterSlot, 1, 10);
+            a.CharacterSlot = Math.Clamp(a.CharacterSlot, 0, 10); // 0 = auto (by name)
     }
 }
 

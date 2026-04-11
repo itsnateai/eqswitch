@@ -33,7 +33,7 @@ enum LoginPhase : uint32_t {
     PHASE_ERROR               = 99,
 };
 
-#define LOGIN_MAX_CHARS     8
+#define LOGIN_MAX_CHARS     10
 #define LOGIN_NAME_LEN      64
 #define LOGIN_PASS_LEN      128
 #define LOGIN_SERVER_LEN    64

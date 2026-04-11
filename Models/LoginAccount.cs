@@ -10,6 +10,6 @@ public class LoginAccount
     public string EncryptedPassword { get; set; } = "";
     public string Server { get; set; } = "Dalaya";
     public string CharacterName { get; set; } = "";
-    public int CharacterSlot { get; set; } = 1;
+    public int CharacterSlot { get; set; } = 0;  // 0 = auto (by name), 1-10 = slot number
     public bool UseLoginFlag { get; set; } = true;
 }
