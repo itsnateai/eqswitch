@@ -53,15 +53,15 @@ static WNDPROC g_origWndProc = nullptr;
 static bool g_subclassInstalled = false;
 
 static const UINT_PTR TIMER_MQ2_POLL = 0xEA01;
+static bool g_mq2TimerInstalled = false;
+
+// TIMERPROC callback — fires on game thread independent of WndProc subclass.
+// Subclass gets removed when focus-faking deactivates, but MQ2 poll must continue.
+static void CALLBACK MQ2TimerProc(HWND hwnd, UINT msg, UINT_PTR idTimer, DWORD dwTime) {
+    MQ2BridgePollTick();
+}
 
 static LRESULT CALLBACK ActivateWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    // MQ2 bridge poll on the GAME THREAD via WM_TIMER — thread-safe access
-    // to CXWndManager, CListWnd, GetChildItem, SetCurSel, WndNotification.
-    if (msg == WM_TIMER && wParam == TIMER_MQ2_POLL) {
-        MQ2BridgePollTick();
-        return 0;
-    }
-
     if (KeyShm::IsActive()) {
         // Block all focus-loss messages — EQ must believe it's always foreground
         if (msg == WM_ACTIVATEAPP) {
@@ -98,14 +98,12 @@ static bool EnsureSubclassInstalled(HWND hwnd) {
     // EQ may have re-set its WndProc — capture the new original
     g_origWndProc = current;
     SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)ActivateWndProc);
-    // Install MQ2 bridge timer on the game thread (500ms interval)
-    SetTimer(hwnd, TIMER_MQ2_POLL, 500, nullptr);
     if (!g_subclassInstalled) {
-        DI8Log("wndproc_hook: installed subclass + MQ2 timer (orig=0x%08X)",
+        DI8Log("wndproc_hook: installed subclass (orig=0x%08X)",
                (unsigned)(uintptr_t)current);
         g_subclassInstalled = true;
     } else {
-        DI8Log("wndproc_hook: RE-installed subclass + MQ2 timer (EQ overwrote, new orig=0x%08X)",
+        DI8Log("wndproc_hook: RE-installed subclass (EQ overwrote, new orig=0x%08X)",
                (unsigned)(uintptr_t)current);
     }
     return true; // freshly installed
@@ -114,11 +112,11 @@ static bool EnsureSubclassInstalled(HWND hwnd) {
 // Remove the subclass when we no longer need it
 static void RemoveSubclass(HWND hwnd) {
     if (!g_subclassInstalled || !g_origWndProc) return;
-    KillTimer(hwnd, TIMER_MQ2_POLL);
+    // NOTE: do NOT kill MQ2 timer here — it must run independently of subclass
     WNDPROC current = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
     if (current == ActivateWndProc) {
         SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)g_origWndProc);
-        DI8Log("wndproc_hook: removed subclass + MQ2 timer");
+        DI8Log("wndproc_hook: removed subclass (MQ2 timer still active)");
     }
     g_subclassInstalled = false;
 }
@@ -146,6 +144,13 @@ static DWORD WINAPI ActivateThread(LPVOID) {
 
         // Count ticks after HWND appears — delay subclass for EQ init
         if (hwnd && initDelay < 200) initDelay++; // ~3.2 seconds
+
+        // Install MQ2 poll timer on game thread (once, independent of subclass)
+        if (!g_mq2TimerInstalled && hwnd && initDelay >= 100) {
+            SetTimer(hwnd, TIMER_MQ2_POLL, 500, MQ2TimerProc);
+            g_mq2TimerInstalled = true;
+            DI8Log("mq2_timer: installed game-thread MQ2 poll (500ms, TIMERPROC)");
+        }
 
         // Layer 2: one-shot pattern scan after EQ's window is created
         if (!g_activeFlagScanned && hwnd && initDelay >= 100) {
@@ -239,8 +244,12 @@ static void StartActivateThread() {
 // skipped entirely — the OS reclaims everything.
 extern "C" void DeviceProxy_Shutdown() {
     g_shutdown = true;
-    // Remove WndProc subclass BEFORE threads exit — prevents use-after-unload crash
+    // Kill MQ2 timer and remove WndProc subclass BEFORE threads exit
     HWND hwnd = g_eqHwnd;
+    if (hwnd && g_mq2TimerInstalled) {
+        KillTimer(hwnd, TIMER_MQ2_POLL);
+        g_mq2TimerInstalled = false;
+    }
     if (hwnd) RemoveSubclass(hwnd);
     // Wait for threads to observe g_shutdown and exit before releasing SHM.
     // ActivateThread sleeps 16ms, ShmPollingThread sleeps 8ms — 100ms is plenty.
