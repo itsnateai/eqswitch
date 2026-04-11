@@ -22,8 +22,8 @@ public class AutoLoginManager
 
     /// <summary>Serializes login sequences — only one login types credentials at a time.
     /// Multiple logins are queued and run sequentially to avoid timing issues under CPU load.</summary>
-    // No serialization gate — each login uses per-PID resources (SHM, hwnd, DLL hooks)
-    // and can run concurrently. The old SemaphoreSlim was overly conservative.
+    // No serialization — logins run concurrently. Focus-faking is kept to
+    // brief windows (activate → type → deactivate) to avoid conflicts.
 
     /// <summary>UI thread sync context — captured at construction for marshaling events back to the UI thread.</summary>
     private readonly SynchronizationContext? _syncContext;
@@ -185,99 +185,91 @@ public class AutoLoginManager
         }
 
         // Run the login sequence on a background thread.
-        // Each login uses per-PID resources (SHM, window handle, DLL hooks)
-        // so multiple logins can run concurrently without interference.
         var loginAccount = account;
         return Task.Run(() => RunLoginSequence(pid, loginAccount, password));
     }
 
     private void RunLoginSequence(int pid, LoginAccount account, string password)
     {
-        // Combined approach: DLL hooks fake window focus + SHM provides key state
-        // + PostMessage delivers WM_KEYDOWN/WM_CHAR to the message queue.
-        // EQ checks GetForegroundWindow before processing input — the DLL must
-        // return the EQ HWND. EQ also reads WM_CHAR from the message queue for
-        // login text fields. Both layers are needed for true background login.
+        // Parallel-safe background login via brief activation windows.
+        // Focus-faking (WndProc subclass + IAT hooks) is ONLY active during
+        // keystroke bursts (~2s each). Between bursts it's OFF so multiple
+        // logins don't fight for foreground.
         var writer = new KeyInputWriter();
         var charSelect = new CharSelectReader();
         try
         {
-            // Step 1: Create SHM early so DLL discovers it during EQ startup
+            // Open SHM early so DLL discovers it during EQ startup
             if (!writer.Open(pid))
             {
                 Report("Error: failed to create DirectInput shared memory");
                 return;
             }
             if (!charSelect.Open(pid))
-                FileLogger.Warn($"AutoLogin: CharSelectReader SHM open failed for PID {pid} — character selection unavailable");
+                FileLogger.Warn($"AutoLogin: CharSelectReader SHM open failed for PID {pid}");
 
-            // Step 2: Wait for EQ window to appear
+            // ── Wait for EQ window ──
             Report("Waiting for EQ window...");
             var hwnd = WaitForWindow(pid, TimeSpan.FromSeconds(30));
-            if (hwnd == IntPtr.Zero)
-            {
-                Report("Timeout: EQ window did not appear");
-                return;
-            }
+            if (hwnd == IntPtr.Zero) { Report("Timeout: EQ window did not appear"); return; }
 
-            // Step 3: Wait for login screen
+            // ── Wait for login screen ──
             Report("Waiting for login screen...");
             Thread.Sleep(_config.LoginScreenDelayMs);
 
-            // Step 4: Activate SHM AFTER window is ready — DLL's ActivateThread
-            // fires the rising edge, switches coop to BACKGROUND, posts WM_ACTIVATEAPP(1),
-            // and makes GetForegroundWindow/GetFocus return EQ's HWND.
-            writer.Activate(pid);
-            FileLogger.Info($"AutoLogin: SHM activated for PID {pid}");
-            Thread.Sleep(500); // let DLL switch coop level + post WM_ACTIVATEAPP
-
-            // Step 5: Type username (if /login flag not used)
+            // ══════════════════════════════════════════════════════════
+            // BURST 1: Type credentials + submit (~3 seconds active)
+            // ══════════════════════════════════════════════════════════
             Report("Typing credentials...");
+            writer.Activate(pid);
+            Thread.Sleep(500); // let DLL switch coop + blast activation
+            FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
+
             if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
             {
-                Thread.Sleep(200);
-                CombinedPressKey(writer, pid, hwnd, 0x09); // Tab
+                CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to username
                 Thread.Sleep(100);
                 CombinedTypeString(writer, pid, hwnd, account.Username);
                 Thread.Sleep(100);
             }
-
-            // Step 6: Tab to password field and type password
             if (!account.UseLoginFlag)
             {
-                CombinedPressKey(writer, pid, hwnd, 0x09);
+                CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to password
                 Thread.Sleep(100);
             }
             CombinedTypeString(writer, pid, hwnd, password);
             Thread.Sleep(100);
 
-            // Step 7: Press Enter to submit login
             Report("Submitting login...");
-            writer.Reactivate(pid);
-            Thread.Sleep(200);
-            CombinedPressKey(writer, pid, hwnd, 0x0D);
-            Thread.Sleep(3000);
+            CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = submit
+            Thread.Sleep(500);
+            writer.Deactivate(pid); // ← OFF immediately after typing
+            FileLogger.Info($"AutoLogin: BURST 1 deactivated for PID {pid}");
 
-            // Re-resolve handle — EQ recreates its window on login→server select transition
+            // ── Wait for server response (no focus-faking) ──
+            Thread.Sleep(3000);
             hwnd = RefreshHandle(pid, hwnd);
             if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window after login"); return; }
 
-            // Step 8: Server select — reactivate SHM before confirming
+            // ══════════════════════════════════════════════════════════
+            // BURST 2: Confirm server select (~1 second active)
+            // ══════════════════════════════════════════════════════════
             Report("Confirming server...");
-            writer.Reactivate(pid);
-            Thread.Sleep(200);
-            CombinedPressKey(writer, pid, hwnd, 0x0D);
+            writer.Activate(pid);
+            Thread.Sleep(300);
+            FileLogger.Info($"AutoLogin: BURST 2 activated for PID {pid}");
+            CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = confirm
+            Thread.Sleep(500);
+            writer.Deactivate(pid); // ← OFF
+            FileLogger.Info($"AutoLogin: BURST 2 deactivated for PID {pid}");
 
-            // Wait for server→charselect transition (loading screen).
-            // EQ's message pump blocks during 3D scene load — IsHungAppWindow
-            // detects this. We wait for hung→responsive, with GetWindowRect
-            // changes as a fallback signal. Handles any load time (5s–60s+).
+            // ── Wait for charselect load (no focus-faking, 5-60+ seconds) ──
             Report("Loading character select...");
             hwnd = WaitForScreenTransition(pid, hwnd);
             if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window during charselect load"); return; }
             FileLogger.Info($"AutoLogin: charselect ready, hwnd=0x{hwnd:X} for PID {pid}");
 
-            // Step 9: Auto Enter World gate
+            // ── Auto Enter World gate ──
             if (!_config.AutoEnterWorld)
             {
                 Report($"{account.Name} reached character select.");
@@ -285,23 +277,15 @@ public class AutoLoginManager
                 return;
             }
 
-            // Reactivate SHM — creates rising edge so DLL re-blasts activation
-            // messages after EQ overwrites WndProc subclass during 3D scene init.
-            writer.Reactivate(pid);
-            Thread.Sleep(2000); // let DLL re-install WndProc subclass + init MQ2 bridge
-
-            // Step 10: Select character by name (if MQ2 available)
+            // ── Character selection via MQ2 bridge (no focus-faking needed) ──
+            Thread.Sleep(2000); // let MQ2 bridge init
             if (!string.IsNullOrEmpty(account.CharacterName))
             {
-                // Wait for MQ2 bridge to populate character list
                 bool charListReady = false;
                 for (int wait = 0; wait < 10; wait++)
                 {
                     if (charSelect.IsMQ2Available(pid) && charSelect.ReadCharCount(pid) > 0)
-                    {
-                        charListReady = true;
-                        break;
-                    }
+                    { charListReady = true; break; }
                     Thread.Sleep(500);
                 }
 
@@ -313,44 +297,43 @@ public class AutoLoginManager
                     int selIdx = charSelect.RequestSelectionByName(pid, account.CharacterName);
                     if (selIdx >= 0)
                     {
-                        // Wait for DLL to acknowledge the selection
                         bool acked = false;
                         for (int ack = 0; ack < 10; ack++)
                         {
                             if (charSelect.IsSelectionAcknowledged(pid))
-                            {
-                                FileLogger.Info($"AutoLogin: character '{account.CharacterName}' selected (index {selIdx})");
-                                acked = true;
-                                break;
-                            }
+                            { acked = true; break; }
                             Thread.Sleep(200);
                         }
-                        if (!acked)
-                            FileLogger.Warn($"AutoLogin: DLL did not acknowledge character selection for '{account.CharacterName}' — proceeding anyway");
-                        Thread.Sleep(500); // Brief pause after selection
+                        if (acked)
+                            FileLogger.Info($"AutoLogin: character '{account.CharacterName}' selected (index {selIdx})");
+                        else
+                            FileLogger.Warn($"AutoLogin: DLL did not ack selection for '{account.CharacterName}'");
+                        Thread.Sleep(500);
                     }
                     else
-                    {
-                        FileLogger.Warn($"AutoLogin: character '{account.CharacterName}' not found in list, entering world with default");
-                    }
+                        FileLogger.Warn($"AutoLogin: character '{account.CharacterName}' not found, using default");
                 }
                 else
-                {
-                    FileLogger.Warn($"AutoLogin: MQ2 bridge not ready (mq2={charSelect.IsMQ2Available(pid)}, chars={charSelect.ReadCharCount(pid)}), entering world with default");
-                }
+                    FileLogger.Warn($"AutoLogin: MQ2 bridge not ready, entering world with default");
             }
 
-            // Step 11: Enter World — retry up to 5 times with pulsed key holds
+            // ══════════════════════════════════════════════════════════
+            // BURST 3: Enter World (~3 seconds active per attempt)
+            // ══════════════════════════════════════════════════════════
             Report("Entering world...");
             bool entered = false;
             for (int attempt = 0; attempt < 5; attempt++)
             {
-                writer.Reactivate(pid);
+                writer.Activate(pid);
                 Thread.Sleep(500);
+                FileLogger.Info($"AutoLogin: BURST 3 activated for PID {pid} (attempt {attempt + 1})");
                 PulseKey3D(writer, pid, hwnd, 0x0D);
-                Thread.Sleep(4000);
+                Thread.Sleep(500);
+                writer.Deactivate(pid); // ← OFF between attempts
+                FileLogger.Info($"AutoLogin: BURST 3 deactivated for PID {pid}");
 
-                // Check if we left char select — window title changes to "EverQuest - CharName"
+                Thread.Sleep(3000); // wait for world load (no focus-faking)
+
                 hwnd = RefreshHandle(pid, hwnd);
                 if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window"); return; }
 
@@ -373,7 +356,7 @@ public class AutoLoginManager
             if (entered)
             {
                 Report($"{account.Name} logged in!");
-                FileLogger.Info($"AutoLogin: {account.Name} login sequence complete (PID {pid})");
+                FileLogger.Info($"AutoLogin: {account.Name} login complete (PID {pid})");
             }
             else
             {
@@ -388,6 +371,8 @@ public class AutoLoginManager
         }
         finally
         {
+            // Deactivate FIRST — ensure focus-faking stops before handles close
+            try { writer.Deactivate(pid); } catch { }
             try { charSelect.Close(pid); } catch { }
             try { charSelect.Dispose(); } catch { }
             try { writer.Close(pid); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Close failed: {ex.Message}"); }
@@ -435,20 +420,16 @@ public class AutoLoginManager
         return false;
     }
 
-    /// <summary>PostMessage with retry. On failure, re-activates SHM to trigger the DLL's
-    /// ActivateThread rising-edge blast, then retries.</summary>
+    /// <summary>PostMessage with retry. No SHM reactivation — if PostMessage fails,
+    /// the window is likely dead. Retrying with brief pauses handles transient OS hiccups.</summary>
     private static bool PostR(KeyInputWriter writer, int pid, IntPtr hwnd,
         uint msg, IntPtr wParam, IntPtr lParam)
     {
         if (Post(hwnd, msg, wParam, lParam)) return true;
-        for (int r = 0; r < 3; r++)
-        {
-            writer.Reactivate(pid, 50);
-            Thread.Sleep(200);
-            if (Post(hwnd, msg, wParam, lParam)) return true;
-        }
-        FileLogger.Warn($"AutoLogin: PostMessage failed after 3 retries (hwnd=0x{hwnd:X}, msg=0x{msg:X})");
-        return false;
+        // Window might be closing — check validity before retry
+        if (!NativeMethods.IsWindow(hwnd)) return false;
+        Thread.Sleep(50);
+        return Post(hwnd, msg, wParam, lParam);
     }
 
     /// <summary>Press a key via SHM (for DLL hooks) AND PostMessage (for message queue).</summary>
