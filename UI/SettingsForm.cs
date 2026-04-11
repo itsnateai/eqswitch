@@ -1453,7 +1453,7 @@ public class SettingsForm : Form
         page.Controls.Add(btnImport);
 
         y += 22;
-        DarkTheme.AddHint(page, "Default for new accounts. Per-account/team overrides in Edit/Teams.", 20, y);
+        DarkTheme.AddHint(page, "Sets all accounts on upgrade. Per-account override in Edit, per-team in Teams.", 20, y);
         DarkTheme.AddHint(page, "DPAPI \u2014 same Windows user only", 320, y);
 
         return page;
