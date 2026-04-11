@@ -315,6 +315,7 @@ static bool TryWndMgrPointer(void *pWndMgr, const char *label,
 
 static void *g_pEQMainWndMgr = nullptr;
 static bool g_eqmainScanned = false;
+static uint32_t g_eqmainWndMgrOffset = 0;  // dedicated offset for eqmain (not shared with eqgame)
 
 static void *FindEQMainWndMgr() {
     // Re-check if eqmain.dll is still loaded — it unloads at charselect transition.
@@ -325,8 +326,7 @@ static void *FindEQMainWndMgr() {
             DI8Log("mq2_bridge: eqmain.dll unloaded — clearing cached WndMgr");
             g_pEQMainWndMgr = nullptr;
             g_eqmainScanned = false;
-            g_wndMgrOffsetFound = false;
-            g_wndMgrValidOffset = 0;
+            g_eqmainWndMgrOffset = 0;
         }
         return nullptr;
     }
@@ -394,8 +394,7 @@ static void *FindEQMainWndMgr() {
 
                 // This looks like a valid CXWndManager!
                 g_pEQMainWndMgr = candidate;
-                g_wndMgrValidOffset = arrOff;
-                g_wndMgrOffsetFound = true;
+                g_eqmainWndMgrOffset = arrOff;
                 DI8Log("mq2_bridge: FOUND eqmain CXWndManager at %p (data+0x%X), pWindows at offset 0x%X (%d windows)",
                        candidate, off, arrOff, arr->Count);
                 return g_pEQMainWndMgr;
@@ -440,11 +439,10 @@ static bool IterateWindowsDirect(void *pWndMgr, uint32_t arrOffset,
 
 static bool IterateAllWindows(WndIterCallback callback, void *context) {
     // 1. Try eqmain.dll's CXWndManager (login screen)
-    //    FindEQMainWndMgr caches the result and sets g_wndMgrValidOffset
+    //    FindEQMainWndMgr caches the result and g_eqmainWndMgrOffset (separate from eqgame's)
     void *eqMainMgr = FindEQMainWndMgr();
-    if (eqMainMgr && g_eqmainScanned) {
-        // Use the offset discovered during scanning (stored in g_wndMgrValidOffset by FindEQMainWndMgr)
-        if (IterateWindowsDirect(eqMainMgr, g_wndMgrValidOffset, callback, context))
+    if (eqMainMgr && g_eqmainScanned && g_eqmainWndMgrOffset) {
+        if (IterateWindowsDirect(eqMainMgr, g_eqmainWndMgrOffset, callback, context))
             return true;
     }
 
@@ -1256,4 +1254,10 @@ void MQ2Bridge::Shutdown() {
     g_offsetValidated  = false;
     g_validatedOffset  = 0;
     g_wndMgrOffsetFound = false;
+    g_wndMgrValidOffset = 0;
+    g_eqmainWndMgrOffset = 0;
+    g_uiFallbackLogged = false;
+    g_cachedNameCol    = -1;
+    g_verificationDone = false;
+    g_findLogCount     = 0;
 }
