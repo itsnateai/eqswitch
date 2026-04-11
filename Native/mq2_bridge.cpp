@@ -852,6 +852,42 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         lastGameState = gameState;
     }
 
+    // Handle Enter World request BEFORE gameState guard — if game state
+    // already transitioned away from charselect, we still need to ack
+    // the request so C# doesn't hang waiting forever.
+    {
+        uint32_t ewReq = shm->enterWorldReq;
+        uint32_t ewAck = shm->enterWorldAck;
+
+        if (ewReq != ewAck) {
+            if (gameState == 1) {
+                DI8Log("mq2_bridge: Enter World request (seq %u->%u)", ewAck, ewReq);
+                void *pEnterBtn = FindWindowByName("CLW_EnterWorldButton");
+                if (pEnterBtn) {
+                    __try {
+                        if (g_fnWndNotification)
+                            g_fnWndNotification(pEnterBtn, pEnterBtn, 1 /*XWM_LCLICK*/, nullptr);
+                        shm->enterWorldResult = 1;  // clicked
+                        DI8Log("mq2_bridge: clicked CLW_EnterWorldButton");
+                    }
+                    __except (EXCEPTION_EXECUTE_HANDLER) {
+                        shm->enterWorldResult = -1;
+                        DI8Log("mq2_bridge: SEH clicking CLW_EnterWorldButton");
+                    }
+                } else {
+                    shm->enterWorldResult = -1;
+                    DI8Log("mq2_bridge: CLW_EnterWorldButton not found");
+                }
+            } else {
+                // Game already left charselect — can't click, ack anyway
+                shm->enterWorldResult = -2;  // missed — state transitioned
+                DI8Log("mq2_bridge: Enter World missed — gameState=%d (not charselect)", gameState);
+            }
+            MemoryBarrier();
+            shm->enterWorldAck = ewReq;
+        }
+    }
+
     if (gameState != 1) {
         shm->charCount = 0;
         shm->selectedIndex = -1;
@@ -949,30 +985,6 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         shm->ackSeq = reqSeq;
     }
 
-    // Handle Enter World request from C# (in-process button click)
-    uint32_t ewReq = shm->enterWorldReq;
-    uint32_t ewAck = shm->enterWorldAck;
-
-    if (ewReq != ewAck) {
-        DI8Log("mq2_bridge: Enter World request (seq %u->%u)", ewAck, ewReq);
-
-        void *pEnterBtn = FindWindowByName("CLW_EnterWorldButton");
-        if (pEnterBtn) {
-            __try {
-                ClickButton(pEnterBtn);
-                shm->enterWorldResult = 1;  // clicked
-                DI8Log("mq2_bridge: clicked CLW_EnterWorldButton");
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) {
-                shm->enterWorldResult = -1;
-                DI8Log("mq2_bridge: SEH clicking CLW_EnterWorldButton");
-            }
-        } else {
-            shm->enterWorldResult = -1;  // button not found
-            DI8Log("mq2_bridge: CLW_EnterWorldButton not found");
-        }
-        shm->enterWorldAck = ewReq;
-    }
 }
 
 // ─── MQ2Bridge::Shutdown ───────────────────────────────────────

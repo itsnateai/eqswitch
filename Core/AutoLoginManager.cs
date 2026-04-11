@@ -361,9 +361,9 @@ public class AutoLoginManager
                 }
 
                 int result = charSelect.ReadEnterWorldResult(pid);
-                if (result < 0)
+                if (result <= 0)
                 {
-                    FileLogger.Warn($"AutoLogin: CLW_EnterWorldButton not found (attempt {attempt + 1})");
+                    FileLogger.Warn($"AutoLogin: Enter World {(result == 0 ? "result pending (race)" : "button not found")} (attempt {attempt + 1})");
                     Thread.Sleep(2000);
                     continue;
                 }
