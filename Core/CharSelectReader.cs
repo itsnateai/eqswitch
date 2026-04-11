@@ -61,7 +61,7 @@ public sealed class CharSelectReader : IDisposable
 
     /// <summary>
     /// Create shared memory for a process. Call during auto-login setup
-    /// (alongside LoginShmWriter.Open).
+    /// (alongside KeyInputWriter.Open).
     /// </summary>
     public bool Open(int pid)
     {

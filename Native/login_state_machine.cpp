@@ -37,6 +37,8 @@ static DWORD      g_phaseEntryTick = 0;   // GetTickCount when phase was entered
 static DWORD      g_lastActionTick = 0;   // Debounce for widget interactions
 static int        g_lastGameState = -99;  // Track game state transitions
 static bool       g_widgetsCached = false;
+static int        g_connectGameState = -99;  // Track gameState when connect was clicked
+static int        g_charSelGameState = -99;  // Track gameState when charselect was entered
 
 // Cached widget pointers (invalidated on game state change)
 static void *g_pUsernameEdit = nullptr;
@@ -290,13 +292,12 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
 
         // Track the gameState when we clicked connect
         {
-            static int connectGameState = -99;
-            if (connectGameState == -99) connectGameState = gameState;
+            if (g_connectGameState == -99) g_connectGameState = gameState;
 
             // Success: game state changed from what it was when we clicked connect
-            if (gameState != connectGameState && connectGameState != -99) {
-                DI8Log("login_sm: connect response — gameState changed %d -> %d", connectGameState, gameState);
-                connectGameState = -99; // reset for next login
+            if (gameState != g_connectGameState && g_connectGameState != -99) {
+                DI8Log("login_sm: connect response — gameState changed %d -> %d", g_connectGameState, gameState);
+                g_connectGameState = -99; // reset for next login
                 SetPhase(loginShm, PHASE_SERVER_SELECT);
                 break;
             }
@@ -424,13 +425,12 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
 
         // Detect in-game: Character_List widget disappears when we leave char select.
         // Also check if gameState changed from what it was at char select.
-        static int charSelGameState = -99;
-        if (charSelGameState == -99) charSelGameState = gameState;
+        if (g_charSelGameState == -99) g_charSelGameState = gameState;
 
         void *charListCheck = MQ2Bridge::FindWindowByName("Character_List");
-        if (!charListCheck && gameState != charSelGameState) {
+        if (!charListCheck && gameState != g_charSelGameState) {
             DI8Log("login_sm: INGAME reached! (gameState=%d, no Character_List)", gameState);
-            charSelGameState = -99;
+            g_charSelGameState = -99;
             memset(g_password, 0, sizeof(g_password));
             SetPhase(loginShm, PHASE_COMPLETE);
             break;
@@ -468,6 +468,8 @@ void Shutdown() {
     g_lastCommandSeq = 0;
     g_retryCount = 0;
     g_lastGameState = -99;
+    g_connectGameState = -99;
+    g_charSelGameState = -99;
     InvalidateWidgets();
     memset(g_password, 0, sizeof(g_password));
     memset(g_username, 0, sizeof(g_username));
