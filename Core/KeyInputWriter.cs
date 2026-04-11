@@ -123,6 +123,21 @@ public sealed class KeyInputWriter : IDisposable
     }
 
     /// <summary>
+    /// Deactivate key injection. Sets active=0 so the DLL stops focus-faking
+    /// and removes the WndProc subclass. Call after each keystroke burst to
+    /// minimize the activation window for parallel login support.
+    /// </summary>
+    public void Deactivate(int pid)
+    {
+        if (!_mappings.TryGetValue(pid, out var entry)) return;
+        try
+        {
+            entry.Accessor.Write(ActiveOffset, (uint)0);
+        }
+        catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Deactivate failed: {ex.Message}"); }
+    }
+
+    /// <summary>
     /// Deactivate then re-activate SHM to create a rising edge. The DLL's
     /// ActivateThread only blasts activation messages on false→true transitions,
     /// so toggling forces it to re-blast even if SHM was already active.

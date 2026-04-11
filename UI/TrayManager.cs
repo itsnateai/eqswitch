@@ -1351,7 +1351,11 @@ public class TrayManager : IDisposable
                 fired++;
             }
         }
-        if (fired == 0) ShowBalloon($"No accounts assigned to {teamName}");
+        if (fired == 0)
+        {
+            ShowBalloon($"No accounts assigned to {teamName} — configure in Settings → Accounts");
+            FileLogger.Warn($"FireTeamLogin: {teamName} has no accounts assigned");
+        }
     }
 
     // ─── Config Reload ─────────────────────────────────────────────
