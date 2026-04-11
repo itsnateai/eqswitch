@@ -190,10 +190,12 @@ public class AppConfig
         // v3.9.0 migration: propagate global AutoEnterWorld to per-account flags.
         // Prior versions only had the global flag. If it was true and accounts still
         // have their default (false), the user's intent was "enter world for all".
+        // Clear global flag after migration so this only runs once.
         if (AutoEnterWorld && Accounts.Count > 0 && Accounts.All(a => !a.AutoEnterWorld))
         {
             foreach (var a in Accounts)
                 a.AutoEnterWorld = true;
+            AutoEnterWorld = false; // consumed — prevent re-firing every session
         }
     }
 }
