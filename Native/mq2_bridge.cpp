@@ -1146,8 +1146,33 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 }
             }
 
+            // Path B2: if GetItemText failed (empty columns) but GetCurSel works,
+            // the list HAS items — populate charCount for slot-based selection.
+            if (count == 0 && nameCol < 0 && g_fnGetCurSel) {
+                __try {
+                    int curSel = g_fnGetCurSel(pCharList);
+                    if (curSel >= 0) {
+                        // List has items but text is unreadable (custom-rendered cells).
+                        // Set charCount to max slots so C# can do slot-based selection.
+                        // Use "Slot N" placeholder names.
+                        count = CHARSEL_MAX_CHARS; // assume max, selection by index works
+                        for (int i = 0; i < count; i++) {
+                            char slotName[CHARSEL_NAME_LEN];
+                            snprintf(slotName, CHARSEL_NAME_LEN, "Slot %d", i + 1);
+                            memcpy((void *)shm->names[i], slotName, CHARSEL_NAME_LEN);
+                            shm->levels[i] = 0;
+                            shm->classes[i] = 0;
+                        }
+                        shm->selectedIndex = curSel;
+                        DI8Log("mq2_bridge: UI fallback: GetItemText empty but GetCurSel=%d — using slot-based mode (%d slots)",
+                               curSel, count);
+                    }
+                } __except(EXCEPTION_EXECUTE_HANDLER) {
+                    DI8Log("mq2_bridge: SEH in GetCurSel fallback");
+                }
+            }
+
             if (count > 0) {
-                DI8Log("mq2_bridge: UI fallback: read %d characters from CListWnd", count);
                 MemoryBarrier();
                 shm->charCount = count;
                 for (int i = count; i < CHARSEL_MAX_CHARS; i++) {
