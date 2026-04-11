@@ -852,43 +852,46 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         lastGameState = gameState;
     }
 
-    // Handle Enter World request BEFORE gameState guard — if game state
-    // already transitioned away from charselect, we still need to ack
-    // the request so C# doesn't hang waiting forever.
+    // Handle Enter World request — no gameState gate.
+    // Dalaya ROF2 uses gameState=0 at both login AND charselect.
+    // We try the click regardless; FindWindowByName returns nullptr if
+    // the button doesn't exist (not at charselect), which is handled.
     {
         uint32_t ewReq = shm->enterWorldReq;
         uint32_t ewAck = shm->enterWorldAck;
 
         if (ewReq != ewAck) {
-            if (gameState == 1) {
-                DI8Log("mq2_bridge: Enter World request (seq %u->%u)", ewAck, ewReq);
-                void *pEnterBtn = FindWindowByName("CLW_EnterWorldButton");
-                if (pEnterBtn) {
-                    __try {
-                        if (g_fnWndNotification)
-                            g_fnWndNotification(pEnterBtn, pEnterBtn, 1 /*XWM_LCLICK*/, nullptr);
-                        shm->enterWorldResult = 1;  // clicked
-                        DI8Log("mq2_bridge: clicked CLW_EnterWorldButton");
-                    }
-                    __except (EXCEPTION_EXECUTE_HANDLER) {
-                        shm->enterWorldResult = -1;
-                        DI8Log("mq2_bridge: SEH clicking CLW_EnterWorldButton");
-                    }
-                } else {
+            DI8Log("mq2_bridge: Enter World request (seq %u->%u, gameState=%d)", ewAck, ewReq, gameState);
+            void *pEnterBtn = FindWindowByName("CLW_EnterWorldButton");
+            if (pEnterBtn) {
+                __try {
+                    if (g_fnWndNotification)
+                        g_fnWndNotification(pEnterBtn, pEnterBtn, 1 /*XWM_LCLICK*/, nullptr);
+                    shm->enterWorldResult = 1;  // clicked
+                    DI8Log("mq2_bridge: clicked CLW_EnterWorldButton");
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER) {
                     shm->enterWorldResult = -1;
-                    DI8Log("mq2_bridge: CLW_EnterWorldButton not found");
+                    DI8Log("mq2_bridge: SEH clicking CLW_EnterWorldButton");
                 }
             } else {
-                // Game already left charselect — can't click, ack anyway
-                shm->enterWorldResult = -2;  // missed — state transitioned
-                DI8Log("mq2_bridge: Enter World missed — gameState=%d (not charselect)", gameState);
+                shm->enterWorldResult = -1;
+                DI8Log("mq2_bridge: CLW_EnterWorldButton not found (gameState=%d)", gameState);
             }
             MemoryBarrier();
             shm->enterWorldAck = ewReq;
         }
     }
 
-    if (gameState != 1) {
+    // Handle selection request — also no gameState gate for Dalaya compatibility.
+    // The selection handler below (after char data read) checks charCount > 0.
+
+    // Dalaya ROF2: gameState=0 at login AND charselect. We can't gate on
+    // gameState==1. Instead, attempt to read character data always — the
+    // SEH guards and validation (IsReadablePtr, name checks) handle invalid states.
+    // If we're not at charselect, charCount will be 0 and nothing happens.
+    if (gameState == 5) {
+        // gameState 5 = in-game on Dalaya. Clear char data + skip polling.
         shm->charCount = 0;
         shm->selectedIndex = -1;
         g_offsetValidated = false;
