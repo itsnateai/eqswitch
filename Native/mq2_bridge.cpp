@@ -1205,15 +1205,24 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 __try {
                     g_fnSetCurSel(pCharListWnd, requestedIdx);
                     shm->selectedIndex = requestedIdx;
+                    shm->ackSeq = reqSeq;  // ack ONLY on successful SetCurSel
                     DI8Log("mq2_bridge: selected character index %d (\"%s\")",
                            requestedIdx, (const char *)shm->names[requestedIdx]);
                 }
                 __except (EXCEPTION_EXECUTE_HANDLER) {
                     DI8Log("mq2_bridge: SEH in SetCurSel(%d)", requestedIdx);
                 }
+            } else {
+                DI8Log("mq2_bridge: selection DEFERRED — Character_List=%p SetCurSel=%p",
+                       pCharListWnd, g_fnSetCurSel);
+                // Don't ack — C# will retry on next poll
             }
+        } else {
+            // Invalid index — ack to prevent infinite retry
+            DI8Log("mq2_bridge: selection SKIPPED — index=%d charCount=%d",
+                   requestedIdx, shm->charCount);
+            shm->ackSeq = reqSeq;
         }
-        shm->ackSeq = reqSeq;
     }
 
 }
