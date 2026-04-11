@@ -60,7 +60,7 @@ public class AutoLoginManager
     /// Non-blocking — runs the login sequence on a background thread.
     /// Returns a Task that completes when the full login sequence finishes.
     /// </summary>
-    public Task LoginAccount(LoginAccount account)
+    public Task LoginAccount(LoginAccount account, bool? teamAutoEnter = null)
     {
         string password;
         try
@@ -186,10 +186,11 @@ public class AutoLoginManager
 
         // Run the login sequence on a background thread.
         var loginAccount = account;
-        return Task.Run(() => RunLoginSequence(pid, loginAccount, password));
+        var teamEnter = teamAutoEnter;
+        return Task.Run(() => RunLoginSequence(pid, loginAccount, password, teamEnter));
     }
 
-    private void RunLoginSequence(int pid, LoginAccount account, string password)
+    private void RunLoginSequence(int pid, LoginAccount account, string password, bool? teamAutoEnter = null)
     {
         // Parallel-safe background login via brief activation windows.
         // Focus-faking (WndProc subclass + IAT hooks) is ONLY active during
@@ -270,10 +271,12 @@ public class AutoLoginManager
             FileLogger.Info($"AutoLogin: charselect ready, hwnd=0x{hwnd:X} for PID {pid}");
 
             // ── Auto Enter World gate ──
-            if (!_config.AutoEnterWorld)
+            // Priority: team setting > per-account setting
+            bool shouldEnterWorld = teamAutoEnter ?? account.AutoEnterWorld;
+            if (!shouldEnterWorld)
             {
                 Report($"{account.Name} reached character select.");
-                FileLogger.Info($"AutoLogin: {account.Name} stopped at char select (AutoEnterWorld disabled)");
+                FileLogger.Info($"AutoLogin: {account.Name} stopped at char select (AutoEnterWorld={shouldEnterWorld}, team={teamAutoEnter}, acct={account.AutoEnterWorld})");
                 return;
             }
 
@@ -348,7 +351,7 @@ public class AutoLoginManager
                         }
                         if (!acked)
                             FileLogger.Warn($"AutoLogin: DLL did not ack character selection");
-                        Thread.Sleep(500);
+                        Thread.Sleep(200); // SetCurSel fires synchronously on game thread via TIMERPROC
                     }
                 }
                 else

@@ -82,6 +82,12 @@ public class AppConfig
     public string Team4Account1 { get; set; } = "";
     public string Team4Account2 { get; set; } = "";
 
+    // Per-team Auto Enter World overrides
+    public bool Team1AutoEnter { get; set; } = false;
+    public bool Team2AutoEnter { get; set; } = false;
+    public bool Team3AutoEnter { get; set; } = false;
+    public bool Team4AutoEnter { get; set; } = false;
+
     // Tray Click Actions
     public TrayClickConfig TrayClick { get; set; } = new();
 

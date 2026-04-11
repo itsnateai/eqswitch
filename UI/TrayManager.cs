@@ -1252,7 +1252,7 @@ public class TrayManager : IDisposable
             case "LaunchAll":
                 FireTeamLogin(
                     new[] { (_config.Team1Account1, "Team 1 Slot 1"), (_config.Team1Account2, "Team 1 Slot 2") },
-                    "Team 1");
+                    "Team 1", _config.Team1AutoEnter);
                 break;
             case "LaunchTwo":
                 ShowBalloon("Launching two clients...");
@@ -1273,22 +1273,22 @@ public class TrayManager : IDisposable
             case "LoginAll":
                 FireTeamLogin(
                     new[] { (_config.Team1Account1, "Team 1 Slot 1"), (_config.Team1Account2, "Team 1 Slot 2") },
-                    "Team 1");
+                    "Team 1", _config.Team1AutoEnter);
                 break;
             case "LoginAll2":
                 FireTeamLogin(
                     new[] { (_config.Team2Account1, "Team 2 Slot 1"), (_config.Team2Account2, "Team 2 Slot 2") },
-                    "Team 2");
+                    "Team 2", _config.Team2AutoEnter);
                 break;
             case "LoginAll3":
                 FireTeamLogin(
                     new[] { (_config.Team3Account1, "Team 3 Slot 1"), (_config.Team3Account2, "Team 3 Slot 2") },
-                    "Team 3");
+                    "Team 3", _config.Team3AutoEnter);
                 break;
             case "LoginAll4":
                 FireTeamLogin(
                     new[] { (_config.Team4Account1, "Team 4 Slot 1"), (_config.Team4Account2, "Team 4 Slot 2") },
-                    "Team 4");
+                    "Team 4", _config.Team4AutoEnter);
                 break;
             case "Settings":
                 ShowSettings();
@@ -1316,7 +1316,7 @@ public class TrayManager : IDisposable
     }
 
 
-    private Task ExecuteQuickLogin(string username, string slotName)
+    private Task ExecuteQuickLogin(string username, string slotName, bool? teamAutoEnter = null)
     {
         if (string.IsNullOrEmpty(username))
         {
@@ -1333,7 +1333,7 @@ public class TrayManager : IDisposable
         }
         var label = string.IsNullOrEmpty(account.CharacterName) ? account.Username : account.CharacterName;
         ShowBalloon($"Logging in {label}...");
-        try { return _autoLoginManager.LoginAccount(account); }
+        try { return _autoLoginManager.LoginAccount(account, teamAutoEnter); }
         catch (Exception ex)
         {
             FileLogger.Error($"AutoLogin CRASH: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}", ex);
@@ -1342,14 +1342,14 @@ public class TrayManager : IDisposable
         }
     }
 
-    private void FireTeamLogin((string username, string label)[] slots, string teamName)
+    private void FireTeamLogin((string username, string label)[] slots, string teamName, bool teamAutoEnter = false)
     {
         int fired = 0;
         foreach (var (user, name) in slots)
         {
             if (!string.IsNullOrEmpty(user))
             {
-                _ = ExecuteQuickLogin(user, name);
+                _ = ExecuteQuickLogin(user, name, teamAutoEnter);
                 fired++;
             }
         }
@@ -1441,6 +1441,10 @@ public class TrayManager : IDisposable
         _config.Team3Account2 = newConfig.Team3Account2;
         _config.Team4Account1 = newConfig.Team4Account1;
         _config.Team4Account2 = newConfig.Team4Account2;
+        _config.Team1AutoEnter = newConfig.Team1AutoEnter;
+        _config.Team2AutoEnter = newConfig.Team2AutoEnter;
+        _config.Team3AutoEnter = newConfig.Team3AutoEnter;
+        _config.Team4AutoEnter = newConfig.Team4AutoEnter;
         _config.AutoEnterWorld = newConfig.AutoEnterWorld;
         _config.LoginScreenDelayMs = newConfig.LoginScreenDelayMs;
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
