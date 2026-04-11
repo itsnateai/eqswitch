@@ -271,7 +271,7 @@ public class AutoLoginManager
             FileLogger.Info($"AutoLogin: charselect ready, hwnd=0x{hwnd:X} for PID {pid}");
 
             // ── Auto Enter World gate ──
-            // Priority: team setting > per-account setting
+            // Priority: team setting > per-account setting > global fallback
             bool shouldEnterWorld = teamAutoEnter ?? account.AutoEnterWorld;
             if (!shouldEnterWorld)
             {

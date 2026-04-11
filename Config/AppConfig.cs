@@ -186,6 +186,15 @@ public class AppConfig
         // LoginAccount field validation
         foreach (var a in Accounts)
             a.CharacterSlot = Math.Clamp(a.CharacterSlot, 0, 10); // 0 = auto (by name)
+
+        // v3.9.0 migration: propagate global AutoEnterWorld to per-account flags.
+        // Prior versions only had the global flag. If it was true and accounts still
+        // have their default (false), the user's intent was "enter world for all".
+        if (AutoEnterWorld && Accounts.Count > 0 && Accounts.All(a => !a.AutoEnterWorld))
+        {
+            foreach (var a in Accounts)
+                a.AutoEnterWorld = true;
+        }
     }
 }
 
