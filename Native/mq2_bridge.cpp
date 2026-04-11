@@ -96,7 +96,6 @@ static const uint32_t CSI_LEVEL_OFF  = 0x48;
 static bool     g_offsetValidated   = false;
 static uint32_t g_validatedOffset   = 0;
 static bool     g_uiFallbackLogged  = false;
-static bool     g_colDumped         = false;
 static int      g_cachedNameCol     = -1;
 static bool     g_verificationDone  = false;
 
@@ -234,8 +233,6 @@ static bool g_wndMgrOffsetFound = false;
 // Returns true if iteration succeeded.
 typedef bool (*WndIterCallback)(void *pWnd, void *context);
 
-static int g_iterLogCount = 0;
-static bool g_dumpedOnce = false;
 
 // Try a single WndMgr pointer with all offset candidates.
 // Returns true if callback stopped early (found target).
@@ -330,7 +327,6 @@ static void *FindEQMainWndMgr() {
             g_eqmainScanned = false;
             g_wndMgrOffsetFound = false;
             g_wndMgrValidOffset = 0;
-            g_dumpedOnce = false;
         }
         return nullptr;
     }
@@ -1025,7 +1021,6 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         shm->selectedIndex = -1;
         g_offsetValidated = false;
         g_uiFallbackLogged = false;
-        g_colDumped = false;
         g_cachedNameCol = -1;
         g_verificationDone = false;
         return;
