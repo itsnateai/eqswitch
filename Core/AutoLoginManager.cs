@@ -310,21 +310,23 @@ public class AutoLoginManager
 
                 if (charListReady)
                 {
+                    // Snapshot charCount — don't re-read from SHM (DLL can reset to 0 between polls)
+                    int charCount = charSelect.ReadCharCount(pid);
                     var charNames = charSelect.ReadAllCharNames(pid);
-                    FileLogger.Info($"AutoLogin: {charNames.Length} characters found: {string.Join(", ", charNames)}");
+                    FileLogger.Info($"AutoLogin: {charCount} characters found: {string.Join(", ", charNames)}");
 
                     bool selected = false;
                     if (account.CharacterSlot > 0)
                     {
                         // Slot-based selection (1-10) — direct index, no name lookup
-                        if (account.CharacterSlot <= charSelect.ReadCharCount(pid))
+                        if (account.CharacterSlot <= charCount)
                         {
                             charSelect.RequestSelectionBySlot(pid, account.CharacterSlot);
                             FileLogger.Info($"AutoLogin: requested slot {account.CharacterSlot} for PID {pid}");
                             selected = true;
                         }
                         else
-                            FileLogger.Warn($"AutoLogin: slot {account.CharacterSlot} exceeds char count {charSelect.ReadCharCount(pid)}");
+                            FileLogger.Warn($"AutoLogin: slot {account.CharacterSlot} exceeds char count {charCount}");
                     }
                     else if (!string.IsNullOrEmpty(account.CharacterName))
                     {
@@ -338,7 +340,7 @@ public class AutoLoginManager
                     if (selected)
                     {
                         bool acked = false;
-                        for (int ack = 0; ack < 10; ack++)
+                        for (int ack = 0; ack < 50; ack++)  // 50x200ms = 10s
                         {
                             if (charSelect.IsSelectionAcknowledged(pid))
                             { acked = true; break; }

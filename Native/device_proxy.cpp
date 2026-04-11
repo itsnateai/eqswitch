@@ -54,6 +54,7 @@ static bool g_subclassInstalled = false;
 
 static const UINT_PTR TIMER_MQ2_POLL = 0xEA01;
 static bool g_mq2TimerInstalled = false;
+static HWND g_timerHwnd = nullptr;  // track which HWND owns the timer
 
 // TIMERPROC callback — fires on game thread independent of WndProc subclass.
 // Subclass gets removed when focus-faking deactivates, but MQ2 poll must continue.
@@ -149,11 +150,22 @@ static DWORD WINAPI ActivateThread(LPVOID) {
         // Count ticks after HWND appears — delay subclass for EQ init
         if (hwnd && initDelay < 200) initDelay++; // ~3.2 seconds
 
-        // Install MQ2 poll timer on game thread (once, independent of subclass)
-        if (!g_mq2TimerInstalled && hwnd && initDelay >= 100) {
-            SetTimer(hwnd, TIMER_MQ2_POLL, 500, MQ2TimerProc);
-            g_mq2TimerInstalled = true;
-            DI8Log("mq2_timer: installed game-thread MQ2 poll (500ms, TIMERPROC)");
+        // Install MQ2 poll timer on game thread (independent of subclass).
+        // Track HWND — if EQ recreates its window, timer dies with old HWND.
+        if (hwnd && initDelay >= 100) {
+            if (g_mq2TimerInstalled && g_timerHwnd && g_timerHwnd != hwnd) {
+                KillTimer(g_timerHwnd, TIMER_MQ2_POLL);
+                g_mq2TimerInstalled = false;
+                DI8Log("mq2_timer: HWND changed 0x%X -> 0x%X, reinstalling",
+                       (unsigned)(uintptr_t)g_timerHwnd, (unsigned)(uintptr_t)hwnd);
+            }
+            if (!g_mq2TimerInstalled) {
+                SetTimer(hwnd, TIMER_MQ2_POLL, 500, MQ2TimerProc);
+                g_timerHwnd = hwnd;
+                g_mq2TimerInstalled = true;
+                DI8Log("mq2_timer: installed game-thread MQ2 poll (500ms, TIMERPROC) on hwnd=0x%X",
+                       (unsigned)(uintptr_t)hwnd);
+            }
         }
 
         // Layer 2: one-shot pattern scan after EQ's window is created
