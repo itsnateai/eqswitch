@@ -59,9 +59,10 @@ typedef void (__thiscall *FN_CXStrDtor)(void *thisPtr);
 static HMODULE        g_hMQ2            = nullptr;
 static volatile int  *g_pGameState      = nullptr;
 static void         **g_ppEverQuest     = nullptr;
-static void         **g_ppWndMgr        = nullptr;    // ppWndMgr: double-ptr (deref once)
-static uintptr_t     *g_pinstWndMgr     = nullptr;    // pinstCXWndManager: uintptr_t (value IS the ptr)
+static void         **g_ppWndMgr        = nullptr;    // ppWndMgr: triple-ptr (&ForeignPointer.m_ptr)
+static uintptr_t     *g_pinstWndMgr     = nullptr;    // pinstCXWndManager: *ptr IS CXWndManager*
 static uintptr_t     *g_pinstEQMainWnd  = nullptr;    // pinstCEQMainWnd: eqmain's window
+static uintptr_t     *g_pinstCharSelect = nullptr;    // pinstCCharacterSelect: direct char select wnd
 static HMODULE        g_hEQMain         = nullptr;    // eqmain.dll handle (login screen module)
 static FN_GetItemText   g_fnGetItemText   = nullptr;
 static FN_SetCurSel     g_fnSetCurSel     = nullptr;
@@ -94,6 +95,7 @@ static const uint32_t CSI_LEVEL_OFF  = 0x48;
 
 static bool     g_offsetValidated   = false;
 static uint32_t g_validatedOffset   = 0;
+static bool     g_uiFallbackLogged  = false;
 
 // ─── ReadListItemText helper ───────────────────────────────────
 
@@ -451,15 +453,34 @@ static bool IterateAllWindows(WndIterCallback callback, void *context) {
             return true;
     }
 
-    // 2. Try eqgame's CXWndManager (charselect and beyond)
-    void *pWndMgr1 = nullptr;
-    if (g_ppWndMgr) {
-        __try { pWndMgr1 = *g_ppWndMgr; }
-        __except (EXCEPTION_EXECUTE_HANDLER) { pWndMgr1 = nullptr; }
+    // 2. Try pinstCXWndManager (single deref → CXWndManager*)
+    //    This is the DIRECT eqgame.exe CXWndManager pointer — most reliable for charselect+ingame.
+    void *pWndMgrInst = nullptr;
+    if (g_pinstWndMgr) {
+        __try { pWndMgrInst = (void *)(uintptr_t)(*g_pinstWndMgr); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { pWndMgrInst = nullptr; }
     }
-    if (pWndMgr1) {
-        // Scan all offsets for eqgame's WndMgr
-        if (TryWndMgrPointer(pWndMgr1, "ppWndMgr", callback, context))
+    if (pWndMgrInst) {
+        if (TryWndMgrPointer(pWndMgrInst, "pinstCXWndManager", callback, context))
+            return true;
+    }
+
+    // 3. Try ppWndMgr (ForeignPointer — needs DOUBLE deref to reach CXWndManager*)
+    //    ppWndMgr points to a ForeignPointer<CXWndManager> whose first field is CXWndManager** m_ptr.
+    //    Deref 1: *ppWndMgr → m_ptr (CXWndManager**). Deref 2: *m_ptr → CXWndManager*.
+    void *pWndMgr2 = nullptr;
+    if (g_ppWndMgr) {
+        __try {
+            void **m_ptr = (void **)*g_ppWndMgr;  // first deref: get ForeignPointer.m_ptr
+            if (m_ptr && IsReadablePtr(m_ptr, sizeof(void *))) {
+                pWndMgr2 = *m_ptr;                 // second deref: get CXWndManager*
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { pWndMgr2 = nullptr; }
+    }
+    // Only try ppWndMgr if it gives a DIFFERENT pointer than pinstCXWndManager (avoid double scan)
+    if (pWndMgr2 && pWndMgr2 != pWndMgrInst) {
+        if (TryWndMgrPointer(pWndMgr2, "ppWndMgr(2x)", callback, context))
             return true;
     }
 
@@ -574,14 +595,16 @@ bool MQ2Bridge::Init() {
     // pinstCXWndManager is a uintptr_t — value IS the CXWndManager pointer (single deref)
     g_pinstWndMgr = (uintptr_t *)GetProcAddress(g_hMQ2, "pinstCXWndManager");
     g_pinstEQMainWnd = (uintptr_t *)GetProcAddress(g_hMQ2, "pinstCEQMainWnd");
+    // pinstCCharacterSelect: direct pointer to CCharacterSelect window (bypasses CXWndManager)
+    g_pinstCharSelect = (uintptr_t *)GetProcAddress(g_hMQ2, "pinstCCharacterSelect");
 
     // eqmain.dll is the login screen module — has its own CXWndManager
     g_hEQMain = GetModuleHandleA("eqmain.dll");
 
     DI8Log("mq2_bridge: gGameState=%p  ppEverQuest=%p  ppWndMgr=%p",
            g_pGameState, g_ppEverQuest, g_ppWndMgr);
-    DI8Log("mq2_bridge: pinstCXWndMgr=%p  pinstCEQMainWnd=%p  eqmain.dll=%p",
-           g_pinstWndMgr, g_pinstEQMainWnd, g_hEQMain);
+    DI8Log("mq2_bridge: pinstCXWndMgr=%p  pinstCEQMainWnd=%p  pinstCCharSelect=%p  eqmain.dll=%p",
+           g_pinstWndMgr, g_pinstEQMainWnd, g_pinstCharSelect, g_hEQMain);
 
     // Resolve mangled C++ exports (__thiscall methods)
     g_fnSetCurSel = (FN_SetCurSel)GetProcAddress(g_hMQ2,
@@ -620,10 +643,41 @@ bool MQ2Bridge::Init() {
            g_fnSetWindowText, g_fnGetWindowText, g_fnWndNotification);
     DI8Log("mq2_bridge: CXStr ctor=%p  dtor=%p", g_fnCXStrCtor, g_fnCXStrDtor);
 
+    // Diagnostic: log runtime values of the two WndMgr paths
+    if (g_pinstWndMgr) {
+        __try {
+            uintptr_t instVal = *g_pinstWndMgr;
+            DI8Log("mq2_bridge: pinstCXWndManager -> 0x%08X (single deref = CXWndManager*)", instVal);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            DI8Log("mq2_bridge: pinstCXWndManager -> SEH on deref");
+        }
+    }
+    if (g_ppWndMgr) {
+        __try {
+            void *deref1 = *g_ppWndMgr;
+            DI8Log("mq2_bridge: ppWndMgr -> deref1=%p (ForeignPointer.m_ptr / CXWndManager**)", deref1);
+            if (deref1 && IsReadablePtr(deref1, sizeof(void *))) {
+                void *deref2 = *(void **)deref1;
+                DI8Log("mq2_bridge: ppWndMgr -> deref2=%p (CXWndManager* after double deref)", deref2);
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            DI8Log("mq2_bridge: ppWndMgr -> SEH on deref");
+        }
+    }
+    if (g_pinstCharSelect) {
+        __try {
+            uintptr_t csVal = *g_pinstCharSelect;
+            DI8Log("mq2_bridge: pinstCCharacterSelect -> 0x%08X", csVal);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            DI8Log("mq2_bridge: pinstCCharacterSelect -> SEH (expected at login)");
+        }
+    }
+
     // Core requirement: gGameState and ppEverQuest for char reading;
     // ppWndMgr + GetChildItem for login UI manipulation
     bool ok = (g_pGameState != nullptr && g_ppEverQuest != nullptr);
-    bool loginReady = (g_ppWndMgr != nullptr && g_fnGetChildItem != nullptr &&
+    bool loginReady = ((g_ppWndMgr != nullptr || g_pinstWndMgr != nullptr) &&
+                       g_fnGetChildItem != nullptr &&
                        g_fnSetWindowText != nullptr && g_fnWndNotification != nullptr &&
                        g_fnCXStrCtor != nullptr && g_fnCXStrDtor != nullptr);
 
@@ -663,6 +717,29 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
         return nullptr;
     }
 
+    // Fast path: try pinstCCharacterSelect directly for charselect widgets.
+    // This bypasses CXWndManager iteration entirely — most reliable path.
+    if (g_pinstCharSelect) {
+        __try {
+            void *pCharSelWnd = (void *)(uintptr_t)(*g_pinstCharSelect);
+            if (pCharSelWnd && IsReadablePtr(pCharSelWnd, sizeof(void *))) {
+                void *vtable = *(void **)pCharSelWnd;
+                if (vtable && IsReadablePtr(vtable, sizeof(void *))) {
+                    void *child = g_fnGetChildItem(pCharSelWnd, name);
+                    if (child) {
+                        DI8Log("mq2_bridge: FindWindowByName('%s') — found via pinstCCharacterSelect at %p",
+                               name, child);
+                        return child;
+                    }
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            // pinstCCharacterSelect not valid at this game state, fall through
+        }
+    }
+
+    // Standard path: iterate all CXWndManager windows
     FindByNameCtx ctx = { name, nullptr };
     bool iterated = IterateAllWindows(FindByNameCallback, &ctx);
 
@@ -895,71 +972,103 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         shm->charCount = 0;
         shm->selectedIndex = -1;
         g_offsetValidated = false;
+        g_uiFallbackLogged = false;
         return;
     }
 
     // At character select -- read character data
+    // Strategy: try charSelectPlayerArray first (struct offsets), then fall back to
+    // UI-based reading via Character_List CListWnd (GetItemText).
+    bool charDataRead = false;
+
+    // Path A: CEverQuest::charSelectPlayerArray (struct-based, gives level+class)
     void *pEverQuest = nullptr;
     __try { pEverQuest = *g_ppEverQuest; }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        shm->charCount = 0;
-        shm->selectedIndex = -1;
-        return;
-    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { pEverQuest = nullptr; }
 
-    if (!pEverQuest) {
-        shm->charCount = 0;
-        shm->selectedIndex = -1;
-        return;
-    }
+    if (pEverQuest) {
+        const uint8_t *pEQ = (const uint8_t *)pEverQuest;
+        if (ValidateCharArrayOffset(pEQ)) {
+            __try {
+                const ArrayClassHeader *arr = (const ArrayClassHeader *)(pEQ + g_validatedOffset);
+                int count = arr->Count;
+                const uint8_t *data = arr->Data;
 
-    const uint8_t *pEQ = (const uint8_t *)pEverQuest;
-
-    if (!ValidateCharArrayOffset(pEQ)) {
-        shm->charCount = 0;
-        shm->selectedIndex = -1;
-        return;
-    }
-
-    __try {
-        const ArrayClassHeader *arr = (const ArrayClassHeader *)(pEQ + g_validatedOffset);
-        int count = arr->Count;
-        const uint8_t *data = arr->Data;
-
-        if (count < 0 || count > CHARSEL_MAX_CHARS || !data) {
-            shm->charCount = 0;
-            shm->selectedIndex = -1;
-            return;
-        }
-
-        for (int i = 0; i < count; i++) {
-            const uint8_t *entry = data + (i * CSI_SIZE);
-            const char *name = (const char *)(entry + CSI_NAME_OFF);
-            int nameLen = 0;
-            while (nameLen < CHARSEL_NAME_LEN - 1 && name[nameLen] != '\0' &&
-                   name[nameLen] >= 0x20 && name[nameLen] <= 0x7E) {
-                nameLen++;
+                if (count >= 1 && count <= CHARSEL_MAX_CHARS && data) {
+                    for (int i = 0; i < count; i++) {
+                        const uint8_t *entry = data + (i * CSI_SIZE);
+                        const char *name = (const char *)(entry + CSI_NAME_OFF);
+                        int nameLen = 0;
+                        while (nameLen < CHARSEL_NAME_LEN - 1 && name[nameLen] != '\0' &&
+                               name[nameLen] >= 0x20 && name[nameLen] <= 0x7E) {
+                            nameLen++;
+                        }
+                        memcpy((void *)shm->names[i], name, nameLen);
+                        ((char *)shm->names[i])[nameLen] = '\0';
+                        shm->levels[i] = *(const int32_t *)(entry + CSI_LEVEL_OFF);
+                        shm->classes[i] = *(const int32_t *)(entry + CSI_CLASS_OFF);
+                    }
+                    MemoryBarrier();
+                    shm->charCount = count;
+                    for (int i = count; i < CHARSEL_MAX_CHARS; i++) {
+                        ((char *)shm->names[i])[0] = '\0';
+                        shm->levels[i] = 0;
+                        shm->classes[i] = 0;
+                    }
+                    charDataRead = true;
+                }
             }
-            memcpy((void *)shm->names[i], name, nameLen);
-            ((char *)shm->names[i])[nameLen] = '\0';
-            shm->levels[i] = *(const int32_t *)(entry + CSI_LEVEL_OFF);
-            shm->classes[i] = *(const int32_t *)(entry + CSI_CLASS_OFF);
-        }
-
-        MemoryBarrier();
-        shm->charCount = count;
-
-        for (int i = count; i < CHARSEL_MAX_CHARS; i++) {
-            ((char *)shm->names[i])[0] = '\0';
-            shm->levels[i] = 0;
-            shm->classes[i] = 0;
+            __except (EXCEPTION_EXECUTE_HANDLER) {
+                DI8Log("mq2_bridge: SEH reading charSelectPlayerArray");
+            }
         }
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        DI8Log("mq2_bridge: SEH reading charSelectPlayerArray");
+
+    // Path B: UI-based fallback — read from Character_List CListWnd via GetItemText.
+    // MQ2AutoLogin reads column 2 for character name. This works even when
+    // charSelectPlayerArray offset is wrong.
+    if (!charDataRead && g_fnGetItemText) {
+        void *pCharList = FindWindowByName("Character_List");
+        if (pCharList) {
+            if (!g_uiFallbackLogged) {
+                DI8Log("mq2_bridge: charSelectPlayerArray unavailable — using UI fallback (CListWnd)");
+                g_uiFallbackLogged = true;
+            }
+
+            int count = 0;
+            for (int i = 0; i < CHARSEL_MAX_CHARS; i++) {
+                char nameBuf[CHARSEL_NAME_LEN] = {};
+                if (ReadListItemText(pCharList, i, 2, nameBuf, CHARSEL_NAME_LEN) && nameBuf[0]) {
+                    memcpy((void *)shm->names[i], nameBuf, CHARSEL_NAME_LEN);
+                    // Level from column 1, class from column 3 (best-effort)
+                    char lvlBuf[16] = {};
+                    if (ReadListItemText(pCharList, i, 1, lvlBuf, 16))
+                        shm->levels[i] = atoi(lvlBuf);
+                    else
+                        shm->levels[i] = 0;
+                    shm->classes[i] = 0; // class ID not reliably available from UI text
+                    count++;
+                } else {
+                    break;
+                }
+            }
+
+            if (count > 0) {
+                MemoryBarrier();
+                shm->charCount = count;
+                for (int i = count; i < CHARSEL_MAX_CHARS; i++) {
+                    ((char *)shm->names[i])[0] = '\0';
+                    shm->levels[i] = 0;
+                    shm->classes[i] = 0;
+                }
+                charDataRead = true;
+            }
+        }
+    }
+
+    if (!charDataRead) {
         shm->charCount = 0;
         shm->selectedIndex = -1;
-        return;
     }
 
     // Handle selection request from C#
@@ -999,6 +1108,7 @@ void MQ2Bridge::Shutdown() {
     g_ppEverQuest      = nullptr;
     g_ppWndMgr         = nullptr;
     g_pinstWndMgr      = nullptr;
+    g_pinstCharSelect  = nullptr;
     g_pinstEQMainWnd   = nullptr;
     g_hEQMain          = nullptr;
     g_pEQMainWndMgr    = nullptr;
