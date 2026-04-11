@@ -546,7 +546,7 @@ public class SettingsForm : Form
         const int L = 10, I = 150, I2 = 310, R = 28;
 
         // ─── Window Switching card ───────────────────────────────
-        var cardSwitch = DarkTheme.MakeCard(page, "⚔", "Window Switching", DarkTheme.CardGreen, 10, y, 480, 100);
+        var cardSwitch = DarkTheme.MakeCard(page, "⚔", "Window Switching", DarkTheme.CardGreen, 10, y, 480, 90);
         int cy = 32;
 
         _lblSwitchKeyHotkey = DarkTheme.AddCardLabel(cardSwitch, "Switch Key (EQ-only):", L, cy);
@@ -569,7 +569,7 @@ public class SettingsForm : Form
         _txtGlobalSwitchKey.TextChanged += (_, _) => CheckDuplicateSwitchKeys();
         cy += R + 2;
 
-        y += 108;
+        y += 98;
 
         // ─── Actions card ────────────────────────────────────────
         var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 110);
@@ -616,7 +616,8 @@ public class SettingsForm : Form
         y += 118;
 
         // ─── Auto-Login Hotkeys ─────────────────────────────────
-        var hkCard = DarkTheme.MakeCard(page, "\u2328", "Auto-Login Hotkeys", DarkTheme.CardGreen, 10, y, 480, 112);
+        var hkCard = DarkTheme.MakeCard(page, "\u2328", "Auto-Login Hotkeys", DarkTheme.CardGreen, 10, y, 480, 98);
+        DarkTheme.AddCardHint(hkCard, "Press combo to set. Backspace/Delete to clear.", 180, 6);
 
         // Accounts row — 4 columns fit within 480px card
         const int hkL = 65, hkW = 78, hkG = 18, hkS = 100;  // label-start, box-width, label-to-box gap, column-stride
@@ -645,9 +646,8 @@ public class SettingsForm : Form
         DarkTheme.AddCardLabel(hkCard, "4:", hkL + hkS * 3, 62);
         _txtTeamLogin4Hotkey = MakeHotkeyBox(hkCard, hkL + hkS * 3 + hkG, 60, hkW);
 
-        // Hint + warning (same line — hint left, conflict warning right)
-        DarkTheme.AddCardHint(hkCard, "Press combo to set. Backspace/Delete to clear.", 10, 88);
-        _lblAutoLoginHotkeyWarn = DarkTheme.AddCardHint(hkCard, "", 240, 88);
+        // Conflict warning below Teams row
+        _lblAutoLoginHotkeyWarn = DarkTheme.AddCardHint(hkCard, "", 10, 82);
         _lblAutoLoginHotkeyWarn.ForeColor = DarkTheme.FgWarn;
 
         _txtAutoLogin1Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
@@ -1415,26 +1415,30 @@ public class SettingsForm : Form
 
         // ─── Autologin Teams ─────────────────────────────────────────
         y += 224;
-        var teamsCard = DarkTheme.MakeCard(page, "\uD83D\uDC65", "Autologin Teams", DarkTheme.CardGold, 10, y, 480, 78);
+        var teamsCard = DarkTheme.MakeCard(page, "\uD83D\uDC65", "Autologin Teams", DarkTheme.CardGold, 10, y, 480, 64);
         var btnTeams = DarkTheme.AddCardButton(teamsCard, "Configure Teams...", 10, 32, 120);
         btnTeams.Click += (_, _) => ShowTeamsDialog();
         _lblTeamSummary = DarkTheme.AddCardHint(teamsCard, BuildTeamSummary(), 140, 32);
         _lblTeamSummary.Size = new Size(330, 28);
 
-        // ─── Autologin Preferences ──────────────────────────────────
-        y += 86;
-        var prefsCard = DarkTheme.MakeCard(page, "\u2699", "Autologin Preferences", DarkTheme.CardCyan, 10, y, 480, 74);
-        _chkAutoEnterWorld = DarkTheme.AddCheckBox(prefsCard, "Auto Enter World (experimental)", 10, 30);
+        // ─── Autologin options (flat row, no card title) ──────────
+        y += 72;
+        _chkAutoEnterWorld = DarkTheme.AddCheckBox(page, "Auto Enter World (experimental)", 20, y);
         _chkAutoEnterWorld.Checked = _config.AutoEnterWorld;
-        DarkTheme.AddCardHint(prefsCard, "Enters world as last character. Uncheck to stop at char select.", 10, 50);
 
-        var btnBackup = DarkTheme.AddCardButton(prefsCard, "\uD83D\uDCE4 Backup", 310, 30, 75);
+        var btnBackup = DarkTheme.MakeButton("\uD83D\uDCE4 Backup", DarkTheme.BgInput, 320, y - 2);
+        btnBackup.Size = new Size(75, 24);
         btnBackup.Click += (_, _) => ExportAccounts();
+        page.Controls.Add(btnBackup);
 
-        var btnImport = DarkTheme.AddCardButton(prefsCard, "\uD83D\uDCE5 Import", 390, 30, 75);
+        var btnImport = DarkTheme.MakeButton("\uD83D\uDCE5 Import", DarkTheme.BgInput, 400, y - 2);
+        btnImport.Size = new Size(75, 24);
         btnImport.Click += (_, _) => ImportAccounts();
+        page.Controls.Add(btnImport);
 
-        DarkTheme.AddCardHint(prefsCard, "DPAPI \u2014 same Windows user only", 310, 56);
+        y += 22;
+        DarkTheme.AddHint(page, "Enters world as last character. Uncheck to stop at char select.", 20, y);
+        DarkTheme.AddHint(page, "DPAPI \u2014 same Windows user only", 320, y);
 
         return page;
     }
