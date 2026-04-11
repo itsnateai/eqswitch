@@ -1614,7 +1614,8 @@ public class SettingsForm : Form
         {
             var names = new[] { u1, u2 }
                 .Where(u => !string.IsNullOrEmpty(u))
-                .Select(u => _pendingAccounts.FirstOrDefault(a => a.Username == u))
+                .Select(u => _pendingAccounts.FirstOrDefault(a => a.CharacterName == u)
+                          ?? _pendingAccounts.FirstOrDefault(a => a.Username == u))
                 .Where(a => a != null)
                 .Select(a => string.IsNullOrEmpty(a!.CharacterName) ? a.Username : a.CharacterName)
                 .ToList();
