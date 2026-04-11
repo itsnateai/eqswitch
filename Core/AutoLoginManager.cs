@@ -285,7 +285,9 @@ public class AutoLoginManager
             if (wantSelection)
             {
                 bool charListReady = false;
-                for (int wait = 0; wait < 10; wait++)
+                // Wait up to 30s for char list — Dalaya's CXWndManager populates
+                // ~25s after charselect screen appears (pinstCCharacterSelect timing)
+                for (int wait = 0; wait < 60; wait++)
                 {
                     if (charSelect.IsMQ2Available(pid) && charSelect.ReadCharCount(pid) > 0)
                     { charListReady = true; break; }

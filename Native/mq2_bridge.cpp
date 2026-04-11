@@ -1053,25 +1053,56 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 g_uiFallbackLogged = true;
             }
 
+            // One-time: dump first row's columns 0-5 to discover Dalaya's layout
+            static bool g_colDumped = false;
+            if (!g_colDumped) {
+                g_colDumped = true;
+                for (int col = 0; col < 6; col++) {
+                    char probe[128] = {};
+                    ReadListItemText(pCharList, 0, col, probe, 128);
+                    DI8Log("mq2_bridge: CListWnd row=0 col=%d -> '%s'", col, probe);
+                }
+            }
+
+            // Try columns 0, 1, 2 for character name (varies by EQ build)
+            int nameCol = -1;
+            for (int tryCol = 0; tryCol <= 2 && nameCol < 0; tryCol++) {
+                char test[CHARSEL_NAME_LEN] = {};
+                if (ReadListItemText(pCharList, 0, tryCol, test, CHARSEL_NAME_LEN) && test[0]) {
+                    // Looks like a name if it's alphabetic and > 2 chars
+                    bool looksLikeName = (test[0] >= 'A' && test[0] <= 'Z') && strlen(test) > 2;
+                    if (looksLikeName) {
+                        nameCol = tryCol;
+                        DI8Log("mq2_bridge: UI fallback: name column = %d (first name: '%s')", tryCol, test);
+                    }
+                }
+            }
+
             int count = 0;
-            for (int i = 0; i < CHARSEL_MAX_CHARS; i++) {
-                char nameBuf[CHARSEL_NAME_LEN] = {};
-                if (ReadListItemText(pCharList, i, 2, nameBuf, CHARSEL_NAME_LEN) && nameBuf[0]) {
-                    memcpy((void *)shm->names[i], nameBuf, CHARSEL_NAME_LEN);
-                    // Level from column 1, class from column 3 (best-effort)
-                    char lvlBuf[16] = {};
-                    if (ReadListItemText(pCharList, i, 1, lvlBuf, 16))
-                        shm->levels[i] = atoi(lvlBuf);
-                    else
-                        shm->levels[i] = 0;
-                    shm->classes[i] = 0; // class ID not reliably available from UI text
-                    count++;
-                } else {
-                    break;
+            if (nameCol >= 0) {
+                for (int i = 0; i < CHARSEL_MAX_CHARS; i++) {
+                    char nameBuf[CHARSEL_NAME_LEN] = {};
+                    if (ReadListItemText(pCharList, i, nameCol, nameBuf, CHARSEL_NAME_LEN) && nameBuf[0]) {
+                        memcpy((void *)shm->names[i], nameBuf, CHARSEL_NAME_LEN);
+                        // Try adjacent columns for level
+                        char lvlBuf[16] = {};
+                        for (int lc = 0; lc < 6; lc++) {
+                            if (lc == nameCol) continue;
+                            if (ReadListItemText(pCharList, i, lc, lvlBuf, 16) && lvlBuf[0] >= '0' && lvlBuf[0] <= '9') {
+                                shm->levels[i] = atoi(lvlBuf);
+                                break;
+                            }
+                        }
+                        shm->classes[i] = 0;
+                        count++;
+                    } else {
+                        break;
+                    }
                 }
             }
 
             if (count > 0) {
+                DI8Log("mq2_bridge: UI fallback: read %d characters from CListWnd", count);
                 MemoryBarrier();
                 shm->charCount = count;
                 for (int i = count; i < CHARSEL_MAX_CHARS; i++) {
