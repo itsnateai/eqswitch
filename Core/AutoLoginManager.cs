@@ -192,6 +192,11 @@ public class AutoLoginManager
 
     private void RunLoginSequence(int pid, LoginAccount account, string password, bool? teamAutoEnter = null)
     {
+        // Snapshot config values — RunLoginSequence runs on a background thread
+        // while ReloadConfig can mutate _config on the UI thread.
+        int loginScreenDelayMs = _config.LoginScreenDelayMs;
+        string eqPath = _config.EQPath;
+
         // Parallel-safe background login via brief activation windows.
         // Focus-faking (WndProc subclass + IAT hooks) is ONLY active during
         // keystroke bursts (~2s each). Between bursts it's OFF so multiple
@@ -216,7 +221,7 @@ public class AutoLoginManager
 
             // ── Wait for login screen ──
             Report("Waiting for login screen...");
-            Thread.Sleep(_config.LoginScreenDelayMs);
+            Thread.Sleep(loginScreenDelayMs);
 
             // ══════════════════════════════════════════════════════════
             // BURST 1: Type credentials + submit (~3 seconds active)
