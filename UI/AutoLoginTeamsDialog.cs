@@ -81,7 +81,8 @@ internal sealed class AutoLoginTeamsDialog : Form
         btnOK.Width = 100;
         btnOK.Click += (_, _) =>
         {
-            // Block same account in both slots of the same team
+            // Block same EQ username in both slots of the same team —
+            // two clients logging into the same account simultaneously crashes both
             var teams = new[] {
                 (_cboTeam1A, _cboTeam1B, "Team 1"),
                 (_cboTeam2A, _cboTeam2B, "Team 2"),
@@ -90,9 +91,12 @@ internal sealed class AutoLoginTeamsDialog : Form
             };
             foreach (var (a, b, name) in teams)
             {
-                if (a.SelectedIndex > 0 && a.SelectedIndex == b.SelectedIndex)
+                if (a.SelectedIndex <= 0 || b.SelectedIndex <= 0) continue;
+                var usernameA = _accounts[a.SelectedIndex - 1].Username;
+                var usernameB = _accounts[b.SelectedIndex - 1].Username;
+                if (usernameA == usernameB)
                 {
-                    lblWarn.Text = $"\u26a0 {name}: same account in both slots";
+                    lblWarn.Text = $"\u26a0 {name}: both slots use login '{usernameA}' — EQ will kick one";
                     lblWarn.Visible = true;
                     return;
                 }
