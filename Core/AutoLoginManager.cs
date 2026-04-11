@@ -291,6 +291,20 @@ public class AutoLoginManager
                 {
                     if (charSelect.IsMQ2Available(pid) && charSelect.ReadCharCount(pid) > 0)
                     { charListReady = true; break; }
+
+                    // Abort if user already entered the game (manual or other)
+                    hwnd = RefreshHandle(pid, hwnd);
+                    if (hwnd != IntPtr.Zero)
+                    {
+                        var tb = new StringBuilder(256);
+                        NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
+                        if (tb.ToString().Contains(" - "))
+                        {
+                            FileLogger.Info("AutoLogin: already in-game during charlist wait, skipping selection");
+                            break;
+                        }
+                    }
+
                     Thread.Sleep(500);
                 }
 
@@ -347,31 +361,44 @@ public class AutoLoginManager
             bool entered = false;
             for (int attempt = 0; attempt < 5; attempt++)
             {
+                // Check BEFORE pressing — avoid sending Enter into an already-loaded game
+                hwnd = RefreshHandle(pid, hwnd);
+                if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window"); return; }
+                {
+                    var tb = new StringBuilder(256);
+                    NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
+                    if (tb.ToString().Contains(" - "))
+                    {
+                        entered = true;
+                        FileLogger.Info($"AutoLogin: already in-game before attempt {attempt + 1} (title: {tb})");
+                        break;
+                    }
+                }
+
                 writer.Activate(pid);
                 Thread.Sleep(500);
                 PulseKey3D(writer, pid, hwnd, 0x0D);
                 Thread.Sleep(500);
                 writer.Deactivate(pid);
 
-                // Wait for world load (no focus-faking)
-                Thread.Sleep(3000);
-
-                hwnd = RefreshHandle(pid, hwnd);
-                if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window"); return; }
-
-                int titleLen = NativeMethods.GetWindowTextLength(hwnd);
-                var titleSb = new StringBuilder(titleLen + 1);
-                NativeMethods.GetWindowText(hwnd, titleSb, titleSb.Capacity);
-                string title = titleSb.ToString();
-
-                if (title.Contains(" - "))
+                // Wait for world load — poll title every second instead of fixed 3s
+                for (int loadWait = 0; loadWait < 6; loadWait++)
                 {
-                    entered = true;
-                    FileLogger.Info($"AutoLogin: enter-world confirmed (title: {title})");
-                    break;
+                    Thread.Sleep(1000);
+                    hwnd = RefreshHandle(pid, hwnd);
+                    if (hwnd == IntPtr.Zero) break;
+                    var tb = new StringBuilder(256);
+                    NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
+                    if (tb.ToString().Contains(" - "))
+                    {
+                        entered = true;
+                        FileLogger.Info($"AutoLogin: enter-world confirmed after {loadWait + 1}s (title: {tb})");
+                        break;
+                    }
                 }
+                if (entered) break;
 
-                FileLogger.Info($"AutoLogin: enter-world attempt {attempt + 1} — title still '{title}', retrying...");
+                FileLogger.Info($"AutoLogin: enter-world attempt {attempt + 1} — not in-game yet, retrying...");
             }
 
             if (entered)
