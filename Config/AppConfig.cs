@@ -122,8 +122,10 @@ public class AppConfig
     /// Clamp all numeric values to safe ranges. Call after deserialization
     /// or before applying settings from the GUI.
     /// </summary>
-    public void Validate()
+    /// <summary>Clamp values and run one-time migrations. Returns true if config was mutated.</summary>
+    public bool Validate()
     {
+        bool mutated = false;
         if (string.IsNullOrWhiteSpace(EQProcessName)) EQProcessName = "eqgame";
         // Guard against null nested objects from corrupt/hand-edited JSON
         Layout ??= new();
@@ -196,7 +198,9 @@ public class AppConfig
             foreach (var a in Accounts)
                 a.AutoEnterWorld = true;
             AutoEnterWorld = false; // consumed — prevent re-firing every session
+            mutated = true;
         }
+        return mutated;
     }
 }
 
