@@ -52,7 +52,16 @@ HWND GetEqHwnd() { return g_eqHwnd; }
 static WNDPROC g_origWndProc = nullptr;
 static bool g_subclassInstalled = false;
 
+static const UINT_PTR TIMER_MQ2_POLL = 0xEA01;
+
 static LRESULT CALLBACK ActivateWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // MQ2 bridge poll on the GAME THREAD via WM_TIMER — thread-safe access
+    // to CXWndManager, CListWnd, GetChildItem, SetCurSel, WndNotification.
+    if (msg == WM_TIMER && wParam == TIMER_MQ2_POLL) {
+        MQ2BridgePollTick();
+        return 0;
+    }
+
     if (KeyShm::IsActive()) {
         // Block all focus-loss messages — EQ must believe it's always foreground
         if (msg == WM_ACTIVATEAPP) {
@@ -89,12 +98,14 @@ static bool EnsureSubclassInstalled(HWND hwnd) {
     // EQ may have re-set its WndProc — capture the new original
     g_origWndProc = current;
     SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)ActivateWndProc);
+    // Install MQ2 bridge timer on the game thread (500ms interval)
+    SetTimer(hwnd, TIMER_MQ2_POLL, 500, nullptr);
     if (!g_subclassInstalled) {
-        DI8Log("wndproc_hook: installed subclass (orig=0x%08X)",
+        DI8Log("wndproc_hook: installed subclass + MQ2 timer (orig=0x%08X)",
                (unsigned)(uintptr_t)current);
         g_subclassInstalled = true;
     } else {
-        DI8Log("wndproc_hook: RE-installed subclass (EQ overwrote, new orig=0x%08X)",
+        DI8Log("wndproc_hook: RE-installed subclass + MQ2 timer (EQ overwrote, new orig=0x%08X)",
                (unsigned)(uintptr_t)current);
     }
     return true; // freshly installed
@@ -103,10 +114,11 @@ static bool EnsureSubclassInstalled(HWND hwnd) {
 // Remove the subclass when we no longer need it
 static void RemoveSubclass(HWND hwnd) {
     if (!g_subclassInstalled || !g_origWndProc) return;
+    KillTimer(hwnd, TIMER_MQ2_POLL);
     WNDPROC current = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
     if (current == ActivateWndProc) {
         SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)g_origWndProc);
-        DI8Log("wndproc_hook: removed subclass");
+        DI8Log("wndproc_hook: removed subclass + MQ2 timer");
     }
     g_subclassInstalled = false;
 }
@@ -126,8 +138,8 @@ static DWORD WINAPI ActivateThread(LPVOID) {
     while (!g_shutdown) {
         Sleep(16); // ~60Hz
 
-        // MQ2 bridge poll (throttled internally to ~500ms)
-        MQ2BridgePollTick();
+        // MQ2 bridge poll moved to WM_TIMER on game thread (ActivateWndProc)
+        // — __thiscall methods on game objects must run on the UI thread.
 
         bool active = KeyShm::IsActive();
         HWND hwnd = g_eqHwnd;

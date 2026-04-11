@@ -381,8 +381,8 @@ public class AutoLoginManager
                 Thread.Sleep(500);
                 writer.Deactivate(pid);
 
-                // Wait for world load — poll title every second instead of fixed 3s
-                for (int loadWait = 0; loadWait < 6; loadWait++)
+                // Wait for world load — poll title every second (Dalaya loads can take 5-90s)
+                for (int loadWait = 0; loadWait < 20; loadWait++)
                 {
                     Thread.Sleep(1000);
                     hwnd = RefreshHandle(pid, hwnd);
