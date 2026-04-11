@@ -453,11 +453,17 @@ static bool IterateAllWindows(WndIterCallback callback, void *context) {
             return true;
     }
 
-    // 2. Try pinstCXWndManager (single deref → CXWndManager*)
-    //    This is the DIRECT eqgame.exe CXWndManager pointer — most reliable for charselect+ingame.
+    // 2. Try pinstCXWndManager (DOUBLE deref → CXWndManager*)
+    //    pinstCXWndManager is a uintptr_t whose value is the ADDRESS where CXWndManager* is stored.
+    //    Deref 1: *g_pinstWndMgr = storage address. Deref 2: *storage = CXWndManager*.
     void *pWndMgrInst = nullptr;
     if (g_pinstWndMgr) {
-        __try { pWndMgrInst = (void *)(uintptr_t)(*g_pinstWndMgr); }
+        __try {
+            uintptr_t storageAddr = *g_pinstWndMgr;  // deref 1: get storage address
+            if (storageAddr && IsReadablePtr((void *)storageAddr, sizeof(void *))) {
+                pWndMgrInst = *(void **)storageAddr;  // deref 2: get CXWndManager*
+            }
+        }
         __except (EXCEPTION_EXECUTE_HANDLER) { pWndMgrInst = nullptr; }
     }
     if (pWndMgrInst) {
@@ -643,31 +649,39 @@ bool MQ2Bridge::Init() {
            g_fnSetWindowText, g_fnGetWindowText, g_fnWndNotification);
     DI8Log("mq2_bridge: CXStr ctor=%p  dtor=%p", g_fnCXStrCtor, g_fnCXStrDtor);
 
-    // Diagnostic: log runtime values of the two WndMgr paths
+    // Diagnostic: log runtime values — ALL pinst* need DOUBLE deref
+    // pinst = "pointer to instance" — *pinst = storage addr, **pinst = actual object
     if (g_pinstWndMgr) {
         __try {
-            uintptr_t instVal = *g_pinstWndMgr;
-            DI8Log("mq2_bridge: pinstCXWndManager -> 0x%08X (single deref = CXWndManager*)", instVal);
+            uintptr_t storageAddr = *g_pinstWndMgr;
+            void *actual = nullptr;
+            if (storageAddr && IsReadablePtr((void *)storageAddr, sizeof(void *)))
+                actual = *(void **)storageAddr;
+            DI8Log("mq2_bridge: pinstCXWndManager -> storage=0x%08X, CXWndManager*=%p",
+                   storageAddr, actual);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             DI8Log("mq2_bridge: pinstCXWndManager -> SEH on deref");
         }
     }
     if (g_ppWndMgr) {
         __try {
-            void *deref1 = *g_ppWndMgr;
-            DI8Log("mq2_bridge: ppWndMgr -> deref1=%p (ForeignPointer.m_ptr / CXWndManager**)", deref1);
-            if (deref1 && IsReadablePtr(deref1, sizeof(void *))) {
-                void *deref2 = *(void **)deref1;
-                DI8Log("mq2_bridge: ppWndMgr -> deref2=%p (CXWndManager* after double deref)", deref2);
-            }
+            void *m_ptr = *g_ppWndMgr;
+            void *actual = nullptr;
+            if (m_ptr && IsReadablePtr(m_ptr, sizeof(void *)))
+                actual = *(void **)m_ptr;
+            DI8Log("mq2_bridge: ppWndMgr -> m_ptr=%p, CXWndManager*=%p", m_ptr, actual);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             DI8Log("mq2_bridge: ppWndMgr -> SEH on deref");
         }
     }
     if (g_pinstCharSelect) {
         __try {
-            uintptr_t csVal = *g_pinstCharSelect;
-            DI8Log("mq2_bridge: pinstCCharacterSelect -> 0x%08X", csVal);
+            uintptr_t storageAddr = *g_pinstCharSelect;
+            void *actual = nullptr;
+            if (storageAddr && IsReadablePtr((void *)storageAddr, sizeof(void *)))
+                actual = *(void **)storageAddr;
+            DI8Log("mq2_bridge: pinstCCharacterSelect -> storage=0x%08X, CCharacterSelect*=%p",
+                   storageAddr, actual);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             DI8Log("mq2_bridge: pinstCCharacterSelect -> SEH (expected at login)");
         }
@@ -719,17 +733,21 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
 
     // Fast path: try pinstCCharacterSelect directly for charselect widgets.
     // This bypasses CXWndManager iteration entirely — most reliable path.
+    // pinstCCharacterSelect is a double-deref: *pinst = storage addr, *storage = CCharacterSelect*.
     if (g_pinstCharSelect) {
         __try {
-            void *pCharSelWnd = (void *)(uintptr_t)(*g_pinstCharSelect);
-            if (pCharSelWnd && IsReadablePtr(pCharSelWnd, sizeof(void *))) {
-                void *vtable = *(void **)pCharSelWnd;
-                if (vtable && IsReadablePtr(vtable, sizeof(void *))) {
-                    void *child = g_fnGetChildItem(pCharSelWnd, name);
-                    if (child) {
-                        DI8Log("mq2_bridge: FindWindowByName('%s') — found via pinstCCharacterSelect at %p",
-                               name, child);
-                        return child;
+            uintptr_t storageAddr = *g_pinstCharSelect;  // deref 1: storage address
+            if (storageAddr && IsReadablePtr((void *)storageAddr, sizeof(void *))) {
+                void *pCharSelWnd = *(void **)storageAddr;  // deref 2: actual window
+                if (pCharSelWnd && IsReadablePtr(pCharSelWnd, sizeof(void *))) {
+                    void *vtable = *(void **)pCharSelWnd;
+                    if (vtable && IsReadablePtr(vtable, sizeof(void *))) {
+                        void *child = g_fnGetChildItem(pCharSelWnd, name);
+                        if (child) {
+                            DI8Log("mq2_bridge: FindWindowByName('%s') — found via pinstCCharacterSelect at %p",
+                                   name, child);
+                            return child;
+                        }
                     }
                 }
             }
