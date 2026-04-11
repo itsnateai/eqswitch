@@ -337,39 +337,22 @@ public class AutoLoginManager
                     FileLogger.Warn($"AutoLogin: MQ2 bridge not ready, entering world with default");
             }
 
-            // ── Enter World via in-process button click (no focus-faking!) ──
+            // ── Enter World via PulseKey3D (keyboard Enter) ──────────
+            // In-process CLW_EnterWorldButton click doesn't work on Dalaya —
+            // eqgame's CXWndManager is empty at charselect (widget not findable).
+            // PulseKey3D with brief activation windows is the proven approach.
             Report("Entering world...");
             bool entered = false;
             for (int attempt = 0; attempt < 5; attempt++)
             {
-                charSelect.RequestEnterWorld(pid);
+                writer.Activate(pid);
+                Thread.Sleep(500);
+                PulseKey3D(writer, pid, hwnd, 0x0D);
+                Thread.Sleep(500);
+                writer.Deactivate(pid);
 
-                // Wait for DLL to ack (up to 3s at 500ms poll rate)
-                bool acked = false;
-                for (int w = 0; w < 6; w++)
-                {
-                    if (charSelect.IsEnterWorldAcknowledged(pid))
-                    { acked = true; break; }
-                    Thread.Sleep(500);
-                }
-
-                if (!acked)
-                {
-                    FileLogger.Warn($"AutoLogin: Enter World not acked (attempt {attempt + 1})");
-                    Thread.Sleep(1000);
-                    continue;
-                }
-
-                int result = charSelect.ReadEnterWorldResult(pid);
-                if (result <= 0)
-                {
-                    FileLogger.Warn($"AutoLogin: Enter World {(result == 0 ? "result pending (race)" : "button not found")} (attempt {attempt + 1})");
-                    Thread.Sleep(2000);
-                    continue;
-                }
-
-                // Wait for world load
-                Thread.Sleep(4000);
+                // Wait for world load (no focus-faking)
+                Thread.Sleep(3000);
 
                 hwnd = RefreshHandle(pid, hwnd);
                 if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window"); return; }
