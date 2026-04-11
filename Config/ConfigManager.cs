@@ -42,10 +42,10 @@ public static class ConfigManager
             var (migratedJson, didMigrate) = ConfigVersionMigrator.MigrateIfNeeded(json);
 
             var config = JsonSerializer.Deserialize<AppConfig>(migratedJson, JsonOptions) ?? new AppConfig();
-            config.Validate();
+            bool validateMutated = config.Validate();
 
             // Persist migrated config so migration doesn't re-run
-            if (didMigrate)
+            if (didMigrate || validateMutated)
             {
                 _pendingSave = config;
                 FlushSave();
