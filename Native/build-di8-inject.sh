@@ -35,7 +35,7 @@ MSYS_NO_PATHCONV=1 "$CL" /nologo /LD /O2 /W3 /DNDEBUG /EHsc \
     "/I$WINSDK/Include/$SDKVER/ucrt" \
     "/I$WINSDK/Include/$SDKVER/um" \
     "/I$WINSDK/Include/$SDKVER/shared" \
-    eqswitch-di8.cpp di8_proxy.cpp device_proxy.cpp net_debug.cpp mq2_bridge.cpp login_state_machine.cpp \
+    eqswitch-di8.cpp di8_proxy.cpp device_proxy.cpp key_shm.cpp iat_hook.cpp pattern_scan.cpp net_debug.cpp mq2_bridge.cpp login_state_machine.cpp \
     hook.c buffer.c trampoline.c hde32.c \
     /Fe:eqswitch-di8.dll \
     /link \
