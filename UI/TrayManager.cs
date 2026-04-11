@@ -813,7 +813,15 @@ public class TrayManager : IDisposable
                     ? account.Username
                     : account.CharacterName;
                 loginMenu.DropDownItems.Add($"\uD83D\uDC64  {label}", null, (_, _) =>
-                    _ = _autoLoginManager.LoginAccount(account));
+                {
+                    try { _ = _autoLoginManager.LoginAccount(account); }
+                    catch (Exception ex)
+                    {
+                        FileLogger.Error($"AutoLogin CRASH: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}", ex);
+                        if (ex.InnerException != null)
+                            FileLogger.Error($"AutoLogin CRASH inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}\n{ex.InnerException.StackTrace}");
+                    }
+                });
             }
             // Team 1 omitted — "Launch Team" on root menu handles it
             var teams = new[]
@@ -1323,7 +1331,13 @@ public class TrayManager : IDisposable
         }
         var label = string.IsNullOrEmpty(account.CharacterName) ? account.Username : account.CharacterName;
         ShowBalloon($"Logging in {label}...");
-        return _autoLoginManager.LoginAccount(account);
+        try { return _autoLoginManager.LoginAccount(account); }
+        catch (Exception ex)
+        {
+            FileLogger.Error($"AutoLogin CRASH: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}", ex);
+            ShowBalloon($"Login error: {ex.Message}");
+            return Task.CompletedTask;
+        }
     }
 
     private void FireTeamLogin((string username, string label)[] slots, string teamName)

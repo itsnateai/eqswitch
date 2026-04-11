@@ -1,11 +1,16 @@
-// eqswitch-di8.dll -- Injected into eqgame.exe via CreateRemoteThread
+// eqswitch-di8.dll — Injected into eqgame.exe via CreateRemoteThread
 //
 // Hooks DirectInput8Create via MinHook detour to wrap COM objects for
-// cooperative level enforcement. Also hosts the MQ2 bridge for in-process
-// login (SetWindowText on edit fields, WndNotification on buttons).
+// background keyboard input. Injected into a CREATE_SUSPENDED process
+// before the main thread starts, so the hook is in place before EQ
+// calls DirectInput8Create.
 //
-// Load chain: eqgame.exe -> Dalaya's dinput8.dll (untouched) -> system32
-//             ^ our detour wraps the result in DI8Proxy/DeviceProxy
+// Load chain: eqgame.exe → Dalaya's dinput8.dll (untouched) → system32
+//             ↑ our detour wraps the result in DI8Proxy/DeviceProxy
+//
+// Also installs:
+//   - IAT hooks for GetAsyncKeyState/GetForegroundWindow etc. (iat_hook.cpp)
+//   - Winsock hooks for disconnect diagnostics (net_debug.cpp)
 
 #define _CRT_SECURE_NO_WARNINGS
 #define DIRECTINPUT_VERSION 0x0800
@@ -15,15 +20,14 @@
 #include <stdarg.h>
 #include "MinHook.h"
 #include "di8_proxy.h"
+#include "iat_hook.h"
 #include "net_debug.h"
 #include "mq2_bridge.h"
-#include "login_shm.h"
-#include "login_state_machine.h"
 
 extern "C" void DeviceProxy_Shutdown();
 
 // ─── CharSelect Shared Memory ──────────────────────────────────
-// Opened lazily -- created by C# CharSelectReader, DLL reads/writes.
+// Opened lazily — created by C# CharSelectReader, DLL reads/writes.
 
 static HANDLE g_charSelMap = nullptr;
 static volatile CharSelectShm* g_charSelShm = nullptr;
@@ -54,103 +58,40 @@ static void CloseCharSelShm() {
     if (g_charSelMap) { CloseHandle(g_charSelMap); g_charSelMap = nullptr; }
 }
 
-// ─── Login Shared Memory ───────────────────────────────────────
-// Opened lazily -- created by C# LoginShmWriter, DLL reads/writes.
-
-static HANDLE g_loginShmMap = nullptr;
-static volatile LoginShm* g_loginShm = nullptr;
-static uint32_t g_loginShmRetry = 0;
-
-static bool TryOpenLoginShm() {
-    DWORD pid = GetCurrentProcessId();
-    char name[64];
-    snprintf(name, sizeof(name), "Local\\EQSwitchLogin_%lu", pid);
-
-    HANDLE h = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, name);
-    if (!h) return false;
-
-    void* view = MapViewOfFile(h, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(LoginShm));
-    if (!view) {
-        CloseHandle(h);
-        return false;
-    }
-
-    g_loginShmMap = h;
-    g_loginShm = (volatile LoginShm*)view;
-    DI8Log("login: opened Login SHM (magic=0x%08X)", g_loginShm->magic);
-    return true;
-}
-
-static void CloseLoginShm() {
-    if (g_loginShm) { UnmapViewOfFile((void*)g_loginShm); g_loginShm = nullptr; }
-    if (g_loginShmMap) { CloseHandle(g_loginShmMap); g_loginShmMap = nullptr; }
-}
-
-// ─── Bridge Polling Thread ─────────────────────────────────────
-// Replaces ActivateThread's polling responsibilities.
-// Runs MQ2 bridge init, CharSelect polling, and LoginStateMachine.
-// No focus-faking -- all UI manipulation is in-process.
-
+// Called from device_proxy.cpp's ActivateThread (~60Hz, throttled to ~500ms internally)
 static bool g_mq2Initialized = false;
 static uint32_t g_mq2InitRetry = 0;
-static volatile bool g_bridgeShutdown = false;
-static HANDLE g_hBridgeThread = nullptr;
 
-static DWORD WINAPI BridgePollingThread(LPVOID) {
-    DI8Log("BridgePollingThread: started");
+void MQ2BridgePollTick() {
+    static DWORD lastPoll = 0;
+    DWORD now = GetTickCount();
+    if (now - lastPoll < 500) return;
+    lastPoll = now;
 
-    while (!g_bridgeShutdown) {
-        Sleep(500); // ~2Hz -- sufficient for UI state machine
-
-        // Lazy MQ2 bridge init
-        if (!g_mq2Initialized) {
-            if (g_mq2InitRetry == 0) {
-                g_mq2Initialized = MQ2Bridge::Init();
-                if (!g_mq2Initialized)
-                    g_mq2InitRetry = 10; // Retry in ~5 seconds
-            } else {
-                g_mq2InitRetry--;
-            }
-            if (!g_mq2Initialized) continue;
+    // Lazy MQ2 bridge init — retries every ~5 seconds until MQ2 globals are ready.
+    // Replaces the old Sleep(2000) one-shot that failed if MQ2 needed more time.
+    if (!g_mq2Initialized) {
+        if (g_mq2InitRetry == 0) {
+            g_mq2Initialized = MQ2Bridge::Init();
+            if (!g_mq2Initialized)
+                g_mq2InitRetry = 10;  // Retry in ~5 seconds (10 × 500ms)
+        } else {
+            g_mq2InitRetry--;
         }
-
-        // CharSelect SHM polling (existing feature)
-        if (!g_charSelShm) {
-            if (g_charSelRetry == 0) {
-                if (!TryOpenCharSelShm())
-                    g_charSelRetry = 10;
-            } else {
-                g_charSelRetry--;
-            }
-        }
-        if (g_charSelShm && g_charSelShm->magic == CHARSEL_SHM_MAGIC) {
-            MQ2Bridge::Poll(g_charSelShm);
-        }
-
-        // Login SHM polling (new in-process login)
-        if (!g_loginShm) {
-            if (g_loginShmRetry == 0) {
-                if (!TryOpenLoginShm())
-                    g_loginShmRetry = 10;
-            } else {
-                g_loginShmRetry--;
-            }
-        }
-        if (g_loginShm && g_loginShm->magic == LOGIN_SHM_MAGIC) {
-            LoginStateMachine::Tick(g_loginShm, g_charSelShm);
-        }
+        if (!g_mq2Initialized) return;
     }
 
-    DI8Log("BridgePollingThread: stopped");
-    return 0;
-}
-
-// Called from DeviceProxy when it captures the EQ HWND
-// (SetCooperativeLevel or SetEventNotification).
-// Legacy: was used to start ActivateThread. Now starts bridge thread.
-void MQ2BridgePollTick() {
-    // No-op -- polling is now handled by BridgePollingThread
-    // This function exists to avoid linker errors from device_proxy.cpp
+    if (!g_charSelShm) {
+        if (g_charSelRetry == 0) {
+            if (!TryOpenCharSelShm())
+                g_charSelRetry = 10;  // Retry every ~5 seconds
+        } else {
+            g_charSelRetry--;
+        }
+    }
+    if (g_charSelShm && g_charSelShm->magic == CHARSEL_SHM_MAGIC) {
+        MQ2Bridge::Poll(g_charSelShm);
+    }
 }
 
 // ─── Globals ────────────────────────────────────────────────────
@@ -158,10 +99,10 @@ void MQ2BridgePollTick() {
 typedef HRESULT(WINAPI *PFN_DirectInput8Create)(
     HINSTANCE, DWORD, REFIID, LPVOID *, LPUNKNOWN);
 
-static PFN_DirectInput8Create g_trampolineCreate = nullptr;
+static PFN_DirectInput8Create g_trampolineCreate = nullptr;  // MinHook trampoline → Dalaya's original
 static HMODULE g_hModule = nullptr;
 static HANDLE g_initThread = nullptr;
-static HANDLE g_stopEvent = nullptr;
+static HANDLE g_stopEvent = nullptr;   // signaled on DLL_PROCESS_DETACH to stop init thread cooperatively
 static volatile LONG g_initialized = 0;
 static bool g_hookInstalled = false;
 
@@ -173,6 +114,7 @@ static char g_logPath[MAX_PATH] = {};
 
 static void EnsureLogOpen() {
     if (g_logFile) return;
+    // Atomic CAS — only one thread opens the file
     if (InterlockedCompareExchange(&g_logInitAttempted, 1, 0) != 0) return;
     if (g_logPath[0])
         g_logFile = fopen(g_logPath, "w");
@@ -201,22 +143,33 @@ static HRESULT WINAPI HookedDirectInput8Create(
 
     if (!g_trampolineCreate) return E_FAIL;
 
+    // Call Dalaya's original DirectInput8Create (which calls system32 internally)
     HRESULT hr = g_trampolineCreate(hinst, dwVersion, riidltf, ppvOut, punkOuter);
     if (FAILED(hr)) {
         DI8Log("DirectInput8Create: real call failed (0x%08X)", (unsigned)hr);
         return hr;
     }
 
+    // Wrap the returned IDirectInput8 in our proxy.
+    // DI8Proxy intercepts CreateDevice to wrap keyboards in DeviceProxy.
     *ppvOut = new DI8Proxy(*ppvOut);
     DI8Log("DirectInput8Create: wrapped in DI8Proxy");
     return hr;
 }
 
 // ─── Init Thread ────────────────────────────────────────────────
+// Runs outside the loader lock (spawned from DllMain via CreateThread).
+// Polls for dinput8.dll to appear, then hooks DirectInput8Create.
 
 static DWORD WINAPI InitThread(LPVOID) {
-    DI8Log("Init thread started -- waiting for dinput8.dll");
+    DI8Log("Init thread started — waiting for dinput8.dll");
 
+    // Poll for Dalaya's dinput8.dll to be loaded by the Windows loader.
+    // Our thread starts before ResumeThread (process is suspended).
+    // GetModuleHandle returns NULL while dinput8.dll isn't loaded yet, so
+    // we poll with a short sleep. Once the main thread is resumed and the
+    // loader processes imports, GetModuleHandle will succeed and we can
+    // hook DirectInput8Create before EQ's WinMain calls it.
     HMODULE hDinput8 = nullptr;
     const DWORD startTick = GetTickCount();
     const DWORD timeoutMs = 30000;
@@ -226,11 +179,14 @@ static DWORD WINAPI InitThread(LPVOID) {
         if (hDinput8) break;
 
         if (GetTickCount() - startTick > timeoutMs) {
-            DI8Log("FATAL: dinput8.dll not loaded after %lu ms -- aborting", timeoutMs);
+            DI8Log("FATAL: dinput8.dll not loaded after %lu ms — aborting", timeoutMs);
             InterlockedExchange(&g_initialized, 1);
             return 1;
         }
 
+        // Wait 10ms or until stop event is signaled (DLL_PROCESS_DETACH).
+        // This replaces Sleep(10) so the thread exits cooperatively on unload
+        // instead of continuing to run after the DLL is unmapped.
         if (WaitForSingleObject(g_stopEvent, 10) == WAIT_OBJECT_0) {
             DI8Log("Init thread: stop requested during poll, exiting cleanly");
             InterlockedExchange(&g_initialized, 1);
@@ -240,6 +196,7 @@ static DWORD WINAPI InitThread(LPVOID) {
 
     DI8Log("GetModuleHandle succeeded: dinput8.dll at 0x%p", hDinput8);
 
+    // Resolve DirectInput8Create from Dalaya's dinput8.dll
     auto realCreate = (PFN_DirectInput8Create)
         GetProcAddress(hDinput8, "DirectInput8Create");
     if (!realCreate) {
@@ -249,6 +206,7 @@ static DWORD WINAPI InitThread(LPVOID) {
     }
     DI8Log("Resolved DirectInput8Create at 0x%p", realCreate);
 
+    // Install MinHook detour on DirectInput8Create
     MH_STATUS mh = MH_Initialize();
     if (mh != MH_OK) {
         DI8Log("FATAL: MH_Initialize failed: %d", mh);
@@ -276,19 +234,21 @@ static DWORD WINAPI InitThread(LPVOID) {
     g_hookInstalled = true;
     DI8Log("MinHook detour installed on DirectInput8Create");
 
+    // Install IAT hooks (keyboard state + window focus spoofing)
+    IatHook::InstallKeyboardHooks();
+    DI8Log("IAT keyboard/focus hooks installed");
+
     // Install Winsock diagnostic hooks
     NetDebug::Install();
     DI8Log("Winsock diagnostic hooks installed");
 
-    // Start bridge polling thread (MQ2 init + login state machine)
-    g_hBridgeThread = CreateThread(nullptr, 0, BridgePollingThread, nullptr, 0, nullptr);
-    if (g_hBridgeThread)
-        DI8Log("Bridge polling thread started");
-    else
-        DI8Log("WARNING: Failed to start bridge polling thread (%lu)", GetLastError());
+    // MQ2 bridge init deferred to Poll() — MQ2 needs time to resolve its own
+    // pointers after dinput8.dll loads, and a fixed Sleep() is unreliable.
+    // MQ2BridgePollTick() will lazy-init on each poll cycle.
+    DI8Log("MQ2 bridge init deferred to poll cycle (lazy retry)");
 
     InterlockedExchange(&g_initialized, 1);
-    DI8Log("Init complete -- hooks active, bridge thread running");
+    DI8Log("Init complete — all hooks active");
     return 0;
 }
 
@@ -297,15 +257,8 @@ static DWORD WINAPI InitThread(LPVOID) {
 static void Cleanup() {
     DI8Log("Cleanup: removing hooks");
 
-    // Stop bridge thread
-    g_bridgeShutdown = true;
-    if (g_hBridgeThread) {
-        WaitForSingleObject(g_hBridgeThread, 5000);
-        CloseHandle(g_hBridgeThread);
-        g_hBridgeThread = nullptr;
-    }
-
     NetDebug::Remove();
+    IatHook::RemoveKeyboardHooks();
     DeviceProxy_Shutdown();
 
     if (g_hookInstalled) {
@@ -314,10 +267,8 @@ static void Cleanup() {
         g_hookInstalled = false;
     }
 
-    LoginStateMachine::Shutdown();
     MQ2Bridge::Shutdown();
     CloseCharSelShm();
-    CloseLoginShm();
 
     DI8Log("Cleanup complete");
 }
@@ -330,6 +281,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
         g_hModule = hModule;
         DisableThreadLibraryCalls(hModule);
 
+        // Build log path next to eqgame.exe (not next to our DLL — we're
+        // alongside EQSwitch.exe, not in the game folder).
         if (GetModuleFileNameA(nullptr, g_logPath, MAX_PATH)) {
             char *lastSlash = strrchr(g_logPath, '\\');
             if (lastSlash && (size_t)(lastSlash + 1 - g_logPath) + 21 < MAX_PATH)
@@ -340,13 +293,22 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
             snprintf(g_logPath, MAX_PATH, "eqswitch-dinput8.log");
         }
 
+        // Create stop event BEFORE init thread — manual-reset, initially non-signaled.
+        // The init thread checks this during its poll loop so it can exit cooperatively
+        // on DLL_PROCESS_DETACH instead of continuing after the DLL is unmapped.
         g_stopEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
 
+        // Spawn init thread — defers all work outside the loader lock.
+        // CreateThread in DLL_PROCESS_ATTACH is safe; the new thread blocks
+        // on the loader lock until DllMain returns.
         g_initThread = CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);
         break;
 
     case DLL_PROCESS_DETACH:
+        // reserved != NULL → process exiting: OS reclaims everything
+        // reserved == NULL → FreeLibrary: wait for init, then clean up
         if (reserved == nullptr) {
+            // Signal init thread to stop, then wait for it to exit
             if (g_stopEvent) SetEvent(g_stopEvent);
             if (g_initThread) {
                 WaitForSingleObject(g_initThread, 3000);
@@ -357,6 +319,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
             if (g_initialized)
                 Cleanup();
         }
+        // Close log — null first so racing threads see nullptr
         FILE *lf = g_logFile;
         g_logFile = nullptr;
         if (lf) fclose(lf);
