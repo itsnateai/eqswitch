@@ -63,7 +63,7 @@ static bool g_mq2Initialized = false;
 static uint32_t g_mq2InitRetry = 0;
 
 void MQ2BridgePollTick() {
-    static DWORD lastPoll = 0;
+    static volatile DWORD lastPoll = 0;  // accessed from ActivateThread + TIMERPROC
     DWORD now = GetTickCount();
     if (now - lastPoll < 500) return;
     lastPoll = now;

@@ -93,11 +93,12 @@ static const uint32_t CSI_LEVEL_OFF  = 0x48;
 
 // ─── Offset validation state ───────────────────────────────────
 
-static bool     g_offsetValidated   = false;
-static uint32_t g_validatedOffset   = 0;
-static bool     g_uiFallbackLogged  = false;
-static int      g_cachedNameCol     = -1;
-static bool     g_verificationDone  = false;
+// volatile: accessed from ActivateThread + TIMERPROC (game thread)
+static volatile bool     g_offsetValidated   = false;
+static volatile uint32_t g_validatedOffset   = 0;
+static volatile bool     g_uiFallbackLogged  = false;
+static volatile int      g_cachedNameCol     = -1;
+static volatile bool     g_verificationDone  = false;
 
 // ─── ReadListItemText helper ───────────────────────────────────
 
@@ -225,9 +226,9 @@ static const uint32_t g_wndMgrOffsets[] = {
 };
 static const int g_numWndMgrOffsets = sizeof(g_wndMgrOffsets) / sizeof(g_wndMgrOffsets[0]);
 
-// Cached working offset for WndMgr window array
-static uint32_t g_wndMgrValidOffset = 0;
-static bool g_wndMgrOffsetFound = false;
+// Cached working offset for WndMgr window array (volatile: dual-thread access)
+static volatile uint32_t g_wndMgrValidOffset = 0;
+static volatile bool g_wndMgrOffsetFound = false;
 
 // Iterate all windows in WndMgr and call a callback.
 // Returns true if iteration succeeded.
@@ -313,9 +314,9 @@ static bool TryWndMgrPointer(void *pWndMgr, const char *label,
 // Dalaya doesn't export EQMain__pinstCXWndManager, so we scan eqmain.dll's
 // PE sections for a pointer that looks like a valid CXWndManager.
 
-static void *g_pEQMainWndMgr = nullptr;
-static bool g_eqmainScanned = false;
-static uint32_t g_eqmainWndMgrOffset = 0;  // dedicated offset for eqmain (not shared with eqgame)
+static volatile void *g_pEQMainWndMgr = nullptr;
+static volatile bool g_eqmainScanned = false;
+static volatile uint32_t g_eqmainWndMgrOffset = 0;  // dedicated offset for eqmain
 
 static void *FindEQMainWndMgr() {
     // Re-check if eqmain.dll is still loaded — it unloads at charselect transition.
@@ -330,7 +331,7 @@ static void *FindEQMainWndMgr() {
         }
         return nullptr;
     }
-    if (g_eqmainScanned) return g_pEQMainWndMgr;
+    if (g_eqmainScanned) return (void *)g_pEQMainWndMgr;
     g_eqmainScanned = true;
 
     // Scan eqmain.dll's .data section for pointers that look like CXWndManager instances.
@@ -397,7 +398,7 @@ static void *FindEQMainWndMgr() {
                 g_eqmainWndMgrOffset = arrOff;
                 DI8Log("mq2_bridge: FOUND eqmain CXWndManager at %p (data+0x%X), pWindows at offset 0x%X (%d windows)",
                        candidate, off, arrOff, arr->Count);
-                return g_pEQMainWndMgr;
+                return (void *)g_pEQMainWndMgr;
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
