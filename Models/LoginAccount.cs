@@ -11,5 +11,6 @@ public class LoginAccount
     public string Server { get; set; } = "Dalaya";
     public string CharacterName { get; set; } = "";
     public int CharacterSlot { get; set; } = 0;  // 0 = auto (by name), 1-10 = slot number
+    public bool AutoEnterWorld { get; set; } = false;
     public bool UseLoginFlag { get; set; } = true;
 }

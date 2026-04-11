@@ -104,6 +104,10 @@ public class SettingsForm : Form
     private string _pendingTeam3B = "";
     private string _pendingTeam4A = "";
     private string _pendingTeam4B = "";
+    private bool _pendingTeam1AutoEnter;
+    private bool _pendingTeam2AutoEnter;
+    private bool _pendingTeam3AutoEnter;
+    private bool _pendingTeam4AutoEnter;
     private CheckBox _chkAutoEnterWorld = null!;
 
     // ─── PiP tab controls
@@ -189,7 +193,7 @@ public class SettingsForm : Form
         {
             Name = a.Name, Username = a.Username, EncryptedPassword = a.EncryptedPassword,
             Server = a.Server, CharacterName = a.CharacterName, CharacterSlot = a.CharacterSlot,
-            UseLoginFlag = a.UseLoginFlag
+            AutoEnterWorld = a.AutoEnterWorld, UseLoginFlag = a.UseLoginFlag
         }).ToList();
 
         _pendingTeam1A = _config.Team1Account1;
@@ -200,6 +204,11 @@ public class SettingsForm : Form
         _pendingTeam3B = _config.Team3Account2;
         _pendingTeam4A = _config.Team4Account1;
         _pendingTeam4B = _config.Team4Account2;
+
+        _pendingTeam1AutoEnter = _config.Team1AutoEnter;
+        _pendingTeam2AutoEnter = _config.Team2AutoEnter;
+        _pendingTeam3AutoEnter = _config.Team3AutoEnter;
+        _pendingTeam4AutoEnter = _config.Team4AutoEnter;
 
         tabs.TabPages.Add(BuildGeneralTab());      // 0
         tabs.TabPages.Add(BuildVideoTab());        // 1
@@ -1250,7 +1259,11 @@ public class SettingsForm : Form
             Team3Account1 = _pendingTeam3A,
             Team3Account2 = _pendingTeam3B,
             Team4Account1 = _pendingTeam4A,
-            Team4Account2 = _pendingTeam4B
+            Team4Account2 = _pendingTeam4B,
+            Team1AutoEnter = _pendingTeam1AutoEnter,
+            Team2AutoEnter = _pendingTeam2AutoEnter,
+            Team3AutoEnter = _pendingTeam3AutoEnter,
+            Team4AutoEnter = _pendingTeam4AutoEnter
         };
 
         // Apply startup registry change
@@ -1343,7 +1356,9 @@ public class SettingsForm : Form
         _dgvAccounts.Columns["Username"]!.FillWeight = 30;
         _dgvAccounts.Columns.Add("Server", "Server");
         _dgvAccounts.Columns["Server"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-        _dgvAccounts.Columns["Server"]!.FillWeight = 25;
+        _dgvAccounts.Columns["Server"]!.FillWeight = 20;
+        _dgvAccounts.Columns.Add("Enter", "Enter");
+        _dgvAccounts.Columns["Enter"]!.Width = 42;
 
         RefreshAccountsGrid();
         card.Controls.Add(_dgvAccounts);
@@ -1438,7 +1453,7 @@ public class SettingsForm : Form
         page.Controls.Add(btnImport);
 
         y += 22;
-        DarkTheme.AddHint(page, "Enters world as last character. Uncheck to stop at char select.", 20, y);
+        DarkTheme.AddHint(page, "Default for new accounts. Per-account/team overrides in Edit/Teams.", 20, y);
         DarkTheme.AddHint(page, "DPAPI \u2014 same Windows user only", 320, y);
 
         return page;
@@ -1450,7 +1465,7 @@ public class SettingsForm : Form
         for (int i = 0; i < _pendingAccounts.Count; i++)
         {
             var a = _pendingAccounts[i];
-            _dgvAccounts.Rows.Add(i + 1, a.CharacterName, a.Username, a.Server);
+            _dgvAccounts.Rows.Add(i + 1, a.CharacterName, a.Username, a.Server, a.AutoEnterWorld ? "Yes" : "");
         }
         RefreshQuickLoginCombos();
     }
@@ -1505,7 +1520,7 @@ public class SettingsForm : Form
         using var dlg = new Form
         {
             Text = existing != null ? "Edit Account" : "Add Account",
-            Size = new Size(380, 305),
+            Size = new Size(380, 335),
             FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition = FormStartPosition.CenterParent,
             MaximizeBox = false,
@@ -1559,6 +1574,10 @@ public class SettingsForm : Form
         dlg.Controls.Add(cboSlot);
         y += R;
 
+        var chkEnterWorld = DarkTheme.AddCheckBox(dlg, "Auto Enter World", L, y);
+        chkEnterWorld.Checked = existing?.AutoEnterWorld ?? _config.AutoEnterWorld;
+        y += R;
+
         y += 5;
 
         var btnOK = DarkTheme.MakePrimaryButton("Save", L, y);
@@ -1579,6 +1598,7 @@ public class SettingsForm : Form
             account.Server = txtServer.Text.Trim();
             account.CharacterName = txtCharName.Text.Trim();
             account.CharacterSlot = cboSlot.SelectedIndex; // 0=auto, 1-10=slot
+            account.AutoEnterWorld = chkEnterWorld.Checked;
             account.UseLoginFlag = true;
 
             // Update team references if character name changed
@@ -1635,7 +1655,9 @@ public class SettingsForm : Form
             _pendingTeam1A, _pendingTeam1B,
             _pendingTeam2A, _pendingTeam2B,
             _pendingTeam3A, _pendingTeam3B,
-            _pendingTeam4A, _pendingTeam4B);
+            _pendingTeam4A, _pendingTeam4B,
+            _pendingTeam1AutoEnter, _pendingTeam2AutoEnter,
+            _pendingTeam3AutoEnter, _pendingTeam4AutoEnter);
         if (dlg.ShowDialog(this) == DialogResult.OK)
         {
             _pendingTeam1A = dlg.Team1Account1;
@@ -1646,6 +1668,10 @@ public class SettingsForm : Form
             _pendingTeam3B = dlg.Team3Account2;
             _pendingTeam4A = dlg.Team4Account1;
             _pendingTeam4B = dlg.Team4Account2;
+            _pendingTeam1AutoEnter = dlg.Team1AutoEnter;
+            _pendingTeam2AutoEnter = dlg.Team2AutoEnter;
+            _pendingTeam3AutoEnter = dlg.Team3AutoEnter;
+            _pendingTeam4AutoEnter = dlg.Team4AutoEnter;
             _lblTeamSummary.Text = BuildTeamSummary();
         }
     }

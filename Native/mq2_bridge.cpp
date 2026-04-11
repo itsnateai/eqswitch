@@ -98,6 +98,7 @@ static uint32_t g_validatedOffset   = 0;
 static bool     g_uiFallbackLogged  = false;
 static bool     g_colDumped         = false;
 static int      g_cachedNameCol     = -1;
+static bool     g_verificationDone  = false;
 
 // ─── ReadListItemText helper ───────────────────────────────────
 
@@ -243,23 +244,7 @@ static bool TryWndMgrPointer(void *pWndMgr, const char *label,
     if (!pWndMgr) return false;
     const uint8_t *pMgr = (const uint8_t *)pWndMgr;
 
-    // One-time diagnostic dump: log raw memory at every candidate offset
-    if (!g_dumpedOnce) {
-        g_dumpedOnce = true;
-        DI8Log("mq2_bridge: === DIAGNOSTIC DUMP %s at %p ===", label, pWndMgr);
-        for (int c = 0; c < g_numWndMgrOffsets; c++) {
-            uint32_t off = g_wndMgrOffsets[c];
-            __try {
-                const ArrayClassHeader *arr = (const ArrayClassHeader *)(pMgr + off);
-                DI8Log("  offset 0x%02X: Data=%p Count=%d Alloc=%d",
-                       off, arr->Data, arr->Count, arr->Alloc);
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) {
-                DI8Log("  offset 0x%02X: SEH EXCEPTION", off);
-            }
-        }
-        DI8Log("mq2_bridge: === END DUMP ===");
-    }
+    // Diagnostic dump removed (production) — verification report covers this
 
     // If we found a working offset before, try it first
     if (g_wndMgrOffsetFound) {
@@ -531,10 +516,7 @@ static bool FindByNameCallback(void *pWnd, void *context) {
     return false;
 }
 
-// ─── Enumerate all windows (diagnostic) ───────────────────────
-// Tries to read the "name" field from each CXWnd. On ROF2 x86,
-// the window name (XMLIndex/ScreenID) is typically at offset 0xA8
-// or nearby as a CXStr. We also try GetChildItem with known names.
+// ─── Enumerate all windows (diagnostic — production: count only) ──
 
 struct EnumCtx {
     int count;
@@ -543,56 +525,6 @@ struct EnumCtx {
 static bool EnumCallback(void *pWnd, void *context) {
     EnumCtx *ctx = (EnumCtx *)context;
     ctx->count++;
-
-    // Log the window address and try to read its text
-    if (g_fnGetWindowText && g_fnCXStrDtor) {
-        __try {
-            uint8_t cxstrBuf[16] = {};
-            g_fnGetWindowText(pWnd, cxstrBuf);
-            CXStr *str = (CXStr *)cxstrBuf;
-            if (str->Ptr && str->Length > 0 && str->Length < 256) {
-                char buf[256] = {};
-                memcpy(buf, str->Ptr, str->Length < 255 ? str->Length : 255);
-                DI8Log("mq2_bridge: ENUM wnd[%d] at %p text='%s'", ctx->count - 1, pWnd, buf);
-            } else {
-                DI8Log("mq2_bridge: ENUM wnd[%d] at %p (no text)", ctx->count - 1, pWnd);
-            }
-            g_fnCXStrDtor(cxstrBuf);
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {
-            DI8Log("mq2_bridge: ENUM wnd[%d] at %p (SEH reading text)", ctx->count - 1, pWnd);
-        }
-    } else {
-        DI8Log("mq2_bridge: ENUM wnd[%d] at %p", ctx->count - 1, pWnd);
-    }
-
-    // Try known widget names against this window
-    static const char *knownNames[] = {
-        "LOGIN_UsernameEdit", "LOGIN_PasswordEdit", "LOGIN_ConnectButton",
-        "OK_Display", "OK_OKButton",
-        "YESNO_Display", "YESNO_YesButton", "YESNO_NoButton",
-        "Character_List", "CLW_EnterWorldButton", "CLW_CharactersScreen",
-        "CONNECT_ConnectButton", "CONNECT_UsernameEdit", "CONNECT_PasswordEdit",
-        "serverselect", "connect", "CLW_CharactersScreen",
-        "MAIN_ConnectButton",
-        nullptr
-    };
-
-    if (g_fnGetChildItem) {
-        for (int i = 0; knownNames[i]; i++) {
-            __try {
-                void *child = g_fnGetChildItem(pWnd, knownNames[i]);
-                if (child) {
-                    DI8Log("mq2_bridge: ENUM wnd[%d] has child '%s' at %p",
-                           ctx->count - 1, knownNames[i], child);
-                }
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER) {
-                // Skip
-            }
-        }
-    }
-
     return false; // continue iterating
 }
 
@@ -775,9 +707,9 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
     FindByNameCtx ctx = { name, nullptr };
     bool iterated = IterateAllWindows(FindByNameCallback, &ctx);
 
-    if (g_findLogCount < 10 && !ctx.result) {
-        DI8Log("mq2_bridge: FindWindowByName('%s') — iterated=%d, result=%p, wndMgrFound=%d",
-               name, iterated, ctx.result, g_wndMgrOffsetFound);
+    if (g_findLogCount < 3 && !ctx.result) {
+        DI8Log("mq2_bridge: FindWindowByName('%s') — iterated=%d, result=%p",
+               name, iterated, ctx.result);
         g_findLogCount++;
     }
 
@@ -937,6 +869,94 @@ void MQ2Bridge::EnumerateAllWindows() {
     DI8Log("mq2_bridge: EnumerateAllWindows -- iterated %d windows", ctx.count);
 }
 
+// ─── Verification Report ──────────────────────────────────────
+// One-shot comprehensive dump of all pointer chains when charselect
+// first succeeds. Replaces scattered diagnostic logging.
+
+static void EmitVerificationReport(volatile CharSelectShm *shm) {
+    if (g_verificationDone) return;
+    g_verificationDone = true;
+
+    DI8Log("=== VERIFICATION REPORT (charselect) ===");
+
+    // 1. pinstCCharacterSelect chain
+    if (g_pinstCharSelect) {
+        __try {
+            uintptr_t storage = *g_pinstCharSelect;
+            void *actual = nullptr;
+            if (storage && IsReadablePtr((void *)storage, sizeof(void *)))
+                actual = *(void **)storage;
+            DI8Log("  pinstCCharacterSelect: export=%p -> storage=0x%08X -> CCharacterSelect*=%p",
+                   g_pinstCharSelect, storage, actual);
+            if (actual) {
+                void *vtable = *(void **)actual;
+                DI8Log("    vtable=%p", vtable);
+                // Try GetChildItem("Character_List") on it
+                if (g_fnGetChildItem) {
+                    void *charList = g_fnGetChildItem(actual, "Character_List");
+                    DI8Log("    GetChildItem('Character_List')=%p", charList);
+                    if (charList && g_fnGetCurSel) {
+                        int curSel = g_fnGetCurSel(charList);
+                        DI8Log("    Character_List.GetCurSel()=%d", curSel);
+                    }
+                }
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            DI8Log("  pinstCCharacterSelect: SEH on deref chain");
+        }
+    } else {
+        DI8Log("  pinstCCharacterSelect: NOT RESOLVED");
+    }
+
+    // 2. pinstCXWndManager chain
+    if (g_pinstWndMgr) {
+        __try {
+            uintptr_t storage = *g_pinstWndMgr;
+            void *actual = nullptr;
+            if (storage && IsReadablePtr((void *)storage, sizeof(void *)))
+                actual = *(void **)storage;
+            DI8Log("  pinstCXWndManager: export=%p -> storage=0x%08X -> CXWndManager*=%p",
+                   g_pinstWndMgr, storage, actual);
+            if (actual && g_wndMgrOffsetFound) {
+                const ArrayClassHeader *arr = (const ArrayClassHeader *)((uint8_t *)actual + g_wndMgrValidOffset);
+                DI8Log("    pWindows at offset 0x%X: Count=%d Alloc=%d", g_wndMgrValidOffset, arr->Count, arr->Alloc);
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            DI8Log("  pinstCXWndManager: SEH on deref chain");
+        }
+    } else {
+        DI8Log("  pinstCXWndManager: NOT RESOLVED");
+    }
+
+    // 3. ppEverQuest + charSelectPlayerArray
+    if (g_ppEverQuest) {
+        __try {
+            void *pEQ = *g_ppEverQuest;
+            DI8Log("  ppEverQuest: export=%p -> CEverQuest*=%p", g_ppEverQuest, pEQ);
+            if (pEQ && g_offsetValidated) {
+                const ArrayClassHeader *arr = (const ArrayClassHeader *)((uint8_t *)pEQ + g_validatedOffset);
+                DI8Log("    charSelectPlayerArray at offset 0x%X: Count=%d", g_validatedOffset, arr->Count);
+                if (arr->Count > 0 && arr->Data) {
+                    const char *firstName = (const char *)(arr->Data + CSI_NAME_OFF);
+                    char nameBuf[64] = {};
+                    int len = 0;
+                    while (len < 63 && firstName[len] >= 0x20 && firstName[len] <= 0x7E) len++;
+                    memcpy(nameBuf, firstName, len);
+                    DI8Log("    first char: '%s'", nameBuf);
+                }
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            DI8Log("  ppEverQuest: SEH");
+        }
+    }
+
+    // 4. SHM state
+    DI8Log("  SHM: charCount=%d selectedIndex=%d mq2Available=%d gameState=%d",
+           shm->charCount, shm->selectedIndex, shm->mq2Available, shm->gameState);
+
+    DI8Log("=== END VERIFICATION REPORT ===");
+}
+
 // ─── MQ2Bridge::Poll (existing -- CharSelectShm) ───────────────
 
 void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
@@ -1007,6 +1027,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         g_uiFallbackLogged = false;
         g_colDumped = false;
         g_cachedNameCol = -1;
+        g_verificationDone = false;
         return;
     }
 
@@ -1068,11 +1089,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 DI8Log("mq2_bridge: charSelectPlayerArray unavailable — using UI fallback (CListWnd at %p)", pCharList);
                 g_uiFallbackLogged = true;
 
-                // One-time: enumerate ALL windows to see what's available
-                DI8Log("mq2_bridge: === ENUMERATING ALL WINDOWS ===");
-                EnumerateAllWindows();
-
-                // Check if list has a current selection (tells us if list has items even if GetItemText fails)
+                // Check if list has a current selection (proves list has items)
                 if (g_fnGetCurSel) {
                     __try {
                         int curSel = g_fnGetCurSel(pCharList);
@@ -1080,21 +1097,6 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                     } __except(EXCEPTION_EXECUTE_HANDLER) {
                         DI8Log("mq2_bridge: Character_List GetCurSel SEH");
                     }
-                }
-            }
-
-            // Dump columns EVERY time until we find data (not just once)
-            if (!g_colDumped) {
-                for (int col = 0; col < 6; col++) {
-                    char probe[128] = {};
-                    ReadListItemText(pCharList, 0, col, probe, 128);
-                    DI8Log("mq2_bridge: CListWnd[%p] row=0 col=%d -> '%s'", pCharList, col, probe);
-                }
-                // Only mark as dumped if we found SOME data, otherwise retry next poll
-                char anyData[128] = {};
-                for (int col = 0; col < 6; col++) {
-                    ReadListItemText(pCharList, 0, col, anyData, 128);
-                    if (anyData[0]) { g_colDumped = true; break; }
                 }
             }
 
@@ -1189,6 +1191,10 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         shm->charCount = 0;
         shm->selectedIndex = -1;
     }
+
+    // One-shot verification report on first successful charselect load
+    if (charDataRead && !g_verificationDone)
+        EmitVerificationReport(shm);
 
     // Handle selection request from C#
     uint32_t reqSeq = shm->requestSeq;

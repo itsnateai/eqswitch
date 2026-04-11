@@ -12,6 +12,7 @@ internal sealed class AutoLoginTeamsDialog : Form
     private readonly ComboBox _cboTeam2A, _cboTeam2B;
     private readonly ComboBox _cboTeam3A, _cboTeam3B;
     private readonly ComboBox _cboTeam4A, _cboTeam4B;
+    private readonly CheckBox _chkTeam1Enter, _chkTeam2Enter, _chkTeam3Enter, _chkTeam4Enter;
 
     public string Team1Account1 => GetUsername(_cboTeam1A);
     public string Team1Account2 => GetUsername(_cboTeam1B);
@@ -21,6 +22,10 @@ internal sealed class AutoLoginTeamsDialog : Form
     public string Team3Account2 => GetUsername(_cboTeam3B);
     public string Team4Account1 => GetUsername(_cboTeam4A);
     public string Team4Account2 => GetUsername(_cboTeam4B);
+    public bool Team1AutoEnter => _chkTeam1Enter.Checked;
+    public bool Team2AutoEnter => _chkTeam2Enter.Checked;
+    public bool Team3AutoEnter => _chkTeam3Enter.Checked;
+    public bool Team4AutoEnter => _chkTeam4Enter.Checked;
 
     private readonly List<LoginAccount> _accounts;
 
@@ -29,39 +34,48 @@ internal sealed class AutoLoginTeamsDialog : Form
         string team1A, string team1B,
         string team2A, string team2B,
         string team3A, string team3B,
-        string team4A, string team4B)
+        string team4A, string team4B,
+        bool team1AutoEnter = false, bool team2AutoEnter = false,
+        bool team3AutoEnter = false, bool team4AutoEnter = false)
     {
         _accounts = accounts;
 
         StartPosition = FormStartPosition.CenterParent;
-        DarkTheme.StyleForm(this, "Autologin Teams", new Size(420, 280));
+        DarkTheme.StyleForm(this, "Autologin Teams", new Size(510, 280));
         MinimizeBox = false;
 
-        const int L = 15, I = 80, CW = 145, gap = 10;
+        const int L = 15, I = 80, CW = 130, gap = 8, CX = I + CW * 2 + gap * 2;
         int y = 18;
+
+        // Header
+        DarkTheme.AddLabel(this, "Enter", CX, 2).Font = DarkTheme.FontUI75;
 
         // Team 1 row
         DarkTheme.AddLabel(this, "Team 1:", L, y + 3);
         _cboTeam1A = MakeCombo(I, y, CW);
         _cboTeam1B = MakeCombo(I + CW + gap, y, CW);
+        _chkTeam1Enter = MakeEnterCheck(CX + 10, y + 2, team1AutoEnter);
         y += 36;
 
         // Team 2 row
         DarkTheme.AddLabel(this, "Team 2:", L, y + 3);
         _cboTeam2A = MakeCombo(I, y, CW);
         _cboTeam2B = MakeCombo(I + CW + gap, y, CW);
+        _chkTeam2Enter = MakeEnterCheck(CX + 10, y + 2, team2AutoEnter);
         y += 36;
 
         // Team 3 row
         DarkTheme.AddLabel(this, "Team 3:", L, y + 3);
         _cboTeam3A = MakeCombo(I, y, CW);
         _cboTeam3B = MakeCombo(I + CW + gap, y, CW);
+        _chkTeam3Enter = MakeEnterCheck(CX + 10, y + 2, team3AutoEnter);
         y += 36;
 
         // Team 4 row
         DarkTheme.AddLabel(this, "Team 4:", L, y + 3);
         _cboTeam4A = MakeCombo(I, y, CW);
         _cboTeam4B = MakeCombo(I + CW + gap, y, CW);
+        _chkTeam4Enter = MakeEnterCheck(CX + 10, y + 2, team4AutoEnter);
         y += 36;
 
         // Hint
@@ -119,6 +133,20 @@ internal sealed class AutoLoginTeamsDialog : Form
         SelectByUsername(_cboTeam3B, team3B);
         SelectByUsername(_cboTeam4A, team4A);
         SelectByUsername(_cboTeam4B, team4B);
+    }
+
+    private CheckBox MakeEnterCheck(int x, int y, bool isChecked)
+    {
+        var chk = new CheckBox
+        {
+            Location = new Point(x, y),
+            Size = new Size(16, 16),
+            Checked = isChecked,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = DarkTheme.BgDark
+        };
+        Controls.Add(chk);
+        return chk;
     }
 
     private ComboBox MakeCombo(int x, int y, int width)
