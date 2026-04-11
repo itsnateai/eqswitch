@@ -1065,19 +1065,37 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         void *pCharList = FindWindowByName("Character_List");
         if (pCharList) {
             if (!g_uiFallbackLogged) {
-                DI8Log("mq2_bridge: charSelectPlayerArray unavailable — using UI fallback (CListWnd)");
+                DI8Log("mq2_bridge: charSelectPlayerArray unavailable — using UI fallback (CListWnd at %p)", pCharList);
                 g_uiFallbackLogged = true;
+
+                // One-time: enumerate ALL windows to see what's available
+                DI8Log("mq2_bridge: === ENUMERATING ALL WINDOWS ===");
+                EnumerateAllWindows();
+
+                // Check if list has a current selection (tells us if list has items even if GetItemText fails)
+                if (g_fnGetCurSel) {
+                    __try {
+                        int curSel = g_fnGetCurSel(pCharList);
+                        DI8Log("mq2_bridge: Character_List GetCurSel = %d", curSel);
+                    } __except(EXCEPTION_EXECUTE_HANDLER) {
+                        DI8Log("mq2_bridge: Character_List GetCurSel SEH");
+                    }
+                }
             }
 
-            // Dump first row's columns 0-5 to discover Dalaya's layout (once per charselect)
-
+            // Dump columns EVERY time until we find data (not just once)
             if (!g_colDumped) {
                 for (int col = 0; col < 6; col++) {
                     char probe[128] = {};
                     ReadListItemText(pCharList, 0, col, probe, 128);
-                    DI8Log("mq2_bridge: CListWnd row=0 col=%d -> '%s'", col, probe);
+                    DI8Log("mq2_bridge: CListWnd[%p] row=0 col=%d -> '%s'", pCharList, col, probe);
                 }
-                g_colDumped = true; // dump logged, but nameCol discovery retries below
+                // Only mark as dumped if we found SOME data, otherwise retry next poll
+                char anyData[128] = {};
+                for (int col = 0; col < 6; col++) {
+                    ReadListItemText(pCharList, 0, col, anyData, 128);
+                    if (anyData[0]) { g_colDumped = true; break; }
+                }
             }
 
             // Discover name column — retry every poll until found (don't cache failure)
