@@ -1158,7 +1158,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                         count = CHARSEL_MAX_CHARS; // assume max, selection by index works
                         for (int i = 0; i < count; i++) {
                             char slotName[CHARSEL_NAME_LEN];
-                            snprintf(slotName, CHARSEL_NAME_LEN, "Slot %d", i + 1);
+                            wsprintfA(slotName, "Slot %d", i + 1);
                             memcpy((void *)shm->names[i], slotName, CHARSEL_NAME_LEN);
                             shm->levels[i] = 0;
                             shm->classes[i] = 0;
