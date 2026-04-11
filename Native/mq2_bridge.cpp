@@ -96,6 +96,8 @@ static const uint32_t CSI_LEVEL_OFF  = 0x48;
 static bool     g_offsetValidated   = false;
 static uint32_t g_validatedOffset   = 0;
 static bool     g_uiFallbackLogged  = false;
+static bool     g_colDumped         = false;
+static int      g_cachedNameCol     = -1;
 
 // ─── ReadListItemText helper ───────────────────────────────────
 
@@ -103,6 +105,7 @@ static bool ReadListItemText(void *listWnd, int row, int col, char *outBuf, int 
     if (!g_fnGetItemText || !listWnd || bufSize <= 0) return false;
 
     outBuf[0] = '\0';
+    bool result = false;
 
     __try {
         CXStr str = {};
@@ -112,14 +115,17 @@ static bool ReadListItemText(void *listWnd, int row, int col, char *outBuf, int 
             int copyLen = (str.Length < bufSize - 1) ? str.Length : (bufSize - 1);
             memcpy(outBuf, str.Ptr, copyLen);
             outBuf[copyLen] = '\0';
-            return true;
+            result = true;
         }
+
+        // MUST destroy CXStr — GetItemText allocates from game's CRT heap
+        if (g_fnCXStrDtor) g_fnCXStrDtor(&str);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         DI8Log("mq2_bridge: SEH in ReadListItemText(row=%d, col=%d)", row, col);
     }
 
-    return false;
+    return result;
 }
 
 // ─── ArrayClass header ────────────────────────────────────────
@@ -329,14 +335,22 @@ static void *g_pEQMainWndMgr = nullptr;
 static bool g_eqmainScanned = false;
 
 static void *FindEQMainWndMgr() {
-    if (g_eqmainScanned) return g_pEQMainWndMgr;
-    g_eqmainScanned = true;
-
+    // Re-check if eqmain.dll is still loaded — it unloads at charselect transition.
+    // Stale cached pointer = use-after-free on freed module memory.
     HMODULE hEQMain = GetModuleHandleA("eqmain.dll");
     if (!hEQMain) {
-        DI8Log("mq2_bridge: eqmain.dll not loaded");
+        if (g_pEQMainWndMgr) {
+            DI8Log("mq2_bridge: eqmain.dll unloaded — clearing cached WndMgr");
+            g_pEQMainWndMgr = nullptr;
+            g_eqmainScanned = false;
+            g_wndMgrOffsetFound = false;
+            g_wndMgrValidOffset = 0;
+            g_dumpedOnce = false;
+        }
         return nullptr;
     }
+    if (g_eqmainScanned) return g_pEQMainWndMgr;
+    g_eqmainScanned = true;
 
     // Scan eqmain.dll's .data section for pointers that look like CXWndManager instances.
     // A valid CXWndManager has pWindows (ArrayClass<CXWnd*>) near the start with Count > 0.
@@ -986,11 +1000,13 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     // SEH guards and validation (IsReadablePtr, name checks) handle invalid states.
     // If we're not at charselect, charCount will be 0 and nothing happens.
     if (gameState == 5) {
-        // gameState 5 = in-game on Dalaya. Clear char data + skip polling.
+        // gameState 5 = in-game on Dalaya. Clear char data + reset all charselect caches.
         shm->charCount = 0;
         shm->selectedIndex = -1;
         g_offsetValidated = false;
         g_uiFallbackLogged = false;
+        g_colDumped = false;
+        g_cachedNameCol = -1;
         return;
     }
 
@@ -1053,27 +1069,38 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 g_uiFallbackLogged = true;
             }
 
-            // One-time: dump first row's columns 0-5 to discover Dalaya's layout
-            static bool g_colDumped = false;
+            // Dump first row's columns 0-5 to discover Dalaya's layout (once per charselect)
+
             if (!g_colDumped) {
-                g_colDumped = true;
                 for (int col = 0; col < 6; col++) {
                     char probe[128] = {};
                     ReadListItemText(pCharList, 0, col, probe, 128);
                     DI8Log("mq2_bridge: CListWnd row=0 col=%d -> '%s'", col, probe);
                 }
+                g_colDumped = true; // dump logged, but nameCol discovery retries below
             }
 
-            // Try columns 0, 1, 2 for character name (varies by EQ build)
-            int nameCol = -1;
-            for (int tryCol = 0; tryCol <= 2 && nameCol < 0; tryCol++) {
-                char test[CHARSEL_NAME_LEN] = {};
-                if (ReadListItemText(pCharList, 0, tryCol, test, CHARSEL_NAME_LEN) && test[0]) {
-                    // Looks like a name if it's alphabetic and > 2 chars
-                    bool looksLikeName = (test[0] >= 'A' && test[0] <= 'Z') && strlen(test) > 2;
-                    if (looksLikeName) {
-                        nameCol = tryCol;
-                        DI8Log("mq2_bridge: UI fallback: name column = %d (first name: '%s')", tryCol, test);
+            // Discover name column — retry every poll until found (don't cache failure)
+            int nameCol = g_cachedNameCol;
+            if (nameCol < 0) {
+                for (int tryCol = 0; tryCol <= 4 && nameCol < 0; tryCol++) {
+                    char test[CHARSEL_NAME_LEN] = {};
+                    if (ReadListItemText(pCharList, 0, tryCol, test, CHARSEL_NAME_LEN) && test[0]) {
+                        // EQ names: uppercase start, >= 4 chars, all alpha
+                        bool looksLikeName = (test[0] >= 'A' && test[0] <= 'Z') && strlen(test) >= 4;
+                        if (looksLikeName) {
+                            bool allAlpha = true;
+                            for (int k = 0; test[k]; k++) {
+                                if (!((test[k] >= 'A' && test[k] <= 'Z') || (test[k] >= 'a' && test[k] <= 'z'))) {
+                                    allAlpha = false; break;
+                                }
+                            }
+                            if (allAlpha) {
+                                nameCol = tryCol;
+                                g_cachedNameCol = nameCol;
+                                DI8Log("mq2_bridge: UI fallback: name column = %d (first name: '%s')", tryCol, test);
+                            }
+                        }
                     }
                 }
             }
