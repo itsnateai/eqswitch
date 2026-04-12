@@ -102,7 +102,88 @@ static volatile uint32_t g_validatedOffset   = 0;
 static volatile bool     g_uiFallbackLogged  = false;
 static volatile int      g_cachedNameCol     = -1;
 static volatile bool     g_charArrayNotFoundLogged = false;
+static volatile int      g_cachedSlotCount   = -1;  // slot probe result cache (-1 = not probed)
 static volatile bool     g_verificationDone  = false;
+static volatile uintptr_t g_heapScanArrayBase = 0;   // heap scan result (0 = not found/not scanned)
+static volatile bool     g_heapScanDone      = false; // one-shot per charselect session
+
+// ─── Heap scan for character name array ───────────────────────
+// Dalaya ROF2 stores char names in a heap-allocated array of 0x160-byte structs.
+// Standard MQ2 charSelectPlayerArray offset doesn't exist. We scan committed pages
+// for the pattern: 10 consecutive entries at 0x160 stride, each starting with a
+// printable ASCII name (uppercase first char, >= 3 chars, null-terminated within 64 bytes).
+// Runs ONCE per charselect session (gated by g_heapScanDone).
+
+static bool IsPlausibleName(const uint8_t *p) {
+    if (p[0] < 'A' || p[0] > 'Z') return false;
+    int len = 0;
+    for (int i = 0; i < 64; i++) {
+        if (p[i] == '\0') { len = i; break; }
+        if (p[i] < 0x20 || p[i] > 0x7E) return false;
+    }
+    return len >= 3;
+}
+
+static const uint32_t HEAP_SCAN_STRIDE = 0x160;
+
+static uintptr_t HeapScanForCharArray() {
+    MEMORY_BASIC_INFORMATION mbi;
+    uintptr_t addr = 0x01000000; // skip low addresses
+    int pagesScanned = 0;
+
+    while (addr < 0x7FFF0000 && pagesScanned < 200000) {
+        if (VirtualQuery((void *)addr, &mbi, sizeof(mbi)) == 0) break;
+
+        uintptr_t base = (uintptr_t)mbi.BaseAddress;
+        SIZE_T size = mbi.RegionSize;
+
+        if (mbi.State == MEM_COMMIT &&
+            !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
+            (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
+
+            pagesScanned++;
+            // Scan in 64KB chunks
+            for (uintptr_t off = 0; off < size; off += 0x10000) {
+                uintptr_t chunk = base + off;
+                SIZE_T chunkSize = (size - off < 0x10000) ? (size - off) : 0x10000;
+
+                // Need at least 10 * 0x160 = 0xDC0 bytes
+                if (chunkSize < 10 * HEAP_SCAN_STRIDE) continue;
+
+                __try {
+                    const uint8_t *p = (const uint8_t *)chunk;
+                    // Step through the chunk looking for name-like starts
+                    for (uintptr_t i = 0; i + 10 * HEAP_SCAN_STRIDE <= chunkSize; i += 4) {
+                        if (!IsPlausibleName(p + i)) continue;
+                        // Check if entries at stride 0x160 also have plausible names
+                        int validCount = 1;
+                        for (int s = 1; s < 10; s++) {
+                            if (IsPlausibleName(p + i + s * HEAP_SCAN_STRIDE))
+                                validCount++;
+                            else
+                                break;
+                        }
+                        if (validCount >= 3) {
+                            // Strong match — 3+ consecutive name-like entries at 0x160 stride
+                            uintptr_t arrayAddr = chunk + i;
+                            DI8Log("mq2_bridge: heap scan FOUND char array at 0x%08X (%d/%d names valid)",
+                                   arrayAddr, validCount, 10);
+                            return arrayAddr;
+                        }
+                    }
+                } __except(EXCEPTION_EXECUTE_HANDLER) {
+                    // Page became unreadable mid-scan, skip
+                }
+            }
+        }
+
+        addr = base + size;
+        if (addr <= base) addr = base + 0x1000;
+    }
+
+    DI8Log("mq2_bridge: heap scan: no char array found (%d pages scanned)", pagesScanned);
+    return 0;
+}
 
 // ─── ReadListItemText helper ───────────────────────────────────
 
@@ -1043,6 +1124,9 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         g_offsetValidated = false;
         g_uiFallbackLogged = false;
         g_cachedNameCol = -1;
+        g_cachedSlotCount = -1;
+        g_heapScanDone = false;
+        g_heapScanArrayBase = 0;
         g_verificationDone = false;
         g_charArrayNotFoundLogged = false;
         return;
@@ -1168,46 +1252,107 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
 
             // Path B2: if GetItemText failed (empty columns) but GetCurSel works,
             // the list HAS items — populate charCount for slot-based selection.
-            if (count == 0 && nameCol < 0 && g_fnGetCurSel && g_fnSetCurSel) {
-                __try {
-                    int curSel = g_fnGetCurSel(pCharList);
-                    if (curSel >= 0) {
-                        // List has items but text is unreadable (custom-rendered cells).
-                        // Probe actual count: SetCurSel to each slot, read back with GetCurSel.
-                        // If the list clamps to a lower index, we've passed the last slot.
-                        int probeCount = 0;
-                        int origSel = curSel;
-                        for (int i = 0; i < CHARSEL_MAX_CHARS; i++) {
-                            g_fnSetCurSel(pCharList, i);
-                            int readBack = g_fnGetCurSel(pCharList);
-                            if (readBack == i) {
-                                probeCount = i + 1;
+            // Cache result to avoid re-probing every 500ms poll cycle.
+            if (count == 0 && nameCol < 0 && g_fnGetCurSel) {
+                if (g_cachedSlotCount > 0) {
+                    // Use cached probe result — just update selectedIndex
+                    count = g_cachedSlotCount;
+                    __try {
+                        int curSel = g_fnGetCurSel(pCharList);
+                        shm->selectedIndex = curSel;
+                    } __except(EXCEPTION_EXECUTE_HANDLER) {}
+                    // Repopulate slot names (SHM may have been reset)
+                    for (int i = 0; i < count; i++) {
+                        char slotName[CHARSEL_NAME_LEN];
+                        wsprintfA(slotName, "Slot %d", i + 1);
+                        memcpy((void *)shm->names[i], slotName, CHARSEL_NAME_LEN);
+                        shm->levels[i] = 0;
+                        shm->classes[i] = 0;
+                    }
+                } else if (g_fnSetCurSel) {
+                    // First probe — SetCurSel/GetCurSel on each slot to find actual count
+                    __try {
+                        int curSel = g_fnGetCurSel(pCharList);
+                        if (curSel >= 0) {
+                            int probeCount = 0;
+                            int origSel = curSel;
+                            for (int i = 0; i < CHARSEL_MAX_CHARS; i++) {
+                                g_fnSetCurSel(pCharList, i);
+                                int readBack = g_fnGetCurSel(pCharList);
+                                if (readBack == i) {
+                                    probeCount = i + 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                            g_fnSetCurSel(pCharList, origSel);
+
+                            if (probeCount == 0) {
+                                DI8Log("mq2_bridge: UI fallback: slot probe inconclusive (curSel=%d), skipping", origSel);
                             } else {
-                                break; // list clamped — no more slots
+                                count = probeCount;
+                                g_cachedSlotCount = probeCount;
+                                for (int i = 0; i < count; i++) {
+                                    char slotName[CHARSEL_NAME_LEN];
+                                    wsprintfA(slotName, "Slot %d", i + 1);
+                                    memcpy((void *)shm->names[i], slotName, CHARSEL_NAME_LEN);
+                                    shm->levels[i] = 0;
+                                    shm->classes[i] = 0;
+                                }
+                                shm->selectedIndex = origSel;
+                                DI8Log("mq2_bridge: UI fallback: slot-based mode — probed %d slots (curSel=%d)",
+                                       count, origSel);
                             }
                         }
-                        // Restore original selection
-                        g_fnSetCurSel(pCharList, origSel);
+                    } __except(EXCEPTION_EXECUTE_HANDLER) {
+                        DI8Log("mq2_bridge: SEH in GetCurSel fallback");
+                    }
+                }
+            }
 
-                        if (probeCount == 0) {
-                            // Probe inconclusive — don't publish phantom slots
-                            DI8Log("mq2_bridge: UI fallback: slot probe inconclusive (curSel=%d), skipping", origSel);
-                        } else {
-                            count = probeCount;
-                            for (int i = 0; i < count; i++) {
-                                char slotName[CHARSEL_NAME_LEN];
-                                wsprintfA(slotName, "Slot %d", i + 1);
-                                memcpy((void *)shm->names[i], slotName, CHARSEL_NAME_LEN);
-                                shm->levels[i] = 0;
-                                shm->classes[i] = 0;
+            // Path C: heap scan for real character names when slot-based mode is active.
+            // Dalaya stores names in a heap array at stride 0x160. One-shot scan per session.
+            if (count > 0 && !g_heapScanDone) {
+                g_heapScanDone = true;
+                uintptr_t arrayBase = HeapScanForCharArray();
+                if (arrayBase) {
+                    g_heapScanArrayBase = arrayBase;
+                    __try {
+                        for (int i = 0; i < count && i < CHARSEL_MAX_CHARS; i++) {
+                            const char *heapName = (const char *)(arrayBase + i * HEAP_SCAN_STRIDE);
+                            if (heapName[0] >= 'A' && heapName[0] <= 'Z') {
+                                int nameLen = 0;
+                                while (nameLen < CHARSEL_NAME_LEN - 1 && heapName[nameLen] != '\0' &&
+                                       heapName[nameLen] >= 0x20 && heapName[nameLen] <= 0x7E)
+                                    nameLen++;
+                                memcpy((void *)shm->names[i], heapName, nameLen);
+                                ((char *)shm->names[i])[nameLen] = '\0';
+                                DI8Log("mq2_bridge: heap scan: slot %d = \"%s\"", i, (const char *)shm->names[i]);
                             }
-                            shm->selectedIndex = origSel;
-                            DI8Log("mq2_bridge: UI fallback: slot-based mode — probed %d slots (curSel=%d)",
-                                   count, origSel);
+                        }
+                    } __except(EXCEPTION_EXECUTE_HANDLER) {
+                        DI8Log("mq2_bridge: SEH reading heap-scanned char array");
+                        g_heapScanArrayBase = 0;
+                    }
+                }
+            }
+            // On subsequent polls, re-read names from cached heap array (names may update)
+            else if (count > 0 && g_heapScanArrayBase) {
+                __try {
+                    for (int i = 0; i < count && i < CHARSEL_MAX_CHARS; i++) {
+                        const char *heapName = (const char *)(g_heapScanArrayBase + i * HEAP_SCAN_STRIDE);
+                        if (heapName[0] >= 'A' && heapName[0] <= 'Z') {
+                            int nameLen = 0;
+                            while (nameLen < CHARSEL_NAME_LEN - 1 && heapName[nameLen] != '\0' &&
+                                   heapName[nameLen] >= 0x20 && heapName[nameLen] <= 0x7E)
+                                nameLen++;
+                            memcpy((void *)shm->names[i], heapName, nameLen);
+                            ((char *)shm->names[i])[nameLen] = '\0';
                         }
                     }
                 } __except(EXCEPTION_EXECUTE_HANDLER) {
-                    DI8Log("mq2_bridge: SEH in GetCurSel fallback");
+                    DI8Log("mq2_bridge: SEH re-reading heap array — invalidating cache");
+                    g_heapScanArrayBase = 0;
                 }
             }
 
