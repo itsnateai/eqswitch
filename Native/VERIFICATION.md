@@ -130,9 +130,78 @@ All function addresses are within dinput8.dll's code section and readable.
 
 The report confirms all pointer chains resolve live. The `charCount=10` is from slot-based mode (10 fixed slots), not from the charSelectPlayerArray.
 
+## 8. CXWndManager pWindows Offset
+
+Scanned all candidate offsets (0x04-0x68) on the live CXWndManager* at charselect:
+
+| Offset | Count | Alloc | 1st CXWnd* vtable | Status |
+|--------|-------|-------|-------------------|--------|
+| +0x08 | 630 | — | `0x00B5982C` | **VALID — primary** |
+| +0x18 | 30 | — | `0x00B25908` | VALID (secondary array) |
+| +0x28 | 630 | — | `0x00B5982C` | VALID (may be same data) |
+
+**Confirmed: pWindows is at CXWndManager+0x08 on Dalaya ROF2.** The DLL's scan range (0x04-0x68) correctly finds this.
+
+## 9. ASLR Analysis (dual-client verification)
+
+Tested two simultaneous eqgame.exe processes (PID 29796 at charselect, PID 37212 at password):
+
+| Module | PID 29796 | PID 37212 | ASLR |
+|--------|-----------|-----------|------|
+| eqgame.exe | `0x00540000` | `0x00540000` | **OFF** |
+| dinput8.dll (MQ2) | `0x722E0000` | `0x722E0000` | **OFF** |
+| eqmain.dll | `0x71490000` | Not at same addr | **ON** |
+
+**All MQ2 export addresses and eqgame storage addresses are stable across processes.** The DLL can rely on hardcoded addresses from GetProcAddress — they won't shift between launches. eqmain.dll has ASLR enabled, so the DLL's runtime scanning (GetModuleHandleA + PE section scan) is the correct approach.
+
+### Password Screen vs Charselect
+
+| Value | Password | Charselect |
+|-------|----------|------------|
+| gGameState | 0 | 0 |
+| CEverQuest* | `0x00FA7CCC` | `0x00FA7CCC` |
+| CCharacterSelect* | NULL | `0x11254828` |
+| CXWndManager* | NULL | `0x1C3FF958` |
+| eqmain.dll | loaded (ASLR base) | UNLOADED |
+
+CEverQuest* is the same in both (static global in eqgame .data). CCharacterSelect and CXWndManager are NULL at password screen — the DLL's null checks before deref are essential.
+
+## 10. Function Export Byte Signatures
+
+Captured for future validation (first 16 bytes at each export address):
+
+```
+GetChildItem   @ 7237FF80: 8B 54 24 04 E8 17 00 00 00 C2 04 00 CC CC CC CC
+SetCurSel      @ 7237F2C0: A1 5C B0 42 72 FF E0 CC CC CC CC CC CC CC CC CC
+GetCurSel      @ 7237F380: A1 D0 AF 42 72 FF E0 CC CC CC CC CC CC CC CC CC
+GetItemText    @ 7237F360: A1 98 AE 42 72 FF E0 CC CC CC CC CC CC CC CC CC
+SetWindowTextA @ 7237FD70: 8B 01 8D 80 24 01 00 00 8B 00 FF E0 CC CC CC CC
+GetWindowTextA @ 7237FC40: A1 44 AF 42 72 FF E0 CC CC CC CC CC CC CC CC CC
+WndNotification@ 7237FDB0: 8B 01 8D 80 88 00 00 00 8B 00 FF E0 CC CC CC CC
+CXStr_ctor     @ 7237F3D0: A1 04 B2 42 72 FF E0 8B 45 FC CC CC CC CC CC CC
+CXStr_dtor     @ 7237FCB0: A1 70 AD 42 72 FF E0 CC CC CC CC CC CC CC CC CC
+```
+
+Pattern: most are `A1 xx xx xx xx FF E0` — `mov eax, [addr]; jmp eax` (indirect jump stubs through a vtable pointer). `GetChildItem` and `WndNotification` use `8B 01` (mov eax, [ecx]) patterns instead.
+
+## 11. MQ2 Export Offsets (from dinput8.dll base)
+
+For reference if dinput8.dll base ever shifts:
+
+| Export | Offset from dinput8 base |
+|--------|-------------------------|
+| gGameState | +0x1353C8 |
+| ppEverQuest | +0x1377D8 |
+| ppWndMgr | +0x1377EC |
+| pinstCXWndMgr | +0x14AF7C |
+| pinstCEQMainWnd | +0x14AE38 |
+| pinstCCharSelect | +0x14B1A4 |
+
 ## Architecture Notes
 
 - **charSelectPlayerArray (0x18EC0):** Standard MQ2 offset, does NOT exist in Dalaya ROF2. The array struct was likely removed or relocated in Dalaya's custom build. The DLL correctly falls back to slot-based UI mode.
 - **Slot-based selection is correct for Dalaya:** `SetCurSel` by index works. Character names are unavailable via standard MQ2 interfaces but are not needed for the selection/enter-world workflow.
-- **eqmain CXWndManager:** The DLL found a separate CXWndManager in eqmain.dll at offset 0x8294 (355 windows). This is used for FindWindowByName operations.
+- **eqmain CXWndManager:** The DLL found a separate CXWndManager in eqmain.dll at .data+0x8294 (355 windows at login). eqmain.dll unloads at charselect transition — the DLL's stale-pointer guard is essential.
 - **gGameState=0 for all non-ingame states:** Dalaya quirk. The DLL handles this by attempting charselect reads on all non-ingame states with structural validation.
+- **CCharacterSelect vtable = 0x00B05410:** Stable across multiple sessions and reloads. Can be used as a validity check.
+- **ASLR:** eqgame.exe and dinput8.dll (MQ2) load at fixed addresses. eqmain.dll uses ASLR. All hardcoded addresses from MQ2 exports are safe.
