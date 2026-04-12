@@ -169,6 +169,7 @@ public sealed class CharSelectReader : IDisposable
         if (!_mappings.TryGetValue(pid, out var entry)) return false;
 
         entry.Accessor.Write(OFF_REQUESTEDINDEX, index);
+        Thread.MemoryBarrier(); // ensure index visible before new seq
         entry.RequestSeq++;
         entry.Accessor.Write(OFF_REQUESTSEQ, entry.RequestSeq);
 
@@ -220,6 +221,7 @@ public sealed class CharSelectReader : IDisposable
         if (!_mappings.TryGetValue(pid, out var entry)) return false;
 
         entry.Accessor.Write(OFF_ENTERWORLD_RESULT, 0); // reset result
+        Thread.MemoryBarrier(); // ensure result=0 visible before new seq
         entry.EnterWorldSeq++;
         entry.Accessor.Write(OFF_ENTERWORLD_REQ, entry.EnterWorldSeq);
 
