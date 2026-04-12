@@ -424,6 +424,7 @@ public class AutoLoginManager
                     FileLogger.Info($"AutoLogin: CLW_EnterWorldButton clicked via SHM (attempt {attempt + 1})");
 
                     // Wait for world load — poll title (Dalaya loads can take 5-90s)
+                    // Button was clicked — do NOT retry, just wait the full duration.
                     for (int loadWait = 0; loadWait < 90; loadWait++)
                     {
                         Thread.Sleep(1000);
@@ -438,9 +439,8 @@ public class AutoLoginManager
                             break;
                         }
                     }
-                    if (entered) break;
-
-                    FileLogger.Info($"AutoLogin: enter-world SHM attempt {attempt + 1} — not in-game yet, retrying...");
+                    // Button was confirmed clicked — never re-click (could cause disconnect)
+                    break;
                 }
             }
 
