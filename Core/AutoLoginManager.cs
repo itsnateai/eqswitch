@@ -342,7 +342,15 @@ public class AutoLoginManager
                         int selIdx = charSelect.RequestSelectionByName(pid, account.CharacterName);
                         selected = selIdx >= 0;
                         if (!selected)
-                            FileLogger.Warn($"AutoLogin: character '{account.CharacterName}' not found, using default");
+                        {
+                            // In slot-based mode (names are "Slot N"), name lookup always fails.
+                            // Fall back to default selection (first slot) so enter-world can proceed.
+                            bool isSlotMode = charNames.Length > 0 && charNames[0].StartsWith("Slot ", StringComparison.Ordinal);
+                            if (isSlotMode)
+                                FileLogger.Info($"AutoLogin: slot-based mode — name '{account.CharacterName}' unavailable, using default selection");
+                            else
+                                FileLogger.Warn($"AutoLogin: character '{account.CharacterName}' not found, using default");
+                        }
                     }
 
                     if (selected)
@@ -363,52 +371,123 @@ public class AutoLoginManager
                     FileLogger.Warn($"AutoLogin: MQ2 bridge not ready, entering world with default");
             }
 
-            // ── Enter World via PulseKey3D (keyboard Enter) ──────────
-            // In-process CLW_EnterWorldButton click doesn't work on Dalaya —
-            // eqgame's CXWndManager is empty at charselect (widget not findable).
-            // PulseKey3D with brief activation windows is the proven approach.
+            // ── Enter World ──────────────────────────────────────────
+            // Primary: in-process CLW_EnterWorldButton click via SHM (no focus-faking needed).
+            // Fallback: PulseKey3D keyboard Enter (requires focus-faking).
+            // Verified: CXWndManager is live at charselect with 630+ windows on Dalaya ROF2.
             Report("Entering world...");
             bool entered = false;
-            for (int attempt = 0; attempt < 5; attempt++)
+
+            // Primary path: SHM RequestEnterWorld (in-process button click)
+            if (charSelect.IsMQ2Available(pid))
             {
-                // Check BEFORE pressing — avoid sending Enter into an already-loaded game
-                hwnd = RefreshHandle(pid, hwnd);
-                if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window"); return; }
+                for (int attempt = 0; attempt < 2; attempt++)
                 {
-                    var tb = new StringBuilder(256);
-                    NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
-                    if (tb.ToString().Contains(" - "))
-                    {
-                        entered = true;
-                        FileLogger.Info($"AutoLogin: already in-game before attempt {attempt + 1} (title: {tb})");
-                        break;
-                    }
-                }
-
-                writer.Activate(pid);
-                Thread.Sleep(500);
-                PulseKey3D(writer, pid, hwnd, 0x0D);
-                Thread.Sleep(500);
-                writer.Deactivate(pid);
-
-                // Wait for world load — poll title every second (Dalaya loads can take 5-90s)
-                for (int loadWait = 0; loadWait < 20; loadWait++)
-                {
-                    Thread.Sleep(1000);
+                    // Check if already in-game
                     hwnd = RefreshHandle(pid, hwnd);
-                    if (hwnd == IntPtr.Zero) break;
-                    var tb = new StringBuilder(256);
-                    NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
-                    if (tb.ToString().Contains(" - "))
+                    if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window"); return; }
                     {
-                        entered = true;
-                        FileLogger.Info($"AutoLogin: enter-world confirmed after {loadWait + 1}s (title: {tb})");
-                        break;
+                        var tb = new StringBuilder(256);
+                        NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
+                        if (tb.ToString().Contains(" - "))
+                        {
+                            entered = true;
+                            FileLogger.Info($"AutoLogin: already in-game before SHM attempt {attempt + 1} (title: {tb})");
+                            break;
+                        }
+                    }
+
+                    charSelect.RequestEnterWorld(pid);
+
+                    // Wait for DLL ack (up to 5s)
+                    bool acked = false;
+                    for (int w = 0; w < 25; w++)
+                    {
+                        if (charSelect.IsEnterWorldAcknowledged(pid)) { acked = true; break; }
+                        Thread.Sleep(200);
+                    }
+
+                    if (!acked)
+                    {
+                        FileLogger.Warn($"AutoLogin: DLL did not ack enter-world request (attempt {attempt + 1})");
+                        continue;
+                    }
+
+                    int result = charSelect.ReadEnterWorldResult(pid);
+                    if (result != 1)
+                    {
+                        FileLogger.Warn($"AutoLogin: enter-world result={result} (attempt {attempt + 1}), button may not exist yet");
+                        Thread.Sleep(2000);
+                        continue;
+                    }
+
+                    FileLogger.Info($"AutoLogin: CLW_EnterWorldButton clicked via SHM (attempt {attempt + 1})");
+
+                    // Wait for world load — poll title (Dalaya loads can take 5-90s)
+                    for (int loadWait = 0; loadWait < 90; loadWait++)
+                    {
+                        Thread.Sleep(1000);
+                        hwnd = RefreshHandle(pid, hwnd);
+                        if (hwnd == IntPtr.Zero) break;
+                        var tb = new StringBuilder(256);
+                        NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
+                        if (tb.ToString().Contains(" - "))
+                        {
+                            entered = true;
+                            FileLogger.Info($"AutoLogin: enter-world confirmed after {loadWait + 1}s (title: {tb})");
+                            break;
+                        }
+                    }
+                    if (entered) break;
+
+                    FileLogger.Info($"AutoLogin: enter-world SHM attempt {attempt + 1} — not in-game yet, retrying...");
+                }
+            }
+
+            // Fallback: PulseKey3D keyboard Enter (if SHM path failed)
+            if (!entered)
+            {
+                if (charSelect.IsMQ2Available(pid))
+                    FileLogger.Warn("AutoLogin: SHM enter-world failed, falling back to PulseKey3D");
+                else
+                    FileLogger.Info("AutoLogin: MQ2 not available, using PulseKey3D for enter-world");
+
+                for (int attempt = 0; attempt < 3 && !entered; attempt++)
+                {
+                    hwnd = RefreshHandle(pid, hwnd);
+                    if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window"); return; }
+                    {
+                        var tb = new StringBuilder(256);
+                        NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
+                        if (tb.ToString().Contains(" - "))
+                        {
+                            entered = true;
+                            FileLogger.Info($"AutoLogin: already in-game before PulseKey3D attempt {attempt + 1}");
+                            break;
+                        }
+                    }
+
+                    writer.Activate(pid);
+                    Thread.Sleep(500);
+                    PulseKey3D(writer, pid, hwnd, 0x0D);
+                    Thread.Sleep(500);
+                    writer.Deactivate(pid);
+
+                    for (int loadWait = 0; loadWait < 20; loadWait++)
+                    {
+                        Thread.Sleep(1000);
+                        hwnd = RefreshHandle(pid, hwnd);
+                        if (hwnd == IntPtr.Zero) break;
+                        var tb = new StringBuilder(256);
+                        NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
+                        if (tb.ToString().Contains(" - "))
+                        {
+                            entered = true;
+                            FileLogger.Info($"AutoLogin: enter-world confirmed via PulseKey3D after {loadWait + 1}s (title: {tb})");
+                            break;
+                        }
                     }
                 }
-                if (entered) break;
-
-                FileLogger.Info($"AutoLogin: enter-world attempt {attempt + 1} — not in-game yet, retrying...");
             }
 
             if (entered)
@@ -419,7 +498,7 @@ public class AutoLoginManager
             else
             {
                 Report($"{account.Name}: reached char select but Enter World didn't register");
-                FileLogger.Warn($"AutoLogin: {account.Name} enter-world failed after 5 attempts (PID {pid})");
+                FileLogger.Warn($"AutoLogin: {account.Name} enter-world failed after all attempts (PID {pid})");
             }
         }
         catch (Exception ex)
