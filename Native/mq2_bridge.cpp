@@ -85,6 +85,9 @@ struct CXStr {
 
 // ─── CEverQuest offset constants ───────────────────────────────
 
+// Verified CCharacterSelect vtable on Dalaya ROF2 (stable across sessions)
+static const uintptr_t CHARSELECT_EXPECTED_VTABLE = 0x00B05410;
+
 static const uint32_t OFFSET_CHARSELECT_ARRAY = 0x18EC0;
 static const uint32_t CSI_SIZE       = 0x170;
 static const uint32_t CSI_NAME_OFF   = 0x00;
@@ -98,6 +101,7 @@ static volatile bool     g_offsetValidated   = false;
 static volatile uint32_t g_validatedOffset   = 0;
 static volatile bool     g_uiFallbackLogged  = false;
 static volatile int      g_cachedNameCol     = -1;
+static volatile bool     g_charArrayNotFoundLogged = false;
 static volatile bool     g_verificationDone  = false;
 
 // ─── ReadListItemText helper ───────────────────────────────────
@@ -174,11 +178,14 @@ static bool ValidateCharArrayOffset(const uint8_t *pEverQuest) {
     if (IsValidCharArray(pEverQuest, OFFSET_CHARSELECT_ARRAY)) {
         g_validatedOffset = OFFSET_CHARSELECT_ARRAY;
         g_offsetValidated = true;
+        g_charArrayNotFoundLogged = false;
         DI8Log("mq2_bridge: charSelectPlayerArray validated at expected offset 0x%X", g_validatedOffset);
         return true;
     }
 
-    DI8Log("mq2_bridge: expected offset 0x%X failed -- scanning +-0x200", OFFSET_CHARSELECT_ARRAY);
+    // Log scan attempt only once per session (resets on game state transition)
+    if (!g_charArrayNotFoundLogged)
+        DI8Log("mq2_bridge: expected offset 0x%X failed -- scanning +-0x200", OFFSET_CHARSELECT_ARRAY);
 
     const uint32_t scanRange = 0x200;
     uint32_t baseOffset = OFFSET_CHARSELECT_ARRAY;
@@ -190,13 +197,17 @@ static bool ValidateCharArrayOffset(const uint8_t *pEverQuest) {
         if (IsValidCharArray(pEverQuest, off)) {
             g_validatedOffset = off;
             g_offsetValidated = true;
+            g_charArrayNotFoundLogged = false;
             DI8Log("mq2_bridge: charSelectPlayerArray FOUND at scanned offset 0x%X (delta=%+d)",
                    off, (int)off - (int)baseOffset);
             return true;
         }
     }
 
-    DI8Log("mq2_bridge: charSelectPlayerArray NOT FOUND in scan range");
+    if (!g_charArrayNotFoundLogged) {
+        DI8Log("mq2_bridge: charSelectPlayerArray NOT FOUND in scan range (suppressing future logs)");
+        g_charArrayNotFoundLogged = true;
+    }
     return false;
 }
 
@@ -219,9 +230,9 @@ static bool IsReadablePtr(const void *ptr, size_t size) {
 // We scan a range of offsets starting from the top of the struct.
 
 static const uint32_t g_wndMgrOffsets[] = {
-    0x04, 0x08, 0x0C, 0x10, 0x14, 0x18, 0x1C, 0x20,
+    0x08, // Verified on Dalaya ROF2 (630 windows at charselect)
+    0x04, 0x0C, 0x10, 0x14, 0x18, 0x1C, 0x20,
     0x24, 0x28, 0x2C, 0x30, 0x34, 0x38, 0x3C, 0x40,
-    // Also try the old offsets in case of a different build
     0x50, 0x54, 0x58, 0x5C, 0x60, 0x64, 0x68
 };
 static const int g_numWndMgrOffsets = sizeof(g_wndMgrOffsets) / sizeof(g_wndMgrOffsets[0]);
@@ -683,11 +694,22 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                 if (pCharSelWnd && IsReadablePtr(pCharSelWnd, sizeof(void *))) {
                     void *vtable = *(void **)pCharSelWnd;
                     if (vtable && IsReadablePtr(vtable, sizeof(void *))) {
-                        void *child = g_fnGetChildItem(pCharSelWnd, name);
-                        if (child) {
-                            DI8Log("mq2_bridge: FindWindowByName('%s') — found via pinstCCharacterSelect at %p",
-                                   name, child);
-                            return child;
+                        // Validate vtable matches expected CCharacterSelect
+                        static volatile bool vtableWarned = false;
+                        if ((uintptr_t)vtable != CHARSELECT_EXPECTED_VTABLE) {
+                            if (!vtableWarned) {
+                                DI8Log("mq2_bridge: WARNING — CCharacterSelect vtable changed: expected 0x%08X, got 0x%08X",
+                                       CHARSELECT_EXPECTED_VTABLE, (uintptr_t)vtable);
+                                vtableWarned = true;
+                            }
+                            // vtable mismatch — skip GetChildItem on unknown object type
+                        } else {
+                            void *child = g_fnGetChildItem(pCharSelWnd, name);
+                            if (child) {
+                                DI8Log("mq2_bridge: FindWindowByName('%s') — found via pinstCCharacterSelect at %p",
+                                       name, child);
+                                return child;
+                            }
                         }
                     }
                 }
@@ -1022,6 +1044,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         g_uiFallbackLogged = false;
         g_cachedNameCol = -1;
         g_verificationDone = false;
+        g_charArrayNotFoundLogged = false;
         return;
     }
 
@@ -1095,9 +1118,10 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
             }
 
             // Discover name column — retry every poll until found (don't cache failure)
+            // Dalaya ROF2 may use non-standard columns, scan wider range (0-9)
             int nameCol = g_cachedNameCol;
             if (nameCol < 0) {
-                for (int tryCol = 0; tryCol <= 4 && nameCol < 0; tryCol++) {
+                for (int tryCol = 0; tryCol <= 9 && nameCol < 0; tryCol++) {
                     char test[CHARSEL_NAME_LEN] = {};
                     if (ReadListItemText(pCharList, 0, tryCol, test, CHARSEL_NAME_LEN) && test[0]) {
                         // EQ names: uppercase start, >= 4 chars, all alpha
@@ -1144,24 +1168,43 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
 
             // Path B2: if GetItemText failed (empty columns) but GetCurSel works,
             // the list HAS items — populate charCount for slot-based selection.
-            if (count == 0 && nameCol < 0 && g_fnGetCurSel) {
+            if (count == 0 && nameCol < 0 && g_fnGetCurSel && g_fnSetCurSel) {
                 __try {
                     int curSel = g_fnGetCurSel(pCharList);
                     if (curSel >= 0) {
                         // List has items but text is unreadable (custom-rendered cells).
-                        // Set charCount to max slots so C# can do slot-based selection.
-                        // Use "Slot N" placeholder names.
-                        count = CHARSEL_MAX_CHARS; // assume max, selection by index works
-                        for (int i = 0; i < count; i++) {
-                            char slotName[CHARSEL_NAME_LEN];
-                            wsprintfA(slotName, "Slot %d", i + 1);
-                            memcpy((void *)shm->names[i], slotName, CHARSEL_NAME_LEN);
-                            shm->levels[i] = 0;
-                            shm->classes[i] = 0;
+                        // Probe actual count: SetCurSel to each slot, read back with GetCurSel.
+                        // If the list clamps to a lower index, we've passed the last slot.
+                        int probeCount = 0;
+                        int origSel = curSel;
+                        for (int i = 0; i < CHARSEL_MAX_CHARS; i++) {
+                            g_fnSetCurSel(pCharList, i);
+                            int readBack = g_fnGetCurSel(pCharList);
+                            if (readBack == i) {
+                                probeCount = i + 1;
+                            } else {
+                                break; // list clamped — no more slots
+                            }
                         }
-                        shm->selectedIndex = curSel;
-                        DI8Log("mq2_bridge: UI fallback: GetItemText empty but GetCurSel=%d — using slot-based mode (%d slots)",
-                               curSel, count);
+                        // Restore original selection
+                        g_fnSetCurSel(pCharList, origSel);
+
+                        if (probeCount == 0) {
+                            // Probe inconclusive — don't publish phantom slots
+                            DI8Log("mq2_bridge: UI fallback: slot probe inconclusive (curSel=%d), skipping", origSel);
+                        } else {
+                            count = probeCount;
+                            for (int i = 0; i < count; i++) {
+                                char slotName[CHARSEL_NAME_LEN];
+                                wsprintfA(slotName, "Slot %d", i + 1);
+                                memcpy((void *)shm->names[i], slotName, CHARSEL_NAME_LEN);
+                                shm->levels[i] = 0;
+                                shm->classes[i] = 0;
+                            }
+                            shm->selectedIndex = origSel;
+                            DI8Log("mq2_bridge: UI fallback: slot-based mode — probed %d slots (curSel=%d)",
+                                   count, origSel);
+                        }
                     }
                 } __except(EXCEPTION_EXECUTE_HANDLER) {
                     DI8Log("mq2_bridge: SEH in GetCurSel fallback");
