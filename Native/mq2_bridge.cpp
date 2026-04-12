@@ -775,22 +775,20 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                 if (pCharSelWnd && IsReadablePtr(pCharSelWnd, sizeof(void *))) {
                     void *vtable = *(void **)pCharSelWnd;
                     if (vtable && IsReadablePtr(vtable, sizeof(void *))) {
-                        // Validate vtable matches expected CCharacterSelect
+                        // Log vtable change (informational — SEH protects against crashes)
                         static volatile bool vtableWarned = false;
-                        if ((uintptr_t)vtable != CHARSELECT_EXPECTED_VTABLE) {
-                            if (!vtableWarned) {
-                                DI8Log("mq2_bridge: WARNING — CCharacterSelect vtable changed: expected 0x%08X, got 0x%08X",
-                                       CHARSELECT_EXPECTED_VTABLE, (uintptr_t)vtable);
-                                vtableWarned = true;
-                            }
-                            // vtable mismatch — skip GetChildItem on unknown object type
-                        } else {
-                            void *child = g_fnGetChildItem(pCharSelWnd, name);
-                            if (child) {
-                                DI8Log("mq2_bridge: FindWindowByName('%s') — found via pinstCCharacterSelect at %p",
-                                       name, child);
-                                return child;
-                            }
+                        if ((uintptr_t)vtable != CHARSELECT_EXPECTED_VTABLE && !vtableWarned) {
+                            DI8Log("mq2_bridge: NOTE — CCharacterSelect vtable 0x%08X (expected 0x%08X, delta=%+d)",
+                                   (uintptr_t)vtable, CHARSELECT_EXPECTED_VTABLE,
+                                   (int)((uintptr_t)vtable - CHARSELECT_EXPECTED_VTABLE));
+                            vtableWarned = true;
+                        }
+                        // Try GetChildItem regardless — SEH handles wrong object type
+                        void *child = g_fnGetChildItem(pCharSelWnd, name);
+                        if (child) {
+                            DI8Log("mq2_bridge: FindWindowByName('%s') — found via pinstCCharacterSelect at %p",
+                                   name, child);
+                            return child;
                         }
                     }
                 }
