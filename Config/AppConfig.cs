@@ -12,7 +12,7 @@ namespace EQSwitch.Config;
 public class AppConfig
 {
     /// <summary>Schema version for config migration. Bump when making breaking changes.</summary>
-    public const int CurrentConfigVersion = 2;
+    public const int CurrentConfigVersion = 3;
 
     public int ConfigVersion { get; set; } = CurrentConfigVersion;
     public bool IsFirstRun { get; set; } = true;
@@ -437,7 +437,9 @@ public class TrayClickConfig
 {
     /// <summary>
     /// Action for single left-click on tray icon.
-    /// Values: "None", "AutoLogin1", "AutoLogin2", "AutoLogin3", "AutoLogin4", "LoginAll", "LoginAll2", "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp"
+    /// Values: "None", "AutoLogin1", "AutoLogin2", "AutoLogin3", "AutoLogin4",
+    /// "LoginAll", "LoginAll2", "LoginAll3", "LoginAll4",
+    /// "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp"
     /// </summary>
     public string SingleClick { get; set; } = "LaunchOne";
 

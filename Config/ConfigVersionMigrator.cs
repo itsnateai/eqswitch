@@ -48,6 +48,10 @@ public static class ConfigVersionMigrator
                     MigrateV1ToV2(root);
                     break;
 
+                case 2:
+                    MigrateV2ToV3(root);
+                    break;
+
                 default:
                     // Unknown version ahead of us — don't touch it
                     FileLogger.Warn($"ConfigMigrator: config version {version} is newer than supported ({AppConfig.CurrentConfigVersion})");
@@ -130,5 +134,32 @@ public static class ConfigVersionMigrator
             root["team2Account2"] = ql4;
             FileLogger.Info($"ConfigMigrator v1→v2: Team 2 populated from QuickLogin 3+4");
         }
+    }
+
+    /// <summary>
+    /// v2 → v3: Rename "LaunchTwo" action to "LaunchAll" in TrayClickConfig.
+    /// "LaunchTwo" was a misleading name for bare multi-client launch.
+    /// The old duplicate "LaunchAll" (Team 1 login) case was removed from
+    /// ExecuteTrayAction — any persisted "LaunchAll" now correctly resolves
+    /// to bare multi-client launch under the new semantics.
+    /// </summary>
+    private static void MigrateV2ToV3(JsonObject root)
+    {
+        if (root["trayClick"]?.AsObject() is not { } trayClick)
+            return;
+
+        var migrated = false;
+        foreach (var prop in new[] { "singleClick", "doubleClick", "tripleClick", "middleClick", "middleDoubleClick" })
+        {
+            var value = trayClick[prop]?.GetValue<string>();
+            if (value == "LaunchTwo")
+            {
+                trayClick[prop] = "LaunchAll";
+                migrated = true;
+            }
+        }
+
+        if (migrated)
+            FileLogger.Info("ConfigMigrator v2→v3: renamed LaunchTwo → LaunchAll in TrayClickConfig");
     }
 }
