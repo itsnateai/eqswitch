@@ -368,7 +368,7 @@ public class SettingsForm : Form
         y += 46;
 
         // ─── Tray Click Actions card ─────────────────────────────
-        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam1", "TogglePiP", "LaunchOne", "LaunchTwo", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4" };
+        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam1", "TogglePiP", "LaunchOne", "LaunchAll", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4" };
         const int cboW = 140;
 
         var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 131);
@@ -460,7 +460,7 @@ public class SettingsForm : Form
         if (_txtArrangeWindows?.Text.Trim() is { Length: > 0 } aw) otherHotkeys[aw] = "Arrange Windows";
         if (_txtToggleMultiMon?.Text.Trim() is { Length: > 0 } mm) otherHotkeys[mm] = "Toggle Multi-Mon";
         if (_txtLaunchOne?.Text.Trim() is { Length: > 0 } lo) otherHotkeys[lo] = "Launch One";
-        if (_txtLaunchAll?.Text.Trim() is { Length: > 0 } la) otherHotkeys[la] = "Launch Two";
+        if (_txtLaunchAll?.Text.Trim() is { Length: > 0 } la) otherHotkeys[la] = "Launch All";
 
         var warnings = new List<string>();
 
@@ -593,7 +593,7 @@ public class SettingsForm : Form
 
         DarkTheme.AddCardLabel(cardActions, "Multi-Mon Toggle:", L, cy);
         _txtToggleMultiMon = MakeHotkeyBox(cardActions, I, cy - 2);
-        DarkTheme.AddCardLabel(cardActions, "Launch Two:", col2, cy);
+        DarkTheme.AddCardLabel(cardActions, "Launch All:", col2, cy);
         _txtLaunchAll = MakeHotkeyBox(cardActions, col2I, cy - 2);
         cy += R + 2;
 

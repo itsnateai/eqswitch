@@ -378,7 +378,7 @@ public class TrayManager : IDisposable
         TryRegister(hk.ArrangeWindows, OnArrangeWindows, "FixWindows");
         TryRegister(hk.ToggleMultiMonitor, OnToggleMultiMonitor, "MultiMon");
         TryRegister(hk.LaunchOne, OnLaunchOne, "LaunchOne");
-        TryRegister(hk.LaunchAll, () => ExecuteTrayAction("LaunchTwo"), "LaunchAll");
+        TryRegister(hk.LaunchAll, () => ExecuteTrayAction("LaunchAll"), "LaunchAll");
         TryRegister(hk.AutoLogin1, () => ExecuteTrayAction("AutoLogin1"), "AutoLogin1");
         TryRegister(hk.AutoLogin2, () => ExecuteTrayAction("AutoLogin2"), "AutoLogin2");
         TryRegister(hk.AutoLogin3, () => ExecuteTrayAction("AutoLogin3"), "AutoLogin3");
@@ -1079,7 +1079,7 @@ public class TrayManager : IDisposable
         if (!string.IsNullOrEmpty(hk.LaunchOne))
             lines.Add($"  [{hk.LaunchOne}]  Launch one client");
         if (!string.IsNullOrEmpty(hk.LaunchAll))
-            lines.Add($"  [{hk.LaunchAll}]  Launch two clients");
+            lines.Add($"  [{hk.LaunchAll}]  Launch all clients");
 
         // Direct switch keys
         for (int i = 0; i < hk.DirectSwitchKeys.Count; i++)
@@ -1118,8 +1118,7 @@ public class TrayManager : IDisposable
         "SwapWindows" => "Swap positions",
         "TogglePiP" => "Toggle PiP",
         "LaunchOne" => "Launch one",
-        "LaunchTwo" => "Launch two clients",
-        "LaunchAll" => "Launch Team 1",
+        "LaunchAll" => "Launch all clients",
         "LoginAll" => "Auto-login Team 1",
         "LoginAll2" => "Auto-login Team 2",
         "LoginAll3" => "Auto-login Team 3",
@@ -1250,12 +1249,7 @@ public class TrayManager : IDisposable
                 OnLaunchOne();
                 break;
             case "LaunchAll":
-                FireTeamLogin(
-                    new[] { (_config.Team1Account1, "Team 1 Slot 1"), (_config.Team1Account2, "Team 1 Slot 2") },
-                    "Team 1", _config.Team1AutoEnter);
-                break;
-            case "LaunchTwo":
-                ShowBalloon("Launching two clients...");
+                ShowBalloon("Launching all clients...");
                 OnLaunchAll();
                 break;
             case "AutoLogin1":
