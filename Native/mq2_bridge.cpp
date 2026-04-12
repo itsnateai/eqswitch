@@ -115,12 +115,14 @@ static volatile bool     g_heapScanDone      = false; // one-shot per charselect
 // Runs ONCE per charselect session (gated by g_heapScanDone).
 
 static bool IsPlausibleName(const uint8_t *p) {
-    // EQ character names: uppercase first, all alphabetic, 3-15 chars, no digits/symbols
+    // EQ character names: title case (uppercase first, lowercase rest), 3-15 chars.
+    // Rejects: env vars (has '='), paths (has '\'), DirectX constants (ALL CAPS),
+    //          GPU strings, shader names, etc.
     if (p[0] < 'A' || p[0] > 'Z') return false;
+    if (p[1] < 'a' || p[1] > 'z') return false; // 2nd char MUST be lowercase (title case)
     int len = 0;
     for (int i = 0; i < 64; i++) {
         if (p[i] == '\0') { len = i; break; }
-        // Must be purely alphabetic (a-z, A-Z) — rejects env vars, paths, etc.
         if (!((p[i] >= 'A' && p[i] <= 'Z') || (p[i] >= 'a' && p[i] <= 'z')))
             return false;
     }
