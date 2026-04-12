@@ -115,13 +115,16 @@ static volatile bool     g_heapScanDone      = false; // one-shot per charselect
 // Runs ONCE per charselect session (gated by g_heapScanDone).
 
 static bool IsPlausibleName(const uint8_t *p) {
+    // EQ character names: uppercase first, all alphabetic, 3-15 chars, no digits/symbols
     if (p[0] < 'A' || p[0] > 'Z') return false;
     int len = 0;
     for (int i = 0; i < 64; i++) {
         if (p[i] == '\0') { len = i; break; }
-        if (p[i] < 0x20 || p[i] > 0x7E) return false;
+        // Must be purely alphabetic (a-z, A-Z) — rejects env vars, paths, etc.
+        if (!((p[i] >= 'A' && p[i] <= 'Z') || (p[i] >= 'a' && p[i] <= 'z')))
+            return false;
     }
-    return len >= 3;
+    return len >= 3 && len <= 15;
 }
 
 static const uint32_t HEAP_SCAN_STRIDE = 0x160;
@@ -163,8 +166,8 @@ static uintptr_t HeapScanForCharArray() {
                             else
                                 break;
                         }
-                        if (validCount >= 3) {
-                            // Strong match — 3+ consecutive name-like entries at 0x160 stride
+                        if (validCount >= 5) {
+                            // Strong match — 5+ consecutive name-like entries at 0x160 stride
                             uintptr_t arrayAddr = chunk + i;
                             DI8Log("mq2_bridge: heap scan FOUND char array at 0x%08X (%d/%d names valid)",
                                    arrayAddr, validCount, 10);
