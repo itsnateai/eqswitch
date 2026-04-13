@@ -91,10 +91,7 @@ public class HookConfigWriter : IDisposable
         try
         {
             var name = $"{SharedMemoryPrefix}{(uint)pid}";
-            mmf = MemoryMappedFile.CreateOrOpen(
-                name,
-                StructSize,
-                MemoryMappedFileAccess.ReadWrite);
+            mmf = SecureMemoryMappedFile.CreateOrOpen(name, StructSize);
 
             accessor = mmf.CreateViewAccessor(0, StructSize, MemoryMappedFileAccess.ReadWrite);
 
