@@ -23,6 +23,13 @@ public static class DllInjector
         }
 
         dllPath = Path.GetFullPath(dllPath);
+
+        // Verify the file is a valid PE DLL (not a renamed exe/script/corrupted file)
+        if (!IsPeDll(dllPath))
+        {
+            FileLogger.Error($"DllInjector: file is not a valid PE DLL: {dllPath}");
+            return false;
+        }
         var dllBytes = Encoding.ASCII.GetBytes(dllPath + '\0');
 
         var hProcess = IntPtr.Zero;
@@ -147,6 +154,44 @@ public static class DllInjector
 
         FileLogger.Warn($"DllInjector: loader timeout ({timeoutMs}ms) for PID {pid}");
         return false;
+    }
+
+    /// <summary>
+    /// Basic PE validation: verify the file has MZ+PE headers and IMAGE_FILE_DLL characteristic.
+    /// Catches basic tampering (renamed .exe, scripts, corrupted files). Only reads headers, not the whole file.
+    /// </summary>
+    private static bool IsPeDll(string filePath)
+    {
+        try
+        {
+            using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (fs.Length < 256) return false; // Too small to be a valid DLL
+
+            using var reader = new BinaryReader(fs);
+
+            // DOS header magic: "MZ"
+            if (reader.ReadUInt16() != 0x5A4D) return false;
+
+            // PE offset at 0x3C
+            fs.Position = 0x3C;
+            int peOffset = reader.ReadInt32();
+            if (peOffset < 0 || peOffset + 6 > fs.Length) return false;
+
+            // PE signature: "PE\0\0"
+            fs.Position = peOffset;
+            if (reader.ReadUInt32() != 0x00004550) return false;
+
+            // COFF header Characteristics at peOffset + 4 (COFF header start) + 18 (Characteristics offset)
+            fs.Position = peOffset + 4 + 18;
+            ushort characteristics = reader.ReadUInt16();
+
+            // IMAGE_FILE_DLL = 0x2000
+            return (characteristics & 0x2000) != 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text.Json;
 using EQSwitch.Core;
 
@@ -26,6 +27,7 @@ public class UpdateDialog : Form
     // Release info from GitHub
     private string? _remoteVersion;
     private string? _downloadUrl;  // zip bundle URL
+    private string? _hashFileUrl;
     private long _downloadSize;
 
     /// <summary>Set by --test-update flag to simulate the full update flow locally.</summary>
@@ -197,7 +199,11 @@ public class UpdateDialog : Form
                         _downloadUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
                         _downloadSize = asset.TryGetProperty("size", out var sizeEl)
                             ? sizeEl.GetInt64() : 0;
-                        break;
+                    }
+                    if (name.Equals("SHA256SUMS", StringComparison.OrdinalIgnoreCase) ||
+                        name.Equals("SHA256SUMS.txt", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _hashFileUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
                     }
                 }
             }
@@ -310,6 +316,53 @@ public class UpdateDialog : Form
             {
                 success = await DownloadFileAsync(_downloadUrl!, zipPath, "update package");
                 if (!success) return;
+            }
+
+            // Verify SHA256 hash if the release includes a SHA256SUMS file (skip in test mode)
+            if (!TestMode && !string.IsNullOrEmpty(_hashFileUrl))
+            {
+                _lblStatus.Text = "Verifying integrity...";
+                try
+                {
+                    var hashContent = await _http.GetStringAsync(_hashFileUrl, _cts!.Token);
+                    string? expectedHash = null;
+                    foreach (var line in hashContent.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        // Format: "hexhash  filename" or "hexhash *filename"
+                        var parts = line.Split(new[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
+                        var fname = parts.Length == 2 ? parts[1].Trim().TrimStart('*') : "";
+                        if (fname.StartsWith("EQSwitch-", StringComparison.OrdinalIgnoreCase)
+                            && fname.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                        {
+                            expectedHash = parts[0].Trim();
+                            break;
+                        }
+                    }
+
+                    if (!string.IsNullOrEmpty(expectedHash))
+                    {
+                        var actualHash = ComputeFileHash(zipPath);
+                        if (!actualHash.Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
+                        {
+                            TryDelete(zipPath);
+                            ShowError("Hash verification failed.",
+                                "The downloaded file doesn't match the expected SHA256 checksum.");
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        TryDelete(zipPath);
+                        ShowError("Hash verification failed.",
+                            "SHA256SUMS file found but contains no entry for EQSwitch zip bundle.");
+                        return;
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch
+                {
+                    // SHA256SUMS fetch failed — defense-in-depth, proceed without verification
+                }
             }
 
             // Extract .new files from the zip
@@ -498,6 +551,13 @@ public class UpdateDialog : Form
     private static void TryDelete(string path)
     {
         try { if (File.Exists(path)) File.Delete(path); } catch { }
+    }
+
+    private static string ComputeFileHash(string filePath)
+    {
+        using var stream = File.OpenRead(filePath);
+        var hashBytes = SHA256.HashData(stream);
+        return Convert.ToHexString(hashBytes).ToLowerInvariant();
     }
 
     private static void TryRollback(string original, string oldPath, string newPath)

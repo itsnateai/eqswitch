@@ -73,7 +73,7 @@ public sealed class LoginShmWriter : IDisposable
         try
         {
             var name = $"{SharedMemoryPrefix}{(uint)pid}";
-            var mmf = MemoryMappedFile.CreateOrOpen(name, ShmSize, MemoryMappedFileAccess.ReadWrite);
+            var mmf = SecureMemoryMappedFile.CreateOrOpen(name, ShmSize);
             var accessor = mmf.CreateViewAccessor(0, ShmSize, MemoryMappedFileAccess.ReadWrite);
 
             // Write header
