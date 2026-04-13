@@ -127,6 +127,12 @@ public class AppConfig
     {
         bool mutated = false;
         if (string.IsNullOrWhiteSpace(EQProcessName)) EQProcessName = "eqgame";
+        // Security: EQProcessName must be a known game executable — prevents config-driven injection into arbitrary processes
+        var allowedProcessNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "eqgame" };
+        if (!allowedProcessNames.Contains(EQProcessName))
+        {
+            EQProcessName = "eqgame";
+        }
         // Guard against null nested objects from corrupt/hand-edited JSON
         Layout ??= new();
         Affinity ??= new();

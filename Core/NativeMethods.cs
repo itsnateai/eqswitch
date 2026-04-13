@@ -326,7 +326,6 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool GetExitCodeThread(IntPtr hThread, out uint lpExitCode);
 
-    public const uint PROCESS_ALL_ACCESS = 0x001FFFFF;
     public const uint PROCESS_CREATE_THREAD = 0x0002;
     public const uint PROCESS_VM_OPERATION = 0x0008;
     public const uint PROCESS_VM_READ = 0x0010;

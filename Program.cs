@@ -143,6 +143,7 @@ static class Program
             }
 
             // --test-update: simulate update flow without hitting GitHub
+#if DEBUG
             if (args.Contains("--test-update"))
             {
                 UpdateDialog.TestMode = true;
@@ -156,6 +157,7 @@ static class Program
                 };
                 timer.Start();
             }
+#endif
 
             Application.Run();
         }
