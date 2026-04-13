@@ -125,6 +125,19 @@ public class UpdateDialog : Form
 
     private async Task CheckForUpdateAsync()
     {
+        if (IsWingetManaged())
+        {
+            FileLogger.Info("Update: winget-managed install detected, skipping self-update");
+            _marqueeTimer.Stop();
+            _progressOuter.Visible = false;
+            _lblStatus.Text = "This installation is managed by winget.";
+            _lblDetail.Text = "Use:  winget upgrade itsnateai.EQSwitch";
+            _btnAction.Visible = false;
+            _btnCancel.Text = "OK";
+            _btnCancel.Location = new Point(170, 120);
+            return;
+        }
+
         _cts = new CancellationTokenSource();
         _marqueeTimer.Start();
 
@@ -372,6 +385,15 @@ public class UpdateDialog : Form
 
     private async Task<bool> DownloadFileAsync(string url, string destPath, string displayName)
     {
+        // Security: only allow downloads from expected GitHub origins
+        if (!url.StartsWith("https://github.com/itsnateai/", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("https://objects.githubusercontent.com/", StringComparison.OrdinalIgnoreCase))
+        {
+            FileLogger.Warn($"Update: rejected download URL from unexpected origin: {url}");
+            ShowError("Update failed: download URL is not from the expected source.", url);
+            return false;
+        }
+
         using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, _cts!.Token);
         response.EnsureSuccessStatusCode();
 
@@ -469,6 +491,9 @@ public class UpdateDialog : Form
     }
 
     // ─── Helpers ────────────────────────────────────────────────
+
+    private static bool IsWingetManaged() =>
+        (Environment.ProcessPath ?? "").Contains(@"Microsoft\WinGet\Packages", StringComparison.OrdinalIgnoreCase);
 
     private static void TryDelete(string path)
     {
