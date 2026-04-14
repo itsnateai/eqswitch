@@ -1322,16 +1322,19 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                     g_heapScanArrayBase = arrayBase;
                     __try {
                         for (int i = 0; i < count && i < CHARSEL_MAX_CHARS; i++) {
-                            const char *heapName = (const char *)(arrayBase + i * HEAP_SCAN_STRIDE);
-                            if (heapName[0] >= 'A' && heapName[0] <= 'Z') {
-                                int nameLen = 0;
-                                while (nameLen < CHARSEL_NAME_LEN - 1 && heapName[nameLen] != '\0' &&
-                                       heapName[nameLen] >= 0x20 && heapName[nameLen] <= 0x7E)
-                                    nameLen++;
-                                memcpy((void *)shm->names[i], heapName, nameLen);
-                                ((char *)shm->names[i])[nameLen] = '\0';
-                                DI8Log("mq2_bridge: heap scan: slot %d = \"%s\"", i, (const char *)shm->names[i]);
-                            }
+                            const uint8_t *entry = (const uint8_t *)(arrayBase + i * HEAP_SCAN_STRIDE);
+                            if (!IsPlausibleName(entry)) continue;
+                            int nameLen = 0;
+                            while (nameLen < CHARSEL_NAME_LEN - 1 && entry[nameLen] != '\0')
+                                nameLen++;
+                            memcpy((void *)shm->names[i], entry, nameLen);
+                            ((char *)shm->names[i])[nameLen] = '\0';
+                            int32_t cls = *(const int32_t *)(entry + 0x44);
+                            int32_t lvl = *(const int32_t *)(entry + 0x50);
+                            shm->classes[i] = (cls >= 0 && cls <= 255) ? cls : 0;
+                            shm->levels[i]  = (lvl >= 0 && lvl <= 200) ? lvl : 0;
+                            DI8Log("mq2_bridge: heap scan: slot %d = \"%s\" lvl=%d cls=%d",
+                                   i, (const char *)shm->names[i], shm->levels[i], shm->classes[i]);
                         }
                     } __except(EXCEPTION_EXECUTE_HANDLER) {
                         DI8Log("mq2_bridge: SEH reading heap-scanned char array");
@@ -1339,19 +1342,28 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                     }
                 }
             }
-            // On subsequent polls, re-read names from cached heap array (names may update)
+            // On subsequent polls, re-read names from cached heap array (names may update).
+            // Re-validate each entry so a stale cache (heap reuse) doesn't silently feed garbage.
             else if (count > 0 && g_heapScanArrayBase) {
                 __try {
+                    int validated = 0;
                     for (int i = 0; i < count && i < CHARSEL_MAX_CHARS; i++) {
-                        const char *heapName = (const char *)(g_heapScanArrayBase + i * HEAP_SCAN_STRIDE);
-                        if (heapName[0] >= 'A' && heapName[0] <= 'Z') {
-                            int nameLen = 0;
-                            while (nameLen < CHARSEL_NAME_LEN - 1 && heapName[nameLen] != '\0' &&
-                                   heapName[nameLen] >= 0x20 && heapName[nameLen] <= 0x7E)
-                                nameLen++;
-                            memcpy((void *)shm->names[i], heapName, nameLen);
-                            ((char *)shm->names[i])[nameLen] = '\0';
-                        }
+                        const uint8_t *entry = (const uint8_t *)(g_heapScanArrayBase + i * HEAP_SCAN_STRIDE);
+                        if (!IsPlausibleName(entry)) continue;
+                        validated++;
+                        int nameLen = 0;
+                        while (nameLen < CHARSEL_NAME_LEN - 1 && entry[nameLen] != '\0')
+                            nameLen++;
+                        memcpy((void *)shm->names[i], entry, nameLen);
+                        ((char *)shm->names[i])[nameLen] = '\0';
+                        int32_t cls = *(const int32_t *)(entry + 0x44);
+                        int32_t lvl = *(const int32_t *)(entry + 0x50);
+                        shm->classes[i] = (cls >= 0 && cls <= 255) ? cls : 0;
+                        shm->levels[i]  = (lvl >= 0 && lvl <= 200) ? lvl : 0;
+                    }
+                    if (validated == 0) {
+                        DI8Log("mq2_bridge: heap cache stale (0/%d names valid) — invalidating", count);
+                        g_heapScanArrayBase = 0;
                     }
                 } __except(EXCEPTION_EXECUTE_HANDLER) {
                     DI8Log("mq2_bridge: SEH re-reading heap array — invalidating cache");
