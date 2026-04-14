@@ -39,9 +39,37 @@ All three files must be in the same folder.
 
 ## Screenshots
 
-<!-- TODO: Add screenshots — tray menu, settings GUI, PiP overlay, grid layout -->
+### Tray menu
+<p align="center">
+  <img src="docs/img/eqswitchtray1.png" alt="Tray menu" width="320">
+  <img src="docs/img/eqswitchtray2.png" alt="Tray menu — accounts submenu" width="320">
+  <img src="docs/img/eqswitchtray3.png" alt="Tray menu — teams submenu" width="320">
+</p>
 
-*Screenshots coming soon*
+### Settings
+<p align="center">
+  <img src="docs/img/eqswitchsettings.png" alt="General settings" width="420">
+  <img src="docs/img/eqswitchhotkeys.png" alt="Hotkeys tab" width="420">
+</p>
+<p align="center">
+  <img src="docs/img/eqswitchaccounts.png" alt="Accounts tab — DPAPI auto-login" width="420">
+  <img src="docs/img/eqswitchpaths.png" alt="Paths tab" width="420">
+</p>
+
+### PiP overlay
+<p align="center">
+  <img src="docs/img/eqswitchpip.png" alt="PiP DWM thumbnail overlay" width="640">
+</p>
+
+### Window styling & EQ client tweaks
+<p align="center">
+  <img src="docs/img/eqswitchwindowssetting.png" alt="Window style + slim titlebar" width="420">
+  <img src="docs/img/eqswitchvideo.png" alt="Video / eqclient.ini settings" width="420">
+</p>
+<p align="center">
+  <img src="docs/img/eqswitcheqclient.png" alt="eqclient.ini editor" width="420">
+  <img src="docs/img/eqswitchcpupriority.png" alt="CPU priority + affinity manager" width="420">
+</p>
 
 ## Features
 
