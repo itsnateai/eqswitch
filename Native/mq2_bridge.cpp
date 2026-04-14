@@ -1329,12 +1329,11 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                                 nameLen++;
                             memcpy((void *)shm->names[i], entry, nameLen);
                             ((char *)shm->names[i])[nameLen] = '\0';
-                            int32_t cls = *(const int32_t *)(entry + 0x44);
-                            int32_t lvl = *(const int32_t *)(entry + 0x50);
-                            shm->classes[i] = (cls >= 0 && cls <= 255) ? cls : 0;
-                            shm->levels[i]  = (lvl >= 0 && lvl <= 300) ? lvl : 0;
-                            DI8Log("mq2_bridge: heap scan: slot %d = \"%s\" lvl=%d cls=%d",
-                                   i, (const char *)shm->names[i], shm->levels[i], shm->classes[i]);
+                            // +0x44 confirmed to be RACE (1=Hum, 11=Halfling, etc), NOT class.
+                            // Class and level offsets unknown — leave shm fields untouched.
+                            int32_t race = *(const int32_t *)(entry + 0x44);
+                            DI8Log("mq2_bridge: heap scan: slot %d = \"%s\" race=%d (cls/lvl unknown)",
+                                   i, (const char *)shm->names[i], race);
                         }
                     } __except(EXCEPTION_EXECUTE_HANDLER) {
                         DI8Log("mq2_bridge: SEH reading heap-scanned char array");
@@ -1356,10 +1355,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                             nameLen++;
                         memcpy((void *)shm->names[i], entry, nameLen);
                         ((char *)shm->names[i])[nameLen] = '\0';
-                        int32_t cls = *(const int32_t *)(entry + 0x44);
-                        int32_t lvl = *(const int32_t *)(entry + 0x50);
-                        shm->classes[i] = (cls >= 0 && cls <= 255) ? cls : 0;
-                        shm->levels[i]  = (lvl >= 0 && lvl <= 200) ? lvl : 0;
+                        // class/level offsets unknown — don't touch shm fields
                     }
                     if (validated == 0) {
                         DI8Log("mq2_bridge: heap cache stale (0/%d names valid) — invalidating", count);
