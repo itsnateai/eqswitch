@@ -1,0 +1,28 @@
+
+
+=== Acpots (slot 0) ===
+  +0x000  'Acpots'
+
+=== Backup (slot 1) ===
+  +0x000  'Backup'
+
+=== Healpots (slot 2) ===
+  +0x000  'Healpots'
+
+=== Jonopua (slot 3) ===
+  +0x000  'Jonopua'
+
+=== Nate (slot 4) ===
+  +0x000  'Nate'
+
+=== Potiongirl (slot 5) ===
+  +0x000  'Potiongirl'
+
+=== Potionguy (slot 6) ===
+  +0x000  'Potionguy'
+
+===  (slot 7) ===
+
+===  (slot 8) ===
+
+===  (slot 9) ===
