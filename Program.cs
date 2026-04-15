@@ -118,6 +118,44 @@ static class Program
             return;
         }
 
+        // --test-key-input-writer — run Core/KeyInputWriterTests.RunAll() and
+        // exit with its return code. Guards the hotfix v3 MMF write-order contract.
+        if (args.Length >= 1 && args[0] == "--test-key-input-writer")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.KeyInputWriterTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"KeyInputWriterTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
+        // --test-shm-layout — verify C# SharedKeyState struct layout matches
+        // Native/key_shm.h. Fails fast if a refactor drifts either side.
+        if (args.Length >= 1 && args[0] == "--test-shm-layout")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.ShmLayoutTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"ShmLayoutTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
         // Enforce single instance
         const string mutexName = "EQSwitch_SingleInstance_SoD";
         _mutex = new Mutex(true, mutexName, out bool createdNew);
