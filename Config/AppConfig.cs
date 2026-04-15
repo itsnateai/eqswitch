@@ -249,14 +249,14 @@ public class AppConfig
     /// registration.
     /// </summary>
     public Account? FindAccountByName(string name) =>
-        string.IsNullOrEmpty(name) ? null : Accounts.FirstOrDefault(a => a.Name == name);
+        string.IsNullOrEmpty(name) ? null : Accounts.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.Ordinal));
 
     /// <summary>
     /// Look up a Character by its in-game Name. Ordinal comparison. Returns null if
     /// name is empty or no match found.
     /// </summary>
     public Character? FindCharacterByName(string name) =>
-        string.IsNullOrEmpty(name) ? null : Characters.FirstOrDefault(c => c.Name == name);
+        string.IsNullOrEmpty(name) ? null : Characters.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.Ordinal));
 }
 
 public class WindowLayout
