@@ -804,8 +804,16 @@ public class TrayManager : IDisposable
             foreach (var acc in accounts)
             {
                 var captured = acc; // explicit capture for closure
-                var label = $"\uD83D\uDC64  {captured.EffectiveLabel}{HkSuffix(hkLookup.GetCombo(captured.Name))}";
-                var item = new ToolStripMenuItem(label) { ToolTipText = captured.Tooltip };
+                // Use ShortcutKeyDisplayString for the hotkey column — DarkMenuRenderer on
+                // submenu items doesn't paint the embedded \t tab separator the way it does
+                // for root items, so HkSuffix renders label+combo docked together. The dedicated
+                // property is the WinForms idiom and renders in its own right-aligned column.
+                var label = $"\uD83D\uDC64  {captured.EffectiveLabel}";
+                var item = new ToolStripMenuItem(label)
+                {
+                    ToolTipText = captured.Tooltip,
+                    ShortcutKeyDisplayString = hkLookup.GetCombo(captured.Name)
+                };
                 item.Click += (_, _) => FireAccountLogin(captured);
                 menu.DropDownItems.Add(item);
             }
@@ -845,9 +853,13 @@ public class TrayManager : IDisposable
             foreach (var ch in characters)
             {
                 var captured = ch;
-                var label = $"\uD83E\uDDD9  {captured.LabelWithClass}{HkSuffix(hkLookup.GetCombo(captured.Name))}";
+                var label = $"\uD83E\uDDD9  {captured.LabelWithClass}";
                 var tooltip = BuildCharacterTooltip(captured, accountsByKey);
-                var item = new ToolStripMenuItem(label) { ToolTipText = tooltip };
+                var item = new ToolStripMenuItem(label)
+                {
+                    ToolTipText = tooltip,
+                    ShortcutKeyDisplayString = hkLookup.GetCombo(captured.Name)
+                };
                 item.Click += (_, _) => FireCharacterLogin(captured);
                 menu.DropDownItems.Add(item);
             }
@@ -894,9 +906,13 @@ public class TrayManager : IDisposable
             foreach (var t in populated)
             {
                 var action = t.Action;  // capture for closure
-                var label = $"\uD83D\uDE80  Auto-Login Team {t.Num}{HkSuffix(t.Combo)}";
+                var label = $"\uD83D\uDE80  Auto-Login Team {t.Num}";
                 var tooltip = BuildTeamTooltip(t.Num);
-                var item = new ToolStripMenuItem(label) { ToolTipText = tooltip };
+                var item = new ToolStripMenuItem(label)
+                {
+                    ToolTipText = tooltip,
+                    ShortcutKeyDisplayString = t.Combo
+                };
                 item.Click += (_, _) => ExecuteTrayAction(action);
                 menu.DropDownItems.Add(item);
             }
@@ -1486,9 +1502,10 @@ public class TrayManager : IDisposable
         };
         if (string.IsNullOrEmpty(targetName))
         {
-            // Rate-limit empty-slot balloons — a hotkey hammered 40 times would otherwise
-            // queue 40 tray notifications. 3 seconds of cooldown per slot covers accidental
-            // repeated presses without hiding a genuinely missed-binding nudge.
+            // Always log — diagnostic trail for empty-slot fires. Balloon is rate-limited
+            // to avoid tray-notification spam if a user holds down or rapidly repeats the hotkey.
+            // First press ALWAYS balloons (rate-limit only kicks in on rapid repeat).
+            FileLogger.Info($"FireLegacyQuickLoginSlot: slot {slot} fired but QuickLogin{slot} is empty (no account assigned)");
             if (!ShouldSuppressEmptySlotBalloon(slot))
                 ShowBalloon($"Quick Login {slot}: no account assigned");
             return;
@@ -1658,25 +1675,68 @@ public class TrayManager : IDisposable
 
     /// <summary>
     /// Fires all populated slots for the given team in parallel (fire-and-forget via
-    /// discard-assignment to ExecuteQuickLogin). Preserves v3 timing semantics —
-    /// DO NOT switch to sequential await (plan line 371 is emphatic).
+    /// discard-assignment — NO await inside the foreach loop). Preserves v3 timing
+    /// semantics around _activeLoginPids — plan line 371 is emphatic.
+    ///
+    /// Team-slot intent (clarified by user 2026-04-15):
+    ///   Character slot → enter world (teams are designed around characters)
+    ///   Account-only slot → stop at charselect (typical crafter-team pattern)
+    ///   teamN.AutoEnter = true → override, try to force enter-world on all slots
+    ///                            (Account-only slots still stop at charselect because
+    ///                             AutoLoginManager can't pick a character for them —
+    ///                             logs a warn and degrades gracefully)
+    ///   teamN.AutoEnter = false → no override, use per-slot-type default above
+    ///
+    /// This method bypasses the legacy ExecuteQuickLogin path (which routed through
+    /// the [Obsolete] LoginAccount wrapper). ExecuteQuickLogin is now dead code — Phase 5
+    /// deletes it per plan. The CS0618 warning it generates stays as a visible reminder
+    /// that Phase 5 cleanup is still pending.
     /// </summary>
     private void FireTeam(int teamIndex)
     {
-        var (slots, teamAutoEnter, teamName) = ResolveTeamConfig(teamIndex);
+        var (slots, teamForcesEnterWorld, teamName) = ResolveTeamConfig(teamIndex);
+
+        // null = no team-level override, use per-slot default.
+        // true = team override — force enter-world (works on Character slots; Account-only
+        //        slots will downgrade-with-warn inside LoginToCharselect since there's no
+        //        character target to select).
+        bool? perSlotOverride = teamForcesEnterWorld ? true : null;
+
         int fired = 0;
         foreach (var (user, slotLabel) in slots)
         {
-            if (!string.IsNullOrEmpty(user))
+            if (string.IsNullOrEmpty(user)) continue;
+
+            // Character-first: teams are designed around Characters → enter world is the default intent.
+            var character = _config.FindCharacterByName(user);
+            if (character != null)
             {
-                _ = ExecuteQuickLogin(user, slotLabel, teamAutoEnter);  // PARALLEL — no await
+                FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{user}' \u2192 Character '{character.EffectiveLabel}' \u2192 enter world");
+                _ = _autoLoginManager.LoginAndEnterWorld(character, perSlotOverride);  // PARALLEL — no await
                 fired++;
+                continue;
             }
+
+            // Account-only slot (no matching Character). Default: stop at charselect — this
+            // is the typical crafter-team pattern where users want to pick the toon manually.
+            var account = _config.FindAccountByName(user);
+            if (account != null)
+            {
+                var intent = teamForcesEnterWorld
+                    ? "team override \u2192 attempt enter world (may downgrade if no Character target)"
+                    : "charselect (Account-only slot, e.g. crafter team)";
+                FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{user}' \u2192 Account '{account.EffectiveLabel}' \u2192 {intent}");
+                _ = _autoLoginManager.LoginToCharselect(account, perSlotOverride);  // PARALLEL — no await
+                fired++;
+                continue;
+            }
+
+            FileLogger.Warn($"FireTeam({teamIndex}): {slotLabel} '{user}' not found in Accounts or Characters \u2014 skipping");
         }
         if (fired == 0)
         {
             ShowWarning($"No accounts assigned to {teamName} \u2014 configure in Settings \u2192 Accounts");
-            FileLogger.Warn($"FireTeam: {teamName} has no accounts assigned");
+            FileLogger.Warn($"FireTeam: {teamName} has no slots assigned");
         }
     }
 
