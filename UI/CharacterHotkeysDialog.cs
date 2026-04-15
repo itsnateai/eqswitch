@@ -21,6 +21,8 @@ public sealed class CharacterHotkeysDialog : Form
     private readonly List<(string TargetName, TextBox HotkeyBox)> _liveRows = new();
     private readonly List<(string TargetName, TextBox HotkeyBox, ComboBox RebindCombo)> _staleRows = new();
     private readonly IReadOnlyList<(string label, string combo)> _otherHotkeys;
+    // Shared Consolas font — see AccountHotkeysDialog for GDI rationale.
+    private readonly Font _hotkeyFont = new("Consolas", 9f);
 
     /// <summary>Result of the dialog. Null until DialogResult.OK.</summary>
     public List<HotkeyBinding>? Result { get; private set; }
@@ -138,7 +140,7 @@ public sealed class CharacterHotkeysDialog : Form
             BackColor = DarkTheme.BgInput,
             ForeColor = DarkTheme.FgWhite,
             BorderStyle = BorderStyle.None,
-            Font = new Font("Consolas", 9f),
+            Font = _hotkeyFont,   // shared — disposed in Dispose override
             TextAlign = HorizontalAlignment.Center,
             ShortcutsEnabled = false,
             Text = initialText,
@@ -146,6 +148,12 @@ public sealed class CharacterHotkeysDialog : Form
         tb.KeyDown += HotkeyBoxKeyDown;
         card.Controls.Add(tb);
         return tb;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _hotkeyFont.Dispose();
+        base.Dispose(disposing);
     }
 
     private static void HotkeyBoxKeyDown(object? sender, KeyEventArgs e)
