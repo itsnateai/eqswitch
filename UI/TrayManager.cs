@@ -1156,7 +1156,7 @@ public class TrayManager : IDisposable
     private void ShowBalloon(string message)
     {
         if (_config.TooltipDurationMs <= 0) return;
-        // Marshal to UI thread if called from a background thread (e.g. FireTeamLogin)
+        // Marshal to UI thread if called from a background thread (e.g. FireTeam)
         if (_uiContext != null && SynchronizationContext.Current != _uiContext)
         {
             _uiContext.Post(_ => ShowBalloon(message), null);
