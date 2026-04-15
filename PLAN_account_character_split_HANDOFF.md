@@ -10,36 +10,30 @@ You are continuing work on EQSwitch, a C#/.NET 8 WinForms multiboxing tray app f
 
 **Your task:** verify, refine, and implement the plan in `PLAN_account_character_split.md` (same directory). The plan splits the current `LoginAccount` model into two first-class entities (`Account` for credentials, `Character` for play targets) and restructures the tray menu into three intentional launch modes (bare client, login-and-stop-at-charselect, login-and-enter-world).
 
-### Phase A — Verify the plan against current code (READ-ONLY first, ~30 min)
+### Phase A — Re-verify the patched plan against current code (READ-ONLY, ~20 min)
 
-Before writing any code, prove the plan is grounded. Two specific verifications the user explicitly called out:
+The plan was audited on 2026-04-14 and 16 gaps were patched. The header has `Verified against codebase: 2026-04-14`. Your job is to re-verify the patched claims (not re-find the original gaps — those are already fixed). Spot-check:
 
-- **GUI table restructure** — the plan's "SettingsForm Accounts tab — table restructure (detailed)" section describes a dual-section layout (Accounts grid above, Characters grid below). Read the current `UI/SettingsForm.cs` Accounts tab carefully — note every field, every event handler, every staging variable. Confirm the staging pattern (`ApplySettings()` builds new config from controls; never mutates `_config` directly) matches the plan's description and that `_stagedAccounts`/`_stagedCharacters` is the right way to extend it.
-- **Teams** — the plan's "Teams — verification + integration" section asks you to verify three things in code BEFORE writing migration code: (1) does today's team launch actually call the same `LoginAccount(LoginAccount)` entry point so the phantom-click defenses apply? (2) does each member's `AutoEnterWorld` flag get respected, or is there a team-level override? (3) parallel vs serial launches and shared state. Trace the call graph from the team-launch hotkey through to `AutoLoginManager`. If teams currently DON'T always enter world, the plan's "teams always enter world" claim is a behavior change, not just a model rename — flag this.
-- **Per-account quick-launch hotkeys** — the plan's "Per-account quick-launch hotkeys — explicit handling" section adds an `AutoLoginTargets` array to `HotkeyConfig` so each AutoLoginN slot binds to either an Account or a Character (with a `Kind` discriminator). Verify the existing `HotkeyConfig` shape, the existing `AutoLogin1-4` semantics, and how the hotkey handler dispatches today. Confirm migration logic preserves user intent (Character-bound = enter world, Account-bound = stop at charselect).
+- **`ConfigVersionMigrator.cs` is the right home** for `MigrateV3ToV4` — not `ConfigMigration.cs` (which is AHK-only). Confirm pattern matches `MigrateV2ToV3`.
+- **`AutoLoginManager.LoginAccount(account, teamAutoEnter)`** at line 63 — two-parameter signature. The plan's new methods must preserve the `teamAutoEnter` override semantic.
+- **`Team{N}AutoEnter` fields** in `AppConfig.cs` lines 86-89 — four bools, preserved in v4 migration unchanged.
+- **Hotkey two-step lookup** — `HotkeyConfig.AutoLoginN` (key combo) + `AppConfig.QuickLoginN` (username/charname) — migration rule in "Step 2" is the right shape.
+- **`CharacterProfile.PriorityOverride`** at line 485 — used by `AffinityManager`, not tooltip-only. Rename preserves it.
+- **`ExecuteQuickLogin` at line 1320-1322** — matches by CharacterName first, Username second. Migration follows same order.
+- **Root "Launch Team" button** at line 802-804 — stays. Team 1 accessible from both root and Teams submenu.
+- **Parallel fire-and-forget** in `FireTeamLogin` at line 1339 — new `FireTeam` must preserve parallelism.
+- **Phantom-click defenses** — `gameState==5` at `mq2_bridge.cpp` lines 1103 and 1141; `result==-2` at `AutoLoginManager.cs:417`.
 
-Then open these files and confirm the rest of the plan matches reality:
+If any claim in the patched plan disagrees with the code, flag it BEFORE writing Phase 1. The patches were done carefully but six-eyes is cheap insurance.
 
-- `Models/LoginAccount.cs` — current schema.
-- `Config/AppConfig.cs` — `Accounts`, `Characters` (existing `CharacterProfile`), `ConfigVersion`, `HotkeyConfig`, `Team{N}Account{M}` fields.
-- `Config/ConfigMigration.cs` and `ConfigVersionMigrator` — where v3→v4 migration must hook in.
-- `Core/AutoLoginManager.cs` — confirm `LoginAccount(LoginAccount)` is the single autologin entry point. Trace all call sites. Especially read lines around 200-540 (the main login flow), 685-755 (`WaitForScreenTransition`), and the `finally` cleanup.
-- `Core/CharSelectReader.cs` — SHM contract. The plan claims native is unchanged; verify by checking that selection-by-name + Enter World only need a character name and a PID.
-- `UI/TrayManager.cs` — current `BuildContextMenu()` (~line 775), Accounts submenu (~line 807). Note all the helper methods that read `_config.Accounts`.
-- `UI/SettingsForm.cs` — current Accounts tab (search for `_chkAutoEnterWorld`, the DataGridView for accounts, the AccountEditDialog if any).
-- Recent commits `ca66aee`, `4bc13c9` — phantom-click defenses. The plan must not regress these.
+### Phase B — Review the resolved decisions (~10 min)
 
-If the plan and the code disagree on any structural claim, flag it before proceeding. The plan was written from a brief skim and may have missed nuance.
+The plan's "Open questions — resolved decisions" section has `(proposed)` and `(resolved)` markers. Read them once and flag anything Nate should override:
 
-### Phase B — Sharpen the plan (~15 min)
+- `(proposed)` items — Nate's preferences are unknown; current recommendations are defensible defaults based on the audit.
+- `(resolved)` items — these are derived from code reading or audit findings and should not change without a specific reason.
 
-Update `PLAN_account_character_split.md` in place if your verification turns up anything material. Specifically resolve:
-
-- The **naming-collision** decision (Option A vs B in the plan) — pick one and commit it in writing.
-- The four **open questions** at the bottom of the plan — propose answers based on what you've now read in the code; mark each as "proposed" so the user can override.
-- Any nuance from "Nuances to watch" that turns out to be wrong or already handled.
-
-If the plan still looks right, leave it as-is and add a one-line "Verified against codebase 2026-MM-DD" at the top.
+If you disagree with a recommendation, make your counter-argument in writing before Phase 1 kicks off. Don't silently implement a different choice.
 
 ### Phase C — Use the brainstorming + writing-plans skills before coding
 
@@ -49,16 +43,24 @@ Do NOT skip these. The phantom-click bugs we just spent a session chasing came f
 
 ### Phase D — Implement Phase 1 (Models + migration), STOP, get sign-off
 
-Per the plan's "Build sequence":
+Per the plan's "Build sequence" — it was updated with the patched steps on 2026-04-14:
 
-1. Create `Models/Account.cs` and `Models/Character.cs` per the schema in the plan.
-2. Update `Config/AppConfig.cs` to use the new types. Bump `ConfigVersion` to 4.
-3. Implement `MigrateV3ToV4` in `ConfigVersionMigrator`.
-4. Add migration unit tests (or scripted fixtures if the project has no test project) covering: (a) one account / one character; (b) one account / three characters; (c) account with no character; (d) DPAPI password round-trip after migration.
-5. Keep existing `LoginAccount.cs` as a thin shim or `[Obsolete]` so the rest of the codebase still compiles. **Do not touch `TrayManager.cs`, `SettingsForm.cs`, or `AutoLoginManager.cs` yet.**
-6. Build (`dotnet build`), publish (`dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true`).
-7. Manually load the existing `eqswitch-config.json` from `C:/Users/nate/proggy/Everquest/EQSwitch/` (back it up first to `eqswitch-config.json.v3-backup`), run the new build once with the user watching, verify migration logs are clean, EXIT THE APP, then `cat eqswitch-config.json` and confirm Accounts and Characters look right.
-8. **STOP. Report back. Get user sign-off before Phase 2.**
+1. Create `Models/Account.cs`, `Models/Character.cs`, `Models/HotkeyBinding.cs`, `Models/CharacterAlias.cs` (rename of `CharacterProfile`) per the schema in the plan.
+2. Update `Config/AppConfig.cs`: swap `List<LoginAccount> Accounts` → `List<Account> Accounts`; swap `List<CharacterProfile> Characters` → `List<CharacterAlias> CharacterAliases` (new JSON key `"characterAliases"`); add `List<Character> Characters` (reclaims the `"characters"` JSON key). Bump `CurrentConfigVersion` to 4.
+3. Implement `MigrateV3ToV4(JsonObject root)` in `Config/ConfigVersionMigrator.cs` — **NOT `ConfigMigration.cs`**. Follow the existing `MigrateV2ToV3` pattern. Covers all 5 steps (account split, hotkey two-step lookup, team field rebinding, Team{N}AutoEnter preservation, TrayClickConfig noop).
+4. Add migration scripted fixtures (no test project exists) covering the 5 patterns (a-e) from the plan's "Migration test fixtures" section. Script them under `_tests/migration/` or similar.
+5. Keep existing `LoginAccount.cs` as `[Obsolete("v3 compat only; removed in v3.11.0")]` so the rest of the codebase still compiles. **Do not touch `TrayManager.cs`, `SettingsForm.cs`, or `AutoLoginManager.cs` yet.**
+6. Verify `AffinityManager` still works with the `CharacterProfile` → `CharacterAlias` rename. Update any direct type references.
+7. Build (`dotnet build`), publish (`dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true`).
+8. Manually load the existing `eqswitch-config.json` from `C:/Users/nate/proggy/Everquest/EQSwitch/` (back it up first to `eqswitch-config.json.v3-backup`), run the new build once with the user watching, verify migration logs are clean, EXIT THE APP, then `cat eqswitch-config.json` and confirm:
+   - `configVersion: 4`
+   - `accounts` array has deduped Account entries (no duplicate username+server pairs).
+   - `characters` array has Character entries for every v3 LoginAccount with CharacterName set.
+   - `characterAliases` array holds the migrated v3 `characters` list (the old CharacterProfile data).
+   - `quickLogin1-4` and `hotkeys.autoLogin1-4` retained for downgrade safety.
+   - `team{N}Account{M}` fields rebound to Character names where possible, Account names otherwise.
+   - `team{N}AutoEnter` unchanged.
+9. **STOP. Report back. Get user sign-off before Phase 2.**
 
 ### Phase E — Subsequent phases
 
