@@ -162,10 +162,28 @@ public class AutoLoginManager
         {
             password = CredentialManager.Decrypt(account.EncryptedPassword);
         }
+        catch (System.Security.Cryptography.CryptographicException ex)
+        {
+            // DPAPI unprotect failed — typically happens after cross-user config import
+            // (DPAPI scope is CurrentUser on this machine). Surface the root cause so the
+            // user knows to re-enter their password rather than assuming the app is broken.
+            FileLogger.Error($"AutoLogin: DPAPI decrypt failed for '{account.Name}' — likely encrypted on a different Windows user. Re-enter password in Settings.", ex);
+            StatusUpdate?.Invoke(this,
+                $"Password for '{account.Name}' was encrypted on a different Windows user. Re-enter it in Settings \u2192 Accounts.");
+            return Task.CompletedTask;
+        }
+        catch (FormatException ex)
+        {
+            // Stored blob is not valid Base64 — config file corruption.
+            FileLogger.Error($"AutoLogin: stored password for '{account.Name}' is not valid Base64 — config corruption.", ex);
+            StatusUpdate?.Invoke(this,
+                $"Stored password for '{account.Name}' is corrupted. Re-enter it in Settings \u2192 Accounts.");
+            return Task.CompletedTask;
+        }
         catch (Exception ex)
         {
-            FileLogger.Error("AutoLogin: failed to decrypt password", ex);
-            StatusUpdate?.Invoke(this, "Error: failed to decrypt password");
+            FileLogger.Error($"AutoLogin: unexpected decrypt failure for '{account.Name}'", ex);
+            StatusUpdate?.Invoke(this, $"Unexpected error decrypting password for '{account.Name}': {ex.Message}");
             return Task.CompletedTask;
         }
 
