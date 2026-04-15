@@ -119,8 +119,16 @@ public sealed class KeyInputWriter : IDisposable
         if (!_mappings.TryGetValue(pid, out var entry)) return;
         try
         {
-            entry.Accessor.Write(ActiveOffset, (uint)1);
+            // Phantom-keys hotfix v6 (HIGH): write Suppress BEFORE Active. If the
+            // second write throws, SHM lands in {Active=0, Suppress=X} — the DLL's
+            // ShouldSuppress() ANDs with active!=0, so the gate stays closed. The
+            // pre-v6 order (Active=1 then Suppress) could leave {Active=1,
+            // Suppress=0} on a partial failure — the exact phantom-keys bleed
+            // state v5 was meant to close. Mirrors v3's zero-before-clear-active
+            // discipline in Deactivate/Reactivate/Close/Dispose.
             entry.Accessor.Write(SuppressOffset, suppress ? (uint)1 : (uint)0);
+            Thread.MemoryBarrier();
+            entry.Accessor.Write(ActiveOffset, (uint)1);
         }
         catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Activate failed: {ex.Message}"); }
     }
@@ -145,6 +153,13 @@ public sealed class KeyInputWriter : IDisposable
             // next Activate. Zeroing first means any partial failure leaves
             // a safe state (active=1 with zero buffer — nothing to inject).
             entry.Accessor.WriteArray(HeaderSize, new byte[KeysSize], 0, KeysSize);
+            // Hotfix v6: clear Suppress on the way out. Not required for DLL
+            // correctness (ShouldSuppress ANDs with active!=0, so a sticky
+            // Suppress is inert after active=0), but preserves the invariant
+            // "Suppress reflects the intent of the CURRENT activation" — any
+            // future Activate() caller sees a clean slate instead of inheriting
+            // a phantom 1 from a prior burst.
+            entry.Accessor.Write(SuppressOffset, (uint)0);
             entry.Accessor.Write(ActiveOffset, (uint)0);
         }
         catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Deactivate failed: {ex.Message}"); }
@@ -155,7 +170,7 @@ public sealed class KeyInputWriter : IDisposable
     /// ActivateThread only blasts activation messages on false→true transitions,
     /// so toggling forces it to re-blast even if SHM was already active.
     /// </summary>
-    public void Reactivate(int pid, int gapMs = 50)
+    public void Reactivate(int pid, int gapMs = 50, bool suppress = false)
     {
         if (!_mappings.TryGetValue(pid, out var entry)) return;
         try
@@ -163,8 +178,15 @@ public sealed class KeyInputWriter : IDisposable
             // Phantom-keys hotfix v3 (HIGH-1): zero buffer BEFORE clearing
             // active. See Deactivate for the fault-safe ordering rationale.
             entry.Accessor.WriteArray(HeaderSize, new byte[KeysSize], 0, KeysSize);
+            entry.Accessor.Write(SuppressOffset, (uint)0);
             entry.Accessor.Write(ActiveOffset, (uint)0);
             Thread.Sleep(gapMs);
+            // Hotfix v6: write Suppress BEFORE Active on the rising edge, same
+            // discipline as Activate. Callers that want burst-mode protection
+            // across a Reactivate must pass suppress:true explicitly — the flag
+            // does NOT carry over from before the gap.
+            entry.Accessor.Write(SuppressOffset, suppress ? (uint)1 : (uint)0);
+            Thread.MemoryBarrier();
             entry.Accessor.Write(ActiveOffset, (uint)1);
         }
         catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Reactivate failed: {ex.Message}"); }
@@ -193,7 +215,9 @@ public sealed class KeyInputWriter : IDisposable
             try
             {
                 // Phantom-keys hotfix v3 (HIGH-1): zero buffer before clearing active.
+                // Hotfix v6: also clear Suppress so nothing leaks to a future Open() reuse.
                 entry.Accessor.WriteArray(HeaderSize, new byte[KeysSize], 0, KeysSize);
+                entry.Accessor.Write(SuppressOffset, (uint)0);
                 entry.Accessor.Write(ActiveOffset, (uint)0);
             }
             catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Close: cleanup failed for PID {pid}: {ex.Message}"); }
@@ -214,8 +238,10 @@ public sealed class KeyInputWriter : IDisposable
                 // Phantom-keys hotfix v3 (HIGH-1 + MED-3): zero buffer before
                 // clearing active, matching Deactivate/Close symmetry. Ensures
                 // no stale bytes linger in the MMF if another process still
-                // holds a view after our handle releases.
+                // holds a view after our handle releases. Hotfix v6 also clears
+                // Suppress for symmetry — same rationale as Deactivate/Close.
                 entry.Accessor.WriteArray(HeaderSize, new byte[KeysSize], 0, KeysSize);
+                entry.Accessor.Write(SuppressOffset, (uint)0);
                 entry.Accessor.Write(ActiveOffset, (uint)0);
             }
             catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Dispose: cleanup failed for PID {pid}: {ex.Message}"); }
