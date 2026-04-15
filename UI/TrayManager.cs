@@ -1014,7 +1014,10 @@ public class TrayManager : IDisposable
         videoMenu.DropDownItems.Add("Swap Windows  \uD83D\uDD00", null, (_, _) => ExecuteTrayAction("SwapWindows"));
         bool isMultiMon = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
         var multiMonItem = new ToolStripMenuItem(
-            $"{(isMultiMon ? "\u2705" : "\u2B1C")}  Multi-Monitor Mode");
+            $"{(isMultiMon ? "\u2705" : "\u2B1C")}  Multi-Monitor Mode")
+        {
+            ShortcutKeyDisplayString = hk.ToggleMultiMonitor
+        };
         multiMonItem.Click += (_, _) =>
         {
             _config.Hotkeys.MultiMonitorEnabled = true; // ensure toggle works from menu
