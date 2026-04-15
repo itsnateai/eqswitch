@@ -1362,7 +1362,9 @@ public class SettingsForm : Form
                 TeamLogin3 = _txtTeamLogin3Hotkey.Text.Trim(),
                 TeamLogin4 = _txtTeamLogin4Hotkey.Text.Trim(),
                 // Once enabled, the hotkey is unlocked permanently
-                MultiMonitorEnabled = _chkVideoMultiMon.Checked || _config.Hotkeys.MultiMonitorEnabled,
+                // Phase 5a: MultiMonitorEnabled gate removed. Preserve existing value for
+                // downgrade safety; SettingsForm no longer writes this field.
+                MultiMonitorEnabled = _config.Hotkeys.MultiMonitorEnabled,
                 DirectSwitchKeys = _config.Hotkeys.DirectSwitchKeys,
                 SwitchKeyMode = _cboSwitchKeyMode.SelectedItem?.ToString() == "Cycle All" ? "cycleAll" : "swapLast"
             },
