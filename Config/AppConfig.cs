@@ -421,6 +421,9 @@ public class HotkeyConfig
     /// </summary>
     public List<HotkeyBinding> CharacterHotkeys { get; set; } = new();
 
+    /// <summary>Toggle PiP overlay (show/hide). Blank = unbound.</summary>
+    public string TogglePip { get; set; } = "";
+
     /// <summary>
     /// Set true once the user has enabled multimonitor mode at least once.
     /// Unlocks Alt+M hotkey permanently. Won't work until user tries
