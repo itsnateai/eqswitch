@@ -583,13 +583,11 @@ public class TrayManager : IDisposable
     /// </summary>
     private void OnToggleMultiMonitor()
     {
-        // Hotkey locked until user has tried multimonitor at least once via Settings
-        if (!_config.Hotkeys.MultiMonitorEnabled)
-        {
-            FileLogger.Info("ToggleMultiMonitor: not yet unlocked — enable in Settings first");
-            ShowBalloon("Enable Multi-Monitor mode in Settings first");
-            return;
-        }
+        // Phase 5a: the first-time-use gate was removed. Any bound combo fires the
+        // toggle directly — the hotkey-conflict modal (P3.5-D) already blocks duplicate
+        // bindings at config time, and every other hotkey operates this way. The
+        // MultiMonitorEnabled bool stays on HotkeyConfig for downgrade safety but is
+        // no longer consulted at dispatch time. Phase 6 deletes the field.
 
         long now = Environment.TickCount64;
         if (now - _lastMultiMonToggle < MultiMonToggleDebounceMs)
