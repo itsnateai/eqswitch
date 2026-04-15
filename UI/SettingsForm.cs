@@ -81,13 +81,14 @@ public class SettingsForm : Form
     // ─── Accounts tab controls (Phase 4: v4 Account + Character as first-class)
     private List<Account> _pendingAccounts = new();
     private List<Character> _pendingCharacters = new();
-    private int _lastNameCollisionHash;
+    private int? _lastNameCollisionHash;
 
     /// <summary>
     /// Phase 4: raised after a successful ApplySettings when at least one Account.Name
     /// collides with a Character.Name. Payload is a comma-separated list of the
     /// colliding names. TrayManager subscribes + surfaces as a non-blocking balloon.
-    /// Fires only when the collision set changes across saves (hash-deduped).
+    /// Fires only when the collision set changes across saves (hash-deduped; nullable
+    /// sentinel so a legitimate 0 hash doesn't masquerade as "no prior collision").
     /// </summary>
     public event Action<string>? OnSameNameCollision;
     private DataGridView _dgvAccounts = null!;
@@ -1241,6 +1242,25 @@ public class SettingsForm : Form
         // Phase 4: cross-section validation — structural errors block Save.
         // Run after P3.5-D hotkey conflict check but before mutating _config.
 
+        // 0. No empty Account or Character Names. A hand-edited config or a degenerate
+        //    Import can slip these past UI-level checks; block before they corrupt the tray.
+        var emptyAcct = _pendingAccounts.FirstOrDefault(a => string.IsNullOrWhiteSpace(a.Name));
+        if (emptyAcct != null)
+        {
+            MessageBox.Show(
+                $"An Account is missing a Name (Username '{emptyAcct.Username}'). Set a Name or delete it before saving.",
+                "Empty Account Name", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+        var emptyChar = _pendingCharacters.FirstOrDefault(c => string.IsNullOrWhiteSpace(c.Name));
+        if (emptyChar != null)
+        {
+            MessageBox.Show(
+                "A Character is missing a Name. Set a Name or delete it before saving.",
+                "Empty Character Name", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+
         // 1. Account names unique (Ordinal).
         var acctNameDupes = _pendingAccounts
             .GroupBy(a => a.Name, StringComparer.Ordinal)
@@ -1450,7 +1470,7 @@ public class SettingsForm : Form
         {
             var details = string.Join(", ", collisions);
             var hash = details.GetHashCode();
-            if (hash != _lastNameCollisionHash)
+            if (_lastNameCollisionHash != hash)
             {
                 _lastNameCollisionHash = hash;
                 OnSameNameCollision?.Invoke(details);
@@ -1458,7 +1478,7 @@ public class SettingsForm : Form
         }
         else
         {
-            _lastNameCollisionHash = 0;
+            _lastNameCollisionHash = null;
         }
 
         return true;
@@ -2165,6 +2185,36 @@ public class SettingsForm : Form
         {
             MessageBox.Show("No accounts found in file.", "Import", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
+        }
+
+        // DPAPI scope is CurrentUser on this machine. If the export came from a different
+        // Windows account, every EncryptedPassword blob is dead. Probe-decrypt the first
+        // non-empty blob; on CryptographicException, warn before proceeding so the user
+        // knows they'll need to re-enter passwords.
+        var probe = imported.FirstOrDefault(a => !string.IsNullOrEmpty(a.EncryptedPassword));
+        if (probe != null)
+        {
+            try
+            {
+                CredentialManager.Decrypt(probe.EncryptedPassword);
+            }
+            catch (System.Security.Cryptography.CryptographicException)
+            {
+                var choice = MessageBox.Show(
+                    "These accounts were encrypted on a different Windows user account (or a different machine). "
+                  + "The stored passwords cannot be decrypted here — you'll need to re-enter each password after import.\n\n"
+                  + "Import the accounts anyway (without working passwords)?",
+                    "Cross-User Import", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (choice != DialogResult.Yes) return;
+            }
+            catch (FormatException)
+            {
+                var choice = MessageBox.Show(
+                    "The stored password blob is not valid Base64 — the export file may be corrupted.\n\n"
+                  + "Import the accounts anyway (without working passwords)?",
+                    "Corrupted Password Blob", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (choice != DialogResult.Yes) return;
+            }
         }
 
         // Dedup by (Username, Server) — case-insensitive.
