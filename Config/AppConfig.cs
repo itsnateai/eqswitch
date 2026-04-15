@@ -213,7 +213,7 @@ public class AppConfig
             Affinity.ActivePriority = "AboveNormal";
         if (Affinity.BackgroundPriority is not ("Normal" or "AboveNormal" or "High" or "BelowNormal"))
             Affinity.BackgroundPriority = "AboveNormal";
-        if (Hotkeys.SwitchKeyMode is not ("swapLast" or "cycleFocused" or "cycleAll"))
+        if (Hotkeys.SwitchKeyMode is not ("swapLast" or "cycleAll"))
             Hotkeys.SwitchKeyMode = "swapLast";
 
         // Array shape validation
