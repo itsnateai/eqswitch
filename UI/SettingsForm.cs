@@ -1402,6 +1402,7 @@ public class SettingsForm : Form
             NotesPath = _txtNotesPath.Text.Trim(),
             DalayaPatcherPath = _txtDalayaPatcherPath.Text.Trim(),
             RunAtStartup = _chkRunAtStartup.Checked,
+            HotkeysLegacyBannerDismissed = _config.HotkeysLegacyBannerDismissed,
             // Phase 4: v4 lists are authoritative. LegacyAccounts is reverse-mapped
             // for downgrade safety. LegacyCharacterProfiles + CharacterAliases remain
             // pure passthrough until Phase 5 surfaces CharacterAlias editing in the UI.

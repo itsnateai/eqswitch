@@ -1882,6 +1882,7 @@ public class TrayManager : IDisposable
         _config.ShowTooltipErrors = newConfig.ShowTooltipErrors;
         _config.MinimizeToTray = newConfig.MinimizeToTray;
         _config.RunAtStartup = newConfig.RunAtStartup;
+        _config.HotkeysLegacyBannerDismissed = newConfig.HotkeysLegacyBannerDismissed;
         _config.CustomVideoPresets = newConfig.CustomVideoPresets;
         _config.EQClientIni = newConfig.EQClientIni;
 
