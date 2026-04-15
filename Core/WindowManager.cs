@@ -436,6 +436,13 @@ public class WindowManager
         // Phase 5b: resolve {CHAR} through the v4 Characters list via the slot->name
         // binding carried in QuickLogin{N}. The QuickLogin{N} indirection itself is
         // Phase 6-deletion-slated; only the resolved-name data source moves to v4 here.
+        //
+        // QuickLogin{N} can hold either a Character.Name (enter-world bind) or an
+        // Account.Name (charselect-only bind) — RefreshQuickLoginCombos builds the
+        // list from both. Account-only binds intentionally fall through here: the
+        // EQ native window title ("EverQuest - CharName" once logged in) is the
+        // appropriate render for a slot the user did not bind to a specific
+        // character. Phase 6 will rewire this whole indirection.
         string? boundName = slotIndex switch
         {
             0 => _config.QuickLogin1,
