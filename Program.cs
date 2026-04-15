@@ -73,6 +73,14 @@ static class Program
             return;
         }
 
+        // --test-character-selector — run Core/CharacterSelectorTests.RunAll() and
+        // exit with its return code. Used to gate Phase 5b's pure decision helper.
+        if (args.Length >= 1 && args[0] == "--test-character-selector")
+        {
+            Environment.Exit(Core.CharacterSelectorTests.RunAll());
+            return;
+        }
+
         // Enforce single instance
         const string mutexName = "EQSwitch_SingleInstance_SoD";
         _mutex = new Mutex(true, mutexName, out bool createdNew);
