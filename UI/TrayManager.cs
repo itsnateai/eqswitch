@@ -383,6 +383,7 @@ public class TrayManager : IDisposable
         TryRegister(hk.ToggleMultiMonitor, OnToggleMultiMonitor, "MultiMon");
         TryRegister(hk.LaunchOne, OnLaunchOne, "LaunchOne");
         TryRegister(hk.LaunchAll, () => ExecuteTrayAction("LaunchAll"), "LaunchAll");
+        TryRegister(hk.TogglePip, () => ExecuteTrayAction("TogglePiP"), "TogglePiP");
         TryRegister(hk.AutoLogin1, () => ExecuteTrayAction("AutoLogin1"), "AutoLogin1");
         TryRegister(hk.AutoLogin2, () => ExecuteTrayAction("AutoLogin2"), "AutoLogin2");
         TryRegister(hk.AutoLogin3, () => ExecuteTrayAction("AutoLogin3"), "AutoLogin3");
@@ -998,6 +999,8 @@ public class TrayManager : IDisposable
         videoMenu.DropDownItems.Add(new ToolStripSeparator());
         var pipItem = new ToolStripMenuItem(
             $"{(_config.Pip.Enabled ? "\u2705" : "\u2B1C")}  Picture in Picture");
+        if (!string.IsNullOrEmpty(hk.TogglePip))
+            pipItem.ShortcutKeyDisplayString = hk.TogglePip;
         pipItem.Click += (_, _) =>
         {
             TogglePip();

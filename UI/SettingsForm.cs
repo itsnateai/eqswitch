@@ -55,6 +55,7 @@ public class SettingsForm : Form
     private TextBox _txtToggleMultiMon = null!;
     private TextBox _txtLaunchOne = null!;
     private TextBox _txtLaunchAll = null!;
+    private TextBox _txtTogglePip = null!;
     // Multi-monitor mode controlled by _chkVideoMultiMon on Video tab
     private ComboBox _cboSwitchKeyMode = null!;
 
@@ -274,10 +275,10 @@ public class SettingsForm : Form
         };
 
         var btnSave = DarkTheme.MakePrimaryButton("Save", 230, 10);
-        btnSave.Click += (_, _) => { ApplySettings(); ConfigManager.Save(_config); Close(); };
+        btnSave.Click += (_, _) => { if (ApplySettings()) { ConfigManager.Save(_config); Close(); } };
 
         var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 320, 10);
-        btnApply.Click += (_, _) => { ApplySettings(); ConfigManager.Save(_config); };
+        btnApply.Click += (_, _) => { if (ApplySettings()) { ConfigManager.Save(_config); } };
 
         var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 410, 10);
         btnCancel.Click += (_, _) => Close();
@@ -461,6 +462,7 @@ public class SettingsForm : Form
         if (_txtToggleMultiMon?.Text.Trim() is { Length: > 0 } mm) otherHotkeys[mm] = "Toggle Multi-Mon";
         if (_txtLaunchOne?.Text.Trim() is { Length: > 0 } lo) otherHotkeys[lo] = "Launch One";
         if (_txtLaunchAll?.Text.Trim() is { Length: > 0 } la) otherHotkeys[la] = "Launch All";
+        if (_txtTogglePip?.Text.Trim() is { Length: > 0 } tp) otherHotkeys[tp] = "Toggle PiP";
 
         var warnings = new List<string>();
 
@@ -581,7 +583,7 @@ public class SettingsForm : Form
         y += 98;
 
         // ─── Actions card ────────────────────────────────────────
-        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions & Launcher", DarkTheme.CardGold, 10, y, 480, 110);
+        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions Launcher", DarkTheme.CardGold, 10, y, 480, 140);
         cy = 32;
         const int col2 = 250, col2I = 370;
 
@@ -597,9 +599,13 @@ public class SettingsForm : Form
         _txtLaunchAll = MakeHotkeyBox(cardActions, col2I, cy - 2);
         cy += R + 2;
 
+        DarkTheme.AddCardLabel(cardActions, "PiP Toggle:", L, cy);
+        _txtTogglePip = MakeHotkeyBox(cardActions, I, cy - 2);
+        cy += R + 2;
+
         DarkTheme.AddCardHint(cardActions, "Press key combo to capture. Leave blank to disable. Backspace/Delete to clear.", L, cy);
 
-        y += 120;
+        y += 150;
 
         // ─── Quick Login Slots (defines what the hotkeys below trigger) ──
         var slotsCard = DarkTheme.MakeCard(page, "\u26A1", "Quick Individual Login Accounts", DarkTheme.CardGold, 10, y, 480, 110);
@@ -667,6 +673,7 @@ public class SettingsForm : Form
         _txtTeamLogin2Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
         _txtTeamLogin3Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
         _txtTeamLogin4Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
+        _txtTogglePip.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
 
         y += 120;
 
@@ -1074,6 +1081,7 @@ public class SettingsForm : Form
         _txtToggleMultiMon.Text = _config.Hotkeys.ToggleMultiMonitor;
         _txtLaunchOne.Text = _config.Hotkeys.LaunchOne;
         _txtLaunchAll.Text = _config.Hotkeys.LaunchAll;
+        _txtTogglePip.Text = _config.Hotkeys.TogglePip;
         _txtAutoLogin1Hotkey.Text = _config.Hotkeys.AutoLogin1;
         _txtAutoLogin2Hotkey.Text = _config.Hotkeys.AutoLogin2;
         _txtAutoLogin3Hotkey.Text = _config.Hotkeys.AutoLogin3;
@@ -1164,8 +1172,46 @@ public class SettingsForm : Form
         ConfigManager.FlushSave();
     }
 
-    private void ApplySettings()
+    private bool ApplySettings()
     {
+        // Phase 3.5-D: hotkey conflict detection — same key combo bound to
+        // multiple actions causes RegisterHotKey to silently fail on the
+        // second registration. Block Save with an actionable modal.
+        var allHotkeys = new[]
+        {
+            ("Fix Windows",      _txtArrangeWindows.Text.Trim()),
+            ("Launch One",       _txtLaunchOne.Text.Trim()),
+            ("Launch All",       _txtLaunchAll.Text.Trim()),
+            ("Multi-Mon Toggle", _txtToggleMultiMon.Text.Trim()),
+            ("PiP Toggle",       _txtTogglePip.Text.Trim()),
+            ("AutoLogin 1",      _txtAutoLogin1Hotkey.Text.Trim()),
+            ("AutoLogin 2",      _txtAutoLogin2Hotkey.Text.Trim()),
+            ("AutoLogin 3",      _txtAutoLogin3Hotkey.Text.Trim()),
+            ("AutoLogin 4",      _txtAutoLogin4Hotkey.Text.Trim()),
+            ("Team Login 1",     _txtTeamLogin1Hotkey.Text.Trim()),
+            ("Team Login 2",     _txtTeamLogin2Hotkey.Text.Trim()),
+            ("Team Login 3",     _txtTeamLogin3Hotkey.Text.Trim()),
+            ("Team Login 4",     _txtTeamLogin4Hotkey.Text.Trim()),
+        };
+
+        var conflicts = allHotkeys
+            .Where(t => !string.IsNullOrEmpty(t.Item2))
+            .GroupBy(t => t.Item2, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1)
+            .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (conflicts.Count > 0)
+        {
+            var lines = conflicts.Select(g =>
+                $"  {g.Key}  \u2192  {string.Join(", ", g.Select(t => t.Item1))}");
+            var msg = "Cannot save — the same key combo is bound to multiple actions:\n\n"
+                    + string.Join("\n", lines)
+                    + "\n\nUnbind duplicates, then try again.";
+            MessageBox.Show(msg, "Hotkey Conflict", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+
         // Re-derive v4 Accounts + Characters from the edited _pendingAccounts so that
         // changes made in the legacy Accounts tab propagate into the lists that Phase 3's
         // rebuilt tray menu will consume. Mirror of MigrateV3ToV4 Step 1 split logic.
@@ -1201,6 +1247,7 @@ public class SettingsForm : Form
                 ToggleMultiMonitor = _txtToggleMultiMon.Text.Trim(),
                 LaunchOne = _txtLaunchOne.Text.Trim(),
                 LaunchAll = _txtLaunchAll.Text.Trim(),
+                TogglePip = _txtTogglePip.Text.Trim(),
                 AutoLogin1 = _txtAutoLogin1Hotkey.Text.Trim(),
                 AutoLogin2 = _txtAutoLogin2Hotkey.Text.Trim(),
                 AutoLogin3 = _txtAutoLogin3Hotkey.Text.Trim(),
@@ -1289,6 +1336,7 @@ public class SettingsForm : Form
         _onApply(newConfig);
         VideoSaveToIni();
         FileLogger.Info("Settings applied");
+        return true;
     }
 
 
