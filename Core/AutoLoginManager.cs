@@ -445,48 +445,43 @@ public class AutoLoginManager
                     var charNames = charSelect.ReadAllCharNames(pid);
                     FileLogger.Info($"AutoLogin: {charCount} characters found: {string.Join(", ", charNames)}");
 
+                    var (resolvedSlot, resolvedByName, decisionLog) = CharacterSelector.Decide(
+                        character.CharacterSlot, character.Name, charNames);
+                    FileLogger.Info($"AutoLogin: selector → {decisionLog}");
+
                     bool selected = false;
                     bool abortWrongCharacter = false;
-                    if (character.CharacterSlot > 0)
+
+                    if (resolvedSlot == 0)
                     {
-                        // Slot-based selection (1-10) — direct index, no name lookup
-                        if (character.CharacterSlot <= charCount)
+                        // No actionable slot. If heap is in slot-mode ("Slot 1".."Slot N") and we
+                        // couldn't find the name, the documented fallback is default selection.
+                        // Otherwise abort to avoid entering world on the wrong character.
+                        bool isSlotMode = charNames.Length > 0
+                            && charNames[0].StartsWith("Slot ", StringComparison.Ordinal);
+                        if (isSlotMode)
                         {
-                            charSelect.RequestSelectionBySlot(pid, character.CharacterSlot);
-                            FileLogger.Info($"AutoLogin: requested slot {character.CharacterSlot} for PID {pid}");
-                            selected = true;
+                            FileLogger.Info($"AutoLogin: slot-based mode — name '{character.Name}' unavailable, using default selection");
                         }
                         else
                         {
-                            // Requested slot exceeds actual character count — entering world on
-                            // whatever's selected would land on the wrong character. Abort safely.
-                            FileLogger.Error($"AutoLogin: slot {character.CharacterSlot} exceeds char count {charCount} — stopping at charselect to avoid wrong-character enter-world");
-                            Report($"{account.Name}: slot {character.CharacterSlot} out of range (only {charCount} characters) — stopped at char select");
+                            FileLogger.Error($"AutoLogin: character '{character.Name}' not found in account '{account.Name}' — stopping at charselect to avoid wrong-character enter-world");
+                            Report($"{account.Name}: character '{character.Name}' not found — stopped at char select");
                             abortWrongCharacter = true;
                         }
                     }
-                    else if (!string.IsNullOrEmpty(character.Name))
+                    else if (resolvedSlot > charCount)
                     {
-                        // Name-based selection — search and select
-                        int selIdx = charSelect.RequestSelectionByName(pid, character.Name);
-                        selected = selIdx >= 0;
-                        if (!selected)
-                        {
-                            // In slot-based mode (names are "Slot N"), name lookup always fails —
-                            // this is the one case where entering on default is the documented fallback.
-                            bool isSlotMode = charNames.Length > 0 && charNames[0].StartsWith("Slot ", StringComparison.Ordinal);
-                            if (isSlotMode)
-                                FileLogger.Info($"AutoLogin: slot-based mode — name '{character.Name}' unavailable, using default selection");
-                            else
-                            {
-                                // Named-mode with the requested character missing (renamed, deleted,
-                                // or on a different account). Entering on default would silently
-                                // swap to slot 1 — dangerous for team configurations. Abort.
-                                FileLogger.Error($"AutoLogin: character '{character.Name}' not found in account '{account.Name}' — stopping at charselect to avoid wrong-character enter-world");
-                                Report($"{account.Name}: character '{character.Name}' not found — stopped at char select");
-                                abortWrongCharacter = true;
-                            }
-                        }
+                        // Slot out of range — same wrong-character guard as pre-extraction.
+                        FileLogger.Error($"AutoLogin: slot {resolvedSlot} exceeds char count {charCount} — stopping at charselect to avoid wrong-character enter-world");
+                        Report($"{account.Name}: slot {resolvedSlot} out of range (only {charCount} characters) — stopped at char select");
+                        abortWrongCharacter = true;
+                    }
+                    else
+                    {
+                        charSelect.RequestSelectionBySlot(pid, resolvedSlot);
+                        FileLogger.Info($"AutoLogin: requested slot {resolvedSlot} for PID {pid} (byName={resolvedByName})");
+                        selected = true;
                     }
 
                     if (abortWrongCharacter)
