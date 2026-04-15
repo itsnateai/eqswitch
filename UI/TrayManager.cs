@@ -1321,6 +1321,11 @@ public class TrayManager : IDisposable
         _keyboardHook.Reset();
 
         _settingsForm = new SettingsForm(_config, ReloadConfig, tabIndex, ShowProcessManager, UpdateHookConfig);
+        _settingsForm.OnSameNameCollision += names =>
+        {
+            ShowBalloon(
+                $"Account(s) '{names}' share names with Characters — consider renaming for tray-menu clarity.");
+        };
         _settingsForm.FormClosed += (_, _) =>
         {
             bool reopen = _settingsForm?.ReopenAfterClose == true;
