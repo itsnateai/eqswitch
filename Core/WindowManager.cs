@@ -433,12 +433,22 @@ public class WindowManager
         // Resolve character name: prefer account preset, fall back to EQ window title
         var charName = "";
 
-        // Look up by slot index in auto-login accounts
-        if (slotIndex < _config.LegacyAccounts.Count)
+        // Phase 5b: resolve {CHAR} through the v4 Characters list via the slot->name
+        // binding carried in QuickLogin{N}. The QuickLogin{N} indirection itself is
+        // Phase 6-deletion-slated; only the resolved-name data source moves to v4 here.
+        string? boundName = slotIndex switch
         {
-            var accountName = _config.LegacyAccounts[slotIndex].CharacterName;
-            if (!string.IsNullOrEmpty(accountName))
-                charName = accountName;
+            0 => _config.QuickLogin1,
+            1 => _config.QuickLogin2,
+            2 => _config.QuickLogin3,
+            3 => _config.QuickLogin4,
+            _ => null
+        };
+        if (!string.IsNullOrEmpty(boundName))
+        {
+            var character = _config.FindCharacterByName(boundName);
+            if (character != null && !string.IsNullOrEmpty(character.Name))
+                charName = character.Name;
         }
 
         // Fall back to EQ's native window title if no account match
