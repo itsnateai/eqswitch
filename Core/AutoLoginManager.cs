@@ -414,6 +414,16 @@ public class AutoLoginManager
                     }
 
                     int result = charSelect.ReadEnterWorldResult(pid);
+                    if (result == -2)
+                    {
+                        // DLL detected we're already in-game (gameState=5). The user beat us
+                        // to it (manual Enter, or a prior request already landed). Do NOT
+                        // retry, do NOT fall back to PulseKey3D — that would phantom-click
+                        // in-game UI. Treat as success.
+                        entered = true;
+                        FileLogger.Info($"AutoLogin: enter-world request dropped by DLL (already in-game, attempt {attempt + 1})");
+                        break;
+                    }
                     if (result != 1)
                     {
                         FileLogger.Warn($"AutoLogin: enter-world result={result} (attempt {attempt + 1}), button may not exist yet");
@@ -444,7 +454,23 @@ public class AutoLoginManager
                 }
             }
 
-            // Fallback: PulseKey3D keyboard Enter (if SHM path failed)
+            // Fallback: PulseKey3D keyboard Enter (if SHM path failed).
+            // Re-check title first — if user manually entered world while SHM was retrying,
+            // the keyboard Enter would land in-game and trigger UI actions (phantom click).
+            if (!entered)
+            {
+                hwnd = RefreshHandle(pid, hwnd);
+                if (hwnd != IntPtr.Zero)
+                {
+                    var tbCheck = new StringBuilder(256);
+                    NativeMethods.GetWindowText(hwnd, tbCheck, tbCheck.Capacity);
+                    if (tbCheck.ToString().Contains(" - "))
+                    {
+                        entered = true;
+                        FileLogger.Info($"AutoLogin: in-game detected before PulseKey3D fallback -- skipping (title: {tbCheck})");
+                    }
+                }
+            }
             if (!entered)
             {
                 if (charSelect.IsMQ2Available(pid))
