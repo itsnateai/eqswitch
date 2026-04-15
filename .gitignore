@@ -52,6 +52,7 @@ Native/*.lib
 ## Claude Code
 .claude/
 .superpowers/
+.worktrees/
 
 ## Task Management
 AUDIT_TASKS.md
