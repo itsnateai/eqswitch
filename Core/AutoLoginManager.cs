@@ -458,24 +458,22 @@ public class AutoLoginManager
 
                     if (resolvedSlot == 0)
                     {
-                        // No actionable slot. If heap is in slot-mode ("Slot 1".."Slot N") and we
-                        // couldn't find the name, the documented fallback is default selection.
-                        // Otherwise abort to avoid entering world on the wrong character.
+                        // Unified safety abort — name-based target didn't resolve, OR malformed
+                        // input (slot=0 + name=""). Entering world on EQ's default selection
+                        // risks landing on the wrong character, which is a key-feature regression
+                        // (the whole point of auto-login is to pick the right character). Users
+                        // who need to auto-login while MQ2 is in slot-mode must use an explicit
+                        // CharacterSlot (>0) which routes through Decide Case 3 and never reaches
+                        // this branch. Promoted from a Phase 6 deferral during Phase 5b's cross-
+                        // cutting review (feature-dev finding I2).
                         bool isSlotMode = charNames.Length > 0
                             && charNames[0].StartsWith("Slot ", StringComparison.Ordinal);
-                        if (isSlotMode)
-                        {
-                            // Pre-extraction CharSelectReader.RequestSelectionByName logged this
-                            // case at Warn; preserve log fidelity so filtered log views still
-                            // surface the signal (review finding M2).
-                            FileLogger.Warn($"AutoLogin: character '{character.Name}' could not be resolved (MQ2 heap in slot-mode, {charNames.Length} placeholder slot(s)) — entering world on EQ default selection");
-                        }
-                        else
-                        {
-                            FileLogger.Error($"AutoLogin: character '{character.Name}' not found in account '{account.Name}' — stopping at charselect to avoid wrong-character enter-world");
-                            Report($"{account.Name}: character '{character.Name}' not found — stopped at char select");
-                            abortWrongCharacter = true;
-                        }
+                        string cause = isSlotMode
+                            ? $"MQ2 heap in slot-mode ({charNames.Length} placeholder slot(s)) — character names unavailable"
+                            : $"character '{character.Name}' not found in account '{account.Name}'";
+                        FileLogger.Error($"AutoLogin: {cause} — stopping at charselect to avoid wrong-character enter-world");
+                        Report($"{account.Name}: {cause} — stopped at char select");
+                        abortWrongCharacter = true;
                     }
                     else if (resolvedSlot > charCount)
                     {
