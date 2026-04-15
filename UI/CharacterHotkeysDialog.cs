@@ -35,10 +35,20 @@ public sealed class CharacterHotkeysDialog : Form
         _characters = characters;
         _otherHotkeys = otherHotkeys;
 
+        // Half-populated entries are malformed — log + drop. See AccountHotkeysDialog for rationale.
         var byTargetName = new Dictionary<string, string>(StringComparer.Ordinal);
         var staleBindings = new List<HotkeyBinding>();
         foreach (var b in currentBindings)
         {
+            bool halfPopulated =
+                (!string.IsNullOrEmpty(b.Combo) && string.IsNullOrEmpty(b.TargetName)) ||
+                (string.IsNullOrEmpty(b.Combo) && !string.IsNullOrEmpty(b.TargetName));
+            if (halfPopulated)
+            {
+                EQSwitch.Core.FileLogger.Warn(
+                    $"CharacterHotkeysDialog: malformed binding dropped (Combo='{b.Combo}', TargetName='{b.TargetName}')");
+                continue;
+            }
             if (!HotkeyBindingUtil.IsPopulated(b)) continue;
             bool resolves = characters.Any(c => c.Name.Equals(b.TargetName, StringComparison.Ordinal));
             if (resolves) byTargetName[b.TargetName] = b.Combo;
@@ -111,6 +121,11 @@ public sealed class CharacterHotkeysDialog : Form
         _liveRows.Add((characterName, tb));
     }
 
+    // Stale-row dropdown preserves a display→actualName mapping so orphan Character
+    // names that literally end in " (no account)" (improbable but possible) aren't
+    // miscorrected by suffix stripping.
+    private readonly List<Dictionary<string, string>> _staleRebindMaps = new();
+
     private void AddStaleRow(Panel card, int x, int y, HotkeyBinding stale)
     {
         var lbl = DarkTheme.AddCardLabel(card,
@@ -121,14 +136,21 @@ public sealed class CharacterHotkeysDialog : Form
 
         var tb = MakeHotkeyBox(card, x + 190, y + 1, 90, stale.Combo);
 
-        var rebindItems = new List<string> { "(none \u2014 clear binding)" };
-        rebindItems.AddRange(_characters.Select(c =>
-            string.IsNullOrEmpty(c.AccountUsername) ? $"{c.Name} (no account)" : c.Name));
+        const string noneLabel = "(none \u2014 clear binding)";
+        var rebindItems = new List<string> { noneLabel };
+        var displayToActual = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var c in _characters)
+        {
+            var display = string.IsNullOrEmpty(c.AccountUsername) ? $"{c.Name} (no account)" : c.Name;
+            rebindItems.Add(display);
+            displayToActual[display] = c.Name;
+        }
         var cboRebind = DarkTheme.AddCardComboBox(card, x + 285, y + 1, 130, rebindItems.ToArray());
         cboRebind.DropDownStyle = ComboBoxStyle.DropDownList;
         cboRebind.SelectedIndex = 0;
 
         _staleRows.Add((stale.TargetName, tb, cboRebind));
+        _staleRebindMaps.Add(displayToActual);
     }
 
     private TextBox MakeHotkeyBox(Panel card, int x, int y, int width, string initialText)
@@ -199,17 +221,17 @@ public sealed class CharacterHotkeysDialog : Form
                 newBindings.Add(new HotkeyBinding { Combo = combo, TargetName = targetName });
         }
 
-        foreach (var (_, tb, cboRebind) in _staleRows)
+        for (int i = 0; i < _staleRows.Count; i++)
         {
+            var (_, tb, cboRebind) = _staleRows[i];
             var combo = tb.Text.Trim();
             if (string.IsNullOrEmpty(combo)) continue;
             if (cboRebind.SelectedIndex <= 0) continue;
-            // Dropdown item may be "Name" or "Name (no account)" — strip the suffix.
+            // Dictionary lookup instead of suffix-strip — robust against Character
+            // names that literally end in " (no account)".
             var picked = cboRebind.SelectedItem?.ToString() ?? "";
-            var targetName = picked.EndsWith(" (no account)", StringComparison.Ordinal)
-                ? picked.Substring(0, picked.Length - " (no account)".Length)
-                : picked;
-            if (string.IsNullOrEmpty(targetName)) continue;
+            if (!_staleRebindMaps[i].TryGetValue(picked, out var targetName) || string.IsNullOrEmpty(targetName))
+                continue;
             newBindings.Add(new HotkeyBinding { Combo = combo, TargetName = targetName });
         }
 
