@@ -609,6 +609,17 @@ public class AutoLoginManager
                         FileLogger.Info($"AutoLogin: enter-world request dropped by DLL (already in-game, attempt {attempt + 1})");
                         break;
                     }
+                    if (result == -4)
+                    {
+                        // Hotfix v6c (Agent 2 F2.5): SEH fault during
+                        // CLW_EnterWorldButton click. The client's UI stack is in
+                        // an unknown state — retrying or falling back to
+                        // PulseKey3D could deepen the fault or hang the client.
+                        // Abort cleanly with a user-visible message instead.
+                        FileLogger.Error($"AutoLogin: EQ client faulted during Enter World click (SEH in game, attempt {attempt + 1}) — stopping to avoid further damage");
+                        Report($"{account.Name}: EQ client faulted during Enter World — please restart the client");
+                        return;
+                    }
                     if (result != 1)
                     {
                         FileLogger.Warn($"AutoLogin: enter-world result={result} (attempt {attempt + 1}), button may not exist yet");
