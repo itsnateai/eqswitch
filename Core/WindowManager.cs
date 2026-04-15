@@ -456,6 +456,15 @@ public class WindowManager
             var character = _config.FindCharacterByName(boundName);
             if (character != null && !string.IsNullOrEmpty(character.Name))
                 charName = character.Name;
+            else
+            {
+                // Bound name exists but didn't resolve to a Character — either an
+                // Account-only QuickLogin bind (intentional — see comment above) or
+                // a Character that was renamed/deleted after the bind was saved.
+                // Log once at Info so triage distinguishes "never bound" (boundName
+                // empty) from "bound-but-unresolved" (this branch) (review finding M3).
+                FileLogger.Info($"SetWindowTitle: slot {slotIndex} bound to '{boundName}' but not in Characters list — falling through to native EQ title");
+            }
         }
 
         // Fall back to EQ's native window title if no account match

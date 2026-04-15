@@ -5,7 +5,7 @@ namespace EQSwitch.Core;
 /// <summary>
 /// Unit tests for CharacterSelector.Decide(). Invoked via the
 /// --test-character-selector CLI flag from Program.cs. Returns 0 when
-/// all 4 cases pass, 1 on any assertion failure.
+/// all 7 cases pass, 1 on any assertion failure, 2 on unhandled exception.
 /// </summary>
 public static class CharacterSelectorTests
 {

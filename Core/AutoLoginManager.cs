@@ -440,9 +440,13 @@ public class AutoLoginManager
 
                 if (charListReady)
                 {
-                    // Snapshot charCount — don't re-read from SHM (DLL can reset to 0 between polls)
-                    int charCount = charSelect.ReadCharCount(pid);
+                    // Snapshot character list ONCE from ReadAllCharNames. `charCount` used by
+                    // bounds checks below must equal the scan snapshot — ReadCharCount re-reads
+                    // SHM and can diverge from charNames.Length if the DLL refreshes between
+                    // the two reads (feature-dev review finding M1a). Using charNames.Length
+                    // ensures the abort-on-out-of-range check aligns with what Decide scanned.
                     var charNames = charSelect.ReadAllCharNames(pid);
+                    int charCount = charNames.Length;
                     FileLogger.Info($"AutoLogin: {charCount} characters found: {string.Join(", ", charNames)}");
 
                     var (resolvedSlot, resolvedByName, decisionLog) = CharacterSelector.Decide(
@@ -461,7 +465,10 @@ public class AutoLoginManager
                             && charNames[0].StartsWith("Slot ", StringComparison.Ordinal);
                         if (isSlotMode)
                         {
-                            FileLogger.Info($"AutoLogin: slot-based mode — name '{character.Name}' unavailable, using default selection");
+                            // Pre-extraction CharSelectReader.RequestSelectionByName logged this
+                            // case at Warn; preserve log fidelity so filtered log views still
+                            // surface the signal (review finding M2).
+                            FileLogger.Warn($"AutoLogin: character '{character.Name}' could not be resolved (MQ2 heap in slot-mode, {charNames.Length} placeholder slot(s)) — entering world on EQ default selection");
                         }
                         else
                         {

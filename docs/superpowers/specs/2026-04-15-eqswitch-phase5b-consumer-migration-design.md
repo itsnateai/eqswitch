@@ -340,5 +340,6 @@ Phase 5b closes the loop on consumer migration. Phase 6 (v3.11.0) is pure subtra
 - Implement `MigrateV4ToV5(JsonObject)` — rename `accountsV4` → `accounts`, `charactersV4` → `characters`, drop leftover v3 keys.
 - Bump `EQSwitch.csproj` to `3.11.0`. Tag release. Update `README.md` with v4 architecture.
 - Document the add-then-rename migration pattern at `_templates/references/migration-framework.md`.
+- **Selection-block safety:** tighten the `isSlotMode` fallback in `AutoLoginManager.RunLoginSequence`. Currently, when a user has a name-only target (`CharacterSlot == 0`, `Name != ""`) and MQ2 can't read character names (heap returns `"Slot N"` placeholders), the code silently enters world on EQ's default selection. Matches pre-extraction behavior, so preserved in Phase 5b for scope discipline — but it's the same silent wrong-character class of defect the other abort guards protect against. Phase 6 should abort by default and optionally gate behind a config flag for users who rely on the fallback.
 
 Phase 6 kickoff requires Nate's explicit sign-off after the Phase 5b smoke test passes.
