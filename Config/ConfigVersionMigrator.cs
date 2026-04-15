@@ -180,6 +180,15 @@ public static class ConfigVersionMigrator
     /// Migration is idempotent on its own output: if accountsV4 / charactersV4 already
     /// exist (e.g. mid-development re-run), Step 1 short-circuits.
     /// </summary>
+    /// <summary>
+    /// Internal snapshot of a single v3 LoginAccount row. Used during v3→v4 migration
+    /// to rebind hotkeys and team fields after the primary Account/Character split runs.
+    /// Nullable reference type so FirstOrDefault(...) returning null is unambiguous —
+    /// replaces an earlier value-tuple design where "no match" was detected via
+    /// `default` tuple-element nullness, which was fragile under nullable context.
+    /// </summary>
+    private sealed record V3Row(string Name, string Username, string Server, string CharacterName, bool AutoEnterWorld);
+
     private static void MigrateV3ToV4(JsonObject root)
     {
         // Step 1 — Account + Character split from legacy "accounts" array
@@ -190,11 +199,19 @@ public static class ConfigVersionMigrator
         var accountKeyToName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         // Capture (Username, Server, AutoEnterWorld, CharacterName) per v3 row for hotkey + team rebinds later.
-        var v3Rows = new List<(string Name, string Username, string Server, string CharacterName, bool AutoEnterWorld)>();
+        var v3Rows = new List<V3Row>();
 
-        foreach (var node in v3Accounts)
+        int skippedMalformed = 0;
+        for (int i = 0; i < v3Accounts.Count; i++)
         {
-            if (node is not JsonObject row) continue;
+            if (v3Accounts[i] is not JsonObject row)
+            {
+                // Malformed entry (null, string, number) — skip with trace. Don't let bad
+                // config data silently shrink the account list without the user knowing.
+                FileLogger.Warn($"ConfigMigrator v3→v4: skipping non-object account entry at index {i}");
+                skippedMalformed++;
+                continue;
+            }
 
             var name = row["name"]?.GetValue<string>() ?? "";
             var username = row["username"]?.GetValue<string>() ?? "";
@@ -205,7 +222,7 @@ public static class ConfigVersionMigrator
             var autoEnterWorld = row["autoEnterWorld"]?.GetValue<bool>() ?? false;
             var useLoginFlag = row["useLoginFlag"]?.GetValue<bool>() ?? true;
 
-            v3Rows.Add((name, username, server, characterName, autoEnterWorld));
+            v3Rows.Add(new V3Row(name, username, server, characterName, autoEnterWorld));
 
             // Account dedup by (Username, Server). Drops AutoEnterWorld — that intent migrates
             // via hotkey/team rules below or via type discriminator (Character = enter world).
@@ -262,15 +279,13 @@ public static class ConfigVersionMigrator
                 continue;
 
             // Resolve target the same way runtime does: CharacterName-first, Username-fallback.
-            // Routes to AccountHotkeys[slot-1] or CharacterHotkeys[slot-1] based on the source row's
-            // AutoEnterWorld + CharacterName presence.
-            var matchByChar = v3Rows.FirstOrDefault(r => r.CharacterName == target);
-            var matchByUser = matchByChar.Username == null
-                ? v3Rows.FirstOrDefault(r => r.Username == target)
-                : matchByChar;
-            var resolved = matchByChar.Username != null ? matchByChar : matchByUser;
+            // Nullable V3Row return makes "no match" unambiguous (vs the older value-tuple
+            // design that relied on tuple-default nullness).
+            V3Row? matchByChar = v3Rows.FirstOrDefault(r => r.CharacterName == target);
+            V3Row? matchByUser = matchByChar ?? v3Rows.FirstOrDefault(r => r.Username == target);
+            V3Row? resolved = matchByChar ?? matchByUser;
 
-            if (resolved.Username == null)
+            if (resolved == null)
             {
                 FileLogger.Warn($"ConfigMigrator v3→v4: AutoLogin{slot} target '{target}' did not resolve to any v3 account — binding dropped");
                 continue;
@@ -286,7 +301,7 @@ public static class ConfigVersionMigrator
                     arr.Add(new JsonObject { ["combo"] = "", ["targetName"] = "" });
             }
 
-            if (matchByChar.Username != null && resolved.AutoEnterWorld)
+            if (matchByChar != null && resolved.AutoEnterWorld)
             {
                 // CharacterName match + AutoEnterWorld=true → Character family
                 EnsureSize(characterHotkeys, slot);
@@ -327,33 +342,31 @@ public static class ConfigVersionMigrator
                 var raw = root[key]?.GetValue<string>() ?? "";
                 if (string.IsNullOrEmpty(raw)) continue;
 
-                // Find the v3 row matching this raw target (CharacterName first, Username fallback)
-                var matchByChar = v3Rows.FirstOrDefault(r => r.CharacterName == raw);
-                var resolved = matchByChar.Username != null
-                    ? matchByChar
-                    : v3Rows.FirstOrDefault(r => r.Username == raw);
+                // Find the v3 row matching this raw target (CharacterName first, Username fallback).
+                V3Row? teamResolved = v3Rows.FirstOrDefault(r => r.CharacterName == raw)
+                                    ?? v3Rows.FirstOrDefault(r => r.Username == raw);
 
-                if (resolved.Username == null)
+                if (teamResolved == null)
                 {
                     FileLogger.Warn($"ConfigMigrator v3→v4: Team {teamN} Slot {slotM}: target '{raw}' did not resolve — leaving blank");
                     root[key] = "";
                     continue;
                 }
 
-                if (!string.IsNullOrEmpty(resolved.CharacterName))
+                if (!string.IsNullOrEmpty(teamResolved.CharacterName))
                 {
                     // Prefer Character.Name (member will enter world per type semantics)
-                    root[key] = resolved.CharacterName;
-                    if (raw != resolved.CharacterName)
-                        FileLogger.Info($"ConfigMigrator v3→v4: Team {teamN} Slot {slotM} rebound '{raw}' → '{resolved.CharacterName}' (Character)");
+                    root[key] = teamResolved.CharacterName;
+                    if (raw != teamResolved.CharacterName)
+                        FileLogger.Info($"ConfigMigrator v3→v4: Team {teamN} Slot {slotM} rebound '{raw}' → '{teamResolved.CharacterName}' (Character)");
                 }
                 else
                 {
                     // Account-only fallback (member stops at charselect unless team override)
-                    var accountKey = $"{resolved.Username}\u0001{resolved.Server}";
-                    var accountName = accountKeyToName.TryGetValue(accountKey, out var n) ? n : resolved.Username;
-                    root[key] = accountName;
-                    FileLogger.Warn($"ConfigMigrator v3→v4: Team {teamN} Slot {slotM} resolved to Account '{accountName}' (no character) — this member will stop at charselect unless Team{teamN}AutoEnter overrides");
+                    var teamAccountKey = $"{teamResolved.Username}\u0001{teamResolved.Server}";
+                    var teamAccountName = accountKeyToName.TryGetValue(teamAccountKey, out var n) ? n : teamResolved.Username;
+                    root[key] = teamAccountName;
+                    FileLogger.Warn($"ConfigMigrator v3→v4: Team {teamN} Slot {slotM} resolved to Account '{teamAccountName}' (no character) — this member will stop at charselect unless Team{teamN}AutoEnter overrides");
                 }
             }
         }
@@ -365,10 +378,19 @@ public static class ConfigVersionMigrator
         // shape; CharacterAlias has identical fields (Name, Class, Notes, SlotIndex, PriorityOverride).
         // Keep "characters" key populated too — Phase 1 LegacyCharacterProfiles still reads from it.
         // The new "characters" key (v4 launch targets) was already written above as charactersV4.
-        if (root["characters"] is JsonNode oldChars)
+        // Guard against a literal JSON null under "characters" (possible via manual edit) — AsArray()
+        // would throw InvalidOperationException on a JSON null. Defensive check saves the migration.
+        if (root["characters"] is JsonArray oldChars)
         {
             root["characterAliases"] = oldChars.DeepClone();
-            FileLogger.Info($"ConfigMigrator v3→v4: copied {(oldChars.AsArray()).Count} character profile(s) to characterAliases");
+            FileLogger.Info($"ConfigMigrator v3→v4: copied {oldChars.Count} character profile(s) to characterAliases");
         }
+        else if (root["characters"] != null)
+        {
+            FileLogger.Warn($"ConfigMigrator v3→v4: 'characters' key is not an array (type={root["characters"]?.GetType().Name ?? "null"}) — characterAliases not populated");
+        }
+
+        if (skippedMalformed > 0)
+            FileLogger.Warn($"ConfigMigrator v3→v4: {skippedMalformed} malformed account entr{(skippedMalformed == 1 ? "y" : "ies")} skipped during migration");
     }
 }

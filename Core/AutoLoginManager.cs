@@ -87,14 +87,16 @@ public class AutoLoginManager
     /// </summary>
     public Task LoginAndEnterWorld(Character character, bool? enterWorldOverride = null)
     {
-        var account = _config.Accounts.FirstOrDefault(a =>
-            string.Equals(a.Username, character.AccountUsername, StringComparison.Ordinal) &&
-            string.Equals(a.Server, character.AccountServer, StringComparison.Ordinal));
+        var key = character.AccountKey;
+        var account = _config.Accounts.FirstOrDefault(key.Matches);
         if (account == null)
         {
-            var msg = $"Character '{character.Name}' references missing Account (username={character.AccountUsername}, server={character.AccountServer})";
+            // Include the full FK in both log AND StatusUpdate — balloon tooltip is
+            // the user's only easy diagnostic when FK drift happens (rename an Account
+            // username without updating dependent Characters).
+            var msg = $"Character '{character.Name}' points at Account {key}, which is not in the accounts list";
             FileLogger.Error($"AutoLogin: {msg}");
-            StatusUpdate?.Invoke(this, $"Error: no account for '{character.Name}'");
+            StatusUpdate?.Invoke(this, $"Error: {msg}");
             return Task.CompletedTask;
         }
         return BeginLogin(account, character, enterWorldOverride);
@@ -426,6 +428,7 @@ public class AutoLoginManager
                     FileLogger.Info($"AutoLogin: {charCount} characters found: {string.Join(", ", charNames)}");
 
                     bool selected = false;
+                    bool abortWrongCharacter = false;
                     if (character.CharacterSlot > 0)
                     {
                         // Slot-based selection (1-10) — direct index, no name lookup
@@ -436,7 +439,13 @@ public class AutoLoginManager
                             selected = true;
                         }
                         else
-                            FileLogger.Warn($"AutoLogin: slot {character.CharacterSlot} exceeds char count {charCount}");
+                        {
+                            // Requested slot exceeds actual character count — entering world on
+                            // whatever's selected would land on the wrong character. Abort safely.
+                            FileLogger.Error($"AutoLogin: slot {character.CharacterSlot} exceeds char count {charCount} — stopping at charselect to avoid wrong-character enter-world");
+                            Report($"{account.Name}: slot {character.CharacterSlot} out of range (only {charCount} characters) — stopped at char select");
+                            abortWrongCharacter = true;
+                        }
                     }
                     else if (!string.IsNullOrEmpty(character.Name))
                     {
@@ -445,15 +454,25 @@ public class AutoLoginManager
                         selected = selIdx >= 0;
                         if (!selected)
                         {
-                            // In slot-based mode (names are "Slot N"), name lookup always fails.
-                            // Fall back to default selection (first slot) so enter-world can proceed.
+                            // In slot-based mode (names are "Slot N"), name lookup always fails —
+                            // this is the one case where entering on default is the documented fallback.
                             bool isSlotMode = charNames.Length > 0 && charNames[0].StartsWith("Slot ", StringComparison.Ordinal);
                             if (isSlotMode)
                                 FileLogger.Info($"AutoLogin: slot-based mode — name '{character.Name}' unavailable, using default selection");
                             else
-                                FileLogger.Warn($"AutoLogin: character '{character.Name}' not found, using default");
+                            {
+                                // Named-mode with the requested character missing (renamed, deleted,
+                                // or on a different account). Entering on default would silently
+                                // swap to slot 1 — dangerous for team configurations. Abort.
+                                FileLogger.Error($"AutoLogin: character '{character.Name}' not found in account '{account.Name}' — stopping at charselect to avoid wrong-character enter-world");
+                                Report($"{account.Name}: character '{character.Name}' not found — stopped at char select");
+                                abortWrongCharacter = true;
+                            }
                         }
                     }
+
+                    if (abortWrongCharacter)
+                        return;
 
                     if (selected)
                     {
