@@ -189,7 +189,7 @@ public class SettingsForm : Form
 
         var tabs = DarkTheme.MakeTabControl();
 
-        _pendingAccounts = _config.Accounts.Select(a => new LoginAccount
+        _pendingAccounts = _config.LegacyAccounts.Select(a => new LoginAccount
         {
             Name = a.Name, Username = a.Username, EncryptedPassword = a.EncryptedPassword,
             Server = a.Server, CharacterName = a.CharacterName, CharacterSlot = a.CharacterSlot,
@@ -1243,8 +1243,13 @@ public class SettingsForm : Form
             NotesPath = _txtNotesPath.Text.Trim(),
             DalayaPatcherPath = _txtDalayaPatcherPath.Text.Trim(),
             RunAtStartup = _chkRunAtStartup.Checked,
+            // Legacy v3 lists carry forward unchanged from live config (Phase 1: read-only)
+            LegacyCharacterProfiles = _config.LegacyCharacterProfiles,
+            LegacyAccounts = _pendingAccounts,
+            // v4 lists pass through as-is; SettingsForm will edit them in Phase 4
             Characters = _config.Characters,
-            Accounts = _pendingAccounts,
+            CharacterAliases = _config.CharacterAliases,
+            Accounts = _config.Accounts,
             LoginScreenDelayMs = (int)(_nudLoginScreenDelay.Value * 1000),
             QuickLogin1 = GetQuickLoginUsername(_cboQuickLogin1),
             QuickLogin2 = GetQuickLoginUsername(_cboQuickLogin2),
