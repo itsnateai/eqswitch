@@ -158,8 +158,25 @@ public class AppConfig
 
         Characters ??= new();
         Accounts ??= new();
+        CharacterAliases ??= new();
+        LegacyAccounts ??= new();
+        LegacyCharacterProfiles ??= new();
         Accounts.RemoveAll(a => a == null!);
         Characters.RemoveAll(c => c == null!);
+
+        // Defense-in-depth: if a v4 config arrives with empty v4 lists but populated
+        // legacy data (hand-edit, dev build, or partial migration), re-derive v4 from
+        // legacy. Otherwise Phase 3's tray would render empty Accounts/Characters
+        // submenus while SettingsForm's Accounts tab shows data. Uses the same split
+        // logic the migrator and SettingsForm.ApplySettings use.
+        if (ConfigVersion >= 4 && LegacyAccounts.Count > 0 && Accounts.Count == 0 && Characters.Count == 0)
+        {
+            var (v4Accounts, v4Characters) = LoginAccountSplitter.Split(LegacyAccounts);
+            Accounts = v4Accounts;
+            Characters = v4Characters;
+            FileLogger.Warn($"AppConfig.Validate: v4 lists were empty with {LegacyAccounts.Count} legacy accounts — re-derived {Accounts.Count} Account(s) + {Characters.Count} Character(s)");
+            mutated = true;
+        }
         TooltipDurationMs = Math.Clamp(TooltipDurationMs, 100, 30000);
 
         Layout.TargetMonitor = Math.Clamp(Layout.TargetMonitor, 0, 8);

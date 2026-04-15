@@ -1166,6 +1166,11 @@ public class SettingsForm : Form
 
     private void ApplySettings()
     {
+        // Re-derive v4 Accounts + Characters from the edited _pendingAccounts so that
+        // changes made in the legacy Accounts tab propagate into the lists that Phase 3's
+        // rebuilt tray menu will consume. Mirror of MigrateV3ToV4 Step 1 split logic.
+        var (v4Accounts, v4Characters) = LoginAccountSplitter.Split(_pendingAccounts);
+
         // Build a new config from form values
         var newConfig = new AppConfig
         {
@@ -1243,13 +1248,14 @@ public class SettingsForm : Form
             NotesPath = _txtNotesPath.Text.Trim(),
             DalayaPatcherPath = _txtDalayaPatcherPath.Text.Trim(),
             RunAtStartup = _chkRunAtStartup.Checked,
-            // Legacy v3 lists carry forward unchanged from live config (Phase 1: read-only)
+            // Legacy v3 lists carry forward from _pendingAccounts (edited) and _config (passthrough).
             LegacyCharacterProfiles = _config.LegacyCharacterProfiles,
             LegacyAccounts = _pendingAccounts,
-            // v4 lists pass through as-is; SettingsForm will edit them in Phase 4
-            Characters = _config.Characters,
+            // v4 lists re-derived above by LoginAccountSplitter. CharacterAliases is
+            // still a pure passthrough until Phase 4 adds editing for it.
+            Accounts = v4Accounts,
+            Characters = v4Characters,
             CharacterAliases = _config.CharacterAliases,
-            Accounts = _config.Accounts,
             LoginScreenDelayMs = (int)(_nudLoginScreenDelay.Value * 1000),
             QuickLogin1 = GetQuickLoginUsername(_cboQuickLogin1),
             QuickLogin2 = GetQuickLoginUsername(_cboQuickLogin2),

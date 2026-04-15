@@ -168,6 +168,15 @@ public static class ConfigVersionMigrator
     }
 
     /// <summary>
+    /// Internal snapshot of a single v3 LoginAccount row. Used during v3→v4 migration
+    /// to rebind hotkeys and team fields after the primary Account/Character split runs.
+    /// Nullable reference type so FirstOrDefault(...) returning null is unambiguous —
+    /// replaces an earlier value-tuple design where "no match" was detected via
+    /// `default` tuple-element nullness, which was fragile under nullable context.
+    /// </summary>
+    private sealed record V3Row(string Name, string Username, string Server, string CharacterName, bool AutoEnterWorld);
+
+    /// <summary>
     /// v3 → v4: split LoginAccount into Account (creds) + Character (play target).
     /// Populates new JSON keys: accountsV4, charactersV4, characterAliases, plus
     /// hotkeys.accountHotkeys / hotkeys.characterHotkeys arrays.
@@ -180,15 +189,6 @@ public static class ConfigVersionMigrator
     /// Migration is idempotent on its own output: if accountsV4 / charactersV4 already
     /// exist (e.g. mid-development re-run), Step 1 short-circuits.
     /// </summary>
-    /// <summary>
-    /// Internal snapshot of a single v3 LoginAccount row. Used during v3→v4 migration
-    /// to rebind hotkeys and team fields after the primary Account/Character split runs.
-    /// Nullable reference type so FirstOrDefault(...) returning null is unambiguous —
-    /// replaces an earlier value-tuple design where "no match" was detected via
-    /// `default` tuple-element nullness, which was fragile under nullable context.
-    /// </summary>
-    private sealed record V3Row(string Name, string Username, string Server, string CharacterName, bool AutoEnterWorld);
-
     private static void MigrateV3ToV4(JsonObject root)
     {
         // Step 1 — Account + Character split from legacy "accounts" array
@@ -280,10 +280,11 @@ public static class ConfigVersionMigrator
 
             // Resolve target the same way runtime does: CharacterName-first, Username-fallback.
             // Nullable V3Row return makes "no match" unambiguous (vs the older value-tuple
-            // design that relied on tuple-default nullness).
-            V3Row? matchByChar = v3Rows.FirstOrDefault(r => r.CharacterName == target);
-            V3Row? matchByUser = matchByChar ?? v3Rows.FirstOrDefault(r => r.Username == target);
-            V3Row? resolved = matchByChar ?? matchByUser;
+            // design that relied on tuple-default nullness). Existence guards on the
+            // predicates prevent empty-string sentinels from matching a hand-edited row.
+            V3Row? matchByChar = v3Rows.FirstOrDefault(r => !string.IsNullOrEmpty(r.CharacterName) && r.CharacterName == target);
+            V3Row? resolved = matchByChar
+                ?? v3Rows.FirstOrDefault(r => !string.IsNullOrEmpty(r.Username) && r.Username == target);
 
             if (resolved == null)
             {
@@ -343,8 +344,9 @@ public static class ConfigVersionMigrator
                 if (string.IsNullOrEmpty(raw)) continue;
 
                 // Find the v3 row matching this raw target (CharacterName first, Username fallback).
-                V3Row? teamResolved = v3Rows.FirstOrDefault(r => r.CharacterName == raw)
-                                    ?? v3Rows.FirstOrDefault(r => r.Username == raw);
+                // Existence guards prevent empty-string rows from matching a corrupted raw field.
+                V3Row? teamResolved = v3Rows.FirstOrDefault(r => !string.IsNullOrEmpty(r.CharacterName) && r.CharacterName == raw)
+                                   ?? v3Rows.FirstOrDefault(r => !string.IsNullOrEmpty(r.Username) && r.Username == raw);
 
                 if (teamResolved == null)
                 {
