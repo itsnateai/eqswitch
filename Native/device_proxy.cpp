@@ -8,6 +8,7 @@
 #include "device_proxy.h"
 #include "key_shm.h"
 #include "pattern_scan.h"
+#include "login_givetime_detour.h"
 #include <string.h>
 
 void DI8Log(const char *fmt, ...);
@@ -139,6 +140,12 @@ static DWORD WINAPI ActivateThread(LPVOID) {
 
     while (!g_shutdown) {
         Sleep(16); // ~60Hz
+
+        // v7 Phase 2: try to install the LoginController::GiveTime detour. No-op
+        // after first successful install; cheap boolean check on subsequent
+        // iterations. Returns false while eqmain.dll isn't loaded — expected
+        // until the client reaches login screen.
+        GiveTimeDetour::PollAndInstall();
 
         // MQ2 bridge: background poll until game-thread timer is installed.
         // Once TIMERPROC is running on the game thread, this becomes a no-op
