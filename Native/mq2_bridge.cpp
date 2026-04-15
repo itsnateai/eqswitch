@@ -1124,7 +1124,13 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                         DI8Log("mq2_bridge: clicked CLW_EnterWorldButton");
                     }
                     __except (EXCEPTION_EXECUTE_HANDLER) {
-                        shm->enterWorldResult = -1;
+                        // Hotfix v6c (Agent 2 F2.5, Agent 3 F3.4): disambiguate SEH
+                        // from "button not found" (-1). Pre-v6c both cases wrote -1,
+                        // so the C# caller retried and then fell back to PulseKey3D
+                        // on what may be a faulted UI stack. A distinct -4 lets C#
+                        // abort the login cleanly with a user-visible "client faulted"
+                        // message instead of spamming Enter into a broken client.
+                        shm->enterWorldResult = -4;
                         DI8Log("mq2_bridge: SEH clicking CLW_EnterWorldButton");
                     }
                 }
