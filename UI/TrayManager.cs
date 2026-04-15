@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using EQSwitch.Config;
 using EQSwitch.Core;
@@ -779,7 +780,7 @@ public class TrayManager : IDisposable
     private static string HkSuffix(string key) => string.IsNullOrEmpty(key) ? "" : $"\t{key}";
 
     /// <summary>
-    /// Phase 3 Accounts submenu: 🔑 parent → 👤 per-account rows + separator + "⚙ Manage Accounts...".
+    /// Phase 3 Accounts submenu: parent item with per-account rows, separator, and "Manage Accounts..." footer.
     /// Each row fires LoginToCharselect on click. Empty-state row teaches what the submenu is for.
     /// Takes the list as an arg so rendering has no hidden _config reach.
     /// </summary>
@@ -810,12 +811,13 @@ public class TrayManager : IDisposable
             }
         }
         menu.DropDownItems.Add(new ToolStripSeparator());
+        // TODO(Phase 4): route to section-specific tab once Characters/Teams split from Accounts tab
         menu.DropDownItems.Add("\u2699  Manage Accounts...", null, (_, _) => ShowSettings(2));
         return menu;
     }
 
     /// <summary>
-    /// Phase 3 Characters submenu: 🧙 parent → 🧙 per-character rows + "⚙ Manage Characters...".
+    /// Phase 3 Characters submenu: parent item with per-character rows and "Manage Characters..." footer.
     /// Each row fires LoginAndEnterWorld on click. Tooltip resolves the backing Account label
     /// via accountsByKey lookup (falls back to username@server on FK drift).
     /// </summary>
@@ -851,12 +853,13 @@ public class TrayManager : IDisposable
             }
         }
         menu.DropDownItems.Add(new ToolStripSeparator());
+        // TODO(Phase 4): route to section-specific tab once Characters/Teams split from Accounts tab
         menu.DropDownItems.Add("\u2699  Manage Characters...", null, (_, _) => ShowSettings(2));
         return menu;
     }
 
     /// <summary>
-    /// Phase 3 Teams submenu: 👥 parent → 🚀 populated teams + "⚙ Manage Teams...".
+    /// Phase 3 Teams submenu: parent item with populated team rows and "Manage Teams..." footer.
     /// Teams are populated if either slot string is non-empty. Empty-state row renders
     /// when all four teams are unpopulated. Click fires ExecuteTrayAction("LoginAll[N]"),
     /// which still routes through FireTeam + ExecuteQuickLogin + [Obsolete] LoginAccount
@@ -899,6 +902,7 @@ public class TrayManager : IDisposable
             }
         }
         menu.DropDownItems.Add(new ToolStripSeparator());
+        // TODO(Phase 4): route to section-specific tab once Characters/Teams split from Accounts tab
         menu.DropDownItems.Add("\u2699  Manage Teams...", null, (_, _) => ShowSettings(2));
         return menu;
     }
@@ -936,7 +940,7 @@ public class TrayManager : IDisposable
         var launchTeamItem = new ToolStripMenuItem($"\uD83C\uDFAE  Launch Team{HkSuffix(hk.TeamLogin1)}")
         {
             Font = _boldMenuFont,
-            ToolTipText = "Launch Team 1 (one-click default)"
+            ToolTipText = "Auto-login Team 1 in parallel (same as Teams \u2192 Team 1)"
         };
         launchTeamItem.Click += (_, _) => ExecuteTrayAction("LoginAll");
         _contextMenu.Items.Add(launchTeamItem);
@@ -1412,7 +1416,15 @@ public class TrayManager : IDisposable
         try
         {
             ShowBalloon($"Logging in {account.EffectiveLabel} \u2014 stopping at charselect");
-            _ = _autoLoginManager.LoginToCharselect(account);
+            _autoLoginManager.LoginToCharselect(account).ContinueWith(t =>
+            {
+                if (t.IsFaulted)
+                {
+                    var inner = t.Exception!.Flatten().InnerException;
+                    FileLogger.Error($"FireAccountLogin async fault: {inner?.GetType().Name}: {inner?.Message}", t.Exception);
+                    ShowBalloon($"Login error: {inner?.Message ?? "unknown"}");
+                }
+            }, TaskScheduler.Default);
         }
         catch (Exception ex)
         {
@@ -1427,7 +1439,15 @@ public class TrayManager : IDisposable
         try
         {
             ShowBalloon($"Logging in {character.EffectiveLabel} \u2014 entering world");
-            _ = _autoLoginManager.LoginAndEnterWorld(character);
+            _autoLoginManager.LoginAndEnterWorld(character).ContinueWith(t =>
+            {
+                if (t.IsFaulted)
+                {
+                    var inner = t.Exception!.Flatten().InnerException;
+                    FileLogger.Error($"FireCharacterLogin async fault: {inner?.GetType().Name}: {inner?.Message}", t.Exception);
+                    ShowBalloon($"Login error: {inner?.Message ?? "unknown"}");
+                }
+            }, TaskScheduler.Default);
         }
         catch (Exception ex)
         {
@@ -1446,13 +1466,18 @@ public class TrayManager : IDisposable
     /// </summary>
     private void FireLegacyQuickLoginSlot(int slot)
     {
+        if (slot < 1 || slot > 4)
+        {
+            FileLogger.Warn($"FireLegacyQuickLoginSlot: slot {slot} out of range (expected 1-4)");
+            return;
+        }
         string targetName = slot switch
         {
             1 => _config.QuickLogin1,
             2 => _config.QuickLogin2,
             3 => _config.QuickLogin3,
             4 => _config.QuickLogin4,
-            _ => ""
+            _ => throw new UnreachableException($"slot {slot} passed guard but hit switch default")
         };
         if (string.IsNullOrEmpty(targetName))
         {
@@ -1502,6 +1527,7 @@ public class TrayManager : IDisposable
             ShowBalloon($"{slotName}: no account assigned");
             return Task.CompletedTask;
         }
+        // TODO(Phase 5): both paths (FireLegacyQuickLoginSlot via FindAccountByName + this team path) must resolve against the same list. Currently LegacyAccounts here vs Accounts/Characters in the new helpers. Phase 5's ResolveTeamSlots will unify.
         // Match by CharacterName first (unique), fall back to Username (legacy configs)
         var account = _config.LegacyAccounts.FirstOrDefault(a => a.CharacterName == username)
                    ?? _config.LegacyAccounts.FirstOrDefault(a => a.Username == username);
@@ -1527,18 +1553,26 @@ public class TrayManager : IDisposable
     /// tooltip rendering.
     /// </summary>
     private (IReadOnlyList<(string user, string slotLabel)> slots, bool autoEnter, string teamName)
-        ResolveTeamConfig(int teamIndex) => teamIndex switch
+        ResolveTeamConfig(int teamIndex)
     {
-        1 => (new[] { (_config.Team1Account1, "Team 1 Slot 1"), (_config.Team1Account2, "Team 1 Slot 2") },
-              _config.Team1AutoEnter, "Team 1"),
-        2 => (new[] { (_config.Team2Account1, "Team 2 Slot 1"), (_config.Team2Account2, "Team 2 Slot 2") },
-              _config.Team2AutoEnter, "Team 2"),
-        3 => (new[] { (_config.Team3Account1, "Team 3 Slot 1"), (_config.Team3Account2, "Team 3 Slot 2") },
-              _config.Team3AutoEnter, "Team 3"),
-        4 => (new[] { (_config.Team4Account1, "Team 4 Slot 1"), (_config.Team4Account2, "Team 4 Slot 2") },
-              _config.Team4AutoEnter, "Team 4"),
-        _ => (Array.Empty<(string, string)>(), false, $"Team {teamIndex}")
-    };
+        if (teamIndex < 1 || teamIndex > 4)
+        {
+            FileLogger.Warn($"ResolveTeamConfig: teamIndex {teamIndex} out of range (expected 1-4)");
+            return (Array.Empty<(string, string)>(), false, $"Team {teamIndex}");
+        }
+        return teamIndex switch
+        {
+            1 => (new[] { (_config.Team1Account1, "Team 1 Slot 1"), (_config.Team1Account2, "Team 1 Slot 2") },
+                  _config.Team1AutoEnter, "Team 1"),
+            2 => (new[] { (_config.Team2Account1, "Team 2 Slot 1"), (_config.Team2Account2, "Team 2 Slot 2") },
+                  _config.Team2AutoEnter, "Team 2"),
+            3 => (new[] { (_config.Team3Account1, "Team 3 Slot 1"), (_config.Team3Account2, "Team 3 Slot 2") },
+                  _config.Team3AutoEnter, "Team 3"),
+            4 => (new[] { (_config.Team4Account1, "Team 4 Slot 1"), (_config.Team4Account2, "Team 4 Slot 2") },
+                  _config.Team4AutoEnter, "Team 4"),
+            _ => throw new UnreachableException($"teamIndex {teamIndex} passed guard but hit switch default")
+        };
+    }
 
     /// <summary>
     /// Character tray-item tooltip: "→ Account 'Main' · slot auto" or fallback
@@ -1575,7 +1609,7 @@ public class TrayManager : IDisposable
         for (int i = 0; i < slots.Count; i++)
             lines.Add($"Slot {i + 1}: {ResolveForTooltip(slots[i].user)}");
         if (autoEnter) lines.Add("[force enter world]");
-        return string.Join("\n", lines);
+        return string.Join("\r\n", lines);
     }
 
     /// <summary>
@@ -2239,7 +2273,11 @@ public class TrayManager : IDisposable
         private void Register(string target, string combo)
         {
             if (string.IsNullOrEmpty(target) || string.IsNullOrEmpty(combo)) return;
-            _comboByTarget[target] = combo;  // last binding wins on duplicate target
+            if (_comboByTarget.ContainsKey(target))
+            {
+                FileLogger.Warn($"LegacyHotkeyLookup: duplicate QuickLogin target '{target}' — overwriting existing combo '{_comboByTarget[target]}' with '{combo}'");
+            }
+            _comboByTarget[target] = combo;
         }
 
         /// <summary>Returns the bound combo for this Account/Character Name, or "" if unbound.</summary>
