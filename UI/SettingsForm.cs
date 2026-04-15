@@ -1494,6 +1494,12 @@ public class SettingsForm : Form
                 // downgrade safety; SettingsForm no longer writes this field.
                 MultiMonitorEnabled = _config.Hotkeys.MultiMonitorEnabled,
                 DirectSwitchKeys = _config.Hotkeys.DirectSwitchKeys,
+                // Phase 5a: family tables pass through — dialogs commit to _config directly
+                // but BuildAppConfig still needs to carry them into newConfig so any caller
+                // that reads newConfig (or a future _config = newConfig refactor) sees the
+                // current state.
+                AccountHotkeys = _config.Hotkeys.AccountHotkeys,
+                CharacterHotkeys = _config.Hotkeys.CharacterHotkeys,
                 SwitchKeyMode = _cboSwitchKeyMode.SelectedItem?.ToString() == "Cycle All" ? "cycleAll" : "swapLast"
             },
             Launch = new LaunchConfig
