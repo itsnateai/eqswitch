@@ -682,17 +682,20 @@ public class SettingsForm : Form
         if (_lblSlotDuplicateWarn == null) return;
 
         var combos = new[] { _cboQuickLogin1, _cboQuickLogin2, _cboQuickLogin3, _cboQuickLogin4 };
+        // Phase 5a: QuickLogin combos may never be built. Bail cleanly instead of NRE.
+        if (combos.All(c => c == null)) return;
         var seen = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         bool reverted = false;
 
         for (int i = 0; i < combos.Length; i++)
         {
+            if (combos[i] == null) continue;
             var username = GetQuickLoginUsername(combos[i]);
             if (string.IsNullOrEmpty(username)) continue;
             if (seen.ContainsKey(username))
             {
                 // Revert the duplicate back to (None) — SoD crashes on duplicate logins
-                combos[i].SelectedIndex = 0;
+                combos[i]!.SelectedIndex = 0;
                 reverted = true;
             }
             else
@@ -1564,10 +1567,14 @@ public class SettingsForm : Form
             }).ToList(),
             CharacterAliases = _config.CharacterAliases,
             LoginScreenDelayMs = (int)(_nudLoginScreenDelay.Value * 1000),
-            QuickLogin1 = GetQuickLoginUsername(_cboQuickLogin1),
-            QuickLogin2 = GetQuickLoginUsername(_cboQuickLogin2),
-            QuickLogin3 = GetQuickLoginUsername(_cboQuickLogin3),
-            QuickLogin4 = GetQuickLoginUsername(_cboQuickLogin4),
+            // Preserve existing QuickLogin values when the combos are not built (Phase 5a
+            // removed the surface from the Hotkeys tab, leaving _cboQuickLoginN as null).
+            // GetQuickLoginUsername returns "" on null, which would clobber user data on
+            // every Save — use the live config value as the fallback instead.
+            QuickLogin1 = _cboQuickLogin1 != null ? GetQuickLoginUsername(_cboQuickLogin1) : _config.QuickLogin1,
+            QuickLogin2 = _cboQuickLogin2 != null ? GetQuickLoginUsername(_cboQuickLogin2) : _config.QuickLogin2,
+            QuickLogin3 = _cboQuickLogin3 != null ? GetQuickLoginUsername(_cboQuickLogin3) : _config.QuickLogin3,
+            QuickLogin4 = _cboQuickLogin4 != null ? GetQuickLoginUsername(_cboQuickLogin4) : _config.QuickLogin4,
             AutoEnterWorld = _chkAutoEnterWorld.Checked,
             LogTrimThresholdMB = (int)_nudLogTrimThreshold.Value,
             Team1Account1 = _pendingTeam1A,
@@ -2013,10 +2020,15 @@ public class SettingsForm : Form
 
     /// <summary>
     /// Return the selected Character.Name / Account.Name for the combo, or empty string
-    /// when (None) is selected.
+    /// when (None) is selected. Null-safe: the QuickLogin combos are declared with the
+    /// null-forgiving init pattern (`null!`) but the card that once built them no longer
+    /// exists in the Hotkeys tab (Phase 5a moved that surface to dialogs). Any caller
+    /// that reaches here with a null combo should get an empty-string — `ApplySettings`
+    /// separately preserves the existing config value so saves don't clobber user data.
     /// </summary>
-    private string GetQuickLoginUsername(ComboBox cbo)
+    private string GetQuickLoginUsername(ComboBox? cbo)
     {
+        if (cbo == null) return "";
         if (cbo.SelectedIndex <= 0) return "";
         return cbo.SelectedItem?.ToString() ?? "";
     }
