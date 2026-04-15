@@ -62,7 +62,25 @@ static void CloseCharSelShm() {
 static bool g_mq2Initialized = false;
 static uint32_t g_mq2InitRetry = 0;
 
+// Hotfix v4 (HIGH-D): RAII reentrancy guard for MQ2BridgePollTick. ActivateThread
+// and TIMERPROC can race to satisfy the 500ms throttle simultaneously. Without this
+// guard, BOTH threads could enter MQ2Bridge::Poll concurrently and fire XWM_LCLICK
+// on CLW_EnterWorldButton twice — double enter-world. The existing "// double-fire
+// is harmless" comment predates the SHM enter-world side-effect semantics.
+struct PollReentryGuard {
+    volatile LONG* flag;
+    bool entered;
+    PollReentryGuard(volatile LONG* f) : flag(f) {
+        entered = (InterlockedCompareExchange(flag, 1, 0) == 0);
+    }
+    ~PollReentryGuard() { if (entered) InterlockedExchange(flag, 0); }
+};
+
 void MQ2BridgePollTick() {
+    static volatile LONG s_pollInProgress = 0;
+    PollReentryGuard guard(&s_pollInProgress);
+    if (!guard.entered) return;  // another thread is already in Poll
+
     static volatile DWORD lastPoll = 0;  // accessed from ActivateThread + TIMERPROC
     DWORD now = GetTickCount();
     if (now - lastPoll < 500) return;
