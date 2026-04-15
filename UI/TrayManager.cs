@@ -79,6 +79,9 @@ public class TrayManager : IDisposable
     private readonly HashSet<int> _injectedPids = new();
     private readonly HashSet<int> _di8InjectedPids = new();
 
+    // Per-session dedup for the one-shot legacy-routing log line (plan nuance #12).
+    private readonly HashSet<int> _legacySlotDeprecationLogged = new();
+
 
     public TrayManager(AppConfig config, ProcessManager processManager)
     {
@@ -772,6 +775,134 @@ public class TrayManager : IDisposable
 
     // ─── Tray UI ─────────────────────────────────────────────────────
 
+    /// <summary>Returns a tab-indented hotkey suffix for tray menu labels, or "" if unbound.</summary>
+    private static string HkSuffix(string key) => string.IsNullOrEmpty(key) ? "" : $"\t{key}";
+
+    /// <summary>
+    /// Phase 3 Accounts submenu: 🔑 parent → 👤 per-account rows + separator + "⚙ Manage Accounts...".
+    /// Each row fires LoginToCharselect on click. Empty-state row teaches what the submenu is for.
+    /// Takes the list as an arg so rendering has no hidden _config reach.
+    /// </summary>
+    private ToolStripMenuItem BuildAccountsSubmenu(IReadOnlyList<Account> accounts, LegacyHotkeyLookup hkLookup)
+    {
+        var menu = new ToolStripMenuItem("\uD83D\uDD11  Accounts")
+        {
+            Font = _boldMenuFont,
+            ToolTipText = "Login and stop at character select"
+        };
+
+        if (accounts.Count == 0)
+        {
+            menu.DropDownItems.Add(new ToolStripMenuItem("No accounts yet \u2014 click Manage Accounts...")
+            {
+                Enabled = false
+            });
+        }
+        else
+        {
+            foreach (var acc in accounts)
+            {
+                var captured = acc; // explicit capture for closure
+                var label = $"\uD83D\uDC64  {captured.EffectiveLabel}{HkSuffix(hkLookup.GetCombo(captured.Name))}";
+                var item = new ToolStripMenuItem(label) { ToolTipText = captured.Tooltip };
+                item.Click += (_, _) => FireAccountLogin(captured);
+                menu.DropDownItems.Add(item);
+            }
+        }
+        menu.DropDownItems.Add(new ToolStripSeparator());
+        menu.DropDownItems.Add("\u2699  Manage Accounts...", null, (_, _) => ShowSettings(2));
+        return menu;
+    }
+
+    /// <summary>
+    /// Phase 3 Characters submenu: 🧙 parent → 🧙 per-character rows + "⚙ Manage Characters...".
+    /// Each row fires LoginAndEnterWorld on click. Tooltip resolves the backing Account label
+    /// via accountsByKey lookup (falls back to username@server on FK drift).
+    /// </summary>
+    private ToolStripMenuItem BuildCharactersSubmenu(
+        IReadOnlyList<Character> characters,
+        IReadOnlyDictionary<AccountKey, Account> accountsByKey,
+        LegacyHotkeyLookup hkLookup)
+    {
+        var menu = new ToolStripMenuItem("\uD83E\uDDD9  Characters")
+        {
+            Font = _boldMenuFont,
+            ToolTipText = "Login and enter world"
+        };
+
+        if (characters.Count == 0)
+        {
+            menu.DropDownItems.Add(new ToolStripMenuItem(
+                "No characters yet \u2014 characters added here will auto-enter-world")
+            {
+                Enabled = false
+            });
+        }
+        else
+        {
+            foreach (var ch in characters)
+            {
+                var captured = ch;
+                var label = $"\uD83E\uDDD9  {captured.LabelWithClass}{HkSuffix(hkLookup.GetCombo(captured.Name))}";
+                var tooltip = BuildCharacterTooltip(captured, accountsByKey);
+                var item = new ToolStripMenuItem(label) { ToolTipText = tooltip };
+                item.Click += (_, _) => FireCharacterLogin(captured);
+                menu.DropDownItems.Add(item);
+            }
+        }
+        menu.DropDownItems.Add(new ToolStripSeparator());
+        menu.DropDownItems.Add("\u2699  Manage Characters...", null, (_, _) => ShowSettings(2));
+        return menu;
+    }
+
+    /// <summary>
+    /// Phase 3 Teams submenu: 👥 parent → 🚀 populated teams + "⚙ Manage Teams...".
+    /// Teams are populated if either slot string is non-empty. Empty-state row renders
+    /// when all four teams are unpopulated. Click fires ExecuteTrayAction("LoginAll[N]"),
+    /// which still routes through FireTeam + ExecuteQuickLogin + [Obsolete] LoginAccount
+    /// until Phase 5 rewires the team path.
+    /// </summary>
+    private ToolStripMenuItem BuildTeamsSubmenu(AppConfig cfg, LegacyHotkeyLookup hkLookup)
+    {
+        var menu = new ToolStripMenuItem("\uD83D\uDC65  Teams")
+        {
+            Font = _boldMenuFont,
+            ToolTipText = "Launch multiple clients in parallel"
+        };
+        var hk = cfg.Hotkeys;
+        var teams = new[]
+        {
+            (Num: 1, Slot1: cfg.Team1Account1, Slot2: cfg.Team1Account2, Combo: hk.TeamLogin1, Action: "LoginAll"),
+            (Num: 2, Slot1: cfg.Team2Account1, Slot2: cfg.Team2Account2, Combo: hk.TeamLogin2, Action: "LoginAll2"),
+            (Num: 3, Slot1: cfg.Team3Account1, Slot2: cfg.Team3Account2, Combo: hk.TeamLogin3, Action: "LoginAll3"),
+            (Num: 4, Slot1: cfg.Team4Account1, Slot2: cfg.Team4Account2, Combo: hk.TeamLogin4, Action: "LoginAll4"),
+        };
+        var populated = teams.Where(t => !string.IsNullOrEmpty(t.Slot1) || !string.IsNullOrEmpty(t.Slot2)).ToList();
+
+        if (populated.Count == 0)
+        {
+            menu.DropDownItems.Add(new ToolStripMenuItem("No teams configured \u2014 click Manage Teams...")
+            {
+                Enabled = false
+            });
+        }
+        else
+        {
+            foreach (var t in populated)
+            {
+                var action = t.Action;  // capture for closure
+                var label = $"\uD83D\uDE80  Auto-Login Team {t.Num}{HkSuffix(t.Combo)}";
+                var tooltip = BuildTeamTooltip(t.Num);
+                var item = new ToolStripMenuItem(label) { ToolTipText = tooltip };
+                item.Click += (_, _) => ExecuteTrayAction(action);
+                menu.DropDownItems.Add(item);
+            }
+        }
+        menu.DropDownItems.Add(new ToolStripSeparator());
+        menu.DropDownItems.Add("\u2699  Manage Teams...", null, (_, _) => ShowSettings(2));
+        return menu;
+    }
+
     private void BuildContextMenu()
     {
         // Dispose old menu and all its items before rebuilding (prevents leak if called multiple times)
@@ -784,7 +915,6 @@ public class TrayManager : IDisposable
         };
 
         var hk = _config.Hotkeys;
-        string HkSuffix(string key) => string.IsNullOrEmpty(key) ? "" : $"\t{key}";
 
         _boldMenuFont?.Dispose();
         _boldMenuFont = new Font(_contextMenu.Font, FontStyle.Bold);
@@ -1310,6 +1440,95 @@ public class TrayManager : IDisposable
     }
 
 
+    /// <summary>Click handler for Accounts-submenu items. Explicit intent balloon + new API call.</summary>
+    private void FireAccountLogin(Account account)
+    {
+        try
+        {
+            ShowBalloon($"Logging in {account.EffectiveLabel} \u2014 stopping at charselect");
+            _ = _autoLoginManager.LoginToCharselect(account);
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Error($"FireAccountLogin CRASH: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}", ex);
+            ShowBalloon($"Login error: {ex.Message}");
+        }
+    }
+
+    /// <summary>Click handler for Characters-submenu items. Explicit intent balloon + new API call.</summary>
+    private void FireCharacterLogin(Character character)
+    {
+        try
+        {
+            ShowBalloon($"Logging in {character.EffectiveLabel} \u2014 entering world");
+            _ = _autoLoginManager.LoginAndEnterWorld(character);
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Error($"FireCharacterLogin CRASH: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}", ex);
+            ShowBalloon($"Login error: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Phase-3 dispatcher for legacy tray-click/hotkey <c>AutoLoginN</c> actions. Reads
+    /// QuickLoginN, resolves Character-first then Account (matches v3 semantics +
+    /// migration preference), logs the routing decision once per session, and
+    /// delegates to FireAccountLogin/FireCharacterLogin which use the NEW API.
+    /// Replaces ExecuteQuickLogin for non-team callers — ExecuteQuickLogin is now
+    /// team-only and still routes through [Obsolete] LoginAccount until Phase 5.
+    /// </summary>
+    private void FireLegacyQuickLoginSlot(int slot)
+    {
+        string targetName = slot switch
+        {
+            1 => _config.QuickLogin1,
+            2 => _config.QuickLogin2,
+            3 => _config.QuickLogin3,
+            4 => _config.QuickLogin4,
+            _ => ""
+        };
+        if (string.IsNullOrEmpty(targetName))
+        {
+            ShowBalloon($"Quick Login {slot}: no account assigned");
+            return;
+        }
+
+        // Character-first resolution mirrors v3 migration preference and
+        // TrayManager.cs:1321-1322 (the existing ExecuteQuickLogin two-step match).
+        var character = _config.FindCharacterByName(targetName);
+        if (character != null)
+        {
+            LogFirstFire(slot, "Character", character.EffectiveLabel);
+            FireCharacterLogin(character);
+            return;
+        }
+
+        var account = _config.FindAccountByName(targetName);
+        if (account != null)
+        {
+            LogFirstFire(slot, "Account", account.EffectiveLabel);
+            FireAccountLogin(account);
+            return;
+        }
+
+        ShowBalloon($"Quick Login {slot}: '{targetName}' not found");
+        FileLogger.Warn($"Legacy QuickLogin{slot}: target '{targetName}' does not resolve to any Account or Character");
+    }
+
+    /// <summary>
+    /// One-shot-per-slot-per-session log line documenting where a legacy QuickLoginN hotkey
+    /// routed through the new API. Surfaced on first fire of each slot so the user can audit
+    /// the routing before Phase 5 replaces the QuickLoginN scheme with AccountHotkeys[]/CharacterHotkeys[].
+    /// </summary>
+    private void LogFirstFire(int slot, string family, string label)
+    {
+        if (_legacySlotDeprecationLogged.Add(slot))
+        {
+            FileLogger.Info($"Legacy QuickLogin{slot} routed via new API \u2192 {family} '{label}' (this mapping moves to {family}Hotkeys in Phase 5)");
+        }
+    }
+
     private Task ExecuteQuickLogin(string username, string slotName, bool? teamAutoEnter = null)
     {
         if (string.IsNullOrEmpty(username))
@@ -1334,6 +1553,63 @@ public class TrayManager : IDisposable
             ShowBalloon($"Login error: {ex.Message}");
             return Task.CompletedTask;
         }
+    }
+
+    /// <summary>
+    /// Resolves <c>_config.Team{N}*</c> fields into the tuple shape FireTeam needs.
+    /// Pure function over <c>_config</c>; called from FireTeam and from BuildTeamsSubmenu
+    /// tooltip rendering.
+    /// </summary>
+    private (IReadOnlyList<(string user, string slotLabel)> slots, bool autoEnter, string teamName)
+        ResolveTeamConfig(int teamIndex) => teamIndex switch
+    {
+        1 => (new[] { (_config.Team1Account1, "Team 1 Slot 1"), (_config.Team1Account2, "Team 1 Slot 2") },
+              _config.Team1AutoEnter, "Team 1"),
+        2 => (new[] { (_config.Team2Account1, "Team 2 Slot 1"), (_config.Team2Account2, "Team 2 Slot 2") },
+              _config.Team2AutoEnter, "Team 2"),
+        3 => (new[] { (_config.Team3Account1, "Team 3 Slot 1"), (_config.Team3Account2, "Team 3 Slot 2") },
+              _config.Team3AutoEnter, "Team 3"),
+        4 => (new[] { (_config.Team4Account1, "Team 4 Slot 1"), (_config.Team4Account2, "Team 4 Slot 2") },
+              _config.Team4AutoEnter, "Team 4"),
+        _ => (Array.Empty<(string, string)>(), false, $"Team {teamIndex}")
+    };
+
+    /// <summary>
+    /// Character tray-item tooltip: "→ Account 'Main' · slot auto" or fallback
+    /// "username@server (unresolved)" when the FK has drifted.
+    /// </summary>
+    private static string BuildCharacterTooltip(
+        Character character,
+        IReadOnlyDictionary<AccountKey, Account> accountsByKey)
+    {
+        var accountLabel = accountsByKey.TryGetValue(character.AccountKey, out var acc)
+            ? acc.EffectiveLabel
+            : $"{character.AccountUsername}@{character.AccountServer} (unresolved)";
+        var slot = character.CharacterSlot == 0 ? "auto" : character.CharacterSlot.ToString();
+        return $"\u2192 Account '{accountLabel}' \u00B7 slot {slot}";
+    }
+
+    /// <summary>
+    /// Team tray-item tooltip: multi-line per-slot preview of what each slot resolves to,
+    /// plus "[force enter world]" hint when the team-level AutoEnter override is true.
+    /// </summary>
+    private string BuildTeamTooltip(int teamIndex)
+    {
+        var (slots, autoEnter, _) = ResolveTeamConfig(teamIndex);
+        string ResolveForTooltip(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "(empty)";
+            var ch = _config.FindCharacterByName(raw);
+            if (ch != null) return $"{ch.LabelWithClass} \u2192 enter world";
+            var acc = _config.FindAccountByName(raw);
+            if (acc != null) return $"{acc.EffectiveLabel} \u2192 charselect";
+            return $"{raw} (unresolved)";
+        }
+        var lines = new List<string>();
+        for (int i = 0; i < slots.Count; i++)
+            lines.Add($"Slot {i + 1}: {ResolveForTooltip(slots[i].user)}");
+        if (autoEnter) lines.Add("[force enter world]");
+        return string.Join("\n", lines);
     }
 
     private void FireTeamLogin((string username, string label)[] slots, string teamName, bool teamAutoEnter = false)
@@ -1966,6 +2242,37 @@ public class TrayManager : IDisposable
         _trayIcon?.Dispose();
         _contextMenu?.Dispose();
         _processManager.Dispose();
+    }
+
+    /// <summary>
+    /// Phase-3-only legacy hotkey indexer. Maps <c>QuickLoginN</c> target strings to their
+    /// bound <c>HotkeyConfig.AutoLoginN</c> combos so the new Accounts/Characters submenus
+    /// can show the user's existing Alt+N bindings during the Phase 3 → Phase 5
+    /// transition. Removed in Phase 5 when AccountHotkeys[] / CharacterHotkeys[]
+    /// family tables replace the QuickLoginN pair scheme.
+    /// </summary>
+    private sealed class LegacyHotkeyLookup
+    {
+        private readonly Dictionary<string, string> _comboByTarget = new(StringComparer.Ordinal);
+
+        public LegacyHotkeyLookup(AppConfig config)
+        {
+            var hk = config.Hotkeys;
+            Register(config.QuickLogin1, hk.AutoLogin1);
+            Register(config.QuickLogin2, hk.AutoLogin2);
+            Register(config.QuickLogin3, hk.AutoLogin3);
+            Register(config.QuickLogin4, hk.AutoLogin4);
+        }
+
+        private void Register(string target, string combo)
+        {
+            if (string.IsNullOrEmpty(target) || string.IsNullOrEmpty(combo)) return;
+            _comboByTarget[target] = combo;  // last binding wins on duplicate target
+        }
+
+        /// <summary>Returns the bound combo for this Account/Character Name, or "" if unbound.</summary>
+        public string GetCombo(string name) =>
+            !string.IsNullOrEmpty(name) && _comboByTarget.TryGetValue(name, out var c) ? c : "";
     }
 }
 
