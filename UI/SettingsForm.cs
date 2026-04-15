@@ -1322,10 +1322,13 @@ public class SettingsForm : Form
 
     private bool ApplySettings()
     {
-        // Phase 3.5-D: hotkey conflict detection — same key combo bound to
-        // multiple actions causes RegisterHotKey to silently fail on the
-        // second registration. Block Save with an actionable modal.
-        var allHotkeys = new[]
+        // Phase 3.5-D + Phase 5a: hotkey conflict detection — same key combo bound to
+        // multiple actions causes RegisterHotKey to silently fail on the second
+        // registration. Scan covers tab-level Action + Team hotkeys plus the family-
+        // table bindings (AccountHotkeys + CharacterHotkeys via HotkeyBindingUtil).
+        // Legacy AutoLogin1-4 values come from _config (no longer edited on this tab)
+        // so migrated v3 bindings still participate during the deprecation window.
+        var tabHotkeys = new[]
         {
             ("Fix Windows",      _txtArrangeWindows.Text.Trim()),
             ("Launch One",       _txtLaunchOne.Text.Trim()),
@@ -1341,6 +1344,9 @@ public class SettingsForm : Form
             ("Team Login 3",     _txtTeamLogin3Hotkey.Text.Trim()),
             ("Team Login 4",     _txtTeamLogin4Hotkey.Text.Trim()),
         };
+        var familyHotkeys = Config.HotkeyBindingUtil.EnumeratePopulatedLabeled(_config)
+            .Select(t => (t.label, t.combo));
+        var allHotkeys = tabHotkeys.Concat(familyHotkeys).ToArray();
 
         var conflicts = allHotkeys
             .Where(t => !string.IsNullOrEmpty(t.Item2))
