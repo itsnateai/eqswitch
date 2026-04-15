@@ -393,6 +393,28 @@ public class TrayManager : IDisposable
         TryRegister(hk.TeamLogin3, () => ExecuteTrayAction("LoginAll3"), "TeamLogin3");
         TryRegister(hk.TeamLogin4, () => ExecuteTrayAction("LoginAll4"), "TeamLogin4");
 
+        // Phase 5a: family-table dispatch. AccountHotkeys -> LoginToCharselect (via
+        // FireAccountLogin), CharacterHotkeys -> LoginAndEnterWorld (via FireCharacterLogin).
+        // Skip padding entries (empty Combo OR empty TargetName — Phase 1 migration contract).
+        // Name-based registration reuses the existing HotkeyManager.Register API.
+        foreach (var binding in hk.AccountHotkeys)
+        {
+            if (!HotkeyBindingUtil.IsPopulated(binding)) continue;
+            var capturedName = binding.TargetName;
+            TryRegister(binding.Combo,
+                () => FireAccountHotkeyByName(capturedName),
+                $"AccountHK:{capturedName}");
+        }
+
+        foreach (var binding in hk.CharacterHotkeys)
+        {
+            if (!HotkeyBindingUtil.IsPopulated(binding)) continue;
+            var capturedName = binding.TargetName;
+            TryRegister(binding.Combo,
+                () => FireCharacterHotkeyByName(capturedName),
+                $"CharacterHK:{capturedName}");
+        }
+
         FileLogger.Info($"RegisterHotKey: {registered} registered, {failed} failed" +
             (failedKeys.Count > 0 ? $" [{string.Join(", ", failedKeys)}]" : ""));
         if (failedKeys.Count > 0)
@@ -1488,6 +1510,24 @@ public class TrayManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// Phase 5a: dispatch entry point for AccountHotkeys[]. Resolves the binding's
+    /// TargetName to an Account at fire time — if the Account was deleted between
+    /// Save and keypress, surfaces an actionable balloon pointing the user at the
+    /// Hotkeys dialog. No throw.
+    /// </summary>
+    private void FireAccountHotkeyByName(string name)
+    {
+        var account = _config.FindAccountByName(name);
+        if (account == null)
+        {
+            ShowBalloon($"Account Hotkey: '{name}' not found. Open Settings \u2192 Hotkeys \u2192 Configure Accounts to rebind.");
+            FileLogger.Warn($"AccountHotkey fired for missing target '{name}' — user should rebind in the Account Hotkeys dialog");
+            return;
+        }
+        FireAccountLogin(account);
+    }
+
     /// <summary>Click handler for Characters-submenu items. Explicit intent balloon + new API call.</summary>
     private void FireCharacterLogin(Character character)
     {
@@ -1509,6 +1549,23 @@ public class TrayManager : IDisposable
             FileLogger.Error($"FireCharacterLogin CRASH: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}", ex);
             ShowBalloon($"Login error: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Phase 5a: dispatch entry point for CharacterHotkeys[]. Same null-guard pattern
+    /// as FireAccountHotkeyByName — if the Character was deleted between Save and
+    /// keypress, balloon points the user at the Hotkeys dialog.
+    /// </summary>
+    private void FireCharacterHotkeyByName(string name)
+    {
+        var character = _config.FindCharacterByName(name);
+        if (character == null)
+        {
+            ShowBalloon($"Character Hotkey: '{name}' not found. Open Settings \u2192 Hotkeys \u2192 Configure Characters to rebind.");
+            FileLogger.Warn($"CharacterHotkey fired for missing target '{name}' — user should rebind in the Character Hotkeys dialog");
+            return;
+        }
+        FireCharacterLogin(character);
     }
 
     /// <summary>
