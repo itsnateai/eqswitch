@@ -189,6 +189,28 @@ public class AppConfig
             FileLogger.Warn($"AppConfig.Validate: v4 lists were empty with {LegacyAccounts.Count} legacy accounts — re-derived {Accounts.Count} Account(s) + {Characters.Count} Character(s)");
             mutated = true;
         }
+
+        // Same safety net for CharacterAliases: the Phase 1 migrator deep-clones
+        // LegacyCharacterProfiles into CharacterAliases once, but nothing re-derives
+        // it on save/reload. Hand-edits or migrator edge-cases that leave aliases
+        // empty while legacy profiles populated would silently drop priority
+        // overrides at AffinityManager.FindSlotPriorityOverride after Phase 5b.
+        // Phase 6 drops LegacyCharacterProfiles; this block goes with it.
+        if (ConfigVersion >= 4 && LegacyCharacterProfiles.Count > 0 && CharacterAliases.Count == 0)
+        {
+            CharacterAliases = LegacyCharacterProfiles
+                .Select(p => new CharacterAlias
+                {
+                    Name = p.Name,
+                    Class = p.Class,
+                    Notes = p.Notes,
+                    SlotIndex = p.SlotIndex,
+                    PriorityOverride = p.PriorityOverride,
+                })
+                .ToList();
+            FileLogger.Warn($"AppConfig.Validate: characterAliases was empty with {LegacyCharacterProfiles.Count} legacy profile(s) — re-derived {CharacterAliases.Count} alias(es)");
+            mutated = true;
+        }
         TooltipDurationMs = Math.Clamp(TooltipDurationMs, 100, 30000);
 
         Layout.TargetMonitor = Math.Clamp(Layout.TargetMonitor, 0, 8);
