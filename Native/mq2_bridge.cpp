@@ -89,10 +89,20 @@ struct CXStr {
 static const uintptr_t CHARSELECT_EXPECTED_VTABLE = 0x00B05410;
 
 static const uint32_t OFFSET_CHARSELECT_ARRAY = 0x18EC0;
-static const uint32_t CSI_SIZE       = 0x170;
+// Hotfix v6f: stride is 0x160, not 0x170 (per live RPM intel 2026-04-14 and the
+// comment 10 lines below this at line 111 that says "0x160-byte structs" — the
+// constant was wrong-by-one-nibble since the reader was written). The 0x10-byte
+// miscount means every entry after entry[0] reads from shifted offsets; at best
+// it produces garbage, at worst it reads an adjacent UI field-label string like
+// "Height" for the name. Fixes the heap-scan path AND this primary Poll path to
+// agree on HEAP_SCAN_STRIDE (0x160). Class/level fields inside this struct are
+// UNRELIABLE per memory intel (class not in this array at all; 0x50 is a stale
+// level that holds prior char's max level when a slot was recreated). Keep the
+// reads but don't trust the values — a proper level+class sourcing is v7 work.
+static const uint32_t CSI_SIZE       = 0x160;
 static const uint32_t CSI_NAME_OFF   = 0x00;
-static const uint32_t CSI_CLASS_OFF  = 0x40;
-static const uint32_t CSI_LEVEL_OFF  = 0x48;
+static const uint32_t CSI_CLASS_OFF  = 0x40;    // UNRELIABLE — see note above
+static const uint32_t CSI_LEVEL_OFF  = 0x48;    // UNRELIABLE — see note above
 
 // ─── Offset validation state ───────────────────────────────────
 
@@ -239,17 +249,49 @@ static bool IsValidCharArray(const uint8_t *pEverQuest, uint32_t offset) {
             return false;
 
         const char *name = (const char *)(arr->Data + CSI_NAME_OFF);
-        if (name[0] < 0x20 || name[0] > 0x7E)
+        // Character name MUST start with uppercase A-Z per EQ naming rules.
+        // Field-label strings like "Height" also start uppercase, so this alone
+        // isn't enough — tighten further below with length + reject known-label list.
+        if (name[0] < 'A' || name[0] > 'Z')
             return false;
 
-        bool foundNull = false;
+        int len = 0;
         for (int i = 0; i < 64; i++) {
-            if (name[i] == '\0') { foundNull = true; break; }
-            if (name[i] < 0x20 || name[i] > 0x7E)
+            if (name[i] == '\0') { len = i; break; }
+            // Name chars are A-Z lowercase/uppercase only (no spaces, digits, punctuation).
+            char c = name[i];
+            if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')))
                 return false;
         }
-        if (!foundNull) return false;
-        if (name[1] == '\0') return false;
+        // EQ names: min 4 chars, max 15 chars. Reject anything outside.
+        if (len < 4 || len > 15) return false;
+
+        // Hotfix v6f: reject known eqmain UI field-label strings that passed the
+        // old "printable ASCII" validator. "Height" was the actual symptom —
+        // heap-scan hit returned eqmain's character-info panel label block
+        // instead of the charselect array. If one of these strings appears as
+        // "name", we're reading from the wrong base.
+        static const char *const kBadNames[] = {
+            "Height", "Class", "Level", "Name", "Race", "Deity", "Gender",
+            "Strength", "Stamina", "Charisma", "Dexterity", "Agility",
+            "Intelligence", "Wisdom", "Account", "Character", "Login",
+            nullptr
+        };
+        for (int k = 0; kBadNames[k]; k++) {
+            const char *bad = kBadNames[k];
+            int bi = 0;
+            while (bad[bi] && name[bi] == bad[bi]) bi++;
+            if (!bad[bi] && name[bi] == '\0') {
+                // Exact match to a UI label — not a character name.
+                return false;
+            }
+        }
+
+        // Additional sanity: entry[0].level field (even though unreliable as-displayed)
+        // should be in a plausible character-level range 1..250 OR zero (stale slot).
+        // Reject if it's obviously garbage (negative, > 10000).
+        int32_t lvl = *(const int32_t *)(arr->Data + CSI_LEVEL_OFF);
+        if (lvl < 0 || lvl > 10000) return false;
 
         return true;
     }
@@ -929,9 +971,14 @@ void MQ2Bridge::PopulateCharacterData(volatile LoginShm *shm) {
             const uint8_t *entry = data + (i * CSI_SIZE);
             const char *name = (const char *)(entry + CSI_NAME_OFF);
 
+            // Hotfix v6f: tighten name charset to letters only (EQ naming rule) so
+            // a field-label string or garbage bytes from a mis-aligned entry can't
+            // be emitted as "name" to the user. Also enforces min length 1; empty
+            // names are written as empty strings (consumer handles the skip).
             int nameLen = 0;
-            while (nameLen < LOGIN_NAME_LEN - 1 && name[nameLen] != '\0' &&
-                   name[nameLen] >= 0x20 && name[nameLen] <= 0x7E) {
+            while (nameLen < LOGIN_NAME_LEN - 1 && name[nameLen] != '\0') {
+                char c = name[nameLen];
+                if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))) break;
                 nameLen++;
             }
             memcpy((void *)shm->charNames[i], name, nameLen);
