@@ -31,4 +31,21 @@ public class Character
     /// </summary>
     [JsonIgnore]
     public AccountKey AccountKey => new(AccountUsername, AccountServer);
+
+    /// <summary>User-facing display label. Falls back DisplayLabel → Name → literal placeholder.
+    /// Never empty.</summary>
+    public string EffectiveLabel
+    {
+        get
+        {
+            if (!string.IsNullOrEmpty(DisplayLabel)) return DisplayLabel;
+            if (!string.IsNullOrEmpty(Name)) return Name;
+            return "(unnamed character)";
+        }
+    }
+
+    /// <summary>Tray-menu label with optional class hint in parentheses (e.g. "Backup (Cleric)").
+    /// Single space before the paren. Falls back to EffectiveLabel when ClassHint is empty.</summary>
+    public string LabelWithClass =>
+        string.IsNullOrEmpty(ClassHint) ? EffectiveLabel : $"{EffectiveLabel} ({ClassHint})";
 }
