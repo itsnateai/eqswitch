@@ -1974,12 +1974,9 @@ public class SettingsForm : Form
 
     private void ShowTeamsDialog()
     {
-        // Phase 4 transitional: AutoLoginTeamsDialog still takes List<LoginAccount>
-        // until Task 9 updates its signature to v4 (Account, Character) + indicators.
-        // Build a reverse-mapped LoginAccount list on the fly for the dialog.
-        var legacyView = ReverseMapToLegacy(_pendingAccounts, _pendingCharacters);
         using var dlg = new AutoLoginTeamsDialog(
-            legacyView,
+            _pendingAccounts,
+            _pendingCharacters,
             _pendingTeam1A, _pendingTeam1B,
             _pendingTeam2A, _pendingTeam2B,
             _pendingTeam3A, _pendingTeam3B,
