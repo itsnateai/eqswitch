@@ -1381,6 +1381,14 @@ public class TrayManager : IDisposable
 
     private void ExecuteTrayAction(string action)
     {
+        // Phase 3.5-A: no tray dispatch while Settings dialog is open. Defense-in-depth
+        // against any ReloadConfig-style race that leaves hotkeys registered.
+        if (_settingsForm != null && !_settingsForm.IsDisposed)
+        {
+            FileLogger.Info($"ExecuteTrayAction({action}): suppressed — Settings dialog is open");
+            return;
+        }
+
         switch (action)
         {
             case "FixWindows":
@@ -1866,10 +1874,16 @@ public class TrayManager : IDisposable
         // Cancel any in-flight launch sequence before reload
         _launchManager.CancelLaunch();
 
-        // Re-register hotkeys if they changed
-        _hotkeyManager.UnregisterAll();
-        _keyboardHook.Reset();
-        RegisterHotkeys();
+        // Re-register hotkeys if they changed.
+        // Phase 3.5-A: when Settings calls ReloadConfig via Apply, global hotkeys
+        // must stay suspended until FormClosed re-registers. Otherwise keystrokes
+        // into rebind fields fire the old hotkeys mid-edit.
+        if (_settingsForm == null || _settingsForm.IsDisposed)
+        {
+            _hotkeyManager.UnregisterAll();
+            _keyboardHook.Reset();
+            RegisterHotkeys();
+        }
 
         // Rebuild context menu so hotkey labels and client count reflect new config
         BuildContextMenu();
