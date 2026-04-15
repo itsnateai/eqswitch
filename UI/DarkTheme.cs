@@ -443,6 +443,11 @@ public static class DarkTheme
 
     public static readonly Color FgWarn = Color.FromArgb(230, 190, 60);
 
+    // Status pill colors for AutoLoginTeamsDialog resolution indicators.
+    public static readonly Color StatusOk = Color.FromArgb(28, 110, 56);     // green — resolves to Character
+    public static readonly Color StatusWarn = Color.FromArgb(210, 170, 40);  // amber — Account-only (charselect)
+    public static readonly Color StatusFail = Color.FromArgb(180, 40, 40);   // red — unresolved
+
     // ─── Semantic Colors (specialized use cases) ──────────────
     public static readonly Color BgOverlay = Color.FromArgb(20, 18, 28);
     public static readonly Color GridSelection = Color.FromArgb(50, 44, 70);
