@@ -1100,12 +1100,15 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
 
         if (ewReq != ewAck) {
             DI8Log("mq2_bridge: Enter World request (seq %u->%u, gameState=%d)", ewAck, ewReq, gameState);
-            if (gameState == 5) {
-                // Already in-game — request is stale, drop it without clicking.
+            if (gameState == 5 || gameState == -99) {
+                // Already in-game OR could not read game state (SEH fallback).
+                // Either way, default-safe: drop the request to avoid phantom-
+                // clicking Enter World while the player is actually in-game
+                // (hotfix v3 HIGH-4).
                 shm->enterWorldResult = -2;
                 MemoryBarrier();
                 shm->enterWorldAck = ewReq;
-                DI8Log("mq2_bridge: dropped stale Enter World request (gameState=5, in-game)");
+                DI8Log("mq2_bridge: dropped Enter World request (gameState=%d — in-game or unreadable)", gameState);
             } else {
                 void *pEnterBtn = FindWindowByName("CLW_EnterWorldButton");
                 if (!pEnterBtn) {

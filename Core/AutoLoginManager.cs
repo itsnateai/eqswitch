@@ -673,10 +673,16 @@ public class AutoLoginManager
         }
         finally
         {
-            // Deactivate FIRST — ensure focus-faking stops before handles close
-            try { writer.Deactivate(pid); } catch { }
-            try { charSelect.Close(pid); } catch { }
-            try { charSelect.Dispose(); } catch { }
+            // Deactivate FIRST — ensure focus-faking stops before handles close.
+            // Hotfix v3 (MED-1): log instead of silently swallowing — a failed
+            // Deactivate means SHM could be left active with stale keys, which
+            // is exactly the phantom-keys regression the hotfix prevents.
+            try { writer.Deactivate(pid); }
+            catch (Exception ex) { FileLogger.Warn($"AutoLogin: finally Deactivate failed for PID {pid}: {ex.Message}"); }
+            try { charSelect.Close(pid); }
+            catch (Exception ex) { FileLogger.Warn($"AutoLogin: finally charSelect.Close failed for PID {pid}: {ex.Message}"); }
+            try { charSelect.Dispose(); }
+            catch (Exception ex) { FileLogger.Warn($"AutoLogin: finally charSelect.Dispose failed: {ex.Message}"); }
             try { writer.Close(pid); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Close failed: {ex.Message}"); }
             try { writer.Dispose(); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Dispose failed: {ex.Message}"); }
             // Remove PID and fire LoginComplete atomically on the UI thread.
