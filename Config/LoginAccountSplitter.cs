@@ -32,7 +32,12 @@ public static class LoginAccountSplitter
     {
         var accounts = new List<Account>();
         var characters = new List<Character>();
+        // See ConfigVersionMigrator.MigrateV3ToV4 for the same pattern: dedup key is
+        // case-insensitive but canonical FK casing must be preserved so runtime
+        // AccountKey.Matches (Ordinal) can resolve Character → Account reliably.
         var accountKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var keyToCanonicalUsername = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var keyToCanonicalServer = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var la in legacy)
         {
@@ -44,6 +49,8 @@ public static class LoginAccountSplitter
             if (accountKeys.Add(key))
             {
                 var name = string.IsNullOrEmpty(la.Name) ? la.Username : la.Name;
+                keyToCanonicalUsername[key] = la.Username;
+                keyToCanonicalServer[key] = la.Server;
                 accounts.Add(new Account
                 {
                     Name = name,
@@ -56,14 +63,17 @@ public static class LoginAccountSplitter
 
             // Character creation — every row with a character name becomes a Character.
             // Multiple legacy rows sharing an (Username, Server) each generate their
-            // own Character, all pointing at the single deduped Account.
+            // own Character, all pointing at the single deduped Account. FK uses canonical
+            // casing from the dedup winner, not la.Username — critical for case-drift
+            // configs (e.g. "MyAcct" and "myacct" rows dedup to one Account but Characters
+            // from the second row would otherwise orphan at runtime).
             if (!string.IsNullOrEmpty(la.CharacterName))
             {
                 characters.Add(new Character
                 {
                     Name = la.CharacterName,
-                    AccountUsername = la.Username,
-                    AccountServer = la.Server,
+                    AccountUsername = keyToCanonicalUsername[key],
+                    AccountServer = keyToCanonicalServer[key],
                     CharacterSlot = la.CharacterSlot,
                 });
             }

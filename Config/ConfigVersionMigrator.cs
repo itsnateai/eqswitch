@@ -195,8 +195,16 @@ public static class ConfigVersionMigrator
         var v3Accounts = root["accounts"]?.AsArray() ?? new JsonArray();
         var newAccounts = new JsonArray();
         var newCharacters = new JsonArray();
+        // Dedup key is (Username, Server) compared case-insensitively, but the Account's
+        // canonical Username/Server is whichever casing the first-seen row had. Characters
+        // must FK against THAT exact casing because AccountKey.Matches at runtime is Ordinal.
+        // Without this, a user with `{Username: "MyAcct"}` and `{Username: "myacct"}` (same
+        // account, different case) dedups correctly but Characters for the second row would
+        // point at "myacct" while the Account stores "MyAcct" — orphaning the Character.
         var accountKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var accountKeyToName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var accountKeyToCanonicalUsername = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var accountKeyToCanonicalServer = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         // Capture (Username, Server, AutoEnterWorld, CharacterName) per v3 row for hotkey + team rebinds later.
         var v3Rows = new List<V3Row>();
@@ -231,6 +239,8 @@ public static class ConfigVersionMigrator
             {
                 var accountName = string.IsNullOrEmpty(name) ? username : name;
                 accountKeyToName[key] = accountName;
+                accountKeyToCanonicalUsername[key] = username;
+                accountKeyToCanonicalServer[key] = server;
                 newAccounts.Add(new JsonObject
                 {
                     ["name"] = accountName,
@@ -245,11 +255,16 @@ public static class ConfigVersionMigrator
             // to reach charselect, where the user picks manually).
             if (!string.IsNullOrEmpty(characterName))
             {
+                // Write FK using canonical casing from the dedup winner, NOT the current row's
+                // casing. This keeps AccountKey.Matches (Ordinal) from orphaning Characters
+                // whose source row had different-case Username from the account's winning row.
+                var fkUsername = accountKeyToCanonicalUsername.TryGetValue(key, out var cu) ? cu : username;
+                var fkServer = accountKeyToCanonicalServer.TryGetValue(key, out var cs) ? cs : server;
                 newCharacters.Add(new JsonObject
                 {
                     ["name"] = characterName,
-                    ["accountUsername"] = username,
-                    ["accountServer"] = server,
+                    ["accountUsername"] = fkUsername,
+                    ["accountServer"] = fkServer,
                     ["characterSlot"] = characterSlot,
                     ["displayLabel"] = "",
                     ["classHint"] = "",
@@ -302,9 +317,13 @@ public static class ConfigVersionMigrator
                     arr.Add(new JsonObject { ["combo"] = "", ["targetName"] = "" });
             }
 
-            if (matchByChar != null && resolved.AutoEnterWorld)
+            if (resolved.AutoEnterWorld && !string.IsNullOrEmpty(resolved.CharacterName))
             {
-                // CharacterName match + AutoEnterWorld=true → Character family
+                // v3 intent was enter-world AND the row has a Character to select.
+                // Route to Character family regardless of whether the hotkey's target string
+                // matched by CharacterName or Username — the source row's AutoEnterWorld flag
+                // is the source of truth for intent, and v3's runtime would have entered world
+                // in either matching case.
                 EnsureSize(characterHotkeys, slot);
                 characterHotkeys[slot - 1] = new JsonObject
                 {
@@ -315,7 +334,7 @@ public static class ConfigVersionMigrator
             }
             else
             {
-                // CharacterName match + AutoEnterWorld=false, OR Username-only match → Account family
+                // No enter-world intent OR no Character to select → Account family.
                 EnsureSize(accountHotkeys, slot);
                 accountHotkeys[slot - 1] = new JsonObject
                 {
