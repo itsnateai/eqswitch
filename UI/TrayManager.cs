@@ -1510,11 +1510,16 @@ public class TrayManager : IDisposable
         }
     }
 
+    // Per-target stale-fire timestamps so rapid combo mashes don't flood balloons/logs.
+    private readonly Dictionary<string, long> _lastStaleFireTicks = new(StringComparer.Ordinal);
+    private const int StaleBalloonCooldownMs = 2000;
+
     /// <summary>
     /// Phase 5a: dispatch entry point for AccountHotkeys[]. Resolves the binding's
     /// TargetName to an Account at fire time — if the Account was deleted between
     /// Save and keypress, surfaces an actionable balloon pointing the user at the
-    /// Hotkeys dialog. No throw.
+    /// Hotkeys dialog. Balloon + log throttled to once per 2 s per target to avoid
+    /// spam from a user mashing a combo. No throw.
     /// </summary>
     private void FireAccountHotkeyByName(string name)
     {
@@ -1525,8 +1530,14 @@ public class TrayManager : IDisposable
         var account = _config.FindAccountByName(name);
         if (account == null)
         {
-            ShowBalloon($"Account Hotkey: '{name}' not found. Open Settings \u2192 Hotkeys \u2192 Configure Accounts to rebind.");
-            FileLogger.Warn($"AccountHotkey fired for missing target '{name}' — user should rebind in the Account Hotkeys dialog");
+            var key = "A:" + name;
+            long now = Environment.TickCount64;
+            if (!_lastStaleFireTicks.TryGetValue(key, out var last) || now - last >= StaleBalloonCooldownMs)
+            {
+                _lastStaleFireTicks[key] = now;
+                ShowBalloon($"Account Hotkey: '{name}' not found. Open Settings \u2192 Hotkeys \u2192 Configure Accounts to rebind.");
+                FileLogger.Warn($"AccountHotkey fired for missing target '{name}' — user should rebind in the Account Hotkeys dialog");
+            }
             return;
         }
         FireAccountLogin(account);
@@ -1567,8 +1578,14 @@ public class TrayManager : IDisposable
         var character = _config.FindCharacterByName(name);
         if (character == null)
         {
-            ShowBalloon($"Character Hotkey: '{name}' not found. Open Settings \u2192 Hotkeys \u2192 Configure Characters to rebind.");
-            FileLogger.Warn($"CharacterHotkey fired for missing target '{name}' — user should rebind in the Character Hotkeys dialog");
+            var key = "C:" + name;
+            long now = Environment.TickCount64;
+            if (!_lastStaleFireTicks.TryGetValue(key, out var last) || now - last >= StaleBalloonCooldownMs)
+            {
+                _lastStaleFireTicks[key] = now;
+                ShowBalloon($"Character Hotkey: '{name}' not found. Open Settings \u2192 Hotkeys \u2192 Configure Characters to rebind.");
+                FileLogger.Warn($"CharacterHotkey fired for missing target '{name}' — user should rebind in the Character Hotkeys dialog");
+            }
             return;
         }
         FireCharacterLogin(character);

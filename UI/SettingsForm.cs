@@ -1330,6 +1330,8 @@ public class SettingsForm : Form
         // so migrated v3 bindings still participate during the deprecation window.
         var tabHotkeys = new[]
         {
+            ("Switch Key",       _txtSwitchKeyGeneral.Text.Trim()),
+            ("Global Switch Key",_txtGlobalSwitchKey.Text.Trim()),
             ("Fix Windows",      _txtArrangeWindows.Text.Trim()),
             ("Launch One",       _txtLaunchOne.Text.Trim()),
             ("Launch All",       _txtLaunchAll.Text.Trim()),

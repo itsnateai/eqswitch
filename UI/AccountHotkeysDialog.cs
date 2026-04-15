@@ -44,10 +44,21 @@ public sealed class AccountHotkeysDialog : Form
         _otherHotkeys = otherHotkeys;
 
         // Classify current bindings: live (TargetName matches an Account) vs stale.
+        // Half-populated (exactly one of Combo/TargetName empty) entries are malformed —
+        // migration padding emits both empty in lockstep. Log + drop.
         var byTargetName = new Dictionary<string, string>(StringComparer.Ordinal);
         var staleBindings = new List<HotkeyBinding>();
         foreach (var b in currentBindings)
         {
+            bool halfPopulated =
+                (!string.IsNullOrEmpty(b.Combo) && string.IsNullOrEmpty(b.TargetName)) ||
+                (string.IsNullOrEmpty(b.Combo) && !string.IsNullOrEmpty(b.TargetName));
+            if (halfPopulated)
+            {
+                EQSwitch.Core.FileLogger.Warn(
+                    $"AccountHotkeysDialog: malformed binding dropped (Combo='{b.Combo}', TargetName='{b.TargetName}')");
+                continue;
+            }
             if (!HotkeyBindingUtil.IsPopulated(b)) continue;
             bool resolves = accounts.Any(a => a.Name.Equals(b.TargetName, StringComparison.Ordinal));
             if (resolves) byTargetName[b.TargetName] = b.Combo;
