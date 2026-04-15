@@ -233,6 +233,20 @@ static DWORD WINAPI ActivateThread(LPVOID) {
             // SHM deactivated — restore EQ's natural state
             RemoveSubclass(hwnd);
 
+            // Phantom-keys hotfix: restore original DI8 cooperative level
+            // (typically FOREGROUND|EXCLUSIVE). Without this, EQ's keyboard
+            // stays in BACKGROUND|NONEXCLUSIVE indefinitely after first auto-
+            // login, causing EQ to read global OS keyboard state regardless
+            // of focus — so any key pressed anywhere lands in EQ.
+            if (g_coopSwitched && g_realKeyboardDevice) {
+                g_realKeyboardDevice->Unacquire();
+                HRESULT hr = g_realKeyboardDevice->SetCooperativeLevel(hwnd, g_originalCoopFlags);
+                HRESULT acqHr = g_realKeyboardDevice->Acquire();
+                g_coopSwitched = false;
+                DI8Log("wm_activate: restored coop level (orig=0x%X SetCoop=0x%08X Acquire=0x%08X)",
+                       (unsigned)g_originalCoopFlags, (unsigned)hr, (unsigned)acqHr);
+            }
+
             HWND fg = GetForegroundWindow();
             if (fg != hwnd) {
                 if (g_pActiveFlag)
