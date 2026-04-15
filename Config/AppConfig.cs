@@ -12,7 +12,7 @@ namespace EQSwitch.Config;
 public class AppConfig
 {
     /// <summary>Schema version for config migration. Bump when making breaking changes.</summary>
-    public const int CurrentConfigVersion = 3;
+    public const int CurrentConfigVersion = 4;
 
     public int ConfigVersion { get; set; } = CurrentConfigVersion;
     public bool IsFirstRun { get; set; } = true;
@@ -36,8 +36,17 @@ public class AppConfig
     // Picture-in-Picture
     public PipConfig Pip { get; set; } = new();
 
-    // Characters
-    public List<CharacterProfile> Characters { get; set; } = new();
+    // ── v3 legacy character profiles (renamed in v4 transition; consumed by AffinityManager until Phase 5) ──
+    [JsonPropertyName("characters")]
+    public List<CharacterProfile> LegacyCharacterProfiles { get; set; } = new();
+
+    // ── v4 launch-target characters (NEW; populated by MigrateV3ToV4; consumed from Phase 3 onwards) ──
+    [JsonPropertyName("charactersV4")]
+    public List<Character> Characters { get; set; } = new();
+
+    // ── v4 cosmetic/priority metadata (NEW; populated by migration as a copy of legacy character profiles) ──
+    [JsonPropertyName("characterAliases")]
+    public List<CharacterAlias> CharacterAliases { get; set; } = new();
 
     // Video
     public List<string> CustomVideoPresets { get; set; } = new();
@@ -47,8 +56,13 @@ public class AppConfig
     public string DalayaPatcherPath { get; set; } = "";
     public string NotesPath { get; set; } = "";
 
-    // Login Accounts (auto-login presets)
-    public List<LoginAccount> Accounts { get; set; } = new();
+    // ── v3 legacy login accounts (renamed in v4 transition; consumed by tray/settings/autologin until Phases 2-4) ──
+    [JsonPropertyName("accounts")]
+    public List<LoginAccount> LegacyAccounts { get; set; } = new();
+
+    // ── v4 launch-target accounts (NEW; populated by MigrateV3ToV4; consumed from Phase 2 onwards) ──
+    [JsonPropertyName("accountsV4")]
+    public List<Account> Accounts { get; set; } = new();
 
     /// <summary>Delay in ms after EQ window appears before typing credentials (default 5s).</summary>
     public int LoginScreenDelayMs { get; set; } = 5000;
@@ -191,17 +205,18 @@ public class AppConfig
         for (int i = 0; i < 6; i++)
             EQClientIni.CPUAffinitySlots[i] = Math.Clamp(EQClientIni.CPUAffinitySlots[i], 0, 31);
 
-        // LoginAccount field validation
-        foreach (var a in Accounts)
+        // LoginAccount field validation (legacy — operates on v3 LegacyAccounts list).
+        // v4 Account type has no CharacterSlot field; per-character slot moves to
+        // Character.CharacterSlot, validated wherever Characters lives by Phase 4 UI.
+        foreach (var a in LegacyAccounts)
             a.CharacterSlot = Math.Clamp(a.CharacterSlot, 0, 10); // 0 = auto (by name)
 
         // v3.9.0 migration: propagate global AutoEnterWorld to per-account flags.
-        // Prior versions only had the global flag. If it was true and accounts still
-        // have their default (false), the user's intent was "enter world for all".
-        // Clear global flag after migration so this only runs once.
-        if (AutoEnterWorld && Accounts.Count > 0 && Accounts.All(a => !a.AutoEnterWorld))
+        // Operates on legacy data only — v4 encodes enter-world intent in the
+        // Character vs Account type discriminator, not a per-row flag.
+        if (AutoEnterWorld && LegacyAccounts.Count > 0 && LegacyAccounts.All(a => !a.AutoEnterWorld))
         {
-            foreach (var a in Accounts)
+            foreach (var a in LegacyAccounts)
                 a.AutoEnterWorld = true;
             AutoEnterWorld = false; // consumed — prevent re-firing every session
             mutated = true;
@@ -351,6 +366,22 @@ public class HotkeyConfig
     public string TeamLogin3 { get; set; } = "";
     /// <summary>Auto-login Team 4.</summary>
     public string TeamLogin4 { get; set; } = "";
+
+    /// <summary>
+    /// v4 Account family hotkeys. Each binding fires LoginToCharselect on the
+    /// matching Account (resolved by TargetName == Account.Name). Populated
+    /// by MigrateV3ToV4 from v3 (AutoLoginN, QuickLoginN) pairs that resolved
+    /// to an account-without-character or to a character with AutoEnterWorld=false.
+    /// </summary>
+    public List<HotkeyBinding> AccountHotkeys { get; set; } = new();
+
+    /// <summary>
+    /// v4 Character family hotkeys. Each binding fires LoginAndEnterWorld on the
+    /// matching Character (resolved by TargetName == Character.Name). Populated
+    /// by MigrateV3ToV4 from v3 (AutoLoginN, QuickLoginN) pairs that resolved
+    /// to a character with AutoEnterWorld=true.
+    /// </summary>
+    public List<HotkeyBinding> CharacterHotkeys { get; set; } = new();
 
     /// <summary>
     /// Set true once the user has enabled multimonitor mode at least once.

@@ -130,7 +130,8 @@ public class AffinityManager
 
     private string? FindSlotPriorityOverride(int slotIndex)
     {
-        var characters = _config.Characters;
+        // Reads legacy CharacterProfile data — Phase 5 will swap to CharacterAliases.
+        var characters = _config.LegacyCharacterProfiles;
         for (int i = 0; i < characters.Count; i++)
         {
             if (characters[i].SlotIndex == slotIndex && characters[i].PriorityOverride != null)

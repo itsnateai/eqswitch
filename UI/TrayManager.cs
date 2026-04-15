@@ -805,9 +805,9 @@ public class TrayManager : IDisposable
 
         // Login submenu (always visible, like Clients menu)
         var loginMenu = new ToolStripMenuItem("\uD83D\uDD11  Accounts") { Font = _boldMenuFont };
-        if (_config.Accounts.Count > 0)
+        if (_config.LegacyAccounts.Count > 0)
         {
-            foreach (var account in _config.Accounts)
+            foreach (var account in _config.LegacyAccounts)
             {
                 var label = string.IsNullOrEmpty(account.CharacterName)
                     ? account.Username
@@ -1318,8 +1318,8 @@ public class TrayManager : IDisposable
             return Task.CompletedTask;
         }
         // Match by CharacterName first (unique), fall back to Username (legacy configs)
-        var account = _config.Accounts.FirstOrDefault(a => a.CharacterName == username)
-                   ?? _config.Accounts.FirstOrDefault(a => a.Username == username);
+        var account = _config.LegacyAccounts.FirstOrDefault(a => a.CharacterName == username)
+                   ?? _config.LegacyAccounts.FirstOrDefault(a => a.Username == username);
         if (account == null)
         {
             ShowBalloon($"{slotName}: account '{username}' not found");
@@ -1421,8 +1421,14 @@ public class TrayManager : IDisposable
         _config.GinaPath = newConfig.GinaPath;
         _config.NotesPath = newConfig.NotesPath;
         _config.DalayaPatcherPath = newConfig.DalayaPatcherPath;
-        _config.Characters = newConfig.Characters;
+        _config.LegacyCharacterProfiles = newConfig.LegacyCharacterProfiles;
+        _config.LegacyAccounts = newConfig.LegacyAccounts;
+        // v4 lists swap together with their legacy counterparts so the live config
+        // stays in sync after Save → Reload. Phases 3/4 will populate these from UI;
+        // Phase 1 just preserves the migration's output.
         _config.Accounts = newConfig.Accounts;
+        _config.Characters = newConfig.Characters;
+        _config.CharacterAliases = newConfig.CharacterAliases;
         _config.QuickLogin1 = newConfig.QuickLogin1;
         _config.QuickLogin2 = newConfig.QuickLogin2;
         _config.QuickLogin3 = newConfig.QuickLogin3;
@@ -1726,9 +1732,9 @@ public class TrayManager : IDisposable
             // Resolve placeholders
             var client = clients[clientIndex];
             var charName = "";
-            if (clientIndex < _config.Accounts.Count)
+            if (clientIndex < _config.LegacyAccounts.Count)
             {
-                var accountName = _config.Accounts[clientIndex].CharacterName;
+                var accountName = _config.LegacyAccounts[clientIndex].CharacterName;
                 if (!string.IsNullOrEmpty(accountName))
                     charName = accountName;
             }

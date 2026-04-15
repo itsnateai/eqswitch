@@ -12,6 +12,28 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        // --test-migrate <input-json> — run ConfigVersionMigrator on the file and write
+        // <input>.migrated.json next to it. Exits without showing UI. Used by scripted
+        // migration test fixtures under _tests/migration/.
+        if (args.Length >= 2 && args[0] == "--test-migrate")
+        {
+            try
+            {
+                var inputPath = args[1];
+                var inputJson = File.ReadAllText(inputPath);
+                var (migratedJson, didMigrate) = ConfigVersionMigrator.MigrateIfNeeded(inputJson);
+                var outputPath = inputPath + ".migrated.json";
+                File.WriteAllText(outputPath, migratedJson);
+                File.WriteAllText(inputPath + ".test-result.txt",
+                    $"input={inputPath}\noutput={outputPath}\nmigrated={didMigrate}\n");
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(args[1] + ".test-result.txt", $"ERROR: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}\n");
+            }
+            return;
+        }
+
         // Enforce single instance
         const string mutexName = "EQSwitch_SingleInstance_SoD";
         _mutex = new Mutex(true, mutexName, out bool createdNew);

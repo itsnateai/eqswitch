@@ -434,9 +434,9 @@ public class WindowManager
         var charName = "";
 
         // Look up by slot index in auto-login accounts
-        if (slotIndex < _config.Accounts.Count)
+        if (slotIndex < _config.LegacyAccounts.Count)
         {
-            var accountName = _config.Accounts[slotIndex].CharacterName;
+            var accountName = _config.LegacyAccounts[slotIndex].CharacterName;
             if (!string.IsNullOrEmpty(accountName))
                 charName = accountName;
         }
