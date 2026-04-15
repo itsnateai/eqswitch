@@ -20,6 +20,10 @@ public sealed class AccountHotkeysDialog : Form
     private readonly List<(string TargetName, TextBox HotkeyBox)> _liveRows = new();
     private readonly List<(string TargetName, TextBox HotkeyBox, ComboBox RebindCombo)> _staleRows = new();
     private readonly IReadOnlyList<(string label, string combo)> _otherHotkeys;
+    // Single Consolas font shared across every hotkey TextBox — WinForms doesn't
+    // dispose Control.Font on the control's Dispose, so a per-TextBox Font leaks GDI
+    // handles on every dialog lifecycle (cf. memory: "UI Polish Session 2 — 7 GDI fixes").
+    private readonly Font _hotkeyFont = new("Consolas", 9f);
 
     /// <summary>Result of the dialog. Null until DialogResult.OK.</summary>
     public List<HotkeyBinding>? Result { get; private set; }
@@ -148,7 +152,7 @@ public sealed class AccountHotkeysDialog : Form
             BackColor = DarkTheme.BgInput,
             ForeColor = DarkTheme.FgWhite,
             BorderStyle = BorderStyle.None,
-            Font = new Font("Consolas", 9f),
+            Font = _hotkeyFont,   // shared — dialog-lifetime Font disposed in override below
             TextAlign = HorizontalAlignment.Center,
             ShortcutsEnabled = false,
             Text = initialText,
@@ -156,6 +160,12 @@ public sealed class AccountHotkeysDialog : Form
         tb.KeyDown += HotkeyBoxKeyDown;
         card.Controls.Add(tb);
         return tb;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _hotkeyFont.Dispose();
+        base.Dispose(disposing);
     }
 
     private static void HotkeyBoxKeyDown(object? sender, KeyEventArgs e)

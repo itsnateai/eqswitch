@@ -1518,6 +1518,10 @@ public class TrayManager : IDisposable
     /// </summary>
     private void FireAccountHotkeyByName(string name)
     {
+        // Phase 3.5-A parity: no dispatch while Settings is open. Bypasses
+        // ExecuteTrayAction so the gate has to be duplicated here.
+        if (_settingsForm != null && !_settingsForm.IsDisposed) return;
+
         var account = _config.FindAccountByName(name);
         if (account == null)
         {
@@ -1558,6 +1562,8 @@ public class TrayManager : IDisposable
     /// </summary>
     private void FireCharacterHotkeyByName(string name)
     {
+        if (_settingsForm != null && !_settingsForm.IsDisposed) return;   // Phase 3.5-A parity
+
         var character = _config.FindCharacterByName(name);
         if (character == null)
         {
@@ -1875,6 +1881,9 @@ public class TrayManager : IDisposable
         _config.Hotkeys.LaunchOne = newConfig.Hotkeys.LaunchOne;
         _config.Hotkeys.LaunchAll = newConfig.Hotkeys.LaunchAll;
         _config.Hotkeys.TogglePip = newConfig.Hotkeys.TogglePip;
+        // Phase 5a family tables — sync both, defense-in-depth matching the TogglePip pattern.
+        _config.Hotkeys.AccountHotkeys = newConfig.Hotkeys.AccountHotkeys;
+        _config.Hotkeys.CharacterHotkeys = newConfig.Hotkeys.CharacterHotkeys;
         _config.Hotkeys.MultiMonitorEnabled = newConfig.Hotkeys.MultiMonitorEnabled;
         _config.Hotkeys.DirectSwitchKeys = newConfig.Hotkeys.DirectSwitchKeys;
         _config.Hotkeys.SwitchKeyMode = newConfig.Hotkeys.SwitchKeyMode;
