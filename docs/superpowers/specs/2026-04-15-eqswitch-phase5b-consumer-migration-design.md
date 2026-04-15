@@ -162,21 +162,23 @@ public static class CharacterSelector
             return (requestedSlot, false,
                 $"heap empty, fall back to requested slot {requestedSlot}");
 
-        // Case 2: auto-by-name — scan the heap for an Ordinal match.
+        // Case 2: auto-by-name — scan the heap for a case-insensitive match.
+        // See drift-point 4 for the OrdinalIgnoreCase rationale.
         if (requestedSlot == 0 && !string.IsNullOrEmpty(requestedName))
         {
             for (int i = 0; i < charNamesInHeap.Length; i++)
             {
                 if (string.Equals(charNamesInHeap[i], requestedName,
-                    StringComparison.Ordinal))
+                    StringComparison.OrdinalIgnoreCase))
                     return (i + 1, true, $"name match '{requestedName}' at slot {i + 1}");
             }
             return (0, false,
                 $"name '{requestedName}' not in heap ({string.Join(",", charNamesInHeap)})");
         }
 
-        // Case 3: explicit slot requested.
-        if (requestedSlot >= 1 && requestedSlot <= 10)
+        // Case 3: explicit slot requested. Caller's resolvedSlot > charCount bounds
+        // check handles out-of-range (matches pre-extraction error path).
+        if (requestedSlot >= 1)
             return (requestedSlot, false, $"explicit slot {requestedSlot}");
 
         // Case 4: malformed request (slot=0 + empty name).
@@ -184,8 +186,6 @@ public static class CharacterSelector
     }
 }
 ```
-
-**Name comparison:** `StringComparison.Ordinal`, matching `AccountKey.Matches` and `FindAccountByName` / `FindCharacterByName`. The handoff's draft used `OrdinalIgnoreCase` — overridden here because the rest of the codebase compares character names case-sensitive.
 
 **Caller rewrite (`AutoLoginManager.RunLoginSequence`, ~30 lines around lines 448-490):**
 ```csharp
