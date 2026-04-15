@@ -1497,6 +1497,13 @@ public class SettingsForm : Form
     /// has no concept of a character without an account. Keeps
     /// <see cref="AppConfig.Validate"/> from triggering a v4 resync that would wipe
     /// Phase-4-only edits.
+    ///
+    /// Deliberate behavior change from v3: every Character-linked row has
+    /// <c>AutoEnterWorld = true</c>. In v3 that flag was per-row; in v4 "is it a Character
+    /// vs. Account" encodes the enter-world intent. A v3 config with
+    /// <c>{CharacterName = X, AutoEnterWorld = false}</c> will lose the false flag on the
+    /// first Save in v4 — the user can re-create the charselect-only intent by removing the
+    /// Character and keeping the Account.
     /// </summary>
     private static List<LoginAccount> ReverseMapToLegacy(
         IReadOnlyList<Account> accounts,
@@ -1880,9 +1887,12 @@ public class SettingsForm : Form
             var oldName = existing.Name;
             var newName = dlg.Result.Name;
             _pendingAccounts[idx] = dlg.Result;
-            // If Account.Name changed, update any Team{N}Account{M} slots referencing the old name.
+            // If Account.Name changed, propagate to any slot referencing the old name.
             if (!oldName.Equals(newName, StringComparison.Ordinal))
+            {
                 UpdateTeamSlotUsername(oldName, newName);
+                PropagateNameChangeToQuickLogins(oldName, newName);
+            }
             RefreshAccountsGrid();
             RefreshCharactersGrid();
             _lblTeamSummary.Text = BuildTeamSummary();
@@ -1960,9 +1970,36 @@ public class SettingsForm : Form
             var newName = dlg.Result.Name;
             _pendingCharacters[idx] = dlg.Result;
             if (!oldName.Equals(newName, StringComparison.Ordinal))
+            {
                 UpdateTeamSlotUsername(oldName, newName);
+                PropagateNameChangeToQuickLogins(oldName, newName);
+            }
             RefreshCharactersGrid();
             _lblTeamSummary.Text = BuildTeamSummary();
+        }
+    }
+
+    /// <summary>
+    /// When an Account or Character is renamed, update any QuickLogin1-4 combo
+    /// whose current selection matches the old name so the binding doesn't silently
+    /// drop to (None) when RefreshQuickLoginCombos rebuilds the item list.
+    /// </summary>
+    private void PropagateNameChangeToQuickLogins(string oldName, string newName)
+    {
+        if (string.IsNullOrEmpty(oldName)) return;
+        var combos = new[] { _cboQuickLogin1, _cboQuickLogin2, _cboQuickLogin3, _cboQuickLogin4 };
+        foreach (var cbo in combos)
+        {
+            if (cbo == null) continue;
+            if (cbo.SelectedItem?.ToString()?.Equals(oldName, StringComparison.Ordinal) == true)
+            {
+                // Intentionally mutate the item text before RefreshQuickLoginCombos
+                // replaces the list — this keeps the selection visually stable.
+                int si = cbo.SelectedIndex;
+                if (si >= 0 && si < cbo.Items.Count)
+                    cbo.Items[si] = newName;
+                cbo.SelectedIndex = si;
+            }
         }
     }
 

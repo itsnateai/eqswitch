@@ -850,14 +850,31 @@ public class TrayManager : IDisposable
             foreach (var ch in characters)
             {
                 var captured = ch;
-                var label = $"\uD83E\uDDD9  {captured.LabelWithClass}";
-                var tooltip = BuildCharacterTooltip(captured, accountsByKey);
+                // Phase 4: orphan Characters (no Account FK — Unlink outcome) render
+                // dim with a warning prefix and a corrective tooltip. Click surfaces
+                // an actionable balloon rather than the AutoLoginManager raw error.
+                bool isOrphan = string.IsNullOrEmpty(captured.AccountUsername);
+                var label = isOrphan
+                    ? $"\u26A0  {captured.LabelWithClass}  (no account)"
+                    : $"\uD83E\uDDD9  {captured.LabelWithClass}";
+                var tooltip = isOrphan
+                    ? $"\u26A0 '{captured.Name}' has no Account linked. Open Settings \u2192 Accounts \u2192 Edit this Character to assign one."
+                    : BuildCharacterTooltip(captured, accountsByKey);
                 var item = new ToolStripMenuItem(label)
                 {
                     ToolTipText = tooltip,
-                    ShortcutKeyDisplayString = hkLookup.GetCombo(captured.Name)
+                    ShortcutKeyDisplayString = hkLookup.GetCombo(captured.Name),
                 };
-                item.Click += (_, _) => FireCharacterLogin(captured);
+                if (isOrphan)
+                {
+                    item.ForeColor = DarkTheme.FgDimGray;
+                    item.Click += (_, _) => ShowBalloon(
+                        $"Character '{captured.Name}' has no Account linked — open Settings to assign one before launching.");
+                }
+                else
+                {
+                    item.Click += (_, _) => FireCharacterLogin(captured);
+                }
                 menu.DropDownItems.Add(item);
             }
         }
