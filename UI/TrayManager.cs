@@ -776,9 +776,6 @@ public class TrayManager : IDisposable
 
     // ─── Tray UI ─────────────────────────────────────────────────────
 
-    /// <summary>Returns a tab-indented hotkey suffix for tray menu labels, or "" if unbound.</summary>
-    private static string HkSuffix(string key) => string.IsNullOrEmpty(key) ? "" : $"\t{key}";
-
     /// <summary>
     /// Phase 3 Accounts submenu: parent item with per-account rows, separator, and "Manage Accounts..." footer.
     /// Each row fires LoginToCharselect on click. Empty-state row teaches what the submenu is for.
@@ -804,10 +801,9 @@ public class TrayManager : IDisposable
             foreach (var acc in accounts)
             {
                 var captured = acc; // explicit capture for closure
-                // Use ShortcutKeyDisplayString for the hotkey column — DarkMenuRenderer on
-                // submenu items doesn't paint the embedded \t tab separator the way it does
-                // for root items, so HkSuffix renders label+combo docked together. The dedicated
-                // property is the WinForms idiom and renders in its own right-aligned column.
+                // ShortcutKeyDisplayString is the WinForms idiom for the hotkey column —
+                // renders right-aligned with proper padding. Applied to every menu item
+                // with a hotkey (root, submenu, video) for visual consistency.
                 var label = $"\uD83D\uDC64  {captured.EffectiveLabel}";
                 var item = new ToolStripMenuItem(label)
                 {
@@ -945,18 +941,20 @@ public class TrayManager : IDisposable
         _contextMenu.Items.Add(titleItem);
         _contextMenu.Items.Add(new ToolStripSeparator());
 
-        var launchOneItem = new ToolStripMenuItem($"\u2694  Launch Client{HkSuffix(hk.LaunchOne)}")
+        var launchOneItem = new ToolStripMenuItem("\u2694  Launch Client")
         {
             Font = _boldMenuFont,
-            ToolTipText = "Launch bare eqgame.exe patchme"
+            ToolTipText = "Launch bare eqgame.exe patchme",
+            ShortcutKeyDisplayString = hk.LaunchOne
         };
         launchOneItem.Click += (_, _) => OnLaunchOne();
         _contextMenu.Items.Add(launchOneItem);
 
-        var launchTeamItem = new ToolStripMenuItem($"\uD83C\uDFAE  Launch Team{HkSuffix(hk.TeamLogin1)}")
+        var launchTeamItem = new ToolStripMenuItem("\uD83C\uDFAE  Launch Team")
         {
             Font = _boldMenuFont,
-            ToolTipText = "Auto-login Team 1 in parallel (same as Teams \u2192 Team 1)"
+            ToolTipText = "Auto-login Team 1 in parallel (same as Teams \u2192 Team 1)",
+            ShortcutKeyDisplayString = hk.TeamLogin1
         };
         launchTeamItem.Click += (_, _) => ExecuteTrayAction("LoginAll");
         _contextMenu.Items.Add(launchTeamItem);
@@ -1007,7 +1005,12 @@ public class TrayManager : IDisposable
         };
         videoMenu.DropDownItems.Add(pipItem);
         videoMenu.DropDownItems.Add(new ToolStripSeparator());
-        videoMenu.DropDownItems.Add($"Fix Windows  \uD83D\uDD27{HkSuffix(hk.ArrangeWindows)}", null, (_, _) => OnArrangeWindows());
+        var fixWindowsItem = new ToolStripMenuItem("Fix Windows  \uD83D\uDD27")
+        {
+            ShortcutKeyDisplayString = hk.ArrangeWindows
+        };
+        fixWindowsItem.Click += (_, _) => OnArrangeWindows();
+        videoMenu.DropDownItems.Add(fixWindowsItem);
         videoMenu.DropDownItems.Add("Swap Windows  \uD83D\uDD00", null, (_, _) => ExecuteTrayAction("SwapWindows"));
         bool isMultiMon = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
         var multiMonItem = new ToolStripMenuItem(
@@ -1539,7 +1542,12 @@ public class TrayManager : IDisposable
         }
 
         // Account-only path (or enter-world intent with missing v4 Character — fail safe to charselect).
-        var account = _config.FindAccountByName(legacyRow.Name);
+        // Look up the v4 Account by (Username, Server) rather than Name — migration dedup means
+        // multiple legacy rows (e.g. "backup" + "acpots" sharing Username "gotquiz") can collapse
+        // into one v4 Account whose Name matches only the first-seen legacy row. Name-based lookup
+        // would miss subsequent legacy rows; AccountKey-based lookup catches them all.
+        var accountKey = new AccountKey(legacyRow.Username, legacyRow.Server);
+        var account = _config.Accounts.FirstOrDefault(a => accountKey.Matches(a));
         if (account != null)
         {
             LogFirstFire(slot, "Account", account.EffectiveLabel);
@@ -1548,7 +1556,7 @@ public class TrayManager : IDisposable
         }
 
         ShowBalloon($"Quick Login {slot}: v4 data missing for '{targetName}' (migration issue?)");
-        FileLogger.Warn($"Legacy QuickLogin{slot}: resolved legacy row '{legacyRow.Name}' but no v4 Account found with that Name");
+        FileLogger.Warn($"Legacy QuickLogin{slot}: resolved legacy row '{legacyRow.Name}' (key {accountKey}) but no v4 Account matches");
     }
 
     // Empty-slot balloon rate-limiter — tracks last fire per slot. Guards against
@@ -1678,55 +1686,55 @@ public class TrayManager : IDisposable
     /// discard-assignment — NO await inside the foreach loop). Preserves v3 timing
     /// semantics around _activeLoginPids — plan line 371 is emphatic.
     ///
-    /// Team-slot intent (clarified by user 2026-04-15):
-    ///   Character slot → enter world (teams are designed around characters)
-    ///   Account-only slot → stop at charselect (typical crafter-team pattern)
-    ///   teamN.AutoEnter = true → override, try to force enter-world on all slots
-    ///                            (Account-only slots still stop at charselect because
-    ///                             AutoLoginManager can't pick a character for them —
-    ///                             logs a warn and degrades gracefully)
-    ///   teamN.AutoEnter = false → no override, use per-slot-type default above
+    /// Team.AutoEnter flag is a BINARY per-team toggle (clarified by user 2026-04-15):
+    ///   true  = force enter world on all slots (the default, for Character teams)
+    ///   false = force charselect on all slots (for crafter teams — "Enter World" off)
     ///
-    /// This method bypasses the legacy ExecuteQuickLogin path (which routed through
-    /// the [Obsolete] LoginAccount wrapper). ExecuteQuickLogin is now dead code — Phase 5
-    /// deletes it per plan. The CS0618 warning it generates stays as a visible reminder
-    /// that Phase 5 cleanup is still pending.
+    /// Dropdown semantics stay sane — users fill team slots with Characters (preferred)
+    /// or Accounts, then toggle the "Enter World" checkbox in Autologin Teams dialog to
+    /// control destination. No hidden "Account-only means charselect" behavior — the flag
+    /// alone decides intent.
+    ///
+    /// Account-only slots with AutoEnter=true still can only reach charselect (AutoLoginManager
+    /// has no character to select); we log the mismatch and degrade gracefully.
+    ///
+    /// This method bypasses the legacy ExecuteQuickLogin path (which routed through the
+    /// [Obsolete] LoginAccount wrapper). ExecuteQuickLogin is now dead code — Phase 5
+    /// deletes it per plan.
     /// </summary>
     private void FireTeam(int teamIndex)
     {
-        var (slots, teamForcesEnterWorld, teamName) = ResolveTeamConfig(teamIndex);
-
-        // null = no team-level override, use per-slot default.
-        // true = team override — force enter-world (works on Character slots; Account-only
-        //        slots will downgrade-with-warn inside LoginToCharselect since there's no
-        //        character target to select).
-        bool? perSlotOverride = teamForcesEnterWorld ? true : null;
+        var (slots, teamEntersWorld, teamName) = ResolveTeamConfig(teamIndex);
 
         int fired = 0;
         foreach (var (user, slotLabel) in slots)
         {
             if (string.IsNullOrEmpty(user)) continue;
 
-            // Character-first: teams are designed around Characters → enter world is the default intent.
+            // Character-first resolve (preferred team-slot content).
             var character = _config.FindCharacterByName(user);
             if (character != null)
             {
-                FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{user}' \u2192 Character '{character.EffectiveLabel}' \u2192 enter world");
-                _ = _autoLoginManager.LoginAndEnterWorld(character, perSlotOverride);  // PARALLEL — no await
+                // teamEntersWorld=true  -> null override -> Character's own default (enter world)
+                // teamEntersWorld=false -> false override -> stop at charselect
+                bool? enterWorldOverride = teamEntersWorld ? null : false;
+                var intent = teamEntersWorld ? "enter world" : "charselect (team Enter World off)";
+                FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{user}' \u2192 Character '{character.EffectiveLabel}' \u2192 {intent}");
+                _ = _autoLoginManager.LoginAndEnterWorld(character, enterWorldOverride);  // PARALLEL — no await
                 fired++;
                 continue;
             }
 
-            // Account-only slot (no matching Character). Default: stop at charselect — this
-            // is the typical crafter-team pattern where users want to pick the toon manually.
+            // Account-only slot. Reaches charselect regardless of flag — can't enter world
+            // without a character target. teamEntersWorld=true logs the mismatch.
             var account = _config.FindAccountByName(user);
             if (account != null)
             {
-                var intent = teamForcesEnterWorld
-                    ? "team override \u2192 attempt enter world (may downgrade if no Character target)"
-                    : "charselect (Account-only slot, e.g. crafter team)";
-                FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{user}' \u2192 Account '{account.EffectiveLabel}' \u2192 {intent}");
-                _ = _autoLoginManager.LoginToCharselect(account, perSlotOverride);  // PARALLEL — no await
+                if (teamEntersWorld)
+                    FileLogger.Warn($"FireTeam({teamIndex}): {slotLabel} '{user}' is Account-only but team Enter World is on — charselect is the only reachable state (no Character target for this slot)");
+                else
+                    FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{user}' \u2192 Account '{account.EffectiveLabel}' \u2192 charselect");
+                _ = _autoLoginManager.LoginToCharselect(account);  // PARALLEL — no await
                 fired++;
                 continue;
             }

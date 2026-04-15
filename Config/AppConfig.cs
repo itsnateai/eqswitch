@@ -97,11 +97,15 @@ public class AppConfig
     public string Team4Account1 { get; set; } = "";
     public string Team4Account2 { get; set; } = "";
 
-    // Per-team Auto Enter World overrides
-    public bool Team1AutoEnter { get; set; } = false;
-    public bool Team2AutoEnter { get; set; } = false;
-    public bool Team3AutoEnter { get; set; } = false;
-    public bool Team4AutoEnter { get; set; } = false;
+    // Per-team Enter World toggle — BINARY interpretation per user 2026-04-15:
+    //   true  = team enters world on launch (default, for Character teams)
+    //   false = team stops at charselect (for crafter teams)
+    // Existing v4 configs that predate this semantic shift keep their stored value;
+    // users with stale "false" flags on Character teams can toggle on via Autologin Teams dialog.
+    public bool Team1AutoEnter { get; set; } = true;
+    public bool Team2AutoEnter { get; set; } = true;
+    public bool Team3AutoEnter { get; set; } = true;
+    public bool Team4AutoEnter { get; set; } = true;
 
     // Tray Click Actions
     public TrayClickConfig TrayClick { get; set; } = new();
