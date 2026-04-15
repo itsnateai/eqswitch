@@ -35,6 +35,8 @@ The tray menu is EQSwitch's most-interacted-with surface. Phase 3 must reflect t
 
 Agent audit (`2026-04-14`) surfaced one foundation defect plus one test-coverage gap that must close before Phase 3 starts. Small, atomic, own commit.
 
+> **Note — BUG-2 already resolved in commit `4e05007`** (`fix(config): drop dead cycleFocused from SwitchKeyMode validator`). Dead allowlist entry with no UI/runtime/migration anywhere else in the codebase; 1-line removal. SwitchKey behavior unchanged. Not part of this pre-Phase-3 patch.
+
 ### BUG-1 — Phantom hotkey binding at `AccountHotkeys[0]` / `CharacterHotkeys[0]`
 
 **File:** `Config/ConfigVersionMigrator.cs:314-318` (`EnsureSize` helper).
