@@ -1088,6 +1088,12 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     // and CXWndManager keeps CLW_EnterWorldButton alive even after charselect
     // closes — so without this gate, a request that arrives just after the user
     // manually pressed Enter would phantom-click in-game.
+    //
+    // Result codes (read by C# AutoLoginManager — must keep in sync):
+    //   1  = clicked successfully
+    //  -1  = button not found
+    //  -2  = dropped (in-game when request arrived; success-equivalent)
+    //  -3  = bridge unavailable (g_fnWndNotification null)
     {
         uint32_t ewReq = shm->enterWorldReq;
         uint32_t ewAck = shm->enterWorldAck;
@@ -1096,32 +1102,33 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
             DI8Log("mq2_bridge: Enter World request (seq %u->%u, gameState=%d)", ewAck, ewReq, gameState);
             if (gameState == 5) {
                 // Already in-game — request is stale, drop it without clicking.
-                shm->enterWorldResult = -2;  // -2 = dropped (in-game)
+                shm->enterWorldResult = -2;
                 MemoryBarrier();
                 shm->enterWorldAck = ewReq;
                 DI8Log("mq2_bridge: dropped stale Enter World request (gameState=5, in-game)");
-                goto enter_world_done;
-            }
-            void *pEnterBtn = FindWindowByName("CLW_EnterWorldButton");
-            if (pEnterBtn) {
-                __try {
-                    if (g_fnWndNotification)
-                        g_fnWndNotification(pEnterBtn, pEnterBtn, 1 /*XWM_LCLICK*/, nullptr);
-                    shm->enterWorldResult = 1;  // clicked
-                    DI8Log("mq2_bridge: clicked CLW_EnterWorldButton");
-                }
-                __except (EXCEPTION_EXECUTE_HANDLER) {
-                    shm->enterWorldResult = -1;
-                    DI8Log("mq2_bridge: SEH clicking CLW_EnterWorldButton");
-                }
             } else {
-                shm->enterWorldResult = -1;
-                DI8Log("mq2_bridge: CLW_EnterWorldButton not found (gameState=%d)", gameState);
+                void *pEnterBtn = FindWindowByName("CLW_EnterWorldButton");
+                if (!pEnterBtn) {
+                    shm->enterWorldResult = -1;
+                    DI8Log("mq2_bridge: CLW_EnterWorldButton not found (gameState=%d)", gameState);
+                } else if (!g_fnWndNotification) {
+                    shm->enterWorldResult = -3;
+                    DI8Log("mq2_bridge: WndNotification fn unresolved -- cannot click");
+                } else {
+                    __try {
+                        g_fnWndNotification(pEnterBtn, pEnterBtn, 1 /*XWM_LCLICK*/, nullptr);
+                        shm->enterWorldResult = 1;
+                        DI8Log("mq2_bridge: clicked CLW_EnterWorldButton");
+                    }
+                    __except (EXCEPTION_EXECUTE_HANDLER) {
+                        shm->enterWorldResult = -1;
+                        DI8Log("mq2_bridge: SEH clicking CLW_EnterWorldButton");
+                    }
+                }
+                MemoryBarrier();
+                shm->enterWorldAck = ewReq;
             }
-            MemoryBarrier();
-            shm->enterWorldAck = ewReq;
         }
-        enter_world_done:;
     }
 
     // Handle selection request — also no gameState gate for Dalaya compatibility.
@@ -1135,6 +1142,11 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         // gameState 5 = in-game on Dalaya. Clear char data + reset all charselect caches.
         shm->charCount = 0;
         shm->selectedIndex = -1;
+        // Drain any in-flight Enter World request so a later session in the same
+        // process can't observe a stale ack/result from this charselect cycle.
+        shm->enterWorldReq = 0;
+        shm->enterWorldAck = 0;
+        shm->enterWorldResult = 0;
         g_offsetValidated = false;
         g_uiFallbackLogged = false;
         g_cachedNameCol = -1;
@@ -1334,7 +1346,11 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                     __try {
                         for (int i = 0; i < count && i < CHARSEL_MAX_CHARS; i++) {
                             const uint8_t *entry = (const uint8_t *)(arrayBase + i * HEAP_SCAN_STRIDE);
-                            if (!IsPlausibleName(entry)) continue;
+                            if (!IsPlausibleName(entry)) {
+                                // Zero stale data from Path A/B so C# doesn't read mismatched names
+                                ((char *)shm->names[i])[0] = '\0';
+                                continue;
+                            }
                             int nameLen = 0;
                             while (nameLen < CHARSEL_NAME_LEN - 1 && entry[nameLen] != '\0')
                                 nameLen++;
@@ -1359,7 +1375,10 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                     int validated = 0;
                     for (int i = 0; i < count && i < CHARSEL_MAX_CHARS; i++) {
                         const uint8_t *entry = (const uint8_t *)(g_heapScanArrayBase + i * HEAP_SCAN_STRIDE);
-                        if (!IsPlausibleName(entry)) continue;
+                        if (!IsPlausibleName(entry)) {
+                            ((char *)shm->names[i])[0] = '\0';
+                            continue;
+                        }
                         validated++;
                         int nameLen = 0;
                         while (nameLen < CHARSEL_NAME_LEN - 1 && entry[nameLen] != '\0')
@@ -1368,13 +1387,19 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                         ((char *)shm->names[i])[nameLen] = '\0';
                         // class/level offsets unknown — don't touch shm fields
                     }
-                    if (validated == 0) {
-                        DI8Log("mq2_bridge: heap cache stale (0/%d names valid) — invalidating", count);
+                    // Invalidate aggressively: any failure (not just all-zero) suggests heap reuse.
+                    // Reset g_heapScanDone so the next poll triggers a fresh full scan, not just
+                    // a cached re-read against a (now-zero) base address.
+                    if (validated < count) {
+                        DI8Log("mq2_bridge: heap cache stale (%d/%d names valid) -- rescanning next poll",
+                               validated, count);
                         g_heapScanArrayBase = 0;
+                        g_heapScanDone = false;
                     }
                 } __except(EXCEPTION_EXECUTE_HANDLER) {
-                    DI8Log("mq2_bridge: SEH re-reading heap array — invalidating cache");
+                    DI8Log("mq2_bridge: SEH re-reading heap array -- rescanning next poll");
                     g_heapScanArrayBase = 0;
+                    g_heapScanDone = false;
                 }
             }
 
