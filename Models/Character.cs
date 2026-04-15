@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace EQSwitch.Models;
 
 /// <summary>
@@ -21,4 +23,12 @@ public class Character
     public string DisplayLabel { get; set; } = "";
     public string ClassHint { get; set; } = "";
     public string Notes { get; set; } = "";
+
+    /// <summary>
+    /// Typed FK to the backing Account. Computed from the serialized
+    /// (AccountUsername, AccountServer) pair — not round-tripped separately
+    /// in JSON. Use with AccountKey.Matches(account) or direct equality.
+    /// </summary>
+    [JsonIgnore]
+    public AccountKey AccountKey => new(AccountUsername, AccountServer);
 }
