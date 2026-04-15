@@ -151,11 +151,14 @@ static DWORD WINAPI ActivateThread(LPVOID) {
         HWND hwnd = g_eqHwnd;
 
         // Count ticks after HWND appears — delay subclass for EQ init
-        if (hwnd && initDelay < 200) initDelay++; // ~3.2 seconds
+        if (hwnd && initDelay < 400) initDelay++; // ~6.4 seconds
 
-        // Install MQ2 poll timer on game thread (independent of subclass).
-        // Track HWND — if EQ recreates its window, timer dies with old HWND.
-        if (hwnd && initDelay >= 100) {
+        // Hotfix v6e: install MQ2 poll timer LATER (300 ticks ~= 4.8s after HWND) to
+        // let EQ's sensitive early init + charselect-loader phase complete without
+        // our WM_TIMER stealing time from the message pump. Pre-v6e installed at 100
+        // ticks (~1.6s). During 1.6-4.8s window, ActivateThread keeps polling at
+        // background-thread cadence (see line 147) — same coverage, zero pump cost.
+        if (hwnd && initDelay >= 300) {
             if (g_mq2TimerInstalled && g_timerHwnd && g_timerHwnd != hwnd) {
                 KillTimer(g_timerHwnd, TIMER_MQ2_POLL);
                 g_mq2TimerInstalled = false;
@@ -163,10 +166,18 @@ static DWORD WINAPI ActivateThread(LPVOID) {
                        (unsigned)(uintptr_t)g_timerHwnd, (unsigned)(uintptr_t)hwnd);
             }
             if (!g_mq2TimerInstalled) {
-                SetTimer(hwnd, TIMER_MQ2_POLL, 500, MQ2TimerProc);
+                // Hotfix v6e: 500ms -> 1500ms. WM_TIMER dispatched via EQ's message
+                // pump blocks the pump while MQ2TimerProc runs. At 500ms we were
+                // contributing enough pump pressure that Dalaya's charselect loader
+                // occasionally exceeded the 5s IsHungAppWindow threshold, leading to
+                // Windows forcibly closing eqgame.exe (Event Viewer: Application
+                // Hang 1002, observed 2026-04-15 15:14 and 16:05). 1500ms gives the
+                // pump 3x more headroom; action latency impact is minimal because
+                // enter-world click response is user-initiated and tolerates 1.5s.
+                SetTimer(hwnd, TIMER_MQ2_POLL, 1500, MQ2TimerProc);
                 g_timerHwnd = hwnd;
                 g_mq2TimerInstalled = true;
-                DI8Log("mq2_timer: installed game-thread MQ2 poll (500ms, TIMERPROC) on hwnd=0x%X",
+                DI8Log("mq2_timer: installed game-thread MQ2 poll (1500ms, TIMERPROC) on hwnd=0x%X",
                        (unsigned)(uintptr_t)hwnd);
             }
         }
