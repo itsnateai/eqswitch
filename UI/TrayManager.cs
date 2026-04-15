@@ -925,51 +925,41 @@ public class TrayManager : IDisposable
         _contextMenu.Items.Add(titleItem);
         _contextMenu.Items.Add(new ToolStripSeparator());
 
-        var launchOneItem = new ToolStripMenuItem($"\u2694  Launch Client{HkSuffix(hk.LaunchOne)}") { Font = _boldMenuFont };
+        var launchOneItem = new ToolStripMenuItem($"\u2694  Launch Client{HkSuffix(hk.LaunchOne)}")
+        {
+            Font = _boldMenuFont,
+            ToolTipText = "Launch bare eqgame.exe patchme"
+        };
         launchOneItem.Click += (_, _) => OnLaunchOne();
         _contextMenu.Items.Add(launchOneItem);
 
-        var launchTeamItem = new ToolStripMenuItem($"\uD83C\uDFAE  Launch Team{HkSuffix(hk.TeamLogin1)}") { Font = _boldMenuFont };
+        var launchTeamItem = new ToolStripMenuItem($"\uD83C\uDFAE  Launch Team{HkSuffix(hk.TeamLogin1)}")
+        {
+            Font = _boldMenuFont,
+            ToolTipText = "Launch Team 1 (one-click default)"
+        };
         launchTeamItem.Click += (_, _) => ExecuteTrayAction("LoginAll");
         _contextMenu.Items.Add(launchTeamItem);
 
-        // Login submenu (always visible, like Clients menu)
-        var loginMenu = new ToolStripMenuItem("\uD83D\uDD11  Accounts") { Font = _boldMenuFont };
-        if (_config.LegacyAccounts.Count > 0)
+        // Phase 3 — three intent-explicit submenus (Accounts → charselect, Characters → enter world, Teams → parallel).
+        _contextMenu.Items.Add(new ToolStripSeparator());
+
+        var hkLookup = new LegacyHotkeyLookup(_config);
+
+        // Defensive: ToDictionary would throw on duplicate AccountKey (hand-edited
+        // config corner case). Migration enforces uniqueness, but we must not crash
+        // the tray on bad data — first-wins dedup + warn is correct.
+        var accountsByKey = new Dictionary<AccountKey, Account>();
+        foreach (var acc in _config.Accounts)
         {
-            foreach (var account in _config.LegacyAccounts)
-            {
-                var label = string.IsNullOrEmpty(account.CharacterName)
-                    ? account.Username
-                    : account.CharacterName;
-                loginMenu.DropDownItems.Add($"\uD83D\uDC64  {label}", null, (_, _) =>
-                {
-                    try { _ = _autoLoginManager.LoginAccount(account); }
-                    catch (Exception ex)
-                    {
-                        FileLogger.Error($"AutoLogin CRASH: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}", ex);
-                        if (ex.InnerException != null)
-                            FileLogger.Error($"AutoLogin CRASH inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}\n{ex.InnerException.StackTrace}");
-                    }
-                });
-            }
-            // Team 1 omitted — "Launch Team" on root menu handles it
-            var teams = new[]
-            {
-                (Has: !string.IsNullOrEmpty(_config.Team2Account1) || !string.IsNullOrEmpty(_config.Team2Account2), Label: "Auto-Login Team 2", Action: "LoginAll2"),
-                (Has: !string.IsNullOrEmpty(_config.Team3Account1) || !string.IsNullOrEmpty(_config.Team3Account2), Label: "Auto-Login Team 3", Action: "LoginAll3"),
-                (Has: !string.IsNullOrEmpty(_config.Team4Account1) || !string.IsNullOrEmpty(_config.Team4Account2), Label: "Auto-Login Team 4", Action: "LoginAll4"),
-            };
-            if (teams.Any(t => t.Has))
-            {
-                loginMenu.DropDownItems.Add(new ToolStripSeparator());
-                foreach (var t in teams.Where(t => t.Has))
-                    loginMenu.DropDownItems.Add($"\uD83D\uDE80  {t.Label}", null, (_, _) => ExecuteTrayAction(t.Action));
-            }
-            loginMenu.DropDownItems.Add(new ToolStripSeparator());
+            var key = new AccountKey(acc.Username, acc.Server);
+            if (!accountsByKey.TryAdd(key, acc))
+                FileLogger.Warn($"BuildContextMenu: duplicate AccountKey {key} in Accounts list — using first occurrence (hand-edited config?)");
         }
-        loginMenu.DropDownItems.Add("\u2699  Manage Accounts...", null, (_, _) => ShowSettings(2));
-        _contextMenu.Items.Add(loginMenu);
+
+        _contextMenu.Items.Add(BuildAccountsSubmenu(_config.Accounts, hkLookup));
+        _contextMenu.Items.Add(BuildCharactersSubmenu(_config.Characters, accountsByKey, hkLookup));
+        _contextMenu.Items.Add(BuildTeamsSubmenu(_config, hkLookup));
 
         _contextMenu.Items.Add(new ToolStripSeparator());
 
@@ -1382,38 +1372,14 @@ public class TrayManager : IDisposable
                 ShowBalloon("Launching all clients...");
                 OnLaunchAll();
                 break;
-            case "AutoLogin1":
-                _ = ExecuteQuickLogin(_config.QuickLogin1, "Quick Login 1");
-                break;
-            case "AutoLogin2":
-                _ = ExecuteQuickLogin(_config.QuickLogin2, "Quick Login 2");
-                break;
-            case "AutoLogin3":
-                _ = ExecuteQuickLogin(_config.QuickLogin3, "Quick Login 3");
-                break;
-            case "AutoLogin4":
-                _ = ExecuteQuickLogin(_config.QuickLogin4, "Quick Login 4");
-                break;
-            case "LoginAll":
-                FireTeamLogin(
-                    new[] { (_config.Team1Account1, "Team 1 Slot 1"), (_config.Team1Account2, "Team 1 Slot 2") },
-                    "Team 1", _config.Team1AutoEnter);
-                break;
-            case "LoginAll2":
-                FireTeamLogin(
-                    new[] { (_config.Team2Account1, "Team 2 Slot 1"), (_config.Team2Account2, "Team 2 Slot 2") },
-                    "Team 2", _config.Team2AutoEnter);
-                break;
-            case "LoginAll3":
-                FireTeamLogin(
-                    new[] { (_config.Team3Account1, "Team 3 Slot 1"), (_config.Team3Account2, "Team 3 Slot 2") },
-                    "Team 3", _config.Team3AutoEnter);
-                break;
-            case "LoginAll4":
-                FireTeamLogin(
-                    new[] { (_config.Team4Account1, "Team 4 Slot 1"), (_config.Team4Account2, "Team 4 Slot 2") },
-                    "Team 4", _config.Team4AutoEnter);
-                break;
+            case "AutoLogin1": FireLegacyQuickLoginSlot(1); break;
+            case "AutoLogin2": FireLegacyQuickLoginSlot(2); break;
+            case "AutoLogin3": FireLegacyQuickLoginSlot(3); break;
+            case "AutoLogin4": FireLegacyQuickLoginSlot(4); break;
+            case "LoginAll":  FireTeam(1); break;
+            case "LoginAll2": FireTeam(2); break;
+            case "LoginAll3": FireTeam(3); break;
+            case "LoginAll4": FireTeam(4); break;
             case "Settings":
                 ShowSettings();
                 break;
@@ -1612,21 +1578,27 @@ public class TrayManager : IDisposable
         return string.Join("\n", lines);
     }
 
-    private void FireTeamLogin((string username, string label)[] slots, string teamName, bool teamAutoEnter = false)
+    /// <summary>
+    /// Fires all populated slots for the given team in parallel (fire-and-forget via
+    /// discard-assignment to ExecuteQuickLogin). Preserves v3 timing semantics —
+    /// DO NOT switch to sequential await (plan line 371 is emphatic).
+    /// </summary>
+    private void FireTeam(int teamIndex)
     {
+        var (slots, teamAutoEnter, teamName) = ResolveTeamConfig(teamIndex);
         int fired = 0;
-        foreach (var (user, name) in slots)
+        foreach (var (user, slotLabel) in slots)
         {
             if (!string.IsNullOrEmpty(user))
             {
-                _ = ExecuteQuickLogin(user, name, teamAutoEnter);
+                _ = ExecuteQuickLogin(user, slotLabel, teamAutoEnter);  // PARALLEL — no await
                 fired++;
             }
         }
         if (fired == 0)
         {
-            ShowWarning($"No accounts assigned to {teamName} — configure in Settings → Accounts");
-            FileLogger.Warn($"FireTeamLogin: {teamName} has no accounts assigned");
+            ShowWarning($"No accounts assigned to {teamName} \u2014 configure in Settings \u2192 Accounts");
+            FileLogger.Warn($"FireTeam: {teamName} has no accounts assigned");
         }
     }
 
