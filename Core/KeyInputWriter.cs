@@ -110,6 +110,9 @@ public sealed class KeyInputWriter : IDisposable
 
     /// <summary>
     /// Activate key injection for a process. Sets active=1 so the proxy starts injecting.
+    /// Auto-login burst callers MUST pass <paramref name="suppress"/>=true so the DI8 proxy
+    /// zeros the real OS keyboard state before ORing synthetic keys — without it, physical
+    /// keystrokes (Notepad, browser, etc.) bleed into EQ's GetDeviceState in BACKGROUND mode.
     /// </summary>
     public void Activate(int pid, bool suppress = false)
     {
