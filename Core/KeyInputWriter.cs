@@ -124,8 +124,11 @@ public sealed class KeyInputWriter : IDisposable
 
     /// <summary>
     /// Deactivate key injection. Sets active=0 so the DLL stops focus-faking
-    /// and removes the WndProc subclass. Call after each keystroke burst to
-    /// minimize the activation window for parallel login support.
+    /// and removes the WndProc subclass. Zeros the keys[] buffer as defense-
+    /// in-depth against stale bytes leaking to EQ's DirectInput state between
+    /// auto-login bursts (see the phantom-keys hotfix — native InjectKeys and
+    /// ReadKeys now also gate on active, but clearing the buffer at the
+    /// source is belt-and-suspenders). Call after each keystroke burst.
     /// </summary>
     public void Deactivate(int pid)
     {
@@ -133,6 +136,7 @@ public sealed class KeyInputWriter : IDisposable
         try
         {
             entry.Accessor.Write(ActiveOffset, (uint)0);
+            entry.Accessor.WriteArray(HeaderSize, new byte[KeysSize], 0, KeysSize);
         }
         catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Deactivate failed: {ex.Message}"); }
     }

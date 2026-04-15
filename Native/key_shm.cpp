@@ -111,6 +111,13 @@ bool KeyShm::InjectKeys(uint8_t *buf, uint32_t bufLen) {
     const SharedKeyState *state = GetState();
     if (!state) return false;
 
+    // Phantom-keys hotfix: gate on active flag. Without this, stale bytes
+    // in the keys[] buffer bleed into EQ's DirectInput state when SHM is
+    // inactive (between auto-login phases, during load-wait retries, after
+    // session ends). Matches IsKeyPressed's existing active-gated semantics.
+    uint32_t active = *(volatile uint32_t *)&state->active;
+    if (active == 0) return false;
+
     uint32_t len = bufLen < 256 ? bufLen : 256;
     bool injected = false;
     for (uint32_t i = 0; i < len; i++) {
@@ -128,6 +135,17 @@ bool KeyShm::ReadKeys(uint8_t out[256]) {
     if (!state) {
         memset(out, 0, 256);
         return false;
+    }
+    // Phantom-keys hotfix: when SHM is inactive, present all-zero state.
+    // Callers (GetDeviceData change-detector, ShmPollingThread) see a clean
+    // inactive snapshot instead of whatever stale bytes happen to be in the
+    // buffer between auto-login bursts. Returns true (mapping exists) so
+    // GetDeviceData's change detector can generate key-up events for any
+    // previously-held keys rather than silently reset prev to 0.
+    uint32_t active = *(volatile uint32_t *)&state->active;
+    if (active == 0) {
+        memset(out, 0, 256);
+        return true;
     }
     for (int i = 0; i < 256; i++)
         out[i] = *(volatile uint8_t *)&state->keys[i];
