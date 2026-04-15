@@ -107,6 +107,26 @@ internal sealed class AutoLoginTeamsDialog : Form
         btnOK.Width = 100;
         btnOK.Click += (_, _) =>
         {
+            // Block unresolved slots — persisting a stale reference through Save would
+            // leave the user stuck in the red-pill loop with no feedback at Save time.
+            var slots = new[]
+            {
+                (_cboTeam1A, "Team 1 Slot 1"), (_cboTeam1B, "Team 1 Slot 2"),
+                (_cboTeam2A, "Team 2 Slot 1"), (_cboTeam2B, "Team 2 Slot 2"),
+                (_cboTeam3A, "Team 3 Slot 1"), (_cboTeam3B, "Team 3 Slot 2"),
+                (_cboTeam4A, "Team 4 Slot 1"), (_cboTeam4B, "Team 4 Slot 2"),
+            };
+            var unresolved = slots
+                .Where(s => s.Item1.Tag is string tag && !string.IsNullOrEmpty(tag))
+                .Select(s => $"{s.Item2}: '{(s.Item1.Tag as string)}'")
+                .ToList();
+            if (unresolved.Count > 0)
+            {
+                lblWarn.Text = "\u26a0 Unresolved: " + string.Join("; ", unresolved) + " — clear (none) or pick a valid target";
+                lblWarn.Visible = true;
+                return;
+            }
+
             // Block same Account (Username, Server) in both slots of the same team —
             // EQ kicks duplicate logins.
             var teams = new[]
