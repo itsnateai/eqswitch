@@ -99,6 +99,12 @@ static volatile int g_diagHitCount = 0;
 static volatile int g_diagMissCount = 0;
 static volatile bool g_diagWasActive = false;
 
+// Phantom-keys hotfix v2: forward-decl. Body lives below after
+// g_ntGetForegroundWindow is declared. Returns true iff EQ's HWND is the
+// true OS foreground (using the win32u.dll syscall wrapper, which bypasses
+// our own GetForegroundWindow hook that spoofs EQ when SHM is active).
+static bool EqIsTrueForeground();
+
 static SHORT WINAPI HookedGetAsyncKeyState(int vKey) {
     bool active = KeyShm::IsActive();
     // Reset counters on active edge (new login session)
@@ -124,6 +130,10 @@ static SHORT WINAPI HookedGetAsyncKeyState(int vKey) {
             DI8Log("iat_hook: GetAsyncKeyState MISS vk=0x%02X scan=0x%02X", vKey, scan);
         }
     }
+    // Phantom-keys hotfix v2: physical-key pass-through requires EQ to be the
+    // TRUE foreground window. Otherwise the real GetAsyncKeyState reads global
+    // OS keyboard state and Nate's typing in other windows bleeds into EQ.
+    if (!EqIsTrueForeground()) return 0;
     return g_realGetAsyncKeyState ? g_realGetAsyncKeyState(vKey) : 0;
 }
 
@@ -133,12 +143,19 @@ static SHORT WINAPI HookedGetKeyState(int nVirtKey) {
         if (scan > 0 && scan < 256 && KeyShm::IsKeyPressed((uint8_t)scan))
             return (SHORT)0x8001;
     }
+    // Phantom-keys hotfix v2: see HookedGetAsyncKeyState.
+    if (!EqIsTrueForeground()) return 0;
     return g_realGetKeyState ? g_realGetKeyState(nVirtKey) : 0;
 }
 
 static BOOL WINAPI HookedGetKeyboardState(PBYTE lpKeyState) {
     BOOL ok = g_realGetKeyboardState ? g_realGetKeyboardState(lpKeyState) : FALSE;
     if (lpKeyState) {
+        // Phantom-keys hotfix v2: if EQ isn't truly focused, zero the physical
+        // key buffer BEFORE injecting SHM state. Otherwise Nate's typing in
+        // other windows bleeds through this API into EQ's game logic.
+        if (!EqIsTrueForeground())
+            memset(lpKeyState, 0, 256);
         for (int vk = 0; vk <= 255; vk++) {
             UINT scan = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
             if (scan > 0 && scan < 256 && KeyShm::IsKeyPressed((uint8_t)scan))
@@ -262,6 +279,17 @@ typedef HWND (WINAPI *PFN_NtUserGetActiveWindow)(); // actually GetThreadState-b
 
 static PFN_NtUserGetForegroundWindow g_ntGetForegroundWindow = nullptr;
 static PFN_NtUserGetFocus g_ntGetFocus = nullptr;
+
+// Phantom-keys hotfix v2: true-foreground check that bypasses our own
+// GetForegroundWindow hook (which spoofs EQ when SHM active). Uses the
+// win32u.dll syscall wrapper captured at InstallInlineHooks time. Permissive
+// if unknown (early DLL init before ptr/HWND set) to keep the happy path alive.
+static bool EqIsTrueForeground() {
+    HWND eqHwnd = GetEqHwnd();
+    if (!eqHwnd || !g_ntGetForegroundWindow) return true;
+    HWND trueFg = g_ntGetForegroundWindow();
+    return trueFg == eqHwnd;
+}
 
 // Inline-hooked replacements: these get called regardless of how EQ resolved the function.
 // They use the same logic as the IAT hooks but call NtUser* as fallback.
