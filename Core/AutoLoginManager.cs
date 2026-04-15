@@ -341,7 +341,7 @@ public class AutoLoginManager
             // BURST 1: Type credentials + submit (~3 seconds active)
             // ══════════════════════════════════════════════════════════
             Report("Typing credentials...");
-            writer.Activate(pid);
+            writer.Activate(pid, suppress: true);
             Thread.Sleep(500); // let DLL switch coop + blast activation
             FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
 
@@ -375,7 +375,7 @@ public class AutoLoginManager
             // BURST 2: Confirm server select (~1 second active)
             // ══════════════════════════════════════════════════════════
             Report("Confirming server...");
-            writer.Activate(pid);
+            writer.Activate(pid, suppress: true);
             Thread.Sleep(300);
             FileLogger.Info($"AutoLogin: BURST 2 activated for PID {pid}");
             CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = confirm
@@ -648,7 +648,7 @@ public class AutoLoginManager
                         }
                     }
 
-                    writer.Activate(pid);
+                    writer.Activate(pid, suppress: true);
                     Thread.Sleep(500);
                     PulseKey3D(writer, pid, hwnd, 0x0D);
                     Thread.Sleep(500);
