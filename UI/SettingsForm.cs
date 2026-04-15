@@ -1055,8 +1055,8 @@ public class SettingsForm : Form
             or Keys.LShiftKey or Keys.RShiftKey or Keys.LControlKey or Keys.RControlKey)
             return;
 
-        // Delete/Backspace clears the field
-        if (e.KeyCode is Keys.Delete or Keys.Back && !e.Control && !e.Alt && !e.Shift)
+        // Delete / Backspace / Escape all clear the field — Esc is the one users try first.
+        if (e.KeyCode is Keys.Delete or Keys.Back or Keys.Escape && !e.Control && !e.Alt && !e.Shift)
         {
             if (sender is TextBox tb) tb.Text = "";
             return;
