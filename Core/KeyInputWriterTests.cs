@@ -23,6 +23,7 @@ public static class KeyInputWriterTests
     private const int HeaderSize = 20;
     private const int KeysSize = 256;
     private const int ActiveOffset = 8;
+    private const int SuppressOffset = 12;
     private const string SharedMemoryPrefix = "Local\\EQSwitchDI8_";
 
     public static int RunAll()
@@ -38,7 +39,7 @@ public static class KeyInputWriterTests
             // Open observer BEFORE any Close/Dispose so the mapping lives long enough
             using var observer = OpenObserver(fakePid);
 
-            writer.Activate((int)fakePid);
+            writer.Activate((int)fakePid, suppress: true);
             writer.SetKey((int)fakePid, 0x1E /* 'a' */, true);
 
             // Round-trip: verify byte is 0x80 via observer
@@ -51,8 +52,12 @@ public static class KeyInputWriterTests
             // in this case, so read via writer's own handle (observer also works).
             byte postKey = ReadKeyByteVia(observer, 0x1E);
             uint postActive = ReadActiveVia(observer);
+            uint postSuppress = ReadSuppressVia(observer);
             failures += Assert("case1 post-Deactivate key=0x00", postKey, (byte)0x00);
             failures += Assert("case1 post-Deactivate active=0", postActive, (uint)0);
+            // Hotfix v6: Deactivate must clear Suppress so a future Activate caller
+            // starts from a known-zero state rather than inheriting a phantom 1.
+            failures += Assert("case1 post-Deactivate suppress=0", postSuppress, (uint)0);
 
             writer.Close((int)fakePid);
         }
@@ -64,7 +69,7 @@ public static class KeyInputWriterTests
 
             using var observer = OpenObserver(fakePid);
 
-            writer.Activate((int)fakePid);
+            writer.Activate((int)fakePid, suppress: true);
             writer.SetKey((int)fakePid, 0x20 /* 'd' */, true);
             writer.SetKey((int)fakePid, 0x48 /* up arrow */, true);
             writer.Close((int)fakePid);
@@ -74,9 +79,11 @@ public static class KeyInputWriterTests
             byte k20 = ReadKeyByteVia(observer, 0x20);
             byte k48 = ReadKeyByteVia(observer, 0x48);
             uint active = ReadActiveVia(observer);
+            uint suppress = ReadSuppressVia(observer);
             failures += Assert("case2 post-Close key[0x20]=0", k20, (byte)0x00);
             failures += Assert("case2 post-Close key[0x48]=0", k48, (byte)0x00);
             failures += Assert("case2 post-Close active=0", active, (uint)0);
+            failures += Assert("case2 post-Close suppress=0", suppress, (uint)0);
         }
 
         // Case 3: SetKey cycle between bursts leaves clean state
@@ -111,14 +118,19 @@ public static class KeyInputWriterTests
 
             using var observer = OpenObserver(fakePid);
 
-            writer.Activate((int)fakePid);
+            writer.Activate((int)fakePid, suppress: true);
             writer.SetKey((int)fakePid, 0x1E, true);
-            writer.Reactivate((int)fakePid, 10);
+            // Hotfix v6: Reactivate gained an explicit suppress parameter. Caller
+            // chooses whether the post-gap activation stays suppressed (pass true)
+            // or falls back to the default unsuppressed state (default false).
+            writer.Reactivate((int)fakePid, 10, suppress: true);
 
             byte key = ReadKeyByteVia(observer, 0x1E);
             uint active = ReadActiveVia(observer);
+            uint suppress = ReadSuppressVia(observer);
             failures += Assert("case4 post-Reactivate key[0x1E]=0", key, (byte)0x00);
             failures += Assert("case4 post-Reactivate active=1", active, (uint)1);
+            failures += Assert("case4 post-Reactivate suppress=1 (explicit)", suppress, (uint)1);
 
             writer.Close((int)fakePid);
         }
@@ -133,8 +145,8 @@ public static class KeyInputWriterTests
             using var observer1 = OpenObserver(fakePid);
             using var observer2 = OpenObserver(fakePid2);
 
-            writer.Activate((int)fakePid);
-            writer.Activate((int)fakePid2);
+            writer.Activate((int)fakePid, suppress: true);
+            writer.Activate((int)fakePid2, suppress: true);
             writer.SetKey((int)fakePid, 0x1E, true);
             writer.SetKey((int)fakePid2, 0x20, true);
             writer.Dispose();
@@ -143,16 +155,50 @@ public static class KeyInputWriterTests
             // Dispose wrote.
             byte k1 = ReadKeyByteVia(observer1, 0x1E);
             uint a1 = ReadActiveVia(observer1);
+            uint s1 = ReadSuppressVia(observer1);
             byte k2 = ReadKeyByteVia(observer2, 0x20);
             uint a2 = ReadActiveVia(observer2);
+            uint s2 = ReadSuppressVia(observer2);
             failures += Assert("case5 Dispose pid1 key=0", k1, (byte)0x00);
             failures += Assert("case5 Dispose pid1 active=0", a1, (uint)0);
+            failures += Assert("case5 Dispose pid1 suppress=0", s1, (uint)0);
             failures += Assert("case5 Dispose pid2 key=0", k2, (byte)0x00);
             failures += Assert("case5 Dispose pid2 active=0", a2, (uint)0);
+            failures += Assert("case5 Dispose pid2 suppress=0", s2, (uint)0);
+        }
+
+        // Case 6 (hotfix v6): Activate round-trips the Suppress parameter.
+        // Guards the v5 contract at the SHM level — the burst-mode defense is
+        // only on when callers explicitly opt in, and a caller can lower the
+        // flag by re-calling Activate with suppress:false. Would have caught
+        // the original v5 bug (default suppress=false at all three sites).
+        {
+            using var writer = new KeyInputWriter();
+            writer.Open((int)fakePid);
+
+            using var observer = OpenObserver(fakePid);
+
+            // Default (no named arg) — Suppress must be 0
+            writer.Activate((int)fakePid);
+            failures += Assert("case6 default-Activate suppress=0", ReadSuppressVia(observer), (uint)0);
+            failures += Assert("case6 default-Activate active=1", ReadActiveVia(observer), (uint)1);
+            writer.Deactivate((int)fakePid);
+
+            // Explicit true — Suppress must be 1
+            writer.Activate((int)fakePid, suppress: true);
+            failures += Assert("case6 Activate(suppress:true) suppress=1", ReadSuppressVia(observer), (uint)1);
+            failures += Assert("case6 Activate(suppress:true) active=1", ReadActiveVia(observer), (uint)1);
+
+            // Re-call with explicit false — Suppress must lower to 0, Active unchanged
+            writer.Activate((int)fakePid, suppress: false);
+            failures += Assert("case6 Activate(suppress:false) lowers suppress to 0", ReadSuppressVia(observer), (uint)0);
+            failures += Assert("case6 Activate(suppress:false) active still 1", ReadActiveVia(observer), (uint)1);
+
+            writer.Close((int)fakePid);
         }
 
         Console.WriteLine(failures == 0
-            ? "KeyInputWriterTests: all 5 cases PASSED"
+            ? "KeyInputWriterTests: all 6 cases PASSED"
             : $"KeyInputWriterTests: {failures} assertion failure(s)");
         return failures == 0 ? 0 : 1;
     }
@@ -172,6 +218,12 @@ public static class KeyInputWriterTests
     {
         using var accessor = mmf.CreateViewAccessor(0, HeaderSize + KeysSize, MemoryMappedFileAccess.Read);
         return accessor.ReadUInt32(ActiveOffset);
+    }
+
+    private static uint ReadSuppressVia(MemoryMappedFile mmf)
+    {
+        using var accessor = mmf.CreateViewAccessor(0, HeaderSize + KeysSize, MemoryMappedFileAccess.Read);
+        return accessor.ReadUInt32(SuppressOffset);
     }
 
     private static int Assert<T>(string name, T actual, T expected)
