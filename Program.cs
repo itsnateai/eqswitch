@@ -75,6 +75,8 @@ static class Program
 
         // --test-character-selector — run Core/CharacterSelectorTests.RunAll() and
         // exit with its return code. Used to gate Phase 5b's pure decision helper.
+        // Uses Environment.Exit (vs. the sibling --test-* flags' file-side-effect
+        // pattern) because the test-runner's pass/fail status IS the return value.
         if (args.Length >= 1 && args[0] == "--test-character-selector")
         {
             Environment.Exit(Core.CharacterSelectorTests.RunAll());

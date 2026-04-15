@@ -18,7 +18,8 @@ public static class CharacterSelector
     /// <paramref name="requestedSlot"/>: 0 = auto-by-name; 1-10 = explicit slot.
     /// <paramref name="requestedName"/>: name to match when <paramref name="requestedSlot"/> is 0.
     /// <paramref name="charNamesInHeap"/>: MQ2-scanned character list order
-    /// (null or empty = heap not yet populated).
+    /// (null or empty = heap not yet populated; the explicit
+    /// <paramref name="requestedSlot"/> is returned unchanged as a fallback).
     /// </summary>
     /// <returns>
     ///   <c>resolvedSlot</c> (1-10) = slot to click, or 0 = no actionable decision.
@@ -47,8 +48,9 @@ public static class CharacterSelector
                 $"name '{requestedName}' not in heap ({string.Join(",", charNamesInHeap)})");
         }
 
-        // Case 3: explicit slot requested.
-        if (requestedSlot >= 1 && requestedSlot <= 10)
+        // Case 3: explicit slot requested. Caller's resolvedSlot > charCount bounds
+        // check handles out-of-range (matches pre-extraction error path).
+        if (requestedSlot >= 1)
             return (requestedSlot, false, $"explicit slot {requestedSlot}");
 
         // Case 4: malformed request (slot=0 + empty name).

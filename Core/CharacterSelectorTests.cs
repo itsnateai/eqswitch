@@ -49,8 +49,39 @@ public static class CharacterSelectorTests
             failures += AssertStartsWith("case4 log", log, "explicit slot 3");
         }
 
+        // Case 5: malformed input (slot=0 + empty name) → Case 4 of Decide.
+        // Pins the spec's intentional behavior drift for this edge.
+        {
+            var (slot, byName, log) = CharacterSelector.Decide(
+                0, "", new[] { "Foo", "bar" });
+            failures += Assert("case5 slot", slot, 0);
+            failures += Assert("case5 byName", byName, false);
+            failures += AssertStartsWith("case5 log", log, "no slot or name requested");
+        }
+
+        // Case 6: name match is Ordinal (case-sensitive) — regression guard
+        // against drift to OrdinalIgnoreCase. 'FOO' must NOT match 'foo'.
+        {
+            var (slot, byName, log) = CharacterSelector.Decide(
+                0, "FOO", new[] { "foo" });
+            failures += Assert("case6 slot", slot, 0);
+            failures += Assert("case6 byName", byName, false);
+            failures += AssertStartsWith("case6 log", log, "name 'FOO' not in heap");
+        }
+
+        // Case 7: requestedSlot above nominal range (11+) still routes through
+        // Case 3 so the caller's resolvedSlot > charCount bounds check produces
+        // the pre-extraction 'slot N exceeds char count N' error message.
+        {
+            var (slot, byName, log) = CharacterSelector.Decide(
+                11, "", new[] { "Foo", "bar" });
+            failures += Assert("case7 slot", slot, 11);
+            failures += Assert("case7 byName", byName, false);
+            failures += AssertStartsWith("case7 log", log, "explicit slot 11");
+        }
+
         Console.WriteLine(failures == 0
-            ? "CharacterSelectorTests: all 4 cases PASSED"
+            ? "CharacterSelectorTests: all 7 cases PASSED"
             : $"CharacterSelectorTests: {failures} assertion failure(s)");
         return failures == 0 ? 0 : 1;
     }
