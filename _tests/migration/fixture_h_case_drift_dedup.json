@@ -1,0 +1,25 @@
+{
+  "configVersion": 3,
+  "accounts": [
+    {
+      "name": "Main",
+      "username": "MyAcct",
+      "encryptedPassword": "ZmFrZS1jaXBoZXJ0ZXh0",
+      "server": "Dalaya",
+      "characterName": "CharA",
+      "characterSlot": 0,
+      "autoEnterWorld": false,
+      "useLoginFlag": true
+    },
+    {
+      "name": "Alt",
+      "username": "myacct",
+      "encryptedPassword": "ZmFrZS1jaXBoZXJ0ZXh0",
+      "server": "Dalaya",
+      "characterName": "CharB",
+      "characterSlot": 0,
+      "autoEnterWorld": false,
+      "useLoginFlag": true
+    }
+  ]
+}

@@ -34,6 +34,45 @@ static class Program
             return;
         }
 
+        // --test-split <input-v3-json> — deserialize accounts[] into LoginAccount[],
+        // run LoginAccountSplitter, and write the split result to <input>.split.json.
+        // The fixture harness asserts this output matches the migrator's accountsV4 /
+        // charactersV4 keys so the two code paths can't drift silently.
+        if (args.Length >= 2 && args[0] == "--test-split")
+        {
+            try
+            {
+                var inputPath = args[1];
+                var inputJson = File.ReadAllText(inputPath);
+                var options = new System.Text.Json.JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+                };
+                var root = System.Text.Json.Nodes.JsonNode.Parse(inputJson)?.AsObject();
+                var accountsArray = root?["accounts"]?.ToJsonString() ?? "[]";
+                var legacyAccounts = System.Text.Json.JsonSerializer.Deserialize<List<EQSwitch.Models.LoginAccount>>(
+                    accountsArray, options) ?? new List<EQSwitch.Models.LoginAccount>();
+
+                var (v4Accounts, v4Characters) = EQSwitch.Config.LoginAccountSplitter.Split(legacyAccounts);
+
+                var splitOutput = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["accounts"] = System.Text.Json.Nodes.JsonNode.Parse(
+                        System.Text.Json.JsonSerializer.Serialize(v4Accounts, options)),
+                    ["characters"] = System.Text.Json.Nodes.JsonNode.Parse(
+                        System.Text.Json.JsonSerializer.Serialize(v4Characters, options)),
+                };
+
+                File.WriteAllText(inputPath + ".split.json", splitOutput.ToJsonString(
+                    new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(args[1] + ".test-result.txt", $"ERROR (split): {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}\n");
+            }
+            return;
+        }
+
         // Enforce single instance
         const string mutexName = "EQSwitch_SingleInstance_SoD";
         _mutex = new Mutex(true, mutexName, out bool createdNew);
