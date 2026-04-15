@@ -22,7 +22,10 @@ public static class CharacterSelector
     /// <paramref name="requestedSlot"/> is returned unchanged as a fallback).
     /// </summary>
     /// <returns>
-    ///   <c>resolvedSlot</c> (1-10) = slot to click, or 0 = no actionable decision.
+    ///   <c>resolvedSlot</c> (1-10) = slot to click. A return of <c>0</c> is a
+    ///   hard abort signal — callers MUST NOT proceed to enter-world on
+    ///   default selection; see <c>AutoLoginManager.RunLoginSequence</c>'s
+    ///   unified abort branch.
     ///   <c>resolvedByName</c> = true when the heap scan matched; false otherwise.
     ///   <c>decisionLog</c> = one-line summary for <c>FileLogger</c>.
     /// </returns>
@@ -35,7 +38,8 @@ public static class CharacterSelector
             return (requestedSlot, false,
                 $"heap empty, fall back to requested slot {requestedSlot}");
 
-        // Case 2: auto-by-name — scan the heap for a case-insensitive match.
+        // Case 2: auto-by-name — scan the heap for a case-insensitive match
+        // using StringComparison.OrdinalIgnoreCase.
         // Heap-read names come from MQ2's live-game memory scrape where casing
         // can drift vs. the user's saved Character.Name (server renames, scrape
         // artifacts, historical config edits). Pre-extraction the DLL-side

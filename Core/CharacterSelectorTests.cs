@@ -4,8 +4,9 @@ namespace EQSwitch.Core;
 
 /// <summary>
 /// Unit tests for CharacterSelector.Decide(). Invoked via the
-/// --test-character-selector CLI flag from Program.cs. Returns 0 when
-/// all 7 cases pass, 1 on any assertion failure, 2 on unhandled exception.
+/// --test-character-selector CLI flag from Program.cs. RunAll() returns 0
+/// on all passes, 1 on any assertion failure. The Program.cs handler maps
+/// unhandled exceptions to exit code 2.
 /// </summary>
 public static class CharacterSelectorTests
 {
@@ -82,8 +83,46 @@ public static class CharacterSelectorTests
             failures += AssertStartsWith("case7 log", log, "explicit slot 11");
         }
 
+        // Case 8 (GAP-1): negative requestedSlot is out-of-contract input.
+        // Falls through to Case 4 ("no slot or name requested") because neither
+        // Case 2 (requires requestedSlot==0) nor Case 3 (requires requestedSlot>=1)
+        // matches. Pins the safe fall-through against a refactor to
+        // `requestedSlot != 0` that would silently pass -5 to RequestSelectionBySlot.
+        {
+            var (slot, byName, log) = CharacterSelector.Decide(
+                -5, "foo", new[] { "foo" });
+            failures += Assert("case8 slot", slot, 0);
+            failures += Assert("case8 byName", byName, false);
+            failures += AssertStartsWith("case8 log", log, "no slot or name requested");
+        }
+
+        // Case 9 (GAP-2): explicit slot wins cleanly even when the name ALSO
+        // matches the heap at the same slot. Pins byName=false contract — the
+        // caller uses this flag for logging to distinguish name-resolved from
+        // slot-explicit selection. A refactor that set byName=true whenever
+        // the name happened to match would silently change caller log output.
+        {
+            var (slot, byName, log) = CharacterSelector.Decide(
+                1, "foo", new[] { "foo", "bar" });
+            failures += Assert("case9 slot", slot, 1);
+            failures += Assert("case9 byName", byName, false);
+            failures += AssertStartsWith("case9 log", log, "explicit slot 1");
+        }
+
+        // Case 10 (GAP-3): null requestedName (JSON deserializer can produce null
+        // if config has "name": null) is treated identically to empty string via
+        // string.IsNullOrEmpty. Pins the null-safety contract against a refactor
+        // to `== ""` or `.Length == 0` that would NullReferenceException.
+        {
+            var (slot, byName, log) = CharacterSelector.Decide(
+                0, null, new[] { "Foo", "bar" });
+            failures += Assert("case10 slot", slot, 0);
+            failures += Assert("case10 byName", byName, false);
+            failures += AssertStartsWith("case10 log", log, "no slot or name requested");
+        }
+
         Console.WriteLine(failures == 0
-            ? "CharacterSelectorTests: all 7 cases PASSED"
+            ? "CharacterSelectorTests: all 10 cases PASSED"
             : $"CharacterSelectorTests: {failures} assertion failure(s)");
         return failures == 0 ? 0 : 1;
     }
