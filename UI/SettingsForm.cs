@@ -78,9 +78,11 @@ public class SettingsForm : Form
     private TextBox _txtDalayaPatcherPath = null!;
     private CheckBox _chkRunAtStartup = null!;
 
-    // ─── Accounts tab controls
-    private List<LoginAccount> _pendingAccounts = new();
+    // ─── Accounts tab controls (Phase 4: v4 Account + Character as first-class)
+    private List<Account> _pendingAccounts = new();
+    private List<Character> _pendingCharacters = new();
     private DataGridView _dgvAccounts = null!;
+    private DataGridView _dgvCharacters = null!;
     private NumericUpDown _nudLoginScreenDelay = null!;
     private ComboBox _cboQuickLogin1 = null!;
     private ComboBox _cboQuickLogin2 = null!;
@@ -190,11 +192,26 @@ public class SettingsForm : Form
 
         var tabs = DarkTheme.MakeTabControl();
 
-        _pendingAccounts = _config.LegacyAccounts.Select(a => new LoginAccount
+        // Phase 4: load v4 lists directly. LegacyAccounts is now a derived shadow
+        // rebuilt from (Accounts, Characters) on Save via ReverseMapToLegacy.
+        _pendingAccounts = _config.Accounts.Select(a => new Account
         {
-            Name = a.Name, Username = a.Username, EncryptedPassword = a.EncryptedPassword,
-            Server = a.Server, CharacterName = a.CharacterName, CharacterSlot = a.CharacterSlot,
-            AutoEnterWorld = a.AutoEnterWorld, UseLoginFlag = a.UseLoginFlag
+            Name = a.Name,
+            Username = a.Username,
+            EncryptedPassword = a.EncryptedPassword,
+            Server = a.Server,
+            UseLoginFlag = a.UseLoginFlag,
+        }).ToList();
+
+        _pendingCharacters = _config.Characters.Select(c => new Character
+        {
+            Name = c.Name,
+            AccountUsername = c.AccountUsername,
+            AccountServer = c.AccountServer,
+            CharacterSlot = c.CharacterSlot,
+            DisplayLabel = c.DisplayLabel,
+            ClassHint = c.ClassHint,
+            Notes = c.Notes,
         }).ToList();
 
         _pendingTeam1A = _config.Team1Account1;
@@ -1212,10 +1229,69 @@ public class SettingsForm : Form
             return false;
         }
 
-        // Re-derive v4 Accounts + Characters from the edited _pendingAccounts so that
-        // changes made in the legacy Accounts tab propagate into the lists that Phase 3's
-        // rebuilt tray menu will consume. Mirror of MigrateV3ToV4 Step 1 split logic.
-        var (v4Accounts, v4Characters) = LoginAccountSplitter.Split(_pendingAccounts);
+        // Phase 4: cross-section validation — structural errors block Save.
+        // Run after P3.5-D hotkey conflict check but before mutating _config.
+
+        // 1. Account names unique (Ordinal).
+        var acctNameDupes = _pendingAccounts
+            .GroupBy(a => a.Name, StringComparer.Ordinal)
+            .Where(g => g.Count() > 1)
+            .ToList();
+        if (acctNameDupes.Any())
+        {
+            var names = string.Join(", ", acctNameDupes.Select(g => $"'{g.Key}' ({g.Count()} times)"));
+            MessageBox.Show($"Account names must be unique.\n\nDuplicates: {names}",
+                "Duplicate Account Name", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+
+        // 2. Account (Username, Server) unique.
+        var acctCredDupes = _pendingAccounts
+            .GroupBy(a => $"{a.Username}\u0001{a.Server}", StringComparer.Ordinal)
+            .Where(g => g.Count() > 1)
+            .ToList();
+        if (acctCredDupes.Any())
+        {
+            var keys = string.Join(", ", acctCredDupes.Select(g => g.Key.Replace("\u0001", "@")));
+            MessageBox.Show($"Account (Username, Server) must be unique.\n\nDuplicates: {keys}",
+                "Duplicate Credentials", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+
+        // 3. Character names unique.
+        var charNameDupes = _pendingCharacters
+            .GroupBy(c => c.Name, StringComparer.Ordinal)
+            .Where(g => g.Count() > 1)
+            .ToList();
+        if (charNameDupes.Any())
+        {
+            var names = string.Join(", ", charNameDupes.Select(g => $"'{g.Key}' ({g.Count()} times)"));
+            MessageBox.Show($"Character names must be unique.\n\nDuplicates: {names}",
+                "Duplicate Character Name", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+
+        // 4. Character FK — every non-empty AccountUsername must resolve to an Account.
+        //    Empty AccountUsername = legitimate Unlink/orphan state.
+        foreach (var c in _pendingCharacters)
+        {
+            if (string.IsNullOrEmpty(c.AccountUsername)) continue;
+            bool resolved = _pendingAccounts.Any(a =>
+                a.Username.Equals(c.AccountUsername, StringComparison.Ordinal) &&
+                a.Server.Equals(c.AccountServer, StringComparison.Ordinal));
+            if (!resolved)
+            {
+                MessageBox.Show(
+                    $"Character '{c.Name}' references missing account '{c.AccountUsername}@{c.AccountServer}'.\n\n"
+                  + "Edit the Character to pick a valid account, or delete the Character.",
+                    "Broken Character FK", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+        }
+
+        // Phase 4: v4 lists are source of truth. Reverse-map back to LegacyAccounts
+        // for downgrade safety + AppConfig.Validate() defense-in-depth cooperation.
+        var legacyAccountsForConfig = ReverseMapToLegacy(_pendingAccounts, _pendingCharacters);
 
         // Build a new config from form values
         var newConfig = new AppConfig
@@ -1295,13 +1371,29 @@ public class SettingsForm : Form
             NotesPath = _txtNotesPath.Text.Trim(),
             DalayaPatcherPath = _txtDalayaPatcherPath.Text.Trim(),
             RunAtStartup = _chkRunAtStartup.Checked,
-            // Legacy v3 lists carry forward from _pendingAccounts (edited) and _config (passthrough).
+            // Phase 4: v4 lists are authoritative. LegacyAccounts is reverse-mapped
+            // for downgrade safety. LegacyCharacterProfiles + CharacterAliases remain
+            // pure passthrough until Phase 5 surfaces CharacterAlias editing in the UI.
             LegacyCharacterProfiles = _config.LegacyCharacterProfiles,
-            LegacyAccounts = _pendingAccounts,
-            // v4 lists re-derived above by LoginAccountSplitter. CharacterAliases is
-            // still a pure passthrough until Phase 4 adds editing for it.
-            Accounts = v4Accounts,
-            Characters = v4Characters,
+            LegacyAccounts = legacyAccountsForConfig,
+            Accounts = _pendingAccounts.Select(a => new Account
+            {
+                Name = a.Name,
+                Username = a.Username,
+                EncryptedPassword = a.EncryptedPassword,
+                Server = a.Server,
+                UseLoginFlag = a.UseLoginFlag,
+            }).ToList(),
+            Characters = _pendingCharacters.Select(c => new Character
+            {
+                Name = c.Name,
+                AccountUsername = c.AccountUsername,
+                AccountServer = c.AccountServer,
+                CharacterSlot = c.CharacterSlot,
+                DisplayLabel = c.DisplayLabel,
+                ClassHint = c.ClassHint,
+                Notes = c.Notes,
+            }).ToList(),
             CharacterAliases = _config.CharacterAliases,
             LoginScreenDelayMs = (int)(_nudLoginScreenDelay.Value * 1000),
             QuickLogin1 = GetQuickLoginUsername(_cboQuickLogin1),
@@ -1364,15 +1456,200 @@ public class SettingsForm : Form
 
     // ─── Accounts Tab ──────────────────────────────────────────────
 
+    /// <summary>
+    /// Phase 4: reverse the v4 split so <c>_config.LegacyAccounts</c> stays in sync with
+    /// the (Accounts, Characters) source of truth. Each Account with N Characters becomes
+    /// N <see cref="LoginAccount"/> rows; an Account with no Characters becomes one bare row.
+    /// Orphan Characters (empty <see cref="Character.AccountUsername"/>) are dropped — v3
+    /// has no concept of a character without an account. Keeps
+    /// <see cref="AppConfig.Validate"/> from triggering a v4 resync that would wipe
+    /// Phase-4-only edits.
+    /// </summary>
+    private static List<LoginAccount> ReverseMapToLegacy(
+        IReadOnlyList<Account> accounts,
+        IReadOnlyList<Character> characters)
+    {
+        var result = new List<LoginAccount>();
+        foreach (var a in accounts)
+        {
+            var linked = characters
+                .Where(c => c.AccountUsername.Equals(a.Username, StringComparison.Ordinal) &&
+                            c.AccountServer.Equals(a.Server, StringComparison.Ordinal))
+                .ToList();
+
+            if (linked.Count == 0)
+            {
+                result.Add(new LoginAccount
+                {
+                    Name = a.Name,
+                    Username = a.Username,
+                    EncryptedPassword = a.EncryptedPassword,
+                    Server = a.Server,
+                    UseLoginFlag = a.UseLoginFlag,
+                    CharacterName = "",
+                    AutoEnterWorld = false,
+                    CharacterSlot = 0,
+                });
+            }
+            else
+            {
+                foreach (var c in linked)
+                {
+                    result.Add(new LoginAccount
+                    {
+                        Name = a.Name,
+                        Username = a.Username,
+                        EncryptedPassword = a.EncryptedPassword,
+                        Server = a.Server,
+                        UseLoginFlag = a.UseLoginFlag,
+                        CharacterName = c.Name,
+                        AutoEnterWorld = true,
+                        CharacterSlot = c.CharacterSlot,
+                    });
+                }
+            }
+        }
+        return result;
+    }
+
     private TabPage BuildAccountsTab()
     {
         var page = DarkTheme.MakeTabPage("Accounts");
         int y = 8;
 
         page.AutoScroll = true;
-        var card = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Login Accounts", DarkTheme.CardGold, 10, y, 480, 216);
 
-        _dgvAccounts = new DataGridView
+        // ─── Accounts card ───────────────────────────────────────────
+        var accountsCard = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Accounts", DarkTheme.CardGold, 10, y, 480, 216);
+
+        _dgvAccounts = MakeDualSectionGrid();
+        _dgvAccounts.Columns.Add("Num", "#");
+        _dgvAccounts.Columns["Num"]!.Width = 30;
+        _dgvAccounts.Columns.Add("Name", "Name");
+        _dgvAccounts.Columns["Name"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        _dgvAccounts.Columns["Name"]!.FillWeight = 30;
+        _dgvAccounts.Columns.Add("Username", "Username");
+        _dgvAccounts.Columns["Username"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        _dgvAccounts.Columns["Username"]!.FillWeight = 30;
+        _dgvAccounts.Columns.Add("Server", "Server");
+        _dgvAccounts.Columns["Server"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        _dgvAccounts.Columns["Server"]!.FillWeight = 20;
+        _dgvAccounts.Columns.Add("Flag", "Flag");
+        _dgvAccounts.Columns["Flag"]!.Width = 42;
+        _dgvAccounts.DoubleClick += (_, _) =>
+        {
+            if (_dgvAccounts.SelectedRows.Count > 0)
+                OnEditAccount(_dgvAccounts.SelectedRows[0].Index);
+        };
+        accountsCard.Controls.Add(_dgvAccounts);
+
+        int btnY = 160;
+        var btnAddAccount = DarkTheme.AddCardButton(accountsCard, "+ Add", 10, btnY, 70);
+        btnAddAccount.Click += (_, _) => OnAddAccount();
+
+        var btnEditAccount = DarkTheme.AddCardButton(accountsCard, "Edit", 85, btnY, 60);
+        btnEditAccount.Click += (_, _) =>
+        {
+            if (_dgvAccounts.SelectedRows.Count > 0)
+                OnEditAccount(_dgvAccounts.SelectedRows[0].Index);
+        };
+
+        var btnDeleteAccount = DarkTheme.AddCardButton(accountsCard, "Delete", 150, btnY, 65);
+        btnDeleteAccount.Click += (_, _) =>
+        {
+            if (_dgvAccounts.SelectedRows.Count > 0)
+                OnDeleteAccount(_dgvAccounts.SelectedRows[0].Index);
+        };
+
+        var btnBackup = DarkTheme.AddCardButton(accountsCard, "\uD83D\uDCE4 Backup", 225, btnY, 75);
+        btnBackup.Click += (_, _) => ExportAccounts();
+
+        var btnImport = DarkTheme.AddCardButton(accountsCard, "\uD83D\uDCE5 Import", 305, btnY, 75);
+        btnImport.Click += (_, _) => ImportAccounts();
+
+        // Login delay — compact, right side of button row
+        DarkTheme.AddCardLabel(accountsCard, "Delay:", 388, btnY + 3);
+        _nudLoginScreenDelay = DarkTheme.AddNumeric(accountsCard, 425, btnY, 45,
+            _config.LoginScreenDelayMs / 1000m, 1, 15);
+        _nudLoginScreenDelay.DecimalPlaces = 1;
+        _nudLoginScreenDelay.Increment = 0.5m;
+
+        DarkTheme.AddCardHint(accountsCard, "DPAPI-encrypted passwords — same Windows user only.", 10, 196);
+
+        y += 224;
+
+        // ─── Characters card ─────────────────────────────────────────
+        var charactersCard = DarkTheme.MakeCard(page, "\uD83E\uDDD9", "Characters", DarkTheme.CardPurple, 10, y, 480, 216);
+
+        _dgvCharacters = MakeDualSectionGrid();
+        _dgvCharacters.Columns.Add("Num", "#");
+        _dgvCharacters.Columns["Num"]!.Width = 30;
+        _dgvCharacters.Columns.Add("Name", "Name");
+        _dgvCharacters.Columns["Name"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        _dgvCharacters.Columns["Name"]!.FillWeight = 30;
+        _dgvCharacters.Columns.Add("Account", "Account");
+        _dgvCharacters.Columns["Account"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        _dgvCharacters.Columns["Account"]!.FillWeight = 30;
+        _dgvCharacters.Columns.Add("Slot", "Slot");
+        _dgvCharacters.Columns["Slot"]!.Width = 50;
+        _dgvCharacters.Columns.Add("HK", "HK");
+        _dgvCharacters.Columns["HK"]!.Width = 70;
+        _dgvCharacters.DoubleClick += (_, _) =>
+        {
+            if (_dgvCharacters.SelectedRows.Count > 0)
+                OnEditCharacter(_dgvCharacters.SelectedRows[0].Index);
+        };
+        charactersCard.Controls.Add(_dgvCharacters);
+
+        var btnAddChar = DarkTheme.AddCardButton(charactersCard, "+ Add Character", 10, btnY, 120);
+        btnAddChar.Click += (_, _) => OnAddCharacter();
+
+        var btnEditChar = DarkTheme.AddCardButton(charactersCard, "Edit", 135, btnY, 60);
+        btnEditChar.Click += (_, _) =>
+        {
+            if (_dgvCharacters.SelectedRows.Count > 0)
+                OnEditCharacter(_dgvCharacters.SelectedRows[0].Index);
+        };
+
+        var btnDeleteChar = DarkTheme.AddCardButton(charactersCard, "Delete", 200, btnY, 65);
+        btnDeleteChar.Click += (_, _) =>
+        {
+            if (_dgvCharacters.SelectedRows.Count > 0)
+                OnDeleteCharacter(_dgvCharacters.SelectedRows[0].Index);
+        };
+
+        DarkTheme.AddCardHint(charactersCard,
+            "Characters enter world; Accounts stop at charselect. Orphan chars (no Account) render '(unassigned)'.",
+            10, 196);
+
+        y += 224;
+
+        // ─── Autologin Teams ─────────────────────────────────────────
+        var teamsCard = DarkTheme.MakeCard(page, "\uD83D\uDC65", "Autologin Teams", DarkTheme.CardGold, 10, y, 480, 64);
+        var btnTeams = DarkTheme.AddCardButton(teamsCard, "Configure Teams...", 10, 32, 120);
+        btnTeams.Click += (_, _) => ShowTeamsDialog();
+        _lblTeamSummary = DarkTheme.AddCardHint(teamsCard, BuildTeamSummary(), 140, 32);
+        _lblTeamSummary.Size = new Size(330, 28);
+
+        // ─── Autologin defaults (flat row) ───────────────────────────
+        y += 72;
+        _chkAutoEnterWorld = DarkTheme.AddCheckBox(page, "Auto Enter World (legacy default)", 20, y);
+        _chkAutoEnterWorld.Checked = _config.AutoEnterWorld;
+        y += 22;
+        DarkTheme.AddHint(page, "Phase 4: Characters always enter world; Accounts stop at charselect. Team AutoEnter flags per-team.", 20, y);
+
+        RefreshAccountsGrid();
+        RefreshCharactersGrid();
+
+        return page;
+    }
+
+    /// <summary>
+    /// Shared DataGridView factory for the Accounts + Characters grids — same style.
+    /// </summary>
+    private DataGridView MakeDualSectionGrid()
+    {
+        return new DataGridView
         {
             Location = new Point(10, 32),
             Size = new Size(458, 120),
@@ -1404,137 +1681,102 @@ public class SettingsForm : Form
             },
             EnableHeadersVisualStyles = false
         };
-
-        _dgvAccounts.Columns.Add("Num", "#");
-        _dgvAccounts.Columns["Num"]!.Width = 30;
-        _dgvAccounts.Columns.Add("Account", "Account");
-        _dgvAccounts.Columns["Account"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-        _dgvAccounts.Columns["Account"]!.FillWeight = 30;
-        _dgvAccounts.Columns.Add("Username", "Username");
-        _dgvAccounts.Columns["Username"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-        _dgvAccounts.Columns["Username"]!.FillWeight = 30;
-        _dgvAccounts.Columns.Add("Server", "Server");
-        _dgvAccounts.Columns["Server"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-        _dgvAccounts.Columns["Server"]!.FillWeight = 20;
-        _dgvAccounts.Columns.Add("Enter", "Enter");
-        _dgvAccounts.Columns["Enter"]!.Width = 42;
-
-        RefreshAccountsGrid();
-        card.Controls.Add(_dgvAccounts);
-
-        int btnY = 160;
-        var btnAdd = DarkTheme.AddCardButton(card, "Add", 10, btnY, 70);
-        btnAdd.Click += (_, _) => ShowAccountDialog(null);
-
-        var btnEdit = DarkTheme.AddCardButton(card, "Edit", 85, btnY, 70);
-        btnEdit.Click += (_, _) =>
-        {
-            if (_dgvAccounts.SelectedRows.Count > 0)
-                ShowAccountDialog(_dgvAccounts.SelectedRows[0].Index);
-        };
-
-        var btnRemove = DarkTheme.AddCardButton(card, "Remove", 160, btnY, 70);
-        btnRemove.Click += (_, _) =>
-        {
-            if (_dgvAccounts.SelectedRows.Count > 0)
-            {
-                int idx = _dgvAccounts.SelectedRows[0].Index;
-                var acct = _pendingAccounts[idx];
-                var removed = !string.IsNullOrEmpty(acct.CharacterName) ? acct.CharacterName : acct.Username;
-                _pendingAccounts.RemoveAt(idx);
-                ClearStaleTeamSlots(removed);
-                RefreshAccountsGrid();
-            }
-        };
-
-        var btnMoveUp = DarkTheme.AddCardButton(card, "\u25B2", 250, btnY, 35);
-        btnMoveUp.Click += (_, _) =>
-        {
-            if (_dgvAccounts.SelectedRows.Count > 0)
-            {
-                int idx = _dgvAccounts.SelectedRows[0].Index;
-                if (idx > 0)
-                {
-                    (_pendingAccounts[idx], _pendingAccounts[idx - 1]) = (_pendingAccounts[idx - 1], _pendingAccounts[idx]);
-                    RefreshAccountsGrid();
-                    _dgvAccounts.Rows[idx - 1].Selected = true;
-                }
-            }
-        };
-
-        var btnMoveDown = DarkTheme.AddCardButton(card, "\u25BC", 290, btnY, 35);
-        btnMoveDown.Click += (_, _) =>
-        {
-            if (_dgvAccounts.SelectedRows.Count > 0)
-            {
-                int idx = _dgvAccounts.SelectedRows[0].Index;
-                if (idx < _pendingAccounts.Count - 1)
-                {
-                    (_pendingAccounts[idx], _pendingAccounts[idx + 1]) = (_pendingAccounts[idx + 1], _pendingAccounts[idx]);
-                    RefreshAccountsGrid();
-                    _dgvAccounts.Rows[idx + 1].Selected = true;
-                }
-            }
-        };
-
-        // Login delay — compact, next to the move buttons
-        DarkTheme.AddCardLabel(card, "Delay:", 340, btnY + 3);
-        _nudLoginScreenDelay = DarkTheme.AddNumeric(card, 385, btnY, 55,
-            _config.LoginScreenDelayMs / 1000m, 1, 15);
-        _nudLoginScreenDelay.DecimalPlaces = 1;
-        _nudLoginScreenDelay.Increment = 0.5m;
-        DarkTheme.AddCardLabel(card, "s", 442, btnY + 3);
-
-        DarkTheme.AddCardHint(card, "DPAPI-encrypted passwords.", 10, 196);
-        DarkTheme.AddCardHint(card, "Delay = seconds before typing credentials.", 250, 196);
-
-        // ─── Autologin Teams ─────────────────────────────────────────
-        y += 224;
-        var teamsCard = DarkTheme.MakeCard(page, "\uD83D\uDC65", "Autologin Teams", DarkTheme.CardGold, 10, y, 480, 64);
-        var btnTeams = DarkTheme.AddCardButton(teamsCard, "Configure Teams...", 10, 32, 120);
-        btnTeams.Click += (_, _) => ShowTeamsDialog();
-        _lblTeamSummary = DarkTheme.AddCardHint(teamsCard, BuildTeamSummary(), 140, 32);
-        _lblTeamSummary.Size = new Size(330, 28);
-
-        // ─── Autologin options (flat row, no card title) ──────────
-        y += 72;
-        _chkAutoEnterWorld = DarkTheme.AddCheckBox(page, "Auto Enter World (experimental)", 20, y);
-        _chkAutoEnterWorld.Checked = _config.AutoEnterWorld;
-
-        var btnBackup = DarkTheme.MakeButton("\uD83D\uDCE4 Backup", DarkTheme.BgInput, 320, y - 2);
-        btnBackup.Size = new Size(75, 24);
-        btnBackup.Click += (_, _) => ExportAccounts();
-        page.Controls.Add(btnBackup);
-
-        var btnImport = DarkTheme.MakeButton("\uD83D\uDCE5 Import", DarkTheme.BgInput, 400, y - 2);
-        btnImport.Size = new Size(75, 24);
-        btnImport.Click += (_, _) => ImportAccounts();
-        page.Controls.Add(btnImport);
-
-        y += 22;
-        DarkTheme.AddHint(page, "Sets all accounts on upgrade. Per-account override in Edit, per-team in Teams.", 20, y);
-        DarkTheme.AddHint(page, "DPAPI \u2014 same Windows user only", 320, y);
-
-        return page;
     }
 
     private void RefreshAccountsGrid()
     {
+        if (_dgvAccounts == null) return;
         _dgvAccounts.Rows.Clear();
         for (int i = 0; i < _pendingAccounts.Count; i++)
         {
             var a = _pendingAccounts[i];
-            _dgvAccounts.Rows.Add(i + 1, a.CharacterName, a.Username, a.Server, a.AutoEnterWorld ? "Yes" : "");
+            _dgvAccounts.Rows.Add(i + 1, a.Name, a.Username, a.Server, a.UseLoginFlag ? "\u2713" : "");
         }
         RefreshQuickLoginCombos();
+    }
+
+    private void RefreshCharactersGrid()
+    {
+        if (_dgvCharacters == null) return;
+        _dgvCharacters.Rows.Clear();
+        for (int i = 0; i < _pendingCharacters.Count; i++)
+        {
+            var c = _pendingCharacters[i];
+            var linkedAccount = _pendingAccounts.FirstOrDefault(a =>
+                a.Username.Equals(c.AccountUsername, StringComparison.Ordinal) &&
+                a.Server.Equals(c.AccountServer, StringComparison.Ordinal));
+
+            string acctDisplay;
+            bool acctFlagged;
+            if (string.IsNullOrEmpty(c.AccountUsername))
+            {
+                acctDisplay = "(unassigned)";
+                acctFlagged = true;
+            }
+            else if (linkedAccount != null)
+            {
+                acctDisplay = linkedAccount.Name;
+                acctFlagged = false;
+            }
+            else
+            {
+                acctDisplay = $"{c.AccountUsername}@{c.AccountServer} (missing)";
+                acctFlagged = true;
+            }
+
+            var slotDisplay = c.CharacterSlot == 0 ? "auto" : c.CharacterSlot.ToString();
+            var hkDisplay = LookupHotkeyForTarget(c.Name);
+
+            int rowIdx = _dgvCharacters.Rows.Add(i + 1, c.Name, acctDisplay, slotDisplay, hkDisplay);
+            if (acctFlagged)
+            {
+                _dgvCharacters.Rows[rowIdx].Cells["Account"].Style.ForeColor = DarkTheme.FgDimGray;
+                _dgvCharacters.Rows[rowIdx].Cells["Account"].Style.Font =
+                    TrackFont(new Font("Segoe UI", 9f, FontStyle.Italic));
+            }
+        }
+        RefreshQuickLoginCombos();
+    }
+
+    private string LookupHotkeyForTarget(string targetName)
+    {
+        if (string.IsNullOrEmpty(targetName)) return "";
+        // Phase 4 bridge: QuickLogin1-4 + HotkeyConfig.AutoLogin1-4 still hold character
+        // bindings until Phase 5 replaces with CharacterHotkeys[]. Show whichever hotkey
+        // currently points at this target.
+        var slots = new (string target, string combo)[]
+        {
+            (_config.QuickLogin1, _config.Hotkeys.AutoLogin1),
+            (_config.QuickLogin2, _config.Hotkeys.AutoLogin2),
+            (_config.QuickLogin3, _config.Hotkeys.AutoLogin3),
+            (_config.QuickLogin4, _config.Hotkeys.AutoLogin4),
+        };
+        foreach (var (target, combo) in slots)
+        {
+            if (!string.IsNullOrEmpty(combo) && target.Equals(targetName, StringComparison.Ordinal))
+                return combo;
+        }
+        return "";
     }
 
     private void RefreshQuickLoginCombos()
     {
         if (_cboQuickLogin1 == null) return; // not built yet
-        var labels = _pendingAccounts.Select(a =>
-            string.IsNullOrEmpty(a.CharacterName) ? a.Username : a.CharacterName).ToList();
-        labels.Insert(0, "(None)");
+
+        // Phase 4: Quick Login combos prefer Characters (enter-world) over Accounts
+        // (charselect-only). Label format: Character.Name or Account.Name; the config
+        // value stored is the same name (FK handled at tray dispatch time).
+        var labels = new List<string>();
+        labels.Add("(None)");
+        foreach (var c in _pendingCharacters)
+            labels.Add(c.Name);
+        foreach (var a in _pendingAccounts)
+        {
+            // Don't duplicate: if an Account.Name matches a Character.Name we've already
+            // added, skip — the character wins.
+            if (_pendingCharacters.Any(ch => ch.Name.Equals(a.Name, StringComparison.Ordinal))) continue;
+            labels.Add(a.Name);
+        }
 
         var combos = new[] { _cboQuickLogin1, _cboQuickLogin2, _cboQuickLogin3, _cboQuickLogin4 };
         var saved = combos.Select(c => c?.SelectedItem?.ToString()).ToArray();
@@ -1552,151 +1794,174 @@ public class SettingsForm : Form
         }
     }
 
-    /// <summary>Select the combo item matching a username from config.</summary>
+    /// <summary>
+    /// Select the combo item matching a config value. Combo items are Character.Name
+    /// entries first, then Account.Name entries (no duplicates).
+    /// </summary>
     private void SelectQuickLoginCombo(ComboBox cbo, string identifier)
     {
         if (string.IsNullOrEmpty(identifier)) { cbo.SelectedIndex = 0; return; }
-        // Match by CharacterName first (unique), fall back to Username (legacy)
-        int idx = _pendingAccounts.FindIndex(a => a.CharacterName == identifier);
-        if (idx < 0) idx = _pendingAccounts.FindIndex(a => a.Username == identifier);
-        cbo.SelectedIndex = idx >= 0 ? idx + 1 : 0; // +1 for (None) entry
+        for (int i = 0; i < cbo.Items.Count; i++)
+        {
+            if (cbo.Items[i]?.ToString() is string s && s.Equals(identifier, StringComparison.Ordinal))
+            {
+                cbo.SelectedIndex = i;
+                return;
+            }
+        }
+        cbo.SelectedIndex = 0;
     }
 
-    /// <summary>Get the unique identifier (CharacterName) for the selected quick login combo item.</summary>
+    /// <summary>
+    /// Return the selected Character.Name / Account.Name for the combo, or empty string
+    /// when (None) is selected.
+    /// </summary>
     private string GetQuickLoginUsername(ComboBox cbo)
     {
         if (cbo.SelectedIndex <= 0) return "";
-        int accountIdx = cbo.SelectedIndex - 1;
-        if (accountIdx >= _pendingAccounts.Count) return "";
-        var acct = _pendingAccounts[accountIdx];
-        return !string.IsNullOrEmpty(acct.CharacterName) ? acct.CharacterName : acct.Username;
+        return cbo.SelectedItem?.ToString() ?? "";
     }
 
-    private void ShowAccountDialog(int? editIndex)
+    // Phase 4: editing routes through AccountEditDialog / CharacterEditDialog. The
+    // old inline dialog builders are gone.
+
+    private void OnAddAccount()
     {
-        var existing = editIndex.HasValue ? _pendingAccounts[editIndex.Value] : null;
-
-        using var dlg = new Form
+        using var dlg = new AccountEditDialog(null, _pendingAccounts);
+        if (dlg.ShowDialog(this) == DialogResult.OK && dlg.Result != null)
         {
-            Text = existing != null ? "Edit Account" : "Add Account",
-            Size = new Size(380, 335),
-            FormBorderStyle = FormBorderStyle.FixedDialog,
-            StartPosition = FormStartPosition.CenterParent,
-            MaximizeBox = false,
-            MinimizeBox = false
-        };
-        DarkTheme.StyleForm(dlg, dlg.Text, dlg.Size);
-
-        int y = 15;
-        const int L = 15, I = 130, W = 210, R = 35;
-
-        TextBox MakeTextBox(int tx, int ty, int tw, string text = "")
-        {
-            var tb = new TextBox { Location = new Point(tx, ty), Width = tw, Text = text,
-                BackColor = DarkTheme.BgDark, ForeColor = DarkTheme.FgWhite,
-                BorderStyle = BorderStyle.FixedSingle };
-            dlg.Controls.Add(tb);
-            return tb;
-        }
-
-        DarkTheme.AddLabel(dlg, "Account Name:", L, y);
-        var txtCharName = MakeTextBox(I, y - 2, W, existing?.CharacterName ?? "");
-        y += R;
-
-        DarkTheme.AddLabel(dlg, "Username:", L, y);
-        var txtUsername = MakeTextBox(I, y - 2, W, existing?.Username ?? "");
-        y += R;
-
-        DarkTheme.AddLabel(dlg, "Password:", L, y);
-        var txtPassword = MakeTextBox(I, y - 2, W);
-        txtPassword.UseSystemPasswordChar = true;
-        if (existing != null)
-            txtPassword.PlaceholderText = "(unchanged)";
-        y += R;
-
-        DarkTheme.AddLabel(dlg, "Server:", L, y);
-        var txtServer = MakeTextBox(I, y - 2, W, existing?.Server ?? "Dalaya");
-        txtServer.ReadOnly = true;
-        txtServer.BackColor = DarkTheme.BgMedium;
-        txtServer.ForeColor = DarkTheme.FgDimGray;
-        y += R;
-
-        DarkTheme.AddLabel(dlg, "Character Slot:", L, y);
-        var cboSlot = new ComboBox
-        {
-            Location = new Point(I, y - 2), Size = new Size(W, 25),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat
-        };
-        cboSlot.Items.AddRange(new object[] { "Auto (by name)", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10" });
-        cboSlot.SelectedIndex = Math.Clamp(existing?.CharacterSlot ?? 0, 0, 10);
-        dlg.Controls.Add(cboSlot);
-        y += R;
-
-        var chkEnterWorld = DarkTheme.AddCheckBox(dlg, "Auto Enter World", L, y);
-        chkEnterWorld.Checked = existing?.AutoEnterWorld ?? _config.AutoEnterWorld;
-        y += R;
-
-        y += 5;
-
-        var btnOK = DarkTheme.MakePrimaryButton("Save", L, y);
-        btnOK.Width = 100;
-        btnOK.Click += (_, _) =>
-        {
-            if (string.IsNullOrWhiteSpace(txtUsername.Text))
-            {
-                MessageBox.Show("Username is required.", "Validation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            var account = existing ?? new LoginAccount();
-            var oldUsername = existing?.Username ?? "";
-            var newUsername = txtUsername.Text.Trim();
-            account.Name = txtCharName.Text.Trim(); // sync Name from Character for backwards compat
-            account.Username = newUsername;
-            account.Server = txtServer.Text.Trim();
-            account.CharacterName = txtCharName.Text.Trim();
-            account.CharacterSlot = cboSlot.SelectedIndex; // 0=auto, 1-10=slot
-            account.AutoEnterWorld = chkEnterWorld.Checked;
-            account.UseLoginFlag = true;
-
-            // Update team references if character name changed
-            var oldCharName = existing?.CharacterName ?? "";
-            var newCharName = txtCharName.Text.Trim();
-            if (existing != null && oldCharName != newCharName && !string.IsNullOrEmpty(oldCharName))
-                UpdateTeamSlotUsername(oldCharName, newCharName);
-
-            // Only update password if user typed something new
-            if (!string.IsNullOrEmpty(txtPassword.Text))
-                account.EncryptedPassword = CredentialManager.Encrypt(txtPassword.Text);
-
-            if (!editIndex.HasValue)
-                _pendingAccounts.Add(account);
-
+            _pendingAccounts.Add(dlg.Result);
             RefreshAccountsGrid();
-            dlg.DialogResult = DialogResult.OK;
-        };
-        dlg.Controls.Add(btnOK);
+            RefreshCharactersGrid();   // new Account may resolve previously-orphaned chars
+            _lblTeamSummary.Text = BuildTeamSummary();
+        }
+    }
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 130, y);
-        btnCancel.Width = 100;
-        btnCancel.Click += (_, _) => dlg.DialogResult = DialogResult.Cancel;
-        dlg.Controls.Add(btnCancel);
+    private void OnEditAccount(int idx)
+    {
+        if (idx < 0 || idx >= _pendingAccounts.Count) return;
+        var existing = _pendingAccounts[idx];
+        using var dlg = new AccountEditDialog(existing, _pendingAccounts);
+        if (dlg.ShowDialog(this) == DialogResult.OK && dlg.Result != null)
+        {
+            var oldName = existing.Name;
+            var newName = dlg.Result.Name;
+            _pendingAccounts[idx] = dlg.Result;
+            // If Account.Name changed, update any Team{N}Account{M} slots referencing the old name.
+            if (!oldName.Equals(newName, StringComparison.Ordinal))
+                UpdateTeamSlotUsername(oldName, newName);
+            RefreshAccountsGrid();
+            RefreshCharactersGrid();
+            _lblTeamSummary.Text = BuildTeamSummary();
+        }
+    }
 
-        dlg.AcceptButton = (IButtonControl)btnOK;
-        dlg.ShowDialog(this);
+    private void OnDeleteAccount(int idx)
+    {
+        if (idx < 0 || idx >= _pendingAccounts.Count) return;
+        var acct = _pendingAccounts[idx];
+        var dependents = _pendingCharacters.Where(c =>
+            c.AccountUsername.Equals(acct.Username, StringComparison.Ordinal) &&
+            c.AccountServer.Equals(acct.Server, StringComparison.Ordinal)).ToList();
+
+        if (dependents.Count == 0)
+        {
+            if (MessageBox.Show($"Delete Account '{acct.Name}'?", "Delete Account",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                return;
+            _pendingAccounts.RemoveAt(idx);
+            ClearStaleTeamSlots(acct.Name);
+        }
+        else
+        {
+            using var dlg = new CascadeDeleteDialog(acct, dependents);
+            dlg.ShowDialog(this);
+            switch (dlg.Choice)
+            {
+                case CascadeDeleteChoice.Cancel:
+                    return;
+                case CascadeDeleteChoice.Unlink:
+                    foreach (var c in dependents)
+                    {
+                        c.AccountUsername = "";
+                        c.AccountServer = "";
+                    }
+                    _pendingAccounts.RemoveAt(idx);
+                    ClearStaleTeamSlots(acct.Name);
+                    break;
+                case CascadeDeleteChoice.DeleteAll:
+                    foreach (var c in dependents)
+                    {
+                        _pendingCharacters.Remove(c);
+                        ClearStaleTeamSlots(c.Name);
+                    }
+                    _pendingAccounts.RemoveAt(idx);
+                    ClearStaleTeamSlots(acct.Name);
+                    break;
+            }
+        }
+        RefreshAccountsGrid();
+        RefreshCharactersGrid();
+        _lblTeamSummary.Text = BuildTeamSummary();
+    }
+
+    private void OnAddCharacter()
+    {
+        using var dlg = new CharacterEditDialog(null, _pendingAccounts, _pendingCharacters);
+        if (dlg.ShowDialog(this) == DialogResult.OK && dlg.Result != null)
+        {
+            _pendingCharacters.Add(dlg.Result);
+            RefreshCharactersGrid();
+            _lblTeamSummary.Text = BuildTeamSummary();
+        }
+    }
+
+    private void OnEditCharacter(int idx)
+    {
+        if (idx < 0 || idx >= _pendingCharacters.Count) return;
+        var existing = _pendingCharacters[idx];
+        using var dlg = new CharacterEditDialog(existing, _pendingAccounts, _pendingCharacters);
+        if (dlg.ShowDialog(this) == DialogResult.OK && dlg.Result != null)
+        {
+            var oldName = existing.Name;
+            var newName = dlg.Result.Name;
+            _pendingCharacters[idx] = dlg.Result;
+            if (!oldName.Equals(newName, StringComparison.Ordinal))
+                UpdateTeamSlotUsername(oldName, newName);
+            RefreshCharactersGrid();
+            _lblTeamSummary.Text = BuildTeamSummary();
+        }
+    }
+
+    private void OnDeleteCharacter(int idx)
+    {
+        if (idx < 0 || idx >= _pendingCharacters.Count) return;
+        var c = _pendingCharacters[idx];
+        if (MessageBox.Show($"Delete Character '{c.Name}'?", "Delete Character",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            return;
+        _pendingCharacters.RemoveAt(idx);
+        ClearStaleTeamSlots(c.Name);
+        RefreshCharactersGrid();
+        _lblTeamSummary.Text = BuildTeamSummary();
     }
 
     private string BuildTeamSummary()
     {
+        string Resolve(string targetName)
+        {
+            if (string.IsNullOrEmpty(targetName)) return "";
+            var ch = _pendingCharacters.FirstOrDefault(c => c.Name.Equals(targetName, StringComparison.Ordinal));
+            if (ch != null) return ch.Name;
+            var ac = _pendingAccounts.FirstOrDefault(a => a.Name.Equals(targetName, StringComparison.Ordinal));
+            return ac != null ? ac.Name : targetName + "?";   // trailing '?' flags unresolved
+        }
+
         string Fmt(string u1, string u2)
         {
             var names = new[] { u1, u2 }
-                .Where(u => !string.IsNullOrEmpty(u))
-                .Select(u => _pendingAccounts.FirstOrDefault(a => a.CharacterName == u)
-                          ?? _pendingAccounts.FirstOrDefault(a => a.Username == u))
-                .Where(a => a != null)
-                .Select(a => string.IsNullOrEmpty(a!.CharacterName) ? a.Username : a.CharacterName)
+                .Select(Resolve)
+                .Where(s => !string.IsNullOrEmpty(s))
                 .ToList();
             return names.Count > 0 ? string.Join(" + ", names) : "(none)";
         }
@@ -1709,8 +1974,12 @@ public class SettingsForm : Form
 
     private void ShowTeamsDialog()
     {
+        // Phase 4 transitional: AutoLoginTeamsDialog still takes List<LoginAccount>
+        // until Task 9 updates its signature to v4 (Account, Character) + indicators.
+        // Build a reverse-mapped LoginAccount list on the fly for the dialog.
+        var legacyView = ReverseMapToLegacy(_pendingAccounts, _pendingCharacters);
         using var dlg = new AutoLoginTeamsDialog(
-            _pendingAccounts,
+            legacyView,
             _pendingTeam1A, _pendingTeam1B,
             _pendingTeam2A, _pendingTeam2B,
             _pendingTeam3A, _pendingTeam3B,
@@ -1808,11 +2077,16 @@ public class SettingsForm : Form
 
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
 
-        List<Models.LoginAccount> imported;
+        // Phase 4: import Account-typed JSON. Legacy v3 LoginAccount exports with
+        // CharacterName/AutoEnterWorld fields still deserialize correctly — those fields
+        // simply aren't bound here (they'd live on Character in v4). Users re-create
+        // Characters in-app after import.
+        List<Account> imported;
         try
         {
             var json = File.ReadAllText(dlg.FileName);
-            imported = System.Text.Json.JsonSerializer.Deserialize<List<Models.LoginAccount>>(json) ?? new();
+            var opts = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            imported = System.Text.Json.JsonSerializer.Deserialize<List<Account>>(json, opts) ?? new();
         }
         catch (Exception ex)
         {
@@ -1826,23 +2100,31 @@ public class SettingsForm : Form
             return;
         }
 
-        // Check for duplicates by username
+        // Dedup by (Username, Server) — case-insensitive.
         int added = 0, skipped = 0;
-        var existingUsernames = new HashSet<string>(_pendingAccounts.Select(a => a.Username), StringComparer.OrdinalIgnoreCase);
-
         foreach (var account in imported)
         {
-            if (existingUsernames.Contains(account.Username))
+            if (string.IsNullOrEmpty(account.Username))
             {
                 skipped++;
                 continue;
             }
+            bool exists = _pendingAccounts.Any(a =>
+                a.Username.Equals(account.Username, StringComparison.OrdinalIgnoreCase) &&
+                a.Server.Equals(account.Server, StringComparison.OrdinalIgnoreCase));
+            if (exists)
+            {
+                skipped++;
+                continue;
+            }
+            if (string.IsNullOrEmpty(account.Server)) account.Server = "Dalaya";
+            if (string.IsNullOrEmpty(account.Name)) account.Name = account.Username;
             _pendingAccounts.Add(account);
-            existingUsernames.Add(account.Username);
             added++;
         }
 
         RefreshAccountsGrid();
+        RefreshCharactersGrid();
 
         var msg = $"Imported {added} account(s).";
         if (skipped > 0) msg += $"\nSkipped {skipped} duplicate(s).";
