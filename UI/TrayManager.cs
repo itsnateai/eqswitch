@@ -1018,11 +1018,7 @@ public class TrayManager : IDisposable
             $"{(_config.Pip.Enabled ? "\u2705" : "\u2B1C")}  Picture in Picture");
         if (!string.IsNullOrEmpty(hk.TogglePip))
             pipItem.ShortcutKeyDisplayString = hk.TogglePip;
-        pipItem.Click += (_, _) =>
-        {
-            TogglePip();
-            BuildContextMenu();
-        };
+        pipItem.Click += (_, _) => TogglePip();  // TogglePip rebuilds the context menu internally
         videoMenu.DropDownItems.Add(pipItem);
         videoMenu.DropDownItems.Add(new ToolStripSeparator());
         var fixWindowsItem = new ToolStripMenuItem("Fix Windows  \uD83D\uDD27")
@@ -1158,18 +1154,24 @@ public class TrayManager : IDisposable
                 _pipOverlay = null;
             }
             ShowBalloon("PiP overlay disabled");
-            return;
+        }
+        else
+        {
+            // Enable — create overlay if clients exist, otherwise auto-show will handle it later
+            var clients = _processManager.Clients;
+            if (clients.Count >= 1)
+            {
+                _pipOverlay = new PipOverlay(_config);
+                _pipOverlay.Show();
+                _pipOverlay.UpdateSources(clients, _processManager.GetActiveClient());
+            }
+            ShowBalloon("PiP overlay enabled");
         }
 
-        // Enable — create overlay if clients exist, otherwise auto-show will handle it later
-        var clients = _processManager.Clients;
-        if (clients.Count >= 1)
-        {
-            _pipOverlay = new PipOverlay(_config);
-            _pipOverlay.Show();
-            _pipOverlay.UpdateSources(clients, _processManager.GetActiveClient());
-        }
-        ShowBalloon("PiP overlay enabled");
+        // Refresh tray menu so the Picture-in-Picture item's checkbox emoji (\u2705 vs \u2B1C)
+        // reflects the new state. All call paths benefit: hotkey (ExecuteTrayAction), middle-click
+        // (TrayClick.TogglePiP), menu click, and the auto-show path on client list change.
+        BuildContextMenu();
     }
 
     // Reusable deferred timer for ShowBalloon/ShowHelpTooltip — avoids allocating
