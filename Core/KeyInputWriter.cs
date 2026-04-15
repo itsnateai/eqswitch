@@ -135,8 +135,14 @@ public sealed class KeyInputWriter : IDisposable
         if (!_mappings.TryGetValue(pid, out var entry)) return;
         try
         {
-            entry.Accessor.Write(ActiveOffset, (uint)0);
+            // Phantom-keys hotfix v3 (HIGH-1): zero the keys[] buffer BEFORE
+            // clearing active. If the buffer-zero throws after active=0 has
+            // landed, SHM would be in exactly the broken state the hotfix is
+            // meant to prevent — active=0 with stale bytes, re-injected on the
+            // next Activate. Zeroing first means any partial failure leaves
+            // a safe state (active=1 with zero buffer — nothing to inject).
             entry.Accessor.WriteArray(HeaderSize, new byte[KeysSize], 0, KeysSize);
+            entry.Accessor.Write(ActiveOffset, (uint)0);
         }
         catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Deactivate failed: {ex.Message}"); }
     }
@@ -151,12 +157,10 @@ public sealed class KeyInputWriter : IDisposable
         if (!_mappings.TryGetValue(pid, out var entry)) return;
         try
         {
-            entry.Accessor.Write(ActiveOffset, (uint)0);
-            // Zero keys[] during the deactivation gap — if Reactivate is called
-            // with stale SetKey(true) state still in the buffer, those bytes
-            // would be injected on the very next GetDeviceState after the
-            // re-activation. Matches Deactivate's buffer-zeroing semantics.
+            // Phantom-keys hotfix v3 (HIGH-1): zero buffer BEFORE clearing
+            // active. See Deactivate for the fault-safe ordering rationale.
             entry.Accessor.WriteArray(HeaderSize, new byte[KeysSize], 0, KeysSize);
+            entry.Accessor.Write(ActiveOffset, (uint)0);
             Thread.Sleep(gapMs);
             entry.Accessor.Write(ActiveOffset, (uint)1);
         }
@@ -185,8 +189,9 @@ public sealed class KeyInputWriter : IDisposable
         {
             try
             {
-                entry.Accessor.Write(ActiveOffset, (uint)0);
+                // Phantom-keys hotfix v3 (HIGH-1): zero buffer before clearing active.
                 entry.Accessor.WriteArray(HeaderSize, new byte[KeysSize], 0, KeysSize);
+                entry.Accessor.Write(ActiveOffset, (uint)0);
             }
             catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Close: cleanup failed for PID {pid}: {ex.Message}"); }
             entry.Dispose();
@@ -203,6 +208,11 @@ public sealed class KeyInputWriter : IDisposable
         {
             try
             {
+                // Phantom-keys hotfix v3 (HIGH-1 + MED-3): zero buffer before
+                // clearing active, matching Deactivate/Close symmetry. Ensures
+                // no stale bytes linger in the MMF if another process still
+                // holds a view after our handle releases.
+                entry.Accessor.WriteArray(HeaderSize, new byte[KeysSize], 0, KeysSize);
                 entry.Accessor.Write(ActiveOffset, (uint)0);
             }
             catch (Exception ex) { FileLogger.Warn($"KeyInputWriter.Dispose: cleanup failed for PID {pid}: {ex.Message}"); }

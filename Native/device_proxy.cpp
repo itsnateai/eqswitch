@@ -242,9 +242,20 @@ static DWORD WINAPI ActivateThread(LPVOID) {
                 g_realKeyboardDevice->Unacquire();
                 HRESULT hr = g_realKeyboardDevice->SetCooperativeLevel(hwnd, g_originalCoopFlags);
                 HRESULT acqHr = g_realKeyboardDevice->Acquire();
-                g_coopSwitched = false;
-                DI8Log("wm_activate: restored coop level (orig=0x%X SetCoop=0x%08X Acquire=0x%08X)",
-                       (unsigned)g_originalCoopFlags, (unsigned)hr, (unsigned)acqHr);
+                // Hotfix v3 (MED-6): only clear g_coopSwitched on SetCoop success.
+                // Acquire failing with E_ACCESSDENIED is expected when EQ lacks
+                // focus — the device is in the right MODE (FOREGROUND), EQ will
+                // reacquire when it regains focus. SetCoop failing means the
+                // device is stuck in BACKGROUND — leave the flag true so the
+                // next cycle retries; log loudly because phantom-keys will fire.
+                if (SUCCEEDED(hr)) {
+                    g_coopSwitched = false;
+                    DI8Log("wm_activate: restored coop level (orig=0x%X SetCoop=0x%08X Acquire=0x%08X)",
+                           (unsigned)g_originalCoopFlags, (unsigned)hr, (unsigned)acqHr);
+                } else {
+                    DI8Log("wm_activate: RESTORE FAILED (orig=0x%X SetCoop=0x%08X Acquire=0x%08X) — leaving g_coopSwitched=true for retry; phantom-keys risk",
+                           (unsigned)g_originalCoopFlags, (unsigned)hr, (unsigned)acqHr);
+                }
             }
 
             HWND fg = GetForegroundWindow();
@@ -563,11 +574,19 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::SetCooperativeLevel(HWND hwnd, DWORD dwFl
             // SHM was already active (no false→true transition to trigger it).
             DWORD bgFlags = (dwFlags & ~(DISCL_EXCLUSIVE | DISCL_FOREGROUND))
                           | DISCL_NONEXCLUSIVE | DISCL_BACKGROUND;
-            g_coopSwitched = true;
-            DI8Log("SetCooperativeLevel: keyboard hwnd=0x%X flags=0x%X → 0x%X (SHM active, forced BACKGROUND)",
-                   (unsigned)(uintptr_t)hwnd, dwFlags, bgFlags);
             StartActivateThread();
             HRESULT hr = m_real->SetCooperativeLevel(hwnd, bgFlags);
+            if (SUCCEEDED(hr)) {
+                g_coopSwitched = true;
+                DI8Log("SetCooperativeLevel: keyboard hwnd=0x%X flags=0x%X → 0x%X (SHM active, forced BACKGROUND)",
+                       (unsigned)(uintptr_t)hwnd, (unsigned)dwFlags, (unsigned)bgFlags);
+            } else {
+                // Hotfix v3 (MED-5): don't mark as switched if the actual call
+                // failed. Leaves state coherent with the device for the next
+                // restore attempt.
+                DI8Log("SetCooperativeLevel: SHM-active forced BACKGROUND FAILED (hr=0x%08X) — g_coopSwitched left unchanged",
+                       (unsigned)hr);
+            }
             // Re-post activation — EQ may have deactivated during screen transition
             PostMessageW(hwnd, WM_ACTIVATEAPP, TRUE, 0);
             return hr;
