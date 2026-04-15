@@ -1458,11 +1458,16 @@ public class TrayManager : IDisposable
 
     /// <summary>
     /// Phase-3 dispatcher for legacy tray-click/hotkey <c>AutoLoginN</c> actions. Reads
-    /// QuickLoginN, resolves Character-first then Account (matches v3 semantics +
-    /// migration preference), logs the routing decision once per session, and
-    /// delegates to FireAccountLogin/FireCharacterLogin which use the NEW API.
-    /// Replaces ExecuteQuickLogin for non-team callers — ExecuteQuickLogin is now
-    /// team-only and still routes through [Obsolete] LoginAccount until Phase 5.
+    /// QuickLoginN, resolves the v3 LegacyAccount row to recover the original intent
+    /// (the v3 <c>AutoEnterWorld</c> flag is the source of truth), then routes to
+    /// FireAccountLogin or FireCharacterLogin using the NEW API. Phase 5 replaces this
+    /// with the AccountHotkeys[]/CharacterHotkeys[] family tables which encode intent
+    /// in the binding family — no LegacyAccount consultation needed.
+    ///
+    /// Why not Character-first-by-name? Because the same name often exists as both
+    /// an Account.Name and a Character.Name (e.g. "natedogg" is both a v4 Account and
+    /// a v4 Character in typical single-character-per-account configs). Character-first
+    /// would always enter-world, regressing users whose v3 row had AutoEnterWorld=false.
     /// </summary>
     private void FireLegacyQuickLoginSlot(int slot)
     {
@@ -1481,21 +1486,43 @@ public class TrayManager : IDisposable
         };
         if (string.IsNullOrEmpty(targetName))
         {
-            ShowBalloon($"Quick Login {slot}: no account assigned");
+            // Rate-limit empty-slot balloons — a hotkey hammered 40 times would otherwise
+            // queue 40 tray notifications. 3 seconds of cooldown per slot covers accidental
+            // repeated presses without hiding a genuinely missed-binding nudge.
+            if (!ShouldSuppressEmptySlotBalloon(slot))
+                ShowBalloon($"Quick Login {slot}: no account assigned");
             return;
         }
 
-        // Character-first resolution mirrors v3 migration preference and
-        // TrayManager.cs:1321-1322 (the existing ExecuteQuickLogin two-step match).
-        var character = _config.FindCharacterByName(targetName);
-        if (character != null)
+        // Find the v3 LegacyAccount row so we can honor its AutoEnterWorld intent.
+        // v3 matched CharacterName first, Username as fallback — preserve that order.
+        var legacyRow = _config.LegacyAccounts.FirstOrDefault(a => a.CharacterName == targetName)
+                    ?? _config.LegacyAccounts.FirstOrDefault(a => a.Username == targetName);
+        if (legacyRow == null)
         {
-            LogFirstFire(slot, "Character", character.EffectiveLabel);
-            FireCharacterLogin(character);
+            ShowBalloon($"Quick Login {slot}: '{targetName}' not found");
+            FileLogger.Warn($"Legacy QuickLogin{slot}: target '{targetName}' does not resolve to any LegacyAccount row");
             return;
         }
 
-        var account = _config.FindAccountByName(targetName);
+        // v3 intent: enter world iff the legacy row had AutoEnterWorld=true AND a CharacterName.
+        // Otherwise stop at charselect — matches v3's own LoginAccount wrapper at AutoLoginManager.cs:127.
+        bool enterWorld = legacyRow.AutoEnterWorld && !string.IsNullOrEmpty(legacyRow.CharacterName);
+
+        if (enterWorld)
+        {
+            var character = _config.FindCharacterByName(legacyRow.CharacterName);
+            if (character != null)
+            {
+                LogFirstFire(slot, "Character", character.EffectiveLabel);
+                FireCharacterLogin(character);
+                return;
+            }
+            FileLogger.Warn($"Legacy QuickLogin{slot}: legacy row '{legacyRow.Name}' wants enter-world but no v4 Character named '{legacyRow.CharacterName}' found — falling back to charselect");
+        }
+
+        // Account-only path (or enter-world intent with missing v4 Character — fail safe to charselect).
+        var account = _config.FindAccountByName(legacyRow.Name);
         if (account != null)
         {
             LogFirstFire(slot, "Account", account.EffectiveLabel);
@@ -1503,8 +1530,25 @@ public class TrayManager : IDisposable
             return;
         }
 
-        ShowBalloon($"Quick Login {slot}: '{targetName}' not found");
-        FileLogger.Warn($"Legacy QuickLogin{slot}: target '{targetName}' does not resolve to any Account or Character");
+        ShowBalloon($"Quick Login {slot}: v4 data missing for '{targetName}' (migration issue?)");
+        FileLogger.Warn($"Legacy QuickLogin{slot}: resolved legacy row '{legacyRow.Name}' but no v4 Account found with that Name");
+    }
+
+    // Empty-slot balloon rate-limiter — tracks last fire per slot. Guards against
+    // hotkey repeat/spam triggering N tray notifications in rapid succession.
+    private readonly Dictionary<int, DateTime> _emptySlotLastFired = new();
+    private const int EmptySlotBalloonCooldownSeconds = 3;
+
+    private bool ShouldSuppressEmptySlotBalloon(int slot)
+    {
+        var now = DateTime.UtcNow;
+        if (_emptySlotLastFired.TryGetValue(slot, out var last) &&
+            (now - last).TotalSeconds < EmptySlotBalloonCooldownSeconds)
+        {
+            return true;
+        }
+        _emptySlotLastFired[slot] = now;
+        return false;
     }
 
     /// <summary>
