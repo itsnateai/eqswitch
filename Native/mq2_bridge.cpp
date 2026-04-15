@@ -1499,4 +1499,9 @@ void MQ2Bridge::Shutdown() {
     g_cachedNameCol    = -1;
     g_verificationDone = false;
     g_findLogCount     = 0;
+
+    // Hotfix v4: reset slot cache + heap-scan base so a mid-process MQ2 re-init
+    // doesn't serve a stale count from the previous session's charselect.
+    g_cachedSlotCount = -1;
+    g_heapScanArrayBase = 0;
 }

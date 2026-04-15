@@ -369,7 +369,7 @@ public class AutoLoginManager
             // ── Wait for server response (no focus-faking) ──
             Thread.Sleep(3000);
             hwnd = RefreshHandle(pid, hwnd);
-            if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window after login"); return; }
+            if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window after login (crashed or closed)"); return; }
 
             // ══════════════════════════════════════════════════════════
             // BURST 2: Confirm server select (~1 second active)
@@ -385,8 +385,15 @@ public class AutoLoginManager
 
             // ── Wait for charselect load (no focus-faking, 5-60+ seconds) ──
             Report("Loading character select...");
-            hwnd = WaitForScreenTransition(pid, hwnd);
-            if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window during charselect load"); return; }
+            var transitionSw = System.Diagnostics.Stopwatch.StartNew();
+            hwnd = WaitForScreenTransition(pid, hwnd, 90000);
+            transitionSw.Stop();
+            if (transitionSw.ElapsedMilliseconds >= 90000 - 500)
+            {
+                // Hotfix v4 (HIGH-C): timeout hit — surface to user rather than silently proceeding.
+                Report($"{account.Name}: char select didn't load in 90s — check password / server / network");
+            }
+            if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during charselect load (crashed or closed)"); return; }
             FileLogger.Info($"AutoLogin: charselect ready, hwnd=0x{hwnd:X} for PID {pid}");
 
             // ── Enter World gate ──
@@ -507,7 +514,16 @@ public class AutoLoginManager
                     }
                 }
                 else
-                    FileLogger.Warn($"AutoLogin: MQ2 bridge not ready, entering world with default");
+                {
+                    // Hotfix v4 (HIGH-A): MQ2 bridge never came up after 30s wait. The
+                    // pre-fix fallthrough would pulse Enter on EQ's DEFAULT-selected character
+                    // — directly contradicts the "unified abort" design from Phase 5b's
+                    // CharacterSelector work. Abort with a user-visible Report instead of
+                    // phantom-entering world on the wrong character.
+                    FileLogger.Error($"AutoLogin: MQ2 bridge not ready after 30s for PID {pid} — stopping at char select to avoid wrong-character enter-world");
+                    Report($"{account.Name}: MQ2 bridge didn't initialize — stopped at char select");
+                    return;
+                }
             }
 
             // ── Enter World ──────────────────────────────────────────
@@ -524,7 +540,7 @@ public class AutoLoginManager
                 {
                     // Check if already in-game
                     hwnd = RefreshHandle(pid, hwnd);
-                    if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window"); return; }
+                    if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during enter-world (crashed or closed)"); return; }
                     {
                         var tb = new StringBuilder(256);
                         NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
@@ -620,7 +636,7 @@ public class AutoLoginManager
                 for (int attempt = 0; attempt < 3 && !entered; attempt++)
                 {
                     hwnd = RefreshHandle(pid, hwnd);
-                    if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window"); return; }
+                    if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during PulseKey3D enter-world fallback (crashed or closed)"); return; }
                     {
                         var tb = new StringBuilder(256);
                         NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
@@ -780,7 +796,14 @@ public class AutoLoginManager
             if (vkScan == -1) continue;
 
             byte modifiers = (byte)(vkScan >> 8);
-            if ((modifiers & ~0x01) != 0) continue;
+            if ((modifiers & ~0x01) != 0)
+            {
+                // Hotfix v4 (L1): log skipped chars so European-layout passwords that
+                // need AltGr (e.g. @, {, }, [, ] on DE/FR/ES layouts) surface visibly
+                // instead of silently producing a mystery login failure.
+                FileLogger.Warn($"AutoLogin: CombinedTypeString skipping char '{c}' (U+{(int)c:X4}) — requires modifier 0x{modifiers:X} (Ctrl/Alt/AltGr)");
+                continue;
+            }
 
             ushort vk = (ushort)(vkScan & 0xFF);
             bool needShift = (modifiers & 0x01) != 0;
@@ -925,7 +948,7 @@ public class AutoLoginManager
         }
 
         // Timeout — proceed anyway (better than hanging forever)
-        FileLogger.Warn($"AutoLogin: screen transition timeout ({maxWaitMs}ms), proceeding anyway");
+        FileLogger.Error($"AutoLogin: screen transition timeout after {maxWaitMs}ms — char select may not have loaded (possible bad password, dead server, or network issue)");
         return RefreshHandle(pid, hwnd);
     }
 

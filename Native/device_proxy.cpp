@@ -202,9 +202,22 @@ static DWORD WINAPI ActivateThread(LPVOID) {
                                   | DISCL_NONEXCLUSIVE | DISCL_BACKGROUND;
                     HRESULT hr = g_realKeyboardDevice->SetCooperativeLevel(hwnd, bgFlags);
                     HRESULT acqHr = g_realKeyboardDevice->Acquire();
-                    g_coopSwitched = true;
-                    DI8Log("wm_activate: Unacquire → SetCoopLevel(BACKGROUND|NONEXCLUSIVE)=0x%08X → Acquire=0x%08X",
-                           (unsigned)hr, (unsigned)acqHr);
+                    // Hotfix v4: gate g_coopSwitched flip on SUCCEEDED(hr), matching the
+                    // MED-5/MED-6 discipline in v3. Without this, a SetCoop failure on
+                    // rising edge would set g_coopSwitched=true while the device is still
+                    // in the original mode — the next restore cycle would then perform a
+                    // no-op SetCoop(original), clear the flag, and silently mask the
+                    // original failure. Phantom-keys risk if EQ was in BACKGROUND at
+                    // restore time. Acquire failure is NOT treated as failure here — it
+                    // typically returns E_ACCESSDENIED when EQ lacks focus, which is OK.
+                    if (SUCCEEDED(hr)) {
+                        g_coopSwitched = true;
+                        DI8Log("wm_activate: Unacquire → SetCoopLevel(BACKGROUND|NONEXCLUSIVE)=0x%08X → Acquire=0x%08X",
+                               (unsigned)hr, (unsigned)acqHr);
+                    } else {
+                        DI8Log("wm_activate: RISING-EDGE SetCoopLevel FAILED (hr=0x%08X, acqHr=0x%08X) — g_coopSwitched stays false, will retry next tick; phantom-keys risk until retry succeeds",
+                               (unsigned)hr, (unsigned)acqHr);
+                    }
                 }
 
                 // Blast all three activation messages to reset EQ's state
