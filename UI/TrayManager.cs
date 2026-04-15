@@ -1817,6 +1817,7 @@ public class TrayManager : IDisposable
         _config.Hotkeys.ToggleMultiMonitor = newConfig.Hotkeys.ToggleMultiMonitor;
         _config.Hotkeys.LaunchOne = newConfig.Hotkeys.LaunchOne;
         _config.Hotkeys.LaunchAll = newConfig.Hotkeys.LaunchAll;
+        _config.Hotkeys.TogglePip = newConfig.Hotkeys.TogglePip;
         _config.Hotkeys.MultiMonitorEnabled = newConfig.Hotkeys.MultiMonitorEnabled;
         _config.Hotkeys.DirectSwitchKeys = newConfig.Hotkeys.DirectSwitchKeys;
         _config.Hotkeys.SwitchKeyMode = newConfig.Hotkeys.SwitchKeyMode;
