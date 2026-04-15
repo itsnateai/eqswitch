@@ -56,11 +56,104 @@ public class AutoLoginManager
     }
 
     /// <summary>
-    /// Launch EQ and auto-login with the given account.
-    /// Non-blocking — runs the login sequence on a background thread.
-    /// Returns a Task that completes when the full login sequence finishes.
+    /// Launch EQ, auto-type credentials, and stop at character select so the user
+    /// can pick manually. Non-blocking — returns a Task that completes when the
+    /// full sequence reaches char select (or fails).
+    ///
+    /// enterWorldOverride forces intent. true on an Account-only target is logged
+    /// and downgraded to charselect (no Character target to select). false and
+    /// null both stop at charselect (null = use type default which is charselect).
     /// </summary>
-    public Task LoginAccount(LoginAccount account, bool? teamAutoEnter = null)
+    public Task LoginToCharselect(Account account, bool? enterWorldOverride = null)
+    {
+        if (enterWorldOverride == true)
+        {
+            FileLogger.Warn($"AutoLogin: LoginToCharselect({account.Name}) called with enterWorldOverride=true — no Character target, staying at charselect");
+            // Don't pass the override through — without a Character target, enter-world
+            // would downgrade inside RunLoginSequence anyway. Pass null for cleaner logs.
+            return BeginLogin(account, character: null, enterWorldOverride: null);
+        }
+        return BeginLogin(account, character: null, enterWorldOverride);
+    }
+
+    /// <summary>
+    /// Launch EQ, auto-type credentials, select the given Character, and enter world.
+    /// Resolves the backing Account via (AccountUsername, AccountServer) on the live
+    /// _config.Accounts list. Non-blocking.
+    ///
+    /// enterWorldOverride forces intent. false stops at charselect without selecting
+    /// the character (team-level override to skip a member). null defaults to enter-world
+    /// (the type-system intent of clicking a Character).
+    /// </summary>
+    public Task LoginAndEnterWorld(Character character, bool? enterWorldOverride = null)
+    {
+        var account = _config.Accounts.FirstOrDefault(a =>
+            string.Equals(a.Username, character.AccountUsername, StringComparison.Ordinal) &&
+            string.Equals(a.Server, character.AccountServer, StringComparison.Ordinal));
+        if (account == null)
+        {
+            var msg = $"Character '{character.Name}' references missing Account (username={character.AccountUsername}, server={character.AccountServer})";
+            FileLogger.Error($"AutoLogin: {msg}");
+            StatusUpdate?.Invoke(this, $"Error: no account for '{character.Name}'");
+            return Task.CompletedTask;
+        }
+        return BeginLogin(account, character, enterWorldOverride);
+    }
+
+    /// <summary>
+    /// Legacy entry point from the v3.x Tray menu. Synthesizes Account + optional
+    /// Character from the combined LoginAccount type, then delegates to BeginLogin.
+    /// The routing matches v3.9.x semantics exactly: AutoEnterWorld=true + non-empty
+    /// CharacterName → enter world as that character; otherwise stop at charselect.
+    ///
+    /// Phase 3+ will move Tray callers off this method; removed in Phase 6 / v3.11.0.
+    /// </summary>
+    [Obsolete("Use LoginToCharselect(Account) or LoginAndEnterWorld(Character) for intent-explicit routing. Removed in v3.11.0.")]
+    public Task LoginAccount(LoginAccount legacyAccount, bool? teamAutoEnter = null)
+    {
+        var account = new Account
+        {
+            Name = legacyAccount.Name,
+            Username = legacyAccount.Username,
+            EncryptedPassword = legacyAccount.EncryptedPassword,
+            Server = legacyAccount.Server,
+            UseLoginFlag = legacyAccount.UseLoginFlag,
+        };
+
+        // v3.9.x rule: enter-world if (team override says so) OR (per-account flag says so).
+        // Team null means "use account default". Team non-null forces the decision.
+        bool wantsEnterWorld = teamAutoEnter ?? legacyAccount.AutoEnterWorld;
+
+        if (wantsEnterWorld && !string.IsNullOrEmpty(legacyAccount.CharacterName))
+        {
+            var character = new Character
+            {
+                Name = legacyAccount.CharacterName,
+                AccountUsername = legacyAccount.Username,
+                AccountServer = legacyAccount.Server,
+                CharacterSlot = legacyAccount.CharacterSlot,
+            };
+            // Pass teamAutoEnter through so team-false can force charselect even on a Character target.
+            return BeginLogin(account, character, teamAutoEnter);
+        }
+        // Account-only path. teamAutoEnter=true on an Account-only row is logged inside
+        // RunLoginSequence as "enter-world requested but no Character target".
+        return BeginLogin(account, character: null, teamAutoEnter);
+    }
+
+    /// <summary>
+    /// Launch EQ with the given Account credentials and (optionally) a specific
+    /// Character to select + enter world. Non-blocking — runs the login sequence
+    /// on a background thread. Returns a Task that completes when the full
+    /// sequence finishes.
+    ///
+    /// Intent routing:
+    ///   character == null                           → stop at character select
+    ///   character != null                           → select that character + enter world
+    ///   enterWorldOverride != null (team override) → forces the decision regardless of the
+    ///                                                 character-presence default
+    /// </summary>
+    private Task BeginLogin(Account account, Character? character, bool? enterWorldOverride)
     {
         string password;
         try
@@ -185,12 +278,13 @@ public class AutoLoginManager
         }
 
         // Run the login sequence on a background thread.
-        var loginAccount = account;
-        var teamEnter = teamAutoEnter;
-        return Task.Run(() => RunLoginSequence(pid, loginAccount, password, teamEnter));
+        var capturedAccount = account;
+        var capturedCharacter = character;
+        var capturedOverride = enterWorldOverride;
+        return Task.Run(() => RunLoginSequence(pid, capturedAccount, capturedCharacter, password, capturedOverride));
     }
 
-    private void RunLoginSequence(int pid, LoginAccount account, string password, bool? teamAutoEnter = null)
+    private void RunLoginSequence(int pid, Account account, Character? character, string password, bool? enterWorldOverride)
     {
         // Snapshot config values — RunLoginSequence runs on a background thread
         // while ReloadConfig can mutate _config on the UI thread.
@@ -275,21 +369,29 @@ public class AutoLoginManager
             if (hwnd == IntPtr.Zero) { Report("Error: lost EQ window during charselect load"); return; }
             FileLogger.Info($"AutoLogin: charselect ready, hwnd=0x{hwnd:X} for PID {pid}");
 
-            // ── Auto Enter World gate ──
-            // Priority: team setting > per-account setting > global fallback
-            bool shouldEnterWorld = teamAutoEnter ?? account.AutoEnterWorld;
+            // ── Enter World gate ──
+            // Default intent from type: Character target = enter world, Account-only = stop here.
+            // enterWorldOverride (team Team{N}AutoEnter) can force the decision either way.
+            // An enter-world request with no Character target is logged and downgraded to charselect
+            // (we have no character name/slot to select, so entering world would land on EQ's default).
+            bool shouldEnterWorld = enterWorldOverride ?? (character != null);
+            if (shouldEnterWorld && character == null)
+            {
+                FileLogger.Warn($"AutoLogin: {account.Name} requested enter-world but no Character target — staying at charselect");
+                shouldEnterWorld = false;
+            }
             if (!shouldEnterWorld)
             {
                 Report($"{account.Name} reached character select.");
-                FileLogger.Info($"AutoLogin: {account.Name} stopped at char select (AutoEnterWorld={shouldEnterWorld}, team={teamAutoEnter}, acct={account.AutoEnterWorld})");
+                FileLogger.Info($"AutoLogin: {account.Name} stopped at char select (enterWorldOverride={enterWorldOverride?.ToString() ?? "null"}, character={character?.Name ?? "<none>"})");
                 return;
             }
 
             // ── Character selection via MQ2 bridge (no focus-faking needed) ──
-            // Priority: slot > name > default
+            // Priority: slot > name > default. character != null here (enforced by gate above).
             Thread.Sleep(2000); // let MQ2 bridge init
 
-            bool wantSelection = account.CharacterSlot > 0 || !string.IsNullOrEmpty(account.CharacterName);
+            bool wantSelection = character!.CharacterSlot > 0 || !string.IsNullOrEmpty(character.Name);
             if (wantSelection)
             {
                 bool charListReady = false;
@@ -324,22 +426,22 @@ public class AutoLoginManager
                     FileLogger.Info($"AutoLogin: {charCount} characters found: {string.Join(", ", charNames)}");
 
                     bool selected = false;
-                    if (account.CharacterSlot > 0)
+                    if (character.CharacterSlot > 0)
                     {
                         // Slot-based selection (1-10) — direct index, no name lookup
-                        if (account.CharacterSlot <= charCount)
+                        if (character.CharacterSlot <= charCount)
                         {
-                            charSelect.RequestSelectionBySlot(pid, account.CharacterSlot);
-                            FileLogger.Info($"AutoLogin: requested slot {account.CharacterSlot} for PID {pid}");
+                            charSelect.RequestSelectionBySlot(pid, character.CharacterSlot);
+                            FileLogger.Info($"AutoLogin: requested slot {character.CharacterSlot} for PID {pid}");
                             selected = true;
                         }
                         else
-                            FileLogger.Warn($"AutoLogin: slot {account.CharacterSlot} exceeds char count {charCount}");
+                            FileLogger.Warn($"AutoLogin: slot {character.CharacterSlot} exceeds char count {charCount}");
                     }
-                    else if (!string.IsNullOrEmpty(account.CharacterName))
+                    else if (!string.IsNullOrEmpty(character.Name))
                     {
                         // Name-based selection — search and select
-                        int selIdx = charSelect.RequestSelectionByName(pid, account.CharacterName);
+                        int selIdx = charSelect.RequestSelectionByName(pid, character.Name);
                         selected = selIdx >= 0;
                         if (!selected)
                         {
@@ -347,9 +449,9 @@ public class AutoLoginManager
                             // Fall back to default selection (first slot) so enter-world can proceed.
                             bool isSlotMode = charNames.Length > 0 && charNames[0].StartsWith("Slot ", StringComparison.Ordinal);
                             if (isSlotMode)
-                                FileLogger.Info($"AutoLogin: slot-based mode — name '{account.CharacterName}' unavailable, using default selection");
+                                FileLogger.Info($"AutoLogin: slot-based mode — name '{character.Name}' unavailable, using default selection");
                             else
-                                FileLogger.Warn($"AutoLogin: character '{account.CharacterName}' not found, using default");
+                                FileLogger.Warn($"AutoLogin: character '{character.Name}' not found, using default");
                         }
                     }
 
