@@ -122,6 +122,13 @@ public class AppConfig
     public bool MinimizeToTray { get; set; } = true;
     public bool RunAtStartup { get; set; } = false;
 
+    /// <summary>
+    /// Phase 5a: once true, the one-time "Quick Login slots are now under Direct
+    /// Bindings" deprecation banner on the Hotkeys tab stays hidden. Flipped by the
+    /// banner's Dismiss button. Ignored by runtime dispatch. Persists across sessions.
+    /// </summary>
+    public bool HotkeysLegacyBannerDismissed { get; set; } = false;
+
 
     /// <summary>Last Settings window position [x, y]. Empty = center screen.</summary>
     public int[] SettingsWindowPos { get; set; } = Array.Empty<int>();
