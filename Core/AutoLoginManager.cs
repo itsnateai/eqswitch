@@ -326,7 +326,17 @@ public class AutoLoginManager
                 return;
             }
             if (!charSelect.Open(pid))
-                FileLogger.Warn($"AutoLogin: CharSelectReader SHM open failed for PID {pid}");
+            {
+                // Hotfix v6b (Agent 2 F2.4): prior behavior was Warn + proceed,
+                // which led to a 30s MQ2-bridge wait followed by the hotfix-v4
+                // "MQ2 didn't initialize" abort — misleading the user because
+                // the actual root cause was SHM creation (likely name collision
+                // or permission), not MQ2. Match the writer.Open failure handling
+                // above: surface the real error immediately.
+                Report($"Error: failed to create character-select shared memory for {account.Name}");
+                FileLogger.Error($"AutoLogin: CharSelectReader SHM open failed for PID {pid} — aborting login");
+                return;
+            }
 
             // ── Wait for EQ window ──
             Report("Waiting for EQ window...");
@@ -391,7 +401,15 @@ public class AutoLoginManager
             if (transitionSw.ElapsedMilliseconds >= 90000 - 500)
             {
                 // Hotfix v4 (HIGH-C): timeout hit — surface to user rather than silently proceeding.
+                // Hotfix v6b (Agent 1 F1.3, Agent 3 F3.3): also abort. Pre-v6b behavior fell
+                // through to the 30s MQ2-wait loop, which then hit the v4 HIGH-A abort and
+                // emitted a confusing SECOND error message ("MQ2 bridge didn't initialize")
+                // that misdirects the user. The real cause (bad password, dead server, slow
+                // network) is already named here. Probing MQ2 for 30 more seconds against a
+                // screen that isn't charselect wastes the user's time.
                 Report($"{account.Name}: char select didn't load in 90s — check password / server / network");
+                FileLogger.Error($"AutoLogin: WaitForScreenTransition hit 90s timeout for {account.Name} — aborting login");
+                return;
             }
             if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during charselect load (crashed or closed)"); return; }
             FileLogger.Info($"AutoLogin: charselect ready, hwnd=0x{hwnd:X} for PID {pid}");
@@ -509,7 +527,19 @@ public class AutoLoginManager
                             Thread.Sleep(200);
                         }
                         if (!acked)
-                            FileLogger.Warn($"AutoLogin: DLL did not ack character selection");
+                        {
+                            // Hotfix v6b (Agent 2 F2.2, Agent 3 F3.2): pre-v6b behavior
+                            // logged a Warn and fell through to Enter World. If the DLL
+                            // never acked, SetCurSel's TIMERPROC never ran, so EQ's
+                            // charselect is still on whatever slot was default (typically
+                            // slot 0). Clicking Enter World then lands on the WRONG
+                            // CHARACTER — exactly the regression Phase 5b's unified abort
+                            // was designed to prevent. The ack-timeout path was an
+                            // unguarded hole in that design. Abort instead.
+                            FileLogger.Error($"AutoLogin: DLL did not ack selection for slot {resolvedSlot} in 10s — stopping at charselect to avoid wrong-character enter-world");
+                            Report($"{account.Name}: character selection not confirmed — stopped at char select");
+                            return;
+                        }
                         Thread.Sleep(200); // SetCurSel fires synchronously on game thread via TIMERPROC
                     }
                 }
@@ -793,7 +823,17 @@ public class AutoLoginManager
         foreach (char c in text)
         {
             short vkScan = NativeMethods.VkKeyScanW(c);
-            if (vkScan == -1) continue;
+            if (vkScan == -1)
+            {
+                // Hotfix v6b (Agent 1 F1.5): mirror the AltGr-skip warning so an
+                // unmappable character surfaces in the log. Previously this
+                // branch was a silent `continue` — a password character that
+                // VkKeyScanW can't map on the user's keyboard layout was
+                // dropped without a log line, and EQ returned "wrong password"
+                // with zero diagnostic guidance.
+                FileLogger.Warn($"AutoLogin: CombinedTypeString skipping char '{c}' (U+{(int)c:X4}) — unmappable on current keyboard layout");
+                continue;
+            }
 
             byte modifiers = (byte)(vkScan >> 8);
             if ((modifiers & ~0x01) != 0)
