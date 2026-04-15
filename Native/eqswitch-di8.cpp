@@ -23,6 +23,7 @@
 #include "iat_hook.h"
 #include "net_debug.h"
 #include "mq2_bridge.h"
+#include "login_givetime_detour.h"
 
 extern "C" void DeviceProxy_Shutdown();
 
@@ -278,6 +279,10 @@ static void Cleanup() {
     NetDebug::Remove();
     IatHook::RemoveKeyboardHooks();
     DeviceProxy_Shutdown();
+
+    // v7 Phase 2: remove GiveTime detour BEFORE MH_Uninitialize so MinHook's
+    // global shutdown doesn't race with our hook's trampoline being called.
+    GiveTimeDetour::Uninstall();
 
     if (g_hookInstalled) {
         MH_DisableHook(MH_ALL_HOOKS);
