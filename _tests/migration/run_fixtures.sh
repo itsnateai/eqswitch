@@ -107,6 +107,7 @@ assert "CharacterHotkeys[0].combo=Alt+1" "$(jq -r '.hotkeys.characterHotkeys[0].
 assert "AccountHotkeys is empty (no charselect-only binding)" "$(jq -r '(.hotkeys.accountHotkeys // []) | length' "$F")" "0"
 assert "Legacy 'accounts' key preserved (downgrade safety)" "$(jq -r '.accounts | length' "$F")" "1"
 assert "Legacy 'characters' key preserved (untouched)" "$(jq -r '.characters | length' "$F")" "1"
+assert "CharacterHotkeys has exactly 1 entry (slot 1 only)" "$(jq -r '.hotkeys.characterHotkeys | length' "$F")" "1"
 end_fixture "fixture_a"
 
 # ── Fixture (b): Three CharacterNames sharing one (Username, Server) ──
@@ -136,6 +137,7 @@ F="$(migrate "$SCRIPT_DIR/fixture_d_charname_hotkey_enterworld.json")"
 assert "CharacterHotkeys[0].targetName=Backup" "$(jq -r '.hotkeys.characterHotkeys[0].targetName' "$F")" "Backup"
 assert "CharacterHotkeys[0].combo=Alt+1" "$(jq -r '.hotkeys.characterHotkeys[0].combo' "$F")" "Alt+1"
 assert "AccountHotkeys did not get this binding" "$(jq -r '(.hotkeys.accountHotkeys // []) | length' "$F")" "0"
+assert "CharacterHotkeys has exactly 1 entry (slot 1 only bound)" "$(jq -r '.hotkeys.characterHotkeys | length' "$F")" "1"
 end_fixture "fixture_d"
 
 # ── Fixture (e): QuickLogin2=bare_user (Username only) → AccountHotkeys[1] ──
@@ -144,6 +146,9 @@ F="$(migrate "$SCRIPT_DIR/fixture_e_username_hotkey_charselect.json")"
 assert "AccountHotkeys[1].targetName=BareAccount" "$(jq -r '.hotkeys.accountHotkeys[1].targetName' "$F")" "BareAccount"
 assert "AccountHotkeys[1].combo=Alt+2" "$(jq -r '.hotkeys.accountHotkeys[1].combo' "$F")" "Alt+2"
 assert "CharacterHotkeys empty (Account-only target)" "$(jq -r '(.hotkeys.characterHotkeys // []) | length' "$F")" "0"
+assert "AccountHotkeys has exactly 2 entries (slot 1 phantom + slot 2 real)" "$(jq -r '.hotkeys.accountHotkeys | length' "$F")" "2"
+assert "AccountHotkeys[0].combo is empty (positional phantom)" "$(jq -r '.hotkeys.accountHotkeys[0].combo' "$F")" ""
+assert "AccountHotkeys[0].targetName is empty (positional phantom)" "$(jq -r '.hotkeys.accountHotkeys[0].targetName' "$F")" ""
 end_fixture "fixture_e"
 
 # ── Fixture (f): QuickLogin1 target doesn't resolve to any v3 account — binding dropped ──
@@ -161,6 +166,7 @@ F="$(migrate "$SCRIPT_DIR/fixture_g_username_target_enterworld.json")"
 assert "CharacterHotkeys[0].targetName=Natechar (not 'nate')" "$(jq -r '.hotkeys.characterHotkeys[0].targetName' "$F")" "Natechar"
 assert "CharacterHotkeys[0].combo=Alt+1" "$(jq -r '.hotkeys.characterHotkeys[0].combo' "$F")" "Alt+1"
 assert "AccountHotkeys empty (H1 was routing here incorrectly)" "$(jq -r '(.hotkeys.accountHotkeys // []) | length' "$F")" "0"
+assert "CharacterHotkeys has exactly 1 entry (slot 1 only)" "$(jq -r '.hotkeys.characterHotkeys | length' "$F")" "1"
 end_fixture "fixture_g"
 
 # ── Fixture (h): M1 regression — case-drift dedup must use canonical Username in Character FK ──
@@ -175,6 +181,17 @@ assert "charactersV4 has 2 entries" "$(jq -r '.charactersV4 | length' "$F")" "2"
 assert "CharA.accountUsername=MyAcct (canonical)" "$(jq -r '.charactersV4[0].accountUsername' "$F")" "MyAcct"
 assert "CharB.accountUsername=MyAcct (canonical, NOT 'myacct')" "$(jq -r '.charactersV4[1].accountUsername' "$F")" "MyAcct"
 end_fixture "fixture_h"
+
+# ── Fixture (i): Step 3 team rebinding — mixed Character/Account/unresolved slots ──
+start_fixture "fixture_i_team_mixed"
+F="$(migrate "$SCRIPT_DIR/fixture_i_team_mixed.json")"
+assert "Team1Account1 rebound to Character 'Healer'" "$(jq -r '.team1Account1' "$F")" "Healer"
+assert "Team1Account2 rebound to Account 'Bare' (Account-fallback for no-Character row)" "$(jq -r '.team1Account2' "$F")" "Bare"
+assert "Team1AutoEnter preserved as true" "$(jq -r '.team1AutoEnter' "$F")" "true"
+assert "Team2Account1 blanked (unresolved target)" "$(jq -r '.team2Account1' "$F")" ""
+assert "Team2Account2 stays empty" "$(jq -r '.team2Account2' "$F")" ""
+assert "Team2AutoEnter preserved as false" "$(jq -r '.team2AutoEnter' "$F")" "false"
+end_fixture "fixture_i"
 
 echo ""
 echo "=================================================="

@@ -310,7 +310,17 @@ public static class ConfigVersionMigrator
             var accountKey = $"{resolved.Username}\u0001{resolved.Server}";
             var accountName = accountKeyToName.TryGetValue(accountKey, out var n) ? n : resolved.Username;
 
-            // Pad the right list up to slot index
+            // Pad the right list up to slot index.
+            //
+            // INVARIANT: array index N-1 always represents v3 slot N. When only slot 2+ is
+            // bound, the entries before it are empty-string placeholders (combo == "" &&
+            // targetName == ""). This is semantically required because Phase 5 dispatches
+            // positionally via `id - 1000 = slot index` (see PLAN_account_character_split.md
+            // line 729-745). DO NOT remove the padding without also revising that contract.
+            //
+            // Phase 5 CONSUMER CONTRACT: when iterating AccountHotkeys/CharacterHotkeys for
+            // hotkey registration, MUST skip entries where Combo or TargetName is empty —
+            // those are positional placeholders, not real bindings.
             void EnsureSize(JsonArray arr, int targetSize)
             {
                 while (arr.Count < targetSize)

@@ -1,0 +1,31 @@
+{
+  "configVersion": 3,
+  "accounts": [
+    {
+      "name": "Main",
+      "username": "mainuser",
+      "encryptedPassword": "ZmFrZS1jaXBoZXJ0ZXh0",
+      "server": "Dalaya",
+      "characterName": "Healer",
+      "characterSlot": 0,
+      "autoEnterWorld": true,
+      "useLoginFlag": true
+    },
+    {
+      "name": "Bare",
+      "username": "bareuser",
+      "encryptedPassword": "ZmFrZS1jaXBoZXJ0ZXh0",
+      "server": "Dalaya",
+      "characterName": "",
+      "characterSlot": 0,
+      "autoEnterWorld": false,
+      "useLoginFlag": true
+    }
+  ],
+  "team1Account1": "Healer",
+  "team1Account2": "bareuser",
+  "team1AutoEnter": true,
+  "team2Account1": "Ghost",
+  "team2Account2": "",
+  "team2AutoEnter": false
+}
