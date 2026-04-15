@@ -1540,6 +1540,33 @@ public class TrayManager : IDisposable
             }
             return;
         }
+
+        // Smart-routing bridge: if the user's v3 config had this name as a Character
+        // with AutoEnterWorld=true (the pre-v3.10.0 "log me in and enter world" intent),
+        // AND a v4 Character row with this name exists, honor the legacy intent by
+        // routing to LoginAndEnterWorld instead of stopping at charselect. This catches
+        // the migration glitch where v3 → v4 split created AccountHotkey bindings for
+        // names that semantically meant "enter world as character X". User can override
+        // by explicitly rebinding in Settings → Hotkeys → Account vs Character family.
+        var legacyRow = _config.LegacyAccounts.FirstOrDefault(a =>
+            a.CharacterName.Equals(name, StringComparison.Ordinal) && a.AutoEnterWorld);
+        if (legacyRow != null)
+        {
+            var character = _config.FindCharacterByName(name);
+            if (character != null)
+            {
+                var key = "A2C:" + name;
+                long now = Environment.TickCount64;
+                if (!_lastStaleFireTicks.TryGetValue(key, out var last) || now - last >= StaleBalloonCooldownMs)
+                {
+                    _lastStaleFireTicks[key] = now;
+                    FileLogger.Info($"AccountHotkey '{name}' auto-routed to CharacterHotkey (legacy AutoEnterWorld=true + v4 Character exists) — rebind in Settings to make this explicit");
+                }
+                FireCharacterLogin(character);
+                return;
+            }
+        }
+
         FireAccountLogin(account);
     }
 
