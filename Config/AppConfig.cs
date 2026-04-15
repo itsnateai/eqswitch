@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text;
 using System.Text.Json.Serialization;
 using EQSwitch.Core;
@@ -240,6 +241,22 @@ public class AppConfig
         }
         return mutated;
     }
+
+    /// <summary>
+    /// Look up an Account by its user-facing Name. Ordinal comparison — matches v3
+    /// ExecuteQuickLogin semantics at TrayManager.cs:1321-1322. Returns null if
+    /// name is empty or no match found. Used by tray dispatch and Phase 5 hotkey
+    /// registration.
+    /// </summary>
+    public Account? FindAccountByName(string name) =>
+        string.IsNullOrEmpty(name) ? null : Accounts.FirstOrDefault(a => a.Name == name);
+
+    /// <summary>
+    /// Look up a Character by its in-game Name. Ordinal comparison. Returns null if
+    /// name is empty or no match found.
+    /// </summary>
+    public Character? FindCharacterByName(string name) =>
+        string.IsNullOrEmpty(name) ? null : Characters.FirstOrDefault(c => c.Name == name);
 }
 
 public class WindowLayout
