@@ -1082,16 +1082,26 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         lastGameState = gameState;
     }
 
-    // Handle Enter World request — no gameState gate.
-    // Dalaya ROF2 uses gameState=0 at both login AND charselect.
-    // We try the click regardless; FindWindowByName returns nullptr if
-    // the button doesn't exist (not at charselect), which is handled.
+    // Handle Enter World request — gated against gameState=5 (in-game).
+    // Dalaya ROF2 uses gameState=0 at BOTH login and charselect, so we can't
+    // gate on charselect via gameState. But gameState=5 reliably means in-game,
+    // and CXWndManager keeps CLW_EnterWorldButton alive even after charselect
+    // closes — so without this gate, a request that arrives just after the user
+    // manually pressed Enter would phantom-click in-game.
     {
         uint32_t ewReq = shm->enterWorldReq;
         uint32_t ewAck = shm->enterWorldAck;
 
         if (ewReq != ewAck) {
             DI8Log("mq2_bridge: Enter World request (seq %u->%u, gameState=%d)", ewAck, ewReq, gameState);
+            if (gameState == 5) {
+                // Already in-game — request is stale, drop it without clicking.
+                shm->enterWorldResult = -2;  // -2 = dropped (in-game)
+                MemoryBarrier();
+                shm->enterWorldAck = ewReq;
+                DI8Log("mq2_bridge: dropped stale Enter World request (gameState=5, in-game)");
+                goto enter_world_done;
+            }
             void *pEnterBtn = FindWindowByName("CLW_EnterWorldButton");
             if (pEnterBtn) {
                 __try {
@@ -1111,6 +1121,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
             MemoryBarrier();
             shm->enterWorldAck = ewReq;
         }
+        enter_world_done:;
     }
 
     // Handle selection request — also no gameState gate for Dalaya compatibility.

@@ -717,17 +717,26 @@ public class AutoLoginManager
                 return RefreshHandle(pid, hwnd);
             }
 
-            // Fallback: track window rect changes (distortion + snap-back pattern)
+            // Fallback: track window rect changes (distortion + snap-back pattern).
+            // Ignore user drags — a drag changes Left/Top but not Width/Height. The EQ
+            // transition produces SIZE changes (re-render at different resolution / mode).
             if (NativeMethods.GetWindowRect(hwnd, out var currentRect))
             {
-                bool rectChanged = currentRect.Left != lastRect.Left ||
-                                   currentRect.Top != lastRect.Top ||
-                                   currentRect.Width != lastRect.Width ||
+                bool sizeChanged = currentRect.Width != lastRect.Width ||
                                    currentRect.Height != lastRect.Height;
-                if (rectChanged)
+                bool posChanged  = currentRect.Left != lastRect.Left ||
+                                   currentRect.Top != lastRect.Top;
+                bool rectChanged = sizeChanged || posChanged;
+                // Only treat size changes as transition signal; pos-only changes are user drags.
+                if (sizeChanged)
                 {
                     sawRectChange = true;
                     lastRectChangeMs = sw.ElapsedMilliseconds;
+                    lastRect = currentRect;
+                }
+                else if (rectChanged)
+                {
+                    // Position-only change (user drag) — update tracker but don't arm fallback
                     lastRect = currentRect;
                 }
                 else if (sawRectChange && !sawHung &&
