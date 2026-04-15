@@ -1,0 +1,12 @@
+Searching for callers of LoginController::GiveTime @ RVA 0x128B0
+eqmain.dll ImageBase 0x10000000
+
+Direct CALL sites to GiveTime: 1
+  RVA 0x00010C8D  (VA 0x10010C8D at default base)
+
+=== Preceding context (24 bytes before each call) ===
+RVA 0x00010C8D: ... 00 80 7E 30 00 74 0B 8B CE E8 ED A3 FF FF C6 46 30 00 8B 0D 74 01 15 10  <CALL>
+    mov ecx,[0x10150174]  -> pLoginController candidate
+    that's RVA 0x150174 in .data section
+
+=== Summary ===
