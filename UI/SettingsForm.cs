@@ -81,6 +81,15 @@ public class SettingsForm : Form
     // ─── Accounts tab controls (Phase 4: v4 Account + Character as first-class)
     private List<Account> _pendingAccounts = new();
     private List<Character> _pendingCharacters = new();
+    private int _lastNameCollisionHash;
+
+    /// <summary>
+    /// Phase 4: raised after a successful ApplySettings when at least one Account.Name
+    /// collides with a Character.Name. Payload is a comma-separated list of the
+    /// colliding names. TrayManager subscribes + surfaces as a non-blocking balloon.
+    /// Fires only when the collision set changes across saves (hash-deduped).
+    /// </summary>
+    public event Action<string>? OnSameNameCollision;
     private DataGridView _dgvAccounts = null!;
     private DataGridView _dgvCharacters = null!;
     private NumericUpDown _nudLoginScreenDelay = null!;
@@ -1428,6 +1437,30 @@ public class SettingsForm : Form
         _onApply(newConfig);
         VideoSaveToIni();
         FileLogger.Info("Settings applied");
+
+        // Phase 4: same-name nudge — non-blocking, hash-deduped per collision set so the
+        // balloon doesn't spam every Apply when the collision set is unchanged.
+        var collisions = _pendingAccounts
+            .Where(a => _pendingCharacters.Any(c => c.Name.Equals(a.Name, StringComparison.Ordinal)))
+            .Select(a => a.Name)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToList();
+
+        if (collisions.Count > 0)
+        {
+            var details = string.Join(", ", collisions);
+            var hash = details.GetHashCode();
+            if (hash != _lastNameCollisionHash)
+            {
+                _lastNameCollisionHash = hash;
+                OnSameNameCollision?.Invoke(details);
+            }
+        }
+        else
+        {
+            _lastNameCollisionHash = 0;
+        }
+
         return true;
     }
 
