@@ -96,6 +96,28 @@ static class Program
             return;
         }
 
+        // --test-config-validate — run Core/AppConfigValidateTests.RunAll() and
+        // exit with its return code. Covers AppConfig.Validate()'s defense-in-
+        // depth resync blocks (Phase 5b's CharacterAliases/LegacyCharacterProfiles
+        // mirror in particular). Same exit-code and try/catch contract as the
+        // sibling --test-character-selector flag.
+        if (args.Length >= 1 && args[0] == "--test-config-validate")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.AppConfigValidateTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"AppConfigValidateTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
         // Enforce single instance
         const string mutexName = "EQSwitch_SingleInstance_SoD";
         _mutex = new Mutex(true, mutexName, out bool createdNew);
