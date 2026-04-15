@@ -152,6 +152,11 @@ public sealed class KeyInputWriter : IDisposable
         try
         {
             entry.Accessor.Write(ActiveOffset, (uint)0);
+            // Zero keys[] during the deactivation gap — if Reactivate is called
+            // with stale SetKey(true) state still in the buffer, those bytes
+            // would be injected on the very next GetDeviceState after the
+            // re-activation. Matches Deactivate's buffer-zeroing semantics.
+            entry.Accessor.WriteArray(HeaderSize, new byte[KeysSize], 0, KeysSize);
             Thread.Sleep(gapMs);
             entry.Accessor.Write(ActiveOffset, (uint)1);
         }
