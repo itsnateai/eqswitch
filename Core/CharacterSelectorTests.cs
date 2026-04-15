@@ -59,14 +59,16 @@ public static class CharacterSelectorTests
             failures += AssertStartsWith("case5 log", log, "no slot or name requested");
         }
 
-        // Case 6: name match is Ordinal (case-sensitive) — regression guard
-        // against drift to OrdinalIgnoreCase. 'FOO' must NOT match 'foo'.
+        // Case 6: name match is OrdinalIgnoreCase — regression guard against
+        // drift BACK to Ordinal. Heap-read names can case-vary vs. config, so
+        // 'FOO' MUST match 'foo' at slot 1. This matches pre-extraction
+        // CharSelectReader.RequestSelectionByName semantics.
         {
             var (slot, byName, log) = CharacterSelector.Decide(
                 0, "FOO", new[] { "foo" });
-            failures += Assert("case6 slot", slot, 0);
-            failures += Assert("case6 byName", byName, false);
-            failures += AssertStartsWith("case6 log", log, "name 'FOO' not in heap");
+            failures += Assert("case6 slot", slot, 1);
+            failures += Assert("case6 byName", byName, true);
+            failures += AssertStartsWith("case6 log", log, "name match 'FOO'");
         }
 
         // Case 7: requestedSlot above nominal range (11+) still routes through

@@ -35,13 +35,21 @@ public static class CharacterSelector
             return (requestedSlot, false,
                 $"heap empty, fall back to requested slot {requestedSlot}");
 
-        // Case 2: auto-by-name — scan the heap for an Ordinal match.
+        // Case 2: auto-by-name — scan the heap for a case-insensitive match.
+        // Heap-read names come from MQ2's live-game memory scrape where casing
+        // can drift vs. the user's saved Character.Name (server renames, scrape
+        // artifacts, historical config edits). Pre-extraction the DLL-side
+        // RequestSelectionByName used OrdinalIgnoreCase for exactly this reason.
+        // Other codebase compares (FindCharacterByName, AccountKey.Matches) use
+        // Ordinal because they operate on config-to-config data where casing is
+        // stable by construction — this function operates on config-to-heap and
+        // must be tolerant.
         if (requestedSlot == 0 && !string.IsNullOrEmpty(requestedName))
         {
             for (int i = 0; i < charNamesInHeap.Length; i++)
             {
                 if (string.Equals(charNamesInHeap[i], requestedName,
-                    StringComparison.Ordinal))
+                    StringComparison.OrdinalIgnoreCase))
                     return (i + 1, true, $"name match '{requestedName}' at slot {i + 1}");
             }
             return (0, false,
