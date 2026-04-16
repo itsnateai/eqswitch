@@ -78,6 +78,11 @@ namespace MQ2Bridge {
     // Populate character data into LoginShm fields.
     void PopulateCharacterData(volatile LoginShm *shm);
 
+    // ─── Widget cache ──────────────────────────────────────────
+    // Reset cached widget pointers (call when eqmain.dll unloads
+    // at charselect transition — widgets die with eqmain).
+    void ResetWidgetCache();
+
     // ─── Diagnostics ───────────────────────────────────────────
     // Enumerate all CXWnd windows and log their names.
     // Used during Phase 0 to discover Dalaya's widget names.
