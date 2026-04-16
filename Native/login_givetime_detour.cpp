@@ -44,6 +44,13 @@ bool g_installed = false;
 bool g_installAttempted = false;  // once true, we stop retrying (either success or permanent failure)
 volatile unsigned g_tickCount = 0;
 
+// v7 Phase 4: cache the last-seen LoginController* so FindWindowByName can
+// use GetChildItem on it instead of the broken eqmain CXWndManager scan.
+// Written by game thread (detour), read by ActivateThread (FindWindowByName).
+// Volatile: x86 TSO guarantees the reader sees the latest store-buffered value;
+// a stale null on the first few reads is harmless (FindWindowByName falls through).
+volatile void *g_loginController = nullptr;
+
 // Set TRUE from Cleanup() on DLL_PROCESS_DETACH BEFORE touching MinHook state.
 // PollAndInstall() checks this at entry and bails immediately, closing the
 // TOCTOU gap between ActivateThread's install path and MH_Uninitialize.
@@ -62,6 +69,11 @@ void __fastcall GiveTime_Detour(void *thisPtr, void *edxBogus) {
     // Increment tick counter for diagnostics (GetTickCount() accessor).
     // Not atomic — only EQ's game thread writes, readers tolerate stale values.
     ++g_tickCount;
+
+    // v7 Phase 4: stash the LoginController* so FindWindowByName can use it.
+    // thisPtr changes identity across eqmain reloads (new login session after
+    // returning to character select from in-game), so we update every frame.
+    g_loginController = thisPtr;
 
     // MQ2 bridge poll — the whole reason this detour exists. Internal 500ms
     // throttle means we do real work only 1-2× per second even though we're
@@ -180,5 +192,9 @@ void Uninstall() {
 unsigned GetTickCount() { return g_tickCount; }
 
 bool IsInstalled() { return g_installed; }
+
+void *GetLoginController() { return (void *)g_loginController; }
+
+void ClearLoginController() { g_loginController = nullptr; }
 
 } // namespace GiveTimeDetour
