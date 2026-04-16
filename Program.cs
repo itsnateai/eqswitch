@@ -76,12 +76,9 @@ static class Program
             return;
         }
 
+#if DEBUG
         // --test-character-selector — run Core/CharacterSelectorTests.RunAll() and
         // exit with its return code. Used to gate Phase 5b's pure decision helper.
-        // Uses Environment.Exit (vs. the sibling --test-* flags' file-side-effect
-        // pattern) because the test-runner's pass/fail status IS the return value.
-        // try/catch matches sibling flags so CLR unhandled-exception crashes get a
-        // distinct exit code (2) vs. assertion-failure exit code (1).
         if (args.Length >= 1 && args[0] == "--test-character-selector")
         {
             int exitCode;
@@ -100,10 +97,7 @@ static class Program
         }
 
         // --test-config-validate — run Core/AppConfigValidateTests.RunAll() and
-        // exit with its return code. Covers AppConfig.Validate()'s defense-in-
-        // depth resync blocks (Phase 5b's CharacterAliases/LegacyCharacterProfiles
-        // mirror in particular). Same exit-code and try/catch contract as the
-        // sibling --test-character-selector flag.
+        // exit with its return code.
         if (args.Length >= 1 && args[0] == "--test-config-validate")
         {
             int exitCode;
@@ -158,6 +152,7 @@ static class Program
             Environment.Exit(exitCode);
             return;
         }
+#endif
 
         // Enforce single instance
         const string mutexName = "EQSwitch_SingleInstance_SoD";
