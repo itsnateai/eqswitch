@@ -1,6 +1,6 @@
 # New-Session Handoff — EQSwitch Hotfix v5 (Suppress-Flag Fix) + Red-Team/White-Team Verification
 
-Paste the prompt below into a fresh Claude Code session. Assumes nothing from prior sessions.
+Paste the prompt below into a fresh session. Assumes nothing from prior sessions.
 
 ---
 
@@ -8,7 +8,7 @@ Paste the prompt below into a fresh Claude Code session. Assumes nothing from pr
 
 You are continuing work on **EQSwitch**, a C#/.NET 8 WinForms multiboxing tray app for EverQuest (Shards of Dalaya). Repo: `X:/_Projects/EQSwitch/`. Read `CLAUDE.md` first for architecture + conventions — it's authoritative.
 
-**The standard (Nate's words, verbatim):** *"Every feature you build, every bug you fix, every audit you run is a showcase of the absolute best work Claude Code can produce. Every UI element, every interaction, every implementation detail, every verification should reflect top-tier craftsmanship. Don't stop at 'good enough.'"* The user's framing is **"click and never worry like WinEQ2."**
+**The standard (Nate's words, verbatim):** *"Every feature you build, every bug you fix, every audit you run is a showcase of the absolute best work we can produce. Every UI element, every interaction, every implementation detail, every verification should reflect top-tier craftsmanship. Don't stop at 'good enough.'"* The user's framing is **"click and never worry like WinEQ2."**
 
 **Your mission: RED-TEAM GO, WHITE-TEAM GO.** Ship hotfix v5 to close the remaining ship-stopper, then dispatch a comprehensive multi-lens verification sweep to confirm the entire login pipeline (credentials → server select → charselect → enter world → in-game) is best-in-class. Fold every verified finding. This builds the solid foundation for Phase 6.
 
@@ -214,7 +214,7 @@ These are tracked for the next phase and MUST NOT be folded into the hotfix chai
 
 ### Bar, one more time
 
-*"Every feature you build, every bug you fix, every audit you run is a showcase of the absolute best work Claude Code can produce. Every UI element, every interaction, every implementation detail, every verification should reflect top-tier craftsmanship. Don't stop at 'good enough.'"*
+*"Every feature you build, every bug you fix, every audit you run is a showcase of the absolute best work we can produce. Every UI element, every interaction, every implementation detail, every verification should reflect top-tier craftsmanship. Don't stop at 'good enough.'"*
 
 The hotfix chain is 4 commits of iteratively tightening the phantom-key class of bug. v5 is the final close. The verification sweep is the QA pass that proves the login pipeline is ready for Phase 6 to build on.
 

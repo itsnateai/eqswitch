@@ -37,7 +37,6 @@ Everything else stays untouched. Native DLLs, `AutoLoginManager`, `ExecuteQuickL
 - Conventional commit messages under 72 char titles.
 - Expected build state after each task: `0 errors, N warnings` where N is specified per task.
 - Expected fixture state: `bash _tests/migration/run_fixtures.sh` prints `Migration fixtures: M passed, 0 failed` where M is specified per task.
-- Every commit footer includes `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>`.
 
 ---
 
@@ -250,7 +249,6 @@ all three rebinding branches plus TeamN AutoEnter round-trip.
 
 9 fixtures pass. Pre-Phase-3 foundation patch.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -332,7 +330,6 @@ Character.LabelWithClass adds optional "(ClassHint)" suffix.
 
 Never-empty guarantee prevents unclickable blank ToolStripMenuItems.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -393,7 +390,6 @@ registration. Ordinal matches v3 ExecuteQuickLogin semantics and keeps
 AccountKey (v2.7) case-handling consistent. Returns null on empty-name
 or no-match — callers balloon an error rather than crash.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -807,7 +803,6 @@ rec) so rendering has no hidden _config reach. Private members are
 unused until the switchover; C# does not warn for unused private
 methods.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1077,7 +1072,6 @@ Warning delta: [Obsolete] at TrayManager.cs:817 eliminated (direct
 LoginAccount call removed). :1330 warning stays until Phase 5 replaces
 the team path.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
