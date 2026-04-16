@@ -495,17 +495,40 @@ static void *FindEQMainWndMgr() {
         GiveTimeDetour::ClearLoginController();
         return nullptr;
     }
-    // v7 Phase 4: allow rescan if the cached result has zero windows (false positive).
-    // Pre-v7: scanned once, cached the first match, never re-validated. If the scan
-    // ran before charselect widgets were created, it cached a garbage pointer (e.g.
-    // 6C435641 = ASCII "lCVA") and every subsequent FindWindowByName failed.
-    if (g_eqmainScanned && g_pEQMainWndMgr) return (void *)g_pEQMainWndMgr;
+    // v7 Phase 4b: validate cached result has enough valid windows before returning it.
+    // The initial scan can run before eqmain creates login widgets, finding a false
+    // positive (e.g. 103 entries but only 3 valid vtable pointers). Re-validate on
+    // each call and clear the cache if the result looks wrong, triggering rescan.
+    if (g_eqmainScanned && g_pEQMainWndMgr) {
+        // Quick re-validate: count valid windows in the cached ArrayClass
+        uint8_t *cached = (uint8_t *)g_pEQMainWndMgr;
+        const ArrayClassHeader *arr = (const ArrayClassHeader *)(cached + g_eqmainWndMgrOffset);
+        if (arr->Count >= 1 && arr->Count <= 500 && arr->Data &&
+            IsReadablePtr(arr->Data, arr->Count * 4)) {
+            void **wndArray = (void **)arr->Data;
+            int validNow = 0;
+            for (int k = 0; k < arr->Count && k < 50; k++) {
+                if (!wndArray[k]) continue;
+                if (!IsReadablePtr(wndArray[k], sizeof(void *))) continue;
+                void *vt = *(void **)wndArray[k];
+                if (vt && IsReadablePtr(vt, sizeof(void *))) validNow++;
+            }
+            if (validNow >= 15) {
+                return (void *)g_pEQMainWndMgr; // Still good
+            }
+            // Cached result degraded or was a false positive — clear and rescan
+            DI8Log("mq2_bridge: cached CXWndManager at %p has only %d valid windows — clearing for rescan",
+                   g_pEQMainWndMgr, validNow);
+            g_pEQMainWndMgr = nullptr;
+        } else {
+            g_pEQMainWndMgr = nullptr;
+        }
+    }
     if (g_eqmainScanned && !g_pEQMainWndMgr) {
-        // Previous scan found nothing OR found a false positive that was cleared.
         // Allow rescan — eqmain's windows may have been created since last attempt.
-        // Throttle: only rescan every 10 calls (~5 seconds at 500ms poll rate).
+        // Throttle: only rescan every 5 calls (~2.5 seconds at 500ms poll rate).
         static int rescanCount = 0;
-        if (++rescanCount % 10 != 0) return nullptr;
+        if (++rescanCount % 5 != 0) return nullptr;
     }
     g_eqmainScanned = true;
 
@@ -542,60 +565,72 @@ static void *FindEQMainWndMgr() {
     DI8Log("mq2_bridge: scanning eqmain.dll .data at %p (%u bytes) for CXWndManager",
            dataBase, dataSize);
 
-    // Scan .data for pointers to potential CXWndManager objects.
-    // Each DWORD in .data could be a pointer to a CXWndManager.
-    // We look for: a pointer to an object that has a valid ArrayClass
-    // at various offsets with Count 1-500 and valid CXWnd* entries.
-    int candidates = 0;
+    // Scan .data for ALL potential CXWndManager candidates, pick the BEST one
+    // (most valid windows). Don't stop at first match — the first hit is often
+    // a false positive (310 entries, 20 valid) while the real CXWndManager has
+    // 100+ valid entries with actual login screen widgets.
+    int scanCount = 0;
+    uint8_t *bestCandidate = nullptr;
+    uint32_t bestArrOff = 0;
+    int bestValid = 0;
+    int bestCount = 0;
+    uint32_t bestDataOff = 0;
+
     for (uint32_t off = 0; off + 4 <= dataSize; off += 4) {
         __try {
             uintptr_t val = *(uintptr_t *)(dataBase + off);
-            if (val < 0x10000 || val > 0x7FFFFFFF) continue; // not a valid x86 pointer
+            if (val < 0x10000 || val > 0x7FFFFFFF) continue;
 
             uint8_t *candidate = (uint8_t *)val;
-            if (!IsReadablePtr(candidate, 0x80)) continue;
+            if (!IsReadablePtr(candidate, 0x70)) continue;
 
-            // Check for ArrayClass at small offsets (0x04-0x20)
-            for (uint32_t arrOff = 0x04; arrOff <= 0x20; arrOff += 4) {
+            // Check for ArrayClass at offsets 0x04-0x60.
+            // Dalaya's CXWndManager has pWindows at 0x54 (confirmed at charselect).
+            for (uint32_t arrOff = 0x04; arrOff <= 0x60; arrOff += 4) {
                 const ArrayClassHeader *arr = (const ArrayClassHeader *)(candidate + arrOff);
                 if (arr->Count < 1 || arr->Count > 500) continue;
                 if (!arr->Data || !IsReadablePtr(arr->Data, arr->Count * 4)) continue;
 
-                // Validate first entry looks like a CXWnd* (has readable vtable)
                 void **wndArray = (void **)arr->Data;
                 if (!wndArray[0]) continue;
                 if (!IsReadablePtr(wndArray[0], 4)) continue;
                 void *vtable = *(void **)wndArray[0];
                 if (!IsReadablePtr(vtable, 4)) continue;
 
-                // v7 Phase 4: validate by checking 3+ valid vtable entries.
-                // Pre-v7 accepted 1 entry → produced false positives.
-                {
-                    int validEntries = 0;
-                    for (int k = 0; k < arr->Count && k < 20; k++) {
-                        if (!wndArray[k]) continue;
-                        if (!IsReadablePtr(wndArray[k], sizeof(void *))) continue;
-                        void *vt = *(void **)wndArray[k];
-                        if (vt && IsReadablePtr(vt, sizeof(void *))) validEntries++;
-                    }
-                    if (validEntries >= 3) {
-                        g_pEQMainWndMgr = candidate;
-                        g_eqmainWndMgrOffset = arrOff;
-                        DI8Log("mq2_bridge: FOUND eqmain CXWndManager at %p (data+0x%X), pWindows at offset 0x%X (%d windows, %d valid)",
-                               candidate, off, arrOff, arr->Count, validEntries);
-                        return (void *)g_pEQMainWndMgr;
-                    }
-                    // False positive: struct looks right but < 3 valid entries
+                // Count valid vtable entries (check more — up to 50)
+                int validEntries = 0;
+                for (int k = 0; k < arr->Count && k < 50; k++) {
+                    if (!wndArray[k]) continue;
+                    if (!IsReadablePtr(wndArray[k], sizeof(void *))) continue;
+                    void *vt = *(void **)wndArray[k];
+                    if (vt && IsReadablePtr(vt, sizeof(void *))) validEntries++;
+                }
+                if (validEntries >= 15 && validEntries > bestValid) {
+                    bestCandidate = candidate;
+                    bestArrOff = arrOff;
+                    bestValid = validEntries;
+                    bestCount = arr->Count;
+                    bestDataOff = off;
+                    DI8Log("mq2_bridge: CXWndManager candidate at %p (data+0x%X), offset 0x%X (%d windows, %d valid) — new best",
+                           candidate, off, arrOff, arr->Count, validEntries);
                 }
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
             // Not a valid pointer, skip
         }
-        candidates++;
+        scanCount++;
     }
 
-    DI8Log("mq2_bridge: eqmain CXWndManager NOT FOUND (scanned %d candidates)", candidates);
+    if (bestCandidate) {
+        g_pEQMainWndMgr = bestCandidate;
+        g_eqmainWndMgrOffset = bestArrOff;
+        DI8Log("mq2_bridge: SELECTED eqmain CXWndManager at %p (data+0x%X), pWindows at offset 0x%X (%d windows, %d valid)",
+               bestCandidate, bestDataOff, bestArrOff, bestCount, bestValid);
+        return (void *)g_pEQMainWndMgr;
+    }
+
+    DI8Log("mq2_bridge: eqmain CXWndManager NOT FOUND (scanned %d entries)", scanCount);
     return nullptr;
 }
 
@@ -703,11 +738,21 @@ static bool FindByNameCallback(void *pWnd, void *context) {
 
 struct EnumCtx {
     int count;
+    int logged;
 };
 
 static bool EnumCallback(void *pWnd, void *context) {
     EnumCtx *ctx = (EnumCtx *)context;
     ctx->count++;
+    // Log first 15 windows with their text via MQ2's CXStr-based GetWindowText
+    if (ctx->logged < 15 && g_fnGetWindowText && g_fnCXStrDtor) {
+        char buf[128] = {};
+        MQ2Bridge::ReadWindowText(pWnd, buf, sizeof(buf));
+        if (buf[0]) {
+            DI8Log("mq2_bridge:   wnd[%d] %p text='%s'", ctx->count - 1, pWnd, buf);
+            ctx->logged++;
+        }
+    }
     return false; // continue iterating
 }
 
@@ -861,28 +906,158 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
     }
 
     // v7 Phase 4 — Tier 0: use LoginController* from the GiveTime detour.
-    // LoginController is the root of eqmain's window hierarchy. GetChildItem
-    // does a recursive SIDL search, so it finds LOGIN_UsernameEdit, Character_List,
-    // CLW_EnterWorldButton — everything we need, without CXWndManager.
-    // This is the MQ2 pattern: GetChildWindow(m_currentWindow, name).
+    // LoginController is NOT a CXWnd — it's a game logic controller. GetChildItem
+    // only works on CXWnd subclasses. Instead, scan LoginController's member fields
+    // for pointers to CXWnd objects (which WOULD have GetChildItem), and try each.
+    // Typical layout: LoginController has m_pLoginScreenWnd, m_pServerSelectWnd etc.
+    // at offsets in the first ~0x200 bytes.
     {
         void *loginCtrl = GiveTimeDetour::GetLoginController();
+        static int tier0LogCount = 0;
         if (loginCtrl && g_fnGetChildItem) {
+            // Scan LoginController fields for CXWnd* pointers, then GetChildItem on each.
+            // LoginController is NOT a CXWnd — it's a game logic object. But it has member
+            // pointers to CXWnd screen objects (login screen, EULA, server select, etc.).
+            // Scan 500 DWORDs (2000 bytes) to cover large objects.
+            int cxwndCandidates = 0;
             __try {
-                void *child = g_fnGetChildItem(loginCtrl, name);
-                if (child) {
-                    static int loggedCount = 0;
-                    if (loggedCount < 10) {
-                        DI8Log("mq2_bridge: FindWindowByName('%s') — found via LoginController at %p",
-                               name, child);
-                        loggedCount++;
+                uintptr_t *fields = (uintptr_t *)loginCtrl;
+                for (int fi = 0; fi < 500; fi++) { // scan first ~2000 bytes
+                    uintptr_t fieldVal = fields[fi];
+                    if (fieldVal < 0x10000 || fieldVal > 0x7FFFFFFF) continue;
+                    if (!IsReadablePtr((void *)fieldVal, sizeof(void *))) continue;
+                    void *vtable = *(void **)fieldVal;
+                    if (!vtable || !IsReadablePtr(vtable, sizeof(void *))) continue;
+                    cxwndCandidates++;
+
+                    void *child = nullptr;
+                    __try {
+                        child = g_fnGetChildItem((void *)fieldVal, name);
+                    } __except(EXCEPTION_EXECUTE_HANDLER) {
+                        continue;
                     }
-                    return child;
+                    if (child) {
+                        if (tier0LogCount < 20) {
+                            DI8Log("mq2_bridge: FindWindowByName('%s') — found via LoginController+0x%X -> CXWnd@%p, child@%p",
+                                   name, fi * 4, (void *)fieldVal, child);
+                            tier0LogCount++;
+                        }
+                        return child;
+                    }
                 }
             }
             __except (EXCEPTION_EXECUTE_HANDLER) {
-                // LoginController became invalid (eqmain unloaded?)
+                if (tier0LogCount < 5) {
+                    DI8Log("mq2_bridge: FindWindowByName('%s') — Tier-0 faulted (ctrl=%p, candidates=%d)",
+                           name, loginCtrl, cxwndCandidates);
+                    tier0LogCount++;
+                }
             }
+            // Log CXWnd-like fields with their text content (diagnostic — runs once)
+            static bool tier0Dumped = false;
+            if (!tier0Dumped && cxwndCandidates > 0 && g_fnGetWindowText && g_fnCXStrDtor) {
+                tier0Dumped = true;
+                DI8Log("mq2_bridge: Tier-0 LoginController@%p — dumping %d CXWnd-like fields:",
+                       loginCtrl, cxwndCandidates);
+                uintptr_t *dumpFields = (uintptr_t *)loginCtrl;
+                int dumpIdx = 0;
+                for (int di = 0; di < 500 && dumpIdx < 30; di++) {
+                    uintptr_t fv = dumpFields[di];
+                    if (fv < 0x10000 || fv > 0x7FFFFFFF) continue;
+                    if (!IsReadablePtr((void *)fv, sizeof(void *))) continue;
+                    void *vt = *(void **)fv;
+                    if (!vt || !IsReadablePtr(vt, sizeof(void *))) continue;
+                    char textBuf[128] = {};
+                    __try { MQ2Bridge::ReadWindowText((void *)fv, textBuf, sizeof(textBuf)); }
+                    __except(EXCEPTION_EXECUTE_HANDLER) { textBuf[0] = '\0'; }
+                    DI8Log("mq2_bridge:   field[%d] +0x%X = %p (vt=%p) text='%s'",
+                           dumpIdx, di * 4, (void *)fv, vt, textBuf);
+                    dumpIdx++;
+                }
+            }
+            if (tier0LogCount < 5) {
+                DI8Log("mq2_bridge: FindWindowByName('%s') — Tier-0 scanned LoginController@%p, %d CXWnd-like fields, none had target",
+                       name, loginCtrl, cxwndCandidates);
+                tier0LogCount++;
+            }
+        } else if (tier0LogCount < 3) {
+            DI8Log("mq2_bridge: FindWindowByName('%s') — Tier-0 skipped (loginCtrl=%p, GetChildItem=%p)",
+                   name, loginCtrl, g_fnGetChildItem);
+            tier0LogCount++;
+        }
+    }
+
+    // Tier 0b (DISABLED): heap widget scan — found CXWnd candidates but offset
+    // identification is unreliable (+0x100 is not SIDL name). Needs dedicated
+    // CE session to map CXWnd struct layout for Dalaya ROF2.
+    // Research: string "LOGIN_UsernameEdit" exists on heap during login.
+    // CXWnd candidates found near 0x019Fxxxx with vtable ~0x72A1xxxx.
+
+    // Tier 0c: scan eqmain.dll globals near pLoginController (RVA 0x150174)
+    // for CXWnd* pointers. The login screen CXWnd is likely stored as a
+    // global variable adjacent to pLoginController in eqmain's .data section.
+    {
+        HMODULE hEqmain = GetModuleHandleA("eqmain.dll");
+        if (hEqmain) {
+            static int eqmainScanLogCount = 0;
+            uintptr_t base = (uintptr_t)hEqmain;
+            // Scan 256 DWORDs (1024 bytes) centered on pLoginController RVA
+            uintptr_t scanStart = base + 0x150174 - 512;
+            uintptr_t scanEnd = base + 0x150174 + 512;
+            for (uintptr_t addr = scanStart; addr < scanEnd; addr += 4) {
+                __try {
+                    if (!IsReadablePtr((void *)addr, 4)) continue;
+                    uintptr_t val = *(uintptr_t *)addr;
+                    if (val < 0x10000 || val > 0x7FFFFFFF) continue;
+                    if (!IsReadablePtr((void *)val, sizeof(void *))) continue;
+                    // Check if val looks like a CXWnd (valid vtable in code range)
+                    void *vt = *(void **)val;
+                    if (!vt || !IsReadablePtr(vt, sizeof(void *))) continue;
+                    // Must be in a code section (not heap) to be a real vtable
+                    if ((uintptr_t)vt < 0x60000000 || (uintptr_t)vt > 0x80000000) continue;
+                    // Try GetChildItem
+                    void *child = nullptr;
+                    __try {
+                        child = g_fnGetChildItem((void *)val, name);
+                    } __except(EXCEPTION_EXECUTE_HANDLER) { continue; }
+                    if (child) {
+                        if (eqmainScanLogCount < 20) {
+                            DI8Log("mq2_bridge: FindWindowByName('%s') — found via eqmain global at RVA 0x%X (CXWnd@%p, vt=%p), child@%p",
+                                   name, (unsigned)(addr - base), (void *)val, vt, child);
+                            eqmainScanLogCount++;
+                        }
+                        return child;
+                    }
+                } __except(EXCEPTION_EXECUTE_HANDLER) { continue; }
+            }
+        }
+    }
+
+    // Tier 0c: try pinstCEQMainWnd — the "main" EQ window during login.
+    // MQ2AutoLogin's state machine gets its m_currentWindow from MQ2's login
+    // state sensor, which resolves to this window during the login phase.
+    // Double-deref: *pinst = storage addr, *storage = CEQMainWnd*.
+    if (g_pinstEQMainWnd) {
+        __try {
+            uintptr_t storageAddr = *g_pinstEQMainWnd;
+            if (storageAddr && IsReadablePtr((void *)storageAddr, sizeof(void *))) {
+                void *pMainWnd = *(void **)storageAddr;
+                if (pMainWnd && IsReadablePtr(pMainWnd, sizeof(void *))) {
+                    void *child = g_fnGetChildItem(pMainWnd, name);
+                    if (child) {
+                        static int mainWndLogCount = 0;
+                        if (mainWndLogCount < 20) {
+                            DI8Log("mq2_bridge: FindWindowByName('%s') — found via pinstCEQMainWnd@%p, child@%p",
+                                   name, pMainWnd, child);
+                            mainWndLogCount++;
+                        }
+                        return child;
+                    }
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            // CEQMainWnd not valid at this game state
         }
     }
 
