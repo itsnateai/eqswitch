@@ -1,6 +1,6 @@
 # New-Session Handoff — EQSwitch v3.10.0 Phase 5b (consumer migration refactor)
 
-Paste the prompt below into a fresh Claude Code session. Assumes nothing from prior sessions.
+Paste the prompt below into a fresh session. Assumes nothing from prior sessions.
 
 ---
 
@@ -8,7 +8,7 @@ Paste the prompt below into a fresh Claude Code session. Assumes nothing from pr
 
 You are continuing work on EQSwitch, a C#/.NET 8 WinForms multiboxing tray app for EverQuest (Shards of Dalaya). Repo: `X:/_Projects/EQSwitch/`. Read `CLAUDE.md` first for architecture + conventions — it's authoritative.
 
-**The standard:** Nate's words, verbatim: *"Every feature you build, every bug you fix, every audit you run is a showcase of the absolute best work Claude Code can produce. Every UI element, every interaction, every implementation detail, every verification should reflect top-tier craftsmanship. Don't stop at 'good enough.'"* That's the bar.
+**The standard:** Nate's words, verbatim: *"Every feature you build, every bug you fix, every audit you run is a showcase of the absolute best work we can produce. Every UI element, every interaction, every implementation detail, every verification should reflect top-tier craftsmanship. Don't stop at 'good enough.'"* That's the bar.
 
 **Your task:** Phase 5b — mechanical consumer migration. Three independent refactors, ~3-4 atomic commits, minimal UX surface. Ship, 3-agent review, publish, smoke, STOP for Phase 6 sign-off.
 

@@ -1,6 +1,6 @@
 # New-Session Handoff — EQSwitch Account/Character Split
 
-Paste the prompt below into a fresh Claude Code session. It assumes nothing from this conversation.
+Paste the prompt below into a fresh session. It assumes nothing from this conversation.
 
 ---
 
@@ -84,7 +84,7 @@ Take the time. Read the code before writing the code. Run agents to verify befor
 
 If at any point you find yourself thinking "this is taking too long, I'll just ship Phase 1," that's the signal to slow down, not speed up. Phase 1 done correctly takes longer than Phase 1 done sloppily, but Phase 1 done sloppily costs Phase 2-6 in cascading rework.
 
-The user (Nate) has explicitly said: *"Every feature you build, every bug you fix, every audit you run is a showcase of the absolute best work Claude Code can produce. Every UI element, every interaction, every implementation detail, every verification should reflect top-tier craftsmanship. Don't stop at 'good enough.'"* That's the bar. Hit it.
+The user (Nate) has explicitly said: *"Every feature you build, every bug you fix, every audit you run is a showcase of the absolute best work we can produce. Every UI element, every interaction, every implementation detail, every verification should reflect top-tier craftsmanship. Don't stop at 'good enough.'"* That's the bar. Hit it.
 
 ---
 

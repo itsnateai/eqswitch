@@ -41,7 +41,6 @@ Native DLLs, `AutoLoginManager`, `ExecuteQuickLogin`: no changes (Phase 5+ terri
 - Every commit stages specific files (never `git add -A`).
 - Conventional-commit titles under 72 chars. Body under 72-char columns.
 - Expected build state after each task: `0 Error(s)`, exactly 1 `[Obsolete]` warning at `TrayManager.cs:1613`. Any deviation is a bug — stop and investigate.
-- Every commit footer ends with `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>`.
 - `ApplySettings` returns `bool` starting in Task 2 — `false` blocks Save. All call sites at `SettingsForm.cs:277-280` updated together.
 - Test commands run from `X:/_Projects/EQSwitch/`.
 - No changes to `gameState == 5` (Native/mq2_bridge.cpp) or `result == -2` (Core/AutoLoginManager.cs) — phantom-click gates stay intact and are re-grep-verified after every commit.
@@ -164,7 +163,6 @@ a dispatch.
 
 Resolves P3.5-A from HANDOFF_phase4.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -438,7 +436,6 @@ Three deferred items from Phase 3 smoke test:
 
 Card height 110 -> 135 for the new PiP row; downstream y offsets shift.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -687,7 +684,6 @@ Task 7' and deleted when the dual-section rewrite lands.
 
 Build green; 9 fixtures pass; phantom-click gates unchanged.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -969,7 +965,6 @@ surface via MessageBox without leaking plaintext.
 
 Wired from SettingsForm Accounts tab in Task 7.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1222,7 +1217,6 @@ AccountKey.Matches (Ordinal) resolves at runtime.
 
 Wired from SettingsForm Characters section in Task 7.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1383,7 +1377,6 @@ Cancel + Unlink remain neutral. Dependent list truncates at 6 with
 
 Used by SettingsForm Accounts grid row delete in Task 7.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1818,7 +1811,6 @@ be added in-app (users re-derive from in-game character list).
 Removes all TRANSITIONAL shims from Task 3. _pendingAccounts is now
 read/written as List<Account>; _pendingCharacters as List<Character>.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1952,7 +1944,6 @@ longer runs on Save — splitter lives only in the migrator.
 DisplayLabel/Notes now survive round-trips: load → edit → save →
 reload → re-edit preserves user-entered values.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -2137,7 +2128,6 @@ config fields.
 
 New DarkTheme.StatusOk / StatusWarn / StatusFail colors for pill BG.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -2234,7 +2224,6 @@ Characters — consider renaming for tray-menu clarity.'
 User can rename either side via the respective Edit dialog; the nudge
 disappears once the collision set clears.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```

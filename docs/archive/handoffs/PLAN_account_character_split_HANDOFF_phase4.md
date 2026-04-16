@@ -1,6 +1,6 @@
 # New-Session Handoff — EQSwitch v3.10.0 Phase 3.5 (polish) + Phase 4 (Settings dual-section UI)
 
-Paste the prompt below into a fresh Claude Code session. Assumes nothing from prior sessions.
+Paste the prompt below into a fresh session. Assumes nothing from prior sessions.
 
 ---
 
@@ -8,7 +8,7 @@ Paste the prompt below into a fresh Claude Code session. Assumes nothing from pr
 
 You are continuing work on EQSwitch, a C#/.NET 8 WinForms multiboxing tray app for EverQuest (Shards of Dalaya). Repo: `X:/_Projects/EQSwitch/`. Read `CLAUDE.md` first for architecture + conventions — it's authoritative.
 
-**The standard:** Nate's words, verbatim: *"Every feature you build, every bug you fix, every audit you run is a showcase of the absolute best work Claude Code can produce. Every UI element, every interaction, every implementation detail, every verification should reflect top-tier craftsmanship. Don't stop at 'good enough.'"* That's the bar.
+**The standard:** Nate's words, verbatim: *"Every feature you build, every bug you fix, every audit you run is a showcase of the absolute best work we can produce. Every UI element, every interaction, every implementation detail, every verification should reflect top-tier craftsmanship. Don't stop at 'good enough.'"* That's the bar.
 
 **Your task:** ship **Phase 3.5 polish** (5 deferred items from Nate's Phase 3 smoke test) as one or more atomic commits, THEN tackle **Phase 4** (SettingsForm dual-section UI — Account/Character edit dialogs).
 
@@ -257,4 +257,4 @@ Don't ask for sign-off on "Phase 4" — the phase is signed off. Ask for sign-of
 
 **Bar one more time:** *Every UI element, every interaction, every implementation detail, every verification should reflect top-tier craftsmanship. Don't stop at "good enough."*
 
-The Settings dialog is EQSwitch's configuration surface — the second-most-interacted-with after the tray menu. Phase 4 is where users discover what v3.10.0 can do. Make it the best Settings dialog Claude Code has ever produced.
+The Settings dialog is EQSwitch's configuration surface — the second-most-interacted-with after the tray menu. Phase 4 is where users discover what v3.10.0 can do. Make it the best Settings dialog we have ever produced.

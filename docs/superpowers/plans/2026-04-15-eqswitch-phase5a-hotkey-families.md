@@ -43,7 +43,6 @@ Total net delta: ~+760 lines across 2 new files + 3 modified; legacy SettingsFor
 - Every commit stages specific files — never `git add -A`.
 - Conventional-commit titles under 72 chars. Bodies under 72-char columns.
 - Expected build state after each task: `0 Error(s)`, exactly 1 `[Obsolete]` warning at `TrayManager.cs:~1648` (`ExecuteQuickLogin`). Any deviation is a bug.
-- Every commit footer ends with `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>`.
 - Test commands run from `X:/_Projects/EQSwitch/` (or via `cd X:/_Projects/EQSwitch &&`).
 - Phantom-click gates (`grep -c "gameState == 5" Native/mq2_bridge.cpp` == 2, `grep -c "result == -2" Core/AutoLoginManager.cs` == 1) re-verified after every task.
 - Migration fixtures (`bash _tests/migration/run_fixtures.sh` → `9 passed, 0 failed`) re-verified after every task.
@@ -153,7 +152,6 @@ Drop the gate. Alt+M fires the toggle directly when bound. Field
 stays on HotkeyConfig for downgrade compat; SettingsForm no longer
 writes it. Phase 6 deletes the field entirely.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -329,7 +327,6 @@ every other field; missing this copy was the Phase 4 TogglePip bug.
 SettingsForm.BuildAppConfig passes the field through unchanged;
 it's written only by the banner's Dismiss click in Task 5.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -641,7 +638,6 @@ behavior including Escape as a clear key (Phase 3.5 polish).
 
 No caller yet; wired from Hotkeys tab in Task 5.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -942,7 +938,6 @@ vs gold for Accounts — visual consistency across Settings tabs.
 
 No caller yet; wired from Hotkeys tab in Task 5.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1349,7 +1344,6 @@ deprecation-window back-compat (Phase 6 deletes them).
 
 CheckAutoLoginHotkeyConflicts narrows to Team entries only.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1482,7 +1476,6 @@ instead of throwing or firing a mystery login.
 Legacy AutoLogin1-4 dispatch path coexists during v3.10.x —
 hotkey-conflict scan blocks duplicate binds at Save time.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1595,7 +1588,6 @@ HotkeyBindingUtil.EnumeratePopulatedLabeled() is the single source of
 truth for family-table scan input, mirrored by the in-dialog scans
 from Tasks 3 + 4.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1774,7 +1766,6 @@ surface, can be lightly brainstormed if any.
 Phase 5a (hotkey families + Hotkeys-tab redesign) signed off. Phase 5b
 awaits Nate's go signal.
 
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 EOF
 )" && git push
 ```

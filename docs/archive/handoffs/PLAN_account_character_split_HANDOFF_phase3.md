@@ -1,6 +1,6 @@
 # New-Session Handoff — EQSwitch v3.10.0 Phase 3 + Deferred Items
 
-Paste the prompt below into a fresh Claude Code session. It assumes nothing from the conversation that produced it.
+Paste the prompt below into a fresh session. It assumes nothing from the conversation that produced it.
 
 ---
 
@@ -8,7 +8,7 @@ Paste the prompt below into a fresh Claude Code session. It assumes nothing from
 
 You are continuing work on EQSwitch, a C#/.NET 8 WinForms multiboxing tray app for EverQuest (Shards of Dalaya). Repo: `X:/_Projects/EQSwitch/`. Read `CLAUDE.md` first for architecture and conventions — it is authoritative.
 
-**The standard:** Nate's words, verbatim: *"Every feature you build, every bug you fix, every audit you run is a showcase of the absolute best work Claude Code can produce. Every UI element, every interaction, every implementation detail, every verification should reflect top-tier craftsmanship. Don't stop at 'good enough.'"* That is the bar. Hit it.
+**The standard:** Nate's words, verbatim: *"Every feature you build, every bug you fix, every audit you run is a showcase of the absolute best work we can produce. Every UI element, every interaction, every implementation detail, every verification should reflect top-tier craftsmanship. Don't stop at 'good enough.'"* That is the bar. Hit it.
 
 **Your task:** implement Phase 3 of `PLAN_account_character_split.md`, then address the deferred items accumulated during Phases 1-2 before starting Phase 4. Full plan (authoritative): `X:/_Projects/EQSwitch/PLAN_account_character_split.md`. This handoff supplements the plan; read both.
 
@@ -211,4 +211,4 @@ Do not ask for sign-off on "the plan" — the plan is already signed off. Ask fo
 
 **Bar one more time, since it matters:** *Every UI element, every interaction, every implementation detail, every verification should reflect top-tier craftsmanship. Don't stop at "good enough."*
 
-The tray menu is the face of EQSwitch. It's the most-interacted-with surface in the entire app. Phase 3 is where v3.10.0 becomes visible to the user. Make it the best tray menu Claude Code has ever produced.
+The tray menu is the face of EQSwitch. It's the most-interacted-with surface in the entire app. Phase 3 is where v3.10.0 becomes visible to the user. Make it the best tray menu we have ever produced.
