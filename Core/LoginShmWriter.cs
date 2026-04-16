@@ -8,44 +8,56 @@ namespace EQSwitch.Core;
 
 /// <summary>
 /// Creates and manages "Local\EQSwitchLogin_{PID}" shared memory for
-/// in-process login via the MQ2 bridge state machine.
+/// in-process login via the native DLL's LoginStateMachine.
 ///
-/// C# writes: username, password, server, character, command
-/// DLL writes: phase, gameState, errorMessage, character data
+/// C# creates the mapping and writes credentials + command.
+/// DLL reads credentials, drives EQ's login UI widgets (SetEditText / ClickButton),
+/// and writes phase transitions + character data back to SHM.
+/// Replaces the entire PostMessage/DirectInput key injection login path.
 ///
-/// The DLL's LoginStateMachine drives EQ's UI widgets directly --
-/// SetWindowText on edit fields, WndNotification on buttons.
-/// No PostMessage, no focus-faking needed.
+/// Must match Native/login_shm.h LoginShm struct exactly (#pragma pack(push, 1)).
 /// </summary>
 public sealed class LoginShmWriter : IDisposable
 {
     private const string SharedMemoryPrefix = "Local\\EQSwitchLogin_";
-    private const uint Magic = 0x45534C53; // "ESLS"
+    private const uint Magic = 0x45534C53;   // "ESLS"
     private const uint Version = 1;
+    private const int MaxChars = 10;         // LOGIN_MAX_CHARS
+    private const int NameLen = 64;          // LOGIN_NAME_LEN
+    private const int PassLen = 128;         // LOGIN_PASS_LEN
+    private const int ServerLen = 64;        // LOGIN_SERVER_LEN
+    private const int CharLen = 64;          // LOGIN_CHAR_LEN
+    private const int ErrorLen = 256;        // LOGIN_ERROR_LEN
 
-    // Must match Native/login_shm.h LoginShm struct exactly
-    private const int ShmSize = 1536; // generous -- actual struct is ~1200 bytes
+    // Total struct size: 1340 bytes (verified against login_shm.h)
+    private const int ShmSize = 1340;
 
-    // Field offsets (matching #pragma pack(push,1) C++ struct)
-    private const int OFF_MAGIC        = 0;
-    private const int OFF_VERSION      = 4;
-    private const int OFF_COMMAND      = 8;
-    private const int OFF_COMMANDSEQ   = 12;
-    private const int OFF_COMMANDACK   = 16;
-    private const int OFF_USERNAME     = 20;   // 64 bytes
-    private const int OFF_PASSWORD     = 84;   // 128 bytes
-    private const int OFF_SERVER       = 212;  // 64 bytes
-    private const int OFF_CHARACTER    = 276;  // 64 bytes
-    private const int OFF_PHASE        = 340;
-    private const int OFF_GAMESTATE    = 344;
-    private const int OFF_ERRORMSG     = 348;  // 256 bytes
-    private const int OFF_RETRYCOUNT   = 604;
-    private const int OFF_CHARCOUNT    = 608;
-    private const int OFF_SELECTEDIDX  = 612;
-    private const int OFF_CHARNAMES    = 616;  // 8 * 64 = 512
-    private const int OFF_CHARLEVELS   = 1128; // 8 * 4 = 32
-    private const int OFF_CHARCLASSES  = 1160; // 8 * 4 = 32
-    private const int OFF_DIAGNOSTIC   = 1192;
+    // ── Commands (C# → DLL) ──────────────────────────────────────
+    private const uint CMD_NONE = 0;
+    private const uint CMD_LOGIN = 1;
+    private const uint CMD_CANCEL = 2;
+
+    // ── Field offsets (matching #pragma pack(push,1) C++ struct) ──
+    private const int OFF_MAGIC = 0;           // uint32  (4)
+    private const int OFF_VERSION = 4;         // uint32  (4)
+    private const int OFF_COMMAND = 8;         // uint32  (4)
+    private const int OFF_COMMAND_SEQ = 12;    // uint32  (4)
+    private const int OFF_COMMAND_ACK = 16;    // uint32  (4)
+    private const int OFF_USERNAME = 20;       // char[64]
+    private const int OFF_PASSWORD = 84;       // char[128]
+    private const int OFF_SERVER = 212;        // char[64]
+    private const int OFF_CHARACTER = 276;     // char[64]
+    private const int OFF_PHASE = 340;         // uint32  (4)
+    private const int OFF_GAMESTATE = 344;     // int32   (4)
+    private const int OFF_ERROR_MSG = 348;     // char[256]
+    private const int OFF_RETRY_COUNT = 604;   // uint32  (4)
+    private const int OFF_CHAR_COUNT = 608;    // int32   (4)
+    private const int OFF_SELECTED_IDX = 612;  // int32   (4)
+    private const int OFF_CHAR_NAMES = 616;    // char[10][64] = 640
+    private const int OFF_CHAR_LEVELS = 1256;  // int32[10]    = 40
+    private const int OFF_CHAR_CLASSES = 1296; // int32[10]    = 40
+    private const int OFF_DIAGNOSTIC = 1336;   // uint32  (4)
+    // Total: 1340 ✓
 
     private sealed class MappingEntry : IDisposable
     {
@@ -69,6 +81,10 @@ public sealed class LoginShmWriter : IDisposable
     private readonly Dictionary<int, MappingEntry> _mappings = new();
     private bool _disposed;
 
+    /// <summary>
+    /// Create LoginShm for a process. Call early in the login sequence —
+    /// the DLL's ActivateThread lazily opens it via OpenFileMappingA.
+    /// </summary>
     public bool Open(int pid)
     {
         if (_mappings.ContainsKey(pid)) return true;
@@ -76,138 +92,202 @@ public sealed class LoginShmWriter : IDisposable
         try
         {
             var name = $"{SharedMemoryPrefix}{(uint)pid}";
-            var mmf = SecureMemoryMappedFile.CreateOrOpen(name, ShmSize);
-            var accessor = mmf.CreateViewAccessor(0, ShmSize, MemoryMappedFileAccess.ReadWrite);
+            var mmf = MemoryMappedFile.CreateOrOpen(name, ShmSize);
+            var accessor = mmf.CreateViewAccessor(0, ShmSize);
 
-            // Write header
+            // Write header — all fields zero/idle
             accessor.Write(OFF_MAGIC, Magic);
             accessor.Write(OFF_VERSION, Version);
-            accessor.Write(OFF_COMMAND, (uint)0);     // LOGIN_CMD_NONE
-            accessor.Write(OFF_COMMANDSEQ, (uint)0);
-            accessor.Write(OFF_COMMANDACK, (uint)0);
+            accessor.Write(OFF_COMMAND, CMD_NONE);
+            accessor.Write(OFF_COMMAND_SEQ, (uint)0);
+            accessor.Write(OFF_COMMAND_ACK, (uint)0);
+            // Zero credential fields
+            accessor.WriteArray(OFF_USERNAME, new byte[NameLen], 0, NameLen);
+            accessor.WriteArray(OFF_PASSWORD, new byte[PassLen], 0, PassLen);
+            accessor.WriteArray(OFF_SERVER, new byte[ServerLen], 0, ServerLen);
+            accessor.WriteArray(OFF_CHARACTER, new byte[CharLen], 0, CharLen);
+            // Zero state fields
             accessor.Write(OFF_PHASE, (uint)0);       // PHASE_IDLE
-            accessor.Write(OFF_GAMESTATE, -1);
-            accessor.Write(OFF_RETRYCOUNT, (uint)0);
-            accessor.Write(OFF_CHARCOUNT, 0);
-            accessor.Write(OFF_SELECTEDIDX, -1);
+            accessor.Write(OFF_GAMESTATE, 0);
+            accessor.WriteArray(OFF_ERROR_MSG, new byte[ErrorLen], 0, ErrorLen);
+            accessor.Write(OFF_RETRY_COUNT, (uint)0);
+            accessor.Write(OFF_CHAR_COUNT, 0);
+            accessor.Write(OFF_SELECTED_IDX, -1);
             accessor.Write(OFF_DIAGNOSTIC, (uint)0);
 
             _mappings[pid] = new MappingEntry(mmf, accessor);
-            FileLogger.Info($"LoginShmWriter: opened {name}");
+            FileLogger.Info($"LoginShmWriter: opened {name} ({ShmSize} bytes)");
             return true;
         }
         catch (Exception ex)
         {
-            FileLogger.Error($"LoginShmWriter: failed to open for PID {pid}", ex);
+            FileLogger.Error($"LoginShmWriter: failed to open SHM for PID {pid}", ex);
             return false;
         }
     }
 
-    /// <summary>Write login credentials to SHM. Call before SendLoginCommand.</summary>
-    public void WriteCredentials(int pid, string username, string password, string server, string character)
+    // ─── Commands (C# → DLL) ─────────────────────────────────────
+
+    /// <summary>
+    /// Send LOGIN command with credentials. The DLL's LoginStateMachine will
+    /// drive the entire login flow: credentials → connect → server → charselect.
+    /// Password is written to SHM briefly — the DLL copies it locally and zeros
+    /// the SHM password field immediately on pickup.
+    /// </summary>
+    public bool SendLoginCommand(int pid, string username, string password,
+                                  string server, string character)
     {
-        if (!_mappings.TryGetValue(pid, out var entry)) return;
+        if (!_mappings.TryGetValue(pid, out var entry)) return false;
 
-        WriteString(entry.Accessor, OFF_USERNAME, username, 64);
-        WriteString(entry.Accessor, OFF_PASSWORD, password, 128);
-        WriteString(entry.Accessor, OFF_SERVER, server, 64);
-        WriteString(entry.Accessor, OFF_CHARACTER, character, 64);
+        try
+        {
+            // Write credentials first
+            WriteString(entry.Accessor, OFF_USERNAME, username, NameLen);
+            WriteString(entry.Accessor, OFF_PASSWORD, password, PassLen);
+            WriteString(entry.Accessor, OFF_SERVER, server, ServerLen);
+            WriteString(entry.Accessor, OFF_CHARACTER, character, CharLen);
 
-        FileLogger.Info($"LoginShmWriter: credentials written for PID {pid} (user={username}, server={server}, char={character})");
+            // Write command + increment sequence — credentials must be visible first
+            entry.Accessor.Write(OFF_COMMAND, CMD_LOGIN);
+            Thread.MemoryBarrier();
+            entry.CommandSeq++;
+            entry.Accessor.Write(OFF_COMMAND_SEQ, entry.CommandSeq);
+
+            FileLogger.Info($"LoginShmWriter: LOGIN command sent for PID {pid} " +
+                $"(user='{username}', server='{server}', char='{character}', seq={entry.CommandSeq})");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Error($"LoginShmWriter: SendLoginCommand failed for PID {pid}", ex);
+            return false;
+        }
     }
 
-    /// <summary>Send the LOGIN command to the DLL state machine.</summary>
-    public void SendLoginCommand(int pid)
+    /// <summary>
+    /// Send CANCEL command to abort the in-progress login.
+    /// Used when C# wants to stop at charselect — the DLL's state machine
+    /// would otherwise auto-advance to enter-world.
+    /// </summary>
+    public bool SendCancelCommand(int pid)
     {
-        if (!_mappings.TryGetValue(pid, out var entry)) return;
+        if (!_mappings.TryGetValue(pid, out var entry)) return false;
 
-        entry.Accessor.Write(OFF_COMMAND, (uint)1); // LOGIN_CMD_LOGIN
-        entry.CommandSeq++;
-        entry.Accessor.Write(OFF_COMMANDSEQ, entry.CommandSeq);
+        try
+        {
+            entry.Accessor.Write(OFF_COMMAND, CMD_CANCEL);
+            Thread.MemoryBarrier();
+            entry.CommandSeq++;
+            entry.Accessor.Write(OFF_COMMAND_SEQ, entry.CommandSeq);
 
-        FileLogger.Info($"LoginShmWriter: LOGIN command sent (seq={entry.CommandSeq})");
+            FileLogger.Info($"LoginShmWriter: CANCEL command sent for PID {pid} (seq={entry.CommandSeq})");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Error($"LoginShmWriter: SendCancelCommand failed for PID {pid}", ex);
+            return false;
+        }
     }
 
-    /// <summary>Send the CANCEL command to abort login.</summary>
-    public void SendCancelCommand(int pid)
-    {
-        if (!_mappings.TryGetValue(pid, out var entry)) return;
+    // ─── State reads (DLL → C#) ──────────────────────────────────
 
-        entry.Accessor.Write(OFF_COMMAND, (uint)2); // LOGIN_CMD_CANCEL
-        entry.CommandSeq++;
-        entry.Accessor.Write(OFF_COMMANDSEQ, entry.CommandSeq);
+    /// <summary>True if the DLL acknowledged the last command (commandAck == commandSeq).</summary>
+    public bool IsCommandAcknowledged(int pid)
+    {
+        if (!_mappings.TryGetValue(pid, out var entry)) return false;
+        if (entry.CommandSeq == 0) return false;
+        return entry.Accessor.ReadUInt32(OFF_COMMAND_ACK) == entry.CommandSeq;
     }
 
-    /// <summary>Enable diagnostic widget enumeration mode.</summary>
-    public void SetDiagnosticMode(int pid, bool enabled)
-    {
-        if (!_mappings.TryGetValue(pid, out var entry)) return;
-        entry.Accessor.Write(OFF_DIAGNOSTIC, enabled ? (uint)1 : (uint)0);
-    }
-
-    /// <summary>Read current login phase from DLL.</summary>
+    /// <summary>Read current login phase. Returns Idle if mapping not found.</summary>
     public LoginPhase ReadPhase(int pid)
     {
         if (!_mappings.TryGetValue(pid, out var entry)) return LoginPhase.Idle;
         return (LoginPhase)entry.Accessor.ReadUInt32(OFF_PHASE);
     }
 
-    /// <summary>Read current game state.</summary>
+    /// <summary>Read error message set by DLL on PHASE_ERROR.</summary>
+    public string ReadError(int pid)
+    {
+        if (!_mappings.TryGetValue(pid, out var entry)) return "";
+        return ReadString(entry.Accessor, OFF_ERROR_MSG, ErrorLen);
+    }
+
+    /// <summary>Read retry count from DLL.</summary>
+    public uint ReadRetryCount(int pid)
+    {
+        if (!_mappings.TryGetValue(pid, out var entry)) return 0;
+        return entry.Accessor.ReadUInt32(OFF_RETRY_COUNT);
+    }
+
+    /// <summary>Read game state reported by DLL.</summary>
     public int ReadGameState(int pid)
     {
         if (!_mappings.TryGetValue(pid, out var entry)) return -1;
         return entry.Accessor.ReadInt32(OFF_GAMESTATE);
     }
 
-    /// <summary>Read error message on PHASE_ERROR.</summary>
-    public string ReadErrorMessage(int pid)
-    {
-        if (!_mappings.TryGetValue(pid, out var entry)) return "";
-        return ReadString(entry.Accessor, OFF_ERRORMSG, 256);
-    }
+    // ─── Character data (populated by DLL at charselect) ─────────
 
-    /// <summary>Read retry count.</summary>
-    public uint ReadRetryCount(int pid)
-    {
-        if (!_mappings.TryGetValue(pid, out var entry)) return 0;
-        return entry.Accessor.ReadUInt32(OFF_RETRYCOUNT);
-    }
-
-    /// <summary>Check if the DLL acknowledged the last command.</summary>
-    public bool IsCommandAcknowledged(int pid)
-    {
-        if (!_mappings.TryGetValue(pid, out var entry)) return false;
-        return entry.Accessor.ReadUInt32(OFF_COMMANDACK) == entry.CommandSeq;
-    }
-
-    /// <summary>Clear password from SHM after login completes (defense in depth).</summary>
-    public void ClearPassword(int pid)
-    {
-        if (!_mappings.TryGetValue(pid, out var entry)) return;
-        entry.Accessor.WriteArray(OFF_PASSWORD, new byte[128], 0, 128);
-    }
-
-    /// <summary>Read character count at char select.</summary>
+    /// <summary>Number of characters at charselect. 0 if not at charselect.</summary>
     public int ReadCharCount(int pid)
     {
         if (!_mappings.TryGetValue(pid, out var entry)) return 0;
-        return entry.Accessor.ReadInt32(OFF_CHARCOUNT);
+        return entry.Accessor.ReadInt32(OFF_CHAR_COUNT);
     }
 
-    /// <summary>Read character name at index.</summary>
+    /// <summary>Currently selected character index (-1 if none).</summary>
+    public int ReadSelectedIndex(int pid)
+    {
+        if (!_mappings.TryGetValue(pid, out var entry)) return -1;
+        return entry.Accessor.ReadInt32(OFF_SELECTED_IDX);
+    }
+
+    /// <summary>Read character name at given index (0-based).</summary>
     public string ReadCharName(int pid, int index)
     {
         if (!_mappings.TryGetValue(pid, out var entry)) return "";
-        if (index < 0 || index >= 8) return "";
-        return ReadString(entry.Accessor, OFF_CHARNAMES + (index * 64), 64);
+        if (index < 0 || index >= MaxChars) return "";
+        return ReadString(entry.Accessor, OFF_CHAR_NAMES + (index * NameLen), NameLen);
     }
 
+    /// <summary>Read all character names. Returns empty array if not at charselect.</summary>
+    public string[] ReadAllCharNames(int pid)
+    {
+        int count = ReadCharCount(pid);
+        if (count <= 0) return Array.Empty<string>();
+
+        var names = new string[Math.Min(count, MaxChars)];
+        for (int i = 0; i < names.Length; i++)
+            names[i] = ReadCharName(pid, i);
+        return names;
+    }
+
+    /// <summary>Read character level at given index.</summary>
+    public int ReadCharLevel(int pid, int index)
+    {
+        if (!_mappings.TryGetValue(pid, out var entry)) return 0;
+        if (index < 0 || index >= MaxChars) return 0;
+        return entry.Accessor.ReadInt32(OFF_CHAR_LEVELS + (index * 4));
+    }
+
+    // ─── Lifecycle ───────────────────────────────────────────────
+
+    /// <summary>Close shared memory for a process.</summary>
     public void Close(int pid)
     {
         if (_mappings.TryGetValue(pid, out var entry))
         {
-            // Clear password before closing
-            try { entry.Accessor.WriteArray(OFF_PASSWORD, new byte[128], 0, 128); } catch { }
+            try
+            {
+                // Zero password field as defense-in-depth
+                entry.Accessor.WriteArray(OFF_PASSWORD, new byte[PassLen], 0, PassLen);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Warn($"LoginShmWriter: Close cleanup failed for PID {pid}: {ex.Message}");
+            }
             entry.Dispose();
             _mappings.Remove(pid);
             FileLogger.Info($"LoginShmWriter: closed mapping for PID {pid}");
@@ -220,22 +300,41 @@ public sealed class LoginShmWriter : IDisposable
         _disposed = true;
         foreach (var (pid, entry) in _mappings)
         {
-            try { entry.Accessor.WriteArray(OFF_PASSWORD, new byte[128], 0, 128); } catch { }
+            try { entry.Accessor.WriteArray(OFF_PASSWORD, new byte[PassLen], 0, PassLen); }
+            catch (Exception ex) { FileLogger.Warn($"LoginShmWriter: Dispose cleanup failed for PID {pid}: {ex.Message}"); }
             entry.Dispose();
         }
         _mappings.Clear();
     }
 
-    // ─── Helpers ──────────────────────────────────────────
+    // ─── Helpers ─────────────────────────────────────────────────
 
-    private static void WriteString(MemoryMappedViewAccessor accessor, int offset, string value, int maxLen)
+    /// <summary>Human-readable phase name for status reporting.</summary>
+    public static string PhaseName(LoginPhase phase) => phase switch
+    {
+        LoginPhase.Idle => "Idle",
+        LoginPhase.WaitLoginScreen => "Waiting for login screen",
+        LoginPhase.TypingCredentials => "Setting credentials",
+        LoginPhase.ClickingConnect => "Clicking connect",
+        LoginPhase.WaitConnectResponse => "Waiting for server response",
+        LoginPhase.ServerSelect => "Server select",
+        LoginPhase.WaitServerLoad => "Loading character select",
+        LoginPhase.CharSelect => "Character select",
+        LoginPhase.EnteringWorld => "Entering world",
+        LoginPhase.Complete => "Complete",
+        LoginPhase.Error => "Error",
+        _ => $"Unknown ({(uint)phase})"
+    };
+
+    private static void WriteString(MemoryMappedViewAccessor accessor, int offset,
+                                     string value, int maxLen)
     {
         var bytes = new byte[maxLen];
         if (!string.IsNullOrEmpty(value))
         {
-            var encoded = Encoding.ASCII.GetBytes(value);
-            var len = Math.Min(encoded.Length, maxLen - 1);
-            Array.Copy(encoded, bytes, len);
+            int written = Encoding.ASCII.GetBytes(value, 0,
+                Math.Min(value.Length, maxLen - 1), bytes, 0);
+            bytes[written] = 0; // null-terminate
         }
         accessor.WriteArray(offset, bytes, 0, maxLen);
     }

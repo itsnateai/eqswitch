@@ -320,6 +320,7 @@ public class AutoLoginManager
         // logins don't fight for foreground.
         var writer = new KeyInputWriter();
         var charSelect = new CharSelectReader();
+        LoginShmWriter? loginShm = null;
         try
         {
             // Open SHM early so DLL discovers it during EQ startup
@@ -341,10 +342,50 @@ public class AutoLoginManager
                 return;
             }
 
+            // Open LoginShm for in-process login (v7 Phase 4).
+            // DLL's ActivateThread lazily discovers it via OpenFileMappingA.
+            loginShm = new LoginShmWriter();
+            if (!loginShm.Open(pid))
+            {
+                FileLogger.Warn($"AutoLogin: LoginShm open failed for PID {pid} — will use keyboard injection");
+                loginShm.Dispose();
+                loginShm = null;
+            }
+
             // ── Wait for EQ window ──
             Report("Waiting for EQ window...");
             var hwnd = WaitForWindow(pid, TimeSpan.FromSeconds(30));
             if (hwnd == IntPtr.Zero) { Report("Timeout: EQ window did not appear"); return; }
+
+            // ══════════════════════════════════════════════════════════════
+            // PATH A: In-process login via LoginShm (zero keyboard injection)
+            // DISABLED — native widget discovery needs a dedicated RE session.
+            // GiveTime detour + LoginStateMachine work, but FindWindowByName
+            // can't locate login widgets (all MQ2 exports null during login,
+            // GetChildItem non-functional, heap scan offset unreliable).
+            // See memory: project_eqswitch_v7_phase4_csharp.md
+            // ══════════════════════════════════════════════════════════════
+            if (false && loginShm != null)
+            {
+                bool shouldEnter = enterWorldOverride ?? (character != null);
+                if (shouldEnter && character == null)
+                {
+                    FileLogger.Warn($"AutoLogin: {account.Name} requested enter-world but no Character target — staying at charselect (LoginShm path)");
+                    shouldEnter = false;
+                }
+
+                bool handled = TryLoginViaShm(pid, loginShm, account, character,
+                    password, shouldEnter, ref hwnd);
+                if (handled)
+                    return;
+
+                // LoginShm path didn't complete — fall through to keyboard injection
+                FileLogger.Info($"AutoLogin: LoginShm path failed for PID {pid}, falling back to keyboard injection");
+            }
+
+            // ══════════════════════════════════════════════════════════════
+            // PATH B: Keyboard injection fallback (legacy)
+            // ══════════════════════════════════════════════════════════════
 
             // ── Wait for login screen ──
             Report("Waiting for login screen...");
@@ -745,6 +786,11 @@ public class AutoLoginManager
             catch (Exception ex) { FileLogger.Warn($"AutoLogin: finally charSelect.Dispose failed: {ex.Message}"); }
             try { writer.Close(pid); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Close failed: {ex.Message}"); }
             try { writer.Dispose(); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Dispose failed: {ex.Message}"); }
+            if (loginShm != null)
+            {
+                try { loginShm.Close(pid); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: loginShm.Close failed for PID {pid}: {ex.Message}"); }
+                try { loginShm.Dispose(); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: loginShm.Dispose failed: {ex.Message}"); }
+            }
             // Remove PID and fire LoginComplete atomically on the UI thread.
             // If TryRemove runs here (background thread) before Post, there's a gap
             // where IsLoginActive returns false but LoginComplete hasn't fired yet —
@@ -763,6 +809,227 @@ public class AutoLoginManager
                 LoginComplete?.Invoke(this, pid);
             }
         }
+    }
+
+    // ─── LoginShm Path (v7 Phase 4) ──────────────────────────────────
+    //
+    // In-process login via the DLL's LoginStateMachine. The DLL reads
+    // credentials from LoginShm and calls CXWnd::SetWindowText on EQ's
+    // edit fields + SendWndNotification(XWM_LCLICK) on buttons. Zero
+    // keyboard injection, zero focus-faking.
+    //
+    // Returns true if the login flow was fully handled (charselect or
+    // in-world). Returns false if the DLL didn't respond or errored —
+    // caller should fall back to the keyboard injection path.
+
+    private bool TryLoginViaShm(int pid, LoginShmWriter loginShm, Account account,
+        Character? character, string password, bool shouldEnterWorld,
+        ref IntPtr hwnd)
+    {
+        // Determine character name for the DLL's name-based selection.
+        // Empty string = DLL skips character selection (C# sends CANCEL at charselect).
+        string charName = shouldEnterWorld && character != null
+            ? character.Name ?? "" : "";
+
+        // Send LOGIN command with credentials
+        if (!loginShm.SendLoginCommand(pid, account.Username, password,
+                account.Server, charName))
+        {
+            FileLogger.Warn($"AutoLogin: LoginShm SendLoginCommand failed for PID {pid}");
+            return false;
+        }
+
+        // Wait for DLL to acknowledge command (up to 15s).
+        // The DLL opens LoginShm lazily every ~5s — first ack may take a cycle.
+        bool acked = false;
+        for (int wait = 0; wait < 75; wait++) // 75 * 200ms = 15s
+        {
+            if (loginShm.IsCommandAcknowledged(pid)) { acked = true; break; }
+            Thread.Sleep(200);
+        }
+        if (!acked)
+        {
+            FileLogger.Warn($"AutoLogin: DLL did not acknowledge LoginShm command in 15s for PID {pid}");
+            loginShm.SendCancelCommand(pid);
+            return false;
+        }
+
+        FileLogger.Info($"AutoLogin: DLL acknowledged LoginShm command for PID {pid}");
+
+        // Monitor phase transitions (200ms poll, 120s overall timeout)
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        LoginPhase lastReported = LoginPhase.Idle;
+
+        while (sw.ElapsedMilliseconds < 120_000)
+        {
+            var phase = loginShm.ReadPhase(pid);
+
+            // Report phase transitions to user
+            if (phase != lastReported)
+            {
+                string status = LoginShmWriter.PhaseName(phase);
+                Report($"{account.Name}: {status}");
+                lastReported = phase;
+                FileLogger.Info($"AutoLogin: LoginShm phase={phase} for PID {pid} at {sw.ElapsedMilliseconds}ms");
+            }
+
+            switch (phase)
+            {
+                case LoginPhase.Error:
+                    var error = loginShm.ReadError(pid);
+                    FileLogger.Error($"AutoLogin: LoginShm error for {account.Name}: {error}");
+                    Report($"{account.Name}: {error}");
+                    return false; // Fall back to keyboard path
+
+                case LoginPhase.WaitLoginScreen:
+                    // If DLL can't find login widgets within 3s, the native-side
+                    // widget discovery isn't working (FindWindowByName via
+                    // LoginController::GetChildItem fails — known issue).
+                    // Bail fast so keyboard fallback starts promptly.
+                    if (sw.ElapsedMilliseconds > 8_000)
+                    {
+                        FileLogger.Warn($"AutoLogin: LoginShm stuck at WaitLoginScreen for 10s — DLL widget discovery not working, falling back to keyboard");
+                        loginShm.SendCancelCommand(pid);
+                        return false;
+                    }
+                    break;
+
+                case LoginPhase.CharSelect:
+                    return HandleCharSelectViaShm(pid, loginShm, account, character,
+                        shouldEnterWorld, ref hwnd, sw);
+
+                case LoginPhase.Complete:
+                    Report($"{account.Name} logged in!");
+                    FileLogger.Info($"AutoLogin: {account.Name} login complete via LoginShm ({sw.ElapsedMilliseconds}ms, PID {pid})");
+                    return true;
+            }
+
+            // Check if EQ process died
+            hwnd = RefreshHandle(pid, hwnd);
+            if (hwnd == IntPtr.Zero)
+            {
+                Report($"{account.Name}: EQ process died during login");
+                return true; // Don't fall back — process is gone
+            }
+
+            Thread.Sleep(200);
+        }
+
+        // Overall timeout
+        FileLogger.Error($"AutoLogin: LoginShm overall timeout (120s) for {account.Name}");
+        loginShm.SendCancelCommand(pid);
+        return false;
+    }
+
+    /// <summary>
+    /// Handle the PHASE_CHAR_SELECT transition from LoginShm.
+    /// If !shouldEnterWorld: send CANCEL to stop DLL, report charselect reached.
+    /// If shouldEnterWorld: validate character via CharacterSelector.Decide,
+    /// then let DLL continue to enter-world or abort on safety failure.
+    /// </summary>
+    private bool HandleCharSelectViaShm(int pid, LoginShmWriter loginShm,
+        Account account, Character? character, bool shouldEnterWorld,
+        ref IntPtr hwnd, System.Diagnostics.Stopwatch sw)
+    {
+        if (!shouldEnterWorld)
+        {
+            // Send CANCEL before DLL's 500ms debounce expires and auto-advances
+            loginShm.SendCancelCommand(pid);
+            Report($"{account.Name} reached character select.");
+            FileLogger.Info($"AutoLogin: {account.Name} stopped at char select via LoginShm ({sw.ElapsedMilliseconds}ms, PID {pid})");
+            return true;
+        }
+
+        // ── shouldEnterWorld = true, character != null (enforced by caller) ──
+        // Validate character selection using C#'s CharacterSelector.Decide.
+        // The DLL will also do its own name matching, but C# gates on safety
+        // (slot-mode detection, wrong-character abort) first.
+        var charNames = loginShm.ReadAllCharNames(pid);
+        int charCount = charNames.Length;
+        FileLogger.Info($"AutoLogin: LoginShm charselect — {charCount} characters: {string.Join(", ", charNames)}");
+
+        var (resolvedSlot, resolvedByName, decisionLog) = CharacterSelector.Decide(
+            character!.CharacterSlot, character.Name, charNames);
+        FileLogger.Info($"AutoLogin: LoginShm selector → {decisionLog}");
+
+        // ── Safety gate (mirrors keyboard path's unified abort) ──
+        if (resolvedSlot == 0)
+        {
+            bool isSlotMode = charNames.Length > 0
+                && charNames[0].StartsWith("Slot ", StringComparison.Ordinal);
+            string cause = isSlotMode
+                ? $"MQ2 heap in slot-mode ({charNames.Length} placeholder slot(s)) — character names unavailable"
+                : $"character '{character.Name}' not found in account '{account.Name}'";
+            FileLogger.Error($"AutoLogin: LoginShm {cause} — sending CANCEL to prevent wrong-character enter-world");
+            loginShm.SendCancelCommand(pid);
+            Report($"{account.Name}: {cause} — stopped at char select");
+            return true; // Handled (safety abort) — don't fall back to keyboard
+        }
+
+        if (resolvedSlot > charCount)
+        {
+            FileLogger.Error($"AutoLogin: LoginShm slot {resolvedSlot} exceeds char count {charCount} — sending CANCEL");
+            loginShm.SendCancelCommand(pid);
+            Report($"{account.Name}: slot {resolvedSlot} out of range (only {charCount} characters) — stopped at char select");
+            return true;
+        }
+
+        // Validation passed — let the DLL continue to ENTERING_WORLD.
+        // The DLL's PHASE_CHAR_SELECT handler will match the character name
+        // we wrote to LoginShm and select it via MQ2Bridge::SelectCharacter.
+        FileLogger.Info($"AutoLogin: LoginShm validation passed — DLL will enter world as '{character.Name}' (slot {resolvedSlot})");
+
+        // Monitor until PHASE_COMPLETE, PHASE_ERROR, or timeout
+        while (sw.ElapsedMilliseconds < 120_000)
+        {
+            var phase = loginShm.ReadPhase(pid);
+
+            switch (phase)
+            {
+                case LoginPhase.Complete:
+                    Report($"{account.Name} logged in!");
+                    FileLogger.Info($"AutoLogin: {account.Name} login complete via LoginShm ({sw.ElapsedMilliseconds}ms, PID {pid})");
+                    return true;
+
+                case LoginPhase.Error:
+                    var error = loginShm.ReadError(pid);
+                    FileLogger.Error($"AutoLogin: LoginShm enter-world error for {account.Name}: {error}");
+                    Report($"{account.Name}: Enter World failed — {error}");
+                    // DLL's enter-world failed (CLW_EnterWorldButton not found, etc.)
+                    // Fall back to keyboard path's PulseKey3D enter-world
+                    return false;
+
+                case LoginPhase.EnteringWorld:
+                    // Still working — also check window title for in-game detection
+                    // (DLL's PHASE_COMPLETE detection may lag behind actual in-game)
+                    hwnd = RefreshHandle(pid, hwnd);
+                    if (hwnd != IntPtr.Zero)
+                    {
+                        var tb = new StringBuilder(256);
+                        NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
+                        if (tb.ToString().Contains(" - "))
+                        {
+                            Report($"{account.Name} logged in!");
+                            FileLogger.Info($"AutoLogin: {account.Name} in-game detected via title before DLL PHASE_COMPLETE ({sw.ElapsedMilliseconds}ms, PID {pid})");
+                            return true;
+                        }
+                    }
+                    break;
+            }
+
+            // Check if EQ process died
+            hwnd = RefreshHandle(pid, hwnd);
+            if (hwnd == IntPtr.Zero)
+            {
+                Report($"{account.Name}: EQ process died during enter-world");
+                return true;
+            }
+
+            Thread.Sleep(500);
+        }
+
+        FileLogger.Error($"AutoLogin: LoginShm enter-world timeout for {account.Name}");
+        return false; // Fall back to keyboard enter-world
     }
 
     // ─── Combined Background Typing (SHM + PostMessage) ─────────────
