@@ -24,6 +24,7 @@
 #include "net_debug.h"
 #include "mq2_bridge.h"
 #include "login_givetime_detour.h"
+#include "login_state_machine.h"
 
 extern "C" void DeviceProxy_Shutdown();
 
@@ -33,6 +34,12 @@ extern "C" void DeviceProxy_Shutdown();
 static HANDLE g_charSelMap = nullptr;
 static volatile CharSelectShm* g_charSelShm = nullptr;
 static uint32_t g_charSelRetry = 0;
+
+// ─── Login Shared Memory ──────────────────────────────────────
+// Opened lazily — created by C# AutoLoginManager, DLL reads/writes.
+static HANDLE g_loginShmMap = nullptr;
+static volatile LoginShm* g_loginShm = nullptr;
+static uint32_t g_loginShmRetry = 0;
 
 static bool TryOpenCharSelShm() {
     DWORD pid = GetCurrentProcessId();
@@ -57,6 +64,31 @@ static bool TryOpenCharSelShm() {
 static void CloseCharSelShm() {
     if (g_charSelShm) { UnmapViewOfFile((void*)g_charSelShm); g_charSelShm = nullptr; }
     if (g_charSelMap) { CloseHandle(g_charSelMap); g_charSelMap = nullptr; }
+}
+
+static bool TryOpenLoginShm() {
+    DWORD pid = GetCurrentProcessId();
+    char name[64];
+    snprintf(name, sizeof(name), "Local\\EQSwitchLogin_%lu", pid);
+
+    HANDLE h = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, name);
+    if (!h) return false;
+
+    void* view = MapViewOfFile(h, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(LoginShm));
+    if (!view) {
+        CloseHandle(h);
+        return false;
+    }
+
+    g_loginShmMap = h;
+    g_loginShm = (volatile LoginShm*)view;
+    DI8Log("login_shm: opened (magic=0x%08X, version=%u)", g_loginShm->magic, g_loginShm->version);
+    return true;
+}
+
+static void CloseLoginShm() {
+    if (g_loginShm) { UnmapViewOfFile((void*)g_loginShm); g_loginShm = nullptr; }
+    if (g_loginShmMap) { CloseHandle(g_loginShmMap); g_loginShmMap = nullptr; }
 }
 
 // Called from device_proxy.cpp's ActivateThread (~60Hz, throttled to ~500ms internally)
@@ -110,6 +142,21 @@ void MQ2BridgePollTick() {
     }
     if (g_charSelShm && g_charSelShm->magic == CHARSEL_SHM_MAGIC) {
         MQ2Bridge::Poll(g_charSelShm);
+    }
+
+    // v7 Phase 4: open LoginShm lazily and tick the login state machine.
+    // LoginStateMachine drives the entire login flow (credentials → connect →
+    // server select → charselect → enter world) via in-process MQ2 widget calls.
+    if (!g_loginShm) {
+        if (g_loginShmRetry == 0) {
+            if (!TryOpenLoginShm())
+                g_loginShmRetry = 10;  // Retry every ~5 seconds
+        } else {
+            g_loginShmRetry--;
+        }
+    }
+    if (g_loginShm && g_loginShm->magic == LOGIN_SHM_MAGIC) {
+        LoginStateMachine::Tick(g_loginShm, g_charSelShm);
     }
 }
 
@@ -292,6 +339,7 @@ static void Cleanup() {
 
     MQ2Bridge::Shutdown();
     CloseCharSelShm();
+    CloseLoginShm();
 
     DI8Log("Cleanup complete");
 }
