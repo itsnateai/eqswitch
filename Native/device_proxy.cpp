@@ -136,19 +136,29 @@ static DWORD WINAPI ActivateThread(LPVOID) {
     while (!g_shutdown) {
         Sleep(16); // ~60Hz
 
-        // v7 Phase 2: try to install the LoginController::GiveTime detour. No-op
+        // v7: try to install the LoginController::GiveTime detour. No-op
         // after first successful install; cheap boolean check on subsequent
         // iterations. Returns false while eqmain.dll isn't loaded — expected
         // until the client reaches login screen.
         GiveTimeDetour::PollAndInstall();
 
-        // MQ2 bridge: background poll while the GiveTime detour is NOT yet
-        // installed (pre-login-screen) and also as a safety net if eqmain never
-        // loads (e.g. client shuts down before reaching login). Once the detour
-        // installs, MQ2BridgePollTick fires from EQ's game thread at 50-130 Hz
-        // and this background call is both redundant (internal 500ms throttle
-        // prevents double-work) and a no-op in practice. Keeping it costs one
-        // atomic CAS and an early-return per iteration.
+        // v7 Phase 4 FIX: detect eqmain.dll unload. eqmain handles login/server
+        // screens ONLY — it UNLOADS when EQ transitions to the 3D charselect
+        // scene (rendered by eqgame.exe, not eqmain). When this happens:
+        //   - GiveTime detour is gone (code was in eqmain's .text)
+        //   - g_installed falsely stays true
+        //   - ActivateThread skips MQ2BridgePollTick (thinks detour is running)
+        //   - Zero polling at charselect → charCount stays 0 → stall
+        // Fix: check if eqmain vanished and reset detour state so the fallback
+        // MQ2BridgePollTick resumes from this thread.
+        if (GiveTimeDetour::IsInstalled() && !GetModuleHandleA("eqmain.dll")) {
+            DI8Log("device_proxy: eqmain.dll UNLOADED — detour is gone, resuming background poll");
+            GiveTimeDetour::OnEqmainUnloaded();
+        }
+
+        // MQ2 bridge: background poll while the GiveTime detour is NOT active.
+        // During login (eqmain loaded), the detour fires at 50-130 Hz and this
+        // is skipped. At charselect (eqmain unloaded), we resume polling here.
         if (!GiveTimeDetour::IsInstalled()) {
             MQ2BridgePollTick();
         }

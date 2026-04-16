@@ -40,9 +40,13 @@ bool IsInstalled();
 // Returns nullptr if the detour hasn't fired yet.
 void *GetLoginController();
 
-// Clear the cached LoginController* when eqmain.dll unloads. Called from
-// FindEQMainWndMgr() when GetModuleHandleA("eqmain.dll") returns NULL.
-// Prevents Tier-0 from passing a dangling pointer to GetChildItem.
+// Clear the cached LoginController* when eqmain.dll unloads.
 void ClearLoginController();
+
+// Called by ActivateThread when eqmain.dll is detected as unloaded.
+// Resets g_installed, g_installAttempted, and g_loginController so:
+//   1. ActivateThread resumes background MQ2BridgePollTick
+//   2. PollAndInstall will re-install if eqmain reloads (camp to charselect)
+void OnEqmainUnloaded();
 
 } // namespace GiveTimeDetour
