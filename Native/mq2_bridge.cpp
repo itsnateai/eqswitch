@@ -12,6 +12,7 @@
 
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
+// psapi.h not needed — we read SizeOfImage from PE header directly
 #include <stdint.h>
 #include <string.h>
 #include "mq2_bridge.h"
@@ -493,6 +494,9 @@ static void *FindEQMainWndMgr() {
         // v7 Phase 4: clear dangling LoginController* — its memory lived in
         // eqmain.dll's address space and is now unmapped.
         GiveTimeDetour::ClearLoginController();
+        // v7 Phase 5: widget definition objects live on the heap managed by
+        // eqmain.dll — they're freed when eqmain unloads.
+        MQ2Bridge::ResetWidgetCache();
         return nullptr;
     }
     // v7 Phase 4b: validate cached result has enough valid windows before returning it.
@@ -710,6 +714,199 @@ static bool IterateAllWindows(WndIterCallback callback, void *context) {
     return false;
 }
 
+// ─── Widget Heap Scan Cache ───────────────────────────────────
+//
+// v7 Phase 5: bypass GetChildItem entirely during login.
+//
+// Problem: MQ2's GetChildItem thunks to eqgame.exe code which reads a
+// global template manager at a fixed address. During login, eqmain.dll
+// manages its own UI system and that global is NULL → GetChildItem
+// always fails with an SEH fault.
+//
+// Solution: scan the heap for "screen piece definition" objects that
+// store the SIDL widget name as a CXStr member at offset +0x18.
+//
+// CXStr buffer layout (Dalaya ROF2):
+//   [+0x00] int refcount
+//   [+0x04] int alloc
+//   [+0x08] int length
+//   [+0x0C] int pad (0)
+//   [+0x10] void* allocator_table_ptr (constant per session)
+//   [+0x14] char data[]  (null-terminated string)
+//
+// So CXStr object = single DWORD pointing to buffer base.
+// String content = *(CXStr) + 20.
+//
+// Widget definition object layout:
+//   [+0x00] void* vtable  (in eqmain.dll range)
+//   [+0x18] CXStr  name   (SIDL name like "LOGIN_UsernameEdit")
+
+struct WidgetCacheEntry {
+    const char *name;        // static string (caller's constant)
+    void       *pWidget;     // cached result (definition object pointer)
+    bool        searched;    // true = already scanned for this name
+};
+
+static const int WIDGET_CACHE_MAX = 16;
+static WidgetCacheEntry g_widgetCache[WIDGET_CACHE_MAX] = {};
+static int              g_widgetCacheCount = 0;
+static volatile bool    g_widgetScanDone = false;  // true after first full scan
+
+static void *HeapScanForWidget(const char *name) {
+    static int scanCallCount = 0;
+    if (scanCallCount < 5) {
+        DI8Log("mq2_bridge: HeapScanForWidget('%s') — starting scan", name);
+        scanCallCount++;
+    }
+
+    // Find eqmain.dll range (ASLR — resolves fresh each call)
+    HMODULE hEqmain = GetModuleHandleA("eqmain.dll");
+    if (!hEqmain) return nullptr;
+
+    // Get eqmain size from PE header (avoids psapi.lib dependency)
+    uintptr_t eqmLo = (uintptr_t)hEqmain;
+    uintptr_t eqmHi = eqmLo;
+    __try {
+        const uint8_t *pe = (const uint8_t *)hEqmain;
+        uint32_t e_lfanew = *(const uint32_t *)(pe + 0x3C);
+        if (e_lfanew < 0x400) {
+            uint32_t sizeOfImage = *(const uint32_t *)(pe + e_lfanew + 0x50);
+            eqmHi = eqmLo + sizeOfImage;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: HeapScanForWidget — failed to read eqmain PE header");
+        return nullptr;
+    }
+    if (eqmHi <= eqmLo) {
+        DI8Log("mq2_bridge: HeapScanForWidget — bad eqmain range 0x%08X-0x%08X", eqmLo, eqmHi);
+        return nullptr;
+    }
+
+    DI8Log("mq2_bridge: HeapScanForWidget('%s') — eqmain range 0x%08X-0x%08X", name, eqmLo, eqmHi);
+
+    int nameLen = (int)strlen(name);
+    MEMORY_BASIC_INFORMATION mbi;
+    uintptr_t addr = 0x00010000; // start from very low
+    int pagesScanned = 0;
+    int regionsTotal = 0;
+    uintptr_t lastAddr = 0;
+
+    while (addr < 0x7FFF0000 && pagesScanned < 300000) {
+        if (VirtualQuery((void *)addr, &mbi, sizeof(mbi)) == 0) {
+            DI8Log("mq2_bridge: HeapScanForWidget — VirtualQuery failed at 0x%08X (err=%d), last=0x%08X",
+                   addr, GetLastError(), lastAddr);
+            break;
+        }
+
+        uintptr_t base = (uintptr_t)mbi.BaseAddress;
+        SIZE_T size = mbi.RegionSize;
+        regionsTotal++;
+        lastAddr = base;
+
+        // Only scan committed, readable, private/mapped (heap) pages
+        if (mbi.State == MEM_COMMIT &&
+            !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
+            (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) &&
+            (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_MAPPED)) {
+
+            pagesScanned++;
+
+            __try {
+                const uint8_t *p = (const uint8_t *)base;
+
+                for (uintptr_t off = 0; off + 0x20 <= size; off += 4) {
+                    // Check if DWORD at this position is an eqmain vtable
+                    uintptr_t vt = *(const uintptr_t *)(p + off);
+                    if (vt < eqmLo || vt >= eqmHi) continue;
+
+                    // Quick vtable validation: first entry should be in code range
+                    uintptr_t vt0 = *(const uintptr_t *)vt;
+                    if (vt0 < eqmLo || vt0 >= eqmHi) {
+                        // Also accept eqgame.exe code range
+                        if (vt0 < 0x00400000 || vt0 >= 0x02200000) continue;
+                    }
+
+                    // Read CXStr buf_base at +0x18 from this object
+                    uintptr_t cxstrBufBase = *(const uintptr_t *)(p + off + 0x18);
+                    if (cxstrBufBase < 0x10000 || cxstrBufBase > 0x7FFFFFFF) continue;
+
+                    // Validate CXStr buffer header: length at buf_base+8 should match
+                    __try {
+                        int bufLen = *(const int *)(cxstrBufBase + 8);
+                        if (bufLen != nameLen) continue;
+
+                        // String data at buf_base + 20
+                        const char *str = (const char *)(cxstrBufBase + 20);
+
+                        // Fast first-char check
+                        if (str[0] != name[0]) continue;
+
+                        // Full string comparison (bounded by length)
+                        bool match = true;
+                        for (int i = 0; i < nameLen; i++) {
+                            if (str[i] != name[i]) { match = false; break; }
+                        }
+                        if (!match || str[nameLen] != '\0') continue;
+
+                        // FOUND! Return this object's address
+                        void *result = (void *)(base + off);
+                        DI8Log("mq2_bridge: HeapScanForWidget('%s') FOUND at %p (vt=%p, eqmain=0x%08X-0x%08X)",
+                               name, result, (void *)vt, eqmLo, eqmHi);
+                        return result;
+                    }
+                    __except (EXCEPTION_EXECUTE_HANDLER) {
+                        // CXStr buf_base pointed to bad memory, skip
+                    }
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {
+                // Page became unreadable mid-scan
+            }
+        }
+
+        addr = base + size;
+        if (addr <= base) addr = base + 0x1000;
+    }
+
+    DI8Log("mq2_bridge: HeapScanForWidget('%s') — not found (%d heap pages, %d total regions, last=0x%08X)",
+           name, pagesScanned, regionsTotal, lastAddr);
+    return nullptr;
+}
+
+// Cached wrapper: scans once per widget name, caches result
+static void *FindWidgetByHeapScan(const char *name) {
+    // Check cache first
+    for (int i = 0; i < g_widgetCacheCount; i++) {
+        if (g_widgetCache[i].name == name || strcmp(g_widgetCache[i].name, name) == 0) {
+            return g_widgetCache[i].pWidget;  // return cached (may be nullptr if not found)
+        }
+    }
+
+    // Not in cache — do the scan
+    void *result = HeapScanForWidget(name);
+
+    // Cache the result (even if nullptr, to avoid re-scanning)
+    if (g_widgetCacheCount < WIDGET_CACHE_MAX) {
+        g_widgetCache[g_widgetCacheCount].name = name;
+        g_widgetCache[g_widgetCacheCount].pWidget = result;
+        g_widgetCache[g_widgetCacheCount].searched = true;
+        g_widgetCacheCount++;
+    }
+
+    return result;
+}
+
+// Reset widget cache (call when eqmain.dll unloads at charselect transition)
+void MQ2Bridge::ResetWidgetCache() {
+    for (int i = 0; i < g_widgetCacheCount; i++) {
+        g_widgetCache[i].pWidget = nullptr;
+        g_widgetCache[i].searched = false;
+    }
+    g_widgetCacheCount = 0;
+    g_widgetScanDone = false;
+    DI8Log("mq2_bridge: widget cache reset");
+}
+
 // ─── FindWindowByName implementation ──────────────────────────
 
 struct FindByNameCtx {
@@ -897,9 +1094,23 @@ int MQ2Bridge::ReadGameState() {
 static int g_findLogCount = 0;
 
 void *MQ2Bridge::FindWindowByName(const char *name) {
-    if (!g_fnGetChildItem || !name) {
+    if (!name) return nullptr;
+
+    // v7 Phase 5 — Tier -1: direct heap scan for widget definitions.
+    // Bypasses GetChildItem entirely — works even when eqmain.dll has its
+    // own CXWndManager and the game's template table is NULL.
+    // Runs ONLY during login (when eqmain.dll is loaded).
+    {
+        HMODULE hEqmain = GetModuleHandleA("eqmain.dll");
+        if (hEqmain) {
+            void *cached = FindWidgetByHeapScan(name);
+            if (cached) return cached;
+        }
+    }
+
+    if (!g_fnGetChildItem) {
         if (g_findLogCount < 3) {
-            DI8Log("mq2_bridge: FindWindowByName('%s') — GetChildItem=%p", name ? name : "null", g_fnGetChildItem);
+            DI8Log("mq2_bridge: FindWindowByName('%s') — GetChildItem=%p, heap scan also failed", name, g_fnGetChildItem);
             g_findLogCount++;
         }
         return nullptr;
