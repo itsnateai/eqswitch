@@ -72,6 +72,7 @@ PLAN_*.md
 TODO.md
 EQSwitch.Tests/
 
-## But: archived historical planning docs should be tracked
-!docs/archive/**
-!docs/archive/**/*.md
+## But: archived historical PLAN handoffs are tracked (scoped — not a blanket un-ignore)
+!docs/archive/handoffs/
+!docs/archive/handoffs/**
+!docs/archive/handoffs/**/*.md
