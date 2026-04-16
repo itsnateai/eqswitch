@@ -1,9 +1,16 @@
-# EQSwitch v3.6.0 — Claude Code Context
+# EQSwitch — Claude Code Context
+
+> **Version:** the authoritative version is in `EQSwitch.csproj` (`<Version>`). Don't hardcode it here; it rots.
 
 ## What This Is
-C# (.NET 8 WinForms) EverQuest multiboxing window manager for the Shards of Dalaya emulator. Features DLL hook injection, DPAPI-encrypted auto-login, slim titlebar mode, PiP overlays, and comprehensive eqclient.ini management. ~30 C# files + native C++ hook DLL, ~12,000 lines.
+C# (.NET 8 WinForms) EverQuest multiboxing window manager for the Shards of Dalaya emulator. Features DLL hook injection, DPAPI-encrypted auto-login, slim titlebar mode, PiP overlays, MQ2 character-select integration (SHM bridge + in-process Enter World), per-account / per-team AutoEnterWorld flags, an Account / Character / Team data split with alias mapping, and comprehensive eqclient.ini management.
 
-**Repo**: `itsnateai/eqswitch` (private) | **Branch**: master
+**Repo**: `itsnateai/eqswitch` (public) | **Branch**: master
+
+## License
+**GPL-2.0-or-later** — see `LICENSE` and the `README.md` License section. Fan-made educational project — free, never sold. Ecosystem-aligned with MacroQuest (GPLv2-only) so v7+ can legitimately borrow from MQ2 where helpful. Per-file headers use SPDX (`// SPDX-License-Identifier: GPL-2.0-or-later`) on first-party source; MinHook (BSD-2) and HDE32/64 retain their upstream headers verbatim.
+
+Relicense boundary: tag `v3.9.3-last-gplv3` marks the final GPLv3 commit. All prior released binaries (v3.9.3 and earlier) remain GPL-3.0 forever.
 
 ## Build Commands
 ```bash
@@ -175,7 +182,7 @@ EQ can recreate its window during gameplay. All Win32 calls on window handles sh
 ```
 eqswitch/
   Program.cs                    # Entry point, mutex, migration
-  EQSwitch.csproj               # .NET 8 WinForms, v3.6.0
+  EQSwitch.csproj               # .NET 8 WinForms (version lives here, not in this doc)
   Core/
     NativeMethods.cs             # All P/Invoke (385 lines)
     ProcessManager.cs            # EQ process detection

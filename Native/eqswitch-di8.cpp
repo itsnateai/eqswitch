@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 itsnateai
+
 // eqswitch-di8.dll — Injected into eqgame.exe via CreateRemoteThread
 //
 // Hooks DirectInput8Create via MinHook detour to wrap COM objects for
