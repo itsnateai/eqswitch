@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 itsnateai
+
 // di8_proxy.cpp — IDirectInput8 COM proxy implementation
 // Forwards all methods to the real interface.
 // CreateDevice intercepts keyboard creation to wrap in DeviceProxy.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 itsnateai
+
 // login_shm.h -- Shared memory for in-process login state machine
 //
 // C# creates "Local\EQSwitchLogin_{PID}", writes credentials + command.

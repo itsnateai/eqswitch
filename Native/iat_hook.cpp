@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 itsnateai
+
 // iat_hook.cpp — IAT patching for keyboard state and window focus queries
 // Hooks GetAsyncKeyState, GetKeyState, GetKeyboardState (return synthetic state)
 // and GetForegroundWindow, GetFocus, GetActiveWindow (return EQ HWND when active).

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 itsnateai
+
 using System.Text;
 using EQSwitch.Config;
 using EQSwitch.Core;

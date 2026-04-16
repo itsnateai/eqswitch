@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 itsnateai
+
 // mq2_bridge.cpp -- MQ2 bridge for character select + in-process login
 //
 // Resolves MQ2 symbols exported by Dalaya's dinput8.dll (2,966 exports),

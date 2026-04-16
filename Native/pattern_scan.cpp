@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 itsnateai
+
 // pattern_scan.cpp — Locates EQ's internal g_bActive flag via binary scanning.
 //
 // Strategy: EQ's WndProc handles WM_ACTIVATEAPP (0x1C) by storing wParam into

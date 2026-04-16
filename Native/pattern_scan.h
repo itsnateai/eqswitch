@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 itsnateai
+
 #pragma once
 // pattern_scan.h — Runtime binary scanner for EQ's internal activation flag.
 // Scans eqgame.exe's .text section for the WM_ACTIVATEAPP handler to locate

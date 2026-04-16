@@ -7,8 +7,12 @@
     <ApplicationIcon>eqswitch.ico</ApplicationIcon>
     <AssemblyName>EQSwitch</AssemblyName>
     <RootNamespace>EQSwitch</RootNamespace>
-    <Version>3.9.3</Version>
+    <Version>3.10.0</Version>
     <Description>EverQuest Multiboxing Window Manager for Shards of Dalaya</Description>
+    <Authors>itsnateai</Authors>
+    <Copyright>Copyright (C) 2026 itsnateai</Copyright>
+    <PackageLicenseExpression>GPL-2.0-or-later</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/itsnateai/eqswitch</PackageProjectUrl>
 
     <!-- Single-file portable publish settings -->
     <PublishSingleFile>true</PublishSingleFile>
@@ -27,6 +31,13 @@
   <ItemGroup>
     <Compile Remove="TestInput\**" />
     <None Remove="TestInput\**" />
+  </ItemGroup>
+
+  <!-- Exclude inline unit tests from Release builds. They live alongside production code
+       for Debug-time test runs, but would bloat the 155 MB single-file publish and leak
+       Console.WriteLine to stdout in shipped binaries. -->
+  <ItemGroup Condition="'$(Configuration)' == 'Release'">
+    <Compile Remove="Core\*Tests.cs" />
   </ItemGroup>
 
   <ItemGroup>
