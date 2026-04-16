@@ -53,18 +53,12 @@ HWND GetEqHwnd() { return g_eqHwnd; }
 static WNDPROC g_origWndProc = nullptr;
 static bool g_subclassInstalled = false;
 
-static const UINT_PTR TIMER_MQ2_POLL = 0xEA01;
-static bool g_mq2TimerInstalled = false;
-static HWND g_timerHwnd = nullptr;  // track which HWND owns the timer
-
-// TIMERPROC callback — fires on game thread independent of WndProc subclass.
-// Subclass gets removed when focus-faking deactivates, but MQ2 poll must continue.
-// g_shutdown guard: KillTimer from a non-owner thread may silently fail (Win32 rule),
-// so a pending WM_TIMER can fire after Shutdown nullifies function pointers.
-static void CALLBACK MQ2TimerProc(HWND hwnd, UINT msg, UINT_PTR idTimer, DWORD dwTime) {
-    if (g_shutdown) return;
-    MQ2BridgePollTick();
-}
+// v7 Phase 3: WM_TIMER-based MQ2 poll removed. MQ2BridgePollTick() now runs
+// from the LoginController::GiveTime detour (see login_givetime_detour.cpp)
+// during login/server-select/charselect, and from ActivateThread's background
+// tick during the pre-eqmain-load window + any post-in-game phase. The detour
+// runs on EQ's game thread inside EQ's own frame loop, so it cannot contribute
+// to message-pump pressure the way v6e's SetTimer did.
 
 static LRESULT CALLBACK ActivateWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (KeyShm::IsActive()) {
@@ -117,11 +111,12 @@ static bool EnsureSubclassInstalled(HWND hwnd) {
 // Remove the subclass when we no longer need it
 static void RemoveSubclass(HWND hwnd) {
     if (!g_subclassInstalled || !g_origWndProc) return;
-    // NOTE: do NOT kill MQ2 timer here — it must run independently of subclass
+    // v7 Phase 3: GiveTime detour runs independently of this subclass — no
+    // timer coupling to worry about here.
     WNDPROC current = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
     if (current == ActivateWndProc) {
         SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)g_origWndProc);
-        DI8Log("wndproc_hook: removed subclass (MQ2 timer still active)");
+        DI8Log("wndproc_hook: removed subclass");
     }
     g_subclassInstalled = false;
 }
@@ -147,10 +142,14 @@ static DWORD WINAPI ActivateThread(LPVOID) {
         // until the client reaches login screen.
         GiveTimeDetour::PollAndInstall();
 
-        // MQ2 bridge: background poll until game-thread timer is installed.
-        // Once TIMERPROC is running on the game thread, this becomes a no-op
-        // (MQ2BridgePollTick has internal 500ms throttle — double-fire is harmless).
-        if (!g_mq2TimerInstalled) {
+        // MQ2 bridge: background poll while the GiveTime detour is NOT yet
+        // installed (pre-login-screen) and also as a safety net if eqmain never
+        // loads (e.g. client shuts down before reaching login). Once the detour
+        // installs, MQ2BridgePollTick fires from EQ's game thread at 50-130 Hz
+        // and this background call is both redundant (internal 500ms throttle
+        // prevents double-work) and a no-op in practice. Keeping it costs one
+        // atomic CAS and an early-return per iteration.
+        if (!GiveTimeDetour::IsInstalled()) {
             MQ2BridgePollTick();
         }
 
@@ -160,34 +159,13 @@ static DWORD WINAPI ActivateThread(LPVOID) {
         // Count ticks after HWND appears — delay subclass for EQ init
         if (hwnd && initDelay < 400) initDelay++; // ~6.4 seconds
 
-        // Hotfix v6e: install MQ2 poll timer LATER (300 ticks ~= 4.8s after HWND) to
-        // let EQ's sensitive early init + charselect-loader phase complete without
-        // our WM_TIMER stealing time from the message pump. Pre-v6e installed at 100
-        // ticks (~1.6s). During 1.6-4.8s window, ActivateThread keeps polling at
-        // background-thread cadence (see line 147) — same coverage, zero pump cost.
-        if (hwnd && initDelay >= 300) {
-            if (g_mq2TimerInstalled && g_timerHwnd && g_timerHwnd != hwnd) {
-                KillTimer(g_timerHwnd, TIMER_MQ2_POLL);
-                g_mq2TimerInstalled = false;
-                DI8Log("mq2_timer: HWND changed 0x%X -> 0x%X, reinstalling",
-                       (unsigned)(uintptr_t)g_timerHwnd, (unsigned)(uintptr_t)hwnd);
-            }
-            if (!g_mq2TimerInstalled) {
-                // Hotfix v6e: 500ms -> 1500ms. WM_TIMER dispatched via EQ's message
-                // pump blocks the pump while MQ2TimerProc runs. At 500ms we were
-                // contributing enough pump pressure that Dalaya's charselect loader
-                // occasionally exceeded the 5s IsHungAppWindow threshold, leading to
-                // Windows forcibly closing eqgame.exe (Event Viewer: Application
-                // Hang 1002, observed 2026-04-15 15:14 and 16:05). 1500ms gives the
-                // pump 3x more headroom; action latency impact is minimal because
-                // enter-world click response is user-initiated and tolerates 1.5s.
-                SetTimer(hwnd, TIMER_MQ2_POLL, 1500, MQ2TimerProc);
-                g_timerHwnd = hwnd;
-                g_mq2TimerInstalled = true;
-                DI8Log("mq2_timer: installed game-thread MQ2 poll (1500ms, TIMERPROC) on hwnd=0x%X",
-                       (unsigned)(uintptr_t)hwnd);
-            }
-        }
+        // v7 Phase 3: SetTimer-based MQ2 poll REMOVED. Was v6e's 1500ms
+        // TIMERPROC; now replaced by the LoginController::GiveTime detour
+        // installed lazily in login_givetime_detour.cpp. The detour runs on
+        // EQ's game thread inside EQ's own frame loop, so we cannot contribute
+        // to message-pump latency the way SetTimer-dispatched WM_TIMER did.
+        // v6e's 1500ms interval + 300-tick initDelay were emergency band-aids
+        // for the IsHungAppWindow / Event 1002 crashes and are obsolete now.
 
         // Layer 2: one-shot pattern scan after EQ's window is created
         if (!g_activeFlagScanned && hwnd && initDelay >= 100) {
@@ -319,12 +297,10 @@ static void StartActivateThread() {
 // skipped entirely — the OS reclaims everything.
 extern "C" void DeviceProxy_Shutdown() {
     g_shutdown = true;
-    // Kill MQ2 timer and remove WndProc subclass BEFORE threads exit
+    // v7 Phase 3: no WM_TIMER to kill — GiveTime detour is uninstalled
+    // separately by GiveTimeDetour::Uninstall() called from eqswitch-di8.cpp
+    // Cleanup() right before MH_Uninitialize.
     HWND hwnd = g_eqHwnd;
-    if (hwnd && g_mq2TimerInstalled) {
-        KillTimer(hwnd, TIMER_MQ2_POLL);
-        g_mq2TimerInstalled = false;
-    }
     if (hwnd) RemoveSubclass(hwnd);
     // Wait for threads to observe g_shutdown and exit before releasing SHM.
     // ActivateThread sleeps 16ms, ShmPollingThread sleeps 8ms — 100ms is plenty.
