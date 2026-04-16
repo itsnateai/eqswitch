@@ -18,6 +18,7 @@
 #include "mq2_bridge.h"
 #include "login_shm.h"
 #include "login_givetime_detour.h"
+#include "eqmain_offsets.h"
 
 // ─── Forward declarations ──────────────────────────────────────
 
@@ -1622,7 +1623,14 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                     tier0LogCount++;
                 }
             }
-            // Log CXWnd-like fields with their text content (diagnostic — runs once)
+            // Log CXWnd-like fields with their text content (diagnostic — runs once).
+            // STEP 2A fix (2026-04-16): tightened CXWnd detection from
+            // "fv-readable && *fv-readable" to IsEQMainWidget(fv). The old
+            // filter let through any memory whose first 4 bytes formed a
+            // readable address — including string buffers and eqmain globals
+            // — and ReadWindowText SEH-faulted on them 26x per login. The new
+            // filter requires the vtable pointer to live inside eqmain.dll's
+            // load range, which is the precise definition of "CXWnd-like".
             static bool tier0Dumped = false;
             if (!tier0Dumped && cxwndCandidates > 0 && g_fnGetWindowText && g_fnCXStrDtor) {
                 tier0Dumped = true;
@@ -1630,18 +1638,30 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                        loginCtrl, cxwndCandidates);
                 uintptr_t *dumpFields = (uintptr_t *)loginCtrl;
                 int dumpIdx = 0;
+                int skippedNonEqMain = 0;
                 for (int di = 0; di < 500 && dumpIdx < 30; di++) {
                     uintptr_t fv = dumpFields[di];
                     if (fv < 0x10000 || fv > 0x7FFFFFFF) continue;
                     if (!IsReadablePtr((void *)fv, sizeof(void *))) continue;
                     void *vt = *(void **)fv;
                     if (!vt || !IsReadablePtr(vt, sizeof(void *))) continue;
+                    // Only dump widgets whose vtable lives inside eqmain.dll.
+                    // Filters out string buffers, module bases, and non-CXWnd
+                    // structs that happened to pass the readability check.
+                    if (!EQMainOffsets::IsEQMainWidget((void *)fv)) {
+                        skippedNonEqMain++;
+                        continue;
+                    }
                     char textBuf[128] = {};
                     __try { MQ2Bridge::ReadWindowText((void *)fv, textBuf, sizeof(textBuf)); }
                     __except(EXCEPTION_EXECUTE_HANDLER) { textBuf[0] = '\0'; }
                     DI8Log("mq2_bridge:   field[%d] +0x%X = %p (vt=%p) text='%s'",
                            dumpIdx, di * 4, (void *)fv, vt, textBuf);
                     dumpIdx++;
+                }
+                if (skippedNonEqMain > 0) {
+                    DI8Log("mq2_bridge: Tier-0 dump skipped %d non-eqmain fields (string buffers/globals)",
+                           skippedNonEqMain);
                 }
             }
             if (tier0LogCount < 5) {
@@ -1793,6 +1813,13 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
 void MQ2Bridge::SetEditText(void *pEditWnd, const char *text) {
     if (!g_fnSetWindowText || !g_fnCXStrCtor || !g_fnCXStrDtor || !pEditWnd || !text) return;
 
+    // STEP 2A diagnostic: log whether this widget is eqmain-owned. The
+    // eqgame-side g_fnSetWindowText call below SEHs on eqmain widgets
+    // because class layouts differ. Step 2B will route these through
+    // eqmain-side function pointers; for now we prove the hypothesis
+    // by correlating "isEqMain=1" with "SEH in SetEditText" in the log.
+    bool isEqMain = EQMainOffsets::IsEQMainWidget(pEditWnd);
+
     __try {
         // Construct a CXStr from const char*, pass it to SetWindowTextA, then destroy
         uint8_t cxstrBuf[16] = {}; // CXStr is 16 bytes (Ptr, Length, Alloc, RefCount)
@@ -1801,7 +1828,8 @@ void MQ2Bridge::SetEditText(void *pEditWnd, const char *text) {
         g_fnCXStrDtor(cxstrBuf);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        DI8Log("mq2_bridge: SEH in SetEditText");
+        DI8Log("mq2_bridge: SEH in SetEditText (pWnd=%p isEqMain=%d — Step 2B will route to eqmain-side fn)",
+               pEditWnd, isEqMain ? 1 : 0);
     }
 }
 
@@ -1814,12 +1842,17 @@ void MQ2Bridge::ClickButton(void *pButton) {
         return;
     }
 
+    // STEP 2A diagnostic: same hypothesis-validation as SetEditText. The
+    // eqgame-side WndNotification export SEHs on eqmain-owned buttons.
+    bool isEqMain = EQMainOffsets::IsEQMainWidget(pButton);
+
     __try {
         // XWM_LCLICK = 1, matching MQ2AutoLogin's SendWndNotification pattern
         g_fnWndNotification(pButton, pButton, 1, nullptr);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        DI8Log("mq2_bridge: SEH in ClickButton");
+        DI8Log("mq2_bridge: SEH in ClickButton (pWnd=%p isEqMain=%d — Step 2B will route to eqmain-side fn)",
+               pButton, isEqMain ? 1 : 0);
     }
 }
 
@@ -1830,6 +1863,10 @@ void MQ2Bridge::ReadWindowText(void *pWnd, char *outBuf, int bufSize) {
     outBuf[0] = '\0';
 
     if (!g_fnGetWindowText || !g_fnCXStrDtor || !pWnd) return;
+
+    // STEP 2A diagnostic: GetWindowTextA is another eqgame-side function
+    // that SEHs on eqmain-owned widgets. Expected 27 SEHs/login per log.
+    bool isEqMain = EQMainOffsets::IsEQMainWidget(pWnd);
 
     __try {
         // GetWindowTextA returns CXStr by value via hidden sret pointer
@@ -1847,7 +1884,8 @@ void MQ2Bridge::ReadWindowText(void *pWnd, char *outBuf, int bufSize) {
         g_fnCXStrDtor(cxstrBuf);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        DI8Log("mq2_bridge: SEH in ReadWindowText");
+        DI8Log("mq2_bridge: SEH in ReadWindowText (pWnd=%p isEqMain=%d)",
+               pWnd, isEqMain ? 1 : 0);
     }
 }
 
