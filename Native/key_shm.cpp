@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 itsnateai
+
 // key_shm.cpp — Shared memory reader for key state injection
 // Opens Local\EQSwitchDI8_{PID} (created by C# KeyInputWriter).
 // All reads use volatile to see cross-process writes.

@@ -1,5 +1,120 @@
 # Changelog
 
+## [Unreleased] — Relicense to GPL-2.0-or-later (2026-04-15)
+
+### Changed
+- **License changed from GPL-3.0 to GPL-2.0-or-later** — Ecosystem alignment with MacroQuest (MQ2) and the broader EverQuest tool community, which is uniformly GPLv2-only. GPL-2.0-or-later is upward-compatible with GPLv3 for anyone who wants it, while unlocking legitimate code-sharing with MQ2-derived work where EQSwitch may eventually borrow (e.g. the planned v7 GiveTime detour).
+- **README License section** — Formal attributions added for **Stonemite** (DirectInput proxy approach, studied — no code taken) and **MacroQuest** (character-select facts referenced, no source compiled in). SHM boundary between EQSwitch and MQ2 DLL reaffirmed.
+- **README fan-made disclaimer** — Strengthened to make the "free, educational, independent" posture explicit. EQSwitch is not sold and will not be sold.
+- **CONTRIBUTING.md** — Contributor license grant updated to GPL-2.0-or-later.
+
+### Rationale
+Sole-author relicensing (verified via `git log`). No external contributors held copyright on any EQSwitch code. Prior releases (v3.9.3 and earlier) remain GPL-3.0 for anyone who already downloaded them; future releases ship under the new license. Tag `v3.9.3-last-gplv3` marks the relicense boundary. No user-visible behavior change.
+
+---
+
+## v3.9.3 — Release Polish (2026-04-13)
+
+### Changed
+- Version bump for public release following v3.9.2 security hardening.
+
+---
+
+## v3.9.2 — Native Upgrade, WinGet Compat, Security Hardening (2026-04-13)
+
+### Added
+- **SHM-driven enter-world** — in-process `CLW_EnterWorldButton` click via shared-memory request/ack handshake (replaces earlier PostMessage approach for this step).
+- **Charselect slot probe** — runtime validation that the resolved slot matches the user's intended character before commit.
+- **Vtable guard around `GetChildItem`** — defensive check before calling into MQ2-exported thunks.
+
+### Changed
+- **WinGet-compatible distribution** — packaging adjustments for smooth WinGet manifest submission.
+- **Security hardening for distribution** — installer / update path review, string scrubbing, no secrets in binaries.
+
+### Fixed
+- **Log-spam reduction** in native `NetDebug` output during charselect polling.
+
+---
+
+## v3.9.0 / v3.9.1 — Per-Account AutoEnterWorld + Naming Cleanup (2026-04-12 / 2026-04-13)
+
+### Added
+- **Per-account and per-team `AutoEnterWorld` flag** — granular control over which accounts auto-commit to character select vs. stop at the character screen.
+- **DLL verification report** (`Native/VERIFICATION.md`) — independent reverse-engineering evidence for MQ2 export offsets used on Dalaya.
+- **Volatile cross-thread fields** in native login state machine (C++ memory-model correctness fix surfaced by 9-agent audit that fixed 8 bugs).
+
+### Changed
+- **`LaunchTwo` → `LaunchAll`** terminology cleanup. Config migrated v2 → v3 (duplicate `LaunchTwo` removed).
+
+---
+
+## v3.6.0 — UI Polish, Log Trimming, Account Backup (2026-04-10)
+
+### Added
+- **Log trimming** — async stream-based trimmer with archive to `Logs/archive/`. Default threshold 50 MB; configurable.
+- **Account backup / import** — DPAPI blobs portable across imports on the same Windows user.
+- **Team submenu rework** — `LaunchTwo` for bare clients, Launch Team restored, all 4 teams in tray submenu.
+
+### Changed
+- **Hotkeys / Video / Accounts tabs** — card padding, conflict warnings, Windowed Mode relocated to Window Style card.
+
+### Fixed
+- **Native vtable validation** before `GetChildItem` call (prevents crash on Dalaya's variant EQ client).
+- **Retry counter** for charselect window search with bounded cap (was unbounded busy-wait).
+- **Lazy MQ2 init** — replaces blocking `Sleep(2000)` startup delay.
+- **MemoryBarrier before SHM charCount write** — ordering fix for cross-thread reads.
+
+---
+
+## v3.5.0 — Background Input & 3-Layer Activation Defense (2026-04-09)
+
+### Fixed
+- **Background auto-login works end-to-end while EQ is unfocused.** Root cause was an inline `GetForegroundWindow` hook in `iat_hook.cpp` that only spoofed for callers within `eqgame.exe`'s address range — EQ's game loop calls from loaded DLLs fell outside that range. Three-layer fix:
+  1. Inline hooks skip the caller check when SHM is active, so `GetForegroundWindow` / `GetFocus` / `GetActiveWindow` all return EQ's HWND.
+  2. Persistent WndProc subclass blocks `WM_ACTIVATEAPP(FALSE)` / `WM_ACTIVATE(WA_INACTIVE)` / `WM_KILLFOCUS` / `WM_NCACTIVATE` with a 16 ms re-install timer.
+  3. Activation blast on re-install after EQ's 3D char select overwrites the subclass.
+- **Unconditional 200 ms re-post** of `WM_ACTIVATEAPP(1)` while SHM active (old self-check was defeated by the hook's own spoofing).
+- `CallWindowProcA` → `CallWindowProcW` for Unicode compatibility.
+
+---
+
+## v3.4.3 — Suspended-Process Injection Architecture (2026-04-08)
+
+### Changed
+- **Replaced `dinput8.dll` proxy with CREATE_SUSPENDED process injection.** EQSwitch now injects `eqswitch-di8.dll` and `eqswitch-hook.dll` directly into `eqgame.exe` after resuming the loader (~50 ms). Dalaya's 1.3 MB MQ2 `dinput8.dll` stays untouched — no patcher conflicts, no server hash validation failures.
+
+### Added
+- **Character select Enter World** uses 250 ms key holds with 3 retry attempts and real title-change verification.
+- **`ActivateThread`** continuously re-posts `WM_ACTIVATEAPP(1)` while SHM active to defend against focus loss.
+- **Adaptive `WaitForScreenTransition`** — replaces fixed 3 s post-server-select sleep; polls `IsHungAppWindow` + `GetWindowRect` stability and handles any load time (5 – 90 s).
+
+### Removed
+- Dead proxy files (prior `dinput8.dll` proxy architecture).
+
+---
+
+## v3.4.2 — Self-Updater Completeness + Config Migration Framework (2026-04-08)
+
+### Added
+- **Self-updater handles all shipped files** — `EQSwitch.exe`, `eqswitch-hook.dll`, and `dinput8.dll` (previously missed `dinput8.dll`).
+- **`--test-update` CLI flag** for simulating full update flow locally without a GitHub release.
+- **Post-update toast notification** on relaunch.
+- **`ConfigVersionMigrator`** — versioned framework that transforms raw JSON before deserialization; preserves user settings across property renames and type changes.
+
+### Fixed
+- **Retry logic for `.old` artifact cleanup** (race with memory-mapped exe).
+- **CTS dispose race** in `UpdateDialog`.
+
+---
+
+## v3.4.0 — CI / Release Pipeline Cleanup (2026-04-05)
+
+### Changed
+- **Removed broken framework-dependent build from CI** — Release artifacts are self-contained single-file only.
+- **Native DLLs bundled into release zip** — `eqswitch-hook.dll` (and later `eqswitch-di8.dll`) ship alongside the exe.
+
+---
+
 ## v3.3.1 — Config Baseline & Defaults Overhaul (2026-04-04)
 
 ### Fixed

@@ -54,15 +54,24 @@ Native/*.lib
 .superpowers/
 .worktrees/
 
-## Task Management
+## Research / RE scratch
+_.diagnostics/
+Native/dumps/
+Native/*.ps1
+cedebug.txt
+
+## Task Management (gitignored — WIP scratch docs at repo root)
 AUDIT_TASKS.md
 TODO_LIST.md
 SCHEDULED_TASKS.md
 ASSUMPTIONS.md
 DEFERRED_FEATURES.md
 eqclient.ini.reference
-CLAUDE.md
 FINAL_REPORT.md
 PLAN_*.md
 TODO.md
 EQSwitch.Tests/
+
+## But: archived historical planning docs should be tracked
+!docs/archive/**
+!docs/archive/**/*.md

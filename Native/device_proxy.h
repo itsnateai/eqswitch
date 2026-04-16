@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 itsnateai
+
 #pragma once
 // EQSwitch dinput8 proxy — IDirectInputDevice8 COM wrapper
 // Intercepts keyboard device methods for background key injection.

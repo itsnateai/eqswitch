@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 itsnateai
+
 // device_proxy.cpp — IDirectInputDevice8 COM proxy implementation
 // Keyboard interception: SetCooperativeLevel (BACKGROUND|NONEXCLUSIVE),
 // GetDeviceState (inject keys), GetDeviceData (synthetic events),

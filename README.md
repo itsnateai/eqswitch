@@ -8,12 +8,12 @@
   <a href="https://github.com/itsnateai/eqswitch/releases/latest"><img src="https://img.shields.io/github/v/release/itsnateai/eqswitch?style=flat-square&color=34c060" alt="Release"></a>
   <img src="https://img.shields.io/badge/.NET-8.0-512bd4?style=flat-square&logo=dotnet" alt=".NET 8">
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4?style=flat-square&logo=windows" alt="Windows">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/itsnateai/eqswitch?style=flat-square&color=34c060" alt="GPL-3.0 License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/itsnateai/eqswitch?style=flat-square&color=34c060" alt="GPL-2.0-or-later License"></a>
 </p>
 
 ---
 
-> **Fan-made project.** EQSwitch is an independent, open-source utility and is not affiliated with, endorsed by, or connected to Daybreak Game Company, Darkpaw Games, or the Shards of Dalaya team. EverQuest is a registered trademark of Daybreak Game Company LLC. This tool does not distribute, modify, or host any game content — it is a client-side window manager only.
+> **Fan-made educational project.** EQSwitch is an independent, open-source utility built for educational and personal-use purposes, and it is free — always. It is not affiliated with, endorsed by, or connected to Daybreak Game Company, Darkpaw Games, or the Shards of Dalaya team. EverQuest is a registered trademark of Daybreak Game Company LLC. This tool does not distribute, modify, or host any game content — it is a client-side window manager only.
 
 A lightweight EverQuest multiboxer — hotkey switching, encrypted auto-login, PiP overlays, CPU affinity, multi-monitor support, and zero-telemetry privacy for Shards of Dalaya.
 
@@ -226,4 +226,15 @@ Your `eqclient.ini` settings and EQSwitch config files are **not** modified — 
 
 ## License
 
-[GPL-3.0](LICENSE)
+[GPL-2.0-or-later](LICENSE) — GNU General Public License, version 2, or (at your option) any later version.
+
+### Attribution
+
+- **Stonemite** ([`eqlaika/stonemite`](https://github.com/eqlaika/stonemite)) — DirectInput proxy architecture studied (GPLv3). No code was taken; the approach was reimplemented independently.
+- **MacroQuest (MQ2)** — Character-select integration facts (offsets, struct layouts, IPC patterns) referenced. No MQ2 source is compiled into EQSwitch; the two communicate across a shared-memory boundary only.
+- **MinHook (by Tsuda Kageyu, 2009–2017)** — x86/x64 inline-hook library. Bundled in-tree under `Native/` (`MinHook.h`, `buffer.c/.h`, `hook.c`, `trampoline.c/.h`). Distributed under its original BSD 2-Clause license, which is preserved verbatim in each source file.
+- **HDE32 / HDE64 (by Vyacheslav Patkov, 2006–2009)** — Length-disassembler tables used by MinHook's trampoline builder. Vendored by MinHook upstream; original headers retained in-tree without modification. Used in-situ as part of MinHook; EQSwitch does not redistribute it independently.
+
+### Why GPL-2.0-or-later?
+
+EQSwitch lives inside the broader EverQuest tool ecosystem, which is uniformly GPLv2-only (MacroQuest and every MQ2 plugin). GPL-2.0-or-later keeps that door open while remaining upward-compatible with GPLv3 for anyone who wants it. This is a free, fan-made educational project — the license choice is about ecosystem interop, not commercialization.

@@ -44,7 +44,7 @@ jobs:
       - name: Create zip bundle
         shell: pwsh
         run: |
-          Compress-Archive -Path EQSwitch.exe, eqswitch-hook.dll, eqswitch-di8.dll -DestinationPath "EQSwitch-${{ steps.version.outputs.VERSION }}.zip"
+          Compress-Archive -Path EQSwitch.exe, eqswitch-hook.dll, eqswitch-di8.dll, LICENSE, README.md, CHANGELOG.md -DestinationPath "EQSwitch-${{ steps.version.outputs.VERSION }}.zip"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

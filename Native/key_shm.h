@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 itsnateai
+
 #pragma once
 // EQSwitch dinput8 proxy — Shared memory reader for key state
 // Reads EQSwitchDI8_{PID} written by C# KeyInputWriter.

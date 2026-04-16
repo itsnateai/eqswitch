@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 itsnateai
+
 // eqswitch-hook.dll — Injected into eqgame.exe to enforce window behavior
 // via shared memory config from EQSwitch.
 //
