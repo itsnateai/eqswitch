@@ -1,0 +1,17 @@
+eqmain.dll: 1346560 bytes
+.text section: VA=0x1000 size=0xFDC00 (file off 0x400)
+
+Signature: 56 8B F1 E8 ?? ?? ?? ?? 8B CE 5E E9 ?? ?? ?? ??
+  (LoginController::GiveTime per MQ2 ROF2 32-bit reference)
+
+Found 1 match(es) in .text:
+
+  RVA 0x000128B0  bytes: 56 8B F1 E8 28 FD FF FF 8B CE 5E E9 10 F7 FF FF
+    CALL target -> RVA 0x000125E0  (ProcessKeyboardEvents?)
+    JMP  target -> RVA 0x00011FD0  (ProcessMouseEvents?)
+
+** SINGLE MATCH — HIGH CONFIDENCE **
+   LoginController::GiveTime RVA: 0x128B0
+   Runtime VA (at current eqmain base 0x71E30000): 0x71E428B0
+   ProcessKeyboardEvents RVA: 0x125E0
+   ProcessMouseEvents RVA:    0x11FD0
