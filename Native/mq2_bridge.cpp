@@ -896,6 +896,9 @@ static void *FindWidgetByHeapScan(const char *name) {
     return result;
 }
 
+// Forward declarations for Phase 6 live CXWnd cache (defined below)
+static void ResetLiveWidgetCache();
+
 // Reset widget cache (call when eqmain.dll unloads at charselect transition)
 void MQ2Bridge::ResetWidgetCache() {
     for (int i = 0; i < g_widgetCacheCount; i++) {
@@ -904,7 +907,452 @@ void MQ2Bridge::ResetWidgetCache() {
     }
     g_widgetCacheCount = 0;
     g_widgetScanDone = false;
-    DI8Log("mq2_bridge: widget cache reset");
+
+    // Also clear live CXWnd cache (Phase 6)
+    ResetLiveWidgetCache();
+    DI8Log("mq2_bridge: widget cache reset (definitions + live)");
+}
+
+// ─── Live CXWnd discovery via CXWndManager tree walk ──────────
+//
+// During login, MQ2's GetChildItem fails because eqgame.exe's SIDL
+// template table ([0x02063D08]) is NULL. eqmain.dll has its own
+// CXWndManager with the live login-screen widgets, but no exports
+// for name-based lookup.
+//
+// Strategy: walk eqmain's CXWnd tree and for each node, check if
+// any DWORD in its body matches:
+//   A) The address of the widget's DEFINITION (screen-piece object
+//      found by HeapScanForWidget). This exploits CSidlScreenWnd's
+//      m_pSidlPiece member — a back-pointer to the definition.
+//   B) A CXStr buf_base pointer whose string content matches the
+//      target widget name. Catches cases where the name is stored
+//      directly (not just via SIDL template ID).
+//
+// Once method A discovers the m_pSidlPiece offset from the first
+// successful match, subsequent lookups only check that single offset
+// (O(1) per node instead of scanning 128 DWORDs).
+
+struct LiveCacheEntry {
+    const char *name;
+    void       *pLiveWnd;
+    int         nameOffset;
+};
+
+static const int LIVE_CACHE_MAX = 16;
+static LiveCacheEntry g_liveCache[LIVE_CACHE_MAX] = {};
+static int g_liveCacheCount = 0;
+static int g_pSidlPieceOffset = -1;       // discovered CXWnd offset for m_pSidlPiece
+
+static bool g_liveDumpDone = false;   // diagnostic dump flag (reset on cache clear)
+static int  g_liveNfLog = 0;         // not-found log counter
+
+static void ResetLiveWidgetCache() {
+    g_liveCacheCount = 0;
+    g_pSidlPieceOffset = -1;
+    g_liveDumpDone = false;
+    g_liveNfLog = 0;
+}
+
+// Check if a DWORD looks like a CXStr buf_base pointing to target name.
+// CXStr buffer layout: +0x08=length, +0x14=string data (buf_base+20).
+static bool IsCXStrMatch(uintptr_t val, const char *name, int nameLen) {
+    if (val < 0x10000 || val > 0x7FFFFFFF) return false;
+    __try {
+        int bufLen = *(const int *)(val + 8);
+        if (bufLen != nameLen) return false;
+        const char *str = (const char *)(val + 20);
+        if (str[0] != name[0]) return false;
+        for (int i = 0; i < nameLen; i++) {
+            if (str[i] != name[i]) return false;
+        }
+        return str[nameLen] == '\0';
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+struct TreeSearchCtx {
+    const char *name;
+    int         nameLen;
+    void       *defAddr;       // definition address from HeapScan (cross-ref target)
+    void       *result;        // output: found live CXWnd
+    int         foundOffset;   // output: offset where match was found
+    int         nodesChecked;
+};
+
+// Walk a CXWnd tree recursively, checking each node for matches.
+// Returns true on first match (stored in ctx->result).
+static bool WalkTreeSearch(void *pWnd, TreeSearchCtx *ctx, int depth) {
+    if (!pWnd || depth > 25 || ctx->nodesChecked > 5000) return false;
+    if ((uintptr_t)pWnd < 0x10000 || (uintptr_t)pWnd > 0x7FFFFFFF) return false;
+
+    __try {
+        if (!IsReadablePtr(pWnd, 0x400)) return false;
+
+        // Skip definition objects: definitions have 0xFFFFFFFF at +0x10
+        uintptr_t atOx10 = *(uintptr_t *)((uintptr_t)pWnd + 0x10);
+        if (atOx10 == 0xFFFFFFFF) return false;
+
+        ctx->nodesChecked++;
+        const uint8_t *body = (const uint8_t *)pWnd;
+
+        // Fast path: if m_pSidlPiece offset is already known, just check that
+        if (g_pSidlPieceOffset > 0 && ctx->defAddr) {
+            uintptr_t val = *(const uintptr_t *)(body + g_pSidlPieceOffset);
+            if ((void *)val == ctx->defAddr) {
+                ctx->result = pWnd;
+                ctx->foundOffset = g_pSidlPieceOffset;
+                return true;
+            }
+            // Also try: the offset holds a DIFFERENT definition — read ITS name
+            // to support multiple widget lookups with the same offset.
+            if (val > 0x10000 && val < 0x7FFFFFFF) {
+                __try {
+                    uintptr_t defName = *(uintptr_t *)(val + 0x18);
+                    if (IsCXStrMatch(defName, ctx->name, ctx->nameLen)) {
+                        ctx->result = pWnd;
+                        ctx->foundOffset = g_pSidlPieceOffset;
+                        return true;
+                    }
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            }
+        }
+
+        // Full scan: check every DWORD in first 0x400 bytes
+        if (g_pSidlPieceOffset < 0) {
+            for (int off = 0x04; off < 0x400; off += 4) {
+                if (off == 0x08 || off == 0x10) continue; // skip sibling/child ptrs
+
+                uintptr_t val = *(const uintptr_t *)(body + off);
+
+                // Method A: cross-reference — DWORD == definition address
+                if (ctx->defAddr && (void *)val == ctx->defAddr) {
+                    ctx->result = pWnd;
+                    ctx->foundOffset = off;
+                    g_pSidlPieceOffset = off;
+                    DI8Log("mq2_bridge: DISCOVERED m_pSidlPiece at CXWnd+0x%X via cross-ref", off);
+                    return true;
+                }
+
+                // Method B: CXStr scan — DWORD is CXStr buf_base with target name
+                if (IsCXStrMatch(val, ctx->name, ctx->nameLen)) {
+                    ctx->result = pWnd;
+                    ctx->foundOffset = off;
+                    return true;
+                }
+
+                // Method A fallback: DWORD points to some object whose +0x18
+                // is a CXStr with the target name (definition-like structure)
+                if (val > 0x10000 && val < 0x7FFFFFFF && IsReadablePtr((void *)val, 0x20)) {
+                    __try {
+                        uintptr_t innerName = *(uintptr_t *)(val + 0x18);
+                        if (IsCXStrMatch(innerName, ctx->name, ctx->nameLen)) {
+                            ctx->result = pWnd;
+                            ctx->foundOffset = off;
+                            g_pSidlPieceOffset = off;
+                            DI8Log("mq2_bridge: DISCOVERED m_pSidlPiece at CXWnd+0x%X via name dereference", off);
+                            return true;
+                        }
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                }
+            }
+        }
+
+        // Recurse into children: firstChild at +0x10
+        void *child = (atOx10 > 0x10000 && atOx10 < 0x7FFFFFFF) ? (void *)atOx10 : nullptr;
+        void *prev = nullptr;
+        while (child) {
+            if ((uintptr_t)child < 0x10000 || (uintptr_t)child > 0x7FFFFFFF) break;
+            if (child == prev) break; // loop detection
+            if (!IsReadablePtr(child, 0x20)) break;
+
+            if (WalkTreeSearch(child, ctx, depth + 1)) return true;
+
+            prev = child;
+            __try {
+                child = *(void **)((uintptr_t)child + 0x08); // nextSibling
+            } __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+    return false;
+}
+
+// Find a live CXWnd by name using eqmain's CXWndManager tree.
+// Returns nullptr if not found (does NOT cache negatives — allows retry).
+static void *FindLiveCXWnd(const char *name) {
+    // Check live cache first
+    for (int i = 0; i < g_liveCacheCount; i++) {
+        if (g_liveCache[i].name == name || strcmp(g_liveCache[i].name, name) == 0) {
+            return g_liveCache[i].pLiveWnd;
+        }
+    }
+
+    // Need eqmain's CXWndManager
+    void *wndMgr = FindEQMainWndMgr();
+    if (!wndMgr || !g_eqmainWndMgrOffset) return nullptr;
+
+    // Get definition address for cross-reference (Method A)
+    void *defAddr = FindWidgetByHeapScan(name);
+
+    TreeSearchCtx ctx = {};
+    ctx.name = name;
+    ctx.nameLen = (int)strlen(name);
+    ctx.defAddr = defAddr;
+    ctx.nodesChecked = 0;
+
+    const uint8_t *pMgr = (const uint8_t *)wndMgr;
+    __try {
+        const ArrayClassHeader *arr = (const ArrayClassHeader *)(pMgr + g_eqmainWndMgrOffset);
+        if (arr->Count < 1 || arr->Count > 500 || !arr->Data) return nullptr;
+        if (!IsReadablePtr(arr->Data, arr->Count * 4)) return nullptr;
+
+        void **wndArray = (void **)arr->Data;
+        for (int i = 0; i < arr->Count; i++) {
+            void *pWnd = wndArray[i];
+            if (!pWnd || !IsReadablePtr(pWnd, 0x20)) continue;
+
+            if (WalkTreeSearch(pWnd, &ctx, 0)) {
+                DI8Log("mq2_bridge: FindLiveCXWnd('%s') FOUND at %p (offset +0x%X, wnd[%d], %d nodes)",
+                       name, ctx.result, ctx.foundOffset, i, ctx.nodesChecked);
+
+                // Cache positive result
+                if (g_liveCacheCount < LIVE_CACHE_MAX) {
+                    g_liveCache[g_liveCacheCount].name = name;
+                    g_liveCache[g_liveCacheCount].pLiveWnd = ctx.result;
+                    g_liveCache[g_liveCacheCount].nameOffset = ctx.foundOffset;
+                    g_liveCacheCount++;
+                }
+                return ctx.result;
+            }
+        }
+
+        // CXWndManager tree walk failed — the login sub-screen CXWnds might
+        // be in a different CXWndManager or not in any manager's array.
+        // Fallback: full heap scan for ANY object with eqmain vtable that
+        // contains the definition address as a DWORD (m_pSidlPiece cross-ref).
+        if (defAddr) {
+            HMODULE hEqmain = GetModuleHandleA("eqmain.dll");
+            uintptr_t eqmLo = (uintptr_t)hEqmain;
+            uintptr_t eqmHi = eqmLo;
+            __try {
+                uint32_t e_lfanew = *(const uint32_t *)((const uint8_t *)hEqmain + 0x3C);
+                if (e_lfanew < 0x400)
+                    eqmHi = eqmLo + *(const uint32_t *)((const uint8_t *)hEqmain + e_lfanew + 0x50);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+            if (eqmHi > eqmLo) {
+                MEMORY_BASIC_INFORMATION mbi;
+                uintptr_t addr = 0x00010000;
+                int heapPages = 0;
+                uintptr_t defVal = (uintptr_t)defAddr;
+
+                while (addr < 0x7FFF0000 && heapPages < 300000) {
+                    if (VirtualQuery((void *)addr, &mbi, sizeof(mbi)) == 0) break;
+                    uintptr_t base = (uintptr_t)mbi.BaseAddress;
+                    SIZE_T size = mbi.RegionSize;
+
+                    if (mbi.State == MEM_COMMIT &&
+                        !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
+                        (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) &&
+                        (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_MAPPED)) {
+
+                        heapPages++;
+                        __try {
+                            const uint8_t *p = (const uint8_t *)base;
+                            for (uintptr_t off = 0; off + 0x400 <= size; off += 4) {
+                                // Check eqmain vtable at +0x00
+                                uintptr_t vt = *(const uintptr_t *)(p + off);
+                                if (vt < eqmLo || vt >= eqmHi) continue;
+                                uintptr_t vt0 = *(const uintptr_t *)vt;
+                                if (vt0 < eqmLo || vt0 >= eqmHi) {
+                                    if (vt0 < 0x00400000 || vt0 >= 0x02200000) continue;
+                                }
+
+                                // Skip definitions (+0x10 == 0xFFFFFFFF)
+                                uintptr_t at10 = *(const uintptr_t *)(p + off + 0x10);
+                                if (at10 == 0xFFFFFFFF) continue;
+
+                                // Skip low addresses (stack/TEB, not heap CXWnds)
+                                uintptr_t objAddr = base + off;
+                                if (objAddr < 0x02000000) continue;
+
+                                // Validate CXWnd structure: +0x08 (sibling) and +0x10 (child)
+                                // must be null or valid HEAP pointers to other CXWnds.
+                                uintptr_t at08 = *(const uintptr_t *)(p + off + 0x08);
+                                if (at08 != 0 && (at08 < 0x10000 || at08 > 0x7FFFFFFF)) continue;
+                                if (at10 != 0 && (at10 < 0x10000 || at10 > 0x7FFFFFFF)) continue;
+
+                                // Child at +0x10 must be in heap memory (MEM_PRIVATE),
+                                // not in a loaded module (MEM_IMAGE). Catches false positives
+                                // where "child" points into DLL code sections.
+                                if (at10 != 0) {
+                                    MEMORY_BASIC_INFORMATION childMbi;
+                                    if (VirtualQuery((void *)at10, &childMbi, sizeof(childMbi)) &&
+                                        childMbi.Type == MEM_IMAGE) continue;
+                                }
+                                // Sibling at +0x08 same check
+                                if (at08 != 0) {
+                                    MEMORY_BASIC_INFORMATION sibMbi;
+                                    if (VirtualQuery((void *)at08, &sibMbi, sizeof(sibMbi)) &&
+                                        sibMbi.Type == MEM_IMAGE) continue;
+                                }
+
+                                // Scan body for DWORD matching definition address
+                                __try {
+                                    for (int bo = 0x14; bo < 0x400; bo += 4) {
+                                        // Skip +0x18 — same offset as definition's name CXStr
+                                        // (high false positive rate from stack variables)
+                                        if (bo == 0x18) continue;
+                                        uintptr_t dw = *(const uintptr_t *)(p + off + bo);
+                                        if (dw == defVal) {
+                                            void *result = (void *)objAddr;
+                                            DI8Log("mq2_bridge: HEAP CROSS-REF '%s' FOUND at %p (def=%p at +0x%X, %d pages, sib=%p child=%p)",
+                                                   name, result, defAddr, bo, heapPages, (void*)at08, (void*)at10);
+                                            if (g_pSidlPieceOffset < 0) {
+                                                g_pSidlPieceOffset = bo;
+                                                DI8Log("mq2_bridge: DISCOVERED m_pSidlPiece at CXWnd+0x%X via heap cross-ref", bo);
+                                            }
+                                            if (g_liveCacheCount < LIVE_CACHE_MAX) {
+                                                g_liveCache[g_liveCacheCount].name = name;
+                                                g_liveCache[g_liveCacheCount].pLiveWnd = result;
+                                                g_liveCache[g_liveCacheCount].nameOffset = bo;
+                                                g_liveCacheCount++;
+                                            }
+                                            return result;
+                                        }
+                                    }
+                                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                            }
+                        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                    }
+                    addr = base + size;
+                    if (addr <= base) addr = base + 0x1000;
+                }
+                DI8Log("mq2_bridge: heap cross-ref for '%s' — not found (%d pages, def=%p)", name, heapPages, defAddr);
+            }
+        }
+
+        // Diagnostic: dump CXStr values from first few CXWnds (resets on cache clear)
+        if (!g_liveDumpDone && defAddr) {
+            g_liveDumpDone = true;
+            DI8Log("mq2_bridge: FindLiveCXWnd('%s') NOT FOUND — dumping CXStr data from tree (def=%p):",
+                   name, defAddr);
+            int dumped = 0;
+            for (int i = 0; i < arr->Count && dumped < 5; i++) {
+                void *pWnd = wndArray[i];
+                if (!pWnd || !IsReadablePtr(pWnd, 0x200)) continue;
+
+                // Only dump windows with children (likely container/screen)
+                uintptr_t fc = *(uintptr_t *)((uintptr_t)pWnd + 0x10);
+                if (fc < 0x10000 || fc == 0xFFFFFFFF) continue;
+
+                dumped++;
+                DI8Log("mq2_bridge:   === Wnd[%d] @ %p (vt=%p) ===",
+                       i, pWnd, *(void **)pWnd);
+
+                // Walk first few children
+                void *child = (void *)fc;
+                int ci = 0;
+                while (child && ci < 8) {
+                    if ((uintptr_t)child < 0x10000 || !IsReadablePtr(child, 0x200)) break;
+                    const uint8_t *cb = (const uint8_t *)child;
+                    DI8Log("mq2_bridge:     child[%d] @ %p (vt=%p):", ci, child, *(void **)child);
+
+                    // Log interesting CXStr values
+                    int found = 0;
+                    for (int off = 0x04; off < 0x200 && found < 6; off += 4) {
+                        if (off == 0x08 || off == 0x10) continue;
+                        uintptr_t val = *(const uintptr_t *)(cb + off);
+                        if (val < 0x10000 || val > 0x7FFFFFFF) continue;
+                        __try {
+                            int blen = *(const int *)(val + 8);
+                            if (blen < 1 || blen > 200) continue;
+                            const char *s = (const char *)(val + 20);
+                            if (s[0] < 0x20 || s[0] > 0x7E) continue;
+                            // Quick printability check
+                            bool ok = true;
+                            for (int k = 0; k < blen && k < 50; k++) {
+                                if (s[k] == '\0') break;
+                                if (s[k] < 0x20 || s[k] > 0x7E) { ok = false; break; }
+                            }
+                            if (!ok) continue;
+                            char preview[52] = {};
+                            strncpy(preview, s, 50);
+                            DI8Log("mq2_bridge:       +0x%02X: CXStr '%s' (len=%d)", off, preview, blen);
+                            found++;
+                        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                    }
+
+                    ci++;
+                    __try { child = *(void **)((uintptr_t)child + 0x08); }
+                    __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+                }
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: FindLiveCXWnd SEH");
+    }
+
+    if (g_liveNfLog++ < 10) {
+        DI8Log("mq2_bridge: FindLiveCXWnd('%s') — not found (def=%p, %d nodes checked)",
+               name, defAddr, ctx.nodesChecked);
+    }
+    return nullptr;
+}
+
+// ─── FindWidgetByLabel ────────────────────────────────────────
+// Find a live CXWnd by its VISIBLE LABEL TEXT at CXWnd+0x1A8.
+// Used to click the "LOGIN" main menu button to open the login
+// sub-screen (where username/password/connect widgets live).
+// Only searches top-level children (one level deep) — main menu
+// buttons are direct children of the screen CXWnd.
+
+void *MQ2Bridge::FindWidgetByLabel(const char *label) {
+    void *wndMgr = FindEQMainWndMgr();
+    if (!wndMgr || !g_eqmainWndMgrOffset) return nullptr;
+
+    int labelLen = (int)strlen(label);
+    const uint8_t *pMgr = (const uint8_t *)wndMgr;
+
+    __try {
+        const ArrayClassHeader *arr = (const ArrayClassHeader *)(pMgr + g_eqmainWndMgrOffset);
+        if (arr->Count < 1 || arr->Count > 500 || !arr->Data) return nullptr;
+        if (!IsReadablePtr(arr->Data, arr->Count * 4)) return nullptr;
+
+        void **wndArray = (void **)arr->Data;
+        for (int i = 0; i < arr->Count; i++) {
+            void *pWnd = wndArray[i];
+            if (!pWnd || !IsReadablePtr(pWnd, 0x20)) continue;
+
+            // Walk children of this top-level window
+            uintptr_t fc;
+            __try { fc = *(uintptr_t *)((uintptr_t)pWnd + 0x10); }
+            __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+            if (fc < 0x10000 || fc == 0xFFFFFFFF) continue;
+
+            void *child = (void *)fc;
+            while (child) {
+                if ((uintptr_t)child < 0x10000 || !IsReadablePtr(child, 0x1B0)) break;
+
+                // Check +0x1A8 for label CXStr
+                __try {
+                    uintptr_t val = *(uintptr_t *)((uintptr_t)child + 0x1A8);
+                    if (IsCXStrMatch(val, label, labelLen)) {
+                        DI8Log("mq2_bridge: FindWidgetByLabel('%s') FOUND at %p (parent wnd[%d])",
+                               label, child, i);
+                        return child;
+                    }
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+                __try { child = *(void **)((uintptr_t)child + 0x08); }
+                __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+    return nullptr;
 }
 
 // ─── FindWindowByName implementation ──────────────────────────
@@ -1096,17 +1544,27 @@ static int g_findLogCount = 0;
 void *MQ2Bridge::FindWindowByName(const char *name) {
     if (!name) return nullptr;
 
-    // v7 Phase 5 — Tier -1: direct heap scan for widget definitions.
-    // Bypasses GetChildItem entirely — works even when eqmain.dll has its
-    // own CXWndManager and the game's template table is NULL.
-    // Runs ONLY during login (when eqmain.dll is loaded).
+    // v7 Phase 6 — Live CXWnd scan via CXWndManager tree walk.
+    // Finds ACTUAL live widgets by walking eqmain's CXWnd tree and
+    // matching via definition cross-reference (m_pSidlPiece) or
+    // direct CXStr name match. Returns widgets that work with
+    // SetEditText/ClickButton (unlike Phase 5 definitions).
     {
         HMODULE hEqmain = GetModuleHandleA("eqmain.dll");
         if (hEqmain) {
-            void *cached = FindWidgetByHeapScan(name);
-            if (cached) return cached;
+            void *live = FindLiveCXWnd(name);
+            if (live) return live;
         }
     }
+
+    // v7 Phase 5 — Tier -1: heap scan for widget DEFINITIONS.
+    // DISABLED as a return path — definitions cause SEH in SetEditText
+    // and ClickButton. FindLiveCXWnd uses HeapScan internally for
+    // cross-referencing (Method A), but we must NOT return definitions
+    // to callers who will try to operate on them.
+    // When eqmain is loaded, FindLiveCXWnd is the ONLY login-phase path.
+    // If it returns nullptr, so does FindWindowByName — this lets the
+    // LoginStateMachine fall through to the LOGIN button click logic.
 
     if (!g_fnGetChildItem) {
         if (g_findLogCount < 3) {
