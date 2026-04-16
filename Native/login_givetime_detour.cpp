@@ -197,4 +197,18 @@ void *GetLoginController() { return (void *)g_loginController; }
 
 void ClearLoginController() { g_loginController = nullptr; }
 
+void OnEqmainUnloaded() {
+    // eqmain.dll unloaded — the detour's code page is gone.
+    // Don't call MH_DisableHook/MH_RemoveHook — the target address is unmapped.
+    // Just reset state so ActivateThread resumes background polling and
+    // PollAndInstall can re-hook if eqmain reloads (camp → charselect → login).
+    g_installed = false;
+    g_installAttempted = false;
+    g_targetAddr = nullptr;
+    g_trampoline = nullptr;
+    g_loginController = nullptr;
+    g_tickCount = 0;
+    DI8Log("givetime_detour: reset after eqmain unload — background poll resumed");
+}
+
 } // namespace GiveTimeDetour
