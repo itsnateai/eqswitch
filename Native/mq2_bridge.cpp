@@ -13,6 +13,7 @@
 #include <string.h>
 #include "mq2_bridge.h"
 #include "login_shm.h"
+#include "login_givetime_detour.h"
 
 // ─── Forward declarations ──────────────────────────────────────
 
@@ -116,6 +117,7 @@ static volatile int      g_cachedSlotCount   = -1;  // slot probe result cache (
 static volatile bool     g_verificationDone  = false;
 static volatile uintptr_t g_heapScanArrayBase = 0;   // heap scan result (0 = not found/not scanned)
 static volatile bool     g_heapScanDone      = false; // one-shot per charselect session
+static int               g_standaloneDelay   = 0;    // delay standalone heap scan by N poll cycles
 
 // ─── Heap scan for character name array ───────────────────────
 // Dalaya ROF2 stores char names in a heap-allocated array of 0x160-byte structs.
@@ -125,18 +127,35 @@ static volatile bool     g_heapScanDone      = false; // one-shot per charselect
 // Runs ONCE per charselect session (gated by g_heapScanDone).
 
 static bool IsPlausibleName(const uint8_t *p) {
-    // EQ character names: title case (uppercase first, lowercase rest), 3-15 chars.
-    // Rejects: env vars (has '='), paths (has '\'), DirectX constants (ALL CAPS),
-    //          GPU strings, shader names, etc.
+    // EQ character names: strict title case — uppercase first, ALL rest lowercase.
+    // Length 4-15 chars. Rejects UI labels like "Height", "Heading" via blocklist.
     if (p[0] < 'A' || p[0] > 'Z') return false;
-    if (p[1] < 'a' || p[1] > 'z') return false; // 2nd char MUST be lowercase (title case)
     int len = 0;
-    for (int i = 0; i < 64; i++) {
+    for (int i = 1; i < 64; i++) {
         if (p[i] == '\0') { len = i; break; }
-        if (!((p[i] >= 'A' && p[i] <= 'Z') || (p[i] >= 'a' && p[i] <= 'z')))
-            return false;
+        // v7 Phase 4: strict lowercase after first char. Rejects "MinVSize",
+        // "OneTextures", "DrawLinesFill" etc. that matched the old rule.
+        if (p[i] < 'a' || p[i] > 'z') return false;
     }
-    return len >= 3 && len <= 15;
+    if (len < 4 || len > 15) return false;
+
+    // Blocklist: common EQ/eqmain UI labels that pass strict title-case.
+    // "Height" and "Heading" are the known false positives from eqmain's
+    // character-info panel label block (see v6f hotfix notes).
+    static const char *const kBadNames[] = {
+        "Height", "Heading", "Class", "Level", "Name", "Race", "Deity",
+        "Gender", "Strength", "Stamina", "Charisma", "Dexterity",
+        "Agility", "Intelligence", "Wisdom", "Account", "Character",
+        "Login", "Server", "World", "Select", "Options", "Default",
+        nullptr
+    };
+    for (int k = 0; kBadNames[k]; k++) {
+        const char *bad = kBadNames[k];
+        int bi = 0;
+        while (bad[bi] && (char)p[bi] == bad[bi]) bi++;
+        if (!bad[bi] && p[bi] == '\0') return false;
+    }
+    return true;
 }
 
 static const uint32_t HEAP_SCAN_STRIDE = 0x160;
@@ -468,9 +487,23 @@ static void *FindEQMainWndMgr() {
             g_eqmainScanned = false;
             g_eqmainWndMgrOffset = 0;
         }
+        // v7 Phase 4: clear dangling LoginController* — its memory lived in
+        // eqmain.dll's address space and is now unmapped.
+        GiveTimeDetour::ClearLoginController();
         return nullptr;
     }
-    if (g_eqmainScanned) return (void *)g_pEQMainWndMgr;
+    // v7 Phase 4: allow rescan if the cached result has zero windows (false positive).
+    // Pre-v7: scanned once, cached the first match, never re-validated. If the scan
+    // ran before charselect widgets were created, it cached a garbage pointer (e.g.
+    // 6C435641 = ASCII "lCVA") and every subsequent FindWindowByName failed.
+    if (g_eqmainScanned && g_pEQMainWndMgr) return (void *)g_pEQMainWndMgr;
+    if (g_eqmainScanned && !g_pEQMainWndMgr) {
+        // Previous scan found nothing OR found a false positive that was cleared.
+        // Allow rescan — eqmain's windows may have been created since last attempt.
+        // Throttle: only rescan every 10 calls (~5 seconds at 500ms poll rate).
+        static int rescanCount = 0;
+        if (++rescanCount % 10 != 0) return nullptr;
+    }
     g_eqmainScanned = true;
 
     // Scan eqmain.dll's .data section for pointers that look like CXWndManager instances.
@@ -532,12 +565,25 @@ static void *FindEQMainWndMgr() {
                 void *vtable = *(void **)wndArray[0];
                 if (!IsReadablePtr(vtable, 4)) continue;
 
-                // This looks like a valid CXWndManager!
-                g_pEQMainWndMgr = candidate;
-                g_eqmainWndMgrOffset = arrOff;
-                DI8Log("mq2_bridge: FOUND eqmain CXWndManager at %p (data+0x%X), pWindows at offset 0x%X (%d windows)",
-                       candidate, off, arrOff, arr->Count);
-                return (void *)g_pEQMainWndMgr;
+                // v7 Phase 4: validate by checking 3+ valid vtable entries.
+                // Pre-v7 accepted 1 entry → produced false positives.
+                {
+                    int validEntries = 0;
+                    for (int k = 0; k < arr->Count && k < 20; k++) {
+                        if (!wndArray[k]) continue;
+                        if (!IsReadablePtr(wndArray[k], sizeof(void *))) continue;
+                        void *vt = *(void **)wndArray[k];
+                        if (vt && IsReadablePtr(vt, sizeof(void *))) validEntries++;
+                    }
+                    if (validEntries >= 3) {
+                        g_pEQMainWndMgr = candidate;
+                        g_eqmainWndMgrOffset = arrOff;
+                        DI8Log("mq2_bridge: FOUND eqmain CXWndManager at %p (data+0x%X), pWindows at offset 0x%X (%d windows, %d valid)",
+                               candidate, off, arrOff, arr->Count, validEntries);
+                        return (void *)g_pEQMainWndMgr;
+                    }
+                    // False positive: struct looks right but < 3 valid entries
+                }
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -811,7 +857,33 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
         return nullptr;
     }
 
-    // Fast path: try pinstCCharacterSelect directly for charselect widgets.
+    // v7 Phase 4 — Tier 0: use LoginController* from the GiveTime detour.
+    // LoginController is the root of eqmain's window hierarchy. GetChildItem
+    // does a recursive SIDL search, so it finds LOGIN_UsernameEdit, Character_List,
+    // CLW_EnterWorldButton — everything we need, without CXWndManager.
+    // This is the MQ2 pattern: GetChildWindow(m_currentWindow, name).
+    {
+        void *loginCtrl = GiveTimeDetour::GetLoginController();
+        if (loginCtrl && g_fnGetChildItem) {
+            __try {
+                void *child = g_fnGetChildItem(loginCtrl, name);
+                if (child) {
+                    static int loggedCount = 0;
+                    if (loggedCount < 10) {
+                        DI8Log("mq2_bridge: FindWindowByName('%s') — found via LoginController at %p",
+                               name, child);
+                        loggedCount++;
+                    }
+                    return child;
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {
+                // LoginController became invalid (eqmain unloaded?)
+            }
+        }
+    }
+
+    // Tier 1: try pinstCCharacterSelect directly for charselect widgets.
     // This bypasses CXWndManager iteration entirely — most reliable path.
     // pinstCCharacterSelect is a double-deref: *pinst = storage addr, *storage = CCharacterSelect*.
     if (g_pinstCharSelect) {
@@ -819,6 +891,16 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
             uintptr_t storageAddr = *g_pinstCharSelect;  // deref 1: storage address
             if (storageAddr && IsReadablePtr((void *)storageAddr, sizeof(void *))) {
                 void *pCharSelWnd = *(void **)storageAddr;  // deref 2: actual window
+
+                // v7 Phase 4: log null→non-null transition so we can tell if
+                // pinstCCharacterSelect populates at charselect time on Dalaya.
+                static volatile void *lastObserved = nullptr;
+                if (pCharSelWnd != lastObserved) {
+                    DI8Log("mq2_bridge: pinstCCharacterSelect transition: %p -> %p",
+                           (void *)lastObserved, pCharSelWnd);
+                    lastObserved = pCharSelWnd;
+                }
+
                 if (pCharSelWnd && IsReadablePtr(pCharSelWnd, sizeof(void *))) {
                     void *vtable = *(void **)pCharSelWnd;
                     if (vtable && IsReadablePtr(vtable, sizeof(void *))) {
@@ -1209,6 +1291,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         g_cachedSlotCount = -1;
         g_heapScanDone = false;
         g_heapScanArrayBase = 0;
+        g_standaloneDelay = 0;  // reset for next charselect cycle
         g_verificationDone = false;
         g_charArrayNotFoundLogged = false;
         return;
@@ -1469,6 +1552,89 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 }
                 charDataRead = true;
             }
+        }
+    }
+
+    // v7 Phase 4: if Path A (charSelectPlayerArray) and Path B (Character_List)
+    // both failed, run the heap scan directly. The heap scan finds character names
+    // by pattern-matching in committed pages — works even when MQ2 exports and
+    // CXWndManager are both broken on Dalaya.
+    // Delay: wait 20 poll cycles (~10 seconds) before scanning. Early scans hit
+    // eqmain UI labels ("Height", "MinVSize") instead of character names because
+    // charselect hasn't loaded its data yet.
+    if (!charDataRead && !g_heapScanDone) {
+        if (g_standaloneDelay < 20) {
+            if (g_standaloneDelay == 0 || g_standaloneDelay == 10 || g_standaloneDelay == 19)
+                DI8Log("mq2_bridge: standalone delay %d/20 (heapScanDone=%d)", g_standaloneDelay, (int)g_heapScanDone);
+            g_standaloneDelay++;
+            // fall through to charDataRead=false → charCount=0
+        } else {
+            g_heapScanDone = true;
+            uintptr_t arrayBase = HeapScanForCharArray();
+            if (arrayBase) {
+                g_heapScanArrayBase = arrayBase;
+                int count = 0;
+                __try {
+                    for (int i = 0; i < CHARSEL_MAX_CHARS; i++) {
+                        const uint8_t *entry = (const uint8_t *)(arrayBase + i * HEAP_SCAN_STRIDE);
+                        if (!IsPlausibleName(entry)) break;
+                        int nameLen = 0;
+                        while (nameLen < CHARSEL_NAME_LEN - 1 && entry[nameLen] != '\0')
+                            nameLen++;
+                        memcpy((void *)shm->names[i], entry, nameLen);
+                        ((char *)shm->names[i])[nameLen] = '\0';
+                        shm->levels[i] = 0;
+                        shm->classes[i] = 0;
+                        count++;
+                        DI8Log("mq2_bridge: heap scan (standalone): slot %d = \"%s\"",
+                               i, (const char *)shm->names[i]);
+                    }
+                } __except(EXCEPTION_EXECUTE_HANDLER) {
+                    DI8Log("mq2_bridge: SEH in standalone heap scan");
+                    g_heapScanArrayBase = 0;
+                }
+                if (count > 0) {
+                    MemoryBarrier();
+                    shm->charCount = count;
+                    for (int i = count; i < CHARSEL_MAX_CHARS; i++) {
+                        ((char *)shm->names[i])[0] = '\0';
+                        shm->levels[i] = 0;
+                        shm->classes[i] = 0;
+                    }
+                    charDataRead = true;
+                    DI8Log("mq2_bridge: heap scan populated %d characters (Path A+B both failed)", count);
+                }
+            }
+        }
+    }
+    // On subsequent polls, re-read names from heap cache (same as existing Path C logic)
+    else if (!charDataRead && g_heapScanArrayBase) {
+        int count = 0;
+        __try {
+            for (int i = 0; i < CHARSEL_MAX_CHARS; i++) {
+                const uint8_t *entry = (const uint8_t *)(g_heapScanArrayBase + i * HEAP_SCAN_STRIDE);
+                if (!IsPlausibleName(entry)) break;
+                int nameLen = 0;
+                while (nameLen < CHARSEL_NAME_LEN - 1 && entry[nameLen] != '\0')
+                    nameLen++;
+                memcpy((void *)shm->names[i], entry, nameLen);
+                ((char *)shm->names[i])[nameLen] = '\0';
+                shm->levels[i] = 0;
+                shm->classes[i] = 0;
+                count++;
+            }
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            g_heapScanArrayBase = 0;
+            g_heapScanDone = false;
+        }
+        if (count > 0) {
+            MemoryBarrier();
+            shm->charCount = count;
+            charDataRead = true;
+        } else {
+            // Cache stale, rescan next poll
+            g_heapScanArrayBase = 0;
+            g_heapScanDone = false;
         }
     }
 

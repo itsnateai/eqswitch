@@ -32,4 +32,17 @@ unsigned GetTickCount();
 // For diagnostics: returns true if MinHook reports the detour is installed.
 bool IsInstalled();
 
+// v7 Phase 4: expose the LoginController* seen on the last GiveTime call.
+// LoginController is the top-level eqmain window that parents all login/
+// server-select/charselect widgets. GetChildItem on this pointer finds
+// LOGIN_UsernameEdit, LOGIN_PasswordEdit, Character_List etc. without
+// needing the fragile eqmain CXWndManager scan.
+// Returns nullptr if the detour hasn't fired yet.
+void *GetLoginController();
+
+// Clear the cached LoginController* when eqmain.dll unloads. Called from
+// FindEQMainWndMgr() when GetModuleHandleA("eqmain.dll") returns NULL.
+// Prevents Tier-0 from passing a dangling pointer to GetChildItem.
+void ClearLoginController();
+
 } // namespace GiveTimeDetour
