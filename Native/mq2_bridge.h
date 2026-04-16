@@ -83,6 +83,12 @@ namespace MQ2Bridge {
     // at charselect transition — widgets die with eqmain).
     void ResetWidgetCache();
 
+    // ─── Label-based widget search ──────────────────────────────
+    // Find a live CXWnd by its visible label text (at CXWnd+0x1A8).
+    // Used to click the "LOGIN" main menu button to open the login
+    // sub-screen before searching for username/password widgets.
+    void *FindWidgetByLabel(const char *label);
+
     // ─── Diagnostics ───────────────────────────────────────────
     // Enumerate all CXWnd windows and log their names.
     // Used during Phase 0 to discover Dalaya's widget names.
