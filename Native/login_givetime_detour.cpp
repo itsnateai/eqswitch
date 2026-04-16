@@ -20,6 +20,10 @@
 
 void DI8Log(const char *fmt, ...);
 
+// Defined in eqswitch-di8.cpp. Safe to call at EQ frame rate — internal
+// 500ms throttle + PollReentryGuard keep MQ2 work to ~2/sec.
+void MQ2BridgePollTick();
+
 namespace {
 
 constexpr uintptr_t GIVETIME_RVA = 0x128B0;
@@ -33,13 +37,12 @@ using GiveTimeFn = void(__fastcall *)(void *thisPtr, void *edxBogus);
 // from EQ's game thread inside GiveTime_Detour. Volatile prevents compiler
 // reordering around the MH_EnableHook sync point (x86 TSO handles the store
 // ordering in hardware, but volatile makes the intent explicit for the null
-// check at line 57 of the detour body).
+// check in the detour body).
 volatile GiveTimeFn g_trampoline = nullptr;
 void *g_targetAddr = nullptr;     // resolved eqmain base + RVA
 bool g_installed = false;
 bool g_installAttempted = false;  // once true, we stop retrying (either success or permanent failure)
 volatile unsigned g_tickCount = 0;
-volatile unsigned g_lastLoggedTick = 0;
 
 // Set TRUE from Cleanup() on DLL_PROCESS_DETACH BEFORE touching MinHook state.
 // PollAndInstall() checks this at entry and bails immediately, closing the
@@ -48,20 +51,28 @@ volatile bool g_detachInProgress = false;
 
 // The detour itself. ECX holds `this` (LoginController*) on entry per __thiscall;
 // because we declare __fastcall, the compiler reads ECX into thisPtr.
+//
+// Runs on EQ's game thread ~50-130 Hz (50 during idle login, spikes during
+// bad-password dialog when 3D frame-limiting is off). This is the permanent
+// replacement for v6's SetTimer(1500ms, MQ2TimerProc) — instead of piggybacking
+// on the Windows message pump (which hit IsHungAppWindow on slow loads), we
+// run inside EQ's own game loop, so by construction any latency we add is
+// latency EQ was already going to incur on its next frame.
 void __fastcall GiveTime_Detour(void *thisPtr, void *edxBogus) {
-    // Increment tick counter (not atomic — single game thread calls this)
-    const unsigned tick = ++g_tickCount;
+    // Increment tick counter for diagnostics (GetTickCount() accessor).
+    // Not atomic — only EQ's game thread writes, readers tolerate stale values.
+    ++g_tickCount;
 
-    // Log every 60 ticks (~once per second at 60 Hz) to prove the detour fires
-    // without spamming the log at frame rate.
-    if (tick - g_lastLoggedTick >= 60) {
-        DI8Log("givetime_detour: tick %u, this=0x%p", tick, thisPtr);
-        g_lastLoggedTick = tick;
-    }
+    // MQ2 bridge poll — the whole reason this detour exists. Internal 500ms
+    // throttle means we do real work only 1-2× per second even though we're
+    // called 50-130× per second. PollReentryGuard inside MQ2BridgePollTick
+    // prevents concurrent entry from ActivateThread's background fallback.
+    MQ2BridgePollTick();
 
     // Call the original GiveTime via the trampoline. MUST happen on every call —
     // skipping it means EQ never processes keyboard/mouse and the client looks
-    // hung.
+    // hung. `edxBogus` is the garbage EDX value EQ's caller happened to have;
+    // passing it through preserves register state as if we weren't here.
     if (g_trampoline) {
         g_trampoline(thisPtr, edxBogus);
     }
