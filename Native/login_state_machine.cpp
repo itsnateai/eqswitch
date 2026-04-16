@@ -39,6 +39,8 @@ static uint32_t   g_retryCount = 0;
 static DWORD      g_phaseEntryTick = 0;   // GetTickCount when phase was entered
 static DWORD      g_lastActionTick = 0;   // Debounce for widget interactions
 static int        g_lastGameState = -99;  // Track game state transitions
+static bool       g_loginBtnClicked = false;  // v7 Phase 6: main menu LOGIN button
+static int        g_loginBtnAttempts = 0;
 static bool       g_widgetsCached = false;
 static int        g_connectGameState = -99;  // Track gameState when connect was clicked
 static int        g_charSelGameState = -99;  // Track gameState when charselect was entered
@@ -211,6 +213,8 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
 
             g_retryCount = 0;
             loginShm->retryCount = 0;
+            g_loginBtnClicked = false;
+            g_loginBtnAttempts = 0;
             InvalidateWidgets();
             SetPhase(loginShm, PHASE_WAIT_LOGIN_SCREEN);
             DI8Log("login_sm: LOGIN command — user='%s' server='%s' char='%s'",
@@ -240,7 +244,7 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
 
     switch (g_phase) {
 
-    case PHASE_WAIT_LOGIN_SCREEN:
+    case PHASE_WAIT_LOGIN_SCREEN: {
         // Wait for login widgets to appear — don't gate on gameState value
         // (Dalaya ROF2 uses gameState=0 at login, not -1 like modern MQ2)
         if (SinceLastAction() < 500) break; // debounce
@@ -248,9 +252,31 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         DiscoverLoginWidgets();
         if (g_widgetsCached) {
             SetPhase(loginShm, PHASE_TYPING_CREDENTIALS);
+            break;
         }
+
+        // v7 Phase 6: login widgets not found — the login SUB-SCREEN may not
+        // be open yet. eqmain starts on a main menu with buttons like "LOGIN",
+        // "HELP", "EXIT". We need to click the "LOGIN" button to open the
+        // username/password form. Try to find it by label text at CXWnd+0x1A8.
+        if (!g_loginBtnClicked && g_loginBtnAttempts < 10) {
+            g_loginBtnAttempts++;
+            void *pLoginBtn = MQ2Bridge::FindWidgetByLabel("LOGIN");
+            if (pLoginBtn) {
+                MQ2Bridge::ClickButton(pLoginBtn);
+                g_loginBtnClicked = true;
+                DI8Log("login_sm: clicked 'LOGIN' main menu button at %p (attempt %d)",
+                       pLoginBtn, g_loginBtnAttempts);
+                // Reset widget cache so FindLiveCXWnd retries after sub-screen opens
+                MQ2Bridge::ResetWidgetCache();
+            } else if (g_loginBtnAttempts <= 3) {
+                DI8Log("login_sm: 'LOGIN' main menu button not found (attempt %d)", g_loginBtnAttempts);
+            }
+        }
+
         g_lastActionTick = GetTickCount();
         break;
+    }
 
     case PHASE_TYPING_CREDENTIALS:
         // Set username and password on edit fields, then click connect
@@ -473,6 +499,8 @@ void Shutdown() {
     g_lastGameState = -99;
     g_connectGameState = -99;
     g_charSelGameState = -99;
+    g_loginBtnClicked = false;
+    g_loginBtnAttempts = 0;
     InvalidateWidgets();
     memset(g_password, 0, sizeof(g_password));
     memset(g_username, 0, sizeof(g_username));
