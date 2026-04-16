@@ -365,7 +365,7 @@ public class AutoLoginManager
             // GetChildItem non-functional, heap scan offset unreliable).
             // See memory: project_eqswitch_v7_phase4_csharp.md
             // ══════════════════════════════════════════════════════════════
-            if (false && loginShm != null)
+            if (loginShm != null)
             {
                 bool shouldEnter = enterWorldOverride ?? (character != null);
                 if (shouldEnter && character == null)
