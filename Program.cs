@@ -76,6 +76,34 @@ static class Program
             return;
         }
 
+        // --test-autologin [alias] [--timeout N] — launch a real EQ client, drive
+        // full auto-login, monitor phase, kill the process, and verify zero SEH
+        // in the native mq2_bridge dispatch path. Used by the v8 Step 2B
+        // verification loop and any future native-path change. Works in both
+        // Debug and Release builds because a failing login is a shippable bug.
+        //
+        // Returns:
+        //   0 = login completed + zero native-path SEH in log  (PASS)
+        //   1 = login didn't reach charselect (timeout or fault)
+        //   2 = login completed BUT log has SEH occurrences
+        //   3 = config / account not found
+        if (args.Length >= 1 && args[0] == "--test-autologin")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.TestAutoLoginRunner.Run(args);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"TestAutoLoginRunner CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
 #if DEBUG
         // --test-character-selector — run Core/CharacterSelectorTests.RunAll() and
         // exit with its return code. Used to gate Phase 5b's pure decision helper.

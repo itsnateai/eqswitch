@@ -1811,25 +1811,67 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
 // ─── MQ2Bridge::SetEditText ────────────────────────────────────
 
 void MQ2Bridge::SetEditText(void *pEditWnd, const char *text) {
-    if (!g_fnSetWindowText || !g_fnCXStrCtor || !g_fnCXStrDtor || !pEditWnd || !text) return;
+    if (!g_fnCXStrCtor || !g_fnCXStrDtor || !pEditWnd || !text) return;
 
-    // STEP 2A diagnostic: log whether this widget is eqmain-owned. The
-    // eqgame-side g_fnSetWindowText call below SEHs on eqmain widgets
-    // because class layouts differ. Step 2B will route these through
-    // eqmain-side function pointers; for now we prove the hypothesis
-    // by correlating "isEqMain=1" with "SEH in SetEditText" in the log.
-    bool isEqMain = EQMainOffsets::IsEQMainWidget(pEditWnd);
+    // Step 2B: route through eqmain-side slot 73 (vtable+0x124) when pWnd is
+    // a real CEditWnd/CEditBaseWnd. Exact-vtable gate because Phase 5 heap-
+    // scan returns CXMLDataPtr definition pointers that live inside eqmain's
+    // range but have wrong slot layout — slot 73 in CXMLDataPtr's vtable is
+    // an unrelated method and corrupts state when called with SetWindowText's
+    // thiscall signature (stack imbalance crash in the earlier 0x128 attempt).
+    //
+    // Dispatch table (SetEditText):
+    //   A. pWnd is a real CEditWnd  → eqmain-side slot 73 (correct layout)
+    //   B. pWnd is CXMLDataPtr/def  → log-once + no-op; keyboard injection
+    //                                  fallback drives input
+    //   C. pWnd is a known non-edit widget class but eqmain fn unavailable
+    //       → SEH-wrapped eqgame call as Step 2A fallback
+    const char *widgetClass = EQMainOffsets::GetEQMainWidgetClassName(pEditWnd);
+    if (!widgetClass) {
+        // Not a known widget class — almost certainly a Phase 5 definition
+        // pointer. Log at low volume (once per unique pWnd we see) so the
+        // upstream widget-enumeration bug stays visible without flooding.
+        static void *s_loggedDefs[16] = {};
+        static int s_loggedCount = 0;
+        bool seen = false;
+        for (int i = 0; i < s_loggedCount; i++) {
+            if (s_loggedDefs[i] == pEditWnd) { seen = true; break; }
+        }
+        if (!seen && s_loggedCount < 16) {
+            s_loggedDefs[s_loggedCount++] = pEditWnd;
+            DI8Log("mq2_bridge: SetEditText skipped — pWnd=%p not a known widget class "
+                   "(likely CXMLDataPtr definition from heap-scan; keyboard injection "
+                   "will drive input instead)", pEditWnd);
+        }
+        return;
+    }
 
+    EQMainOffsets::FN_SetWindowText fnEqmain = EQMainOffsets::GetSetWindowTextFor(pEditWnd);
+    if (fnEqmain) {
+        __try {
+            uint8_t cxstrBuf[16] = {}; // CXStr is 16 bytes inline
+            g_fnCXStrCtor(cxstrBuf, text);
+            fnEqmain(pEditWnd, cxstrBuf);
+            g_fnCXStrDtor(cxstrBuf);
+            return;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            DI8Log("mq2_bridge: SEH in SetEditText native path (pWnd=%p class=%s fn=%p)",
+                   pEditWnd, widgetClass, fnEqmain);
+            // Fall through to eqgame-side as last resort.
+        }
+    }
+
+    // Fallback to eqgame-side for classes outside GetSetWindowTextFor's
+    // narrow allow-list, or if the native path SEH'd.
+    if (!g_fnSetWindowText) return;
     __try {
-        // Construct a CXStr from const char*, pass it to SetWindowTextA, then destroy
-        uint8_t cxstrBuf[16] = {}; // CXStr is 16 bytes (Ptr, Length, Alloc, RefCount)
+        uint8_t cxstrBuf[16] = {};
         g_fnCXStrCtor(cxstrBuf, text);
         g_fnSetWindowText(pEditWnd, cxstrBuf);
         g_fnCXStrDtor(cxstrBuf);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        DI8Log("mq2_bridge: SEH in SetEditText (pWnd=%p isEqMain=%d — Step 2B will route to eqmain-side fn)",
-               pEditWnd, isEqMain ? 1 : 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: SEH in SetEditText fallback (pWnd=%p class=%s)",
+               pEditWnd, widgetClass);
     }
 }
 
@@ -1837,22 +1879,45 @@ void MQ2Bridge::SetEditText(void *pEditWnd, const char *text) {
 
 void MQ2Bridge::ClickButton(void *pButton) {
     if (!pButton) return;
-    if (!g_fnWndNotification) {
-        DI8Log("mq2_bridge: ClickButton SKIPPED — WndNotification export not resolved");
+
+    // Step 2B: route through eqmain-side slot 34 (vtable+0x88, WndNotification)
+    // with exact-vtable class gate. XWM_LCLICK=1 mirrors MQ2AutoLogin's click
+    // delivery pattern. CButtonWnd inherits WndNotification from CXWnd's
+    // real-body implementation; the dispatcher handles msg routing internally.
+    const char *widgetClass = EQMainOffsets::GetEQMainWidgetClassName(pButton);
+    if (!widgetClass) {
+        static void *s_loggedDefs[16] = {};
+        static int s_loggedCount = 0;
+        bool seen = false;
+        for (int i = 0; i < s_loggedCount; i++) {
+            if (s_loggedDefs[i] == pButton) { seen = true; break; }
+        }
+        if (!seen && s_loggedCount < 16) {
+            s_loggedDefs[s_loggedCount++] = pButton;
+            DI8Log("mq2_bridge: ClickButton skipped — pButton=%p not a known widget class "
+                   "(likely CXMLDataPtr definition; keyboard injection fallback will drive click)",
+                   pButton);
+        }
         return;
     }
 
-    // STEP 2A diagnostic: same hypothesis-validation as SetEditText. The
-    // eqgame-side WndNotification export SEHs on eqmain-owned buttons.
-    bool isEqMain = EQMainOffsets::IsEQMainWidget(pButton);
-
-    __try {
-        // XWM_LCLICK = 1, matching MQ2AutoLogin's SendWndNotification pattern
-        g_fnWndNotification(pButton, pButton, 1, nullptr);
+    EQMainOffsets::FN_WndNotification fnEqmain = EQMainOffsets::GetWndNotificationFor(pButton);
+    if (fnEqmain) {
+        __try {
+            fnEqmain(pButton, pButton, 1, nullptr);
+            return;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            DI8Log("mq2_bridge: SEH in ClickButton native path (pWnd=%p class=%s fn=%p)",
+                   pButton, widgetClass, fnEqmain);
+        }
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        DI8Log("mq2_bridge: SEH in ClickButton (pWnd=%p isEqMain=%d — Step 2B will route to eqmain-side fn)",
-               pButton, isEqMain ? 1 : 0);
+
+    if (!g_fnWndNotification) return;
+    __try {
+        g_fnWndNotification(pButton, pButton, 1, nullptr);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: SEH in ClickButton fallback (pWnd=%p class=%s)",
+               pButton, widgetClass);
     }
 }
 

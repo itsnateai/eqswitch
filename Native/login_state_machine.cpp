@@ -42,6 +42,7 @@ static int        g_lastGameState = -99;  // Track game state transitions
 static bool       g_loginBtnClicked = false;  // v7 Phase 6: main menu LOGIN button
 static int        g_loginBtnAttempts = 0;
 static bool       g_widgetsCached = false;
+static uint32_t   g_yesBtnAttempts = 0;   // kick-session dialog retry counter
 static int        g_connectGameState = -99;  // Track gameState when connect was clicked
 static int        g_charSelGameState = -99;  // Track gameState when charselect was entered
 
@@ -215,6 +216,7 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
             loginShm->retryCount = 0;
             g_loginBtnClicked = false;
             g_loginBtnAttempts = 0;
+            g_yesBtnAttempts = 0;
             InvalidateWidgets();
             SetPhase(loginShm, PHASE_WAIT_LOGIN_SCREEN);
             DI8Log("login_sm: LOGIN command — user='%s' server='%s' char='%s'",
@@ -378,9 +380,29 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         // Check for "already logged in" yes/no dialog
         if (g_pYesButton) {
             // Auto-click "Yes" to kick existing session
-            // (matches MQ2AutoLogin ServerSelectKick behavior)
+            // (matches MQ2AutoLogin ServerSelectKick behavior).
+            // Cap at 20 attempts (~10s at 500ms tick). Post-Step-2B the call
+            // no longer SEHs — it gets class-rejected silently because the
+            // YES button pointer from FindWindowByName is a CXMLDataPtr
+            // definition, not a live CButtonWnd. Step 3 (live widget
+            // discovery) will make these clicks land; until then we cap
+            // retries and surface a clear error rather than spin forever.
+            g_yesBtnAttempts++;
+            if (g_yesBtnAttempts > 20) {
+                SetError(loginShm,
+                    "Kick-session dialog: click not reaching live button "
+                    "(FindWindowByName returns CXMLDataPtr definition pointer, "
+                    "not live CButtonWnd — pending Step 3 widget-list reinit). "
+                    "Please click YES manually to continue, or close EQ and retry.");
+                break;
+            }
             MQ2Bridge::ClickButton(g_pYesButton);
-            DI8Log("login_sm: clicked YESNO_YesButton (kick existing session)");
+            DI8Log("login_sm: clicked YESNO_YesButton (kick existing session, attempt %u/20)",
+                   g_yesBtnAttempts);
+        } else {
+            // Dialog disappeared — reset counter so a future kick dialog
+            // gets a fresh 20 attempts.
+            g_yesBtnAttempts = 0;
         }
         break;
 

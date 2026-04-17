@@ -57,6 +57,7 @@ Native/*.lib
 ## Research / RE scratch
 _.diagnostics/
 Native/dumps/
+dumps/
 Native/*.ps1
 cedebug.txt
 
