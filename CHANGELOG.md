@@ -1,15 +1,28 @@
 # Changelog
 
-## [Unreleased] — Relicense to GPL-2.0-or-later (2026-04-15)
+## v3.10.0 — GPL-2.0-or-later + Native v7/v8 login path (2026-04-18)
 
 ### Changed
-- **License changed from GPL-3.0 to GPL-2.0-or-later** — Ecosystem alignment with MacroQuest (MQ2) and the broader EverQuest tool community, which is uniformly GPLv2-only. GPL-2.0-or-later is upward-compatible with GPLv3 for anyone who wants it, while unlocking legitimate code-sharing with MQ2-derived work where EQSwitch may eventually borrow (e.g. the planned v7 GiveTime detour).
-- **README License section** — Formal attributions added for **Stonemite** (DirectInput proxy approach, studied — no code taken) and **MacroQuest** (character-select facts referenced, no source compiled in). SHM boundary between EQSwitch and MQ2 DLL reaffirmed.
-- **README fan-made disclaimer** — Strengthened to make the "free, educational, independent" posture explicit. EQSwitch is not sold and will not be sold.
-- **CONTRIBUTING.md** — Contributor license grant updated to GPL-2.0-or-later.
+- **License changed from GPL-3.0 to GPL-2.0-or-later** — ecosystem alignment with MacroQuest (MQ2) and the broader EverQuest tool community, which is uniformly GPLv2-only. GPL-2.0-or-later is upward-compatible with GPLv3 for anyone who wants it, while unlocking legitimate code-sharing with MQ2-derived work. Prior releases (v3.9.3 and earlier) remain GPL-3.0 forever. Tag `v3.9.3-last-gplv3` marks the relicense boundary.
+- **README License section** — formal attributions added for **Stonemite** (DirectInput proxy approach studied, no code taken) and **MacroQuest** (character-select facts referenced, no source compiled in). SHM boundary between EQSwitch and MQ2 DLL reaffirmed.
+- **README fan-made disclaimer** strengthened — EQSwitch is free, educational, independent, and not sold.
+- **CONTRIBUTING.md** — contributor license grant updated to GPL-2.0-or-later.
 
-### Rationale
-Sole-author relicensing (verified via `git log`). No external contributors held copyright on any EQSwitch code. Prior releases (v3.9.3 and earlier) remain GPL-3.0 for anyone who already downloaded them; future releases ship under the new license. Tag `v3.9.3-last-gplv3` marks the relicense boundary. No user-visible behavior change.
+### Native login reliability (v7)
+- **GiveTime detour** replaces SetTimer-based polling — login state machine now rides the game's own game-loop tick (50–130 Hz), matching the MQ2 pattern for stable, high-frequency polling.
+- **`LoginController*` fast-path** — when the controller pointer is already resolved, subsequent logins skip the full scan.
+- **Charselect robustness** — detects `eqmain.dll` unload at character select and resumes the background poll instead of bailing.
+- `LoginShmWriter` wired into the native path.
+
+### Native widget discovery (v8, internal foundation)
+- MQ2-style `eqmain.dll` detection with widget-ownership tracking.
+- Corrected `SetWindowText` vtable slot + exact-vtable class gate for login-widget match.
+- `HeapScanForWidget` — locates login widgets by SIDL name on the heap.
+- Live `CXWnd` discovery: tree walk, heap cross-reference, label search.
+- Improved `CXWndManager` diagnostics.
+
+### Rationale (relicense)
+Sole-author relicensing (verified via `git log`). No external contributors held copyright on any EQSwitch code. No user-visible behavior change from the relicense itself.
 
 ---
 
