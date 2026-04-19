@@ -77,3 +77,4 @@ EQSwitch.Tests/
 !docs/archive/handoffs/
 !docs/archive/handoffs/**
 !docs/archive/handoffs/**/*.md
+.code-graph/
