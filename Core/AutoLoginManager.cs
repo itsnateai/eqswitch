@@ -562,15 +562,10 @@ public class AutoLoginManager
 
                     // Abort if user already entered the game (manual or other)
                     hwnd = RefreshHandle(pid, hwnd);
-                    if (hwnd != IntPtr.Zero)
+                    if (hwnd != IntPtr.Zero && IsInGame(charSelect, pid, hwnd))
                     {
-                        var tb = new StringBuilder(256);
-                        NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
-                        if (tb.ToString().Contains(" - "))
-                        {
-                            FileLogger.Info("AutoLogin: already in-game during charlist wait, skipping selection");
-                            break;
-                        }
+                        FileLogger.Info("AutoLogin: already in-game during charlist wait, skipping selection");
+                        break;
                     }
 
                     Thread.Sleep(500);
@@ -684,15 +679,11 @@ public class AutoLoginManager
                     // Check if already in-game
                     hwnd = RefreshHandle(pid, hwnd);
                     if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during enter-world (crashed or closed)"); return; }
+                    if (IsInGame(charSelect, pid, hwnd))
                     {
-                        var tb = new StringBuilder(256);
-                        NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
-                        if (tb.ToString().Contains(" - "))
-                        {
-                            entered = true;
-                            FileLogger.Info($"AutoLogin: already in-game before SHM attempt {attempt + 1} (title: {tb})");
-                            break;
-                        }
+                        entered = true;
+                        FileLogger.Info($"AutoLogin: already in-game before SHM attempt {attempt + 1} (gameState=5 or title)");
+                        break;
                     }
 
                     charSelect.RequestEnterWorld(pid);
@@ -742,21 +733,13 @@ public class AutoLoginManager
 
                     FileLogger.Info($"AutoLogin: CLW_EnterWorldButton clicked via SHM (attempt {attempt + 1})");
 
-                    // Wait for world load — poll title (Dalaya loads can take 5-90s)
-                    // Button was clicked — do NOT retry, just wait the full duration.
-                    for (int loadWait = 0; loadWait < 90; loadWait++)
+                    // Wait for zone-load transition (Dalaya loads can take 5-90s).
+                    // Primary: IsHungAppWindow hung→responsive pattern (authoritative
+                    // on Dalaya where gameState stays 0 and title stays custom across
+                    // char-select→in-world). Fallback: native " - " title flip.
+                    if (WaitForEnterWorldTransition(pid, ref hwnd, 90))
                     {
-                        Thread.Sleep(1000);
-                        hwnd = RefreshHandle(pid, hwnd);
-                        if (hwnd == IntPtr.Zero) break;
-                        var tb = new StringBuilder(256);
-                        NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
-                        if (tb.ToString().Contains(" - "))
-                        {
-                            entered = true;
-                            FileLogger.Info($"AutoLogin: enter-world confirmed after {loadWait + 1}s (title: {tb})");
-                            break;
-                        }
+                        entered = true;
                     }
                     // Button was confirmed clicked — never re-click (could cause disconnect)
                     break;
@@ -769,15 +752,10 @@ public class AutoLoginManager
             if (!entered)
             {
                 hwnd = RefreshHandle(pid, hwnd);
-                if (hwnd != IntPtr.Zero)
+                if (hwnd != IntPtr.Zero && IsInGame(charSelect, pid, hwnd))
                 {
-                    var tbCheck = new StringBuilder(256);
-                    NativeMethods.GetWindowText(hwnd, tbCheck, tbCheck.Capacity);
-                    if (tbCheck.ToString().Contains(" - "))
-                    {
-                        entered = true;
-                        FileLogger.Info($"AutoLogin: in-game detected before PulseKey3D fallback -- skipping (title: {tbCheck})");
-                    }
+                    entered = true;
+                    FileLogger.Info("AutoLogin: in-game detected before PulseKey3D fallback -- skipping (gameState=5 or title)");
                 }
             }
             if (!entered)
@@ -791,15 +769,11 @@ public class AutoLoginManager
                 {
                     hwnd = RefreshHandle(pid, hwnd);
                     if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during PulseKey3D enter-world fallback (crashed or closed)"); return; }
+                    if (IsInGame(charSelect, pid, hwnd))
                     {
-                        var tb = new StringBuilder(256);
-                        NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
-                        if (tb.ToString().Contains(" - "))
-                        {
-                            entered = true;
-                            FileLogger.Info($"AutoLogin: already in-game before PulseKey3D attempt {attempt + 1}");
-                            break;
-                        }
+                        entered = true;
+                        FileLogger.Info($"AutoLogin: already in-game before PulseKey3D attempt {attempt + 1}");
+                        break;
                     }
 
                     writer.Activate(pid, suppress: true);
@@ -808,19 +782,13 @@ public class AutoLoginManager
                     Thread.Sleep(500);
                     writer.Deactivate(pid);
 
-                    for (int loadWait = 0; loadWait < 20; loadWait++)
+                    // Wait for zone-load transition. Same IsHungAppWindow-based
+                    // detector as the SHM path; 60s cap (PulseKey3D is the
+                    // fallback — if the first attempt's keystroke didn't land
+                    // we still have 2 more attempts).
+                    if (WaitForEnterWorldTransition(pid, ref hwnd, 60))
                     {
-                        Thread.Sleep(1000);
-                        hwnd = RefreshHandle(pid, hwnd);
-                        if (hwnd == IntPtr.Zero) break;
-                        var tb = new StringBuilder(256);
-                        NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
-                        if (tb.ToString().Contains(" - "))
-                        {
-                            entered = true;
-                            FileLogger.Info($"AutoLogin: enter-world confirmed via PulseKey3D after {loadWait + 1}s (title: {tb})");
-                            break;
-                        }
+                        entered = true;
                     }
                 }
             }
@@ -1069,19 +1037,15 @@ public class AutoLoginManager
                     return false;
 
                 case LoginPhase.EnteringWorld:
-                    // Still working — also check window title for in-game detection
-                    // (DLL's PHASE_COMPLETE detection may lag behind actual in-game)
+                    // Still working — also check for in-game transition
+                    // (DLL's PHASE_COMPLETE detection may lag behind actual in-game).
+                    // Uses gameState=5 as primary signal, title " - " as fallback.
                     hwnd = RefreshHandle(pid, hwnd);
-                    if (hwnd != IntPtr.Zero)
+                    if (hwnd != IntPtr.Zero && IsInGame(loginShm.ReadGameState(pid), hwnd))
                     {
-                        var tb = new StringBuilder(256);
-                        NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
-                        if (tb.ToString().Contains(" - "))
-                        {
-                            Report($"{account.Name} logged in!");
-                            FileLogger.Info($"AutoLogin: {account.Name} in-game detected via title before DLL PHASE_COMPLETE ({sw.ElapsedMilliseconds}ms, PID {pid})");
-                            return true;
-                        }
+                        Report($"{account.Name} logged in!");
+                        FileLogger.Info($"AutoLogin: {account.Name} in-game detected before DLL PHASE_COMPLETE ({sw.ElapsedMilliseconds}ms, PID {pid})");
+                        return true;
                     }
                     break;
             }
@@ -1340,6 +1304,90 @@ public class AutoLoginManager
         // Timeout — proceed anyway (better than hanging forever)
         FileLogger.Error($"AutoLogin: screen transition timeout after {maxWaitMs}ms — char select may not have loaded (possible bad password, dead server, or network issue)");
         return RefreshHandle(pid, hwnd);
+    }
+
+    /// <summary>
+    /// Is this PID in-game? Primary signal is the DLL's gameState sensor
+    /// (written to the SHM every poll tick); gameState=5 reliably means
+    /// in-world on Dalaya ROF2. Secondary signal is the window title
+    /// containing " - " (classic "EverQuest - CharName" pattern), used as
+    /// a fallback when MQ2 exports aren't yet resolved or on non-Dalaya EQ
+    /// variants. The title-alone check misfires on Dalaya patchme because
+    /// the client keeps the title "EverQuest" even after successful Enter
+    /// World — caused the "enter-world failed after all attempts"
+    /// noise-log that this helper fixes (2026-04-24).
+    /// </summary>
+    private static bool IsInGame(CharSelectReader charSelect, int pid, IntPtr hwnd)
+        => IsInGame(charSelect.ReadGameState(pid), hwnd);
+
+    /// <summary>
+    /// Overload for callers that already have a fresh gameState reading
+    /// from another SHM source (e.g. LoginShmWriter during the LoginShm path).
+    /// Strict — returns true only on signals that CANNOT fire pre-in-world:
+    /// gameState=5 (non-Dalaya) and title containing " - " (native EQ flip).
+    /// Does NOT consider custom WindowTitleTemplate output as in-world —
+    /// EQSwitch's WindowManager.SetWindowTitle fires at launch regardless of
+    /// game phase (confirmed 2026-04-24 live: title "1076 , natedogg , 1"
+    /// visible at char-select, causing a false-positive "already in-game"
+    /// that skipped the Enter World click). In-world detection on Dalaya
+    /// uses the zone-load IsHungAppWindow transition pattern instead —
+    /// see the post-click loops in the enter-world logic.
+    /// </summary>
+    private static bool IsInGame(int gameState, IntPtr hwnd)
+    {
+        if (gameState == 5) return true;
+        if (hwnd != IntPtr.Zero)
+        {
+            var tb = new StringBuilder(256);
+            NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
+            if (tb.ToString().Contains(" - ")) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Post-Enter-World zone-load detection. Polls for the IsHungAppWindow
+    /// hung→responsive transition that fires when EQ's 3D engine loads the
+    /// player's zone. Authoritative in-world signal on Dalaya ROF2 where
+    /// title and gameState both stay constant across the char-select→in-world
+    /// boundary. Also catches the native title flip (" - ") as a belt-and-
+    /// braces fallback for non-Dalaya variants.
+    /// Returns true if a transition was observed, false on timeout / process
+    /// death. hwnd is refreshed in place.
+    /// </summary>
+    private static bool WaitForEnterWorldTransition(int pid, ref IntPtr hwnd, int maxWaitSec)
+    {
+        bool sawHung = false;
+        for (int i = 0; i < maxWaitSec; i++)
+        {
+            Thread.Sleep(1000);
+            hwnd = RefreshHandle(pid, hwnd);
+            if (hwnd == IntPtr.Zero) return false;
+
+            // Native title flip — works on non-Dalaya EQ variants.
+            var tb = new StringBuilder(256);
+            NativeMethods.GetWindowText(hwnd, tb, tb.Capacity);
+            if (tb.ToString().Contains(" - "))
+            {
+                FileLogger.Info($"AutoLogin: zone-load confirmed via title flip after {i + 1}s (title: {tb})");
+                return true;
+            }
+
+            bool hung = NativeMethods.IsHungAppWindow(hwnd);
+            if (hung)
+            {
+                sawHung = true;
+            }
+            else if (sawHung)
+            {
+                // Was hung (3D scene loading), now responsive — zone loaded.
+                FileLogger.Info($"AutoLogin: zone-load confirmed via IsHungAppWindow transition after {i + 1}s");
+                Thread.Sleep(1500); // settle time for render
+                hwnd = RefreshHandle(pid, hwnd);
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>
