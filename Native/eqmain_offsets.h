@@ -136,6 +136,18 @@ constexpr uint32_t RVA_VTABLE_CLabelWnd      = 0x0010AC2C;
 typedef int  (__thiscall *FN_WndNotification)(void *thisPtr, void *sender, uint32_t msg, void *data);
 typedef void (__thiscall *FN_SetWindowText)  (void *thisPtr, void *pCXStr);
 
+// ─── MQ2-faithful widget resolution ──────────────────────────
+// MQ2's autologin plugin resolves widgets by XML name via CXWnd::GetChildItem,
+// which internally walks the widget's child tree comparing pXMLData->Name
+// (and ScreenID) case-insensitively. Dalaya's MQ2 dinput8.dll exports the
+// char*-overload of this function:
+//   ?GetChildItem@CXWnd@EQClasses@@QAEPAV12@PAD@Z
+// as a thunk into MQ2's own C++ implementation, which is byte-for-byte the
+// MacroQuest eqlib source (CXWnd.cpp RecurseAndFindName + GetChildItem).
+// Calling it on each top-level widget in eqmain's pWindows reproduces MQ2's
+// autologin widget lookup verbatim — no pattern scan, no heuristic.
+typedef void *(__thiscall *FN_CXWndGetChildItemChar)(void *thisPtr, const char *name);
+
 // Returns the eqmain-side function pointer for this widget's
 // WndNotification / SetWindowText vtable slot, or nullptr if:
 //   - pWnd is not an eqmain widget (falls through to eqgame-side fn)
@@ -177,6 +189,148 @@ bool IsEQMainButtonWidget(const void *pWnd);   // CButtonWnd
 // Diagnostic — returns the short class name for pWnd's vtable, or nullptr
 // if not a known widget class. Does not allocate; returns a string literal.
 const char *GetEQMainWidgetClassName(const void *pWnd);
+
+// ─── Step 3: live CXWndManager tree walk (MQ2 ReinitializeWindowList port) ──
+//
+// Replaces Phase-5 heap-scan false positives with authoritative enumeration
+// from CXWndManager::pWindows. MQ2's ReinitializeWindowList iterates this
+// array to map widget names to live pointers — we do the equivalent via
+// tree walk so we get widgets (not screens) back without needing a
+// pattern-scanned GetChildItem function pointer.
+//
+// Offsets confirmed by static disassembly of eqmain-dalaya.dll (see
+// dumps/scout_step3_v2.py). CXWndManager ctor @ RVA 0x0007a460 zeroes
+// pWindows{data, count, capacity} at [this+0x04..0x0c] — classic 32-bit
+// ArrayClass<CXWnd*> layout, 12 bytes wide.
+constexpr uint32_t RVA_VTABLE_CXWndManager        = 0x0010abe0;
+// ArrayClass<CXWnd*> pWindows starts at CXWndManager+0x04. Layout inherits
+// from CDynamicArrayBase (`m_length` first at +0x00), THEN ArrayClass adds
+// `m_array` (data ptr) at +0x04, `m_alloc` (capacity) at +0x08. So within
+// the outer CXWndManager: [+0x04]=count, [+0x08]=data, [+0x0c]=alloc.
+//
+// Earlier pass had Cnt/Data swapped which caused the scanner to pick a
+// zombie object (anything with the CXWndManager vtable at +0 whose +4
+// happened to look like a pointer and +8 like a small int). The SEH-
+// wrapped reads were "succeeding" on garbage.
+constexpr uint32_t OFF_CXWndManager_pWindows_Cnt  = 0x04;   // m_length
+constexpr uint32_t OFF_CXWndManager_pWindows_Data = 0x08;   // m_array
+constexpr uint32_t OFF_CXWndManager_pWindows_Alloc = 0x0c;  // m_alloc (capacity)
+
+// CXWnd tree-link offsets. Values from reference_eqswitch_dalaya_rof2_offsets.md,
+// empirically validated by v7 Phase 6 walk. If Step 3 telemetry shows no
+// screens being found, these are the first thing to re-verify.
+constexpr uint32_t OFF_CXWnd_NextSibling = 0x08;
+constexpr uint32_t OFF_CXWnd_FirstChild  = 0x10;
+
+// Scans eqmain's data range for the live CXWndManager instance (object whose
+// vtable pointer equals base+RVA_VTABLE_CXWndManager). Result is cached per
+// eqmain load — first call walks the range (~2-4MB), subsequent calls return
+// the cached pointer. Returns nullptr if eqmain unloaded or no match.
+//
+// Thread safety: first-call scan holds a static-bool gate under a trivial
+// one-shot pattern. Worst case under a race, two threads scan; they find
+// the same address; last-writer-wins is fine. No lock because the scan
+// runs on the game thread in practice (from GiveTime detour).
+void *FindLiveCXWndManager();
+
+// Copies up to maxCount top-level screen pointers from pWndMgr->pWindows
+// into `out`. Returns the number actually copied. Each entry is validated
+// via IsEQMainWidgetClass before being included — this rejects stale
+// pointers the heap might have left in the array mid-teardown.
+//
+// Typical return: 3-7 during login (LoginBaseScreen, SplashScreen,
+// YESNO_Dialog, OK_Dialog, etc.). Returns 0 if CXWndManager not found or
+// pWindows.Count is obviously corrupt (> 256).
+int EnumerateTopLevelScreens(void *out[], int maxCount);
+
+// BFS tree-walk starting from every top-level screen. For each widget
+// reached, if `classFilterRVA` matches the widget's vtable (or is 0 meaning
+// "any widget class"), adds the widget to `out`. Returns the count copied.
+//
+// `maxCount` bounds the output array. Internal traversal queue is fixed
+// at 512 entries — sufficient for login-screen trees which have ~20-40
+// widgets total. Beyond that, additional widgets are silently skipped
+// (diagnostic log notes the overflow).
+//
+// Every pointer deref is SEH-wrapped individually so a single bad link
+// doesn't abort the whole walk. This matters because Step 2B already
+// showed that some LoginController fields point at CXMLDataPtr/junk —
+// our class filter rejects them, but the walk itself must survive.
+int EnumerateWidgetsInTree(void *out[], int maxCount, uint32_t classFilterRVA);
+
+// One-shot diagnostic that walks the tree and dumps:
+//   - # of top-level screens
+//   - per-screen: pointer, class name, child count
+//   - flat list of CEditWnd pointers found (Username/Password candidates)
+//   - flat list of CButtonWnd pointers found (Connect/Yes/OK candidates)
+//   - flat list of CListWnd pointers found (CharacterList candidate)
+//
+// Called at most once per eqmain load — subsequent calls are no-ops. Log
+// volume is ~50 lines per login, one-time. Goal: empirically verify the
+// tree walk finds real widgets that the Phase-5 heap scan missed.
+void DumpStep3TreeDiagnostic();
+
+// Returns true for widget names that the Step 3 resolver understands,
+// regardless of whether it currently has a live widget to return. Used
+// by mq2_bridge::FindWindowByName to gate Phase-5 heap-scan fallbacks
+// while eqmain is loaded — if Step 3 owns the name, the heap scan's
+// CXMLDataPtr false positives (which cause SEH floods via ReadWindowText)
+// never get a chance to pollute the result.
+bool IsStep3KnownName(const char *name);
+
+// MQ2-faithful widget-by-name resolver. Iterates pWindows and delegates
+// each entry to Dalaya MQ2's exported CXWnd::GetChildItem(const char*),
+// which recursively walks the widget subtree matching pXMLData->Name or
+// pXMLData->ScreenID case-insensitively (see MQ2AutoLogin.h:60-66 +
+// macroquest-rof2-emu/src/eqlib/src/game/CXWnd.cpp RecurseAndFindName).
+//
+// No heuristic. No text/ordinal matching. Returns the same widget MQ2's
+// autologin plugin would locate via `GetChildWindow<T>(m_currentWindow,
+// name)` — except we don't need MQ2's LoginStateSensor to know which
+// top-level is active; we try every top-level until one returns a hit.
+//
+// Requires the MQ2 bridge function pointer to be resolved (happens in
+// OnEQMainLoaded via ResolveMQ2FaithfulFunctions). Returns nullptr when
+// resolution hasn't fired yet or no screen contains a child with this name.
+void *FindWidgetByKnownName(const char *name);
+
+// Resolves the CXWnd::GetChildItem(char*) export from Dalaya's dinput8.dll
+// (Dalaya MQ2 — loaded by the Windows loader before eqgame's main thread
+// runs, always available by the time eqswitch-di8 is injected). Called
+// from OnEQMainLoaded; idempotent, safe to call repeatedly. Returns true
+// once resolved — caches the function pointer in a static.
+bool ResolveMQ2FaithfulFunctions();
+
+// ─── The pSidlMgr swap — makes GetChildItem work on eqmain widgets ────
+//
+// dinput8's CXWnd::GetChildItem implementation reads a GLOBAL variable
+// `pSidlMgr` (a ForeignPointer<CSidlManager>) whose address is exported as
+// `ppSidlMgr` at dinput8 RVA 0x1353b8. During login, this pointer is null
+// or stale — eqgame hasn't loaded its CSidlManager yet. GetChildItem then
+// crashes inside pSidlMgr->GetParamManager() or silently returns null.
+//
+// MQ2's solution (Globals.cpp:1678): on eqmain LOAD, assign
+// `pSidlMgr = EQMain__pinstCSidlManager` so that lookups route through
+// eqmain's instance. We replicate this behavior without having MQ2's
+// hook infra — scan eqmain's memory for the CSidlManager instance
+// (vtable match against RVA_VTABLE_CSidlManagerBase), write that pointer
+// into ppSidlMgr, then GetChildItem walks the correct tree.
+//
+// Paired with RestorePSidlMgrSwap() on eqmain UNLOAD to restore the
+// prior value so eqgame's state isn't polluted.
+bool InstallPSidlMgrSwap();
+void RestorePSidlMgrSwap();
+
+// Scans eqmain's committed memory regions for an object whose vtable
+// pointer equals `base + RVA_VTABLE_CSidlManagerBase`. Returns nullptr if
+// no live instance exists (eqmain not loaded, or instance not yet
+// constructed). Cached; invalidated on eqmain UNLOAD.
+void *FindLiveCSidlManagerBase();
+
+// RTTI-verified vtable RVA for CSidlManagerBase in eqmain-dalaya.dll.
+// Source: vtable_dump.txt line "CSidlManagerBase TD=0x101341e4 ...
+// vtables=['0x1010aa40']".
+constexpr uint32_t RVA_VTABLE_CSidlManagerBase = 0x0010AA40;
 
 // ─── Step 2B-diag: one-shot vtable dump ──────────────────────
 // Called ONCE per unique eqmain vtable (editbox vtable ≠ button vtable).
