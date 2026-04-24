@@ -934,11 +934,18 @@ public class AutoLoginManager
 
         FileLogger.Info($"AutoLogin: DLL acknowledged LoginShm command for PID {pid}");
 
-        // Monitor phase transitions (200ms poll, 120s overall timeout)
+        // Monitor phase transitions (200ms poll, 14s overall timeout).
+        // 14s matches the pre-fix implicit YESNO-SetError fast-fail timing;
+        // DLL in-process credential entry is ABI-broken on Dalaya (b2d2d69),
+        // so this outer timeout is the backstop that routes to keyboard
+        // injection when the DLL progresses past phase-1 but can't actually
+        // type. Was 120s — caused ~100s wall-clock regression when the
+        // YESNO-SetError implicit fast-fail was removed. See handoff
+        // _.comms/handoff-eqswitch-next-20260424-pm.md.
         var sw = System.Diagnostics.Stopwatch.StartNew();
         LoginPhase lastReported = LoginPhase.Idle;
 
-        while (sw.ElapsedMilliseconds < 120_000)
+        while (sw.ElapsedMilliseconds < 14_000)
         {
             var phase = loginShm.ReadPhase(pid);
 
@@ -960,11 +967,12 @@ public class AutoLoginManager
                     return false; // Fall back to keyboard path
 
                 case LoginPhase.WaitLoginScreen:
-                    // If DLL can't find login widgets within 3s, the native-side
-                    // widget discovery isn't working (FindWindowByName via
-                    // LoginController::GetChildItem fails — known issue on Dalaya).
-                    // Bail fast so keyboard fallback starts promptly — this is the
-                    // dominant wall-clock lever on hotkey-to-in-world (handoff 2026-04-24).
+                    // Fast-fail: DLL stuck at phase 1 (widget discovery failed).
+                    // Works together with the outer 14s overall-timeout: this
+                    // 3s handles the "DLL never advances past phase 1" case,
+                    // the 14s handles the "DLL advances but can't complete
+                    // credentials due to ABI mismatch" case. Both route to
+                    // keyboard injection (the actual credential-entry path).
                     if (sw.ElapsedMilliseconds > 3_000)
                     {
                         FileLogger.Warn($"AutoLogin: LoginShm stuck at WaitLoginScreen for 3s — DLL widget discovery not working, falling back to keyboard");
@@ -994,8 +1002,9 @@ public class AutoLoginManager
             Thread.Sleep(200);
         }
 
-        // Overall timeout
-        FileLogger.Error($"AutoLogin: LoginShm overall timeout (120s) for {account.Name}");
+        // Overall timeout — routes to keyboard injection when DLL advances
+        // past phase 1 but can't complete (ABI-broken in-process credentials).
+        FileLogger.Error($"AutoLogin: LoginShm overall timeout (14s) for {account.Name}");
         loginShm.SendCancelCommand(pid);
         return false;
     }
