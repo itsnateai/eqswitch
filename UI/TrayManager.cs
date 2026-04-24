@@ -426,14 +426,18 @@ public class TrayManager : IDisposable
         // Low-level keyboard hook for single-key hotkeys
         if (_keyboardHook.Install())
         {
-            // Switch Key (default '\') — only when EQ is focused
+            // Switch Key (default '\') — fires when EQ clients exist.
+            // EQ focused → swap; EQ not focused → focus first client.
+            // (Previously EQ-only via process filter; first press after fresh
+            // in-world arrival failed because EQ wasn't yet foreground —
+            // 2026-04-24.)
             if (!string.IsNullOrEmpty(hk.SwitchKey))
             {
                 uint vk = HotkeyManager.ResolveVK(hk.SwitchKey);
                 if (vk != 0)
                 {
-                    _keyboardHook.Register(vk, OnSwitchKey, _config.EQProcessName);
-                    FileLogger.Info($"Hook: SwitchKey '{hk.SwitchKey}' (VK 0x{vk:X2}) — EQ-only");
+                    _keyboardHook.Register(vk, OnSwitchKey, requireClients: true);
+                    FileLogger.Info($"Hook: SwitchKey '{hk.SwitchKey}' (VK 0x{vk:X2}) — requires clients");
                 }
             }
 
@@ -474,16 +478,36 @@ public class TrayManager : IDisposable
     }
 
     /// <summary>
-    /// Switch Key ('\'):  Swap between last two clients (default) or cycle all.
-    /// Only fires when an EQ window is already focused (enforced by KeyboardHookManager filter).
+    /// Switch Key ('\'):
+    /// - If EQ is focused: swap between last two clients (default) or cycle all.
+    /// - If EQ is NOT focused: bring the first EQ client to front (cold-start path).
+    /// Fires whenever EQ clients exist (no process filter — see registration for rationale).
     /// </summary>
     private void OnSwitchKey()
     {
         var current = _processManager.GetActiveClient();
         var clients = _processManager.Clients;
+        if (clients.Count == 0)
+        {
+            FileLogger.Info("SwitchKey: no clients, nothing to do");
+            return;
+        }
+
+        // Cold-start: EQ isn't foregrounded. Bring the first client to front
+        // so the next press can swap. Previously blocked by the EQ-only
+        // process filter — first press after fresh in-world arrival would
+        // fall through to the focused non-EQ app (2026-04-24 fix).
+        if (current == null)
+        {
+            var first = clients[0];
+            _windowManager.SwitchToClient(first);
+            FileLogger.Info($"SwitchKey: no EQ focused — focused {first}");
+            return;
+        }
+
         if (clients.Count < 2)
         {
-            FileLogger.Info("SwitchKey: fewer than 2 clients, nothing to switch");
+            FileLogger.Info("SwitchKey: only 1 client, nothing to swap");
             return;
         }
 
