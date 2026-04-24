@@ -17,6 +17,10 @@
 #include "login_state_machine.h"
 
 void DI8Log(const char *fmt, ...);
+// File-scope (global namespace) — defined in device_proxy.cpp. Returns the
+// EQ main HWND captured from DirectInput SetCooperativeLevel, or nullptr
+// if it hasn't been seen yet.
+HWND GetEqHwnd();
 
 // ─── XWM constants (from MQ2 EQClasses.h) ─────────────────────
 #define XWM_LCLICK          1
@@ -313,6 +317,28 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
             MQ2Bridge::ClickButton(g_pConnectButton);
             DI8Log("login_sm: clicked LOGIN_ConnectButton");
         }
+
+        // Belt-and-braces: also post VK_RETURN to the EQ window. On Dalaya,
+        // pressing Enter after typing password submits the form reliably
+        // (user-confirmed path) — this catches the case where our
+        // ClickButton targeted the wrong CButtonWnd. If the form already
+        // submitted from the click, the Enter press is a no-op at the
+        // form level.
+        {
+            HWND hwnd = ::GetEqHwnd();
+            if (hwnd) {
+                // DIK_RETURN=0x1C. lParam layout: scancode<<16 | repeatCount(1).
+                // For WM_KEYUP, bit 30 (prev key state = was down) and bit 31
+                // (transition state = being released) are set.
+                LPARAM downLParam = (LPARAM)((0x1C << 16) | 1);
+                LPARAM upLParam   = downLParam | 0xC0000000;
+                PostMessageA(hwnd, WM_KEYDOWN, VK_RETURN, downLParam);
+                PostMessageA(hwnd, WM_CHAR,    VK_RETURN, downLParam);
+                PostMessageA(hwnd, WM_KEYUP,   VK_RETURN, upLParam);
+                DI8Log("login_sm: posted VK_RETURN to hwnd=%p (backup submit path)", hwnd);
+            }
+        }
+
         SetPhase(loginShm, PHASE_WAIT_CONNECT_RESP);
         break;
 
