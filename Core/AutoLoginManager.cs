@@ -394,7 +394,7 @@ public class AutoLoginManager
             // ══════════════════════════════════════════════════════════
             // BURST 1: Type credentials + submit (~3 seconds active)
             // ══════════════════════════════════════════════════════════
-            Report("Attempting credential keystrokes (unverified)...");
+            Report("Typing credentials...");
             writer.Activate(pid, suppress: true);
             Thread.Sleep(500); // let DLL switch coop + blast activation
             FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
@@ -414,7 +414,7 @@ public class AutoLoginManager
             CombinedTypeString(writer, pid, hwnd, password);
             Thread.Sleep(100);
 
-            Report("Posted Enter key (submit unverified)...");
+            Report("Submitting login...");
             CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = submit
             Thread.Sleep(500);
             writer.Deactivate(pid); // ← OFF immediately after typing
@@ -428,7 +428,7 @@ public class AutoLoginManager
             // ══════════════════════════════════════════════════════════
             // BURST 2: Confirm server select (~1 second active)
             // ══════════════════════════════════════════════════════════
-            Report("Posting server-select Enter (unverified)...");
+            Report("Confirming server...");
             writer.Activate(pid, suppress: true);
             Thread.Sleep(300);
             FileLogger.Info($"AutoLogin: BURST 2 activated for PID {pid}");
@@ -438,7 +438,7 @@ public class AutoLoginManager
             FileLogger.Info($"AutoLogin: BURST 2 deactivated for PID {pid}");
 
             // ── Wait for charselect load (no focus-faking, 5-60+ seconds) ──
-            Report("Waiting for screen transition (stalls here if login failed)...");
+            Report("Loading character select...");
             var transitionSw = System.Diagnostics.Stopwatch.StartNew();
             hwnd = WaitForScreenTransition(pid, hwnd, 90000);
             transitionSw.Stop();
@@ -882,20 +882,13 @@ public class AutoLoginManager
                     return false; // Fall back to keyboard path
 
                 case LoginPhase.WaitLoginScreen:
-                    // Native DLL's SetEditText / ClickButton silently no-op on
-                    // Dalaya patchme (widget pointers resolved by heap-scan are
-                    // CXMLDataPtr definitions, not live CButtonWnd/CEditWnd —
-                    // CXMLDataPtr class-gate rejects every call). The native
-                    // state machine advances through phases but does no real
-                    // work. Fall back fast to C#'s keyboard injection path
-                    // (v3.5.0's 3-layer activation defense) which actually
-                    // types credentials via dinput8 proxy SHM.
-                    // Kept at 8s — previously bumped to 20s during phase-4
-                    // sensor work, but that delayed the working keyboard
-                    // path and left credentials unentered. Reverted 2026-04-23.
+                    // If DLL can't find login widgets within 3s, the native-side
+                    // widget discovery isn't working (FindWindowByName via
+                    // LoginController::GetChildItem fails — known issue).
+                    // Bail fast so keyboard fallback starts promptly.
                     if (sw.ElapsedMilliseconds > 8_000)
                     {
-                        FileLogger.Warn($"AutoLogin: LoginShm stuck at WaitLoginScreen for 8s — DLL widget discovery not working, falling back to keyboard");
+                        FileLogger.Warn($"AutoLogin: LoginShm stuck at WaitLoginScreen for 10s — DLL widget discovery not working, falling back to keyboard");
                         loginShm.SendCancelCommand(pid);
                         return false;
                     }

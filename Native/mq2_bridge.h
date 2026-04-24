@@ -54,18 +54,6 @@ namespace MQ2Bridge {
     // Read gGameState safely (SEH-wrapped). Returns -99 if unavailable.
     int ReadGameState();
 
-    // MQ-style state sensor — returns true when eqgame's
-    // pinstCCharacterSelect export double-derefs to a live CXWnd with
-    // a readable vtable. This is the same signal MQ uses to detect the
-    // CharacterSelect state (see macroquest-rof2-emu StateMachine.cpp —
-    // MQ checks GAMESTATE_CHARSELECT + looks up CLW_CharactersScreen;
-    // we skip the name-lookup step since the direct pinst gives us the
-    // same answer without walking pWndMgr). Replaces the earlier
-    // timer-based heuristic in login_state_machine. Returns false if
-    // the pinst isn't resolved yet (export not found) or the window
-    // isn't constructed (still at login / server select).
-    bool IsCharSelectLive();
-
     // ─── Window finding ────────────────────────────────────────
     // Find a top-level EQ window or child widget by name.
     // Iterates ppWndMgr's window array, calls GetChildItem on each.

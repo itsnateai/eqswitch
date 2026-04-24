@@ -505,23 +505,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
 
         // Build log path next to eqgame.exe (not next to our DLL — we're
         // alongside EQSwitch.exe, not in the game folder).
-        // Per-PID filename so 2-client sessions don't truncate each other's
-        // log on fopen("w") — misleading diagnostics cost a full session on
-        // 2026-04-23. Filename: eqswitch-dinput8-<PID>.log
-        {
-            DWORD pid = GetCurrentProcessId();
-            char fname[48];
-            snprintf(fname, sizeof(fname), "eqswitch-dinput8-%lu.log", (unsigned long)pid);
-            if (GetModuleFileNameA(nullptr, g_logPath, MAX_PATH)) {
-                char *lastSlash = strrchr(g_logPath, '\\');
-                size_t fnameLen = strlen(fname);
-                if (lastSlash && (size_t)(lastSlash + 1 - g_logPath) + fnameLen + 1 < MAX_PATH)
-                    memcpy(lastSlash + 1, fname, fnameLen + 1);
-                else
-                    snprintf(g_logPath, MAX_PATH, "%s", fname);
-            } else {
-                snprintf(g_logPath, MAX_PATH, "%s", fname);
-            }
+        if (GetModuleFileNameA(nullptr, g_logPath, MAX_PATH)) {
+            char *lastSlash = strrchr(g_logPath, '\\');
+            if (lastSlash && (size_t)(lastSlash + 1 - g_logPath) + 21 < MAX_PATH)
+                memcpy(lastSlash + 1, "eqswitch-dinput8.log", 21);
+            else
+                snprintf(g_logPath, MAX_PATH, "eqswitch-dinput8.log");
+        } else {
+            snprintf(g_logPath, MAX_PATH, "eqswitch-dinput8.log");
         }
 
         // Create stop event BEFORE init thread — manual-reset, initially non-signaled.
