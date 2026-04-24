@@ -2,6 +2,21 @@
 
 > **Version:** the authoritative version is in `EQSwitch.csproj` (`<Version>`). Don't hardcode it here; it rots.
 
+## MQ2 OFFSET REFERENCE — READ BEFORE ANY NATIVE WORK (do NOT skip)
+
+**Before probing memory, pattern-scanning, or guessing struct layouts in `Native/`, READ these first.** Nate did a full offset-dump session and has authoritative MQ sources on disk. Skipping them costs real hours (confirmed 2026-04-23 — Option A chased `LoginController` fields for 3 iterations because I never looked here).
+
+| Path | What's in it |
+|------|--------------|
+| `X:/_Projects/_.src/_srcexamples/macroquest-rof2-emu/src/eqlib/include/eqlib/offsets/eqmain.h` | **Authoritative eqmain.dll class + instance pointer names.** Key exports: `pinstCLoginViewManager`, `pinstLoginController`, `pinstCXWndManager`, `pinstCSidlManager`, `pinstLoginServerAPI`, `pinstCEQSuiteTextureLoader`, `LoginController::GiveTime`, `LoginController::Shutdown`, `LoginServerAPI::JoinServer`, `CLoginViewManager::HandleLButtonUp`, `WndProc`. **Login widgets are owned by `CLoginViewManager`, NOT `LoginController`** — don't repeat that mistake. |
+| `.../eqlib/include/eqlib/offsets/eqgame.h` | eqgame.exe offsets — 57KB of exports (spawn/target/world/zone/char etc.). |
+| `X:/_Projects/_.src/_srcexamples/macroquest-rof2-emu-offsets-report.md` | 2026-04-18 recon report mapping MQ symbols → MySEQ INI keys. RoF2 x86 VAs in the `0xDD_xxxx` / `0xE6_xxxx` range. |
+| `X:/_Projects/_.src/_srcexamples/macroquest-rof2-emu-offsets-report-VERIFICATION.md` | Adversarial verification pass. Flags the `pinstEverQuestInfo ≠ CharInfo` mismapping. |
+| `X:/_Projects/_.src/_srcexamples/MiraDump/` | Pattern-scanner TOOL (Electron + native). Useful when a symbol moves between builds and we need to regenerate a VA from an AOB signature. Not a dump of results — the RESULTS are in the files above. |
+| `X:/_Projects/_.src/_srcexamples/macroquest-rof2-emu/` | Full MQ `emu` branch checkout. When in doubt about a class layout or what an MQ function does, GREP this tree before speculating. |
+
+**Caveat:** the x64 VAs in `eqmain.h` (`0x180xxxxxxx`) target the x64 RoF2 May 10 2013 build. Dalaya is x86 — numeric VAs differ. **Symbol names and class relationships are authoritative**; use those to direct pattern scans / RTTI lookups / vtable walks on our x86 target. Don't blindly paste the hex.
+
 ## What This Is
 C# (.NET 8 WinForms) EverQuest multiboxing window manager for the Shards of Dalaya emulator. Features DLL hook injection, DPAPI-encrypted auto-login, slim titlebar mode, PiP overlays, MQ2 character-select integration (SHM bridge + in-process Enter World), per-account / per-team AutoEnterWorld flags, an Account / Character / Team data split with alias mapping, and comprehensive eqclient.ini management.
 

@@ -1710,8 +1710,20 @@ static void DumpWidgetOffsetsOnce(void *const *screens, int nScreens) {
     DI8Log("mq2port: ═══ END OFFSET PROBE ═══");
 }
 
+// v8 Step 3 Option A was REMOVED 2026-04-23 after discovering it targeted
+// the wrong object. See `X:/_Projects/_.src/_srcexamples/macroquest-rof2-emu/
+// src/eqlib/include/eqlib/game/LoginFrontend.h` — `LoginController` is a
+// 0x34-byte (x64; ~0x1A x86) struct holding only DirectInput + HWND state.
+// It does NOT own login widgets. Those live under eqmain's own
+// `pinstCXWndManager` / `pinstCSidlManager` / `pinstCLoginViewManager`.
+// The "13 CXWnd-like fields" reported by mq2_bridge's Tier-0 dump were the
+// LOOSE readable-pointer count; under the tight `IsEQMainWidget` filter
+// the true count is 0. Do NOT re-add a LoginController field scan.
+
 void *FindWidgetByKnownName(const char *name) {
     if (!name) return nullptr;
+    int nameLen = (int)strlen(name);
+
     if (!FindLiveCXWndManager()) return nullptr;      // pWindows not ready yet
 
     // One-shot tree diagnostic on first call (prints pWindows class layout).
@@ -1724,11 +1736,10 @@ void *FindWidgetByKnownName(const char *name) {
     // Offset probe disabled — data already gathered. Re-enable if widget
     // layout changes (Dalaya update): DumpWidgetOffsetsOnce(screens, nScreens);
 
-    // Primary path: native RecurseAndFindName walk (our own C++ port — see
-    // comment block on RecurseAndFindNameNative above). Walks the live tree
-    // from each top-level in pWindows. Returns the first widget whose
+    // Secondary fallback: native RecurseAndFindName walk (our own C++ port —
+    // see comment block on RecurseAndFindNameNative above). Walks the live
+    // tree from each top-level in pWindows. Returns the first widget whose
     // CXMLData.Name case-insensitively matches `name`.
-    int nameLen = (int)strlen(name);
     // Reset budget PER TOP-LEVEL, not once per lookup. pWindows during login
     // carries ~205 entries (flat list of all registered widgets, not just
     // screen containers), so a single 5000-node global budget averages only
