@@ -1538,6 +1538,33 @@ int MQ2Bridge::ReadGameState() {
     }
 }
 
+bool MQ2Bridge::IsCharSelectLive() {
+    // Tier-1 state sensor: Dalaya's MQ2 dinput8.dll exports
+    // `pinstCCharacterSelect` (a uintptr_t whose value is a storage
+    // address; *storage → live CCharacterSelect*). When the deref
+    // chain yields a non-null window with a readable vtable word,
+    // the char-select screen is constructed and ready — same signal
+    // MQ2AutoLogin uses when it checks GAMESTATE_CHARSELECT +
+    // GetWindow("CLW_CharactersScreen"). No polling timer needed;
+    // the caller hooks this via GiveTime and reacts on the first
+    // tick where the answer flips null→non-null.
+    if (!g_pinstCharSelect) return false;
+    __try {
+        uintptr_t storageAddr = *g_pinstCharSelect;       // deref 1
+        if (!storageAddr) return false;
+        if (!IsReadablePtr((void *)storageAddr, sizeof(void *))) return false;
+        void *pCharSelWnd = *(void **)storageAddr;        // deref 2
+        if (!pCharSelWnd) return false;
+        if (!IsReadablePtr(pCharSelWnd, sizeof(void *))) return false;
+        void *vtable = *(void **)pCharSelWnd;
+        if (!vtable || !IsReadablePtr(vtable, sizeof(void *))) return false;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 // ─── MQ2Bridge::FindWindowByName ───────────────────────────────
 
 static int g_findLogCount = 0;
@@ -1837,38 +1864,40 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
 void MQ2Bridge::SetEditText(void *pEditWnd, const char *text) {
     if (!g_fnCXStrCtor || !g_fnCXStrDtor || !pEditWnd || !text) return;
 
-    // Step 2B: route through eqmain-side slot 73 (vtable+0x124) when pWnd is
-    // a real CEditWnd/CEditBaseWnd. Exact-vtable gate because Phase 5 heap-
-    // scan returns CXMLDataPtr definition pointers that live inside eqmain's
-    // range but have wrong slot layout — slot 73 in CXMLDataPtr's vtable is
-    // an unrelated method and corrupts state when called with SetWindowText's
-    // thiscall signature (stack imbalance crash in the earlier 0x128 attempt).
-    //
-    // Dispatch table (SetEditText):
-    //   A. pWnd is a real CEditWnd  → eqmain-side slot 73 (correct layout)
-    //   B. pWnd is CXMLDataPtr/def  → log-once + no-op; keyboard injection
-    //                                  fallback drives input
-    //   C. pWnd is a known non-edit widget class but eqmain fn unavailable
-    //       → SEH-wrapped eqgame call as Step 2A fallback
-    const char *widgetClass = EQMainOffsets::GetEQMainWidgetClassName(pEditWnd);
-    if (!widgetClass) {
-        // Not a known widget class — almost certainly a Phase 5 definition
-        // pointer. Log at low volume (once per unique pWnd we see) so the
-        // upstream widget-enumeration bug stays visible without flooding.
-        static void *s_loggedDefs[16] = {};
-        static int s_loggedCount = 0;
-        bool seen = false;
-        for (int i = 0; i < s_loggedCount; i++) {
-            if (s_loggedDefs[i] == pEditWnd) { seen = true; break; }
+    // CXMLDataPtr-definition safety check: live widgets have a CXWnd-like
+    // body; CXMLDataPtr defs have 0xFFFFFFFF at +0x10. Skip only when we
+    // can confirm it's a definition — never gate on vtable-RVA whitelist
+    // anymore (2026-04-23: the hardcoded RVAs in eqmain_offsets.h are
+    // stale for live Dalaya CEditWnd instances whose vtables differ from
+    // the CEditWnd template — caused every SetEditText call to silently
+    // no-op even when pEditWnd was a correctly-resolved LIVE widget from
+    // heap cross-ref). SEH-wrap all vtable calls below for belt-and-braces.
+    __try {
+        uintptr_t defMarker = *(const uintptr_t *)((const uint8_t *)pEditWnd + 0x10);
+        if (defMarker == 0xFFFFFFFF) {
+            static void *s_loggedDefs[16] = {};
+            static int s_loggedCount = 0;
+            bool seen = false;
+            for (int i = 0; i < s_loggedCount; i++) {
+                if (s_loggedDefs[i] == pEditWnd) { seen = true; break; }
+            }
+            if (!seen && s_loggedCount < 16) {
+                s_loggedDefs[s_loggedCount++] = pEditWnd;
+                DI8Log("mq2_bridge: SetEditText skipped — pWnd=%p is CXMLDataPtr "
+                       "definition (+0x10==0xFFFFFFFF)", pEditWnd);
+            }
+            return;
         }
-        if (!seen && s_loggedCount < 16) {
-            s_loggedDefs[s_loggedCount++] = pEditWnd;
-            DI8Log("mq2_bridge: SetEditText skipped — pWnd=%p not a known widget class "
-                   "(likely CXMLDataPtr definition from heap-scan; keyboard injection "
-                   "will drive input instead)", pEditWnd);
-        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        // Can't read +0x10 — treat as suspect, skip
+        DI8Log("mq2_bridge: SetEditText SEH reading def-marker at %p — skipping", pEditWnd);
         return;
     }
+
+    // Diagnostic-only: class name from eqmain-offsets whitelist (may be null
+    // on live widgets with non-hardcoded vtables — informational, no longer
+    // gating).
+    const char *widgetClass = EQMainOffsets::GetEQMainWidgetClassName(pEditWnd);
 
     EQMainOffsets::FN_SetWindowText fnEqmain = EQMainOffsets::GetSetWindowTextFor(pEditWnd);
     if (fnEqmain) {
@@ -1904,26 +1933,33 @@ void MQ2Bridge::SetEditText(void *pEditWnd, const char *text) {
 void MQ2Bridge::ClickButton(void *pButton) {
     if (!pButton) return;
 
-    // Step 2B: route through eqmain-side slot 34 (vtable+0x88, WndNotification)
-    // with exact-vtable class gate. XWM_LCLICK=1 mirrors MQ2AutoLogin's click
-    // delivery pattern. CButtonWnd inherits WndNotification from CXWnd's
-    // real-body implementation; the dispatcher handles msg routing internally.
-    const char *widgetClass = EQMainOffsets::GetEQMainWidgetClassName(pButton);
-    if (!widgetClass) {
-        static void *s_loggedDefs[16] = {};
-        static int s_loggedCount = 0;
-        bool seen = false;
-        for (int i = 0; i < s_loggedCount; i++) {
-            if (s_loggedDefs[i] == pButton) { seen = true; break; }
+    // Same gate-loosening as SetEditText: accept any pointer whose +0x10
+    // isn't 0xFFFFFFFF (CXMLDataPtr def marker). Hardcoded vtable-RVA
+    // whitelist was rejecting live Dalaya CButtonWnd instances whose
+    // vtables differ from the CButtonWnd template RVA on this build.
+    __try {
+        uintptr_t defMarker = *(const uintptr_t *)((const uint8_t *)pButton + 0x10);
+        if (defMarker == 0xFFFFFFFF) {
+            static void *s_loggedDefs[16] = {};
+            static int s_loggedCount = 0;
+            bool seen = false;
+            for (int i = 0; i < s_loggedCount; i++) {
+                if (s_loggedDefs[i] == pButton) { seen = true; break; }
+            }
+            if (!seen && s_loggedCount < 16) {
+                s_loggedDefs[s_loggedCount++] = pButton;
+                DI8Log("mq2_bridge: ClickButton skipped — pButton=%p is CXMLDataPtr "
+                       "definition (+0x10==0xFFFFFFFF)", pButton);
+            }
+            return;
         }
-        if (!seen && s_loggedCount < 16) {
-            s_loggedDefs[s_loggedCount++] = pButton;
-            DI8Log("mq2_bridge: ClickButton skipped — pButton=%p not a known widget class "
-                   "(likely CXMLDataPtr definition; keyboard injection fallback will drive click)",
-                   pButton);
-        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: ClickButton SEH reading def-marker at %p — skipping", pButton);
         return;
     }
+
+    // Diagnostic-only: informational, no longer gating.
+    const char *widgetClass = EQMainOffsets::GetEQMainWidgetClassName(pButton);
 
     EQMainOffsets::FN_WndNotification fnEqmain = EQMainOffsets::GetWndNotificationFor(pButton);
     if (fnEqmain) {
