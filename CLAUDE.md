@@ -2,9 +2,20 @@
 
 > **Version:** the authoritative version is in `EQSwitch.csproj` (`<Version>`). Don't hardcode it here; it rots.
 
-## MQ2 OFFSET REFERENCE — READ BEFORE ANY NATIVE WORK (do NOT skip)
+## MQ2 IS THE BATTLE-TESTED SOURCE — PORT, DON'T INVENT (do NOT skip)
 
-**Before probing memory, pattern-scanning, or guessing struct layouts in `Native/`, READ these first.** Nate did a full offset-dump session and has authoritative MQ sources on disk. Skipping them costs real hours (confirmed 2026-04-23 — Option A chased `LoginController` fields for 3 iterations because I never looked here).
+**Core rule for anything in `Native/`:** if MacroQuest has a working implementation
+of the thing you're about to write, **port from MQ2's code** — don't reinvent it.
+Class layouts, struct offsets, function signatures, and state-machine logic in the
+MQ2 `emu` branch are battle-tested against ROF2 binaries for years. Our job is
+adaptation (x86 vs x64 VAs, Dalaya-specific quirks), not original research.
+
+**Before probing memory, pattern-scanning, or guessing struct layouts, READ these
+first.** Nate did a full offset-dump session and has authoritative MQ sources on
+disk. Skipping them costs real hours (confirmed 2026-04-23 — Option A chased
+`LoginController` fields for 3 iterations because I never looked here; also
+2026-04-23→24 chased a fabricated "YESNO kick-session dialog" for a full session
+because I trusted a handoff file over screenshotting the actual client window).
 
 | Path | What's in it |
 |------|--------------|
@@ -16,6 +27,37 @@
 | `X:/_Projects/_.src/_srcexamples/macroquest-rof2-emu/` | Full MQ `emu` branch checkout. When in doubt about a class layout or what an MQ function does, GREP this tree before speculating. |
 
 **Caveat:** the x64 VAs in `eqmain.h` (`0x180xxxxxxx`) target the x64 RoF2 May 10 2013 build. Dalaya is x86 — numeric VAs differ. **Symbol names and class relationships are authoritative**; use those to direct pattern scans / RTTI lookups / vtable walks on our x86 target. Don't blindly paste the hex.
+
+## AUTOLOGIN SPEC — THE ACTUAL REQUIREMENT (per Nate, repeated for days)
+
+**This is what autologin must do. Nothing more, nothing less.**
+
+1. User fires `Ctrl+Alt+Shift+F9` (team1 hotkey) — both eqgame.exe clients launch.
+2. For each client, **within the first 5 seconds** after the login screen is
+   ready:
+   - Type the **password** into the focused password field. (Username is
+     auto-populated from `eqlsPlayerData*.ini` by LaunchManager before launch —
+     do not type it.)
+   - Press **Enter** → submits password to the login server.
+   - Press **Enter** again at the server-select screen → picks Dalaya, advances
+     to char-select.
+3. Char-select loads; the correct character is auto-highlighted; the DLL or C#
+   side fires **Enter World** (VK_RETURN PostMessage to EQ's HWND is fine here
+   — char-select responds to it via EQ's default "Enter = Enter World on
+   highlighted char" binding, verified working).
+4. Both clients in-world. **Zero manual clicks.** Confirmed end-to-end 2026-04-24.
+
+**There is NO kick-session YESNO dialog in patchme mode.** If a prior session's
+handoff tells you there is, it's fiction — see
+`memory/feedback_eqswitch_no_yesno_in_patchme.md`. Screenshot the client window
+before trusting ANY "dialog is up" claim (PrintWindow API from PowerShell works
+on background clients). Logs are truncate-on-open so a 2-client session
+interleaves and partially overwrites — screenshots are ground truth.
+
+**If it's already working, don't fix it.** The current proggy deployment
+(pre-surgery backup at `.pre-vkreturn-fallback-20260423`) works end-to-end.
+Touch it only to reduce the 35–50s wall-clock or polish log spam — never to
+"solve" a dialog that isn't there.
 
 ## What This Is
 C# (.NET 8 WinForms) EverQuest multiboxing window manager for the Shards of Dalaya emulator. Features DLL hook injection, DPAPI-encrypted auto-login, slim titlebar mode, PiP overlays, MQ2 character-select integration (SHM bridge + in-process Enter World), per-account / per-team AutoEnterWorld flags, an Account / Character / Team data split with alias mapping, and comprehensive eqclient.ini management.
@@ -55,7 +97,7 @@ dotnet restore
 ## Architecture
 
 ### Entry Point
-- **Program.cs** — Single-instance enforcement via named Mutex (`EQSwitch_SingleInstance_SoD`). Loads config, runs AHK migration on first launch, shows FirstRunDialog if no migration found, then hands off to TrayManager. `Application.ApplicationExit` handler ensures cleanup on any exit path.
+- **Program.cs** — Single-instance enforcement via named Mutex (`EQSwitch_SingleInstance_SoD`). Loads config, shows FirstRunDialog if no EQ path is configured, then hands off to TrayManager. `Application.ApplicationExit` handler ensures cleanup on any exit path.
 
 ### Core Layer (`Core/`)
 | File | Purpose | Key Nuances |
@@ -79,7 +121,6 @@ dotnet restore
 |------|---------|-------------|
 | **AppConfig.cs** (509 lines) | Strongly-typed JSON model | All settings in one file. Nested classes: WindowLayout, AffinityConfig, HotkeyConfig, LaunchConfig, PipConfig, CharacterProfile. LoginAccounts list for auto-login. |
 | **ConfigManager.cs** | JSON load/save with backup rotation | Config at `eqswitch-config.json` alongside exe (portable). Auto-backup on save (keeps last 10). Coalesced writes (250ms). `FlushSave()` for critical saves. |
-| **ConfigMigration.cs** | AHK config importer | Reads `eqswitch.cfg` (AHK INI format) with `Encoding.Default`. Runs automatically on first launch. |
 
 ### UI Layer (`UI/`)
 | File | Purpose | Key Nuances |
@@ -117,7 +158,7 @@ dotnet restore
 Lightweight system tray app. No complex UI, no data binding, no MVVM needed. WinForms is simpler, smaller, and starts faster for a background utility.
 
 ### Why Single-file Publish?
-Matches the original AHK philosophy: one exe, drag anywhere, runs. No installer, no Program Files, no registry (except optional run-at-startup). Config JSON sits next to the exe.
+One exe, drag anywhere, runs. No installer, no Program Files, no registry (except optional run-at-startup). Config JSON sits next to the exe.
 
 ### Hotkey Architecture (Two Systems)
 1. **RegisterHotKey** (HotkeyManager) — For modifier-based hotkeys like Alt+1, Alt+G, Alt+M. Requires a hidden window to receive WM_HOTKEY. Uses MOD_NOREPEAT.
@@ -216,7 +257,6 @@ eqswitch/
   Config/
     AppConfig.cs                 # JSON config model (509 lines)
     ConfigManager.cs             # Load/save with backup rotation
-    ConfigMigration.cs           # AHK config importer
   Models/
     EQClient.cs                  # Running EQ client model
     LoginAccount.cs              # Auto-login account preset
@@ -247,9 +287,12 @@ eqswitch/
 ```
 
 ## Features Summary
-Window switching (hotkeys + keyboard hook), grid/stacked/multi-monitor arrangement, slim titlebar (WinEQ2 mode), DLL hook injection (prevents EQ from fighting window management), DPAPI-encrypted auto-login with enter-world automation, process priority management, eqclient.ini CPU affinity slots, PiP DWM thumbnails with orientation support, staggered launch, 6-tab settings GUI, comprehensive eqclient.ini editor, config migration from AHK, config backup/restore, character profiles, process manager, desktop shortcut creation, run-at-startup.
+Window switching (hotkeys + keyboard hook), grid/stacked/multi-monitor arrangement, slim titlebar (WinEQ2 mode), DLL hook injection (prevents EQ from fighting window management), DPAPI-encrypted auto-login with enter-world automation, process priority management, eqclient.ini CPU affinity slots, PiP DWM thumbnails with orientation support, staggered launch, 6-tab settings GUI, comprehensive eqclient.ini editor, config backup/restore, character profiles, process manager, desktop shortcut creation, run-at-startup.
 
 ## Status
+
+Current working state is documented at the top under **AUTOLOGIN SPEC**.
+Historical release notes below for context on how we got here.
 
 **v3.6.0 — UI Polish, Log Trimming, Account Backup (2026-04-10)**
 
