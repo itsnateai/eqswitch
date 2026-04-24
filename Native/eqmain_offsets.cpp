@@ -420,17 +420,18 @@ bool IsEQMainWidget(const void *pWnd) {
 static void *volatile g_cachedWndMgr  = nullptr;
 static bool           g_step3Dumped   = false;  // DumpStep3TreeDiagnostic one-shot
 
-// Forward decls — learned offsets reset on eqmain UNLOAD. Declared here so
-// InvalidateStep3Caches can see them; definitions are in the mq2port section.
-extern int g_learnedDefOffset;
-extern int g_learnedNameOffset;
+// Forward decl — per-vtable offset cache reset on eqmain UNLOAD. Declared
+// here so InvalidateStep3Caches can see it; definition is in the mq2port
+// section. Count-only reset is sufficient: FindVTableEntry short-circuits
+// on g_vtOffsetCount == 0, and next-learned entries overwrite slot [0..] in
+// order, so stale VTableOffsetEntry values past g_vtOffsetCount are inert.
+extern int g_vtOffsetCount;
 
 static void InvalidateStep3Caches() {
     InterlockedExchangePointer((PVOID volatile *)&g_cachedWndMgr, nullptr);
     InterlockedExchangePointer((PVOID volatile *)&g_cachedCSidlMgr, nullptr);
     g_step3Dumped = false;
-    g_learnedDefOffset = -1;
-    g_learnedNameOffset = -1;
+    g_vtOffsetCount = 0;
 }
 
 // ─── Live-CXWndManager scan ──────────────────────────────────────────
@@ -1390,20 +1391,70 @@ static bool IsCXStrMatchCI(uintptr_t bufPtr, const char *target, int targetLen) 
     }
 }
 
-// Offset cache — learned from first successful lookup. mq2_bridge uses the
-// same caching pattern in g_pSidlPieceOffset. Once we know which offset
-// within a widget's body holds the pSidlPiece/CXMLData pointer, every
-// subsequent lookup is a single deref + CXStr match.
-// (Non-static so InvalidateStep3Caches at the top of the file can reset
-// them on UNLOAD — matches the g_cachedCSidlMgr forward-decl pattern.)
-int g_learnedDefOffset = -1;   // offset from widget body to def ptr
-int g_learnedNameOffset = -1;  // offset from def to Name CXStr (usually 0x18)
+// Per-vtable pSidlPiece-offset cache. Each eqmain widget class stores its
+// pSidlPiece at a DIFFERENT body offset — confirmed from live HeapScan +
+// CrossRef logs 2026-04-23:
+//     LOGIN_UsernameEdit  → +0x278    OK_Display       → +0x3F8
+//     LOGIN_PasswordEdit  → +0x2D8    OK_OKButton      → +0x110
+//     LOGIN_ConnectButton → +0x14C    YESNO_YesButton  → +0x11C
+// A single shared cache (v8 Step 3 first cut) misses all of these because
+// no one offset fits every class. Keyed by vtable RVA, one learned offset
+// serves every instance of that class across the full login flow.
+//
+// Discovery is expensive — ~243 4-aligned reads per widget, each SEH
+// wrapped — but runs ONCE per vtable then every later lookup takes the
+// single-deref fast path. Mirrors mq2_bridge's g_pSidlPieceOffset pattern
+// (shared offset) generalized for eqmain's polymorphic layouts.
+struct VTableOffsetEntry {
+    uint32_t vtableRVA;   // relative to eqmain base
+    int      defOffset;   // offset in widget body to def ptr (or direct CXStr buf)
+    int      nameOffset;  // offset in def to Name CXStr; 0 = body+defOff IS the buf
+};
 
-// Scan a CXWnd's body for an embedded pointer to a CXStr whose buffer
-// matches `name`. Two-tier:
-//   1. Fast path — if g_learnedDefOffset is known, only check that.
-//   2. Discovery path — on first call, try a bounded set of candidate
-//      offsets (not exhaustive — exhaustive was too slow during login).
+// Sized for login UI — typical session sees 6-10 distinct widget vtables
+// (CEditWnd, CButtonWnd, CSidlScreenWnd, CListWnd, CLabelWnd, + LoginController
+// derivatives). 32 covers that with generous headroom; cache-full is logged.
+// Non-static so InvalidateStep3Caches can reset via forward-decl.
+VTableOffsetEntry g_vtOffsetCache[32];
+int g_vtOffsetCount = 0;
+
+static int FindVTableEntry(uint32_t vtRVA) {
+    for (int i = 0; i < g_vtOffsetCount; i++) {
+        if (g_vtOffsetCache[i].vtableRVA == vtRVA) return i;
+    }
+    return -1;
+}
+
+// Record a (vtRVA → defOff, nameOff) pair. No-op if already present or the
+// cache is full. Learning is monotonic within one eqmain load — entries are
+// only cleared via InvalidateStep3Caches on UNLOAD.
+static void RecordVTableEntry(uint32_t vtRVA, int defOff, int nameOff) {
+    if (FindVTableEntry(vtRVA) >= 0) return;
+    if (g_vtOffsetCount >= 32) {
+        static int s_fullWarn = 0;
+        if (s_fullWarn < 4) {
+            DI8Log("mq2port: vtable offset cache FULL (32 entries) — new vtRVA=0x%X dropped",
+                   (unsigned)vtRVA);
+            s_fullWarn++;
+        }
+        return;
+    }
+    int idx = g_vtOffsetCount++;
+    g_vtOffsetCache[idx].vtableRVA  = vtRVA;
+    g_vtOffsetCache[idx].defOffset  = defOff;
+    g_vtOffsetCache[idx].nameOffset = nameOff;
+    DI8Log("mq2port: LEARNED widget def offset +0x%X, name offset +0x%X (vtRVA=0x%X, cache %d/32)",
+           (unsigned)defOff, (unsigned)nameOff, (unsigned)vtRVA, g_vtOffsetCount);
+}
+
+// Scan a CXWnd's body for a pointer whose +0x18 CXStr matches `target`.
+// Two-tier:
+//   1. Fast path — per-vtable cache hit: single deref + CXStr compare.
+//   2. Discovery path — on first widget of a vtable, scan every 4-aligned
+//      DWORD from +0x14 to +0x400 looking for a def ptr whose Name CXStr
+//      matches. Each read is individually SEH-wrapped so undersized widgets
+//      (read faults past the body tail) don't abort the scan — we keep
+//      probing in case a real field sits higher.
 // Skips definitions (0xFFFFFFFF at +0x10).
 static bool WidgetNameMatches(const void *pWnd, const char *target, int targetLen) {
     if (!pWnd || !target) return false;
@@ -1415,52 +1466,73 @@ static bool WidgetNameMatches(const void *pWnd, const char *target, int targetLe
         uintptr_t at10 = *(const uintptr_t *)(body + 0x10);
         if (at10 == 0xFFFFFFFF) return false;
 
-        // Fast path — cached offset from a prior successful lookup
-        if (g_learnedDefOffset > 0) {
-            uintptr_t val = *(const uintptr_t *)(body + g_learnedDefOffset);
-            if (IsCXStrMatchCI(val, target, targetLen)) return true;
-            if (val >= 0x10000 && val < 0x7FFFFFFF) {
-                int nameOff = g_learnedNameOffset > 0 ? g_learnedNameOffset : 0x18;
-                __try {
-                    uintptr_t inner = *(const uintptr_t *)(val + nameOff);
-                    if (IsCXStrMatchCI(inner, target, targetLen)) return true;
-                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        // Resolve the vtable RVA so we can key the per-class cache. Non-eqmain
+        // vtables are out of scope (IsEQMainWidgetClass would reject them at
+        // the caller anyway); reject so we don't pollute the cache with
+        // pointers that won't resolve consistently across widgets.
+        uintptr_t vt = *(const uintptr_t *)body;
+        uintptr_t base = 0;
+        uint32_t size = 0;
+        GetRange(&base, &size);
+        if (!base || !size || vt < base || vt >= base + size) return false;
+        uint32_t vtRVA = (uint32_t)(vt - base);
+
+        // Fast path — this vtable already has a learned layout.
+        int cacheIdx = FindVTableEntry(vtRVA);
+        if (cacheIdx >= 0) {
+            int defOff  = g_vtOffsetCache[cacheIdx].defOffset;
+            int nameOff = g_vtOffsetCache[cacheIdx].nameOffset;
+            uintptr_t val = *(const uintptr_t *)(body + defOff);
+            if (nameOff == 0) {
+                // Learned as direct CXStr buf at body+defOff.
+                return IsCXStrMatchCI(val, target, targetLen);
             }
-            return false;  // cached offset didn't match — don't rescan
+            if (val < 0x10000 || val >= 0x7FFFFFFF) return false;
+            __try {
+                uintptr_t inner = *(const uintptr_t *)(val + nameOff);
+                return IsCXStrMatchCI(inner, target, targetLen);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                return false;
+            }
         }
 
-        // Discovery path — bounded candidate offsets.
-        // 0x2C is mq2_bridge's cached g_pSidlPieceOffset for eqgame widgets.
-        // 0xD4/0xD8 are common in eqmain-side CXWnd derivatives (observed in
-        // probe dump — widget[0] +D8=0x310000 etc.).
-        static const uint32_t candidateDefOffs[] = {
-            0x2C, 0xD4, 0xD8, 0x1C, 0x98, 0x9C, 0xA4, 0xB0, 0xC0, 0xE0, 0x100, 0x1A8
-        };
+        // Discovery path — scan every 4-aligned DWORD from +0x14 to +0x400.
+        // 0x14 skips the CXWnd header (vtable/sibling/child). 0x400 upper
+        // bound covers the widest confirmed pSidlPiece offset (OK_Display
+        // at +0x3F8) with a small margin.
         static const uint32_t candidateNameOffs[] = {
             0x18, 0x08, 0x1C, 0x20  // Name-CXStr position in def
         };
-        for (uint32_t defOff : candidateDefOffs) {
-            uintptr_t val = *(const uintptr_t *)(body + defOff);
-            // Direct CXStr-buf match at this offset
+        for (uint32_t defOff = 0x14; defOff < 0x400; defOff += 4) {
+            uintptr_t val = 0;
+            bool readOk = false;
+            __try {
+                val = *(const uintptr_t *)(body + defOff);
+                readOk = true;
+            } __except (EXCEPTION_EXECUTE_HANDLER) { readOk = false; }
+            if (!readOk) continue;
+
+            // Direct CXStr-buf match at this offset (rare but seen for some
+            // classes that inline the Name CXStr rather than reference via def).
             if (IsCXStrMatchCI(val, target, targetLen)) {
-                g_learnedDefOffset = (int)defOff;
-                g_learnedNameOffset = 0;  // direct CXStr, no indirection
+                RecordVTableEntry(vtRVA, (int)defOff, 0);
                 return true;
             }
             if (val < 0x10000 || val >= 0x7FFFFFFF) continue;
-            // Indirect — val is def pointer, Name CXStr lives at one of
-            // several offsets inside the def.
+
+            // Indirect — val is a def pointer; Name CXStr lives inside it.
             for (uint32_t nameOff : candidateNameOffs) {
+                uintptr_t inner = 0;
+                bool innerOk = false;
                 __try {
-                    uintptr_t inner = *(const uintptr_t *)(val + nameOff);
-                    if (IsCXStrMatchCI(inner, target, targetLen)) {
-                        g_learnedDefOffset = (int)defOff;
-                        g_learnedNameOffset = (int)nameOff;
-                        DI8Log("mq2port: LEARNED widget def offset +0x%X, name offset +0x%X",
-                               (unsigned)defOff, (unsigned)nameOff);
-                        return true;
-                    }
-                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                    inner = *(const uintptr_t *)(val + nameOff);
+                    innerOk = true;
+                } __except (EXCEPTION_EXECUTE_HANDLER) { innerOk = false; }
+                if (!innerOk) continue;
+                if (IsCXStrMatchCI(inner, target, targetLen)) {
+                    RecordVTableEntry(vtRVA, (int)defOff, (int)nameOff);
+                    return true;
+                }
             }
         }
         return false;
@@ -1657,8 +1729,15 @@ void *FindWidgetByKnownName(const char *name) {
     // from each top-level in pWindows. Returns the first widget whose
     // CXMLData.Name case-insensitively matches `name`.
     int nameLen = (int)strlen(name);
-    g_recurseNodeCount = 0;  // reset global budget for this lookup
+    // Reset budget PER TOP-LEVEL, not once per lookup. pWindows during login
+    // carries ~205 entries (flat list of all registered widgets, not just
+    // screen containers), so a single 5000-node global budget averages only
+    // ~24 nodes per subtree — we'd starve before reaching LOGIN_UsernameEdit
+    // buried under LoginBaseScreen. Per-iteration reset means each subtree
+    // gets its own 5000-node headroom; a runaway cycle in one entry still
+    // bounds at 5000, doesn't starve the other 204.
     for (int i = 0; i < nScreens; i++) {
+        g_recurseNodeCount = 0;
         void *hit = RecurseAndFindNameNative(screens[i], name, nameLen, 0);
         if (hit) {
             static int s_hitLog = 0;
