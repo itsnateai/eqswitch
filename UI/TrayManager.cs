@@ -234,6 +234,12 @@ public class TrayManager : IDisposable
         };
         _processManager.ClientDiscovered += (_, c) =>
         {
+            // Stamp the bound character/account name from the autologin launch
+            // record — the hook-config and window-title paths prefer this over
+            // positional LegacyAccounts[i] indexing for accurate team-slot rendering.
+            if (AutoLoginManager.TryGetBoundName(c.ProcessId, out var bound))
+                c.BoundCharacterName = bound;
+
             // NO tooltip here — creating TopMost windows during EQ's DirectX init
             // causes the game to lose foreground and minimize itself
             _affinityManager.ScheduleRetry(c);
@@ -285,6 +291,8 @@ public class TrayManager : IDisposable
             _di8InjectedPids.Remove(c.ProcessId);
             _hookConfig?.Close(c.ProcessId);
 
+            // Drop the PID→name binding so a recycled PID doesn't inherit a stale name.
+            AutoLoginManager.ClearBoundName(c.ProcessId);
         };
 
         // Immediately detect newly launched clients so slim titlebar applies without
@@ -2307,11 +2315,20 @@ public class TrayManager : IDisposable
             // Resolve placeholders
             var client = clients[clientIndex];
             var charName = "";
-            if (clientIndex < _config.LegacyAccounts.Count)
+
+            // Authoritative source: the name AutoLogin stamped when it launched
+            // this PID. Resolves team1Account2="backup" → "backup" instead of
+            // LegacyAccounts[1]="flotte" (positional-index mis-mapping).
+            if (!string.IsNullOrEmpty(client.BoundCharacterName))
+                charName = client.BoundCharacterName;
+            else if (clientIndex < _config.LegacyAccounts.Count)
             {
-                var accountName = _config.LegacyAccounts[clientIndex].CharacterName;
-                if (!string.IsNullOrEmpty(accountName))
-                    charName = accountName;
+                // Fallback for externally-launched clients (no AutoLogin stamp):
+                // chain CharacterName → Name → Username so the slot still renders.
+                var acct = _config.LegacyAccounts[clientIndex];
+                if (!string.IsNullOrEmpty(acct.CharacterName)) charName = acct.CharacterName;
+                else if (!string.IsNullOrEmpty(acct.Name)) charName = acct.Name;
+                else if (!string.IsNullOrEmpty(acct.Username)) charName = acct.Username;
             }
             title = template
                 .Replace("{CHAR}", charName)

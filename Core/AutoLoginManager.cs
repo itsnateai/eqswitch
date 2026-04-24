@@ -23,6 +23,28 @@ public class AutoLoginManager
     /// <summary>PIDs currently in the login sequence — DLL injection should be deferred for these.</summary>
     private readonly ConcurrentDictionary<int, byte> _activeLoginPids = new();
 
+    /// <summary>
+    /// PID → the Character or Account name this PID was launched for. Populated
+    /// at process-create time, read by TrayManager on ClientDiscovered to stamp
+    /// <see cref="EQClient.BoundCharacterName"/>. Static so consumers can look
+    /// up without holding an AutoLoginManager reference. Lives for the life of
+    /// the launched process — TrayManager calls ClearBoundName on ClientLost.
+    /// </summary>
+    private static readonly ConcurrentDictionary<int, string> _pidBoundName = new();
+
+    /// <summary>Look up the character/account name a PID was launched for. Returns
+    /// false (and empty string) for externally-launched or post-cleanup PIDs.</summary>
+    public static bool TryGetBoundName(int pid, out string name)
+    {
+        if (_pidBoundName.TryGetValue(pid, out var n)) { name = n; return true; }
+        name = string.Empty;
+        return false;
+    }
+
+    /// <summary>Drop the PID→name binding. Call from ClientLost so a recycled PID
+    /// doesn't inherit a stale name.</summary>
+    public static void ClearBoundName(int pid) => _pidBoundName.TryRemove(pid, out _);
+
     /// <summary>Serializes login sequences — only one login types credentials at a time.
     /// Multiple logins are queued and run sequentially to avoid timing issues under CPU load.</summary>
     // No serialization — logins run concurrently. Focus-faking is kept to
@@ -245,6 +267,14 @@ public class AutoLoginManager
             // Register as login-active BEFORE resume so ProcessManager's ClientDiscovered
             // handler sees IsLoginActive=true and defers window manipulation.
             _activeLoginPids.TryAdd(pid, 0);
+
+            // Stamp the PID→bound-name mapping so TrayManager can render accurate
+            // {CHAR} titles without relying on positional LegacyAccounts indexing
+            // (which mis-maps team slots, e.g. team1Account2="backup" → "flotte").
+            var boundName = !string.IsNullOrEmpty(character?.Name) ? character!.Name : account.Name;
+            if (!string.IsNullOrEmpty(boundName))
+                _pidBoundName[pid] = boundName;
+
             LoginStarting?.Invoke(this, pid);
 
             // Ensure handles are always closed, even if injection or resume throws
@@ -261,6 +291,7 @@ public class AutoLoginManager
                     FileLogger.Error($"AutoLogin: ResumeThread failed (error {err}) — terminating zombie PID {pid}");
                     NativeMethods.TerminateProcess(pi.hProcess, 1);
                     _activeLoginPids.TryRemove(pid, out _);
+                    _pidBoundName.TryRemove(pid, out _); // no ClientLost will fire — clear the stamp here
                     StatusUpdate?.Invoke(this, "Error: failed to resume process");
                     return Task.CompletedTask;
                 }
@@ -295,7 +326,11 @@ public class AutoLoginManager
         catch (Exception ex)
         {
             FileLogger.Error("AutoLogin: launch failed", ex);
-            if (pid > 0) _activeLoginPids.TryRemove(pid, out _);
+            if (pid > 0)
+            {
+                _activeLoginPids.TryRemove(pid, out _);
+                _pidBoundName.TryRemove(pid, out _); // no ClientLost will fire
+            }
             StatusUpdate?.Invoke(this, $"Error: {ex.Message}");
             return Task.CompletedTask;
         }
@@ -398,6 +433,12 @@ public class AutoLoginManager
             writer.Activate(pid, suppress: true);
             Thread.Sleep(500); // let DLL switch coop + blast activation
             FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
+
+            // NOTE: a pre-flight Enter before typing is NOT idempotent on Dalaya
+            // patchme — empty-password Enter raises a "you need to enter a
+            // username and password" modal that steals focus from the password
+            // field, causing BURST 1 to type into the modal and Enter to click
+            // OK instead of submit. Tested + reverted 2026-04-24.
 
             if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
             {
@@ -921,11 +962,12 @@ public class AutoLoginManager
                 case LoginPhase.WaitLoginScreen:
                     // If DLL can't find login widgets within 3s, the native-side
                     // widget discovery isn't working (FindWindowByName via
-                    // LoginController::GetChildItem fails — known issue).
-                    // Bail fast so keyboard fallback starts promptly.
-                    if (sw.ElapsedMilliseconds > 8_000)
+                    // LoginController::GetChildItem fails — known issue on Dalaya).
+                    // Bail fast so keyboard fallback starts promptly — this is the
+                    // dominant wall-clock lever on hotkey-to-in-world (handoff 2026-04-24).
+                    if (sw.ElapsedMilliseconds > 3_000)
                     {
-                        FileLogger.Warn($"AutoLogin: LoginShm stuck at WaitLoginScreen for 10s — DLL widget discovery not working, falling back to keyboard");
+                        FileLogger.Warn($"AutoLogin: LoginShm stuck at WaitLoginScreen for 3s — DLL widget discovery not working, falling back to keyboard");
                         loginShm.SendCancelCommand(pid);
                         return false;
                     }
