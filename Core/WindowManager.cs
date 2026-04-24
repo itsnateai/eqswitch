@@ -436,37 +436,49 @@ public class WindowManager
         // Resolve character name: prefer account preset, fall back to EQ window title
         var charName = "";
 
-        // Phase 5b: resolve {CHAR} through the v4 Characters list via the slot->name
-        // binding carried in QuickLogin{N}. The QuickLogin{N} indirection itself is
-        // Phase 6-deletion-slated; only the resolved-name data source moves to v4 here.
-        //
-        // QuickLogin{N} can hold either a Character.Name (enter-world bind) or an
-        // Account.Name (charselect-only bind) — RefreshQuickLoginCombos builds the
-        // list from both. Account-only binds intentionally fall through here: the
-        // EQ native window title ("EverQuest - CharName" once logged in) is the
-        // appropriate render for a slot the user did not bind to a specific
-        // character. Phase 6 will rewire this whole indirection.
-        string? boundName = slotIndex switch
+        // Authoritative: the name AutoLogin stamped at launch time (team1Account2,
+        // etc). Short-circuits all downstream resolution because it's the only
+        // source that knows the actual team slot that produced this client —
+        // QuickLogin{N} is positional and mis-maps team-launched slots.
+        string? boundName = null;
+        if (!string.IsNullOrEmpty(client.BoundCharacterName))
         {
-            0 => _config.QuickLogin1,
-            1 => _config.QuickLogin2,
-            2 => _config.QuickLogin3,
-            3 => _config.QuickLogin4,
-            _ => null
-        };
-        if (!string.IsNullOrEmpty(boundName))
+            charName = client.BoundCharacterName;
+        }
+        else
         {
-            var character = _config.FindCharacterByName(boundName);
-            if (character != null && !string.IsNullOrEmpty(character.Name))
-                charName = character.Name;
-            else
+            // Phase 5b: resolve {CHAR} through the v4 Characters list via the slot->name
+            // binding carried in QuickLogin{N}. The QuickLogin{N} indirection itself is
+            // Phase 6-deletion-slated; only the resolved-name data source moves to v4 here.
+            //
+            // QuickLogin{N} can hold either a Character.Name (enter-world bind) or an
+            // Account.Name (charselect-only bind) — RefreshQuickLoginCombos builds the
+            // list from both. Account-only binds intentionally fall through here: the
+            // EQ native window title ("EverQuest - CharName" once logged in) is the
+            // appropriate render for a slot the user did not bind to a specific
+            // character. Phase 6 will rewire this whole indirection.
+            boundName = slotIndex switch
             {
-                // Bound name exists but didn't resolve to a Character — either an
-                // Account-only QuickLogin bind (intentional — see comment above) or
-                // a Character that was renamed/deleted after the bind was saved.
-                // Log once at Info so triage distinguishes "never bound" (boundName
-                // empty) from "bound-but-unresolved" (this branch) (review finding M3).
-                FileLogger.Info($"SetWindowTitle: slot {slotIndex} bound to '{boundName}' but not in Characters list — falling through to native EQ title");
+                0 => _config.QuickLogin1,
+                1 => _config.QuickLogin2,
+                2 => _config.QuickLogin3,
+                3 => _config.QuickLogin4,
+                _ => null
+            };
+            if (!string.IsNullOrEmpty(boundName))
+            {
+                var character = _config.FindCharacterByName(boundName);
+                if (character != null && !string.IsNullOrEmpty(character.Name))
+                    charName = character.Name;
+                else
+                {
+                    // Bound name exists but didn't resolve to a Character — either an
+                    // Account-only QuickLogin bind (intentional — see comment above) or
+                    // a Character that was renamed/deleted after the bind was saved.
+                    // Log once at Info so triage distinguishes "never bound" (boundName
+                    // empty) from "bound-but-unresolved" (this branch) (review finding M3).
+                    FileLogger.Info($"SetWindowTitle: slot {slotIndex} bound to '{boundName}' but not in Characters list — falling through to native EQ title");
+                }
             }
         }
 
@@ -489,6 +501,13 @@ public class WindowManager
             if (!string.IsNullOrEmpty(client.OriginalTitle) && client.OriginalTitle.Contains(" - "))
                 charName = client.OriginalTitle.Split(" - ", 2)[1];
         }
+
+        // Final fallback: if no Character match and EQ hasn't exposed an
+        // in-world title yet, use the bound QuickLogin value itself. For
+        // account-only binds (e.g. "backup") this renders the user's chosen
+        // label instead of an empty {CHAR} slot (handoff 2026-04-24 Open #3).
+        if (string.IsNullOrEmpty(charName) && !string.IsNullOrEmpty(boundName))
+            charName = boundName;
 
         var title = template
             .Replace("{CHAR}", charName)
