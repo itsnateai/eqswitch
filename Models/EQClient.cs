@@ -22,6 +22,18 @@ public class EQClient
     public string OriginalTitle { get; set; } = "";
     public int SlotIndex { get; set; }
 
+    /// <summary>
+    /// The Character or Account name this client was launched for by EQSwitch
+    /// autologin (e.g. "backup" for a slot bound to team1Account2="backup").
+    /// Empty for externally-launched clients.
+    ///
+    /// Authoritative {CHAR} source — more reliable than positional
+    /// LegacyAccounts[clientIndex] indexing, which maps to the raw accounts
+    /// list order rather than the team slot that produced this client.
+    /// Populated by TrayManager on ClientDiscovered via AutoLoginManager.TryGetBoundName.
+    /// </summary>
+    public string BoundCharacterName { get; set; } = "";
+
     public EQClient(int processId, IntPtr windowHandle, int slotIndex)
     {
         ProcessId = processId;
