@@ -137,7 +137,17 @@ static void DiscoverLoginWidgets() {
 static void DiscoverDialogWidgets() {
     g_pOkDisplay = MQ2Bridge::FindWindowByName("OK_Display");
     g_pOkButton  = MQ2Bridge::FindWindowByName("OK_OKButton");
-    g_pYesButton = MQ2Bridge::FindWindowByName("YESNO_YesButton");
+    // YESNO_YesButton is the "kick existing session" confirm button.
+    // EQSwitch launches eqgame.exe with `patchme` (LaunchManager), which
+    // bypasses the kick-session flow on Dalaya entirely — no YESNO dialog
+    // is ever displayed. Resolving the widget name here anyway pulled a
+    // stale CXMLDataPtr *definition* pointer (always present in eqmain's
+    // memory) which caused PHASE_WAIT_CONNECT_RESP to loop-click a
+    // phantom button for 20 attempts before SetError'ing out.
+    // Confirmed live 2026-04-23 via Nate — no YES button on his patchme
+    // login flow. Leaving the phase-4 `if (g_pYesButton)` check wired:
+    // if a future non-patchme flow needs it, re-enable resolution here.
+    g_pYesButton = nullptr;
 }
 
 static void DiscoverCharSelectWidgets() {
