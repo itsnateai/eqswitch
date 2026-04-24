@@ -394,7 +394,7 @@ public class AutoLoginManager
             // ══════════════════════════════════════════════════════════
             // BURST 1: Type credentials + submit (~3 seconds active)
             // ══════════════════════════════════════════════════════════
-            Report("Typing credentials...");
+            Report("Attempting credential keystrokes (unverified)...");
             writer.Activate(pid, suppress: true);
             Thread.Sleep(500); // let DLL switch coop + blast activation
             FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
@@ -414,7 +414,7 @@ public class AutoLoginManager
             CombinedTypeString(writer, pid, hwnd, password);
             Thread.Sleep(100);
 
-            Report("Submitting login...");
+            Report("Posted Enter key (submit unverified)...");
             CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = submit
             Thread.Sleep(500);
             writer.Deactivate(pid); // ← OFF immediately after typing
@@ -428,7 +428,7 @@ public class AutoLoginManager
             // ══════════════════════════════════════════════════════════
             // BURST 2: Confirm server select (~1 second active)
             // ══════════════════════════════════════════════════════════
-            Report("Confirming server...");
+            Report("Posting server-select Enter (unverified)...");
             writer.Activate(pid, suppress: true);
             Thread.Sleep(300);
             FileLogger.Info($"AutoLogin: BURST 2 activated for PID {pid}");
@@ -438,7 +438,7 @@ public class AutoLoginManager
             FileLogger.Info($"AutoLogin: BURST 2 deactivated for PID {pid}");
 
             // ── Wait for charselect load (no focus-faking, 5-60+ seconds) ──
-            Report("Loading character select...");
+            Report("Waiting for screen transition (stalls here if login failed)...");
             var transitionSw = System.Diagnostics.Stopwatch.StartNew();
             hwnd = WaitForScreenTransition(pid, hwnd, 90000);
             transitionSw.Stop();
