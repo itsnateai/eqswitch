@@ -442,17 +442,86 @@ public class AutoLoginManager
             var transitionSw = System.Diagnostics.Stopwatch.StartNew();
             hwnd = WaitForScreenTransition(pid, hwnd, 90000);
             transitionSw.Stop();
-            if (transitionSw.ElapsedMilliseconds >= 90000 - 500)
+            bool hitTimeout = transitionSw.ElapsedMilliseconds >= 90000 - 500;
+
+            // Hotfix 2026-04-24: stale-session auto-recovery.
+            // On Dalaya, if the login server still holds a prior session for
+            // this account (e.g. previous run crashed, was killed hard, or a
+            // fresh hotkey fire within ~30-45s of the previous login), EQ
+            // shows a modal "Connection to the server could not be reached"
+            // dialog with a focused OK button. The dialog blocks the login
+            // flow — WaitForScreenTransition hits its 90s timeout and we
+            // bail without recovery. Dismiss the dialog (Enter clicks the
+            // focused OK button), wait for the server to release, and
+            // re-fire the credential burst. One retry, then surface failure.
+            if (hitTimeout && hwnd != IntPtr.Zero)
             {
-                // Hotfix v4 (HIGH-C): timeout hit — surface to user rather than silently proceeding.
-                // Hotfix v6b (Agent 1 F1.3, Agent 3 F3.3): also abort. Pre-v6b behavior fell
-                // through to the 30s MQ2-wait loop, which then hit the v4 HIGH-A abort and
-                // emitted a confusing SECOND error message ("MQ2 bridge didn't initialize")
-                // that misdirects the user. The real cause (bad password, dead server, slow
-                // network) is already named here. Probing MQ2 for 30 more seconds against a
-                // screen that isn't charselect wastes the user's time.
-                Report($"{account.Name}: char select didn't load in 90s — check password / server / network");
-                FileLogger.Error($"AutoLogin: WaitForScreenTransition hit 90s timeout for {account.Name} — aborting login");
+                Report($"{account.Name}: transition timed out — dismissing any modal dialog + retrying login");
+                FileLogger.Warn($"AutoLogin: {account.Name} hit 90s transition timeout — attempting stale-session recovery (one-shot retry)");
+
+                // Enter clicks OK on any modal dialog; benign on a live login form.
+                writer.Activate(pid, suppress: true);
+                Thread.Sleep(300);
+                CombinedPressKey(writer, pid, hwnd, 0x0D);
+                Thread.Sleep(300);
+                writer.Deactivate(pid);
+
+                // Server-release wait — empirically Dalaya releases stale sessions in ~30-45s.
+                Thread.Sleep(30000);
+                hwnd = RefreshHandle(pid, hwnd);
+                if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during recovery wait"); return; }
+
+                // Re-fire BURST 1 (credentials + submit).
+                Report("Retry: typing credentials...");
+                writer.Activate(pid, suppress: true);
+                Thread.Sleep(500);
+                FileLogger.Info($"AutoLogin: RETRY BURST 1 activated for PID {pid}");
+                if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
+                {
+                    CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to username
+                    Thread.Sleep(100);
+                    CombinedTypeString(writer, pid, hwnd, account.Username);
+                    Thread.Sleep(100);
+                }
+                if (!account.UseLoginFlag)
+                {
+                    CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to password
+                    Thread.Sleep(100);
+                }
+                CombinedTypeString(writer, pid, hwnd, password);
+                Thread.Sleep(100);
+                Report("Retry: submitting login...");
+                CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = submit
+                Thread.Sleep(500);
+                writer.Deactivate(pid);
+                FileLogger.Info($"AutoLogin: RETRY BURST 1 deactivated for PID {pid}");
+
+                Thread.Sleep(3000);
+                hwnd = RefreshHandle(pid, hwnd);
+                if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during retry submit"); return; }
+
+                // Re-fire BURST 2 (server confirm).
+                Report("Retry: confirming server...");
+                writer.Activate(pid, suppress: true);
+                Thread.Sleep(300);
+                FileLogger.Info($"AutoLogin: RETRY BURST 2 activated for PID {pid}");
+                CombinedPressKey(writer, pid, hwnd, 0x0D);
+                Thread.Sleep(500);
+                writer.Deactivate(pid);
+                FileLogger.Info($"AutoLogin: RETRY BURST 2 deactivated for PID {pid}");
+
+                // Re-wait for screen transition — 60s cap (already burned 90+30+burst).
+                Report("Retry: loading character select...");
+                transitionSw.Restart();
+                hwnd = WaitForScreenTransition(pid, hwnd, 60000);
+                transitionSw.Stop();
+                hitTimeout = transitionSw.ElapsedMilliseconds >= 60000 - 500;
+            }
+
+            if (hitTimeout)
+            {
+                Report($"{account.Name}: char select didn't load (90s + retry) — check password / server / network");
+                FileLogger.Error($"AutoLogin: WaitForScreenTransition timeout even after stale-session recovery for {account.Name} — aborting login");
                 return;
             }
             if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during charselect load (crashed or closed)"); return; }
