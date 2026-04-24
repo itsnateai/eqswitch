@@ -446,7 +446,25 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
             break;
         }
 
-        DI8Log("login_sm: waiting for server select transition (gameState=%d)", gameState);
+        // v8 widget-resolver fallback — Dalaya's live char-select UI is visible
+        // (confirmed via screenshots 2026-04-23) but heap-scan cannot locate
+        // Character_List's CXMLDataPtr on this build. If we've been stuck here
+        // for >15s with no widget resolution, force-progress straight to
+        // ENTERING_WORLD and rely on VK_RETURN fallback for the Enter World
+        // click. EQ's default char-select keybinding is Enter = Enter World on
+        // the currently-highlighted row (which is the top-of-list character
+        // EQ auto-highlights — matches the single-char "natedogg" and 10-char
+        // "acpots" cases Nate screenshotted).
+        if (PhaseAge() > 15000) {
+            DI8Log("login_sm: PHASE_SERVER_SELECT timeout (%u ms, no Character_List) — "
+                   "force-progressing to ENTERING_WORLD via VK_RETURN fallback",
+                   (unsigned)PhaseAge());
+            SetPhase(loginShm, PHASE_ENTERING_WORLD);
+            break;
+        }
+
+        DI8Log("login_sm: waiting for server select transition (gameState=%d, age=%u ms)",
+               gameState, (unsigned)PhaseAge());
         break;
     }
 
@@ -459,6 +477,16 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         DiscoverCharSelectWidgets();
         if (g_pCharList) {
             SetPhase(loginShm, PHASE_CHAR_SELECT);
+            break;
+        }
+
+        // Same widget-resolver fallback as PHASE_SERVER_SELECT — 10s here since
+        // we already waited in PHASE_SERVER_SELECT.
+        if (PhaseAge() > 10000) {
+            DI8Log("login_sm: PHASE_WAIT_SERVER_LOAD timeout (%u ms, no Character_List) — "
+                   "force-progressing to ENTERING_WORLD via VK_RETURN fallback",
+                   (unsigned)PhaseAge());
+            SetPhase(loginShm, PHASE_ENTERING_WORLD);
         }
         break;
 
@@ -522,14 +550,32 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
             if (g_pEnterWorldBtn) {
                 MQ2Bridge::ClickButton(g_pEnterWorldBtn);
                 DI8Log("login_sm: clicked CLW_EnterWorldButton (attempt %u)", g_retryCount + 1);
-                g_retryCount++;
-                loginShm->retryCount = g_retryCount;
-
-                if (g_retryCount > 10) {
-                    SetError(loginShm, "Enter World failed after 10 attempts");
-                }
             } else {
-                DI8Log("login_sm: CLW_EnterWorldButton not found, retrying...");
+                // Widget-resolver fallback — heap-scan can't locate
+                // CLW_EnterWorldButton's CXMLDataPtr on Dalaya's current build.
+                // EQ's default char-select keybinding is Enter = Enter World on
+                // the currently-highlighted character. Fire VK_RETURN straight
+                // at EQ's HWND (same PostMessage mechanism used post-Connect for
+                // login submit in 12dd1e9).
+                HWND hwnd = GetEqHwnd();
+                if (hwnd) {
+                    // Scan codes per Win32 WM_KEYDOWN/UP lParam layout:
+                    //   VK_RETURN scan code = 0x1C, repeat count = 1.
+                    //   KEYDOWN: bits 0..15=repeat(1), 16..23=scan(0x1C), 24=ext(0), 30=prev(0), 31=transition(0)
+                    //   KEYUP:   same + bit 30=1 (prev down), bit 31=1 (released)
+                    PostMessageA(hwnd, WM_KEYDOWN, VK_RETURN, 0x001C0001);
+                    PostMessageA(hwnd, WM_KEYUP,   VK_RETURN, 0xC01C0001);
+                    DI8Log("login_sm: CLW_EnterWorldButton widget miss — VK_RETURN fallback (attempt %u)",
+                           g_retryCount + 1);
+                } else {
+                    DI8Log("login_sm: CLW_EnterWorldButton not found and no EQ HWND, retrying...");
+                }
+            }
+            g_retryCount++;
+            loginShm->retryCount = g_retryCount;
+
+            if (g_retryCount > 10) {
+                SetError(loginShm, "Enter World failed after 10 attempts");
             }
         }
         break;
