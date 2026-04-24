@@ -141,7 +141,17 @@ static void DiscoverLoginWidgets() {
 static void DiscoverDialogWidgets() {
     g_pOkDisplay = MQ2Bridge::FindWindowByName("OK_Display");
     g_pOkButton  = MQ2Bridge::FindWindowByName("OK_OKButton");
-    g_pYesButton = MQ2Bridge::FindWindowByName("YESNO_YesButton");
+    // YESNO_YesButton is the "kick existing session" confirm button.
+    // EQSwitch launches eqgame.exe with `patchme` (LaunchManager), which
+    // bypasses the kick-session flow on Dalaya entirely — no YESNO dialog
+    // is ever displayed. Resolving the widget name here anyway pulled a
+    // stale CXMLDataPtr *definition* pointer (always present in eqmain's
+    // memory) which caused PHASE_WAIT_CONNECT_RESP to loop-click a
+    // phantom button for 20 attempts before SetError'ing out.
+    // Confirmed live 2026-04-23 via Nate — no YES button on his patchme
+    // login flow. Leaving the phase-4 `if (g_pYesButton)` check wired:
+    // if a future non-patchme flow needs it, re-enable resolution here.
+    g_pYesButton = nullptr;
 }
 
 static void DiscoverCharSelectWidgets() {
@@ -285,57 +295,45 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
     }
 
     case PHASE_TYPING_CREDENTIALS:
-        // Set username and password on edit fields, then click connect
+        // Native SetEditText via Dalaya dinput8 exports is ABI-broken —
+        // g_fnSetWindowText SEHs on live Dalaya eqmain widgets (confirmed
+        // 2026-04-23 live log). C# side's keyboard injection path
+        // (KeyInputWriter → dinput8 proxy SHM → DirectInput state) is
+        // what actually types credentials, firing after C# hits the
+        // LoginShm cancel threshold (~8s). Native SM just advances
+        // phases to keep the state machine structurally coherent —
+        // no widget manipulation.
         if (SinceLastAction() < 200) break;
 
-        // Abort if widgets disappeared (stale cache)
+        // Abort only if the widgets never resolved at all — a missing
+        // edit widget means eqmain layout is wrong and we can't proceed
+        // via any path.
         if (!g_pUsernameEdit || !g_pPasswordEdit) {
             SetError(loginShm, "Login widgets disappeared before credentials could be set");
             memset(g_password, 0, sizeof(g_password));
             break;
         }
 
-        if (g_username[0]) {
-            MQ2Bridge::SetEditText(g_pUsernameEdit, g_username);
-            DI8Log("login_sm: set username on LOGIN_UsernameEdit");
-        }
-
-        if (g_password[0]) {
-            MQ2Bridge::SetEditText(g_pPasswordEdit, g_password);
-            DI8Log("login_sm: set password on LOGIN_PasswordEdit");
-            // Password stays in g_password until PHASE_COMPLETE in case retry is needed
-        }
-
         SetPhase(loginShm, PHASE_CLICKING_CONNECT);
         break;
 
     case PHASE_CLICKING_CONNECT:
-        // Small delay then click connect
+        // Native ClickButton SEHs on live widgets (same ABI issue).
+        // VK_RETURN is the reliable Dalaya-patchme submit — on the login
+        // screen, Enter in the password field submits to the server.
         if (SinceLastAction() < 300) break;
 
-        if (g_pConnectButton) {
-            MQ2Bridge::ClickButton(g_pConnectButton);
-            DI8Log("login_sm: clicked LOGIN_ConnectButton");
-        }
-
-        // Belt-and-braces: also post VK_RETURN to the EQ window. On Dalaya,
-        // pressing Enter after typing password submits the form reliably
-        // (user-confirmed path) — this catches the case where our
-        // ClickButton targeted the wrong CButtonWnd. If the form already
-        // submitted from the click, the Enter press is a no-op at the
-        // form level.
         {
             HWND hwnd = ::GetEqHwnd();
             if (hwnd) {
-                // DIK_RETURN=0x1C. lParam layout: scancode<<16 | repeatCount(1).
-                // For WM_KEYUP, bit 30 (prev key state = was down) and bit 31
-                // (transition state = being released) are set.
+                // DIK_RETURN=0x1C. lParam: scancode<<16 | repeat(1). KEYUP
+                // sets bits 30 (prev down) and 31 (released).
                 LPARAM downLParam = (LPARAM)((0x1C << 16) | 1);
                 LPARAM upLParam   = downLParam | 0xC0000000;
                 PostMessageA(hwnd, WM_KEYDOWN, VK_RETURN, downLParam);
                 PostMessageA(hwnd, WM_CHAR,    VK_RETURN, downLParam);
                 PostMessageA(hwnd, WM_KEYUP,   VK_RETURN, upLParam);
-                DI8Log("login_sm: posted VK_RETURN to hwnd=%p (backup submit path)", hwnd);
+                DI8Log("login_sm: posted VK_RETURN to hwnd=%p (connect submit)", hwnd);
             }
         }
 
@@ -347,11 +345,29 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         if (SinceLastAction() < 500) break;
         g_lastActionTick = GetTickCount();
 
+        // MQ-style state sensor (primary on Dalaya): pinstCCharacterSelect
+        // flipping to live means the connect succeeded AND we're past
+        // server-select AND char-select screen is constructed — skip
+        // straight to ENTERING_WORLD. This is the only reliable signal
+        // on Dalaya because gameState stays 0 across login→charselect
+        // (see mq2_bridge.cpp:2214 — "Dalaya ROF2 uses gameState=0 at
+        // BOTH login and charselect, so we can't gate on gameState").
+        if (MQ2Bridge::IsCharSelectLive()) {
+            DI8Log("login_sm: pinstCCharacterSelect live from WAIT_CONNECT_RESP "
+                   "— skipping server-select phases, advancing to ENTERING_WORLD");
+            g_connectGameState = -99;
+            SetPhase(loginShm, PHASE_ENTERING_WORLD);
+            break;
+        }
+
         // Track the gameState when we clicked connect
         {
             if (g_connectGameState == -99) g_connectGameState = gameState;
 
-            // Success: game state changed from what it was when we clicked connect
+            // Success: game state changed from what it was when we clicked connect.
+            // NOTE: This gate does not fire on Dalaya (gameState stays 0). Kept
+            // for non-Dalaya EQ builds that flip gameState on connect; the
+            // IsCharSelectLive sensor above is the real Dalaya advance path.
             if (gameState != g_connectGameState && g_connectGameState != -99) {
                 DI8Log("login_sm: connect response — gameState changed %d -> %d", g_connectGameState, gameState);
                 g_connectGameState = -99; // reset for next login
@@ -438,7 +454,7 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         if (SinceLastAction() < 1000) break;
         g_lastActionTick = GetTickCount();
 
-        // Check if Character_List widget appeared (= we're at char select)
+        // Preferred path: Character_List widget resolved (native click will work).
         DiscoverCharSelectWidgets();
         if (g_pCharList) {
             DI8Log("login_sm: Character_List found — at char select (gameState=%d)", gameState);
@@ -446,24 +462,22 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
             break;
         }
 
-        // v8 widget-resolver fallback — Dalaya's live char-select UI is visible
-        // (confirmed via screenshots 2026-04-23) but heap-scan cannot locate
-        // Character_List's CXMLDataPtr on this build. If we've been stuck here
-        // for >15s with no widget resolution, force-progress straight to
-        // ENTERING_WORLD and rely on VK_RETURN fallback for the Enter World
-        // click. EQ's default char-select keybinding is Enter = Enter World on
-        // the currently-highlighted row (which is the top-of-list character
-        // EQ auto-highlights — matches the single-char "natedogg" and 10-char
-        // "acpots" cases Nate screenshotted).
-        if (PhaseAge() > 15000) {
-            DI8Log("login_sm: PHASE_SERVER_SELECT timeout (%u ms, no Character_List) — "
-                   "force-progressing to ENTERING_WORLD via VK_RETURN fallback",
-                   (unsigned)PhaseAge());
+        // MQ-style state sensor: Dalaya's dinput8.dll exports
+        // `pinstCCharacterSelect`. When its double-deref yields a live CXWnd,
+        // the char-select screen is constructed — same signal MQ2AutoLogin
+        // uses (GAMESTATE_CHARSELECT + CLW_CharactersScreen window lookup).
+        // If the screen is up but our widget-name resolver can't find
+        // Character_List (heap-scan CXMLDataPtr miss on Dalaya's current
+        // build), we still want to proceed — the VK_RETURN fallback in
+        // PHASE_ENTERING_WORLD handles the click without a resolved widget.
+        // This replaces the previous 15s timeout with a real event edge.
+        if (MQ2Bridge::IsCharSelectLive()) {
+            DI8Log("login_sm: pinstCCharacterSelect live — advancing despite widget miss");
             SetPhase(loginShm, PHASE_ENTERING_WORLD);
             break;
         }
 
-        DI8Log("login_sm: waiting for server select transition (gameState=%d, age=%u ms)",
+        DI8Log("login_sm: waiting for char-select screen (gameState=%d, age=%u ms)",
                gameState, (unsigned)PhaseAge());
         break;
     }
@@ -473,19 +487,16 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         if (SinceLastAction() < 1000) break;
         g_lastActionTick = GetTickCount();
 
-        // Try to find character list widget
         DiscoverCharSelectWidgets();
         if (g_pCharList) {
             SetPhase(loginShm, PHASE_CHAR_SELECT);
             break;
         }
 
-        // Same widget-resolver fallback as PHASE_SERVER_SELECT — 10s here since
-        // we already waited in PHASE_SERVER_SELECT.
-        if (PhaseAge() > 10000) {
-            DI8Log("login_sm: PHASE_WAIT_SERVER_LOAD timeout (%u ms, no Character_List) — "
-                   "force-progressing to ENTERING_WORLD via VK_RETURN fallback",
-                   (unsigned)PhaseAge());
+        // Same MQ-style sensor as PHASE_SERVER_SELECT — advance on the
+        // first tick the screen is live, not after a hardcoded delay.
+        if (MQ2Bridge::IsCharSelectLive()) {
+            DI8Log("login_sm: pinstCCharacterSelect live in WAIT_SERVER_LOAD — advancing");
             SetPhase(loginShm, PHASE_ENTERING_WORLD);
         }
         break;
@@ -541,41 +552,26 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
             break;
         }
 
-        // Still at char select — click Enter World button
+        // Click Enter World via VK_RETURN — native ClickButton is ABI-broken
+        // on Dalaya eqgame widgets, and EQ's char-select default binding is
+        // Enter = Enter World on the highlighted character. Same approach
+        // MQ takes via pCharacterListWnd->EnterWorld() virtual call, but
+        // without the binary-layout risk.
         {
-            if (!g_pEnterWorldBtn) {
-                DiscoverCharSelectWidgets();
-            }
-
-            if (g_pEnterWorldBtn) {
-                MQ2Bridge::ClickButton(g_pEnterWorldBtn);
-                DI8Log("login_sm: clicked CLW_EnterWorldButton (attempt %u)", g_retryCount + 1);
-            } else {
-                // Widget-resolver fallback — heap-scan can't locate
-                // CLW_EnterWorldButton's CXMLDataPtr on Dalaya's current build.
-                // EQ's default char-select keybinding is Enter = Enter World on
-                // the currently-highlighted character. Fire VK_RETURN straight
-                // at EQ's HWND (same PostMessage mechanism used post-Connect for
-                // login submit in 12dd1e9).
-                HWND hwnd = GetEqHwnd();
-                if (hwnd) {
-                    // Scan codes per Win32 WM_KEYDOWN/UP lParam layout:
-                    //   VK_RETURN scan code = 0x1C, repeat count = 1.
-                    //   KEYDOWN: bits 0..15=repeat(1), 16..23=scan(0x1C), 24=ext(0), 30=prev(0), 31=transition(0)
-                    //   KEYUP:   same + bit 30=1 (prev down), bit 31=1 (released)
-                    PostMessageA(hwnd, WM_KEYDOWN, VK_RETURN, 0x001C0001);
-                    PostMessageA(hwnd, WM_KEYUP,   VK_RETURN, 0xC01C0001);
-                    DI8Log("login_sm: CLW_EnterWorldButton widget miss — VK_RETURN fallback (attempt %u)",
-                           g_retryCount + 1);
-                } else {
-                    DI8Log("login_sm: CLW_EnterWorldButton not found and no EQ HWND, retrying...");
-                }
+            HWND hwnd = GetEqHwnd();
+            if (hwnd) {
+                // VK_RETURN scancode=0x1C, repeat=1. KEYUP adds bits 30+31.
+                LPARAM downLParam = (LPARAM)((0x1C << 16) | 1);
+                LPARAM upLParam   = downLParam | 0xC0000000;
+                PostMessageA(hwnd, WM_KEYDOWN, VK_RETURN, downLParam);
+                PostMessageA(hwnd, WM_CHAR,    VK_RETURN, downLParam);
+                PostMessageA(hwnd, WM_KEYUP,   VK_RETURN, upLParam);
+                DI8Log("login_sm: posted VK_RETURN to enter world (attempt %u)", g_retryCount + 1);
             }
             g_retryCount++;
             loginShm->retryCount = g_retryCount;
-
             if (g_retryCount > 10) {
-                SetError(loginShm, "Enter World failed after 10 attempts");
+                SetError(loginShm, "Enter World failed after 10 VK_RETURN attempts");
             }
         }
         break;

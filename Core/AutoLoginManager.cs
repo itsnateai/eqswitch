@@ -882,13 +882,20 @@ public class AutoLoginManager
                     return false; // Fall back to keyboard path
 
                 case LoginPhase.WaitLoginScreen:
-                    // If DLL can't find login widgets within 3s, the native-side
-                    // widget discovery isn't working (FindWindowByName via
-                    // LoginController::GetChildItem fails — known issue).
-                    // Bail fast so keyboard fallback starts promptly.
+                    // Native DLL's SetEditText / ClickButton silently no-op on
+                    // Dalaya patchme (widget pointers resolved by heap-scan are
+                    // CXMLDataPtr definitions, not live CButtonWnd/CEditWnd —
+                    // CXMLDataPtr class-gate rejects every call). The native
+                    // state machine advances through phases but does no real
+                    // work. Fall back fast to C#'s keyboard injection path
+                    // (v3.5.0's 3-layer activation defense) which actually
+                    // types credentials via dinput8 proxy SHM.
+                    // Kept at 8s — previously bumped to 20s during phase-4
+                    // sensor work, but that delayed the working keyboard
+                    // path and left credentials unentered. Reverted 2026-04-23.
                     if (sw.ElapsedMilliseconds > 8_000)
                     {
-                        FileLogger.Warn($"AutoLogin: LoginShm stuck at WaitLoginScreen for 10s — DLL widget discovery not working, falling back to keyboard");
+                        FileLogger.Warn($"AutoLogin: LoginShm stuck at WaitLoginScreen for 8s — DLL widget discovery not working, falling back to keyboard");
                         loginShm.SendCancelCommand(pid);
                         return false;
                     }
