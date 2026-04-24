@@ -1,0 +1,19 @@
+# Heavy rizin recon dumps — regeneratable
+avra-raw.txt
+rtti-classes.txt
+
+# Copy of Dalaya binary — DO NOT COMMIT (copyrighted)
+eqmain.dll
+
+# IDA database files
+eqmain.idb
+eqmain.id0
+eqmain.id1
+eqmain.id2
+eqmain.nam
+eqmain.til
+eqmain.i64
+ida.log
+
+# Empty placeholder from killed jsdec task
+SetWindowText.jsdec.c
