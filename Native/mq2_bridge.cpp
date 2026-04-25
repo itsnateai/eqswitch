@@ -1346,6 +1346,155 @@ static void EnumerateLiveWidgetVtablesOnce() {
             }
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
+
+    // ───────────────────────────────────────────────────────────
+    // Iteration 10 — combined offset probe for MQ2 port:
+    //   10a: XMLIndex shape filter (positive (type<<16)|idx match)
+    //   10b: pSidlMgr body className hunt (locates dataArray)
+    //   10c: heap scan for "LOGIN_PasswordEdit" CXStr (anchor)
+    //
+    // Goal: pin the offsets iter 11's compile-time-bound MQ2 port needs.
+    // See _.claude/_comms/handoff-eqswitch-combo-g-iterations1-9-20260424.md.
+    // ───────────────────────────────────────────────────────────
+
+    // ── 10a: XMLIndex shape filter (smarter than iter 9's reject-all-ptrs) ──
+    // XMLIndex on x86 is uint32 = (uiType<<16) | idx where uiType < 0x100
+    // and idx < 0x1000 (per MQ2 eqlib.natvis:351-352). Iter 9 rejected
+    // values >= 0x10000 as "pointer-like" — exactly the XMLIndex range.
+    // Re-run with a positive shape match.
+    if (probed >= 2 && probedPtrs[0] && probedPtrs[1]) {
+        auto LooksLikeXMLIdx = [](uint32_t v) -> bool {
+            uint32_t hi = v >> 16;
+            uint32_t lo = v & 0xFFFF;
+            return v != 0 && hi > 0 && hi < 0x100 && lo < 0x1000;
+        };
+        DI8Log("mq2_bridge: iter 10a — XMLIndex shape probe ((type<<16)|idx, type<0x100, idx<0x1000):");
+        int xiHits = 0;
+        __try {
+            const uint8_t *e1 = (const uint8_t *)probedPtrs[0];
+            const uint8_t *e2 = (const uint8_t *)probedPtrs[1];
+            const uint8_t *e3 = probedPtrs[2] ? (const uint8_t *)probedPtrs[2] : nullptr;
+            for (int o = 0x40; o < 0x200; o += 4) {
+                uint32_t v1 = *(const uint32_t *)(e1 + o);
+                uint32_t v2 = *(const uint32_t *)(e2 + o);
+                uint32_t v3 = e3 ? *(const uint32_t *)(e3 + o) : 0;
+                if (!LooksLikeXMLIdx(v1) || !LooksLikeXMLIdx(v2)) continue;
+                if (e3 && !LooksLikeXMLIdx(v3)) continue;
+                // XMLIndex is unique per widget — values must differ
+                if (v1 == v2 && (!e3 || v1 == v3)) continue;
+                DI8Log("mq2_bridge:   CAND +0x%02X: [1]=0x%08X (type=%u idx=%u) [2]=0x%08X (type=%u idx=%u)",
+                       o, v1, v1>>16, v1&0xFFFF, v2, v2>>16, v2&0xFFFF);
+                if (e3) {
+                    DI8Log("mq2_bridge:                  [3]=0x%08X (type=%u idx=%u)",
+                           v3, v3>>16, v3&0xFFFF);
+                }
+                if (++xiHits >= 8) break;
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        if (!xiHits) DI8Log("mq2_bridge:   (no XMLIndex-shaped fields in 0x40..0x200)");
+    }
+
+    // ── 10b: pSidlMgr body className hunt (locates dataArray) ───────────
+    // CSidlManager has inline CXMLDataManager with dataArray of XMLClassData,
+    // each holding a className CXStr ("Screen", "EditBox", "Button", ...).
+    // Scan pSidlMgr's body for ptr→CXStr buf with a known UI class name.
+    // The offsets where these hit reveal dataArray's location and stride.
+    if (firstSidlMgr) {
+        static const char *const knownClassNames[] = {
+            "Screen", "EditBox", "Button", "Slider", "STMLBox",
+            "Listbox", "Page", "Label", "Gauge", "TabBox",
+            "Spellgem", "Combobox", "TextEntry"
+        };
+        DI8Log("mq2_bridge: iter 10b — pSidlMgr body className hunt (looking for UI class names):");
+        int hits = 0;
+        __try {
+            const uint8_t *sm = (const uint8_t *)firstSidlMgr;
+            for (int o = 0x00; o < 0x800; o += 4) {
+                uintptr_t v = *(const uintptr_t *)(sm + o);
+                if (v < 0x10000 || v > 0x7FFFFFFF) continue;
+                if (!IsReadablePtr((void *)v, 0x18)) continue;
+                __try {
+                    int len = *(const int *)(v + 8);
+                    if (len < 1 || len > 32) continue;
+                    const char *s = (const char *)(v + 0x14);
+                    const char *match = nullptr;
+                    for (const char *kn : knownClassNames) {
+                        int klen = 0;
+                        while (kn[klen]) klen++;
+                        if (len != klen) continue;
+                        bool eq = true;
+                        for (int k = 0; k < klen; k++) {
+                            if (s[k] != kn[k]) { eq = false; break; }
+                        }
+                        if (eq) { match = kn; break; }
+                    }
+                    if (match) {
+                        DI8Log("mq2_bridge:   HIT pSidlMgr+0x%03X = CXStr@0x%08X len=%d '%s'",
+                               o, (unsigned)v, len, match);
+                        if (++hits >= 16) break;
+                    }
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        if (!hits) DI8Log("mq2_bridge:   (no known UI class names referenced in pSidlMgr+0x00..0x800)");
+    }
+
+    // ── 10c: heap-scan for "LOGIN_PasswordEdit" CXStr buffer ────────────
+    // Find the literal "LOGIN_PasswordEdit" string anywhere in process.
+    // CXStr layout: buf_base+0x14 = C string data, buf_base+0x08 = length.
+    // For each hit, classify: STRICT (4-byte aligned + len@-0xC matches) =
+    // a real CXStr buf reachable from XMLData::Name. LOOSE (anything else,
+    // probably .rdata) = string literal, not useful for backtrace.
+    DI8Log("mq2_bridge: iter 10c — heap scan for 'LOGIN_PasswordEdit' CXStr:");
+    {
+        static const char target[] = "LOGIN_PasswordEdit";
+        static const int  targetLen = sizeof(target) - 1;
+        int strict = 0, loose = 0;
+        MEMORY_BASIC_INFORMATION mbi2;
+        uintptr_t addr2 = 0x00010000;
+        int pages2 = 0;
+        while (addr2 < 0x7FFF0000 && pages2 < 5000 && strict < 4) {
+            if (VirtualQuery((void *)addr2, &mbi2, sizeof(mbi2)) == 0) break;
+            uintptr_t b = (uintptr_t)mbi2.BaseAddress;
+            SIZE_T sz = mbi2.RegionSize;
+            if (mbi2.State == MEM_COMMIT &&
+                !(mbi2.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
+                (mbi2.Protect & (PAGE_READONLY | PAGE_READWRITE)) &&
+                (mbi2.Type == MEM_PRIVATE || mbi2.Type == MEM_MAPPED)) {
+                pages2++;
+                __try {
+                    const uint8_t *p = (const uint8_t *)b;
+                    for (uintptr_t off = 0; off + targetLen + 1 <= sz; off++) {
+                        if (p[off] != 'L') continue;  // fast reject
+                        bool eq = true;
+                        for (int k = 1; k < targetLen; k++) {
+                            if (p[off+k] != target[k]) { eq = false; break; }
+                        }
+                        if (!eq || p[off+targetLen] != 0) continue;
+                        bool aligned = (off >= 0x14 && (off & 3) == 0);
+                        bool cxstrShaped = false;
+                        if (aligned) {
+                            int maybeLen = *(const int *)(p + off - 0x0C);
+                            cxstrShaped = (maybeLen == targetLen);
+                        }
+                        if (cxstrShaped) {
+                            DI8Log("mq2_bridge:   STRICT buf=0x%08X data=0x%08X len=%d (CXStr — XMLData backtrace target)",
+                                   (unsigned)(uintptr_t)(p + off - 0x14), (unsigned)(uintptr_t)(p + off), targetLen);
+                            if (++strict >= 4) break;
+                        } else if (loose < 2) {
+                            DI8Log("mq2_bridge:   LOOSE  data=0x%08X (raw string — likely .rdata, not CXStr)",
+                                   (unsigned)(uintptr_t)(p + off));
+                            loose++;
+                        }
+                    }
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            }
+            addr2 = b + sz;
+            if (addr2 <= b) addr2 = b + 0x1000;
+        }
+        DI8Log("mq2_bridge: iter 10c — strict=%d loose=%d hits in %d pages",
+               strict, loose, pages2);
+    }
 }
 
 // Check if a DWORD looks like a CXStr buf_base pointing to target name.
