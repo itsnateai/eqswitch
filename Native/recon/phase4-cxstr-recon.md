@@ -304,6 +304,40 @@ switchover from the current b142afe-anchor autologin path.
 
 Three independent witnesses agree. No need for IDA Witness 3.
 
+## Additional vtable RVAs identified 2026-04-24 evening
+
+While debugging why `WriteEditTextDirect` was failing on heap-scan results, the
+following Dalaya eqmain.dll vtable RVAs were identified via rizin RTTI walk +
+COL chain decode (TypeDescriptor name strings shown):
+
+| RVA | Class (mangled) | Role |
+|---|---|---|
+| `0x0010A7D4` | `.?AVCXMLDataPtr@@` | def-wrapper (single DWORD body holds CParamXxx*) |
+| `0x0010AA08` | `.?AVCParamButton@@` | XML def of a button widget |
+| `0x0010D304` | `.?AVCParamEditbox@@` | XML def of an editbox widget |
+
+Combined with the live-widget vtables already in `eqmain_offsets.h`:
+
+| RVA | Class | Role |
+|---|---|---|
+| `0x0010A084` | `CXWnd` | base widget class |
+| `0x0010A574` | `CSidlScreenWnd` | top-level screens (login, charselect) |
+| `0x0010B53C` | `CButtonWnd` | live button |
+| `0x0010BCDC` | `CEditBaseWnd` | live edit base |
+| `0x0010BE6C` | `CEditWnd` | live edit |
+
+**Outstanding mystery (next-session entry point):** Dalaya's actual live
+login-screen widgets have a vtable that's NOT in the live-widget set above.
+`MQ2Bridge::FindWidgetByLabel` finds them via `+0x1A8` CXStr label match
+(no vtable filter), proving they exist in the CXWndManager tree — but
+`TranslateDefToLive`'s `IsLiveWidgetVtable` rejects them. Identifying their
+vtable is the single blocker for Combo G's in-process credential write.
+
+Recon procedure for next session: instrument `WalkForDefBackref` to log the
+vtable RVA of any node whose body backrefs the target def but whose vtable
+fails the live-widget filter. One smoke run, then COL-walk the unknown RVA
+to get the class name. Add to `IsLiveWidgetVtable`. Done.
+
 ## Open questions (Phase 4b)
 
 1. **AOB rescan strategy on prologue mismatch.** Need a unique signature
