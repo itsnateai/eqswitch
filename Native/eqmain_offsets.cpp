@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include "eqmain_offsets.h"
 #include "eqmain_cxstr.h"
+#include "eqmain_widgets.h"
 
 // DI8Log is defined in eqswitch-di8.cpp; forward-declare so this TU can use
 // the same log sink without pulling in di8_proxy or MinHook headers.
@@ -75,6 +76,13 @@ void OnEQMainUnloaded() {
     // racing caller of EQMainCXStr::HasResolvedFunctions sees nullptr and
     // bails rather than calling a freed code address.
     EQMainCXStr::ClearResolvedFunctions();
+
+    // Iter 12 wire-up: reset the password XMLIndex cache so a subsequent
+    // eqmain reload triggers fresh resolution. The cached XMLIndex is
+    // process-load-specific (the .sidl-derived item indices match this
+    // process's CXMLDataManager); a reload could theoretically change
+    // them if Dalaya patches between unload and reload.
+    EQMainWidgets::ResetPasswordCache();
 
     // Clear base first so concurrent readers see {0, old_size} — which still
     // yields IsEQMainWidget=false because the range test uses base as the gate.

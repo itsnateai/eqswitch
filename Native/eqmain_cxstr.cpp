@@ -26,6 +26,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "eqmain_cxstr.h"
+#include "eqmain_offsets.h"
 
 // DI8Log is defined in eqswitch-di8.cpp; matches the convention used by
 // eqmain_offsets.cpp. Same translation unit network, same log sink.
@@ -195,6 +196,21 @@ bool WriteEditTextDirect(void *pEditWnd, const char *text) {
     if (!pEditWnd || !text) return false;
     if (!HasResolvedFunctions()) {
         DI8Log("eqmain_cxstr: WriteEditTextDirect refused — CXStr functions unresolved");
+        return false;
+    }
+
+    // Vtable gate (added 2026-04-25 after iter 12 smoke showed false-success
+    // on CXMLDataPtr wrappers). The wrapper has readable memory at +0x1A8
+    // (just unrelated bytes), so the SEH touch-test below DOESN'T fault.
+    // Result: WriteEditTextDirect reported success while writing into the
+    // wrong widget's memory; login_sm then clicked LOGIN_ConnectButton
+    // without the password being in the actual field, and C# fell back to
+    // a delayed keystroke retry. Reject any non-edit-widget vtable here so
+    // the caller's false branch fires and the b142afe DI8 SHM path takes
+    // over instantly instead of after a doomed connect-click cycle.
+    if (!EQMainOffsets::IsEQMainEditWidget(pEditWnd)) {
+        // IsEQMainEditWidget already logs a rate-limited rejection line
+        // identifying the wrong vtable, so we don't re-log here.
         return false;
     }
 
