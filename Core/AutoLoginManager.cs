@@ -133,9 +133,10 @@ public class AutoLoginManager
     /// The routing matches v3.9.x semantics exactly: AutoEnterWorld=true + non-empty
     /// CharacterName → enter world as that character; otherwise stop at charselect.
     ///
-    /// Phase 3+ will move Tray callers off this method; removed in Phase 6 / v3.11.0.
+    /// Phase 3+ will move Tray callers off this method; planned removal once
+    /// TrayManager.FireAccountLogin is migrated to the intent-explicit API.
     /// </summary>
-    [Obsolete("Use LoginToCharselect(Account) or LoginAndEnterWorld(Character) for intent-explicit routing. Removed in v3.11.0.")]
+    [Obsolete("Use LoginToCharselect(Account) or LoginAndEnterWorld(Character) for intent-explicit routing. Slated for removal once TrayManager.FireAccountLogin is migrated.")]
     public Task LoginAccount(LoginAccount legacyAccount, bool? teamAutoEnter = null)
     {
         var account = new Account
