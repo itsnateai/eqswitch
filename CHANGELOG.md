@@ -1,5 +1,27 @@
 # Changelog
 
+## v3.11.2 — autologin documentation honesty + load-bearing-warmup discovery (2026-04-25)
+
+### Fixed
+- Stale `LoginShm overall timeout (14s)` log message corrected to `(45s)` —
+  the timeout was bumped to 45s in iter 15.2 but the message text was never
+  updated, leading to false impressions when reading logs.
+- Stale `// PATH A: ... DISABLED — native widget discovery needs a dedicated
+  RE session.` comment block replaced with current reality + a
+  ⚠ LOAD-BEARING SIDE EFFECT ⚠ warning. Combo G fixed widget discovery; the
+  broken piece is now the DLL's post-connect detection. **PATH A's 45s
+  timeout, although the "intended" login flow never completes, is incidentally
+  serving as the warmup that PATH B's keystroke injection requires** — without
+  it, BURST 1 fires at T+10s and EQ drops the first ~3 keystrokes (verified
+  2026-04-25 by attempting C# disable, password truncated 6→3 chars, login
+  failed, rolled back).
+
+### Notes
+- No behavior change vs v3.11.1 — only comments and one log message.
+- The "skip PATH A entirely" win identified during analysis turned out to
+  need a non-time-based BURST-1 readiness gate, not just commenting-out the
+  if-block. Tracked as a future "D" task.
+
 ## v3.11.1 — `\` switch key now EQ-window-only (2026-04-25)
 
 ### Fixed
