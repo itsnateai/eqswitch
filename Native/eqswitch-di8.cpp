@@ -493,20 +493,35 @@ static void Cleanup() {
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     switch (reason) {
-    case DLL_PROCESS_ATTACH:
+    case DLL_PROCESS_ATTACH: {
         g_hModule = hModule;
         DisableThreadLibraryCalls(hModule);
 
-        // Build log path next to eqgame.exe (not next to our DLL — we're
-        // alongside EQSwitch.exe, not in the game folder).
+        // Build per-PID log path next to eqgame.exe (not next to our DLL —
+        // we're alongside EQSwitch.exe, not in the game folder). Per-PID
+        // naming is REQUIRED for multi-client (team) launches: the prior
+        // shared `eqswitch-dinput8.log` was truncate-on-open, so two
+        // concurrent eqgame.exe processes would clobber each other's logs
+        // and lose any diagnostics from whichever client started later.
+        // Each process now gets its own `eqswitch-dinput8-{PID}.log`,
+        // letting 2-4 clients run fully independent with separate logs
+        // we can grep without interleaving.
+        DWORD pid = GetCurrentProcessId();
         if (GetModuleFileNameA(nullptr, g_logPath, MAX_PATH)) {
             char *lastSlash = strrchr(g_logPath, '\\');
-            if (lastSlash && (size_t)(lastSlash + 1 - g_logPath) + 21 < MAX_PATH)
-                memcpy(lastSlash + 1, "eqswitch-dinput8.log", 21);
-            else
-                snprintf(g_logPath, MAX_PATH, "eqswitch-dinput8.log");
+            if (lastSlash) {
+                size_t prefixLen = (size_t)(lastSlash + 1 - g_logPath);
+                if (prefixLen + 32 < MAX_PATH) {
+                    snprintf(lastSlash + 1, MAX_PATH - prefixLen,
+                             "eqswitch-dinput8-%lu.log", pid);
+                } else {
+                    snprintf(g_logPath, MAX_PATH, "eqswitch-dinput8-%lu.log", pid);
+                }
+            } else {
+                snprintf(g_logPath, MAX_PATH, "eqswitch-dinput8-%lu.log", pid);
+            }
         } else {
-            snprintf(g_logPath, MAX_PATH, "eqswitch-dinput8.log");
+            snprintf(g_logPath, MAX_PATH, "eqswitch-dinput8-%lu.log", pid);
         }
 
         // Create stop event BEFORE init thread — manual-reset, initially non-signaled.
@@ -519,6 +534,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
         // on the loader lock until DllMain returns.
         g_initThread = CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);
         break;
+    }
 
     case DLL_PROCESS_DETACH:
         // reserved != NULL → process exiting: OS reclaims everything
