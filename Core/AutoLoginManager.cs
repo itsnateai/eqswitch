@@ -918,12 +918,15 @@ public class AutoLoginManager
         }
 
         // Wait for DLL to acknowledge command (up to 15s).
-        // The DLL opens LoginShm lazily every ~5s — first ack may take a cycle.
+        // Iter 15.1: poll every 50ms instead of 200ms. The DLL's lazy SHM
+        // open is now eager (iter 14.1) and the throttle-bypass-on-eqmain-LOAD
+        // (iter 15) means the DLL acks within ~10ms of being able to. Tighter
+        // poll picks up the ack faster instead of waiting up to 200ms.
         bool acked = false;
-        for (int wait = 0; wait < 75; wait++) // 75 * 200ms = 15s
+        for (int wait = 0; wait < 300; wait++) // 300 * 50ms = 15s
         {
             if (loginShm.IsCommandAcknowledged(pid)) { acked = true; break; }
-            Thread.Sleep(200);
+            Thread.Sleep(50);
         }
         if (!acked)
         {
@@ -934,18 +937,20 @@ public class AutoLoginManager
 
         FileLogger.Info($"AutoLogin: DLL acknowledged LoginShm command for PID {pid}");
 
-        // Monitor phase transitions (200ms poll, 14s overall timeout).
-        // 14s matches the pre-fix implicit YESNO-SetError fast-fail timing;
-        // DLL in-process credential entry is ABI-broken on Dalaya (b2d2d69),
-        // so this outer timeout is the backstop that routes to keyboard
-        // injection when the DLL progresses past phase-1 but can't actually
-        // type. Was 120s — caused ~100s wall-clock regression when the
-        // YESNO-SetError implicit fast-fail was removed. See handoff
-        // _.comms/handoff-eqswitch-next-20260424-pm.md.
+        // Monitor phase transitions (50ms poll, 45s overall timeout).
+        // Iter 15.2 (2026-04-25): timeout extended 14s → 45s. Combo G now
+        // writes the password successfully (verified via DLL log "set password
+        // via Combo G"), but the 14s outer timeout was firing BEFORE the DLL
+        // could observe the gameState transition through PHASE_WAIT_CONNECT_RESP
+        // (login server response can take 10-20s on Dalaya). C# would CANCEL,
+        // fall back to BURST 1 keystroke, and the user would see VISIBLE typing
+        // even though Combo G had already filled the field. With Combo G
+        // working reliably, 45s gives enough headroom for slow server response
+        // without triggering the keystroke fallback.
         var sw = System.Diagnostics.Stopwatch.StartNew();
         LoginPhase lastReported = LoginPhase.Idle;
 
-        while (sw.ElapsedMilliseconds < 14_000)
+        while (sw.ElapsedMilliseconds < 45_000)
         {
             var phase = loginShm.ReadPhase(pid);
 
@@ -1002,7 +1007,7 @@ public class AutoLoginManager
                 return true; // Don't fall back — process is gone
             }
 
-            Thread.Sleep(200);
+            Thread.Sleep(50); // iter 15.1: was 200ms — tighter phase polling
         }
 
         // Overall timeout — routes to keyboard injection when DLL advances
@@ -1261,6 +1266,12 @@ public class AutoLoginManager
     /// </summary>
     private static IntPtr WaitForWindow(int pid, TimeSpan timeout)
     {
+        // Iter 15.1 (2026-04-25): poll every 50ms instead of 500ms. The window
+        // handle becomes available at an unpredictable point during eqgame.exe
+        // boot (anywhere from 3-8s after spawn); a 500ms poll could land up
+        // to 500ms after the actual ready moment. Tightening to 50ms means
+        // we send the LOGIN command within ~50ms of the window being ready,
+        // which is the upstream gate for the entire native-side login flow.
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
@@ -1275,7 +1286,7 @@ public class AutoLoginManager
             {
                 return IntPtr.Zero; // Process exited
             }
-            Thread.Sleep(500);
+            Thread.Sleep(50);
         }
         return IntPtr.Zero;
     }
