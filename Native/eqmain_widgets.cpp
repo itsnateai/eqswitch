@@ -28,6 +28,11 @@ namespace EQMainWidgets {
 // rest of the early-init path. Readers see 0 or a coherent value.
 static volatile uint32_t g_cachedXMLIndex = 0;
 
+// Iter 14.3: cached widget pointer. Validated on each FindLive call by
+// re-reading the vtable + XMLIndex; if both still match, return cached
+// without rescanning. Invalidated by ResetPasswordCache (eqmain unload).
+static volatile uintptr_t g_cachedWidgetPtr = 0;
+
 // ─── Memory-safety helpers ──────────────────────────────────
 static bool SafeReadDword(uintptr_t addr, uint32_t *out) {
     __try {
@@ -269,6 +274,7 @@ uint32_t GetCachedPasswordXMLIndex() {
 
 void ResetPasswordCache() {
     InterlockedExchange(reinterpret_cast<volatile LONG *>(&g_cachedXMLIndex), 0);
+    InterlockedExchangePointer((PVOID volatile *)&g_cachedWidgetPtr, nullptr);
 }
 
 void *FindLivePasswordCEditWnd() {
@@ -296,6 +302,30 @@ void *FindLivePasswordCEditWnd() {
 
     uintptr_t vtCEditWnd     = eqmBase + EQMainOffsets::RVA_VTABLE_CEditWnd;
     uintptr_t vtCEditBaseWnd = eqmBase + EQMainOffsets::RVA_VTABLE_CEditBaseWnd;
+
+    // Iter 14.3: fast path — validate cached widget pointer. Re-reads vtable
+    // and XMLIndex; if both still match, return immediately (~10us instead
+    // of ~750ms heap scan). The widget can move/free across charselect-
+    // enter-world transitions, so this re-validation is required on each
+    // call. ResetPasswordCache (called from OnEQMainUnloaded) clears the
+    // cache when the screen tears down.
+    uintptr_t cached = g_cachedWidgetPtr;
+    if (cached) {
+        __try {
+            uintptr_t vt = *(const uintptr_t *)cached;
+            if (vt == vtCEditWnd || vt == vtCEditBaseWnd) {
+                uint32_t xmlIdx = *(const uint32_t *)(cached + OFFSET_XMLINDEX);
+                if (xmlIdx == target) {
+                    return (void *)cached;
+                }
+            }
+            // Cache stale — fall through to rescan
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            // Cached pointer faulted — widget freed. Fall through to rescan.
+        }
+        // Invalidate stale cache before rescan
+        InterlockedExchangePointer((PVOID volatile *)&g_cachedWidgetPtr, nullptr);
+    }
 
     int candidatesScanned = 0;
     void *result = nullptr;
@@ -355,6 +385,8 @@ void *FindLivePasswordCEditWnd() {
 
                     if (xmlIdx == target) {
                         result = reinterpret_cast<void *>(b + off);
+                        // Cache for fast re-lookup on subsequent calls
+                        InterlockedExchangePointer((PVOID volatile *)&g_cachedWidgetPtr, result);
                         DI8Log("eqmain_widgets: FindLivePasswordCEditWnd — MATCH @ %p vt=0x%08X XMLIndex=0x%08X",
                                result, (unsigned)vt, xmlIdx);
                         break;
