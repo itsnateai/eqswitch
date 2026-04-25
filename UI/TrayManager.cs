@@ -434,18 +434,17 @@ public class TrayManager : IDisposable
         // Low-level keyboard hook for single-key hotkeys
         if (_keyboardHook.Install())
         {
-            // Switch Key (default '\') — fires when EQ clients exist.
-            // EQ focused → swap; EQ not focused → focus first client.
-            // (Previously EQ-only via process filter; first press after fresh
-            // in-world arrival failed because EQ wasn't yet foreground —
-            // 2026-04-24.)
+            // Switch Key (default '\') — fires ONLY when an EQ client window
+            // is foregrounded. Lets the user type '\' freely in chat/Discord/
+            // browsers without it being swallowed. The "from any app" key is
+            // GlobalSwitchKey (']') below.
             if (!string.IsNullOrEmpty(hk.SwitchKey))
             {
                 uint vk = HotkeyManager.ResolveVK(hk.SwitchKey);
                 if (vk != 0)
                 {
-                    _keyboardHook.Register(vk, OnSwitchKey, requireClients: true);
-                    FileLogger.Info($"Hook: SwitchKey '{hk.SwitchKey}' (VK 0x{vk:X2}) — requires clients");
+                    _keyboardHook.Register(vk, OnSwitchKey, processFilter: "eqgame", requireClients: true);
+                    FileLogger.Info($"Hook: SwitchKey '{hk.SwitchKey}' (VK 0x{vk:X2}) — EQ-foreground only");
                 }
             }
 
@@ -501,10 +500,9 @@ public class TrayManager : IDisposable
             return;
         }
 
-        // Cold-start: EQ isn't foregrounded. Bring the first client to front
-        // so the next press can swap. Previously blocked by the EQ-only
-        // process filter — first press after fresh in-world arrival would
-        // fall through to the focused non-EQ app (2026-04-24 fix).
+        // Defensive: with the EQ-foreground process filter on '\', this branch
+        // should be unreachable in steady state. Kept in case the cached PID
+        // set hasn't caught up to a brand-new client yet.
         if (current == null)
         {
             var first = clients[0];
