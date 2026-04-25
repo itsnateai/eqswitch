@@ -15,6 +15,7 @@
 #include <windows.h>
 #include <string.h>
 #include "login_state_machine.h"
+#include "eqmain_cxstr.h"
 
 void DI8Log(const char *fmt, ...);
 
@@ -291,8 +292,15 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
     }
 
     case PHASE_TYPING_CREDENTIALS:
-        // Set username and password on edit fields, then click connect
-        if (SinceLastAction() < 200) break;
+        // Set username and password on edit fields, then click connect.
+        //
+        // No debounce — Combo G writes are direct memory writes via the
+        // resolved eqmain CXStr ctor + vtable[73] SetWindowText. Each call
+        // is a synchronous 4-CALL chain (ctor + setText + redraw1 + redraw2)
+        // that completes in microseconds. The previous 200ms debounce
+        // existed to space keystroke-injection events; with WriteEditTextDirect
+        // it's pure latency that loses the race against C#'s 3s WaitLoginScreen
+        // timeout (AutoLoginManager.cs:976).
 
         // Abort if widgets disappeared (stale cache)
         if (!g_pUsernameEdit || !g_pPasswordEdit) {
@@ -302,14 +310,34 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         }
 
         if (g_username[0]) {
-            MQ2Bridge::SetEditText(g_pUsernameEdit, g_username);
-            DI8Log("login_sm: set username on LOGIN_UsernameEdit");
+            // Username is usually pre-filled by eqlsPlayerData.ini, but write
+            // anyway so a stale ini value gets overwritten with the configured
+            // account. Failure here is non-fatal (username may already be right).
+            if (EQMainCXStr::WriteEditTextDirect(g_pUsernameEdit, g_username)) {
+                DI8Log("login_sm: set username via Combo G (WriteEditTextDirect)");
+            } else {
+                DI8Log("login_sm: username WriteEditTextDirect failed — proceeding "
+                       "(may already be ini-prefilled)");
+            }
         }
 
         if (g_password[0]) {
-            MQ2Bridge::SetEditText(g_pPasswordEdit, g_password);
-            DI8Log("login_sm: set password on LOGIN_PasswordEdit");
-            // Password stays in g_password until PHASE_COMPLETE in case retry is needed
+            // Password is critical — if Combo G fails, we MUST surface error
+            // immediately rather than leaving C# to wait its 14s outer timeout
+            // and silently fall back to keystroke injection. Per
+            // memory/feedback_eqswitch_no_regression_to_dinput8.md, the
+            // dinput8 keystroke path is the regression we're escaping; failing
+            // loud here is the right behavior.
+            if (EQMainCXStr::WriteEditTextDirect(g_pPasswordEdit, g_password)) {
+                DI8Log("login_sm: set password via Combo G (WriteEditTextDirect)");
+                // Password stays in g_password until PHASE_COMPLETE for retry
+            } else {
+                SetError(loginShm,
+                         "Combo G WriteEditTextDirect failed on password edit "
+                         "(CXStr unresolved, vtable slot probe exhausted, or SEH fault)");
+                memset(g_password, 0, sizeof(g_password));
+                break;
+            }
         }
 
         SetPhase(loginShm, PHASE_CLICKING_CONNECT);

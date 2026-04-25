@@ -967,15 +967,18 @@ public class AutoLoginManager
                     return false; // Fall back to keyboard path
 
                 case LoginPhase.WaitLoginScreen:
-                    // Fast-fail: DLL stuck at phase 1 (widget discovery failed).
-                    // Works together with the outer 14s overall-timeout: this
-                    // 3s handles the "DLL never advances past phase 1" case,
-                    // the 14s handles the "DLL advances but can't complete
-                    // credentials due to ABI mismatch" case. Both route to
-                    // keyboard injection (the actual credential-entry path).
-                    if (sw.ElapsedMilliseconds > 3_000)
+                    // Widget discovery via HeapScanForWidget legitimately takes
+                    // ~5-6s on Dalaya — heap scan walks ~238 pages × 3 widgets.
+                    // The prior 3s timeout was ALWAYS losing this race (verified
+                    // 2026-04-24 across both b142afe baseline and post-Combo-G
+                    // smoke test: CANCEL fired 16-50ms after widgets found in
+                    // both runs). Extended to 10s so Combo G's
+                    // WriteEditTextDirect actually gets a chance to run before
+                    // C# falls back. The outer 14s timeout still catches the
+                    // "DLL advanced past phase 1 but can't complete" case.
+                    if (sw.ElapsedMilliseconds > 10_000)
                     {
-                        FileLogger.Warn($"AutoLogin: LoginShm stuck at WaitLoginScreen for 3s — DLL widget discovery not working, falling back to keyboard");
+                        FileLogger.Warn($"AutoLogin: LoginShm stuck at WaitLoginScreen for 10s — DLL widget discovery not working, falling back to keyboard");
                         loginShm.SendCancelCommand(pid);
                         return false;
                     }
