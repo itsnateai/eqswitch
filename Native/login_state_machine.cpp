@@ -123,11 +123,14 @@ static void DiscoverLoginWidgets() {
     // experience is "screen up → password instantly fills → brief pause →
     // connect clicks" rather than "screen up → 5s idle → password → connect".
     g_pUsernameEdit  = nullptr;
-    g_pPasswordEdit  = nullptr;
     g_pConnectButton = nullptr;  // resolved in PHASE_CLICKING_CONNECT
 
     void *pPasswordWidget = EQMainWidgets::FindLivePasswordCEditWnd();
     if (pPasswordWidget) {
+        // Iter 14.2: cache the widget pointer so PHASE_TYPING_CREDENTIALS
+        // doesn't have to repeat the heap scan. Saves ~600ms on the
+        // critical path. Invalidated by InvalidateWidgets() on retry.
+        g_pPasswordEdit = pPasswordWidget;
         g_widgetsCached = true;
         DI8Log("login_sm: login screen ready — structural password widget @ %p (XMLIndex=0x%08X) "
                "after %d attempts; LOGIN_ConnectButton resolution deferred to click phase",
@@ -330,15 +333,14 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         // cache lookup that produced a wrapper pointer.
 
         if (g_password[0]) {
-            // Structural lookup via EQMainWidgets — walks live CEditBaseWnd
-            // instances on the heap and returns the one whose CXWnd::XMLIndex
-            // (+0xD8) matches the cached LOGIN_PasswordEdit value (hardcoded
-            // at iter 12.3 to (34<<16)|1 based on iter 12.2 diagnostic dump
-            // showing username at idx=0 with .sidl-stable sequential layout).
-            // Sidesteps the iter 1-9 dead-end where FindLiveCXWnd returned
-            // CXMLDataPtr wrappers (vtable RVA 0x10A7D4) instead of real
-            // live CEditBaseWnd (vtable RVA 0x10BCDC).
-            void *pPasswordWidget = EQMainWidgets::FindLivePasswordCEditWnd();
+            // Iter 14.2: prefer the cached widget pointer from DiscoverLoginWidgets
+            // (saved when the login-screen-ready signal fired) — avoids a
+            // redundant ~600ms heap scan. Falls back to a fresh structural
+            // lookup if the cache is empty (e.g., race between phase transitions).
+            void *pPasswordWidget = g_pPasswordEdit;
+            if (!pPasswordWidget) {
+                pPasswordWidget = EQMainWidgets::FindLivePasswordCEditWnd();
+            }
             if (!pPasswordWidget) {
                 DI8Log("login_sm: structural password lookup failed — Combo G "
                        "unavailable; deferring to C# keystroke fallback (DI8 SHM)");
@@ -348,8 +350,6 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
                 memset(g_password, 0, sizeof(g_password));
                 break;
             }
-            DI8Log("login_sm: structural password widget @ %p (XMLIndex=0x%08X)",
-                   pPasswordWidget, EQMainWidgets::GetCachedPasswordXMLIndex());
 
             // Password is critical — if Combo G fails, we MUST surface error
             // immediately rather than leaving C# to wait its 14s outer timeout
