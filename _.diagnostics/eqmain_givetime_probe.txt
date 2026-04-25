@@ -1,3 +1,0 @@
-=== EQMain GiveTime probe @ 2026-04-15 16:44:41 ===
-
-ERROR: no eqgame.exe running — start one and re-launch CE
