@@ -1352,14 +1352,22 @@ static bool WalkForDefBackref(void *pWnd, DefBackrefCtx *ctx, int depth) {
     if ((uintptr_t)pWnd < 0x10000 || (uintptr_t)pWnd > 0x7FFFFFFF) return false;
 
     __try {
-        if (!IsReadablePtr(pWnd, 0x400)) return false;
+        // Lowered from 0x400 to 0x100 — leaf widgets (CEditWnd) can be
+        // smaller than 0x400 bytes; the per-DWORD body scan below uses the
+        // outer __try to catch any over-read into unmapped memory.
+        if (!IsReadablePtr(pWnd, 0x100)) return false;
         ctx->nodesChecked++;
 
-        // Skip CParamXxx-style definition objects (have 0xFFFFFFFF at +0x10).
-        // CXMLDataPtr does NOT match this filter so it's still visited, but
-        // it'll fail the IsLiveWidgetVtable gate below.
+        // Read firstChild slot at +0x10. 0xFFFFFFFF here means "no first
+        // child" (leaf widget) — DO NOT return false here: leaf widgets
+        // are exactly what we're looking for (LOGIN_PasswordEdit etc.
+        // have no children). The 0xFFFFFFFF was previously used as a
+        // "skip definition objects" filter, but that filter also prunes
+        // legitimate leaf live-widgets. Definitions are filtered correctly
+        // by the IsLiveWidgetVtable predicate below — that's the right
+        // gate. Caught 2026-04-24 smoke test: 523 nodes, 0 matches because
+        // every login-screen leaf widget was pruned before predicate ran.
         uintptr_t atOx10 = *(uintptr_t *)((uintptr_t)pWnd + 0x10);
-        if (atOx10 == 0xFFFFFFFF) return false;
 
         // MATCH PREDICATE: live edit/button widget that backrefs the def
         if (IsLiveWidgetVtable(pWnd, ctx->eqmainBase)) {
@@ -1394,8 +1402,13 @@ static bool WalkForDefBackref(void *pWnd, DefBackrefCtx *ctx, int depth) {
             }
         }
 
-        // Recurse into children: firstChild at +0x10
-        void *child = (atOx10 > 0x10000 && atOx10 < 0x7FFFFFFF) ? (void *)atOx10 : nullptr;
+        // Recurse into children: firstChild at +0x10. 0xFFFFFFFF means no
+        // children — skip the child-loop without returning false (the
+        // match predicate above has already run for this node).
+        bool hasChildren = (atOx10 != 0xFFFFFFFF
+                            && atOx10 > 0x10000
+                            && atOx10 < 0x7FFFFFFF);
+        void *child = hasChildren ? (void *)atOx10 : nullptr;
         void *prev = nullptr;
         while (child) {
             if ((uintptr_t)child < 0x10000 || (uintptr_t)child > 0x7FFFFFFF) break;
