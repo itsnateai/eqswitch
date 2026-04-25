@@ -114,10 +114,18 @@ Locked variant — enters CS, does refcount-decrement-and-maybe-free.
 ... (SEH cookie xor-with-ebp, EH frame install) ...
 0x10047317  call  EnterCriticalSection      ; locks 0x10341674 (CXStr mutex)
 ... (refcount-- on m_data, free if zero) ...
+0x10047386  ret   4                         ; <-- ABI: callee cleans 1 stack arg
 ```
 
 Identical role to MQ2's `CXStr::FreeRep(CStrRep* rep)`. Use it for cleanup
 after `SetWindowText` returns.
+
+**ABI verified `__thiscall (CXStr* this, CStrRep* rep)`** — disassembly's
+final `ret 4` at `0x10047386` proves the function expects exactly one stack
+argument plus `this` in `ecx`. The current `FN_FreeRep` typedef in
+`eqmain_cxstr.cpp` and the call site `g_freeRep(x, x->m_data)` are correct;
+no stack-imbalance risk. (A code-reviewer agent flagged this as a confidence-82
+finding 2026-04-24; rizin disasm check resolved it cleanly.)
 
 ## Prologue signatures (for runtime byte check)
 
