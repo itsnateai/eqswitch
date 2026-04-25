@@ -395,11 +395,34 @@ public class AutoLoginManager
 
             // ══════════════════════════════════════════════════════════════
             // PATH A: In-process login via LoginShm (zero keyboard injection)
-            // DISABLED — native widget discovery needs a dedicated RE session.
-            // GiveTime detour + LoginStateMachine work, but FindWindowByName
-            // can't locate login widgets (all MQ2 exports null during login,
-            // GetChildItem non-functional, heap scan offset unreliable).
-            // See memory: project_eqswitch_v7_phase4_csharp.md
+            //
+            // CURRENT STATUS (2026-04-25): PATH A's intended in-process login
+            // is broken on Dalaya — Combo G's password write works (verified
+            // in DLL log: "set password via Combo G"), but the DLL's
+            // PHASE_WAIT_CONNECT_RESP detection in
+            // login_state_machine.cpp:399-415 polls for a `gameState` change
+            // that never advances on Dalaya (gameState/title both lie — see
+            // memory reference_eqswitch_dalaya_signals.md). PATH A therefore
+            // always times out at 45s and falls through to PATH B.
+            //
+            // ⚠ LOAD-BEARING SIDE EFFECT — DO NOT NAIVELY DISABLE ⚠
+            // The 45s PATH A timeout is the warmup PATH B's keystroke
+            // injection requires. Disabling PATH A and going straight to
+            // PATH B at T+10s causes EQ to drop the first ~3 keystrokes of
+            // BURST 1 (verified 2026-04-25 — password truncated 6→3 chars,
+            // login failed). PATH A's wasted 45s is incidentally giving
+            // EQ's DirectInput cooperative-level negotiation enough wall-
+            // clock to settle before BURST 1 fires. Memory:
+            // feedback_chesterton_fence_load_bearing_bugs.md.
+            //
+            // ══════════════════════════════════════════════════════════════
+            // To skip PATH A safely you need EITHER (a) a real DLL
+            // post-connect detection signal (the "D" task) so PATH A
+            // actually completes and reports success, OR (b) a non-time-
+            // based readiness gate before PATH B's BURST 1 (e.g. wait for
+            // password-field focus, first scene render, or DI8 cooperative
+            // level transition). A flat loginScreenDelayMs bump just trades
+            // the 45s back for a different fixed wait.
             // ══════════════════════════════════════════════════════════════
             if (loginShm != null)
             {
@@ -1013,7 +1036,7 @@ public class AutoLoginManager
 
         // Overall timeout — routes to keyboard injection when DLL advances
         // past phase 1 but can't complete (ABI-broken in-process credentials).
-        FileLogger.Error($"AutoLogin: LoginShm overall timeout (14s) for {account.Name}");
+        FileLogger.Error($"AutoLogin: LoginShm overall timeout (45s) for {account.Name}");
         loginShm.SendCancelCommand(pid);
         return false;
     }
