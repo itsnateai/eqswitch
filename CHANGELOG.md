@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.11.1 — `\` switch key now EQ-window-only (2026-04-25)
+
+### Fixed
+- **`\` (SwitchKey) was firing globally** — any press in chat, Discord, browsers, etc. was being swallowed by the keyboard hook. Now scoped to "EQ client window must be foreground" via the existing `processFilter` path. `]` (GlobalSwitchKey) remains genuinely global, as designed.
+- Removed the cold-start "no EQ focused → focus first client" branch from the primary path of `OnSwitchKey` (left in as a defensive no-op). The previous EQ-only filter had been temporarily removed on 2026-04-24 to work around a broken-autologin foreground race; that race is gone now that autologin lands EQ as foreground end-to-end.
+
 ## v3.10.0 — GPL-2.0-or-later + Native v7/v8 login path (2026-04-18)
 
 ### Changed
