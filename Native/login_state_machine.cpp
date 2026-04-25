@@ -115,25 +115,26 @@ static void DiscoverLoginWidgets() {
     if (g_widgetsCached) return;
     g_discoverAttempts++;
 
-    // Iter 12.4 (2026-04-25): skipped heap-cross-ref scans for
-    // LOGIN_UsernameEdit and LOGIN_PasswordEdit. Both returned CXMLDataPtr
-    // wrappers (~3.8s combined per launch); WriteEditTextDirect now
-    // rejects wrappers via vtable check and returns false. Username is
-    // ini-prefilled per the autologin spec (no widget needed); password
-    // is sourced from EQMainWidgets::FindLivePasswordCEditWnd at credential-
-    // write time. Removing these eliminates the visible idle window where
-    // the login screen sits up before the password fills.
+    // Iter 13 (2026-04-25): use structural password widget lookup as the
+    // login-screen-ready signal. Cheap (~0.5s heap scan via vtable match)
+    // and tells us the login UI's CEditWnd allocations are complete.
+    // Defer LOGIN_ConnectButton heap-cross-ref scan to PHASE_CLICKING_CONNECT
+    // (~3.2s) — runs AFTER the password is typed, so the user-visible
+    // experience is "screen up → password instantly fills → brief pause →
+    // connect clicks" rather than "screen up → 5s idle → password → connect".
     g_pUsernameEdit  = nullptr;
     g_pPasswordEdit  = nullptr;
-    g_pConnectButton = MQ2Bridge::FindWindowByName("LOGIN_ConnectButton");
+    g_pConnectButton = nullptr;  // resolved in PHASE_CLICKING_CONNECT
 
-    if (g_pConnectButton) {
+    void *pPasswordWidget = EQMainWidgets::FindLivePasswordCEditWnd();
+    if (pPasswordWidget) {
         g_widgetsCached = true;
-        DI8Log("login_sm: connect button found (connect=%p) after %d attempts; "
-               "user/pass widgets sourced structurally at write time",
-               g_pConnectButton, g_discoverAttempts);
+        DI8Log("login_sm: login screen ready — structural password widget @ %p (XMLIndex=0x%08X) "
+               "after %d attempts; LOGIN_ConnectButton resolution deferred to click phase",
+               pPasswordWidget, EQMainWidgets::GetCachedPasswordXMLIndex(), g_discoverAttempts);
     } else if (g_discoverAttempts <= 5 || g_discoverAttempts % 20 == 0) {
-        DI8Log("login_sm: connect button NOT found attempt %d", g_discoverAttempts);
+        DI8Log("login_sm: login screen not ready (password widget unfound) attempt %d",
+               g_discoverAttempts);
 
         if (g_discoverAttempts == 3) {
             DI8Log("login_sm: running diagnostic enumeration...");
@@ -309,19 +310,10 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         // it's pure latency that loses the race against C#'s 3s WaitLoginScreen
         // timeout (AutoLoginManager.cs:976).
 
-        // Iter 12.4: connect button is the only legacy widget pointer we
-        // still need (for the post-credentials click). Username is ini-
-        // prefilled per spec; password is sourced from the structural
-        // lookup at write time. No need to validate username/password
-        // widget pointers here — the writes themselves handle the unfound
-        // case (username write becomes no-op via WriteEditTextDirect's
-        // null-pEditWnd guard; password write fails through to keystroke
-        // fallback). Connect button is required for PHASE_CLICKING_CONNECT.
-        if (!g_pConnectButton) {
-            SetError(loginShm, "LOGIN_ConnectButton not found before credentials could be set");
-            memset(g_password, 0, sizeof(g_password));
-            break;
-        }
+        // Iter 13: no widget-pointer preconditions to validate here.
+        // Username is ini-prefilled per spec; password is sourced
+        // structurally at write time; connect button is resolved lazily
+        // in PHASE_CLICKING_CONNECT.
 
         // Username path: skipped entirely. The autologin spec
         // (CLAUDE.md AUTOLOGIN SPEC) says username is auto-populated from
@@ -377,10 +369,23 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         // Small delay then click connect
         if (SinceLastAction() < 300) break;
 
-        if (g_pConnectButton) {
-            MQ2Bridge::ClickButton(g_pConnectButton);
-            DI8Log("login_sm: clicked LOGIN_ConnectButton");
+        // Iter 13: lazy-resolve LOGIN_ConnectButton on first click attempt.
+        // Deferred from DiscoverLoginWidgets so the heap-cross-ref scan
+        // (~3.2s) doesn't block password entry. Password is already in the
+        // widget at this point (typed in PHASE_TYPING_CREDENTIALS) so this
+        // delay is hidden by the natural pause between typing and clicking.
+        if (!g_pConnectButton) {
+            g_pConnectButton = MQ2Bridge::FindWindowByName("LOGIN_ConnectButton");
+            if (g_pConnectButton) {
+                DI8Log("login_sm: LOGIN_ConnectButton resolved lazily @ %p", g_pConnectButton);
+            } else {
+                DI8Log("login_sm: LOGIN_ConnectButton not found at click phase — retrying next tick");
+                break;  // retry next tick (with debounce)
+            }
         }
+
+        MQ2Bridge::ClickButton(g_pConnectButton);
+        DI8Log("login_sm: clicked LOGIN_ConnectButton");
         SetPhase(loginShm, PHASE_WAIT_CONNECT_RESP);
         break;
 
