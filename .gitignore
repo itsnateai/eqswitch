@@ -53,13 +53,19 @@ Native/*.lib
 .claude/
 .superpowers/
 .worktrees/
+docs/superpowers/
 
 ## Research / RE scratch
 _.diagnostics/
 Native/dumps/
+Native/recon/
+Native/VERIFICATION.md
 dumps/
 Native/*.ps1
 cedebug.txt
+
+## Test fixtures / smoke notes (workflow scratch — not run in CI)
+_tests/
 
 ## Task Management (gitignored — WIP scratch docs at repo root)
 AUDIT_TASKS.md
