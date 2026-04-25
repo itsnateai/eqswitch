@@ -273,13 +273,12 @@ void MQ2BridgePollTick() {
         if (!g_mq2Initialized) return;
     }
 
+    // Iter 14.1 (2026-04-25): try opening on every poll tick (every ~500ms
+    // throttled). OpenFileMappingA is ~10μs — cheaper than the retry-counter
+    // bookkeeping. Eliminates the extra 500ms-1s window between C# creating
+    // the SHM and the DLL noticing.
     if (!g_charSelShm) {
-        if (g_charSelRetry == 0) {
-            if (!TryOpenCharSelShm())
-                g_charSelRetry = 1;  // Retry every ~500ms (was 10 = ~5s)
-        } else {
-            g_charSelRetry--;
-        }
+        TryOpenCharSelShm();
     }
     if (g_charSelShm && g_charSelShm->magic == CHARSEL_SHM_MAGIC) {
         MQ2Bridge::Poll(g_charSelShm);
@@ -288,20 +287,8 @@ void MQ2BridgePollTick() {
     // v7 Phase 4: open LoginShm lazily and tick the login state machine.
     // LoginStateMachine drives the entire login flow (credentials → connect →
     // server select → charselect → enter world) via in-process MQ2 widget calls.
-    //
-    // Iter 14 (2026-04-25): retry every ~500ms (was 10 ticks = ~5s). The 5s
-    // gap was the visible idle window the user saw between login screen
-    // appearing and password entering — DLL couldn't open the SHM until C#
-    // had created it, and a single failed open meant up to 5s of waiting
-    // before retry. OpenFileMappingA is a cheap syscall (~10μs) so polling
-    // every 500ms costs nothing meaningful.
     if (!g_loginShm) {
-        if (g_loginShmRetry == 0) {
-            if (!TryOpenLoginShm())
-                g_loginShmRetry = 1;  // Retry every ~500ms (was 10 = ~5s)
-        } else {
-            g_loginShmRetry--;
-        }
+        TryOpenLoginShm();
     }
     if (g_loginShm && g_loginShm->magic == LOGIN_SHM_MAGIC) {
         LoginStateMachine::Tick(g_loginShm, g_charSelShm);
