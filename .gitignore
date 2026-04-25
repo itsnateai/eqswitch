@@ -84,3 +84,7 @@ EQSwitch.Tests/
 !docs/archive/handoffs/**
 !docs/archive/handoffs/**/*.md
 .code-graph/
+
+## Local-only history-rewrite artifacts
+.git.bak-*/
+.mailmap-rewrite
