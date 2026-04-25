@@ -16,6 +16,7 @@
 #include <string.h>
 #include "login_state_machine.h"
 #include "eqmain_cxstr.h"
+#include "eqmain_widgets.h"
 
 void DI8Log(const char *fmt, ...);
 
@@ -114,20 +115,26 @@ static void DiscoverLoginWidgets() {
     if (g_widgetsCached) return;
     g_discoverAttempts++;
 
-    g_pUsernameEdit  = MQ2Bridge::FindWindowByName("LOGIN_UsernameEdit");
-    g_pPasswordEdit  = MQ2Bridge::FindWindowByName("LOGIN_PasswordEdit");
+    // Iter 12.4 (2026-04-25): skipped heap-cross-ref scans for
+    // LOGIN_UsernameEdit and LOGIN_PasswordEdit. Both returned CXMLDataPtr
+    // wrappers (~3.8s combined per launch); WriteEditTextDirect now
+    // rejects wrappers via vtable check and returns false. Username is
+    // ini-prefilled per the autologin spec (no widget needed); password
+    // is sourced from EQMainWidgets::FindLivePasswordCEditWnd at credential-
+    // write time. Removing these eliminates the visible idle window where
+    // the login screen sits up before the password fills.
+    g_pUsernameEdit  = nullptr;
+    g_pPasswordEdit  = nullptr;
     g_pConnectButton = MQ2Bridge::FindWindowByName("LOGIN_ConnectButton");
 
-    if (g_pUsernameEdit && g_pPasswordEdit && g_pConnectButton) {
+    if (g_pConnectButton) {
         g_widgetsCached = true;
-        DI8Log("login_sm: login widgets found (user=%p pass=%p connect=%p) after %d attempts",
-               g_pUsernameEdit, g_pPasswordEdit, g_pConnectButton, g_discoverAttempts);
+        DI8Log("login_sm: connect button found (connect=%p) after %d attempts; "
+               "user/pass widgets sourced structurally at write time",
+               g_pConnectButton, g_discoverAttempts);
     } else if (g_discoverAttempts <= 5 || g_discoverAttempts % 20 == 0) {
-        // Log first 5 attempts, then every 20th to avoid spam
-        DI8Log("login_sm: login widgets NOT found (user=%p pass=%p connect=%p) attempt %d",
-               g_pUsernameEdit, g_pPasswordEdit, g_pConnectButton, g_discoverAttempts);
+        DI8Log("login_sm: connect button NOT found attempt %d", g_discoverAttempts);
 
-        // On 3rd attempt, run full diagnostic enumeration
         if (g_discoverAttempts == 3) {
             DI8Log("login_sm: running diagnostic enumeration...");
             MQ2Bridge::EnumerateAllWindows();
@@ -302,39 +309,62 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         // it's pure latency that loses the race against C#'s 3s WaitLoginScreen
         // timeout (AutoLoginManager.cs:976).
 
-        // Abort if widgets disappeared (stale cache)
-        if (!g_pUsernameEdit || !g_pPasswordEdit) {
-            SetError(loginShm, "Login widgets disappeared before credentials could be set");
+        // Iter 12.4: connect button is the only legacy widget pointer we
+        // still need (for the post-credentials click). Username is ini-
+        // prefilled per spec; password is sourced from the structural
+        // lookup at write time. No need to validate username/password
+        // widget pointers here — the writes themselves handle the unfound
+        // case (username write becomes no-op via WriteEditTextDirect's
+        // null-pEditWnd guard; password write fails through to keystroke
+        // fallback). Connect button is required for PHASE_CLICKING_CONNECT.
+        if (!g_pConnectButton) {
+            SetError(loginShm, "LOGIN_ConnectButton not found before credentials could be set");
             memset(g_password, 0, sizeof(g_password));
             break;
         }
 
-        if (g_username[0]) {
-            // Username is usually pre-filled by eqlsPlayerData.ini, but write
-            // anyway so a stale ini value gets overwritten with the configured
-            // account. Failure here is non-fatal (username may already be right).
-            if (EQMainCXStr::WriteEditTextDirect(g_pUsernameEdit, g_username)) {
-                DI8Log("login_sm: set username via Combo G (WriteEditTextDirect)");
-            } else {
-                DI8Log("login_sm: username WriteEditTextDirect failed — proceeding "
-                       "(may already be ini-prefilled)");
-            }
-        }
+        // Username path: skipped entirely. The autologin spec
+        // (CLAUDE.md AUTOLOGIN SPEC) says username is auto-populated from
+        // eqlsPlayerData*.ini by LaunchManager before launch. We don't
+        // need to type it. Removing the WriteEditTextDirect attempt here
+        // saves a vtable-rejection round trip and the pre-existing widget
+        // cache lookup that produced a wrapper pointer.
 
         if (g_password[0]) {
+            // Structural lookup via EQMainWidgets — walks live CEditBaseWnd
+            // instances on the heap and returns the one whose CXWnd::XMLIndex
+            // (+0xD8) matches the cached LOGIN_PasswordEdit value (hardcoded
+            // at iter 12.3 to (34<<16)|1 based on iter 12.2 diagnostic dump
+            // showing username at idx=0 with .sidl-stable sequential layout).
+            // Sidesteps the iter 1-9 dead-end where FindLiveCXWnd returned
+            // CXMLDataPtr wrappers (vtable RVA 0x10A7D4) instead of real
+            // live CEditBaseWnd (vtable RVA 0x10BCDC).
+            void *pPasswordWidget = EQMainWidgets::FindLivePasswordCEditWnd();
+            if (!pPasswordWidget) {
+                DI8Log("login_sm: structural password lookup failed — Combo G "
+                       "unavailable; deferring to C# keystroke fallback (DI8 SHM)");
+                SetError(loginShm,
+                         "Combo G structural password widget not found "
+                         "(EQMainWidgets::FindLivePasswordCEditWnd)");
+                memset(g_password, 0, sizeof(g_password));
+                break;
+            }
+            DI8Log("login_sm: structural password widget @ %p (XMLIndex=0x%08X)",
+                   pPasswordWidget, EQMainWidgets::GetCachedPasswordXMLIndex());
+
             // Password is critical — if Combo G fails, we MUST surface error
             // immediately rather than leaving C# to wait its 14s outer timeout
             // and silently fall back to keystroke injection. Per
             // memory/feedback_eqswitch_no_regression_to_dinput8.md, the
             // dinput8 keystroke path is the regression we're escaping; failing
             // loud here is the right behavior.
-            if (EQMainCXStr::WriteEditTextDirect(g_pPasswordEdit, g_password)) {
-                DI8Log("login_sm: set password via Combo G (WriteEditTextDirect)");
+            if (EQMainCXStr::WriteEditTextDirect(pPasswordWidget, g_password)) {
+                DI8Log("login_sm: set password via Combo G (direct field write @ +0x1A8)");
                 // Password stays in g_password until PHASE_COMPLETE for retry
             } else {
                 SetError(loginShm,
                          "Combo G WriteEditTextDirect failed on password edit "
-                         "(CXStr unresolved, vtable slot probe exhausted, or SEH fault)");
+                         "(CXStr unresolved or +0x1A8 touch faulted on wrapper)");
                 memset(g_password, 0, sizeof(g_password));
                 break;
             }
