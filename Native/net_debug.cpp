@@ -14,13 +14,26 @@
 #include <stdio.h>
 #include "net_debug.h"
 
-// Winsock types/constants we need (avoiding winsock2.h include entirely)
+// Winsock types/constants we need (avoiding winsock2.h include entirely).
+// Each #define is guarded so it doesn't C4005-redefine values the SDK has
+// since pulled in via windows.h's transitive winerror.h/winsock.h. Values
+// match the SDK; guards just suppress the diagnostic.
 typedef UINT_PTR SOCKET;
+#ifndef SOCKET_ERROR
 #define SOCKET_ERROR (-1)
+#endif
+#ifndef WSAEWOULDBLOCK
 #define WSAEWOULDBLOCK 10035
+#endif
+#ifndef WSAECONNRESET
 #define WSAECONNRESET  10054
+#endif
+#ifndef AF_INET
 #define AF_INET 2
+#endif
+#ifndef INVALID_SOCKET
 #define INVALID_SOCKET (~(SOCKET)0)
+#endif
 
 #ifndef WSAAPI
 #define WSAAPI PASCAL
