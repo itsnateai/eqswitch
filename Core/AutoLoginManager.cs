@@ -424,66 +424,191 @@ public class AutoLoginManager
             // level transition). A flat loginScreenDelayMs bump just trades
             // the 45s back for a different fixed wait.
             // ══════════════════════════════════════════════════════════════
+            // PATH A disabled for agent investigation 2026-04-25 — truncation symptom
+            // if (loginShm != null)
+            // {
+            //     bool shouldEnter = enterWorldOverride ?? (character != null);
+            //     if (shouldEnter && character == null)
+            //     {
+            //         FileLogger.Warn($"AutoLogin: {account.Name} requested enter-world but no Character target — staying at charselect (LoginShm path)");
+            //         shouldEnter = false;
+            //     }
+            //
+            //     bool handled = TryLoginViaShm(pid, loginShm, account, character,
+            //         password, shouldEnter, ref hwnd);
+            //     if (handled)
+            //         return;
+            //
+            //     // LoginShm path didn't complete — fall through to keyboard injection
+            //     FileLogger.Info($"AutoLogin: LoginShm path failed for PID {pid}, falling back to keyboard injection");
+            // }
+
+            // ══════════════════════════════════════════════════════════════
+            // PATH HYBRID — SHM password write + keyboard for buttons
+            // ══════════════════════════════════════════════════════════════
+            // 2026-04-25: MQ2-style. Use the DLL's Combo G SetEditWndText
+            // path to write the password silently (no keystrokes, no
+            // truncation) — the only piece of "PATH A" that actually works
+            // on Dalaya. Skip the broken PHASE_WAIT_CONNECT_RESP detection.
+            // The DLL still clicks the Connect button as part of the LOGIN
+            // command flow. C# then waits for server response and uses
+            // BURST 2 (Enter for server-confirm) which has always worked
+            // because it's a single key press to a button, not 6+ chars
+            // into an edit field.
+            //
+            // BURST 1 keystroke path is kept as fallback for the case where
+            // SHM credentials fail (DLL not ready, Combo G regression, etc).
+            // ══════════════════════════════════════════════════════════════
+            bool shmDidCredentials = false;
             if (loginShm != null)
             {
-                bool shouldEnter = enterWorldOverride ?? (character != null);
-                if (shouldEnter && character == null)
+                // Wait for DLL's state machine to be alive (gameState published)
+                var gateSw = System.Diagnostics.Stopwatch.StartNew();
+                while (gateSw.ElapsedMilliseconds < 30000)
                 {
-                    FileLogger.Warn($"AutoLogin: {account.Name} requested enter-world but no Character target — staying at charselect (LoginShm path)");
-                    shouldEnter = false;
+                    if (loginShm.ReadGameState(pid) != 0) break;
+                    Thread.Sleep(100);
+                }
+                FileLogger.Info($"AutoLogin: DLL gameState ready after {gateSw.ElapsedMilliseconds}ms (PID {pid})");
+
+                // Tell DLL to write password via Combo G (SetEditWndText) and
+                // click Connect. Empty charName = DLL stops at charselect.
+                Report($"{account.Name}: SHM password write...");
+                if (loginShm.SendLoginCommand(pid, account.Username, password, account.Server, ""))
+                {
+                    // Wait for phase to reach ClickingConnect — proves the
+                    // password write via Combo G's SetEditWndText completed
+                    // successfully (Fix 2's read-back also gates this — if
+                    // ConstructFromCStr or the read-back fails, phase goes
+                    // to Error, not ClickingConnect).
+                    //
+                    // We deliberately do NOT wait for WaitConnectResponse —
+                    // the DLL's PHASE_CLICKING_CONNECT loop tries to click
+                    // the Connect button via MQ2Bridge::ClickButton, but
+                    // FindWindowByName('LOGIN_ConnectButton') returns the
+                    // CXMLDataPtr def (no live widget backrefs found), and
+                    // Fix 1's IsEQMainButtonWidget gate correctly rejects
+                    // it. The DLL then loops retrying for ~25s before
+                    // SetError. Instead: as soon as we know password is in
+                    // the field (phase >= ClickingConnect), C# presses Enter
+                    // via a single keystroke — reliable because it's ONE
+                    // key, not 6+ chars vulnerable to coop-swap truncation.
+                    // Wait for phase >= WaitConnectResponse OR Error OR 15s
+                    // timeout. On Dalaya, phase never advances past
+                    // ClickingConnect (broken button), so the 15s timeout
+                    // ALWAYS fires — that's intentional, it provides EQ-input
+                    // warmup time for BURST 1 keystrokes (proven working in
+                    // 2026-04-25 dual-box test where T+~21s BURST 1 typed
+                    // all 6 chars cleanly). Don't shorten this without
+                    // testing BURST 1 truncation at the new earlier timing.
+                    var credSw = System.Diagnostics.Stopwatch.StartNew();
+                    while (credSw.ElapsedMilliseconds < 15000)
+                    {
+                        var phase = loginShm.ReadPhase(pid);
+                        if (phase >= LoginPhase.WaitConnectResponse && phase != LoginPhase.Error)
+                        {
+                            shmDidCredentials = true;
+                            FileLogger.Info($"AutoLogin: SHM credentials done at {credSw.ElapsedMilliseconds}ms (phase={phase}, PID {pid})");
+                            break;
+                        }
+                        if (phase == LoginPhase.Error)
+                        {
+                            var err = loginShm.ReadError(pid);
+                            FileLogger.Warn($"AutoLogin: SHM credentials phase errored — falling back to keyboard BURST 1 (error: {err})");
+                            break;
+                        }
+                        Thread.Sleep(50);
+                    }
+                    if (!shmDidCredentials)
+                    {
+                        FileLogger.Warn($"AutoLogin: SHM credentials timeout after {credSw.ElapsedMilliseconds}ms — falling back to keyboard BURST 1");
+                        loginShm.SendCancelCommand(pid);
+                    }
+                }
+                else
+                {
+                    FileLogger.Warn($"AutoLogin: SendLoginCommand failed for PID {pid} — falling back to keyboard BURST 1");
                 }
 
-                bool handled = TryLoginViaShm(pid, loginShm, account, character,
-                    password, shouldEnter, ref hwnd);
-                if (handled)
-                    return;
-
-                // LoginShm path didn't complete — fall through to keyboard injection
-                FileLogger.Info($"AutoLogin: LoginShm path failed for PID {pid}, falling back to keyboard injection");
+                // ── Fix (3): VERIFY SHM credentials actually progressed EQ ──
+                // The DLL state machine advancing to phase=WaitConnectResponse only
+                // proves the DLL THINKS it wrote password + clicked Connect. It does
+                // NOT prove EQ actually left the login screen. Combo G can write to
+                // a stale widget pointer (silent no-op) and ClickButton can skip on
+                // a non-button vtable (silent no-op) — both lie to the state machine.
+                //
+                // Real progression is signaled by CharSelectReader.ReadCharCount(pid)
+                // becoming > 0 (DLL only populates char list once EQ reaches char-select)
+                // OR loginShm phase advancing past WaitConnectResponse (would happen
+                // if Native fixes 1+2 land and DLL detection isn't broken).
+                // If neither happens within 10s of phase=WaitConnectResponse, SHM lied
+                // → flip shmDidCredentials back to false → BURST 1 keystrokes run.
+                // Verification block removed (2026-04-25). With Fix 2's
+                // read-back guard, phase only advances to ClickingConnect
+                // when Combo G's write actually landed. The DLL's broken
+                // PHASE_CLICKING_CONNECT loop is harmless — we ignore it
+                // and have C# do the Connect-button click ourselves below.
             }
 
-            // ══════════════════════════════════════════════════════════════
-            // PATH B: Keyboard injection fallback (legacy)
-            // ══════════════════════════════════════════════════════════════
-
-            // ── Wait for login screen ──
-            Report("Waiting for login screen...");
-            Thread.Sleep(loginScreenDelayMs);
-
-            // ══════════════════════════════════════════════════════════
-            // BURST 1: Type credentials + submit (~3 seconds active)
-            // ══════════════════════════════════════════════════════════
-            Report("Typing credentials...");
-            writer.Activate(pid, suppress: true);
-            Thread.Sleep(500); // let DLL switch coop + blast activation
-            FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
-
-            // NOTE: a pre-flight Enter before typing is NOT idempotent on Dalaya
-            // patchme — empty-password Enter raises a "you need to enter a
-            // username and password" modal that steals focus from the password
-            // field, causing BURST 1 to type into the modal and Enter to click
-            // OK instead of submit. Tested + reverted 2026-04-24.
-
-            if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
+            if (!shmDidCredentials)
             {
-                CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to username
-                Thread.Sleep(100);
-                CombinedTypeString(writer, pid, hwnd, account.Username);
-                Thread.Sleep(100);
-            }
-            if (!account.UseLoginFlag)
-            {
-                CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to password
-                Thread.Sleep(100);
-            }
-            CombinedTypeString(writer, pid, hwnd, password);
-            Thread.Sleep(100);
+                // ── PATH B FALLBACK: keystroke BURST 1 ──
+                Report("Waiting for login screen...");
+                Thread.Sleep(loginScreenDelayMs);
 
-            Report("Submitting login...");
-            CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = submit
-            Thread.Sleep(500);
-            writer.Deactivate(pid); // ← OFF immediately after typing
-            FileLogger.Info($"AutoLogin: BURST 1 deactivated for PID {pid}");
+                Report("Typing credentials...");
+                writer.Activate(pid, suppress: true);
+                Thread.Sleep(500); // let DLL switch coop + blast activation
+                FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
+
+                // NOTE: a pre-flight Enter before typing is NOT idempotent on Dalaya
+                // patchme — empty-password Enter raises a "you need to enter a
+                // username and password" modal that steals focus from the password
+                // field, causing BURST 1 to type into the modal and Enter to click
+                // OK instead of submit. Tested + reverted 2026-04-24.
+
+                if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
+                {
+                    CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to username
+                    Thread.Sleep(100);
+                    CombinedTypeString(writer, pid, hwnd, account.Username);
+                    Thread.Sleep(100);
+                }
+                if (!account.UseLoginFlag)
+                {
+                    CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to password
+                    Thread.Sleep(100);
+                }
+                CombinedTypeString(writer, pid, hwnd, password);
+                Thread.Sleep(100);
+
+                Report("Submitting login...");
+                CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = submit
+                Thread.Sleep(500);
+                writer.Deactivate(pid); // ← OFF immediately after typing
+                FileLogger.Info($"AutoLogin: BURST 1 deactivated for PID {pid}");
+            }
+            // 2026-04-25: silent-injection abandoned for now. Empirical test
+            // showed Combo G's CXStr write at +0x1A8 doesn't populate the
+            // RENDERED/SUBMITTED password field — read-back at +0x14 sees our
+            // bytes (we DID write somewhere), but EQ's display/submit reads
+            // from a different buffer. Tab+Enter clicked LOGIN button but
+            // EQ's submit found empty password → "enter a password" error.
+            //
+            // The SHM LOGIN attempt above is kept as warmup ritual ONLY —
+            // its 5-15s of DLL widget-discovery activity warms up EQ enough
+            // for BURST 1 keystrokes to land cleanly. Always force BURST 1
+            // to run by flipping shmDidCredentials back to false here.
+            //
+            // Future work: fix Combo G to write to the right widget/buffer
+            // (live render-side EditWnd, not whatever +0x1A8 points to on
+            // the SidlManager-walk's pick), then re-enable the silent path.
+            if (shmDidCredentials)
+            {
+                if (loginShm != null) loginShm.SendCancelCommand(pid);
+                FileLogger.Info($"AutoLogin: SHM warmup done for PID {pid} — BURST 1 keystrokes will follow (silent path disabled until Combo G writes the rendered field)");
+                shmDidCredentials = false;
+            }
 
             // ── Wait for server response (no focus-faking) ──
             Thread.Sleep(3000);

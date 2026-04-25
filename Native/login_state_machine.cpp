@@ -17,6 +17,7 @@
 #include "login_state_machine.h"
 #include "eqmain_cxstr.h"
 #include "eqmain_widgets.h"
+#include "eqmain_offsets.h"
 
 void DI8Log(const char *fmt, ...);
 
@@ -47,6 +48,7 @@ static bool       g_widgetsCached = false;
 static uint32_t   g_yesBtnAttempts = 0;   // kick-session dialog retry counter
 static int        g_connectGameState = -99;  // Track gameState when connect was clicked
 static int        g_charSelGameState = -99;  // Track gameState when charselect was entered
+static int        g_connectButtonRetries = 0;  // Fix (1) 2026-04-25: gate ClickButton on real CButtonWnd vtable
 
 // Cached widget pointers (invalidated on game state change)
 static void *g_pUsernameEdit = nullptr;
@@ -103,6 +105,7 @@ static void InvalidateWidgets() {
     g_pCharList = nullptr;
     g_pEnterWorldBtn = nullptr;
     g_widgetsCached = false;
+    g_connectButtonRetries = 0;  // Fix Native C1 (agent verify): reset in lockstep with widget-ptr nulls
 }
 
 // ─── Widget discovery ──────────────────────────────────────────
@@ -381,13 +384,39 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         // (~3.2s) doesn't block password entry. Password is already in the
         // widget at this point (typed in PHASE_TYPING_CREDENTIALS) so this
         // delay is hidden by the natural pause between typing and clicking.
+        //
+        // 2026-04-25 Fix (1): gate the lazy-resolve on IsEQMainButtonWidget.
+        // FindWindowByName has a legacy fallback that returns CXMLDataPtr
+        // definitions when no live widget is found — the def has a vtable
+        // pointing to eqmain.dll's DOS header (literally eqmain+0x00000),
+        // not a real CButtonWnd vtable. Pre-fix the state machine called
+        // ClickButton on this def, ClickButton silently early-returned
+        // ("not a known widget class"), and the phase advanced to
+        // PHASE_WAIT_CONNECT_RESP regardless. C# trusted the lying
+        // advancement and skipped its keystroke fallback. Verified via
+        // eqswitch-dinput8-{pid}.log on 2026-04-25 dual-box test.
         if (!g_pConnectButton) {
-            g_pConnectButton = MQ2Bridge::FindWindowByName("LOGIN_ConnectButton");
-            if (g_pConnectButton) {
-                DI8Log("login_sm: LOGIN_ConnectButton resolved lazily @ %p", g_pConnectButton);
+            void *pCandidate = MQ2Bridge::FindWindowByName("LOGIN_ConnectButton");
+            if (pCandidate && EQMainOffsets::IsEQMainButtonWidget(pCandidate)) {
+                g_pConnectButton = pCandidate;
+                g_connectButtonRetries = 0;
+                DI8Log("login_sm: LOGIN_ConnectButton resolved lazily @ %p (verified CButtonWnd vtable)", pCandidate);
             } else {
-                DI8Log("login_sm: LOGIN_ConnectButton not found at click phase — retrying next tick");
-                break;  // retry next tick (with debounce)
+                g_connectButtonRetries++;
+                if (pCandidate) {
+                    DI8Log("login_sm: REJECTED LOGIN_ConnectButton candidate @ %p (retry %d) — not CButtonWnd vtable (likely CXMLDataPtr def)",
+                           pCandidate, g_connectButtonRetries);
+                } else {
+                    DI8Log("login_sm: LOGIN_ConnectButton not found at click phase (retry %d)", g_connectButtonRetries);
+                }
+                if (g_connectButtonRetries > 50) {
+                    // ~25s of 500ms-debounced retries — give up loud so C#
+                    // can fall back to keystroke BURST 1 instead of waiting
+                    // the full 90s WaitForScreenTransition timeout.
+                    SetError(loginShm, "LOGIN_ConnectButton lookup never returned a live CButtonWnd vtable");
+                    g_connectButtonRetries = 0;
+                }
+                break;  // retry next tick
             }
         }
 
