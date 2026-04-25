@@ -11,6 +11,7 @@
 #include <windows.h>
 #include <stdint.h>
 #include "eqmain_offsets.h"
+#include "eqmain_cxstr.h"
 
 // DI8Log is defined in eqswitch-di8.cpp; forward-declare so this TU can use
 // the same log sink without pulling in di8_proxy or MinHook headers.
@@ -55,11 +56,25 @@ void OnEQMainLoaded(uintptr_t dllBase, uint32_t sizeOfImage) {
 
     DI8Log("eqmain_offsets: LOAD tracked — range 0x%08X-0x%08X (size 0x%X)",
            (unsigned)dllBase, (unsigned)(dllBase + sizeOfImage), sizeOfImage);
+
+    // Phase 4 wire-up: prologue-validate + cache eqmain CXStr ctor/FreeRep
+    // function pointers for Combo G. Pure-additive — failure is logged but
+    // does NOT change autologin behavior because no live call site uses
+    // EQMainCXStr::WriteEditTextDirect yet. Wire-up of the actual write
+    // path requires dual-box smoke verify per
+    // memory/feedback_eqswitch_e8faf9b_is_anchor.md. See
+    // Native/recon/phase4-cxstr-recon.md for the recon record.
+    EQMainCXStr::ResolveCXStrFunctions(dllBase);
 }
 
 void OnEQMainUnloaded() {
     uintptr_t priorBase = g_base;
     uint32_t priorSize = g_size;
+
+    // Clear CXStr function-pointer cache BEFORE clearing the range so any
+    // racing caller of EQMainCXStr::HasResolvedFunctions sees nullptr and
+    // bails rather than calling a freed code address.
+    EQMainCXStr::ClearResolvedFunctions();
 
     // Clear base first so concurrent readers see {0, old_size} — which still
     // yields IsEQMainWidget=false because the range test uses base as the gate.
