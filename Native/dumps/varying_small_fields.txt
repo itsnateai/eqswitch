@@ -1,9 +1,0 @@
-OFFSET    values per slot (range, count distinct)
-          Acpots    Backup    Healpots  Jonopua   Nate      PotiongirlPotionguy                               
-+0x018    14        14        14        14        14        14        14        0         0         0           (distinct=2)
-+0x01C    2         2         2         2         2         2         2         0         0         0           (distinct=2)
-+0x044    12        12        12        11        12        1         0         0         0         0           (distinct=4)
-+0x04C    12        12        12        11        12        1         0         0         0         0           (distinct=4)
-+0x050    1         1         55        189       55        1         0         0         0         0           (distinct=4)
-+0x0E4    5         7         7         0         8         5         0         0         0         0           (distinct=4)
-+0x140    5         7         7         0         8         5         0         0         0         0           (distinct=4)
