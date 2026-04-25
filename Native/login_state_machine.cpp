@@ -268,7 +268,14 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
     case PHASE_WAIT_LOGIN_SCREEN: {
         // Wait for login widgets to appear — don't gate on gameState value
         // (Dalaya ROF2 uses gameState=0 at login, not -1 like modern MQ2)
-        if (SinceLastAction() < 500) break; // debounce
+        //
+        // Iter 14 (2026-04-25): debounce reduced 500ms→100ms. The previous
+        // 500ms gap was a second source of visible idle on top of the SHM
+        // open retry — once the SHM was open and the screen was up,
+        // DiscoverLoginWidgets only ran once per 500ms. With structural
+        // password lookup the heap scan is the throttle (~500ms intrinsic),
+        // so 100ms debounce just lets us start the first scan promptly.
+        if (SinceLastAction() < 100) break;
 
         DiscoverLoginWidgets();
         if (g_widgetsCached) {
