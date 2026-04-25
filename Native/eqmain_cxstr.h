@@ -34,11 +34,19 @@
 // used for the active autologin attempt. Per
 // memory/feedback_eqswitch_no_regression_to_dinput8.md, fail-mode
 // hierarchy is:
-//   1. Probe vtable[72] / [74] for SetWindowText (handled in
-//      WriteEditTextDirect's slot resolver below)
-//   2. AOB rescan on prologue signature (TODO Phase 4b)
-//   3. Hard-fail loud — log + abort the autologin attempt
+//   1. Prologue check on ctor / FreeRep at resolve time — false from
+//      ResolveCXStrFunctions if either prologue mismatched
+//   2. SEH on the field touch at +0x1A8 inside WriteEditTextDirect —
+//      false if pEditWnd isn't a real live CEditBaseWnd / CEditWnd
+//   3. AOB rescan on prologue signature (TODO Phase 4b)
+//   4. Hard-fail loud — log + abort the autologin attempt
 // **Never silently regress to dinput8 or keyboard injection.**
+//
+// Iter 11 (2026-04-25): replaced vtable-slot SetWindowText path with
+// direct CXStr-field assignment at +0x1A8. The slot-73 probe never fired
+// successfully on a real widget across 9 iters — FindLiveCXWnd was always
+// returning CXMLDataPtr wrappers. Direct field write matches MQ2's own
+// reference impl at MQ2AutoLogin.cpp:1049 (`pWnd->InputText = text`).
 
 #pragma once
 #include <stdint.h>
@@ -116,23 +124,25 @@ bool ConstructFromCStr(CXStr_Dalaya *out, const char *s);
 void Free(CXStr_Dalaya *x);
 
 // ─── Combo G high-level helper ──────────────────────────────
-// Write `text` into an eqmain CEditWnd via vtable[73] (CEditWnd::SetWindowText).
-// Encapsulates: slot probe (73→72→74), prologue validation on the resolved
-// slot, eqmain CXStr construction, the SEH-guarded virtual call, and CXStr
-// cleanup.
+// Write `text` into an eqmain CEditWnd via direct CXStr-field assignment
+// at the InputText offset (+0x1A8 on Dalaya x86, pinned iter 8). Mirrors
+// MQ2's reference impl at MQ2AutoLogin.cpp:1049 (`pWnd->InputText = text`).
+// Composes existing CXStr ctor (RVA 0x473d0) + FreeRep (RVA 0x472d0) for
+// the in-place Free→Construct sequence that operator= performs internally.
 //
-// pEditWnd must be an eqmain CEditWnd or CEditBaseWnd. Behavior is undefined
-// (and probably crashes inside the call) if pEditWnd is not an edit widget;
-// caller should pre-screen with EQMainOffsets::IsEQMainEditWidget.
+// pEditWnd must be an eqmain CEditWnd or CEditBaseWnd. Iter 12's wiring
+// will source these from EQMainWidgets::FindLivePasswordCEditWnd which
+// filters by exact vtable match. If pEditWnd is a wrapper (CXMLDataPtr)
+// or stale, the SEH-wrapped touch-test on +0x1A8 catches it cleanly and
+// returns false without faulting.
 //
 // Returns:
-//   true  — text was written and the SetWindowText body returned without
-//           SEH; the password edit widget should now contain `text`
-//   false — slot resolution failed (no slot 72/73/74 had a matching
-//           prologue), CXStr construction failed, or the SetWindowText
-//           call itself faulted. Caller MUST NOT silently fall back to
-//           the dinput8 path; per the fail-mode rule, log loudly and
-//           abort the autologin attempt.
+//   true  — InputText field was atomically replaced; the password edit
+//           widget should now contain `text`
+//   false — CXStr functions unresolved, the +0x1A8 field touch faulted
+//           (wrong widget type), or ctor allocation failed. Caller MUST
+//           NOT silently fall back to the dinput8 path; per the fail-mode
+//           rule, log loudly and abort the autologin attempt.
 bool WriteEditTextDirect(void *pEditWnd, const char *text);
 
 // ─── Diagnostic ─────────────────────────────────────────────
