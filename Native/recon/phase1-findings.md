@@ -126,6 +126,15 @@ Confirmed via `rizin -c "iE"`: zero exported symbols. This means:
 
 ## Open question for C++ implementation
 
+> **RESOLVED 2026-04-24** — Strategy A executed. See **`phase4-cxstr-recon.md`** for:
+> - `eqmain::CXStr::CXStr(const char*)` at RVA `0x000473d0` (verified body)
+> - `eqmain::CXStr::FreeRep` at RVA `0x000472d0` (used as dtor)
+> - Confirmed Dalaya CStrRep layout (old MQ2, NOT modern — utf8 at +0x14, no encoding/freeList fields)
+> - Prologue bytes for runtime check on all three Combo G targets
+> - Correction to handoff transcription bug (slot-73 prologue bytes)
+
+The original analysis below is preserved for context.
+
 `CEditWnd::SetWindowText` takes `const eqmain::CXStr&`, NOT `const EQClasses::CXStr&`. The two are layout-incompatible (per the comment block in `Native/eqmain_offsets.h`: "separate parallel class hierarchy with different member offsets"). The existing `g_fnCXStrCtor` in `mq2_bridge.cpp` constructs an `EQClasses::CXStr` from a const char* — wrong type for our call.
 
 Three implementation strategies:
@@ -140,8 +149,4 @@ Strategy A is cleanest. Discovering the ctor's address is one more rizin pass �
 
 ## Phase 1 status
 
-**Static-only static analysis: COMPLETE for the three named deliverables. Ready to proceed once:**
-1. IDA Witness #3 done (Path A — Nate accepts EULA, ~30 sec interaction), OR
-2. User accepts 2-witness sufficiency (Path B — over-determined override pattern + binary disassembly is strong evidence; harden C++ with prologue-byte sanity check at runtime).
-
-**Phase 4 has additional dependency:** locate `eqmain::CXStr::CXStr(const char*)` for proper arg construction (Strategy A above). This is straightforward but needs another rizin pass. Defer until paths above are decided.
+**Static-only static analysis: COMPLETE for the three named deliverables. Path B selected 2026-04-24:** prologue-byte runtime check (with corrected bytes — handoff text `ff 35` was wrong, actual is `6A FF`); IDA Witness 3 deemed unnecessary given over-determined RTTI + the 18-override pattern matching MQ2 declarations exactly. Phase 4 recon also complete — see `phase4-cxstr-recon.md`.
