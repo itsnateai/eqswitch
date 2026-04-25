@@ -234,10 +234,67 @@ bool WriteEditTextDirect(void *pEditWnd, const char *text) {
     // ConstructFromCStr allocates a new CStrRep from eqmain's CXFreeList
     // and writes its pointer back to m_data. The widget's InputText slot
     // is updated in place.
+    // SECURITY: never log `text` content — this function writes passwords.
+    // All diagnostic logs use length + first-byte hex only. Length is a low-
+    // entropy fact already inferable from any successful login; first-byte
+    // hex on a single failed write doesn't meaningfully reduce entropy of a
+    // multi-character password.
+    size_t textLen = 0;
+    for (textLen = 0; textLen < 256 && text[textLen] != '\0'; ++textLen) {}
+
     Free(inputText);
     if (!ConstructFromCStr(inputText, text)) {
-        DI8Log("eqmain_cxstr: WriteEditTextDirect — ctor failed for text=\"%.32s\"",
-               text);
+        DI8Log("eqmain_cxstr: WriteEditTextDirect — ctor failed (textLen=%u)",
+               (unsigned)textLen);
+        return false;
+    }
+
+    // 2026-04-25 Fix (2): read-back verification. ConstructFromCStr can
+    // succeed at the API level (returns true, m_data != null) while the
+    // CStrRep itself contains zero bytes — observed in dual-box test where
+    // DLL log said "set password via Combo G" but EQ's password field
+    // displayed empty (screenshot evidence). Verify the new CStrRep has
+    // length > 0 AND first utf8 byte matches what we requested. If the
+    // read-back fails, return false so caller falls back to keystroke.
+    __try {
+        CStrRep_Dalaya *rep = inputText->m_data;
+        if (!rep) {
+            DI8Log("eqmain_cxstr: WriteEditTextDirect read-back FAILED — m_data is null after ConstructFromCStr (textLen=%u)",
+                   (unsigned)textLen);
+            return false;
+        }
+        if (rep->length == 0) {
+            DI8Log("eqmain_cxstr: WriteEditTextDirect read-back FAILED — CStrRep length is 0 after write (requested textLen=%u)",
+                   (unsigned)textLen);
+            return false;
+        }
+        if (rep->utf8[0] != text[0]) {
+            // Hex dump first 0x40 bytes of the CStrRep so we can FIND the
+            // actual utf8 offset. Length matches (so refCount/alloc/length
+            // layout is correct) but utf8 isn't where we think.
+            // Logs only first byte of `text` (not full password) — see
+            // top-of-function security note.
+            const unsigned char *raw = (const unsigned char *)rep;
+            char hex[3 * 0x40 + 1] = {};
+            int hexLen = 0;
+            for (int i = 0; i < 0x40; i++) {
+                __try {
+                    hexLen += wsprintfA(hex + hexLen, "%02x ", raw[i]);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    hexLen += wsprintfA(hex + hexLen, "?? ");
+                }
+            }
+            DI8Log("eqmain_cxstr: WriteEditTextDirect read-back FAILED — first byte mismatch: wrote 0x%02x, read 0x%02x at +0x10 (requested length=%u, repLength=%u). CStrRep hex dump (+0x00..+0x40):",
+                   (unsigned char)text[0], (unsigned char)rep->utf8[0],
+                   (unsigned)textLen, (unsigned)rep->length);
+            DI8Log("eqmain_cxstr:   %s", hex);
+            return false;
+        }
+        DI8Log("eqmain_cxstr: WriteEditTextDirect read-back OK — length=%u, first byte 0x%02x matches",
+               rep->length, (unsigned char)rep->utf8[0]);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("eqmain_cxstr: WriteEditTextDirect read-back SEH — m_data invalid after write (textLen=%u)",
+               (unsigned)textLen);
         return false;
     }
     return true;
