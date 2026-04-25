@@ -54,15 +54,24 @@
 namespace EQMainCXStr {
 
 // ─── Layout types ───────────────────────────────────────────
-// Dalaya 2013 CStrRep — verified by reading fcn.100473d0 body (the ctor
-// writes m_data->length at +0x08 and memcpys data at +0x14). NOT compatible
-// with modern MQ2's CStrRep which has encoding/freeList fields and shifts
-// utf8 to +0x18.
+// Dalaya CStrRep — verified by Fix (2) hex dump (2026-04-25):
+//   +0x00: refCount=1
+//   +0x04: alloc=8 (allocation size in bytes for utf8 buffer)
+//   +0x08: length (utf8 byte count, NOT including null)
+//   +0x0c: 4-byte pad (always zero observed)
+//   +0x10: 4-byte vtable/owner pointer (lives in eqmain.dll, e.g. 0x715a2bd8)
+//   +0x14: utf8 inline string data (flexible array, null-terminated)
+//
+// Original 2013 recon got this right; an earlier Fix (2) misread a stale
+// m_data pointer (read 0x75 at +0x14 from a non-current CStrRep) and led
+// me to wrongly move utf8 to +0x10 — that pointed at the vtable pointer,
+// causing the 0xd8 false-mismatch in the next test.
 struct CStrRep_Dalaya {
     /*0x00*/ int32_t   refCount;
     /*0x04*/ uint32_t  alloc;
     /*0x08*/ uint32_t  length;
-    /*0x0c*/ uint8_t   _pad[0x0c];   // contents unknown; ctor doesn't touch
+    /*0x0c*/ uint8_t   _pad0[0x04];  // observed all-zeros
+    /*0x10*/ uint32_t  ownerPtr;     // vtable or owning-CXFreeList ptr (eqmain range)
     /*0x14*/ char      utf8[1];      // flexible array; allocator sizes for length+1
 };
 static_assert(sizeof(CStrRep_Dalaya) >= 0x15, "CStrRep_Dalaya layout regression");
