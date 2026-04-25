@@ -204,15 +204,40 @@ bool IsEQMainWidgetClass(const void *pWnd) {
     return false;
 }
 
+// Rate-limited rejection log shared by the edit/button gates. Without
+// this, a vtable-mismatch silently turns the in-process write/click into
+// a no-op and the keystroke fallback quietly takes over — leaving no
+// trace in the log. Caught 2026-04-24 Combo G session: in-process path
+// was never carrying load and IsEQMainEditWidget's silent rejection was
+// why the bug was invisible for so long. See handoff
+// `_.claude/_comms/handoff-eqswitch-combo-g-continuation-20260424.md`
+// (Quick-win section).
+static void LogWidgetGateRejection(const char *gate, const void *pWnd) {
+    static int g_rejLogCount = 0;
+    if (g_rejLogCount >= 30) return;
+    uintptr_t base = g_base;
+    uintptr_t vt = 0;
+    (void)ReadVtablePtr(pWnd, &vt);
+    DI8Log("eqmain_offsets: %s REJECTED pWnd=%p vt=0x%08X (eqmain+0x%05X) — "
+           "caller will fall back to keystroke / become no-op",
+           gate, pWnd, (unsigned)vt,
+           base ? (unsigned)(vt - base) : 0u);
+    g_rejLogCount++;
+}
+
 bool IsEQMainEditWidget(const void *pWnd) {
     // CEditWnd is the live edit widget. CEditBaseWnd is abstract base —
     // should not appear as a live vtable but included for belt-and-braces.
-    return VtableMatchesRVA(pWnd, RVA_VTABLE_CEditWnd)
-        || VtableMatchesRVA(pWnd, RVA_VTABLE_CEditBaseWnd);
+    bool ok = VtableMatchesRVA(pWnd, RVA_VTABLE_CEditWnd)
+           || VtableMatchesRVA(pWnd, RVA_VTABLE_CEditBaseWnd);
+    if (!ok && pWnd) LogWidgetGateRejection("IsEQMainEditWidget", pWnd);
+    return ok;
 }
 
 bool IsEQMainButtonWidget(const void *pWnd) {
-    return VtableMatchesRVA(pWnd, RVA_VTABLE_CButtonWnd);
+    bool ok = VtableMatchesRVA(pWnd, RVA_VTABLE_CButtonWnd);
+    if (!ok && pWnd) LogWidgetGateRejection("IsEQMainButtonWidget", pWnd);
+    return ok;
 }
 
 const char *GetEQMainWidgetClassName(const void *pWnd) {

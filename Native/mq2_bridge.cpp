@@ -24,6 +24,12 @@
 
 void DI8Log(const char *fmt, ...);
 
+// CXMLDataPtr vtable RVA — Dalaya x86 eqmain. Used in cross-ref scans
+// and walker indirect-backref check (live widget holds CXMLDataPtr* whose
+// m_pXMLData == def). Declared at file scope so both FindLiveCXWnd's
+// heap cross-ref (Iteration 5) and WalkForDefBackref's tree walk can use it.
+static constexpr uint32_t RVA_VTABLE_CXMLDataPtr_Dalaya = 0x0010A7D4;
+
 // ─── MQ2 Export Types ──────────────────────────────────────────
 
 // __thiscall on x86: 'this' in ECX, args on stack.
@@ -947,12 +953,399 @@ static int g_pSidlPieceOffset = -1;       // discovered CXWnd offset for m_pSidl
 
 static bool g_liveDumpDone = false;   // diagnostic dump flag (reset on cache clear)
 static int  g_liveNfLog = 0;         // not-found log counter
+static bool g_liveVtEnumDone = false; // one-shot heap enum of live-widget vtables
 
 static void ResetLiveWidgetCache() {
     g_liveCacheCount = 0;
     g_pSidlPieceOffset = -1;
     g_liveDumpDone = false;
     g_liveNfLog = 0;
+    g_liveVtEnumDone = false;
+}
+
+// One-shot heap enumeration: scan ALL committed pages for objects whose
+// first DWORD (vtable pointer) matches any of the known live-widget vtable
+// RVAs in eqmain.dll {CEditWnd, CEditBaseWnd, CButtonWnd}. Logs total count
+// + first-found address per class. NO def-backref filter — pure presence
+// check, answers "do real live CEditBaseWnd instances exist on Dalaya?"
+//
+// Iteration 4 (2026-04-24) diagnostic. Background: iterations 1-3 found
+// the def-backref always returning CXMLDataPtr-vtable matches (vt RVA
+// 0x10A7D4) which our recon labels as "wrapper". The slot probe on that
+// vtable always fails, blocking Combo G. Two competing hypotheses:
+//   H1: The CXMLDataPtr-class wrapper IS the actual login widget on
+//       Dalaya (RTTI label CXMLDataPtr but class repurposed). If so,
+//       we need to discover the right SetWindowText slot or InputText
+//       offset for that class — slot 73 is the wrong target.
+//   H2: A separate live CEditBaseWnd exists on the heap but doesn't
+//       backref the def at any offset our scan reaches.
+// This enum disambiguates: count > 0 with live-widget vtables → H2 (find
+// + use them); count == 0 → H1 confirmed (probe wrapper slots).
+static void EnumerateLiveWidgetVtablesOnce() {
+    if (g_liveVtEnumDone) return;
+    g_liveVtEnumDone = true;
+
+    HMODULE hEqmain = GetModuleHandleA("eqmain.dll");
+    if (!hEqmain) return;
+    uintptr_t eqmLo = (uintptr_t)hEqmain;
+    uintptr_t eqmHi = eqmLo;
+    __try {
+        uint32_t e_lfanew = *(const uint32_t *)((const uint8_t *)hEqmain + 0x3C);
+        if (e_lfanew < 0x400)
+            eqmHi = eqmLo + *(const uint32_t *)((const uint8_t *)hEqmain + e_lfanew + 0x50);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (eqmHi <= eqmLo) return;
+
+    uintptr_t vtCEditWnd     = eqmLo + EQMainOffsets::RVA_VTABLE_CEditWnd;
+    uintptr_t vtCEditBaseWnd = eqmLo + EQMainOffsets::RVA_VTABLE_CEditBaseWnd;
+    uintptr_t vtCButtonWnd   = eqmLo + EQMainOffsets::RVA_VTABLE_CButtonWnd;
+    uintptr_t vtCSidlScreen  = eqmLo + EQMainOffsets::RVA_VTABLE_CSidlScreenWnd;
+    uintptr_t vtCXWndBase    = eqmLo + EQMainOffsets::RVA_VTABLE_CXWnd;
+
+    static const int SAMPLE_MAX = 10;
+    int countEdit = 0, countEditBase = 0, countButton = 0;
+    int countSidlScreen = 0, countXWndBase = 0;
+    void *samplesEdit[SAMPLE_MAX]      = {};
+    void *samplesEditBase[SAMPLE_MAX]  = {};
+    void *samplesButton[SAMPLE_MAX]    = {};
+    void *samplesSidlScreen[SAMPLE_MAX] = {};
+    void *samplesXWndBase[SAMPLE_MAX]  = {};
+
+    MEMORY_BASIC_INFORMATION mbi;
+    uintptr_t addr = 0x00010000;
+    int pages = 0;
+
+    while (addr < 0x7FFF0000 && pages < 10000) {
+        if (VirtualQuery((void *)addr, &mbi, sizeof(mbi)) == 0) break;
+        uintptr_t base = (uintptr_t)mbi.BaseAddress;
+        SIZE_T    size = mbi.RegionSize;
+
+        if (mbi.State == MEM_COMMIT &&
+            !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
+            (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) &&
+            (mbi.Type == MEM_PRIVATE || mbi.Type == MEM_MAPPED)) {
+
+            pages++;
+            __try {
+                const uint8_t *p = (const uint8_t *)base;
+                for (uintptr_t off = 0; off + 4 <= size; off += 4) {
+                    uintptr_t vt = *(const uintptr_t *)(p + off);
+                    if (vt == vtCEditWnd) {
+                        if (countEdit < SAMPLE_MAX) samplesEdit[countEdit] = (void *)(base + off);
+                        countEdit++;
+                    } else if (vt == vtCEditBaseWnd) {
+                        if (countEditBase < SAMPLE_MAX) samplesEditBase[countEditBase] = (void *)(base + off);
+                        countEditBase++;
+                    } else if (vt == vtCButtonWnd) {
+                        if (countButton < SAMPLE_MAX) samplesButton[countButton] = (void *)(base + off);
+                        countButton++;
+                    } else if (vt == vtCSidlScreen) {
+                        if (countSidlScreen < SAMPLE_MAX) samplesSidlScreen[countSidlScreen] = (void *)(base + off);
+                        countSidlScreen++;
+                    } else if (vt == vtCXWndBase) {
+                        if (countXWndBase < SAMPLE_MAX) samplesXWndBase[countXWndBase] = (void *)(base + off);
+                        countXWndBase++;
+                    }
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+        addr = base + size;
+        if (addr <= base) addr = base + 0x1000;
+    }
+
+    DI8Log("mq2_bridge: LIVE-WIDGET HEAP ENUM — scanned %d pages", pages);
+
+    auto LogSamples = [](const char *className, uintptr_t vt, uint32_t rva,
+                         int count, void **samples, int sampleMax) {
+        int n = count < sampleMax ? count : sampleMax;
+        DI8Log("mq2_bridge:   %s vt=0x%08X (eqmain+0x%05X) count=%d (showing first %d)",
+               className, (unsigned)vt, (unsigned)rva, count, n);
+        for (int i = 0; i < n; i++) {
+            const char *zone = ((uintptr_t)samples[i] < 0x02000000) ? "LOW (likely vftable-array false-pos)"
+                             : ((uintptr_t)samples[i] >= 0x10000000) ? "HIGH (real heap candidate)"
+                             : "MID";
+            DI8Log("mq2_bridge:     [%d] %p — %s", i, samples[i], zone);
+        }
+    };
+    LogSamples("CEditWnd      ", vtCEditWnd,     EQMainOffsets::RVA_VTABLE_CEditWnd,
+               countEdit, samplesEdit, SAMPLE_MAX);
+    LogSamples("CEditBaseWnd  ", vtCEditBaseWnd, EQMainOffsets::RVA_VTABLE_CEditBaseWnd,
+               countEditBase, samplesEditBase, SAMPLE_MAX);
+    LogSamples("CButtonWnd    ", vtCButtonWnd,   EQMainOffsets::RVA_VTABLE_CButtonWnd,
+               countButton, samplesButton, SAMPLE_MAX);
+    LogSamples("CSidlScreenWnd", vtCSidlScreen,  EQMainOffsets::RVA_VTABLE_CSidlScreenWnd,
+               countSidlScreen, samplesSidlScreen, SAMPLE_MAX);
+    LogSamples("CXWnd (base)  ", vtCXWndBase,    EQMainOffsets::RVA_VTABLE_CXWnd,
+               countXWndBase, samplesXWndBase, SAMPLE_MAX);
+
+    // ─── Iteration 7 (FORWARD scan) ─────────────────────────────
+    // For each high-heap live CEditWnd / CButtonWnd, scan its body
+    // 0x14..0x800 for DWORDs that point at any def-like vtable
+    // (CParamEditbox / CParamButton / CXMLDataPtr). This finds the
+    // link between live widget and its XML def, however deep it lives
+    // in the live widget's structure. Iterations 1-6 all looked
+    // backward (from def to holder); this looks forward (from live
+    // widget to its def reference).
+    auto ScanLiveBodyForDefRefs = [&](const char *cls, void **samples, int count) {
+        for (int i = 0; i < SAMPLE_MAX && i < count; i++) {
+            void *we = samples[i];
+            if (!we || (uintptr_t)we < 0x02000000) continue; // skip false-pos
+            int defLikeRefs = 0;
+            DI8Log("mq2_bridge:   FORWARD scan %s[%d]@%p body 0x14..0x800:",
+                   cls, i, we);
+            __try {
+                const uint8_t *eb = (const uint8_t *)we;
+                for (int eo = 0x14; eo < 0x800; eo += 4) {
+                    if (eo == 0x18) continue;
+                    uintptr_t ed = *(const uintptr_t *)(eb + eo);
+                    if (ed < 0x10000 || ed > 0x7FFFFFFF) continue;
+                    if (!IsReadablePtr((void *)ed, 4)) continue;
+                    __try {
+                        uintptr_t edvt = *(const uintptr_t *)ed;
+                        if (edvt < eqmLo || edvt >= eqmHi) continue;
+                        uint32_t edvtRVA = (uint32_t)(edvt - eqmLo);
+                        // Def-like vtables (param-class definitions + smart ptrs).
+                        // Also report any other eqmain-vtable hit (could be a
+                        // related XML data class we haven't catalogued).
+                        bool isDefLike =
+                            (edvtRVA == 0x10D304 ||  // CParamEditbox
+                             edvtRVA == 0x10AA08 ||  // CParamButton
+                             edvtRVA == 0x10A7D4);   // CXMLDataPtr
+                        if (isDefLike) {
+                            DI8Log("mq2_bridge:     +0x%03X = %p -> vt=eqmain+0x%05X DEF-LIKE",
+                                   eo, (void *)ed, edvtRVA);
+                            defLikeRefs++;
+                            if (defLikeRefs >= 8) break;
+                        }
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            if (defLikeRefs == 0) {
+                DI8Log("mq2_bridge:     (no def-like vtable refs in body)");
+            }
+        }
+    };
+    ScanLiveBodyForDefRefs("CEditWnd  ", samplesEdit,    countEdit);
+    ScanLiveBodyForDefRefs("CButtonWnd", samplesButton,  countButton);
+
+    // ─── Iteration 8a: pinstCSidlManager probe ────────────────────
+    // CSidlManagerBase RTTI-walked vtable RVA on Dalaya eqmain (per
+    // rizin probe 2026-04-24): COL at 0x10115608 in DLL imageBase view,
+    // vtable at 0x1010aa40, so vtable RVA = 0x10aa40.
+    // pSidlMgr is the singleton — scan eqmain's .data section for any
+    // pointer whose deref has this vtable.
+    constexpr uint32_t RVA_VTABLE_CSidlManagerBase = 0x10aa40;
+    uintptr_t expectedCSidlVt = eqmLo + RVA_VTABLE_CSidlManagerBase;
+    DI8Log("mq2_bridge: pinstCSidlManager probe — looking for ptr to obj with vt=0x%08X (eqmain+0x%05X)",
+           (unsigned)expectedCSidlVt, RVA_VTABLE_CSidlManagerBase);
+
+    // Locate eqmain's .data section
+    uint8_t *eqMainBaseB = (uint8_t *)hEqmain;
+    uint8_t *dataBase = nullptr;
+    uint32_t dataSize = 0;
+    __try {
+        if (*(uint16_t *)eqMainBaseB == 0x5A4D) {
+            int32_t eLfanew = *(int32_t *)(eqMainBaseB + 0x3C);
+            if (eLfanew >= 0x40 && eLfanew <= 0x1000 &&
+                *(uint32_t *)(eqMainBaseB + eLfanew) == 0x00004550) {
+                uint16_t numSections = *(uint16_t *)(eqMainBaseB + eLfanew + 6);
+                uint16_t optSize     = *(uint16_t *)(eqMainBaseB + eLfanew + 20);
+                uint8_t *sh = eqMainBaseB + eLfanew + 24 + optSize;
+                for (int i = 0; i < numSections && i < 64; i++, sh += 40) {
+                    char nm[9] = {};
+                    memcpy(nm, sh, 8);
+                    if (strcmp(nm, ".data") == 0) {
+                        dataBase = eqMainBaseB + *(uint32_t *)(sh + 12);
+                        dataSize = *(uint32_t *)(sh + 8);
+                        break;
+                    }
+                }
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+    int sidlMgrCount = 0;
+    void *firstSidlMgr = nullptr;
+    uint32_t firstSidlOff = 0;
+    if (dataBase && dataSize > 16) {
+        __try {
+            for (uint32_t off = 0; off + 4 <= dataSize; off += 4) {
+                uintptr_t p = *(uintptr_t *)(dataBase + off);
+                if (p < 0x10000 || p > 0x7FFFFFFF) continue;
+                if (!IsReadablePtr((void *)p, sizeof(void *))) continue;
+                __try {
+                    uintptr_t pvt = *(uintptr_t *)p;
+                    if (pvt != expectedCSidlVt) continue;
+                    sidlMgrCount++;
+                    if (!firstSidlMgr) {
+                        firstSidlMgr = (void *)p;
+                        firstSidlOff = off;
+                    }
+                    if (sidlMgrCount <= 5) {
+                        DI8Log("mq2_bridge:   pSidlMgr cand[%d] data+0x%X = %p (vt matches CSidlManagerBase)",
+                               sidlMgrCount - 1, off, (void *)p);
+                    }
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+    DI8Log("mq2_bridge: pinstCSidlManager probe — %d candidate(s) total, first at data+0x%X = %p",
+           sidlMgrCount, firstSidlOff, firstSidlMgr);
+
+    // ─── Iteration 8b: CXWnd structure probe (XMLIndex + InputText offsets) ───
+    // Per agent's MQ2-source port spec:
+    //   x64: XMLIndex at CXWnd+0x094 (uint32_t key into CXMLDataManager hash)
+    //        InputText at CEditBaseWnd+0x278 (CXStr field on edit widget)
+    //   x86: pointers/CXStr handles halve, so estimates:
+    //        XMLIndex at ~CXWnd+0x4A..+0x60 (uint32, small integer)
+    //        InputText at ~CEditBaseWnd+0x180..+0x1A0 (CXStr — length<200, ASCII data)
+    // Probe each high-heap CEditWnd sample for these fields.
+    auto ProbeXWndForKnownFields = [&](void *we, int idx) {
+        if (!we || (uintptr_t)we < 0x02000000) return;
+        DI8Log("mq2_bridge: CXWnd-field probe CEditWnd[%d]@%p:", idx, we);
+
+        // XMLIndex candidates: uint32 small integer (1..9999) at offsets 0x40..0x100
+        DI8Log("mq2_bridge:   XMLIndex candidates (uint32 in range 1..9999):");
+        int xmlIdxHits = 0;
+        __try {
+            const uint8_t *eb = (const uint8_t *)we;
+            for (int o = 0x40; o < 0x100; o += 4) {
+                uint32_t v = *(const uint32_t *)(eb + o);
+                if (v >= 1 && v <= 9999) {
+                    DI8Log("mq2_bridge:     +0x%02X = %u", o, v);
+                    if (++xmlIdxHits >= 6) break;
+                }
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        if (!xmlIdxHits) DI8Log("mq2_bridge:     (no small-int candidates in 0x40..0x100)");
+
+        // InputText CXStr candidates: pointer at offset 0x100..0x300 such that
+        //   *(int*)(p+8) is a small length (1..200) AND *(char*)(p+0x14) is ASCII
+        DI8Log("mq2_bridge:   CXStr candidates (likely InputText):");
+        int cxstrHits = 0;
+        __try {
+            const uint8_t *eb = (const uint8_t *)we;
+            for (int o = 0x100; o < 0x300; o += 4) {
+                uintptr_t p = *(const uintptr_t *)(eb + o);
+                if (p < 0x10000 || p > 0x7FFFFFFF) continue;
+                if (!IsReadablePtr((void *)p, 0x18)) continue;
+                __try {
+                    int len = *(const int *)(p + 8);
+                    if (len < 0 || len > 200) continue;
+                    const char *s = (const char *)(p + 0x14);
+                    bool ok = true;
+                    int useLen = len > 0 ? len : 1;
+                    for (int k = 0; k < useLen && k < 32; k++) {
+                        char c = s[k];
+                        if (c == 0) break;
+                        if (c < 0x20 || c > 0x7E) { ok = false; break; }
+                    }
+                    if (!ok) continue;
+                    char preview[40] = {};
+                    int prevN = len < 32 ? len : 32;
+                    if (prevN > 0) memcpy(preview, s, prevN);
+                    DI8Log("mq2_bridge:     +0x%03X = CXStr@%p len=%d data='%s'",
+                           o, (void *)p, len, preview);
+                    if (++cxstrHits >= 6) break;
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        if (!cxstrHits) DI8Log("mq2_bridge:     (no CXStr-shaped candidates in 0x100..0x300)");
+    };
+
+    // Probe first 3 high-heap CEditWnd samples
+    int probed = 0;
+    void *probedPtrs[3] = {};
+    for (int i = 0; i < SAMPLE_MAX && i < countEdit && probed < 3; i++) {
+        if (samplesEdit[i] && (uintptr_t)samplesEdit[i] >= 0x02000000) {
+            probedPtrs[probed] = samplesEdit[i];
+            ProbeXWndForKnownFields(samplesEdit[i], i);
+            probed++;
+        }
+    }
+
+    // ─── Iteration 9: cross-instance diff for XMLIndex discovery ───
+    // XMLIndex must be UNIQUE per widget instance. Class-shared fields
+    // (flags, defaults) appear at the same value across all instances of
+    // the same class — those are NOT XMLIndex. Cross-compare the 3
+    // probed CEditWnds; offsets where values differ AND values are small
+    // ints (1..9999) are XMLIndex candidates.
+    if (probed >= 2 && probedPtrs[0] && probedPtrs[1]) {
+        DI8Log("mq2_bridge: cross-instance DIFF (CEditWnd[%p] vs [%p]%s) — looking for XMLIndex (unique per widget):",
+               probedPtrs[0], probedPtrs[1], probedPtrs[2] ? " vs [3rd]" : "");
+        int diffHits = 0;
+        __try {
+            const uint8_t *e1 = (const uint8_t *)probedPtrs[0];
+            const uint8_t *e2 = (const uint8_t *)probedPtrs[1];
+            const uint8_t *e3 = probedPtrs[2] ? (const uint8_t *)probedPtrs[2] : nullptr;
+            for (int o = 0x60; o < 0x180; o += 4) {
+                uint32_t v1 = *(const uint32_t *)(e1 + o);
+                uint32_t v2 = *(const uint32_t *)(e2 + o);
+                uint32_t v3 = e3 ? *(const uint32_t *)(e3 + o) : 0;
+                // Skip if all identical (class-shared, not XMLIndex)
+                if (v1 == v2 && (!e3 || v1 == v3)) continue;
+                // Skip if any value looks like a pointer (XMLIndex is uint32, not ptr)
+                bool anyPtrLike = (v1 >= 0x10000 && v1 <= 0x7FFFFFFF) ||
+                                   (v2 >= 0x10000 && v2 <= 0x7FFFFFFF) ||
+                                   (e3 && v3 >= 0x10000 && v3 <= 0x7FFFFFFF);
+                if (anyPtrLike) continue;
+                DI8Log("mq2_bridge:   +0x%02X DIFFERS: [1]=%u [2]=%u%s%s",
+                       o, v1, v2,
+                       e3 ? " [3]=" : "",
+                       e3 ? (v3 < 100000 ? "small" : "large") : "");
+                if (e3) {
+                    DI8Log("mq2_bridge:                       (verbose) [1]=0x%X [2]=0x%X [3]=0x%X",
+                           v1, v2, v3);
+                }
+                if (++diffHits >= 12) break;
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        if (!diffHits) DI8Log("mq2_bridge:   (no varying small-int fields in 0x60..0x180)");
+    }
+
+    // ─── Iteration 9: pSidlMgr body dump for XMLDataMgr discovery ───
+    // Look for the inline CXMLDataManager. Agent estimate: x86 ~+0xD8.
+    // We don't know its vtable but we can spot it by structure: it likely
+    // has an ArrayClass<CXMLData*> at some offset (count + data ptr).
+    // First, find pSidlMgr — re-do the .data scan inline (we already did
+    // this above into firstSidlMgr).
+    if (firstSidlMgr) {
+        DI8Log("mq2_bridge: pSidlMgr body dump @ %p, offsets 0x80..0x200 (looking for inline XMLDataMgr):",
+               firstSidlMgr);
+        int dumpHits = 0;
+        __try {
+            const uint8_t *sm = (const uint8_t *)firstSidlMgr;
+            for (int o = 0x80; o < 0x200; o += 4) {
+                uint32_t v = *(const uint32_t *)(sm + o);
+                const char *kind = "scalar";
+                bool kindIsScalar = true;
+                if (v >= 0x10000 && v <= 0x7FFFFFFF) {
+                    if (IsReadablePtr((void *)(uintptr_t)v, 4)) {
+                        __try {
+                            uintptr_t pvt = *(const uintptr_t *)(uintptr_t)v;
+                            if (pvt >= eqmLo && pvt < eqmHi) {
+                                uint32_t rva = (uint32_t)(pvt - eqmLo);
+                                DI8Log("mq2_bridge:     pSidlMgr+0x%02X = 0x%08X -> ptr to obj with vt=eqmain+0x%05X",
+                                       o, v, rva);
+                                dumpHits++;
+                                continue;
+                            }
+                        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                        kind = "heap-ptr";
+                        kindIsScalar = false;
+                    } else {
+                        kind = "ptr-unreadable";
+                        kindIsScalar = false;
+                    }
+                }
+                if (v != 0 && (v < 100000 || !kindIsScalar)) {
+                    DI8Log("mq2_bridge:     pSidlMgr+0x%02X = 0x%08X (%s)", o, v, kind);
+                    dumpHits++;
+                }
+                if (dumpHits >= 30) break;
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
 }
 
 // Check if a DWORD looks like a CXStr buf_base pointing to target name.
@@ -1144,12 +1537,49 @@ static void *FindLiveCXWnd(const char *name) {
             } __except (EXCEPTION_EXECUTE_HANDLER) {}
 
             if (eqmHi > eqmLo) {
+                // Iteration 4 — first run a one-shot heap enumeration of
+                // live-widget vtables ({CEditWnd, CEditBaseWnd, CButtonWnd,
+                // CSidlScreenWnd, CXWnd}). If count == 0 for all, the
+                // CXMLDataPtr-class wrapper (vt RVA 0x10A7D4) IS the actual
+                // login widget on Dalaya and Combo G must probe its real
+                // SetWindowText slot rather than assume slot 73.
+                EnumerateLiveWidgetVtablesOnce();
+
+                // Collect ALL heap-cross-ref matches (up to MAX_CANDS) instead of
+                // returning the first one. Iteration 3 finding (2026-04-24): the
+                // first match is consistently the CXMLDataPtr wrapper (vtable RVA
+                // 0x10A7D4). Iteration 4 dedups by vtable — only the FIRST match
+                // per unique vtable is kept, so the 16-slot cap captures up to
+                // 16 distinct vtables instead of 16 wrapper-array slide-window
+                // duplicates (which all read the same downstream def-pointer).
+                //
+                // Per MQ2 source (XMLData.h:603-687), MQ2's autologin writes
+                // the InputText CXStr field directly on CEditBaseWnd
+                // (MQ2AutoLogin.cpp:1039-1051), NOT via vtable SetWindowText.
+                // We need the live CEditBaseWnd to do the same.
+                //
+                // Strategy: enumerate distinct-vtable candidates, log each with
+                // vtable, then prefer one whose vtable is in the live-widget
+                // set. Fallback to first match (= wrapper) for legacy behavior
+                // if no live-vtable candidate (preserves keystroke-fallback
+                // path: login_sm needs a non-null widget pointer to proceed).
+                struct CrossRefCand {
+                    void     *addr;
+                    uintptr_t vt;
+                    uint32_t  off;
+                    void     *sib;
+                    void     *child;
+                };
+                static const int MAX_CANDS = 16;
+                CrossRefCand cands[MAX_CANDS] = {};
+                int candCount = 0;
+
                 MEMORY_BASIC_INFORMATION mbi;
                 uintptr_t addr = 0x00010000;
                 int heapPages = 0;
                 uintptr_t defVal = (uintptr_t)defAddr;
 
-                while (addr < 0x7FFF0000 && heapPages < 300000) {
+                while (addr < 0x7FFF0000 && heapPages < 300000 && candCount < MAX_CANDS) {
                     if (VirtualQuery((void *)addr, &mbi, sizeof(mbi)) == 0) break;
                     uintptr_t base = (uintptr_t)mbi.BaseAddress;
                     SIZE_T size = mbi.RegionSize;
@@ -1162,7 +1592,7 @@ static void *FindLiveCXWnd(const char *name) {
                         heapPages++;
                         __try {
                             const uint8_t *p = (const uint8_t *)base;
-                            for (uintptr_t off = 0; off + 0x400 <= size; off += 4) {
+                            for (uintptr_t off = 0; off + 0x400 <= size && candCount < MAX_CANDS; off += 4) {
                                 // Check eqmain vtable at +0x00
                                 uintptr_t vt = *(const uintptr_t *)(p + off);
                                 if (vt < eqmLo || vt >= eqmHi) continue;
@@ -1200,29 +1630,57 @@ static void *FindLiveCXWnd(const char *name) {
                                         sibMbi.Type == MEM_IMAGE) continue;
                                 }
 
-                                // Scan body for DWORD matching definition address
+                                // Iteration 4 — dedup by vtable. Skip if we
+                                // already have a candidate with this vtable;
+                                // saves 16-slot cap for distinct vtables.
+                                bool dupVtable = false;
+                                for (int j = 0; j < candCount; j++) {
+                                    if (cands[j].vt == vt) { dupVtable = true; break; }
+                                }
+                                if (dupVtable) continue;
+
+                                // Scan body for backref to def. Two paths:
+                                //   DIRECT:   body[off] == defAddr (m_pSidlPiece
+                                //             stores CParamEditbox* directly).
+                                //   INDIRECT: body[off] is a pointer to a
+                                //             CXMLDataPtr instance whose +4
+                                //             field == defAddr (m_pSidlPiece is
+                                //             a smart-ptr wrapping CParamEditbox).
+                                // Iteration 5: indirect path added because
+                                // iteration 4 enum proved live CEditWnd/CButtonWnd
+                                // exist on heap (8/70 instances) but cross-ref
+                                // found 0 live-widget candidates via direct path
+                                // alone. Live widgets must hold m_pSidlPiece as
+                                // CXMLDataPtr* (matches MQ2 ROF2 source layout).
                                 __try {
                                     for (int bo = 0x14; bo < 0x400; bo += 4) {
                                         // Skip +0x18 — same offset as definition's name CXStr
                                         // (high false positive rate from stack variables)
                                         if (bo == 0x18) continue;
                                         uintptr_t dw = *(const uintptr_t *)(p + off + bo);
-                                        if (dw == defVal) {
-                                            void *result = (void *)objAddr;
-                                            DI8Log("mq2_bridge: HEAP CROSS-REF '%s' FOUND at %p (def=%p at +0x%X, %d pages, sib=%p child=%p)",
-                                                   name, result, defAddr, bo, heapPages, (void*)at08, (void*)at10);
-                                            if (g_pSidlPieceOffset < 0) {
-                                                g_pSidlPieceOffset = bo;
-                                                DI8Log("mq2_bridge: DISCOVERED m_pSidlPiece at CXWnd+0x%X via heap cross-ref", bo);
-                                            }
-                                            if (g_liveCacheCount < LIVE_CACHE_MAX) {
-                                                g_liveCache[g_liveCacheCount].name = name;
-                                                g_liveCache[g_liveCacheCount].pLiveWnd = result;
-                                                g_liveCache[g_liveCacheCount].nameOffset = bo;
-                                                g_liveCacheCount++;
-                                            }
-                                            return result;
+
+                                        bool isDirect   = (dw == defVal);
+                                        bool isIndirect = false;
+                                        if (!isDirect
+                                            && dw > 0x10000 && dw < 0x7FFFFFFF) {
+                                            __try {
+                                                uintptr_t innerVt = *(const uintptr_t *)dw;
+                                                if (innerVt == eqmLo + RVA_VTABLE_CXMLDataPtr_Dalaya) {
+                                                    uintptr_t inner = *(const uintptr_t *)(dw + 4);
+                                                    if (inner == defVal) isIndirect = true;
+                                                }
+                                            } __except (EXCEPTION_EXECUTE_HANDLER) {}
                                         }
+
+                                        if (!isDirect && !isIndirect) continue;
+
+                                        cands[candCount].addr  = (void *)objAddr;
+                                        cands[candCount].vt    = vt;
+                                        cands[candCount].off   = (uint32_t)bo;
+                                        cands[candCount].sib   = (void *)at08;
+                                        cands[candCount].child = (void *)at10;
+                                        candCount++;
+                                        break; // first matching offset per object is enough
                                     }
                                 } __except (EXCEPTION_EXECUTE_HANDLER) {}
                             }
@@ -1231,6 +1689,89 @@ static void *FindLiveCXWnd(const char *name) {
                     addr = base + size;
                     if (addr <= base) addr = base + 0x1000;
                 }
+
+                // ─── Post-scan: log all candidates with vtable RVA + class ────
+                DI8Log("mq2_bridge: HEAP CROSS-REF '%s' — %d candidate(s) collected in %d pages (def=%p)",
+                       name, candCount, heapPages, defAddr);
+                for (int i = 0; i < candCount; i++) {
+                    const char *vtClass = EQMainOffsets::GetEQMainWidgetClassName(cands[i].addr);
+                    DI8Log("mq2_bridge:   cand[%d] addr=%p vt=0x%08X (eqmain+0x%05X) off=+0x%X "
+                           "sib=%p child=%p class=%s",
+                           i, cands[i].addr, (unsigned)cands[i].vt,
+                           (unsigned)(cands[i].vt - eqmLo), cands[i].off,
+                           cands[i].sib, cands[i].child,
+                           vtClass ? vtClass : "(unknown)");
+                }
+
+                // Prefer first candidate whose vtable is a known live widget class.
+                // This is the actual Combo G fix — bypass the CXMLDataPtr wrapper.
+                int chosen = -1;
+                for (int i = 0; i < candCount; i++) {
+                    uintptr_t v = cands[i].vt;
+                    if (v == eqmLo + EQMainOffsets::RVA_VTABLE_CEditWnd ||
+                        v == eqmLo + EQMainOffsets::RVA_VTABLE_CEditBaseWnd ||
+                        v == eqmLo + EQMainOffsets::RVA_VTABLE_CButtonWnd) {
+                        chosen = i;
+                        DI8Log("mq2_bridge: HEAP CROSS-REF '%s' SELECTED cand[%d] (live-widget vtable)",
+                               name, i);
+                        break;
+                    }
+                }
+                if (chosen < 0 && candCount > 0) {
+                    chosen = 0;
+                    DI8Log("mq2_bridge: HEAP CROSS-REF '%s' SELECTED cand[0] (fallback — no live-widget vtable found)",
+                           name);
+                }
+
+                if (chosen >= 0) {
+                    void *result = cands[chosen].addr;
+                    int  bo     = (int)cands[chosen].off;
+                    DI8Log("mq2_bridge: HEAP CROSS-REF '%s' FOUND at %p (def=%p at +0x%X, %d pages, sib=%p child=%p)",
+                           name, result, defAddr, bo, heapPages,
+                           cands[chosen].sib, cands[chosen].child);
+
+                    // Iteration 6 diagnostic: scan SELECTED wrapper's body
+                    // 0x00..0x100 for DWORDs that point at live-widget-vtable
+                    // objects. If found, that's the actual live widget the
+                    // wrapper belongs to (transitive: wrapper → live).
+                    DI8Log("mq2_bridge:   wrapper-body trans-lookup (scanning %p body 0x00..0x100):", result);
+                    int liveBackrefCount = 0;
+                    __try {
+                        const uint8_t *wb = (const uint8_t *)result;
+                        for (int wo = 0x00; wo < 0x100; wo += 4) {
+                            uintptr_t wd = *(const uintptr_t *)(wb + wo);
+                            if (wd < 0x10000 || wd > 0x7FFFFFFF) continue;
+                            if (!IsReadablePtr((void *)wd, 4)) continue;
+                            __try {
+                                uintptr_t wdvt = *(const uintptr_t *)wd;
+                                if (wdvt == eqmLo + EQMainOffsets::RVA_VTABLE_CEditWnd ||
+                                    wdvt == eqmLo + EQMainOffsets::RVA_VTABLE_CEditBaseWnd ||
+                                    wdvt == eqmLo + EQMainOffsets::RVA_VTABLE_CButtonWnd ||
+                                    wdvt == eqmLo + EQMainOffsets::RVA_VTABLE_CSidlScreenWnd ||
+                                    wdvt == eqmLo + EQMainOffsets::RVA_VTABLE_CXWnd) {
+                                    const char *cls = EQMainOffsets::GetEQMainWidgetClassName((void *)wd);
+                                    DI8Log("mq2_bridge:     wrapper+0x%02X = %p -> vt=0x%08X class=%s LIVE-WIDGET BACKREF",
+                                           wo, (void *)wd, (unsigned)wdvt, cls ? cls : "?");
+                                    liveBackrefCount++;
+                                }
+                            } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                        }
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                    DI8Log("mq2_bridge:   wrapper-body trans-lookup: %d live-widget backref(s) found", liveBackrefCount);
+
+                    if (g_pSidlPieceOffset < 0) {
+                        g_pSidlPieceOffset = bo;
+                        DI8Log("mq2_bridge: DISCOVERED m_pSidlPiece at CXWnd+0x%X via heap cross-ref", bo);
+                    }
+                    if (g_liveCacheCount < LIVE_CACHE_MAX) {
+                        g_liveCache[g_liveCacheCount].name = name;
+                        g_liveCache[g_liveCacheCount].pLiveWnd = result;
+                        g_liveCache[g_liveCacheCount].nameOffset = bo;
+                        g_liveCacheCount++;
+                    }
+                    return result;
+                }
+
                 DI8Log("mq2_bridge: heap cross-ref for '%s' — not found (%d pages, def=%p)", name, heapPages, defAddr);
             }
         }
@@ -1336,16 +1877,16 @@ static bool IsLiveWidgetVtable(const void *pObj, uintptr_t eqmainBase) {
 }
 
 struct DefBackrefCtx {
-    void     *defAddr;
-    uintptr_t eqmainBase;
-    void     *result;
-    int       foundOffset;
-    int       nodesChecked;
+    void       *defAddr;
+    uintptr_t   eqmainBase;
+    void       *result;
+    int         foundOffset;
+    int         nodesChecked;
+    const char *name;        // widget name (e.g. "LOGIN_PasswordEdit") for diagnostic log
 };
 
-// CXMLDataPtr vtable RVA — Dalaya x86 eqmain. Used to detect indirect
-// def references (live widget holds a CXMLDataPtr* which holds the def).
-static constexpr uint32_t RVA_VTABLE_CXMLDataPtr_Dalaya = 0x0010A7D4;
+// CXMLDataPtr vtable RVA — declared at file scope (top) so both this
+// walker and FindLiveCXWnd's cross-ref scan share the constant.
 
 static bool WalkForDefBackref(void *pWnd, DefBackrefCtx *ctx, int depth) {
     if (!pWnd || depth > 25 || ctx->nodesChecked > 5000) return false;
@@ -1369,37 +1910,82 @@ static bool WalkForDefBackref(void *pWnd, DefBackrefCtx *ctx, int depth) {
         // every login-screen leaf widget was pruned before predicate ran.
         uintptr_t atOx10 = *(uintptr_t *)((uintptr_t)pWnd + 0x10);
 
-        // MATCH PREDICATE: live edit/button widget that backrefs the def
-        if (IsLiveWidgetVtable(pWnd, ctx->eqmainBase)) {
+        // BODY SCAN — runs for EVERY node, not just live-widget ones.
+        // The vtable check happens AFTER finding a backref, so unrecognized
+        // live-widget vtables (e.g. Dalaya-specific subclasses) get logged
+        // as REJECTED candidates instead of silently dropped. Previously
+        // the vtable filter gated the entire body scan — when Dalaya's
+        // live login widgets used a vtable not in {CEditWnd, CEditBaseWnd,
+        // CButtonWnd}, the walker reported "523 nodes, 0 matches" with no
+        // signal as to which class was actually holding the def.
+        // Cost: ~256 reads per node, bounded by the 5000-node walker cap.
+        // The body scan has its own __try so SEH from over-reading a
+        // small leaf widget doesn't abort recursion into this node's
+        // children (only matters for widgets with bodies < 0x400 bytes
+        // that still have children — rare but possible).
+        bool foundMatch = false;
+        int  matchOff   = 0;
+        __try {
             const uint8_t *body = (const uint8_t *)pWnd;
             for (int off = 0x04; off < 0x400; off += 4) {
                 if (off == 0x08 || off == 0x10) continue; // skip sibling/child ptrs
                 uintptr_t val = *(const uintptr_t *)(body + off);
 
-                // Direct backref: body[off] == def
-                if ((void *)val == ctx->defAddr) {
-                    ctx->result      = pWnd;
-                    ctx->foundOffset = off;
-                    return true;
-                }
+                bool isDirect   = ((void *)val == ctx->defAddr);
+                bool isIndirect = false;
 
                 // Indirect backref: body[off] points at a CXMLDataPtr whose
                 // m_pSidlPiece (the second DWORD) == def
-                if (val > 0x10000 && val < 0x7FFFFFFF
+                if (!isDirect
+                    && val > 0x10000 && val < 0x7FFFFFFF
                     && IsReadablePtr((void *)val, 8)) {
                     __try {
                         uintptr_t innerVt = *(uintptr_t *)val;
                         if (innerVt == ctx->eqmainBase + RVA_VTABLE_CXMLDataPtr_Dalaya) {
                             uintptr_t inner = *(uintptr_t *)(val + 4);
-                            if ((void *)inner == ctx->defAddr) {
-                                ctx->result      = pWnd;
-                                ctx->foundOffset = off;
-                                return true;
-                            }
+                            if ((void *)inner == ctx->defAddr) isIndirect = true;
                         }
                     } __except (EXCEPTION_EXECUTE_HANDLER) {}
                 }
+
+                if (!isDirect && !isIndirect) continue;
+
+                // Backref found. Is the holder a live widget we recognize?
+                if (IsLiveWidgetVtable(pWnd, ctx->eqmainBase)) {
+                    foundMatch = true;
+                    matchOff   = off;
+                    break;
+                }
+
+                // Holder vtable is NOT in the live-widget set. Log it so
+                // we can decode the real Dalaya live-widget class via
+                // RTTI/COL walk (see handoff for procedure). Rate-limited
+                // to 30 entries — the CXMLDataPtr wrappers themselves
+                // backref the def and are common, so unbounded would flood.
+                static int g_unkVtLogCount = 0;
+                if (g_unkVtLogCount < 30) {
+                    uintptr_t nodeVt = 0;
+                    __try { nodeVt = *(const uintptr_t *)pWnd; }
+                    __except (EXCEPTION_EXECUTE_HANDLER) {}
+                    DI8Log("mq2_bridge: WalkForDefBackref candidate REJECTED by vtable filter — "
+                           "name='%s' node=%p vt=0x%08X (eqmain+0x%05X) off=+0x%X kind=%s def=%p",
+                           ctx->name ? ctx->name : "?",
+                           pWnd, (unsigned)nodeVt,
+                           (unsigned)(nodeVt - ctx->eqmainBase),
+                           off, isDirect ? "direct" : "indirect", ctx->defAddr);
+                    g_unkVtLogCount++;
+                }
+                // Continue scanning — multiple backref offsets in one body
+                // are possible (CXMLDataPtr def + member backref to itself).
             }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            // Body over-read SEH'd — fall through to children walk.
+        }
+
+        if (foundMatch) {
+            ctx->result      = pWnd;
+            ctx->foundOffset = matchOff;
+            return true;
         }
 
         // Recurse into children: firstChild at +0x10. 0xFFFFFFFF means no
@@ -1446,6 +2032,7 @@ static void *TranslateDefToLive(const char *name, void *defAddr) {
     DefBackrefCtx ctx = {};
     ctx.defAddr     = defAddr;
     ctx.eqmainBase  = (uintptr_t)hEqmain;
+    ctx.name        = name;  // for diagnostic log in WalkForDefBackref
 
     const uint8_t *pMgr = (const uint8_t *)wndMgr;
     __try {
@@ -1743,9 +2330,25 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                 if (IsLiveWidgetVtable(live, eqmainBase)) {
                     return live;  // already a live CEditWnd/CButtonWnd/CEditBaseWnd — fast path
                 }
-                // FindLiveCXWnd returned a def (CXMLDataPtr or CParamXxx).
-                // Try to translate to actual live widget for Combo G fast path.
-                void *real = TranslateDefToLive(name, live);
+                // FindLiveCXWnd returned a CXMLDataPtr wrapper (heap-cross-ref
+                // path) or a CParamXxx def — NOT the live CEditWnd. The actual
+                // live widget's m_pSidlPiece points at the INNER CParamXxx def,
+                // not at the wrapper that contains it. So the walker needs the
+                // inner def as its needle, not the wrapper. Re-resolve via
+                // FindWidgetByHeapScan (cached — essentially free) and try
+                // matching against the inner def first; fall back to the
+                // wrapper if that fails (covers the case where the live
+                // widget happens to hold the wrapper pointer instead).
+                //
+                // Caught 2026-04-24 smoke #2: walker reported 0 nodes, 0
+                // REJECTED candidates because it was hunting the WRAPPER
+                // address (10EFD928) — only the wrapper itself contains it
+                // in the body, and the wrapper isn't in the walked tree.
+                void *innerDef = FindWidgetByHeapScan(name);
+                void *real = innerDef ? TranslateDefToLive(name, innerDef) : nullptr;
+                if (!real && innerDef != live) {
+                    real = TranslateDefToLive(name, live);
+                }
                 if (real) return real;
                 // Translation failed — return the def anyway (legacy behavior).
                 // The downstream WriteEditTextDirect / SetEditText path will
