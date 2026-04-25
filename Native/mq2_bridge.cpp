@@ -672,6 +672,18 @@ static bool IterateWindowsDirect(void *pWndMgr, uint32_t arrOffset,
     }
 }
 
+static bool IterateAllWindows(WndIterCallback callback, void *context);
+
+// Public wrapper — exposes the internal iterator to other translation units
+// (specifically eqmain_widgets.cpp's structural lookup) without exporting
+// internal types or the FindEQMainWndMgr / g_pinstWndMgr / g_ppWndMgr globals.
+bool MQ2Bridge::IterateAllWindowsPublic(PublicWndIterCallback callback, void *context) {
+    // Cast is safe: PublicWndIterCallback and WndIterCallback have identical
+    // signatures — they're declared separately only because the public type
+    // lives in the namespace and the internal one is file-static.
+    return IterateAllWindows(reinterpret_cast<WndIterCallback>(callback), context);
+}
+
 static bool IterateAllWindows(WndIterCallback callback, void *context) {
     // 1. Try eqmain.dll's CXWndManager (login screen)
     //    FindEQMainWndMgr caches the result and g_eqmainWndMgrOffset (separate from eqgame's)

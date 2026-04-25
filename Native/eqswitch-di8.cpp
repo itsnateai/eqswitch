@@ -75,6 +75,12 @@ using PLDR_UNREGISTER_DLL_NOTIFICATION = uint32_t(__stdcall*)(void*);
 
 static void* g_loaderNotificationCookie = nullptr;
 
+// Iter 15: when eqmain.dll loads, set this flag. The next MQ2BridgePollTick
+// will see it and prioritize the SHM open + login state machine work over
+// any other deferred init. Lets us collapse the ~500ms wait between eqmain
+// LOAD and the next poll noticing.
+static volatile LONG g_eqmainJustLoaded = 0;
+
 // Case-insensitive wide-string equality. Windows can present module names
 // with any case — MQ2 uses mq::ci_equals here for the same reason.
 static bool CiEqualsW(const wchar_t* a, const wchar_t* b) {
@@ -101,6 +107,12 @@ static void __stdcall LdrDllNotificationCallback(
                (unsigned)data->DllBase, data->SizeOfImage);
         // STEP 2A: publish range so mq2_bridge can identify eqmain-owned widgets.
         EQMainOffsets::OnEQMainLoaded(data->DllBase, data->SizeOfImage);
+
+        // Iter 15: signal the poll loop that eqmain just loaded so it can
+        // skip the throttle on the next tick and immediately try SHM open +
+        // login state machine work. Avoids the loader-lock concern of
+        // calling OpenFileMappingA directly from this callback.
+        InterlockedExchange(&g_eqmainJustLoaded, 1);
     } else if (reason == LDR_DLL_NOTIFICATION_REASON_UNLOADED) {
         DI8Log("dll_notify: eqmain.dll UNLOADING — will tear down eqmain-side state");
         // STEP 2A: clear range so IsEQMainWidget returns false for dangling ptrs.
@@ -257,11 +269,37 @@ void MQ2BridgePollTick() {
 
     static volatile DWORD lastPoll = 0;  // accessed from ActivateThread + TIMERPROC
     DWORD now = GetTickCount();
-    if (now - lastPoll < 500) return;
+    // Iter 15: skip throttle on first tick after eqmain.dll LOAD so SHM open
+    // happens immediately instead of waiting up to 500ms. Flag is set from
+    // LdrDllNotificationCallback under the loader lock and consumed exactly
+    // once via InterlockedExchange.
+    bool bypassThrottle = (InterlockedExchange(&g_eqmainJustLoaded, 0) != 0);
+    if (!bypassThrottle && now - lastPoll < 500) return;
     lastPoll = now;
 
+    // ── Iter 15 fix: SHM open + login state machine BEFORE MQ2 init guard ──
+    // The prior order had MQ2Bridge::Init's failure-retry counter (set to 10 ticks
+    // = 5 seconds) gating the entire poll body. SHM open and the login state
+    // machine have NO dependency on MQ2 bridge — the bridge is needed only for
+    // char-select widget enumeration (which fires from the CharSelShm path).
+    // Putting them first means a failed MQ2 init no longer blocks the password
+    // entry for up to 5 seconds. (User reported being able to manually type the
+    // password and reach char-select before our DLL even attempted Combo G —
+    // root cause was this guard, not eqgame.exe boot time.)
+    if (!g_loginShm) {
+        TryOpenLoginShm();
+    }
+    if (g_loginShm && g_loginShm->magic == LOGIN_SHM_MAGIC) {
+        LoginStateMachine::Tick(g_loginShm, g_charSelShm);
+    }
+
+    if (!g_charSelShm) {
+        TryOpenCharSelShm();
+    }
+
     // Lazy MQ2 bridge init — retries every ~5 seconds until MQ2 globals are ready.
-    // Replaces the old Sleep(2000) one-shot that failed if MQ2 needed more time.
+    // Now gates ONLY the CharSel poll path (which actually needs the bridge),
+    // not the login state machine.
     if (!g_mq2Initialized) {
         if (g_mq2InitRetry == 0) {
             g_mq2Initialized = MQ2Bridge::Init();
@@ -273,25 +311,8 @@ void MQ2BridgePollTick() {
         if (!g_mq2Initialized) return;
     }
 
-    // Iter 14.1 (2026-04-25): try opening on every poll tick (every ~500ms
-    // throttled). OpenFileMappingA is ~10μs — cheaper than the retry-counter
-    // bookkeeping. Eliminates the extra 500ms-1s window between C# creating
-    // the SHM and the DLL noticing.
-    if (!g_charSelShm) {
-        TryOpenCharSelShm();
-    }
     if (g_charSelShm && g_charSelShm->magic == CHARSEL_SHM_MAGIC) {
         MQ2Bridge::Poll(g_charSelShm);
-    }
-
-    // v7 Phase 4: open LoginShm lazily and tick the login state machine.
-    // LoginStateMachine drives the entire login flow (credentials → connect →
-    // server select → charselect → enter world) via in-process MQ2 widget calls.
-    if (!g_loginShm) {
-        TryOpenLoginShm();
-    }
-    if (g_loginShm && g_loginShm->magic == LOGIN_SHM_MAGIC) {
-        LoginStateMachine::Tick(g_loginShm, g_charSelShm);
     }
 }
 

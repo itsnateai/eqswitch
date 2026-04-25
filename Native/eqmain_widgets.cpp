@@ -18,6 +18,7 @@
 #include <string.h>
 #include "eqmain_widgets.h"
 #include "eqmain_offsets.h"
+#include "mq2_bridge.h"
 
 void DI8Log(const char *fmt, ...);
 
@@ -325,6 +326,40 @@ void *FindLivePasswordCEditWnd() {
         }
         // Invalidate stale cache before rescan
         InterlockedExchangePointer((PVOID volatile *)&g_cachedWidgetPtr, nullptr);
+    }
+
+    // Iter 15: try the CXWndManager walk first (~1-5ms typical) before
+    // falling back to the full heap scan (~700ms). The manager iterates
+    // pinstCXWndManager's child array, which is the canonical path eqmain
+    // uses internally for widget lookup. If the manager isn't pinned yet
+    // (eqmain still constructing), this returns false fast and we fall
+    // through to the heap scan as a safety net.
+    struct ManagerScanCtx {
+        uintptr_t vtCEditWnd;
+        uintptr_t vtCEditBaseWnd;
+        uint32_t  target;
+        void     *result;
+    };
+    ManagerScanCtx mctx{ vtCEditWnd, vtCEditBaseWnd, target, nullptr };
+    auto managerCb = [](void *pWnd, void *context) -> bool {
+        ManagerScanCtx *m = (ManagerScanCtx *)context;
+        if (!pWnd) return false;  // continue
+        __try {
+            uintptr_t vt = *(uintptr_t *)pWnd;
+            if (vt != m->vtCEditWnd && vt != m->vtCEditBaseWnd) return false;
+            uint32_t xmlIdx = *(uint32_t *)((uintptr_t)pWnd + OFFSET_XMLINDEX);
+            if (xmlIdx == m->target) {
+                m->result = pWnd;
+                return true;  // stop iteration
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return false;
+    };
+    if (MQ2Bridge::IterateAllWindowsPublic(managerCb, &mctx) && mctx.result) {
+        InterlockedExchangePointer((PVOID volatile *)&g_cachedWidgetPtr, mctx.result);
+        DI8Log("eqmain_widgets: FindLivePasswordCEditWnd — MATCH via manager walk @ %p XMLIndex=0x%08X",
+               mctx.result, target);
+        return mctx.result;
     }
 
     int candidatesScanned = 0;

@@ -93,4 +93,15 @@ namespace MQ2Bridge {
     // Enumerate all CXWnd windows and log their names.
     // Used during Phase 0 to discover Dalaya's widget names.
     void EnumerateAllWindows();
+
+    // ─── Public window iteration (iter 15) ─────────────────────
+    // Exposes the internal IterateAllWindows so structural-lookup callers
+    // (EQMainWidgets) can walk the CXWndManager child array without doing
+    // their own ~700ms heap scan. Tries eqmain's CXWndManager first, then
+    // pinstCXWndManager, then ppWndMgr — first non-null hit wins.
+    //
+    // Callback receives each top-level + descendant CXWnd. Return true to
+    // stop iteration, false to continue.
+    typedef bool (*PublicWndIterCallback)(void *pWnd, void *context);
+    bool IterateAllWindowsPublic(PublicWndIterCallback callback, void *context);
 }
