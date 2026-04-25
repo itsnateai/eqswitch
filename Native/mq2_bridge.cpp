@@ -1303,6 +1303,166 @@ static void *FindLiveCXWnd(const char *name) {
     return nullptr;
 }
 
+// ─── Combo G: definition → live widget translation ────────────
+//
+// FindLiveCXWnd's heap cross-reference (Method A in WalkTreeSearch) returns
+// the FIRST object that contains the definition pointer in its body. On
+// Dalaya 2013 eqmain, that "first object" is a `CXMLDataPtr` wrapper
+// (vtable RVA 0x10A7D4) — a one-DWORD heap-allocated holder of a CParamXxx*.
+// CXMLDataPtr is NOT a live CXWnd; calling SetWindowText / WndNotification
+// on it crashes inside the vtable dispatch because the slot offsets have
+// no relation to CEditWnd's body layout.
+//
+// The actual live widget (CEditWnd at vtable RVA 0x10BE6C, CButtonWnd at
+// 0x10B53C, CEditBaseWnd at 0x10BCDC) does reference the def — but
+// indirectly through a CXMLDataPtr member. So we walk the CXWnd tree
+// looking for an object whose vtable matches a live-widget vtable AND
+// whose body contains either (a) the def pointer directly, or (b) a
+// CXMLDataPtr-wrapped pointer to the def.
+//
+// Verified 2026-04-24 via rizin RTTI walk on Native/recon/eqmain.dll:
+//   COL at 0x10114F48 → TypeDescriptor at 0x10133F34 → name ".?AVCXMLDataPtr@@"
+// Recon source: phase4-cxstr-recon.md (Combo G).
+
+static bool IsLiveWidgetVtable(const void *pObj, uintptr_t eqmainBase) {
+    if (!pObj || !eqmainBase) return false;
+    __try {
+        uintptr_t vt = *(const uintptr_t *)pObj;
+        return vt == eqmainBase + EQMainOffsets::RVA_VTABLE_CEditWnd
+            || vt == eqmainBase + EQMainOffsets::RVA_VTABLE_CEditBaseWnd
+            || vt == eqmainBase + EQMainOffsets::RVA_VTABLE_CButtonWnd;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return false;
+}
+
+struct DefBackrefCtx {
+    void     *defAddr;
+    uintptr_t eqmainBase;
+    void     *result;
+    int       foundOffset;
+    int       nodesChecked;
+};
+
+// CXMLDataPtr vtable RVA — Dalaya x86 eqmain. Used to detect indirect
+// def references (live widget holds a CXMLDataPtr* which holds the def).
+static constexpr uint32_t RVA_VTABLE_CXMLDataPtr_Dalaya = 0x0010A7D4;
+
+static bool WalkForDefBackref(void *pWnd, DefBackrefCtx *ctx, int depth) {
+    if (!pWnd || depth > 25 || ctx->nodesChecked > 5000) return false;
+    if ((uintptr_t)pWnd < 0x10000 || (uintptr_t)pWnd > 0x7FFFFFFF) return false;
+
+    __try {
+        if (!IsReadablePtr(pWnd, 0x400)) return false;
+        ctx->nodesChecked++;
+
+        // Skip CParamXxx-style definition objects (have 0xFFFFFFFF at +0x10).
+        // CXMLDataPtr does NOT match this filter so it's still visited, but
+        // it'll fail the IsLiveWidgetVtable gate below.
+        uintptr_t atOx10 = *(uintptr_t *)((uintptr_t)pWnd + 0x10);
+        if (atOx10 == 0xFFFFFFFF) return false;
+
+        // MATCH PREDICATE: live edit/button widget that backrefs the def
+        if (IsLiveWidgetVtable(pWnd, ctx->eqmainBase)) {
+            const uint8_t *body = (const uint8_t *)pWnd;
+            for (int off = 0x04; off < 0x400; off += 4) {
+                if (off == 0x08 || off == 0x10) continue; // skip sibling/child ptrs
+                uintptr_t val = *(const uintptr_t *)(body + off);
+
+                // Direct backref: body[off] == def
+                if ((void *)val == ctx->defAddr) {
+                    ctx->result      = pWnd;
+                    ctx->foundOffset = off;
+                    return true;
+                }
+
+                // Indirect backref: body[off] points at a CXMLDataPtr whose
+                // m_pSidlPiece (the second DWORD) == def
+                if (val > 0x10000 && val < 0x7FFFFFFF
+                    && IsReadablePtr((void *)val, 8)) {
+                    __try {
+                        uintptr_t innerVt = *(uintptr_t *)val;
+                        if (innerVt == ctx->eqmainBase + RVA_VTABLE_CXMLDataPtr_Dalaya) {
+                            uintptr_t inner = *(uintptr_t *)(val + 4);
+                            if ((void *)inner == ctx->defAddr) {
+                                ctx->result      = pWnd;
+                                ctx->foundOffset = off;
+                                return true;
+                            }
+                        }
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                }
+            }
+        }
+
+        // Recurse into children: firstChild at +0x10
+        void *child = (atOx10 > 0x10000 && atOx10 < 0x7FFFFFFF) ? (void *)atOx10 : nullptr;
+        void *prev = nullptr;
+        while (child) {
+            if ((uintptr_t)child < 0x10000 || (uintptr_t)child > 0x7FFFFFFF) break;
+            if (child == prev) break; // loop detection
+            if (!IsReadablePtr(child, 0x20)) break;
+
+            if (WalkForDefBackref(child, ctx, depth + 1)) return true;
+
+            prev = child;
+            __try {
+                child = *(void **)((uintptr_t)child + 0x08); // nextSibling
+            } __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+    return false;
+}
+
+// Given a definition pointer (CParamEditbox, CParamButton, or any CXMLDataPtr-
+// wrapped def), walk the CXWndManager tree and return the first live
+// CEditWnd/CButtonWnd/CEditBaseWnd whose body backrefs that def.
+//
+// Returns nullptr if no live widget references the def — at which point
+// caller should NOT use the def directly (it's not a live CXWnd) and
+// should fail-loud per the no-regression-to-dinput8 rule.
+static void *TranslateDefToLive(const char *name, void *defAddr) {
+    if (!defAddr) return nullptr;
+
+    HMODULE hEqmain = GetModuleHandleA("eqmain.dll");
+    if (!hEqmain) return nullptr;
+
+    void *wndMgr = FindEQMainWndMgr();
+    if (!wndMgr || !g_eqmainWndMgrOffset) return nullptr;
+
+    DefBackrefCtx ctx = {};
+    ctx.defAddr     = defAddr;
+    ctx.eqmainBase  = (uintptr_t)hEqmain;
+
+    const uint8_t *pMgr = (const uint8_t *)wndMgr;
+    __try {
+        const ArrayClassHeader *arr = (const ArrayClassHeader *)(pMgr + g_eqmainWndMgrOffset);
+        if (arr->Count < 1 || arr->Count > 500 || !arr->Data) return nullptr;
+        if (!IsReadablePtr(arr->Data, arr->Count * 4)) return nullptr;
+
+        void **wndArray = (void **)arr->Data;
+        for (int i = 0; i < arr->Count; i++) {
+            void *pTopWnd = wndArray[i];
+            if (!pTopWnd || !IsReadablePtr(pTopWnd, 0x20)) continue;
+
+            if (WalkForDefBackref(pTopWnd, &ctx, 0)) {
+                uintptr_t resultVt = 0;
+                __try { resultVt = *(uintptr_t *)ctx.result; }
+                __except (EXCEPTION_EXECUTE_HANDLER) {}
+                DI8Log("mq2_bridge: TranslateDefToLive('%s') def=%p -> live=%p "
+                       "(vt=0x%08X, off=+0x%X, %d nodes, top[%d])",
+                       name, defAddr, ctx.result,
+                       (unsigned)resultVt, ctx.foundOffset, ctx.nodesChecked, i);
+                return ctx.result;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+    DI8Log("mq2_bridge: TranslateDefToLive('%s') — no live widget backrefs def=%p (%d nodes)",
+           name, defAddr, ctx.nodesChecked);
+    return nullptr;
+}
+
 // ─── FindWidgetByLabel ────────────────────────────────────────
 // Find a live CXWnd by its VISIBLE LABEL TEXT at CXWnd+0x1A8.
 // Used to click the "LOGIN" main menu button to open the login
@@ -1550,11 +1710,35 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
     // matching via definition cross-reference (m_pSidlPiece) or
     // direct CXStr name match. Returns widgets that work with
     // SetEditText/ClickButton (unlike Phase 5 definitions).
+    //
+    // Combo G fix (2026-04-24): TRY to translate a CXMLDataPtr def to a
+    // live CEditWnd via TranslateDefToLive (the new walker). If translation
+    // succeeds, return the live widget — Combo G WriteEditTextDirect will
+    // work. If translation FAILS, return the def pointer anyway (legacy
+    // behavior preserved). WriteEditTextDirect will reject the def via
+    // prologue check, login_sm will SetError, and C# falls back to its
+    // keystroke path — same as the 3f40e1e baseline (36s end-to-end).
+    // We MUST NOT return nullptr here because login_sm treats nullptr as
+    // "widget not found" and stays in WaitLoginScreen forever, blocking
+    // C# entirely (the regression seen at 19:53 smoke).
     {
         HMODULE hEqmain = GetModuleHandleA("eqmain.dll");
         if (hEqmain) {
+            uintptr_t eqmainBase = (uintptr_t)hEqmain;
             void *live = FindLiveCXWnd(name);
-            if (live) return live;
+            if (live) {
+                if (IsLiveWidgetVtable(live, eqmainBase)) {
+                    return live;  // already a live CEditWnd/CButtonWnd/CEditBaseWnd — fast path
+                }
+                // FindLiveCXWnd returned a def (CXMLDataPtr or CParamXxx).
+                // Try to translate to actual live widget for Combo G fast path.
+                void *real = TranslateDefToLive(name, live);
+                if (real) return real;
+                // Translation failed — return the def anyway (legacy behavior).
+                // The downstream WriteEditTextDirect / SetEditText path will
+                // detect the wrong vtable and SetError, triggering C# fallback.
+                return live;
+            }
         }
     }
 
