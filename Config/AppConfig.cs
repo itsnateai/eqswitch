@@ -68,8 +68,20 @@ public class AppConfig
     [JsonPropertyName("accountsV4")]
     public List<Account> Accounts { get; set; } = new();
 
-    /// <summary>Delay in ms after EQ window appears before typing credentials (default 5s).</summary>
+    /// <summary>Delay in ms after EQ window appears before typing credentials (default 5s).
+    /// Only applies when the SHM warmup ritual was skipped/failed — when the warmup
+    /// runs, the warmup itself IS the delay (DLL widget discovery + Combo G write
+    /// take ~3-5s) and this knob is bypassed.</summary>
     public int LoginScreenDelayMs { get; set; } = 5000;
+
+    /// <summary>Post-warmup dwell in ms before BURST 1 keystrokes fire. The DLL's
+    /// SHM warmup advances phase to ClickingConnect once login-screen widgets are
+    /// discovered (~2s), but EQ's DirectInput cooperative-level negotiation needs
+    /// extra wall-clock to settle so SendInput keystrokes don't get truncated.
+    /// 4s is the conservative starting default; bump to 6000 if the first chars of
+    /// the password get dropped, drop toward 2000 if BURST 1 lands clean.
+    /// See feedback_chesterton_fence_load_bearing_bugs.md for the prior baseline.</summary>
+    public int WarmupDwellMs { get; set; } = 4000;
 
     /// <summary>When true, auto-login continues past character select into the world.
     /// When false, stops at the character select screen.</summary>
@@ -230,6 +242,7 @@ public class AppConfig
         Launch.FixDelayMs = Math.Clamp(Launch.FixDelayMs, 1000, 120000);
 
         LoginScreenDelayMs = Math.Clamp(LoginScreenDelayMs, 1000, 15000);
+        WarmupDwellMs = Math.Clamp(WarmupDwellMs, 0, 15000);
 
         Pip.Opacity = Math.Clamp(Pip.Opacity, (byte)10, (byte)255);
         Pip.MaxWindows = Math.Clamp(Pip.MaxWindows, 1, 3);
