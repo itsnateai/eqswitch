@@ -394,12 +394,18 @@ public class AutoLoginManager
     /// Between (1) and (2) we dwell for WarmupDwellMs (default 4s) — the
     /// DLL keeps retrying ClickButton in the background during this dwell,
     /// providing additional widget-tree activity to keep EQ's pump warm.
-    /// SendCancelCommand fires AFTER BURST 1 (was BEFORE in v3.11.3) to
-    /// extend the warmup activity window across the dwell + typing.
+    /// SendCancelCommand fires BEFORE BURST 1 (one mid-dev iteration tried
+    /// AFTER and caused 4-of-6 char truncation — DLL's ClickButton retry loop
+    /// contended with C# typing for EQ's message pump). Cancelling pre-Activate
+    /// gives the DLL ~500ms to observe LOGIN_CMD_CANCEL on its next tick and
+    /// stop polling, so BURST 1 types into a quiet pump.
     ///
-    /// Total wall-clock from method entry to BURST 1 deactivate:
-    ///   ~3-5s (phase advance) + WarmupDwellMs (~4s default) + ~1.5s (typing)
-    ///   = ~8-10s typical, vs ~21s in v3.11.3.
+    /// Total wall-clock from method entry to BURST 1 deactivate, ASSUMING
+    /// gameState ready (DLL boot ~2s after EQ window appears, separate gate):
+    ///   ~2-5s (phase advance) + WarmupDwellMs (~4s default) + ~0.7s (typing
+    ///   at 25/15/15ms inter-key) = ~7-10s typical, vs ~21s in v3.11.3.
+    /// Per-char typing went from ~130ms (v3.11.3) to ~40ms in v3.12.0 — looks
+    /// paste-like at 60fps.
     /// </summary>
     private void RunCredentialEntry(int pid, IntPtr hwnd, KeyInputWriter writer,
         LoginShmWriter? loginShm, Account account, string password,
