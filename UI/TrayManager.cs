@@ -1932,6 +1932,8 @@ public class TrayManager : IDisposable
         // call is itself non-blocking (Task.Run inside).
         _ = Task.Run(async () =>
         {
+        try
+        {
 
         int fired = 0;
         bool first = true;
@@ -1984,6 +1986,15 @@ public class TrayManager : IDisposable
             // pump). We're inside Task.Run on threadpool \u2014 marshal explicitly.
             var capturedTeamName = teamName;
             _uiContext?.Post(_ => ShowWarning($"No accounts assigned to {capturedTeamName} \u2014 configure in Settings \u2192 Accounts"), null);
+        }
+        }
+        catch (Exception ex)
+        {
+            // Synchronous WinForms tray would have surfaced this via the
+            // ThreadException handler. The Task.Run wrapper would otherwise
+            // swallow it silently \u2014 log + balloon so the user sees the failure.
+            FileLogger.Error($"FireTeam({teamIndex}) crashed", ex);
+            _uiContext?.Post(_ => ShowWarning($"Team {teamIndex} launch failed: {ex.Message}"), null);
         }
         });  // end Task.Run
     }
