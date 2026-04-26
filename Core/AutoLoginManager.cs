@@ -50,8 +50,14 @@ public class AutoLoginManager
     // No serialization — logins run concurrently. Focus-faking is kept to
     // brief windows (activate → type → deactivate) to avoid conflicts.
 
-    /// <summary>UI thread sync context — captured at construction for marshaling events back to the UI thread.</summary>
-    private readonly SynchronizationContext? _syncContext;
+    /// <summary>UI thread sync context for marshaling events. Captured at construction
+    /// as a best-effort fallback, then replaced by TrayManager.Initialize() via
+    /// <see cref="SetUiContext"/> AFTER NotifyIcon creation guarantees the WinForms
+    /// sync context is installed on this thread. Without the late-bind, events fired
+    /// from background login threads (LoginStarting / LoginCredentialsSent / LoginComplete /
+    /// StatusUpdate) fall into the synchronous-fire branch and race UI-thread state in
+    /// the subscribers (notably TrayManager._injectedPids HashSet).</summary>
+    private SynchronizationContext? _syncContext;
 
     /// <summary>Callback to enforce eqclient.ini overrides before launch (injected to avoid Core→UI dependency).</summary>
     private readonly Action<AppConfig>? _enforceOverrides;
@@ -60,6 +66,14 @@ public class AutoLoginManager
 
     /// <summary>Fires just before the login sequence starts (use to pause guard timers).</summary>
     public event EventHandler<int>? LoginStarting;
+
+    /// <summary>Fires after BURST 1 keystrokes finished and Enter was submitted —
+    /// roughly T+~7s after EQ window appears (vs T+~30s for LoginComplete).
+    /// Subscribers can resume cosmetic work that was deferred during login
+    /// (slim-titlebar guard, hook config refresh, window title) without
+    /// waiting for the full charselect-ready signal. Cosmetic ONLY — never
+    /// generate input or steal focus from this handler.</summary>
+    public event EventHandler<int>? LoginCredentialsSent;
 
     /// <summary>Fires when a login sequence completes (success or failure) with the PID.</summary>
     public event EventHandler<int>? LoginComplete;
@@ -76,8 +90,22 @@ public class AutoLoginManager
     public AutoLoginManager(AppConfig config, Action<AppConfig>? enforceOverrides = null)
     {
         _config = config;
+        // Best-effort capture — may be null if constructed before WinForms is up
+        // (the typical Program.cs path). TrayManager.Initialize() calls SetUiContext
+        // post-NotifyIcon to install the real WindowsFormsSynchronizationContext.
         _syncContext = SynchronizationContext.Current;
         _enforceOverrides = enforceOverrides;
+    }
+
+    /// <summary>Install the WinForms UI sync context. TrayManager calls this from
+    /// Initialize() after NotifyIcon creation (which forces WinForms to install the
+    /// sync context on the UI thread). Required for event handlers and StatusUpdate
+    /// to marshal cleanly to the UI thread instead of running on background threads
+    /// and racing UI-thread state.</summary>
+    public void SetUiContext(SynchronizationContext context)
+    {
+        _syncContext = context ?? throw new ArgumentNullException(nameof(context));
+        FileLogger.Info($"AutoLogin: UI sync context installed ({context.GetType().Name})");
     }
 
     /// <summary>
@@ -343,11 +371,164 @@ public class AutoLoginManager
         return Task.Run(() => RunLoginSequence(pid, capturedAccount, capturedCharacter, password, capturedOverride));
     }
 
+    /// <summary>
+    /// Enter the password into EQ's login screen and submit.
+    ///
+    /// Conceptually two phases bundled into one method (because they're tightly
+    /// coupled by the load-bearing warmup contract — see chesterton-fence note
+    /// at memory/feedback_chesterton_fence_load_bearing_bugs.md):
+    ///
+    ///   1. **Warmup ritual** via SHM LOGIN command. The DLL walks the
+    ///      SidlManager widget tree to find the live password CEditWnd and
+    ///      writes via Combo G's SetEditWndText. On Dalaya the write
+    ///      silent-no-ops (wrong buffer — EQ renders/submits from a
+    ///      different field), but the WIDGET DISCOVERY ACTIVITY warms up
+    ///      EQ's input pump and gives DI8 cooperative-level negotiation
+    ///      wall-clock to settle into BACKGROUND mode. Phase advances to
+    ///      ClickingConnect (=3) ~3-5s after SendLoginCommand on Dalaya.
+    ///
+    ///   2. **BURST 1 keystrokes** — the actual workhorse. DI8 SendInput
+    ///      types the password (+ Tab/Tab/username if not /login: flag)
+    ///      then Enter to submit.
+    ///
+    /// Between (1) and (2) we dwell for WarmupDwellMs (default 4s) — the
+    /// DLL keeps retrying ClickButton in the background during this dwell,
+    /// providing additional widget-tree activity to keep EQ's pump warm.
+    /// SendCancelCommand fires AFTER BURST 1 (was BEFORE in v3.11.3) to
+    /// extend the warmup activity window across the dwell + typing.
+    ///
+    /// Total wall-clock from method entry to BURST 1 deactivate:
+    ///   ~3-5s (phase advance) + WarmupDwellMs (~4s default) + ~1.5s (typing)
+    ///   = ~8-10s typical, vs ~21s in v3.11.3.
+    /// </summary>
+    private void RunCredentialEntry(int pid, IntPtr hwnd, KeyInputWriter writer,
+        LoginShmWriter? loginShm, Account account, string password,
+        int loginScreenDelayMs, int warmupDwellMs)
+    {
+        // ── Phase 1: SHM warmup ritual ──
+        bool warmupRan = false;
+        if (loginShm != null)
+        {
+            // Wait for DLL state machine to be alive (gameState published).
+            var gateSw = System.Diagnostics.Stopwatch.StartNew();
+            while (gateSw.ElapsedMilliseconds < 30000)
+            {
+                if (loginShm.ReadGameState(pid) != 0) break;
+                Thread.Sleep(100);
+            }
+            FileLogger.Info($"AutoLogin: DLL gameState ready after {gateSw.ElapsedMilliseconds}ms (PID {pid})");
+
+            Report($"{account.Name}: warmup...");
+            if (loginShm.SendLoginCommand(pid, account.Username, password, account.Server, ""))
+            {
+                // Wait for phase >= ClickingConnect (=3) — proves login-screen
+                // widgets are discoverable AND Combo G actually wrote a CXStr
+                // (Fix 2's read-back guard would have left phase at Error if
+                // the write went to a stale ptr). Empirically advances in
+                // ~3-5s on Dalaya.
+                //
+                // We deliberately do NOT wait for WaitConnectResponse — the
+                // DLL's PHASE_CLICKING_CONNECT loop tries MQ2Bridge::ClickButton
+                // on 'LOGIN_ConnectButton' which returns a CXMLDataPtr def
+                // (Fix 1's IsEQMainButtonWidget rejects it), then retries for
+                // ~25s before SetError. We don't need that signal — C# fires
+                // BURST 1 instead.
+                const int phaseCeilingMs = 12000;
+                var phaseSw = System.Diagnostics.Stopwatch.StartNew();
+                while (phaseSw.ElapsedMilliseconds < phaseCeilingMs)
+                {
+                    var phase = loginShm.ReadPhase(pid);
+                    if (phase >= LoginPhase.ClickingConnect && phase != LoginPhase.Error)
+                    {
+                        warmupRan = true;
+                        FileLogger.Info($"AutoLogin: warmup phase advanced to {phase} after {phaseSw.ElapsedMilliseconds}ms (PID {pid})");
+                        break;
+                    }
+                    if (phase == LoginPhase.Error)
+                    {
+                        var err = loginShm.ReadError(pid);
+                        FileLogger.Warn($"AutoLogin: warmup phase errored ({err}) — falling back to flat sleep");
+                        break;
+                    }
+                    Thread.Sleep(50);
+                }
+                if (!warmupRan && phaseSw.ElapsedMilliseconds >= phaseCeilingMs)
+                {
+                    FileLogger.Warn($"AutoLogin: warmup phase didn't advance to ClickingConnect within {phaseCeilingMs}ms — falling back to flat sleep");
+                }
+            }
+            else
+            {
+                FileLogger.Warn($"AutoLogin: SendLoginCommand failed for PID {pid} — falling back to flat sleep");
+            }
+        }
+
+        // ── Dwell: DI8 cooperative-level settle window ──
+        // When warmup ran, dwell for WarmupDwellMs (default 4s) — DLL retries
+        // ClickButton in the background during this period. When warmup didn't
+        // run, fall back to LoginScreenDelayMs (default 5s) without DLL activity.
+        int dwellMs = warmupRan ? warmupDwellMs : loginScreenDelayMs;
+        if (dwellMs > 0)
+        {
+            Report(warmupRan ? "Warmup done — settling..." : "Waiting for login screen...");
+            Thread.Sleep(dwellMs);
+        }
+
+        // ── Pre-BURST cancel: silence the DLL before typing ──
+        // The DLL's PHASE_CLICKING_CONNECT loop polls MQ2Bridge::ClickButton
+        // every ~500ms on EQ's game thread, doing SEH-wrapped widget heap-
+        // walks + WndNotification calls. If left running through BURST 1's
+        // typing window, those heap-walks contend with EQ's message pump and
+        // cause keystroke truncation (verified 2026-04-25 dual-box: 4-of-6
+        // chars on client 1, 0-of-6 on client 2). Cancelling BEFORE Activate
+        // gives the DLL ~500ms to observe LOGIN_CMD_CANCEL on its next tick
+        // and stop polling, so BURST 1 types into a quiet pump.
+        if (loginShm != null && warmupRan)
+        {
+            loginShm.SendCancelCommand(pid);
+            FileLogger.Info($"AutoLogin: warmup cancel sent pre-BURST 1 for PID {pid}");
+        }
+
+        // ── Phase 2: BURST 1 keystrokes ──
+        Report("Typing credentials...");
+        writer.Activate(pid, suppress: true);
+        Thread.Sleep(500); // let DLL switch coop + blast activation
+        FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
+
+        // NOTE: a pre-flight Enter before typing is NOT idempotent on Dalaya
+        // patchme — empty-password Enter raises a "you need to enter a username
+        // and password" modal that steals focus from the password field, causing
+        // BURST 1 to type into the modal and Enter to click OK instead of submit.
+        // Tested + reverted 2026-04-24.
+
+        if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
+        {
+            CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to username
+            Thread.Sleep(100);
+            CombinedTypeString(writer, pid, hwnd, account.Username);
+            Thread.Sleep(100);
+        }
+        if (!account.UseLoginFlag)
+        {
+            CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to password
+            Thread.Sleep(100);
+        }
+        CombinedTypeString(writer, pid, hwnd, password);
+        Thread.Sleep(100);
+
+        Report("Submitting login...");
+        CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = submit
+        Thread.Sleep(500);
+        writer.Deactivate(pid);
+        FileLogger.Info($"AutoLogin: BURST 1 deactivated for PID {pid}");
+    }
+
     private void RunLoginSequence(int pid, Account account, Character? character, string password, bool? enterWorldOverride)
     {
         // Snapshot config values — RunLoginSequence runs on a background thread
         // while ReloadConfig can mutate _config on the UI thread.
         int loginScreenDelayMs = _config.LoginScreenDelayMs;
+        int warmupDwellMs = _config.WarmupDwellMs;
         string eqPath = _config.EQPath;
 
         // Parallel-safe background login via brief activation windows.
@@ -444,170 +625,39 @@ public class AutoLoginManager
             // }
 
             // ══════════════════════════════════════════════════════════════
-            // PATH HYBRID — SHM password write + keyboard for buttons
-            // ══════════════════════════════════════════════════════════════
-            // 2026-04-25: MQ2-style. Use the DLL's Combo G SetEditWndText
-            // path to write the password silently (no keystrokes, no
-            // truncation) — the only piece of "PATH A" that actually works
-            // on Dalaya. Skip the broken PHASE_WAIT_CONNECT_RESP detection.
-            // The DLL still clicks the Connect button as part of the LOGIN
-            // command flow. C# then waits for server response and uses
-            // BURST 2 (Enter for server-confirm) which has always worked
-            // because it's a single key press to a button, not 6+ chars
-            // into an edit field.
+            // Single credential-entry method:
+            //   warmup (SHM widget discovery + Combo G silent-no-op) →
+            //   dwell (DI8 cooperative-level settle) →
+            //   BURST 1 keystrokes (the actual password typing) →
+            //   cancel SHM (stop DLL retry loop)
             //
-            // BURST 1 keystroke path is kept as fallback for the case where
-            // SHM credentials fail (DLL not ready, Combo G regression, etc).
+            // 2026-04-25: silent injection abandoned for now. Combo G's CXStr
+            // write at +0x1A8 doesn't reach EQ's render/submit buffer (read-
+            // back at +0x14 confirms we wrote somewhere, but EQ reads from a
+            // different field). The SHM LOGIN attempt is kept as warmup ritual
+            // ONLY — its widget-discovery activity warms up EQ's input pump and
+            // gives DI8 cooperative-level negotiation wall-clock to settle.
+            // Tunable via WarmupDwellMs config (default 4s post-phase-advance).
+            //
+            // Future stretch: fix Combo G to write the right widget/buffer
+            // (live render-side EditWnd), then BURST 1 can be removed entirely.
             // ══════════════════════════════════════════════════════════════
-            bool shmDidCredentials = false;
-            if (loginShm != null)
-            {
-                // Wait for DLL's state machine to be alive (gameState published)
-                var gateSw = System.Diagnostics.Stopwatch.StartNew();
-                while (gateSw.ElapsedMilliseconds < 30000)
-                {
-                    if (loginShm.ReadGameState(pid) != 0) break;
-                    Thread.Sleep(100);
-                }
-                FileLogger.Info($"AutoLogin: DLL gameState ready after {gateSw.ElapsedMilliseconds}ms (PID {pid})");
+            RunCredentialEntry(pid, hwnd, writer, loginShm, account, password,
+                loginScreenDelayMs, warmupDwellMs);
 
-                // Tell DLL to write password via Combo G (SetEditWndText) and
-                // click Connect. Empty charName = DLL stops at charselect.
-                Report($"{account.Name}: SHM password write...");
-                if (loginShm.SendLoginCommand(pid, account.Username, password, account.Server, ""))
-                {
-                    // Wait for phase to reach ClickingConnect — proves the
-                    // password write via Combo G's SetEditWndText completed
-                    // successfully (Fix 2's read-back also gates this — if
-                    // ConstructFromCStr or the read-back fails, phase goes
-                    // to Error, not ClickingConnect).
-                    //
-                    // We deliberately do NOT wait for WaitConnectResponse —
-                    // the DLL's PHASE_CLICKING_CONNECT loop tries to click
-                    // the Connect button via MQ2Bridge::ClickButton, but
-                    // FindWindowByName('LOGIN_ConnectButton') returns the
-                    // CXMLDataPtr def (no live widget backrefs found), and
-                    // Fix 1's IsEQMainButtonWidget gate correctly rejects
-                    // it. The DLL then loops retrying for ~25s before
-                    // SetError. Instead: as soon as we know password is in
-                    // the field (phase >= ClickingConnect), C# presses Enter
-                    // via a single keystroke — reliable because it's ONE
-                    // key, not 6+ chars vulnerable to coop-swap truncation.
-                    // Wait for phase >= WaitConnectResponse OR Error OR 15s
-                    // timeout. On Dalaya, phase never advances past
-                    // ClickingConnect (broken button), so the 15s timeout
-                    // ALWAYS fires — that's intentional, it provides EQ-input
-                    // warmup time for BURST 1 keystrokes (proven working in
-                    // 2026-04-25 dual-box test where T+~21s BURST 1 typed
-                    // all 6 chars cleanly). Don't shorten this without
-                    // testing BURST 1 truncation at the new earlier timing.
-                    var credSw = System.Diagnostics.Stopwatch.StartNew();
-                    while (credSw.ElapsedMilliseconds < 15000)
-                    {
-                        var phase = loginShm.ReadPhase(pid);
-                        if (phase >= LoginPhase.WaitConnectResponse && phase != LoginPhase.Error)
-                        {
-                            shmDidCredentials = true;
-                            FileLogger.Info($"AutoLogin: SHM credentials done at {credSw.ElapsedMilliseconds}ms (phase={phase}, PID {pid})");
-                            break;
-                        }
-                        if (phase == LoginPhase.Error)
-                        {
-                            var err = loginShm.ReadError(pid);
-                            FileLogger.Warn($"AutoLogin: SHM credentials phase errored — falling back to keyboard BURST 1 (error: {err})");
-                            break;
-                        }
-                        Thread.Sleep(50);
-                    }
-                    if (!shmDidCredentials)
-                    {
-                        FileLogger.Warn($"AutoLogin: SHM credentials timeout after {credSw.ElapsedMilliseconds}ms — falling back to keyboard BURST 1");
-                        loginShm.SendCancelCommand(pid);
-                    }
-                }
+            // Fire LoginCredentialsSent — TrayManager uses this to apply slim-
+            // titlebar + hook config + window title NOW (T+~7s) instead of
+            // waiting for charselect-ready (T+~30s).
+            try
+            {
+                if (_syncContext != null)
+                    _syncContext.Post(_ => LoginCredentialsSent?.Invoke(this, pid), null);
                 else
-                {
-                    FileLogger.Warn($"AutoLogin: SendLoginCommand failed for PID {pid} — falling back to keyboard BURST 1");
-                }
-
-                // ── Fix (3): VERIFY SHM credentials actually progressed EQ ──
-                // The DLL state machine advancing to phase=WaitConnectResponse only
-                // proves the DLL THINKS it wrote password + clicked Connect. It does
-                // NOT prove EQ actually left the login screen. Combo G can write to
-                // a stale widget pointer (silent no-op) and ClickButton can skip on
-                // a non-button vtable (silent no-op) — both lie to the state machine.
-                //
-                // Real progression is signaled by CharSelectReader.ReadCharCount(pid)
-                // becoming > 0 (DLL only populates char list once EQ reaches char-select)
-                // OR loginShm phase advancing past WaitConnectResponse (would happen
-                // if Native fixes 1+2 land and DLL detection isn't broken).
-                // If neither happens within 10s of phase=WaitConnectResponse, SHM lied
-                // → flip shmDidCredentials back to false → BURST 1 keystrokes run.
-                // Verification block removed (2026-04-25). With Fix 2's
-                // read-back guard, phase only advances to ClickingConnect
-                // when Combo G's write actually landed. The DLL's broken
-                // PHASE_CLICKING_CONNECT loop is harmless — we ignore it
-                // and have C# do the Connect-button click ourselves below.
+                    LoginCredentialsSent?.Invoke(this, pid);
             }
-
-            if (!shmDidCredentials)
+            catch (Exception ex)
             {
-                // ── PATH B FALLBACK: keystroke BURST 1 ──
-                Report("Waiting for login screen...");
-                Thread.Sleep(loginScreenDelayMs);
-
-                Report("Typing credentials...");
-                writer.Activate(pid, suppress: true);
-                Thread.Sleep(500); // let DLL switch coop + blast activation
-                FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
-
-                // NOTE: a pre-flight Enter before typing is NOT idempotent on Dalaya
-                // patchme — empty-password Enter raises a "you need to enter a
-                // username and password" modal that steals focus from the password
-                // field, causing BURST 1 to type into the modal and Enter to click
-                // OK instead of submit. Tested + reverted 2026-04-24.
-
-                if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
-                {
-                    CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to username
-                    Thread.Sleep(100);
-                    CombinedTypeString(writer, pid, hwnd, account.Username);
-                    Thread.Sleep(100);
-                }
-                if (!account.UseLoginFlag)
-                {
-                    CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to password
-                    Thread.Sleep(100);
-                }
-                CombinedTypeString(writer, pid, hwnd, password);
-                Thread.Sleep(100);
-
-                Report("Submitting login...");
-                CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = submit
-                Thread.Sleep(500);
-                writer.Deactivate(pid); // ← OFF immediately after typing
-                FileLogger.Info($"AutoLogin: BURST 1 deactivated for PID {pid}");
-            }
-            // 2026-04-25: silent-injection abandoned for now. Empirical test
-            // showed Combo G's CXStr write at +0x1A8 doesn't populate the
-            // RENDERED/SUBMITTED password field — read-back at +0x14 sees our
-            // bytes (we DID write somewhere), but EQ's display/submit reads
-            // from a different buffer. Tab+Enter clicked LOGIN button but
-            // EQ's submit found empty password → "enter a password" error.
-            //
-            // The SHM LOGIN attempt above is kept as warmup ritual ONLY —
-            // its 5-15s of DLL widget-discovery activity warms up EQ enough
-            // for BURST 1 keystrokes to land cleanly. Always force BURST 1
-            // to run by flipping shmDidCredentials back to false here.
-            //
-            // Future work: fix Combo G to write to the right widget/buffer
-            // (live render-side EditWnd, not whatever +0x1A8 points to on
-            // the SidlManager-walk's pick), then re-enable the silent path.
-            if (shmDidCredentials)
-            {
-                if (loginShm != null) loginShm.SendCancelCommand(pid);
-                FileLogger.Info($"AutoLogin: SHM warmup done for PID {pid} — BURST 1 keystrokes will follow (silent path disabled until Combo G writes the rendered field)");
-                shmDidCredentials = false;
+                FileLogger.Warn($"AutoLogin: LoginCredentialsSent handler threw for PID {pid}: {ex.Message}");
             }
 
             // ── Wait for server response (no focus-faking) ──
@@ -1384,7 +1434,7 @@ public class AutoLoginManager
             if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, true);
             PostR(writer, pid, hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
             PostR(writer, pid, hwnd, (uint)NativeMethods.WM_CHAR, (IntPtr)c, MakeKeyDownLParam(scan));
-            Thread.Sleep(80);
+            Thread.Sleep(25); // was 80ms — tightened 2026-04-25 to make typing feel paste-like
 
             // Key up (both layers)
             if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, false);
@@ -1393,11 +1443,11 @@ public class AutoLoginManager
             // Shift up
             if (needShift)
             {
-                Thread.Sleep(40);
+                Thread.Sleep(15); // was 40ms
                 if (shiftScan > 0 && shiftScan < 256) writer.SetKey(pid, (byte)shiftScan, false);
                 PostR(writer, pid, hwnd, NativeMethods.WM_KEYUP, (IntPtr)0x10, MakeKeyUpLParam(shiftScan));
             }
-            Thread.Sleep(50);
+            Thread.Sleep(15); // was 50ms — full per-char now ~40ms vs ~130ms (3x faster)
         }
     }
 

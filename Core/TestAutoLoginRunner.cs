@@ -109,6 +109,11 @@ public static class TestAutoLoginRunner
         Console.WriteLine($"[test-autologin] Log baseline offset: {logBaseline} bytes at {logPath}");
 
         // Build AutoLoginManager with di8 injection wired.
+        // NOTE: no SetUiContext() call — Console-only test runner, no WinForms message
+        // pump. All event handlers below MUST be thread-safe (events fire synchronously
+        // on background login threads when _syncContext is null). Production uses
+        // TrayManager.Initialize() to install the WindowsFormsSynchronizationContext
+        // so handlers marshal to the UI thread instead.
         var autoLogin = new AutoLoginManager(config);
         autoLogin.PreResumeCallback = sp => InjectDi8(sp);
 

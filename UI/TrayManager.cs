@@ -29,7 +29,7 @@ public class TrayManager : IDisposable
     private readonly AffinityManager _affinityManager;
     private readonly LaunchManager _launchManager;
     private readonly AutoLoginManager _autoLoginManager;
-    private readonly SynchronizationContext? _uiContext;
+    private SynchronizationContext? _uiContext;
 
     private NotifyIcon? _trayIcon;
     private ContextMenuStrip? _contextMenu;
@@ -108,28 +108,48 @@ public class TrayManager : IDisposable
             _slimTitlebarGuard?.Stop();
             FileLogger.Info("AutoLogin: paused slim titlebar guard timer");
         };
+        _autoLoginManager.LoginCredentialsSent += (_, pid) =>
+        {
+            // BURST 1 done — apply cosmetic work NOW (T+~7s) instead of
+            // waiting for LoginComplete (T+~30s after charselect-ready).
+            // Guard timer stays paused; LoginComplete resumes it once the
+            // charselect-load transition settles.
+            FileLogger.Info($"AutoLogin: BURST 1 done for PID {pid} — applying deferred cosmetic work early");
+            ApplyDeferredCosmetics(pid);
+        };
         _autoLoginManager.LoginComplete += (_, pid) =>
         {
             // Resume guard timer
             _slimTitlebarGuard?.Start();
             FileLogger.Info("AutoLogin: resumed slim titlebar guard timer");
 
-            // Now that login is done, apply everything that was deferred
-            var client = _processManager.Clients.FirstOrDefault(c => c.ProcessId == pid);
-            if (client == null) return;
-
-            if (_config.Layout.SlimTitlebar)
-            {
-                _windowManager.ApplySlimTitlebar(
-                    client.WindowHandle,
-                    _windowManager.GetTargetMonitorBounds(),
-                    _config.Layout.TitlebarOffset);
-            }
-            // Hook DLL injection is now handled pre-resume (CREATE_SUSPENDED),
-            // so no need to inject here. Just ensure config is fresh.
-            if (_injectedPids.Contains(pid))
-                UpdateHookConfigForPid(pid);
+            // Re-apply (idempotent) — covers the case where LoginCredentialsSent
+            // didn't fire (early abort) or EQ fought back during the charselect-
+            // load transition and drifted off slim-titlebar.
+            ApplyDeferredCosmetics(pid);
         };
+    }
+
+    /// <summary>Apply the cosmetic work that was deferred during the auto-login
+    /// sequence — slim-titlebar + hook config refresh. Idempotent: safe to call
+    /// from both LoginCredentialsSent (early, T+~7s) and LoginComplete (late,
+    /// T+~30s). Caller controls the slim-titlebar guard lifecycle separately.</summary>
+    private void ApplyDeferredCosmetics(int pid)
+    {
+        var client = _processManager.Clients.FirstOrDefault(c => c.ProcessId == pid);
+        if (client == null) return;
+
+        if (_config.Layout.SlimTitlebar)
+        {
+            _windowManager.ApplySlimTitlebar(
+                client.WindowHandle,
+                _windowManager.GetTargetMonitorBounds(),
+                _config.Layout.TitlebarOffset);
+        }
+        // Hook DLL injection is handled pre-resume (CREATE_SUSPENDED) — only
+        // refresh shared-memory config (position + title template).
+        if (_injectedPids.Contains(pid))
+            UpdateHookConfigForPid(pid);
     }
 
     public void Initialize()
@@ -143,6 +163,27 @@ public class TrayManager : IDisposable
             Text = "EQSwitch - 0 clients",
             Visible = true
         };
+
+        // Late-bind the WinForms UI sync context. NotifyIcon's hidden message-only
+        // window forces WindowsFormsSynchronizationContext to be installed on this
+        // thread (if it wasn't already by Application.Run or earlier WinForms work).
+        // Constructor-time capture (TrayManager ctor + AutoLoginManager ctor) may
+        // have grabbed null on a normal launch path, leaving background-thread
+        // events firing synchronously and racing _injectedPids and other UI state.
+        if (SynchronizationContext.Current is not WindowsFormsSynchronizationContext)
+        {
+            SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+        }
+        _uiContext = SynchronizationContext.Current;
+        if (_uiContext != null)
+        {
+            _autoLoginManager.SetUiContext(_uiContext);
+            FileLogger.Info($"TrayManager: UI sync context installed ({_uiContext.GetType().Name})");
+        }
+        else
+        {
+            FileLogger.Warn("TrayManager: SynchronizationContext.Current still null after install attempt — events may race");
+        }
 
         // Assign context menu only on right-click, remove on left/middle to prevent
         // Windows from showing the menu and stealing focus from click detection
@@ -1881,11 +1922,29 @@ public class TrayManager : IDisposable
     private void FireTeam(int teamIndex)
     {
         var (slots, teamEntersWorld, teamName) = ResolveTeamConfig(teamIndex);
+        int delayMs = Math.Max(_config.Launch.LaunchDelayMs, 500);
+
+        // Honor Settings -> Video -> Client Launch Delay between team slots so
+        // concurrent autologins don't hit Dalaya's auth gate within ~ms of
+        // each other (caused "connection error" rejections in dual-box test
+        // 2026-04-25 — both BURST 1 submits landed within 31ms). Run on a
+        // background thread to keep the UI responsive — each LoginAndEnter*
+        // call is itself non-blocking (Task.Run inside).
+        _ = Task.Run(async () =>
+        {
 
         int fired = 0;
+        bool first = true;
         foreach (var (user, slotLabel) in slots)
         {
             if (string.IsNullOrEmpty(user)) continue;
+
+            if (!first)
+            {
+                FileLogger.Info($"FireTeam({teamIndex}): waiting {delayMs}ms before next slot (LaunchDelayMs)");
+                await Task.Delay(delayMs);
+            }
+            first = false;
 
             // Character-first resolve (preferred team-slot content).
             var character = _config.FindCharacterByName(user);
@@ -1919,9 +1978,14 @@ public class TrayManager : IDisposable
         }
         if (fired == 0)
         {
-            ShowWarning($"No accounts assigned to {teamName} \u2014 configure in Settings \u2192 Accounts");
             FileLogger.Warn($"FireTeam: {teamName} has no slots assigned");
+            // ShowWarning -> DeferToNextTick -> WinForms.Timer construction MUST
+            // happen on the UI thread (timer's hidden window owns the message
+            // pump). We're inside Task.Run on threadpool \u2014 marshal explicitly.
+            var capturedTeamName = teamName;
+            _uiContext?.Post(_ => ShowWarning($"No accounts assigned to {capturedTeamName} \u2014 configure in Settings \u2192 Accounts"), null);
         }
+        });  // end Task.Run
     }
 
     // ─── Config Reload ─────────────────────────────────────────────
