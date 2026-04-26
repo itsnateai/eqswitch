@@ -17,6 +17,7 @@
 #include "login_state_machine.h"
 #include "eqmain_cxstr.h"
 #include "eqmain_widgets.h"
+#include "eqmain_widgets_mq2style.h"  // ITER 12: MQ2-style structural lookup
 #include "eqmain_offsets.h"
 
 void DI8Log(const char *fmt, ...);
@@ -106,6 +107,14 @@ static void InvalidateWidgets() {
     g_pEnterWorldBtn = nullptr;
     g_widgetsCached = false;
     g_connectButtonRetries = 0;  // Fix Native C1 (agent verify): reset in lockstep with widget-ptr nulls
+    // ITER 12 v4 (2026-04-26): the v3 ResetPasswordCache() pair-call was REVERTED.
+    // It looked right on paper (Agent #2 secondary-latent flag), but in practice
+    // InvalidateWidgets fires on EVERY gameState transition (line 213), including
+    // login→server-select→char-select. Nuking g_cachedXMLIndex mid-flow forced
+    // every subsequent BURST keystroke through a slow ResolvePasswordXMLIndex
+    // bootstrap. Revert to v2's behavior — the SM-layer cache (g_pPasswordEdit)
+    // and native cache (g_cachedWidgetPtr) intentionally diverge; native re-validates
+    // on every call so a stale ptr is benign.
 }
 
 // ─── Widget discovery ──────────────────────────────────────────
@@ -396,7 +405,28 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         // advancement and skipped its keystroke fallback. Verified via
         // eqswitch-dinput8-{pid}.log on 2026-04-25 dual-box test.
         if (!g_pConnectButton) {
-            void *pCandidate = MQ2Bridge::FindWindowByName("LOGIN_ConnectButton");
+            // ITER 12 v2 (toggle on by default 2026-04-26 PM): try MQ2-style
+            // structural traversal first (~few ms), fall back to legacy
+            // heap-cross-ref scan (~3.2s) on miss. The outer `!g_pConnectButton`
+            // check is the cache-first guard — MQ2-style only runs when
+            // cache cold. With kMQ2StyleWidgetLookup == false the iter-12
+            // path is skipped entirely and behavior matches v3.12.0.
+            void *pCandidate = nullptr;
+            if (EQMainWidgetsMQ2::kMQ2StyleWidgetLookup) {
+                pCandidate = EQMainWidgetsMQ2::FindChildByName("connect", "LOGIN_ConnectButton");
+                if (pCandidate && EQMainOffsets::IsEQMainButtonWidget(pCandidate)) {
+                    DI8Log("login_sm: LOGIN_ConnectButton resolved via MQ2-style @ %p "
+                           "(skipping legacy heap-cross-ref scan)", pCandidate);
+                } else {
+                    if (pCandidate) {
+                        DI8Log("login_sm: MQ2-style returned %p but failed IsEQMainButtonWidget; "
+                               "falling back to legacy FindWindowByName", pCandidate);
+                    }
+                    pCandidate = MQ2Bridge::FindWindowByName("LOGIN_ConnectButton");
+                }
+            } else {
+                pCandidate = MQ2Bridge::FindWindowByName("LOGIN_ConnectButton");
+            }
             if (pCandidate && EQMainOffsets::IsEQMainButtonWidget(pCandidate)) {
                 g_pConnectButton = pCandidate;
                 g_connectButtonRetries = 0;

@@ -110,6 +110,17 @@ void ResetPasswordCache();
 // appear and disappear as screens transition). Bounded — caps page
 // iteration to keep the call under a few hundred milliseconds even on
 // fragmented address spaces.
+//
+// ITER 12: this wrapper tries the MQ2-style structural traversal first
+// (`EQMainWidgetsMQ2::FindChildByName("connect", "LOGIN_PasswordEdit")` +
+// vtable validation). On null/invalid, falls back to FindLivePasswordCEditWnd_Legacy.
+// Per memory/feedback_eqswitch_native_anchor.md the legacy XMLIndex path
+// stays in place for at least 2 weeks of production validation before
+// being a candidate for removal.
 void *FindLivePasswordCEditWnd();
+
+// Original ITER 11 implementation — XMLIndex-keyed heap scan with cache.
+// Kept as the fallback for the ITER 12 MQ2-style wrapper.
+void *FindLivePasswordCEditWnd_Legacy();
 
 } // namespace EQMainWidgets

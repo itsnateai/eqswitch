@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "eqmain_widgets.h"
+#include "eqmain_widgets_mq2style.h"  // ITER 12: MQ2-style structural lookup
 #include "eqmain_offsets.h"
 #include "mq2_bridge.h"
 
@@ -278,7 +279,73 @@ void ResetPasswordCache() {
     InterlockedExchangePointer((PVOID volatile *)&g_cachedWidgetPtr, nullptr);
 }
 
+// ITER 12 v2 wrapper — cache-first, then MQ2-style on cache miss, then
+// legacy fallback. The cache check at the top kills v1's BURST starvation
+// (the v1 ran a full IterateAllWindowsPublic+heuristic on EVERY keystroke
+// before getting to the cache). Cache hit returns in ~10us; only cold-cache
+// calls pay the MQ2-style scan cost. On MQ2-style success, we update the
+// cache so subsequent calls hit fast-path.
 void *FindLivePasswordCEditWnd() {
+    // ITER 12 v3 fix (agent diagnosis 2026-04-26):
+    // The DumpTopLevelWidgetNamesOnce() call WAS at this point. Both review
+    // agents identified it as the regression root cause — the dump's
+    // synchronous IterateAllWindowsPublic + ~22 DI8Log writes (30-150ms) can
+    // fire DURING PHASE_TYPING_CREDENTIALS if the SM cache is cold, blocking
+    // the password typing thread. Removed entirely; the dump function stays
+    // defined for future opt-in diagnostic. Earlier test runs already
+    // captured the data we needed.
+
+    // 1) Cache-fast-path: re-validate g_cachedWidgetPtr inline without the
+    //    bootstrap overhead in _Legacy. This is the hot BURST keystroke
+    //    path. Mirrors the cache logic at the top of _Legacy lines 313-329.
+    uint32_t target = g_cachedXMLIndex;
+    if (target) {
+        uintptr_t eqmBase = 0;
+        uint32_t  eqmSize = 0;
+        EQMainOffsets::GetRange(&eqmBase, &eqmSize);
+        uintptr_t vtCEditWnd     = eqmBase ? eqmBase + EQMainOffsets::RVA_VTABLE_CEditWnd     : 0;
+        uintptr_t vtCEditBaseWnd = eqmBase ? eqmBase + EQMainOffsets::RVA_VTABLE_CEditBaseWnd : 0;
+        uintptr_t cached = g_cachedWidgetPtr;
+        if (cached && eqmBase) {
+            __try {
+                uintptr_t vt = *(const uintptr_t *)cached;
+                if (vt == vtCEditWnd || vt == vtCEditBaseWnd) {
+                    uint32_t xmlIdx = *(const uint32_t *)(cached + OFFSET_XMLINDEX);
+                    if (xmlIdx == target) {
+                        return (void *)cached;
+                    }
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                // stale cache — fall through
+            }
+        }
+    }
+
+    // 2) MQ2-style attempt (gated). Only reached on cache miss/cold cache.
+    if (EQMainWidgetsMQ2::kMQ2StyleWidgetLookup) {
+        void *pPwd = EQMainWidgetsMQ2::FindChildByName("connect", "LOGIN_PasswordEdit");
+        if (pPwd && EQMainOffsets::IsEQMainEditWidget(pPwd)) {
+            DI8Log("eqmain_widgets: FindLivePasswordCEditWnd — MQ2-style hit @ %p (cache cold; skipping legacy heap scan)",
+                   pPwd);
+            // Update cache so subsequent BURST keystrokes hit fast-path
+            InterlockedExchangePointer((PVOID volatile *)&g_cachedWidgetPtr, pPwd);
+            return pPwd;
+        }
+        if (pPwd) {
+            DI8Log("eqmain_widgets: FindLivePasswordCEditWnd — MQ2-style returned %p but failed "
+                   "IsEQMainEditWidget vtable check; falling back to legacy", pPwd);
+        } else {
+            DI8Log("eqmain_widgets: FindLivePasswordCEditWnd — MQ2-style returned null; "
+                   "falling back to legacy XMLIndex match");
+        }
+    }
+
+    // 3) Legacy fallback — full bootstrap (ResolvePasswordXMLIndex if cold)
+    //    + heap scan with its own cache validation.
+    return FindLivePasswordCEditWnd_Legacy();
+}
+
+void *FindLivePasswordCEditWnd_Legacy() {
     // Lazy resolve on first call — at module-load time the .sidl-derived
     // CXStr buffers don't exist yet, so resolution must wait until the
     // login UI has been fully loaded. ResolvePasswordXMLIndex is idempotent
