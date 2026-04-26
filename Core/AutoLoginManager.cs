@@ -45,6 +45,14 @@ public class AutoLoginManager
     /// doesn't inherit a stale name.</summary>
     public static void ClearBoundName(int pid) => _pidBoundName.TryRemove(pid, out _);
 
+    // Dedup set for "process N exited during login sequence" warnings.
+    // Why: callers that don't break on RefreshHandle returning IntPtr.Zero
+    // (e.g. the MQ2-bridge readiness loop) will re-enter RefreshHandle every
+    // 500ms, flooding the log with one identical warn line per tick. Run 1
+    // of the 2026-04-25 dual-box log produced 60+ duplicate lines for a
+    // single dead PID. TryAdd makes the warn fire once per (PID, lifetime).
+    private static readonly ConcurrentDictionary<int, byte> _loggedExitPids = new();
+
     /// <summary>Serializes login sequences — only one login types credentials at a time.
     /// Multiple logins are queued and run sequentially to avoid timing issues under CPU load.</summary>
     // No serialization — logins run concurrently. Focus-faking is kept to
@@ -1524,13 +1532,19 @@ public class AutoLoginManager
 
             if (hung)
             {
-                sawHung = true;
-                FileLogger.Info($"AutoLogin: EQ window hung (loading), elapsed={sw.ElapsedMilliseconds}ms");
+                // Edge-detect: log only on transition into hung. Without this,
+                // the 500ms poll interval times the ~22s charselect load
+                // produces ~44 identical lines per PID per login.
+                if (!sawHung)
+                {
+                    FileLogger.Info($"AutoLogin: EQ window hung (loading) PID {pid}, elapsed={sw.ElapsedMilliseconds}ms");
+                    sawHung = true;
+                }
             }
             else if (sawHung)
             {
                 // Was hung, now responsive — transition complete
-                FileLogger.Info($"AutoLogin: EQ responsive after loading, elapsed={sw.ElapsedMilliseconds}ms");
+                FileLogger.Info($"AutoLogin: EQ responsive after loading PID {pid}, elapsed={sw.ElapsedMilliseconds}ms");
                 Thread.Sleep(1000); // brief settle time for render
                 return RefreshHandle(pid, hwnd);
             }
@@ -1682,7 +1696,8 @@ public class AutoLoginManager
         }
         catch (ArgumentException)
         {
-            FileLogger.Warn($"AutoLogin: process {pid} exited during login sequence");
+            if (_loggedExitPids.TryAdd(pid, 0))
+                FileLogger.Warn($"AutoLogin: process {pid} exited during login sequence");
         }
 
         return IntPtr.Zero;
