@@ -58,9 +58,12 @@ public sealed class CharacterHotkeysDialog : Form
             else staleBindings.Add(b);
         }
 
+        // Tight layout matching TeamHotkeysDialog: card ends ~10px below the
+        // hint (was ~56px of dead space). Empty-state hint is 40px tall so
+        // floor card height at 82.
         int rowCount = characters.Count + staleBindings.Count;
-        int bodyHeight = 80 + rowCount * 30;
-        int formHeight = Math.Min(140 + bodyHeight, 540);
+        int cardHeight = Math.Max(82, 64 + rowCount * 30);
+        int formHeight = Math.Min(70 + cardHeight, 540);
 
         StartPosition = FormStartPosition.CenterParent;
         DarkTheme.StyleForm(this, "Character Hotkeys", new Size(460, formHeight));
@@ -69,7 +72,7 @@ public sealed class CharacterHotkeysDialog : Form
             "\uD83E\uDDD9",
             "Direct Character Hotkeys",
             DarkTheme.CardPurple,
-            10, 10, 430, bodyHeight + 30);
+            10, 10, 430, cardHeight);
 
         int cy = 32;
 
@@ -98,7 +101,7 @@ public sealed class CharacterHotkeysDialog : Form
 
             cy += 8;
             DarkTheme.AddCardHint(card,
-                "Press combo to capture. Backspace, Delete, or Escape clear. \u26A0 red = deleted target; orphan = no account linked.",
+                "Press a combo to capture. Backspace, Delete, or Escape clears.",
                 10, cy);
         }
 
@@ -179,6 +182,22 @@ public sealed class CharacterHotkeysDialog : Form
     {
         if (disposing) _hotkeyFont.Dispose();
         base.Dispose(disposing);
+    }
+
+    /// <summary>
+    /// Intercept Escape so a focused hotkey TextBox clears its value
+    /// (matching the on-screen hint) instead of triggering CancelButton
+    /// and closing the dialog. Identified by ShortcutsEnabled=false, the
+    /// distinguishing flag set in MakeHotkeyBox.
+    /// </summary>
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData == Keys.Escape && ActiveControl is TextBox tb && !tb.ShortcutsEnabled)
+        {
+            tb.Text = "";
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
     }
 
     private static void HotkeyBoxKeyDown(object? sender, KeyEventArgs e)

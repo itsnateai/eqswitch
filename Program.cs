@@ -297,7 +297,11 @@ static class Program
             if (isNewUser)
                 trayApp.OpenSettingsAfterDelay();
 
-            // Show confirmation after successful self-update (delayed so tray is ready)
+            // Show confirmation after successful self-update (delayed so tray is ready).
+            // Intentionally calls FloatingTooltip.Show directly — bypasses
+            // TrayManager.ShowBalloon and the AppConfig.ShowTooltips toggle so
+            // the post-update confirmation always surfaces, even when the user
+            // has muted status tooltips.
             if (isAfterUpdate)
             {
                 var postUpdateTimer = new System.Windows.Forms.Timer { Interval = 1500 };

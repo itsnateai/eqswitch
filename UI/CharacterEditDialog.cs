@@ -40,9 +40,23 @@ public sealed class CharacterEditDialog : Form
         _existingClassHint = existing?.ClassHint ?? "";
 
         StartPosition = FormStartPosition.CenterParent;
+        // Tight layout: form ClientSize matches actual content + button row.
+        // Inputs are 200px (was 275); Notes textarea also 200x80. Card height
+        // computed from row count so the bottom doesn't leak empty space.
+        const int formW = 360;
+        const int cardW = 340;
+        const int L = 10, I = 105;
+        const int inputW = 200;
+
+        // Content cy: 32 + Name 30 + Account 30 + Slot 30 + DisplayLabel 30 + Notes 90
+        int contentH = 32 + 30 * 4 + 90;
+        int cardH = contentH + 6;
+        int btnY = 10 + cardH + 12;
+        int formH = btnY + 30 + 12;
+
         DarkTheme.StyleForm(this,
             _isEdit ? $"Edit Character \u2014 {existing!.Name}" : "Add Character",
-            new Size(440, 400));
+            new Size(formW, formH));
 
         // Guard: can't create a Character without Accounts.
         if (availableAccounts.Count == 0)
@@ -63,18 +77,17 @@ public sealed class CharacterEditDialog : Form
 
         var card = DarkTheme.MakeCard(this, "\uD83E\uDDD9",
             _isEdit ? "Edit Character" : "New Character",
-            DarkTheme.CardPurple, 10, 10, 410, 335);
+            DarkTheme.CardPurple, 10, 10, cardW, cardH);
 
-        const int L = 10, I = 115;
         int cy = 32;
 
         DarkTheme.AddCardLabel(card, "Name:", L, cy + 4);
-        _txtName = DarkTheme.AddCardTextBox(card, I, cy, 275);
+        _txtName = DarkTheme.AddCardTextBox(card, I, cy, inputW);
         _txtName.Text = existing?.Name ?? "";
         cy += 30;
 
         DarkTheme.AddCardLabel(card, "Account:", L, cy + 4);
-        _cboAccount = DarkTheme.AddCardComboBox(card, I, cy, 275, Array.Empty<string>());
+        _cboAccount = DarkTheme.AddCardComboBox(card, I, cy, inputW, Array.Empty<string>());
         _cboAccount.DropDownStyle = ComboBoxStyle.DropDownList;
         _cboAccount.DisplayMember = nameof(Account.Name);
         foreach (var a in availableAccounts)
@@ -99,7 +112,7 @@ public sealed class CharacterEditDialog : Form
         cy += 30;
 
         DarkTheme.AddCardLabel(card, "Display Label:", L, cy + 4);
-        _txtDisplayLabel = DarkTheme.AddCardTextBox(card, I, cy, 275);
+        _txtDisplayLabel = DarkTheme.AddCardTextBox(card, I, cy, inputW);
         _txtDisplayLabel.Text = existing?.DisplayLabel ?? "";
         cy += 30;
 
@@ -107,7 +120,7 @@ public sealed class CharacterEditDialog : Form
         _txtNotes = new TextBox
         {
             Location = new Point(I, cy),
-            Size = new Size(275, 80),
+            Size = new Size(inputW, 80),
             Multiline = true,
             ScrollBars = ScrollBars.Vertical,
             AcceptsReturn = true,
@@ -119,12 +132,14 @@ public sealed class CharacterEditDialog : Form
         card.Controls.Add(_txtNotes);
         cy += 90;
 
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 230, 355);
+        int btnSaveX = formW - 200;
+        int btnCancelX = formW - 100;
+        var btnSave = DarkTheme.MakePrimaryButton("Save", btnSaveX, btnY);
         btnSave.Click += (_, _) => OnSaveClicked(otherCharacters);
         Controls.Add(btnSave);
         AcceptButton = btnSave;
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 330, 355);
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, btnCancelX, btnY);
         btnCancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         Controls.Add(btnCancel);
         CancelButton = btnCancel;
