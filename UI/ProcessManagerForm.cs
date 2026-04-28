@@ -16,6 +16,13 @@ namespace EQSwitch.UI;
 /// </summary>
 public class ProcessManagerForm : Form
 {
+    // Remembers last-open location across opens within a session. Static so
+    // all instances share it; falls back to CenterScreen on first open
+    // (this is a top-level utility form, not a parent-modal dialog).
+    // Process lifetime only; cross-session persistence would need config.
+    private static Point? _lastLocation;
+
+
     private const int RefreshIntervalMs = 2000;
     private const int FormW = 600;
     private const int GridW = 560;
@@ -84,7 +91,17 @@ public class ProcessManagerForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
-        StartPosition = FormStartPosition.CenterScreen;
+        // Restore last-open position if available; otherwise CenterScreen.
+        if (_lastLocation.HasValue)
+        {
+            StartPosition = FormStartPosition.Manual;
+            Location = _lastLocation.Value;
+        }
+        else
+        {
+            StartPosition = FormStartPosition.CenterScreen;
+        }
+        FormClosing += (_, _) => _lastLocation = Location;
         BackColor = DarkTheme.BgDark;
         ForeColor = DarkTheme.FgWhite;
         Font = DarkTheme.FontUI9;

@@ -899,7 +899,16 @@ public class TrayManager : IDisposable
                 // ShortcutKeyDisplayString is the WinForms idiom for the hotkey column —
                 // renders right-aligned with proper padding. Applied to every menu item
                 // with a hotkey (root, submenu, video) for visual consistency.
-                var label = $"\uD83D\uDC64  {captured.EffectiveLabel}";
+                // Accounts = login username (per v4 split spec). Account.Name is a
+                // user-editable label and on legacy-migrated rows often holds the
+                // character name, colliding with the Characters submenu. Show Username
+                // directly so the Accounts menu reflects the unique login identity;
+                // tooltip already shows Username@Server. Fallback to EffectiveLabel
+                // only if Username is empty (defensive \u2014 shouldn't happen post-split).
+                var displayName = string.IsNullOrEmpty(captured.Username)
+                    ? captured.EffectiveLabel
+                    : captured.Username;
+                var label = $"\uD83D\uDC64  {displayName}";
                 var item = new ToolStripMenuItem(label)
                 {
                     ToolTipText = captured.Tooltip,
@@ -1014,7 +1023,18 @@ public class TrayManager : IDisposable
             foreach (var t in populated)
             {
                 var action = t.Action;  // capture for closure
-                var label = $"\uD83D\uDE80  Auto-Login Team {t.Num}";
+                // Show what the team actually launches \u2014 slot values resolved to
+                // Character.Name first (preferred for in-game identity), then
+                // Account.Username, then raw fallback. "natedogg / acpots" beats
+                // "Auto-Login Team 1" for at-a-glance recognition. The team number
+                // stays discoverable via the hotkey display + the tooltip.
+                var slotNames = new[] { t.Slot1, t.Slot2 }
+                    .Select(ResolveTeamSlotDisplayName)
+                    .Where(s => !string.IsNullOrEmpty(s))
+                    .ToList();
+                var label = slotNames.Count > 0
+                    ? $"\uD83D\uDE80  {string.Join(" / ", slotNames)}"
+                    : $"\uD83D\uDE80  Auto-Login Team {t.Num}";
                 var tooltip = BuildTeamTooltip(t.Num);
                 var item = new ToolStripMenuItem(label)
                 {
@@ -1037,6 +1057,12 @@ public class TrayManager : IDisposable
         _contextMenu?.Dispose();
         _contextMenu = new ContextMenuStrip();
         _contextMenu.Renderer = new DarkMenuRenderer();
+        // Gate menu hover tooltips on the same Show Tooltips toggle that
+        // gates balloon toasts (Settings → Video → Preferences). Lets users
+        // hide the helpful-on-first-run hover hints once they know the menu.
+        // ContextMenuStrip rebuilds on every ReloadConfig so the toggle takes
+        // effect immediately on Save in Settings.
+        _contextMenu.ShowItemToolTips = _config.ShowTooltips;
         _contextMenu.Closed += (_, _) =>
         {
             if (_clientMenuDirty) UpdateClientMenu();
@@ -1838,26 +1864,23 @@ public class TrayManager : IDisposable
     /// <summary>
     /// Resolves <c>_config.Team{N}*</c> fields into the tuple shape FireTeam needs.
     /// Pure function over <c>_config</c>; called from FireTeam and from BuildTeamsSubmenu
-    /// tooltip rendering.
+    /// tooltip rendering. Per-team Enter World flag was removed — destination is now
+    /// dictated by slot kind alone (Character → enters world, Account → charselect).
     /// </summary>
-    private (IReadOnlyList<(string user, string slotLabel)> slots, bool autoEnter, string teamName)
+    private (IReadOnlyList<(string user, string slotLabel)> slots, string teamName)
         ResolveTeamConfig(int teamIndex)
     {
         if (teamIndex < 1 || teamIndex > 4)
         {
             FileLogger.Warn($"ResolveTeamConfig: teamIndex {teamIndex} out of range (expected 1-4)");
-            return (Array.Empty<(string, string)>(), false, $"Team {teamIndex}");
+            return (Array.Empty<(string, string)>(), $"Team {teamIndex}");
         }
         return teamIndex switch
         {
-            1 => (new[] { (_config.Team1Account1, "Team 1 Slot 1"), (_config.Team1Account2, "Team 1 Slot 2") },
-                  _config.Team1AutoEnter, "Team 1"),
-            2 => (new[] { (_config.Team2Account1, "Team 2 Slot 1"), (_config.Team2Account2, "Team 2 Slot 2") },
-                  _config.Team2AutoEnter, "Team 2"),
-            3 => (new[] { (_config.Team3Account1, "Team 3 Slot 1"), (_config.Team3Account2, "Team 3 Slot 2") },
-                  _config.Team3AutoEnter, "Team 3"),
-            4 => (new[] { (_config.Team4Account1, "Team 4 Slot 1"), (_config.Team4Account2, "Team 4 Slot 2") },
-                  _config.Team4AutoEnter, "Team 4"),
+            1 => (new[] { (_config.Team1Account1, "Team 1 Slot 1"), (_config.Team1Account2, "Team 1 Slot 2") }, "Team 1"),
+            2 => (new[] { (_config.Team2Account1, "Team 2 Slot 1"), (_config.Team2Account2, "Team 2 Slot 2") }, "Team 2"),
+            3 => (new[] { (_config.Team3Account1, "Team 3 Slot 1"), (_config.Team3Account2, "Team 3 Slot 2") }, "Team 3"),
+            4 => (new[] { (_config.Team4Account1, "Team 4 Slot 1"), (_config.Team4Account2, "Team 4 Slot 2") }, "Team 4"),
             _ => throw new UnreachableException($"teamIndex {teamIndex} passed guard but hit switch default")
         };
     }
@@ -1878,12 +1901,29 @@ public class TrayManager : IDisposable
     }
 
     /// <summary>
-    /// Team tray-item tooltip: multi-line per-slot preview of what each slot resolves to,
-    /// plus "[force enter world]" hint when the team-level AutoEnter override is true.
+    /// Resolve a team slot's stored string (Character.Name or Account.Name) to the
+    /// display name used in the Teams submenu label. Character.Name preferred —
+    /// Username fallback for Account-only slots. Returns "" for empty slots so the
+    /// caller can filter. Mirrors BuildTeamTooltip's resolution but compact (no arrows).
+    /// </summary>
+    private string ResolveTeamSlotDisplayName(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return "";
+        var ch = _config.FindCharacterByName(raw);
+        if (ch != null) return ch.Name;
+        var acc = _config.FindAccountByName(raw);
+        if (acc != null && !string.IsNullOrEmpty(acc.Username)) return acc.Username;
+        return raw;
+    }
+
+    /// <summary>
+    /// Team tray-item tooltip: multi-line per-slot preview of what each slot resolves to.
+    /// Destination is per-slot (Character → enters world, Account → charselect) — no
+    /// team-level override anymore.
     /// </summary>
     private string BuildTeamTooltip(int teamIndex)
     {
-        var (slots, autoEnter, _) = ResolveTeamConfig(teamIndex);
+        var (slots, _) = ResolveTeamConfig(teamIndex);
         string ResolveForTooltip(string raw)
         {
             if (string.IsNullOrEmpty(raw)) return "(empty)";
@@ -1896,7 +1936,6 @@ public class TrayManager : IDisposable
         var lines = new List<string>();
         for (int i = 0; i < slots.Count; i++)
             lines.Add($"Slot {i + 1}: {ResolveForTooltip(slots[i].user)}");
-        if (autoEnter) lines.Add("[force enter world]");
         return string.Join("\r\n", lines);
     }
 
@@ -1905,17 +1944,11 @@ public class TrayManager : IDisposable
     /// discard-assignment — NO await inside the foreach loop). Preserves v3 timing
     /// semantics around _activeLoginPids — plan line 371 is emphatic.
     ///
-    /// Team.AutoEnter flag is a BINARY per-team toggle (clarified by user 2026-04-15):
-    ///   true  = force enter world on all slots (the default, for Character teams)
-    ///   false = force charselect on all slots (for crafter teams — "Enter World" off)
-    ///
-    /// Dropdown semantics stay sane — users fill team slots with Characters (preferred)
-    /// or Accounts, then toggle the "Enter World" checkbox in Autologin Teams dialog to
-    /// control destination. No hidden "Account-only means charselect" behavior — the flag
-    /// alone decides intent.
-    ///
-    /// Account-only slots with AutoEnter=true still can only reach charselect (AutoLoginManager
-    /// has no character to select); we log the mismatch and degrade gracefully.
+    /// Destination is per-slot, dictated by kind (no team-level override):
+    ///   Character slot → LoginAndEnterWorld → enters game world.
+    ///   Account slot   → LoginToCharselect  → stops at character select.
+    /// Mixed teams just get a mix (Character enters, Account stops). Want a
+    /// character to stop at charselect? Put the backing Account in that slot.
     ///
     /// This method bypasses the legacy ExecuteQuickLogin path (which routed through the
     /// [Obsolete] LoginAccount wrapper). ExecuteQuickLogin is now dead code — Phase 5
@@ -1923,7 +1956,7 @@ public class TrayManager : IDisposable
     /// </summary>
     private void FireTeam(int teamIndex)
     {
-        var (slots, teamEntersWorld, teamName) = ResolveTeamConfig(teamIndex);
+        var (slots, teamName) = ResolveTeamConfig(teamIndex);
         int delayMs = Math.Max(_config.Launch.LaunchDelayMs, 500);
 
         // Honor Settings -> Video -> Client Launch Delay between team slots so
@@ -1954,24 +1987,18 @@ public class TrayManager : IDisposable
             var character = _config.FindCharacterByName(user);
             if (character != null)
             {
-                // teamEntersWorld=true  -> null override -> Character's own default (enter world)
-                // teamEntersWorld=false -> false override -> stop at charselect
-                bool? enterWorldOverride = teamEntersWorld ? null : false;
-                var intent = teamEntersWorld ? "enter world" : "charselect (team Enter World off)";
-                FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{user}' \u2192 Character '{character.EffectiveLabel}' \u2192 {intent}");
+                // Always null override -> Character's default behavior (enter world).
+                bool? enterWorldOverride = null;
+                FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{user}' \u2192 Character '{character.EffectiveLabel}' \u2192 enter world");
                 _ = _autoLoginManager.LoginAndEnterWorld(character, enterWorldOverride);  // PARALLEL — no await
                 fired++;
                 continue;
             }
 
-            // Account-only slot. Reaches charselect regardless of flag — can't enter world
-            // without a character target. teamEntersWorld=true logs the mismatch.
+            // Account-only slot. Always charselect — no character target to enter world with.
             var account = _config.FindAccountByName(user);
             if (account != null)
             {
-                if (teamEntersWorld)
-                    FileLogger.Warn($"FireTeam({teamIndex}): {slotLabel} '{user}' is Account-only but team Enter World is on — charselect is the only reachable state (no Character target for this slot)");
-                else
                     FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{user}' \u2192 Account '{account.EffectiveLabel}' \u2192 charselect");
                 _ = _autoLoginManager.LoginToCharselect(account);  // PARALLEL — no await
                 fired++;
@@ -2093,10 +2120,8 @@ public class TrayManager : IDisposable
         _config.Team3Account2 = newConfig.Team3Account2;
         _config.Team4Account1 = newConfig.Team4Account1;
         _config.Team4Account2 = newConfig.Team4Account2;
-        _config.Team1AutoEnter = newConfig.Team1AutoEnter;
-        _config.Team2AutoEnter = newConfig.Team2AutoEnter;
-        _config.Team3AutoEnter = newConfig.Team3AutoEnter;
-        _config.Team4AutoEnter = newConfig.Team4AutoEnter;
+        // Team{N}AutoEnter removed — destination dictated by slot kind (Character → enter world,
+        // Account → charselect). No per-team override anymore.
         _config.AutoEnterWorld = newConfig.AutoEnterWorld;
         _config.LoginScreenDelayMs = newConfig.LoginScreenDelayMs;
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;

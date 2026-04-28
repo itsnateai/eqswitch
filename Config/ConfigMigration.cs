@@ -164,6 +164,9 @@ public static class ConfigMigration
             if (values.TryGetValue("GINA_PATH", out var ginaPath))
                 config.GinaPath = ginaPath;
 
+            if (values.TryGetValue("GAMPARSE_PATH", out var gamparsePath))
+                config.GamparsePath = gamparsePath;
+
             if (values.TryGetValue("NOTES_FILE", out var notesFile))
                 config.NotesPath = notesFile;
 

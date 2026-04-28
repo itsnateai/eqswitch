@@ -19,6 +19,11 @@ namespace EQSwitch.UI;
 /// </summary>
 public sealed class AccountHotkeysDialog : Form
 {
+    // Remembers last-open location across opens within a session. Static so all
+    // instances share it; falls back to CenterParent on first open. Process
+    // lifetime only — cross-session persistence would need config storage.
+    private static Point? _lastLocation;
+
     private readonly IReadOnlyList<Account> _accounts;
     private readonly List<(string TargetName, TextBox HotkeyBox)> _liveRows = new();
     private readonly List<(string TargetName, TextBox HotkeyBox, ComboBox RebindCombo)> _staleRows = new();
@@ -71,11 +76,25 @@ public sealed class AccountHotkeysDialog : Form
         // Tight layout matching TeamHotkeysDialog: card ends ~10px below the
         // hint (was ~56px of dead space). Empty-state hint is 40px tall so
         // floor card height at 82.
+        // +24px overhead reserves a row at the top of the card for the
+        // "Will load to Character Select" intent hint (only shown in the
+        // populated branch — the empty-state branch has its own message).
         int rowCount = accounts.Count + staleBindings.Count;
-        int cardHeight = Math.Max(82, 64 + rowCount * 30);
+        bool showIntentHint = rowCount > 0;
+        int cardHeight = Math.Max(82, 64 + rowCount * 30 + (showIntentHint ? 24 : 0));
         int formHeight = Math.Min(70 + cardHeight, 540);
 
-        StartPosition = FormStartPosition.CenterParent;
+        // Restore last-open position if available; otherwise center on parent.
+        if (_lastLocation.HasValue)
+        {
+            StartPosition = FormStartPosition.Manual;
+            Location = _lastLocation.Value;
+        }
+        else
+        {
+            StartPosition = FormStartPosition.CenterParent;
+        }
+        FormClosing += (_, _) => _lastLocation = Location;
         DarkTheme.StyleForm(this, "Account Hotkeys", new Size(460, formHeight));
 
         var card = DarkTheme.MakeCard(this,
@@ -95,6 +114,14 @@ public sealed class AccountHotkeysDialog : Form
         }
         else
         {
+            // Intent hint: tell the user what these account-level hotkeys do.
+            // Account hotkeys log in but stop at character select — distinct
+            // from Character hotkeys which auto-enter-world.
+            DarkTheme.AddCardHint(card,
+                "Will load to Character Select",
+                10, cy);
+            cy += 24;
+
             // Stale rows first (red, with Rebind dropdown).
             foreach (var stale in staleBindings.OrderBy(b => b.TargetName, StringComparer.Ordinal))
             {
