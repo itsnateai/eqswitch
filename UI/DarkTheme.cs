@@ -364,8 +364,11 @@ public static class DarkTheme
         form.ClientSize = size;
         form.FormBorderStyle = FormBorderStyle.FixedDialog;
         form.MaximizeBox = false;
-        // Only override if caller hasn't already set CenterParent (dialogs need it)
-        if (form.StartPosition != FormStartPosition.CenterParent)
+        // Preserve caller's choice if they set CenterParent (modal dialogs) or
+        // Manual (e.g. position-memory dialogs that restored Location from a
+        // saved state). Otherwise default to CenterScreen.
+        if (form.StartPosition != FormStartPosition.CenterParent
+            && form.StartPosition != FormStartPosition.Manual)
             form.StartPosition = FormStartPosition.CenterScreen;
         form.WindowState = FormWindowState.Normal;
         form.ShowInTaskbar = true;

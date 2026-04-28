@@ -139,6 +139,32 @@ public static class FileOperations
         }
     }
 
+    public static void OpenGamparse(AppConfig config, Action<string> showBalloon, Action? openPathsTab = null)
+    {
+        if (string.IsNullOrEmpty(config.GamparsePath) || !File.Exists(config.GamparsePath))
+        {
+            if (openPathsTab != null)
+                openPathsTab();
+            else
+                showBalloon("Gamparse path not configured or file not found.\nSet it in Settings.");
+            return;
+        }
+
+        try
+        {
+            using var proc = Process.Start(new ProcessStartInfo
+            {
+                FileName = config.GamparsePath,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Warn($"OpenGamparse failed: {ex.Message}");
+            showBalloon($"Failed to launch Gamparse: {ex.Message}");
+        }
+    }
+
     public static void OpenNotes(AppConfig config, Action<string> showBalloon)
     {
         var notesPath = config.NotesPath;
@@ -201,8 +227,8 @@ public static class FileOperations
         var archiveDir = Path.Combine(logsDir, "archive");
         int thresholdCopy = thresholdMB;
 
-        // Run on background thread so large files don't freeze the UI
-        showBalloon("Trimming log files...");
+        // Run on background thread so large files don't freeze the UI.
+        // No pre-work popup — only the result MessageBox at completion.
         Task.Run(() =>
         {
             int trimmed = 0;

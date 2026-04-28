@@ -43,14 +43,18 @@ public class UpdateDialog : Form
 
     public UpdateDialog()
     {
-        DarkTheme.StyleForm(this, "EQSwitch — Update", new Size(420, 210));
+        // Compact dialog: 320x152 with symmetric 20px top/bottom pads. Button
+        // block (Upgrade 110 + 15gap + Cancel 80 = 205) starts at x=57 so it
+        // centers on the form's x=160 axis — visually aligned under the
+        // MiddleCenter-aligned status/detail labels.
+        DarkTheme.StyleForm(this, "EQSwitch — Update", new Size(320, 152));
         MinimizeBox = false;
 
         _lblStatus = new Label
         {
             Text = "Checking GitHub for new version...",
             Location = new Point(20, 20),
-            Size = new Size(370, 24),
+            Size = new Size(280, 24),
             ForeColor = DarkTheme.FgWhite,
             Font = DarkTheme.FontSemibold95,
             TextAlign = ContentAlignment.MiddleCenter
@@ -61,7 +65,7 @@ public class UpdateDialog : Form
         {
             Text = "",
             Location = new Point(20, 48),
-            Size = new Size(370, 20),
+            Size = new Size(280, 20),
             ForeColor = DarkTheme.FgDimGray,
             Font = DarkTheme.FontUI75Italic,
             TextAlign = ContentAlignment.MiddleCenter
@@ -71,28 +75,28 @@ public class UpdateDialog : Form
         // Custom dark progress bar — two nested panels
         _progressOuter = new Panel
         {
-            Location = new Point(30, 80),
-            Size = new Size(350, 20),
+            Location = new Point(30, 78),
+            Size = new Size(260, 18),
             BackColor = DarkTheme.BgInput,
             BorderStyle = BorderStyle.None
         };
         _progressFill = new Panel
         {
             Location = new Point(0, 0),
-            Size = new Size(0, 20),
+            Size = new Size(0, 18),
             BackColor = DarkTheme.AccentGreen
         };
         _progressOuter.Controls.Add(_progressFill);
         Controls.Add(_progressOuter);
 
-        // Buttons
-        _btnAction = DarkTheme.MakePrimaryButton("Upgrade Now", 170, 120);
+        // Buttons — block centered on form's x=160 axis (block width 205, x=57..262)
+        _btnAction = DarkTheme.MakePrimaryButton("Upgrade Now", 57, 100);
         _btnAction.Size = new Size(110, 32);
         _btnAction.Visible = false;
         _btnAction.Click += OnActionClick;
         Controls.Add(_btnAction);
 
-        _btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 295, 120);
+        _btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 182, 100);
         _btnCancel.Size = new Size(80, 32);
         _btnCancel.Click += (_, _) =>
         {
@@ -111,7 +115,7 @@ public class UpdateDialog : Form
             if (_marqueePos + barW >= _progressOuter.Width) _marqueeForward = false;
             if (_marqueePos <= 0) _marqueeForward = true;
             _progressFill.Location = new Point(_marqueePos, 0);
-            _progressFill.Size = new Size(barW, 20);
+            _progressFill.Size = new Size(barW, 18);
         };
 
         Shown += async (_, _) => await CheckForUpdateAsync();
@@ -139,7 +143,7 @@ public class UpdateDialog : Form
             _lblDetail.Text = "Use:  winget upgrade itsnateai.EQSwitch";
             _btnAction.Visible = false;
             _btnCancel.Text = "OK";
-            _btnCancel.Location = new Point(170, 120);
+            _btnCancel.Location = new Point(120, 100);
             return;
         }
 
@@ -244,7 +248,7 @@ public class UpdateDialog : Form
     private void ShowVersionComparison()
     {
         _marqueeTimer.Stop();
-        _progressFill.Size = new Size(0, 20);
+        _progressFill.Size = new Size(0, 18);
         _progressFill.Location = new Point(0, 0);
 
         var localVersion = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
@@ -267,7 +271,7 @@ public class UpdateDialog : Form
             _lblStatus.Text = "You're on the latest version!";
             _btnAction.Visible = false;
             _btnCancel.Text = "OK";
-            _btnCancel.Location = new Point(170, 120);
+            _btnCancel.Location = new Point(120, 100);
         }
     }
 
@@ -476,7 +480,7 @@ public class UpdateDialog : Form
                 {
                     if (IsDisposed) return;
                     _progressFill.Size = new Size(
-                        (int)(_progressOuter.Width * downloaded / totalBytes), 20);
+                        (int)(_progressOuter.Width * downloaded / totalBytes), 18);
                     _lblDetail.Text = totalMB < 1
                         ? $"{pct}% ({downloaded / 1024.0:F0} / {totalBytes / 1024.0:F0} KB)"
                         : $"{pct}% ({dlMB:F0} / {totalMB:F0} MB)";
@@ -543,7 +547,7 @@ public class UpdateDialog : Form
         _lblDetail.Text = detail;
         _btnAction.Visible = false;
         _btnCancel.Text = "OK";
-        _btnCancel.Location = new Point(170, 120);
+        _btnCancel.Location = new Point(120, 100);
     }
 
     // ─── Helpers ────────────────────────────────────────────────

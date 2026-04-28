@@ -118,10 +118,9 @@ public class AppConfig
     //   false = team stops at charselect (for crafter teams)
     // Existing v4 configs that predate this semantic shift keep their stored value;
     // users with stale "false" flags on Character teams can toggle on via Autologin Teams dialog.
-    public bool Team1AutoEnter { get; set; } = true;
-    public bool Team2AutoEnter { get; set; } = true;
-    public bool Team3AutoEnter { get; set; } = true;
-    public bool Team4AutoEnter { get; set; } = true;
+    // Team{N}AutoEnter removed — destination is dictated by slot kind alone.
+    // Old configs containing these JSON keys are silently ignored by System.Text.Json
+    // (unknown members) on load; next save drops the keys from the file.
 
     // Tray Click Actions
     public TrayClickConfig TrayClick { get; set; } = new();
@@ -237,7 +236,9 @@ public class AppConfig
             FileLogger.Warn($"AppConfig.Validate: characterAliases was empty with {LegacyCharacterProfiles.Count} legacy profile(s) — re-derived {CharacterAliases.Count} alias(es)");
             mutated = true;
         }
-        TooltipDurationMs = Math.Clamp(TooltipDurationMs, 100, 30000);
+        // Range matches SettingsForm NUD (100..5000ms). On/off lives in the
+        // ShowTooltips checkbox — no zero-as-suppression backdoor here either.
+        TooltipDurationMs = Math.Clamp(TooltipDurationMs, 100, 5000);
 
         Layout.TargetMonitor = Math.Clamp(Layout.TargetMonitor, 0, 8);
         Layout.SecondaryMonitor = Math.Clamp(Layout.SecondaryMonitor, -1, 8);

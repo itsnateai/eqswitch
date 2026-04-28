@@ -14,6 +14,13 @@ namespace EQSwitch.UI;
 /// </summary>
 public class EQClientSettingsForm : Form
 {
+    // Remembers last-open location across opens within a session. Static so
+    // all instances share it; falls back to CenterScreen on first open
+    // (this is a top-level utility form, not a parent-modal dialog).
+    // Process lifetime only; cross-session persistence would need config.
+    private static Point? _lastLocation;
+
+
     private readonly AppConfig _config;
     private readonly string _iniPath;
 
@@ -66,6 +73,14 @@ public class EQClientSettingsForm : Form
 
     private void InitializeForm()
     {
+        // Restore last-open position if available; otherwise CenterScreen
+        // (StyleForm's default since this is a top-level form, not parent-modal).
+        if (_lastLocation.HasValue)
+        {
+            StartPosition = FormStartPosition.Manual;
+            Location = _lastLocation.Value;
+        }
+        FormClosing += (_, _) => _lastLocation = Location;
         DarkTheme.StyleForm(this, "EQSwitch \u2014 EQ Client Settings", new Size(750, 680));
 
         int y = 8;

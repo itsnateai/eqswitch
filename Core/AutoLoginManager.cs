@@ -783,7 +783,9 @@ public class AutoLoginManager
 
             // ── Enter World gate ──
             // Default intent from type: Character target = enter world, Account-only = stop here.
-            // enterWorldOverride (team Team{N}AutoEnter) can force the decision either way.
+            // enterWorldOverride is kept as a parameter for future extension; current
+            // callers always pass null (use the Character's default) — team-level
+            // overrides were removed when destination became kind-only.
             // An enter-world request with no Character target is logged and downgraded to charselect
             // (we have no character name/slot to select, so entering world would land on EQ's default).
             bool shouldEnterWorld = enterWorldOverride ?? (character != null);

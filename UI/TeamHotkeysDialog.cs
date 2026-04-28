@@ -18,6 +18,11 @@ namespace EQSwitch.UI;
 /// </summary>
 public sealed class TeamHotkeysDialog : Form
 {
+    // Remembers last-open location across opens within a session. Static so all
+    // instances share it; falls back to CenterParent on first open. Process
+    // lifetime only — cross-session persistence would need config storage.
+    private static Point? _lastLocation;
+
     private readonly TextBox[] _boxes = new TextBox[4];
     private readonly IReadOnlyList<(string label, string combo)> _otherHotkeys;
     // Shared font — per-control Font leaks GDI handles when WinForms disposes
@@ -29,19 +34,30 @@ public sealed class TeamHotkeysDialog : Form
 
     public TeamHotkeysDialog(
         string team1, string team2, string team3, string team4,
+        IReadOnlyList<string> teamPreviews,
         IReadOnlyList<(string label, string combo)> otherHotkeys)
     {
         _otherHotkeys = otherHotkeys;
 
-        // Form dimensions match AccountHotkeysDialog / CharacterHotkeysDialog
-        // for visual consistency (same width 460, same card 430, same button
-        // placement at formHeight - 44).
-        const int formW = 460;
+        // Row label is "Team N — name1 / name2" (no destination suffix —
+        // destination is per-slot now, dictated by kind). Label column 200
+        // covers most pairs; AutoEllipsis truncates worst case. Form 400.
+        const int formW = 400;
         const int formH = 250;
-        const int cardW = 430;
+        const int cardW = 370;
         const int cardH = 180;
 
-        StartPosition = FormStartPosition.CenterParent;
+        // Restore last-open position if available; otherwise center on parent.
+        if (_lastLocation.HasValue)
+        {
+            StartPosition = FormStartPosition.Manual;
+            Location = _lastLocation.Value;
+        }
+        else
+        {
+            StartPosition = FormStartPosition.CenterParent;
+        }
+        FormClosing += (_, _) => _lastLocation = Location;
         DarkTheme.StyleForm(this, "Team Hotkeys", new Size(formW, formH));
 
         var card = DarkTheme.MakeCard(this, "👥", "Team Login Hotkeys",
@@ -51,8 +67,17 @@ public sealed class TeamHotkeysDialog : Form
         var initial = new[] { team1, team2, team3, team4 };
         for (int i = 0; i < 4; i++)
         {
-            DarkTheme.AddCardLabel(card, $"Team {i + 1}:", 10, cy + 4);
-            _boxes[i] = MakeHotkeyBox(card, 70, cy + 1, 340, initial[i] ?? "");
+            // Show "Team N — slot1 / slot2" so the hotkey row is self-explanatory.
+            // No destination suffix — destination is per-slot, dictated by kind:
+            // Character → enters world, Account → charselect (handled at FireTeam).
+            var preview = i < teamPreviews.Count ? teamPreviews[i] : "(empty)";
+            var lbl = DarkTheme.AddCardLabel(card,
+                $"Team {i + 1} — {preview}", 10, cy + 4);
+            lbl.AutoSize = false;
+            lbl.Size = new Size(200, 20);
+            lbl.AutoEllipsis = true;
+
+            _boxes[i] = MakeHotkeyBox(card, 220, cy + 1, 140, initial[i] ?? "");
             cy += 30;
         }
 
@@ -60,12 +85,13 @@ public sealed class TeamHotkeysDialog : Form
             "Press a combo to capture. Backspace, Delete, or Escape clears.",
             10, cy + 4);
 
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 250, formH - 44);
+        // Buttons: Cancel right edge (~370) lands ~10px inside card right edge (380).
+        var btnSave = DarkTheme.MakePrimaryButton("Save", 200, formH - 44);
         btnSave.Click += OnSaveClicked;
         Controls.Add(btnSave);
         AcceptButton = btnSave;
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 350, formH - 44);
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 290, formH - 44);
         btnCancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         Controls.Add(btnCancel);
         CancelButton = btnCancel;
