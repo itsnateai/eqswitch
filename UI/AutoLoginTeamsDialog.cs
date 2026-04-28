@@ -16,6 +16,11 @@ namespace EQSwitch.UI;
 /// </summary>
 internal sealed class AutoLoginTeamsDialog : Form
 {
+    // Remembers last-open location across opens within a session. Static so
+    // all instances share it; falls back to CenterParent on first open.
+    // Process lifetime only; cross-session persistence would need config.
+    private static Point? _lastLocation;
+
     private enum SlotKind { None, Character, Account }
 
     private sealed class SlotOption
@@ -43,8 +48,6 @@ internal sealed class AutoLoginTeamsDialog : Form
     private readonly Label _pillTeam2A, _pillTeam2B;
     private readonly Label _pillTeam3A, _pillTeam3B;
     private readonly Label _pillTeam4A, _pillTeam4B;
-    private readonly CheckBox _chkTeam1Enter, _chkTeam2Enter, _chkTeam3Enter, _chkTeam4Enter;
-
     private readonly System.Windows.Forms.ToolTip _tooltip = new();
 
     public string Team1Account1 => GetValue(_cboTeam1A);
@@ -55,58 +58,69 @@ internal sealed class AutoLoginTeamsDialog : Form
     public string Team3Account2 => GetValue(_cboTeam3B);
     public string Team4Account1 => GetValue(_cboTeam4A);
     public string Team4Account2 => GetValue(_cboTeam4B);
-    public bool Team1AutoEnter => _chkTeam1Enter.Checked;
-    public bool Team2AutoEnter => _chkTeam2Enter.Checked;
-    public bool Team3AutoEnter => _chkTeam3Enter.Checked;
-    public bool Team4AutoEnter => _chkTeam4Enter.Checked;
-
     public AutoLoginTeamsDialog(
         IReadOnlyList<Account> accounts,
         IReadOnlyList<Character> characters,
         string team1A, string team1B,
         string team2A, string team2B,
         string team3A, string team3B,
-        string team4A, string team4B,
-        bool team1AutoEnter = false, bool team2AutoEnter = false,
-        bool team3AutoEnter = false, bool team4AutoEnter = false)
+        string team4A, string team4B)
     {
         _accounts = accounts;
         _characters = characters;
 
-        StartPosition = FormStartPosition.CenterParent;
-        // Height 210 (was 300) — content ends at y≈190 after the Save button,
-        // so 300 left ~110px of dead space below. Width unchanged.
-        DarkTheme.StyleForm(this, "Autologin Teams", new Size(560, 210));
+        // Restore last-open position if available; otherwise center on parent.
+        if (_lastLocation.HasValue)
+        {
+            StartPosition = FormStartPosition.Manual;
+            Location = _lastLocation.Value;
+        }
+        else
+        {
+            StartPosition = FormStartPosition.CenterParent;
+        }
+        FormClosing += (_, _) => _lastLocation = Location;
+        // Width 480 (was 560) — Enter World column removed; rightmost element
+        // is now the second pill ending at ~x=444. Height 254 keeps the
+        // warning row + button row layout symmetric (18px top/bottom pads).
+        DarkTheme.StyleForm(this, "Autologin Teams", new Size(480, 254));
         MinimizeBox = false;
 
         const int L = 15, I = 80, CW = 150, gap = 8, PILLW = 24;
-        int CX = I + CW + gap + PILLW + gap + CW + gap + PILLW + gap;
         int y = 18;
 
-        // Header
-        DarkTheme.AddLabel(this, "Enter", CX, 2).Font = DarkTheme.FontUI75;
+        // No "Enter World" column anymore — destination is per-slot, dictated by
+        // kind (Character → enters world, Account → charselect). Always.
 
         // Team rows
-        (_cboTeam1A, _pillTeam1A, _cboTeam1B, _pillTeam1B, _chkTeam1Enter) = AddTeamRow("Team 1:", L, I, CW, gap, PILLW, CX, ref y, team1AutoEnter);
-        (_cboTeam2A, _pillTeam2A, _cboTeam2B, _pillTeam2B, _chkTeam2Enter) = AddTeamRow("Team 2:", L, I, CW, gap, PILLW, CX, ref y, team2AutoEnter);
-        (_cboTeam3A, _pillTeam3A, _cboTeam3B, _pillTeam3B, _chkTeam3Enter) = AddTeamRow("Team 3:", L, I, CW, gap, PILLW, CX, ref y, team3AutoEnter);
-        (_cboTeam4A, _pillTeam4A, _cboTeam4B, _pillTeam4B, _chkTeam4Enter) = AddTeamRow("Team 4:", L, I, CW, gap, PILLW, CX, ref y, team4AutoEnter);
+        (_cboTeam1A, _pillTeam1A, _cboTeam1B, _pillTeam1B) = AddTeamRow("Team 1:", L, I, CW, gap, PILLW, ref y);
+        (_cboTeam2A, _pillTeam2A, _cboTeam2B, _pillTeam2B) = AddTeamRow("Team 2:", L, I, CW, gap, PILLW, ref y);
+        (_cboTeam3A, _pillTeam3A, _cboTeam3B, _pillTeam3B) = AddTeamRow("Team 3:", L, I, CW, gap, PILLW, ref y);
+        (_cboTeam4A, _pillTeam4A, _cboTeam4B, _pillTeam4B) = AddTeamRow("Team 4:", L, I, CW, gap, PILLW, ref y);
 
-        // Legend
+        // Legend \u2014 describes slot KIND only. Destination is the team's call,
+        // controlled by the Enter World column header (with its own tooltip).
+        // Kind + destination are independent dimensions; conflating them in
+        // the legend was the source of confusion ("\u2713 = Character (enter world)"
+        // wasn't always true when the team's Enter World was off).
         var legend = DarkTheme.AddLabel(this,
-            "\u2713 = Character (enter world)   !  = Account (charselect)   \u2717 = unresolved",
+            "C = Character    A = Account    \u2717 = unresolved",
             L, y + 2);
         legend.ForeColor = DarkTheme.FgDimGray;
         legend.Font = DarkTheme.FontUI75;
         legend.AutoSize = true;
         y += 22;
 
-        // Warning label (same-login collision)
-        var lblWarn = DarkTheme.AddLabel(this, "", I, y + 2);
+        // Warning / contextual-hint label — gets its own row above the buttons
+        // so it never overlaps Save/Cancel (was sharing y with buttons before).
+        // Used for: same-login collision blocker, unresolved-slot blocker on
+        // Save, and the descriptive "Account-only — character select" hint.
+        var lblWarn = DarkTheme.AddLabel(this, "", L, y);
         lblWarn.ForeColor = DarkTheme.FgWarn;
         lblWarn.Font = DarkTheme.FontUI75;
         lblWarn.AutoSize = true;
         lblWarn.Visible = false;
+        y += 22;
 
         var btnOK = DarkTheme.MakePrimaryButton("Save", L, y);
         btnOK.Width = 100;
@@ -170,33 +184,18 @@ internal sealed class AutoLoginTeamsDialog : Form
         SelectByValue(_cboTeam4A, team4A);  SelectByValue(_cboTeam4B, team4B);
     }
 
-    private (ComboBox a, Label pa, ComboBox b, Label pb, CheckBox chk) AddTeamRow(
-        string label, int L, int I, int CW, int gap, int PILLW, int CX, ref int y, bool enterChecked)
+    private (ComboBox a, Label pa, ComboBox b, Label pb) AddTeamRow(
+        string label, int L, int I, int CW, int gap, int PILLW, ref int y)
     {
         DarkTheme.AddLabel(this, label, L, y + 3);
         var a = MakeCombo(I, y, CW);
         var pa = MakePill(I + CW + gap / 2, y + 2);
         var b = MakeCombo(I + CW + gap + PILLW + gap, y, CW);
         var pb = MakePill(I + CW + gap + PILLW + gap + CW + gap / 2, y + 2);
-        var chk = MakeEnterCheck(CX + 10, y + 2, enterChecked);
         a.SelectedIndexChanged += (_, _) => RefreshPill(a, pa);
         b.SelectedIndexChanged += (_, _) => RefreshPill(b, pb);
         y += 36;
-        return (a, pa, b, pb, chk);
-    }
-
-    private CheckBox MakeEnterCheck(int x, int y, bool isChecked)
-    {
-        var chk = new CheckBox
-        {
-            Location = new Point(x, y),
-            Size = new Size(16, 16),
-            Checked = isChecked,
-            FlatStyle = FlatStyle.Flat,
-            BackColor = DarkTheme.BgDark
-        };
-        Controls.Add(chk);
-        return chk;
+        return (a, pa, b, pb);
     }
 
     private Label MakePill(int x, int y)
@@ -321,18 +320,29 @@ internal sealed class AutoLoginTeamsDialog : Form
 
         if (opt.Kind == SlotKind.Character)
         {
-            pill.Text = "\u2713";
-            pill.BackColor = DarkTheme.StatusOk;
+            // Neutral kind indicator \u2014 was \u2713-green which read as "correct";
+            // changed to C-on-blue so neither pill carries a value judgment.
+            pill.Text = "C";
+            pill.BackColor = DarkTheme.CardBlue;
             pill.ForeColor = Color.White;
-            _tooltip.SetToolTip(pill, "Resolves to Character — will enter world.");
+            // Descriptive: pill describes KIND only. Destination depends on the
+            // team's Enter World toggle (covered by its own header tooltip).
+            _tooltip.SetToolTip(pill,
+                "Resolves to Character — enters world when Enter World is on.");
         }
         else // Account
         {
-            pill.Text = "!";
-            pill.BackColor = DarkTheme.StatusWarn;
-            pill.ForeColor = Color.Black;
+            // Neutral kind indicator — was !-yellow which read as "warning";
+            // changed to A-on-purple so accounts look like a valid type, not
+            // an error state. Accounts working as intended ≠ warning.
+            pill.Text = "A";
+            pill.BackColor = DarkTheme.CardPurple;
+            pill.ForeColor = Color.White;
+            // Descriptive: states the constraint, doesn't push the user to
+            // change their config (was "Pick a Character to enter world instead"
+            // which contradicted users who deliberately set up account-only teams).
             _tooltip.SetToolTip(pill,
-                "Resolves to Account — will stop at charselect. Pick a Character to enter world instead.");
+                "Resolves to Account — charselect only (Accounts cannot enter world).");
         }
     }
 

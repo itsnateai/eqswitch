@@ -95,10 +95,16 @@ public static class FloatingTooltip
                 using var brush = new SolidBrush(DarkTheme.AccentGreen);
                 e.Graphics.FillRectangle(brush, 0, 0, 2, inner.Height);
             };
+            // Cap label width so long messages (e.g. multi-account same-name nudge)
+            // wrap instead of growing horizontally past the screen edge. AutoSize=true
+            // + MaximumSize.Width flips Label into wrap-and-grow-vertically mode.
+            // 480px tracks ~60 chars at 9pt Segoe UI — fits a small laptop screen
+            // with margin to spare; the screen-clamp in Show() handles edge cases.
             inner.Controls.Add(new Label
             {
                 Text = message,
                 AutoSize = true,
+                MaximumSize = new Size(480, 0),
                 Font = new Font("Segoe UI", 9),
                 ForeColor = DarkTheme.FgWhite,
                 BackColor = DarkTheme.BgPanel,

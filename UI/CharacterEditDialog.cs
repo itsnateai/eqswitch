@@ -17,6 +17,12 @@ namespace EQSwitch.UI;
 /// </summary>
 public sealed class CharacterEditDialog : Form
 {
+    // Remembers last-open location across opens within a session — shared
+    // between Add and Edit modes (same dialog visually). Static so all
+    // instances share it; falls back to CenterParent on first open.
+    // Process lifetime only; cross-session persistence would need config.
+    private static Point? _lastLocation;
+
     private readonly TextBox _txtName = null!;
     private readonly ComboBox _cboAccount = null!;
     private readonly NumericUpDown _numSlot = null!;
@@ -39,7 +45,17 @@ public sealed class CharacterEditDialog : Form
         _selfName = existing?.Name ?? "";
         _existingClassHint = existing?.ClassHint ?? "";
 
-        StartPosition = FormStartPosition.CenterParent;
+        // Restore last-open position if available; otherwise center on parent.
+        if (_lastLocation.HasValue)
+        {
+            StartPosition = FormStartPosition.Manual;
+            Location = _lastLocation.Value;
+        }
+        else
+        {
+            StartPosition = FormStartPosition.CenterParent;
+        }
+        FormClosing += (_, _) => _lastLocation = Location;
         // Tight layout: form ClientSize matches actual content + button row.
         // Inputs are 200px (was 275); Notes textarea also 200x80. Card height
         // computed from row count so the bottom doesn't leak empty space.

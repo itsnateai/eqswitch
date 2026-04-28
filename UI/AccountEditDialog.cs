@@ -16,6 +16,12 @@ namespace EQSwitch.UI;
 /// </summary>
 public sealed class AccountEditDialog : Form
 {
+    // Remembers last-open location across opens within a session — shared
+    // between Add and Edit modes (same dialog visually). Static so all
+    // instances share it; falls back to CenterParent on first open.
+    // Process lifetime only; cross-session persistence would need config.
+    private static Point? _lastLocation;
+
     private readonly TextBox _txtName;
     private readonly TextBox _txtUsername;
     private readonly TextBox _txtPassword;
@@ -47,7 +53,17 @@ public sealed class AccountEditDialog : Form
         _selfUsername = existing?.Username ?? "";
         _selfServer = existing?.Server ?? "";
 
-        StartPosition = FormStartPosition.CenterParent;
+        // Restore last-open position if available; otherwise center on parent.
+        if (_lastLocation.HasValue)
+        {
+            StartPosition = FormStartPosition.Manual;
+            Location = _lastLocation.Value;
+        }
+        else
+        {
+            StartPosition = FormStartPosition.CenterParent;
+        }
+        FormClosing += (_, _) => _lastLocation = Location;
         // Tight layout: form ClientSize matches actual content + button row.
         // Inputs are 200px (was 290) -- usernames and passwords are short.
         // Password row uses 145+55 split so Show/Hide isn't clipped.

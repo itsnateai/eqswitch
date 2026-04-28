@@ -132,10 +132,7 @@ public class SettingsForm : Form
     private string _pendingTeam3B = "";
     private string _pendingTeam4A = "";
     private string _pendingTeam4B = "";
-    private bool _pendingTeam1AutoEnter;
-    private bool _pendingTeam2AutoEnter;
-    private bool _pendingTeam3AutoEnter;
-    private bool _pendingTeam4AutoEnter;
+    // _pendingTeam{N}AutoEnter removed alongside the per-team Enter World toggle.
     // _chkAutoEnterWorld removed — see Phase 5b note in BuildAccountsTab.
 
     // ─── PiP tab controls
@@ -248,10 +245,7 @@ public class SettingsForm : Form
         _pendingTeam4A = _config.Team4Account1;
         _pendingTeam4B = _config.Team4Account2;
 
-        _pendingTeam1AutoEnter = _config.Team1AutoEnter;
-        _pendingTeam2AutoEnter = _config.Team2AutoEnter;
-        _pendingTeam3AutoEnter = _config.Team3AutoEnter;
-        _pendingTeam4AutoEnter = _config.Team4AutoEnter;
+        // Team{N}AutoEnter removed — kind alone dictates destination.
 
         tabs.TabPages.Add(BuildGeneralTab());      // 0
         tabs.TabPages.Add(BuildVideoTab());        // 1
@@ -689,8 +683,36 @@ public class SettingsForm : Form
                 others.Add(($"Character '{b.TargetName}'", b.Combo));
 
         if (FocusExistingHotkeyDialog()) return;
+
+        // Compute "natedogg / acpots" / "(empty)" previews per team so the dialog
+        // can show what each row's hotkey will actually launch — mirrors the
+        // Account/Character hotkey dialogs' "label = the thing being bound" pattern.
+        // Resolution: Character.Name → Account.Name → raw → "(empty)".
+        string ResolveSlot(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "";
+            var ch = _pendingCharacters.FirstOrDefault(c => c.Name.Equals(raw, StringComparison.Ordinal));
+            if (ch != null) return ch.Name;
+            var ac = _pendingAccounts.FirstOrDefault(a => a.Name.Equals(raw, StringComparison.Ordinal));
+            return ac != null ? ac.Name : raw;
+        }
+        string PreviewSlots(string a, string b)
+        {
+            var names = new[] { ResolveSlot(a), ResolveSlot(b) }
+                .Where(s => !string.IsNullOrEmpty(s)).ToArray();
+            return names.Length > 0 ? string.Join(" / ", names) : "(empty)";
+        }
+        var teamPreviews = new[]
+        {
+            PreviewSlots(_pendingTeam1A, _pendingTeam1B),
+            PreviewSlots(_pendingTeam2A, _pendingTeam2B),
+            PreviewSlots(_pendingTeam3A, _pendingTeam3B),
+            PreviewSlots(_pendingTeam4A, _pendingTeam4B),
+        };
+
         var dlg = new TeamHotkeysDialog(
             _pendingTeamLogin1, _pendingTeamLogin2, _pendingTeamLogin3, _pendingTeamLogin4,
+            teamPreviews,
             others);
         dlg.FormClosed += (_, _) =>
         {
@@ -851,6 +873,18 @@ public class SettingsForm : Form
         RefreshDirectBindingsCard();
 
         y += 126;
+
+        // ─── Client Launch Delay (header-less, full-width) ───────
+        // Moved from Video → Preferences. Header-less full-width card aligned
+        // with the other sections' left border (x=10). Controls within stay
+        // pushed to the right side of the card so the section reads as an aside.
+        var cardLaunchDelay = DarkTheme.MakeCard(page, "", "",
+            DarkTheme.CardCyan, 10, y, 480, 36);
+        DarkTheme.AddCardLabel(cardLaunchDelay, "Client Launch Delay:", 280, 10);
+        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardLaunchDelay, 408, 8, 40, 3, 1, 30);
+        DarkTheme.AddCardHint(cardLaunchDelay, "sec", 458, 10);
+
+        y += 44;
 
         return page;
     }
@@ -1026,9 +1060,10 @@ public class SettingsForm : Form
         y += 248;
 
         // ─── Startup card ───────────────────────────────────────
-        // Three controls stacked at x=47 with even 30px stride, matching
-        // the user's layout brief: <pad><btn><pad><chk><pad><chk><pad>.
-        var cardStartup = DarkTheme.MakeCard(page, "🚀", "Startup", DarkTheme.CardGreen, 10, y, 480, 128);
+        // Single row, original x=47 left padding preserved. Button on the left,
+        // Run at Startup mid-right with breathing room. Show Tooltips toggle
+        // moved to Video → Preferences (paired with Tooltip Delay).
+        var cardStartup = DarkTheme.MakeCard(page, "🚀", "Startup", DarkTheme.CardGreen, 10, y, 480, 64);
         cy = 32;
 
         var btnShortcut = DarkTheme.AddCardButton(cardStartup, "Create Desktop Shortcut", 47, cy, 180);
@@ -1043,14 +1078,10 @@ public class SettingsForm : Form
                 reset.Start();
             });
         };
-        cy += 30;
 
-        _chkShowTooltips = DarkTheme.AddCardCheckBox(cardStartup, "Show Tooltips", 47, cy);
-        cy += 30;
+        _chkRunAtStartup = DarkTheme.AddCardCheckBox(cardStartup, "Run at Startup", 320, cy + 5);
 
-        _chkRunAtStartup = DarkTheme.AddCardCheckBox(cardStartup, "Run at Startup", 47, cy);
-
-        y += 136;
+        y += 72;
 
         // ─── eqclient.ini actions card ─────────────────────────────
         var cardIni = DarkTheme.MakeCard(page, "💾", "eqclient.ini", DarkTheme.CardGold, 10, y, 480, 70);
@@ -1632,10 +1663,6 @@ public class SettingsForm : Form
             Team3Account2 = _pendingTeam3B,
             Team4Account1 = _pendingTeam4A,
             Team4Account2 = _pendingTeam4B,
-            Team1AutoEnter = _pendingTeam1AutoEnter,
-            Team2AutoEnter = _pendingTeam2AutoEnter,
-            Team3AutoEnter = _pendingTeam3AutoEnter,
-            Team4AutoEnter = _pendingTeam4AutoEnter
         };
 
         // Apply startup registry change
@@ -1850,8 +1877,9 @@ public class SettingsForm : Form
         _dgvCharacters.Columns["Account"]!.FillWeight = 30;
         _dgvCharacters.Columns.Add("Slot", "Slot");
         _dgvCharacters.Columns["Slot"]!.Width = 50;
-        _dgvCharacters.Columns.Add("HK", "HK");
-        _dgvCharacters.Columns["HK"]!.Width = 70;
+        _dgvCharacters.Columns.Add("HK", "Hotkey");
+        _dgvCharacters.Columns["HK"]!.Width = 60;
+        _dgvCharacters.Columns["HK"]!.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleCenter;
         _dgvCharacters.DoubleClick += (_, _) =>
         {
             if (_dgvCharacters.SelectedRows.Count > 0)
@@ -1986,9 +2014,18 @@ public class SettingsForm : Form
             }
 
             var slotDisplay = c.CharacterSlot == 0 ? "auto" : c.CharacterSlot.ToString();
-            var hkDisplay = LookupHotkeyForTarget(c.Name);
+            // Hotkey column shows a green ✓ if any hotkey is bound to this character
+            // (combo itself is editable via Hotkeys → Configure Characters). The full
+            // combo lands in the cell tooltip so it stays discoverable on hover.
+            var hkCombo = LookupHotkeyForTarget(c.Name);
+            var hkDisplay = string.IsNullOrEmpty(hkCombo) ? "" : "✓";
 
             int rowIdx = _dgvCharacters.Rows.Add(i + 1, c.Name, acctDisplay, slotDisplay, hkDisplay);
+            if (!string.IsNullOrEmpty(hkCombo))
+            {
+                _dgvCharacters.Rows[rowIdx].Cells["HK"].Style.ForeColor = DarkTheme.AccentGreen;
+                _dgvCharacters.Rows[rowIdx].Cells["HK"].ToolTipText = hkCombo;
+            }
             if (acctFlagged)
             {
                 _dgvCharacters.Rows[rowIdx].Cells["Account"].Style.ForeColor = DarkTheme.FgDimGray;
@@ -2276,9 +2313,7 @@ public class SettingsForm : Form
             _pendingTeam1A, _pendingTeam1B,
             _pendingTeam2A, _pendingTeam2B,
             _pendingTeam3A, _pendingTeam3B,
-            _pendingTeam4A, _pendingTeam4B,
-            _pendingTeam1AutoEnter, _pendingTeam2AutoEnter,
-            _pendingTeam3AutoEnter, _pendingTeam4AutoEnter);
+            _pendingTeam4A, _pendingTeam4B);
         if (dlg.ShowDialog(this) == DialogResult.OK)
         {
             _pendingTeam1A = dlg.Team1Account1;
@@ -2289,10 +2324,6 @@ public class SettingsForm : Form
             _pendingTeam3B = dlg.Team3Account2;
             _pendingTeam4A = dlg.Team4Account1;
             _pendingTeam4B = dlg.Team4Account2;
-            _pendingTeam1AutoEnter = dlg.Team1AutoEnter;
-            _pendingTeam2AutoEnter = dlg.Team2AutoEnter;
-            _pendingTeam3AutoEnter = dlg.Team3AutoEnter;
-            _pendingTeam4AutoEnter = dlg.Team4AutoEnter;
             _lblTeamSummary.Text = BuildTeamSummary();
         }
     }
@@ -2644,15 +2675,22 @@ public class SettingsForm : Form
         y += 120;
 
         // ─── Preferences card ────────────────────────────────────
+        // Left: Show Tooltips toggle (moved from Paths → Startup card — pairs
+        // logically with the Tooltip Delay knob it gates).
+        // Right: Tooltip Delay (slid over from where Client Launch Delay was;
+        // Client Launch Delay moved to a header-less section on the Hotkeys tab).
         var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardCyan, 10, y, 480, 68);
         cy = 32;
-        DarkTheme.AddCardLabel(cardPrefs, "Tooltip Delay:", L, cy);
-        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardPrefs, 110, cy, 55, 1000, 0, 10000);
+        _chkShowTooltips = DarkTheme.AddCardCheckBox(cardPrefs, "Show Tooltips", L, cy + 1);
+        // "Duration" not "Delay": this is the auto-dismiss interval for the
+        // post-action FloatingTooltip toast (and gates menu hover tooltips
+        // through ShowTooltips). Range 100..5000ms — on/off lives in the
+        // ShowTooltips checkbox, not in this numeric. 100ms floor avoids
+        // sub-perceptual flashes; 5000ms ceiling avoids sticky popups.
+        DarkTheme.AddCardLabel(cardPrefs, "Tooltip Duration:", 240, cy);
+        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardPrefs, 360, cy, 55, 1000, 100, 5000);
         _nudTooltipDuration.Increment = 100;
-        DarkTheme.AddCardHint(cardPrefs, "ms", 175, cy);
-        DarkTheme.AddCardLabel(cardPrefs, "Client Launch Delay:", 240, cy);
-        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardPrefs, 360, cy, 40, 3, 1, 30);
-        DarkTheme.AddCardHint(cardPrefs, "sec", 410, cy);
+        DarkTheme.AddCardHint(cardPrefs, "ms", 425, cy);
 
         return page;
     }
