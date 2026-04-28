@@ -74,7 +74,9 @@ internal sealed class AutoLoginTeamsDialog : Form
         _characters = characters;
 
         StartPosition = FormStartPosition.CenterParent;
-        DarkTheme.StyleForm(this, "Autologin Teams", new Size(560, 300));
+        // Height 210 (was 300) — content ends at y≈190 after the Save button,
+        // so 300 left ~110px of dead space below. Width unchanged.
+        DarkTheme.StyleForm(this, "Autologin Teams", new Size(560, 210));
         MinimizeBox = false;
 
         const int L = 15, I = 80, CW = 150, gap = 8, PILLW = 24;

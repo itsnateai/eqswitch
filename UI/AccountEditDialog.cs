@@ -20,8 +20,11 @@ public sealed class AccountEditDialog : Form
     private readonly TextBox _txtUsername;
     private readonly TextBox _txtPassword;
     private readonly Button _btnRevealPassword;
+    // UseLoginFlag UI removed — Account.UseLoginFlag is always set to true on
+    // save (the original toggle existed for early-login-server experiments
+    // that are no longer relevant). Existing saved Accounts with the flag
+    // set to false get upgraded the next time the user edits them.
     private readonly ComboBox _cboServer;
-    private readonly CheckBox _chkUseLoginFlag;
 
     private readonly bool _isEdit;
     private readonly string _existingEncryptedPassword;
@@ -45,22 +48,36 @@ public sealed class AccountEditDialog : Form
         _selfServer = existing?.Server ?? "";
 
         StartPosition = FormStartPosition.CenterParent;
-        DarkTheme.StyleForm(this, _isEdit ? $"Edit Account \u2014 {existing!.Name}" : "Add Account", new Size(440, 330));
+        // Tight layout: form ClientSize matches actual content + button row.
+        // Inputs are 200px (was 290) -- usernames and passwords are short.
+        // Password row uses 145+55 split so Show/Hide isn't clipped.
+        const int formW = 360;
+        const int cardW = 340;
+        const int L = 10, I = 90;
+        const int inputW = 200;
+
+        // Content cy: 32 + Name 30 + Username 30 + Password 30 + (edit hint 20) + Server 30
+        int contentH = 32 + 30 * 4;
+        if (_isEdit) contentH += 20;
+        int cardH = contentH + 6;
+        int btnY = 10 + cardH + 12;
+        int formH = btnY + 30 + 12;
+
+        DarkTheme.StyleForm(this, _isEdit ? $"Edit Account \u2014 {existing!.Name}" : "Add Account", new Size(formW, formH));
 
         var card = DarkTheme.MakeCard(this, "\uD83D\uDD11",
             _isEdit ? "Edit Account" : "New Account",
-            DarkTheme.CardGold, 10, 10, 410, 265);
+            DarkTheme.CardGold, 10, 10, cardW, cardH);
 
-        const int L = 10, I = 100;
         int cy = 32;
 
         DarkTheme.AddCardLabel(card, "Name:", L, cy + 4);
-        _txtName = DarkTheme.AddCardTextBox(card, I, cy, 290);
+        _txtName = DarkTheme.AddCardTextBox(card, I, cy, inputW);
         _txtName.Text = existing?.Name ?? "";
         cy += 30;
 
         DarkTheme.AddCardLabel(card, "Username:", L, cy + 4);
-        _txtUsername = DarkTheme.AddCardTextBox(card, I, cy, 290);
+        _txtUsername = DarkTheme.AddCardTextBox(card, I, cy, inputW);
         _txtUsername.Text = existing?.Username ?? "";
         if (_isEdit)
         {
@@ -71,9 +88,9 @@ public sealed class AccountEditDialog : Form
         cy += 30;
 
         DarkTheme.AddCardLabel(card, "Password:", L, cy + 4);
-        _txtPassword = DarkTheme.AddCardTextBox(card, I, cy, 240);
+        _txtPassword = DarkTheme.AddCardTextBox(card, I, cy, 145);
         _txtPassword.PasswordChar = '*';
-        _btnRevealPassword = DarkTheme.AddCardButton(card, "Show", I + 245, cy - 1, 45);
+        _btnRevealPassword = DarkTheme.AddCardButton(card, "Show", I + 150, cy - 1, 55);
         _btnRevealPassword.TabStop = false;
         _btnRevealPassword.Click += (_, _) =>
         {
@@ -90,22 +107,19 @@ public sealed class AccountEditDialog : Form
         }
 
         DarkTheme.AddCardLabel(card, "Server:", L, cy + 4);
-        _cboServer = DarkTheme.AddCardComboBox(card, I, cy, 290, new[] { "Dalaya" });
+        _cboServer = DarkTheme.AddCardComboBox(card, I, cy, inputW, new[] { "Dalaya" });
         _cboServer.DropDownStyle = ComboBoxStyle.DropDown;
         _cboServer.Text = string.IsNullOrEmpty(existing?.Server) ? "Dalaya" : existing!.Server;
-        cy += 30;
 
-        _chkUseLoginFlag = DarkTheme.AddCardCheckBox(card, "Use login flag (pass -login to eqgame.exe)", L, cy + 2);
-        _chkUseLoginFlag.Width = 380;
-        _chkUseLoginFlag.Checked = existing?.UseLoginFlag ?? false;
-
-        // Buttons outside the card, at the bottom of the form.
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 230, 285);
+        // Buttons outside the card, right-aligned (Save x = formW-200, Cancel x = formW-100).
+        int btnSaveX = formW - 200;
+        int btnCancelX = formW - 100;
+        var btnSave = DarkTheme.MakePrimaryButton("Save", btnSaveX, btnY);
         btnSave.Click += (_, _) => OnSaveClicked(otherAccounts);
         Controls.Add(btnSave);
         AcceptButton = btnSave;
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 330, 285);
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, btnCancelX, btnY);
         btnCancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         Controls.Add(btnCancel);
         CancelButton = btnCancel;
@@ -195,7 +209,7 @@ public sealed class AccountEditDialog : Form
             Username = username,
             EncryptedPassword = encryptedPassword,
             Server = server,
-            UseLoginFlag = _chkUseLoginFlag.Checked,
+            UseLoginFlag = true,
         };
         DialogResult = DialogResult.OK;
         Close();

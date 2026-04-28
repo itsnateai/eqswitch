@@ -77,9 +77,11 @@ public class SettingsForm : Form
 
     // ─── Paths tab controls
     private TextBox _txtGinaPath = null!;
+    private TextBox _txtGamparsePath = null!;
     private TextBox _txtNotesPath = null!;
     private TextBox _txtDalayaPatcherPath = null!;
     private CheckBox _chkRunAtStartup = null!;
+    private CheckBox _chkShowTooltips = null!;
 
     // ─── Accounts tab controls (Phase 4: v4 Account + Character as first-class)
     private List<Account> _pendingAccounts = new();
@@ -106,11 +108,20 @@ public class SettingsForm : Form
     // BuildAppConfig from _config during the v3.10.x deprecation window.
     private Panel _cardDirectBindings = null!;
     private Panel? _legacyBanner;   // rendered only when any QuickLoginN is populated and banner not dismissed
-    private TextBox _txtTeamLogin1Hotkey = null!;
-    private TextBox _txtTeamLogin2Hotkey = null!;
-    private TextBox _txtTeamLogin3Hotkey = null!;
-    private TextBox _txtTeamLogin4Hotkey = null!;
-    private Label _lblAutoLoginHotkeyWarn = null!;
+    // Currently-open hotkey dialog (Account/Character/Team). Non-modal Show()
+    // means SettingsForm and the tray menu stay clickable while editing — but
+    // we still want to forbid opening two of these at once (their conflict
+    // checks are computed against a snapshot of _config at open time, so
+    // double-open lets stale values shadow each other). Reusing the field
+    // for any of the 3 dialogs is fine: they aren't simultaneously editable.
+    private Form? _openHotkeyDialog;
+    // Team login hotkeys: edited via TeamHotkeysDialog (opened from Direct
+    // Bindings card on the Hotkeys tab). _pending* fields stage edits until
+    // ApplySettings, mirroring the AccountHotkeys / CharacterHotkeys flow.
+    private string _pendingTeamLogin1 = "";
+    private string _pendingTeamLogin2 = "";
+    private string _pendingTeamLogin3 = "";
+    private string _pendingTeamLogin4 = "";
     private Label _lblSlotDuplicateWarn = null!;
     private Label _lblTeamSummary = null!;
     private string _pendingTeam1A = "";
@@ -125,7 +136,7 @@ public class SettingsForm : Form
     private bool _pendingTeam2AutoEnter;
     private bool _pendingTeam3AutoEnter;
     private bool _pendingTeam4AutoEnter;
-    private CheckBox _chkAutoEnterWorld = null!;
+    // _chkAutoEnterWorld removed — see Phase 5b note in BuildAccountsTab.
 
     // ─── PiP tab controls
     private CheckBox _chkPipEnabled = null!;
@@ -470,62 +481,10 @@ public class SettingsForm : Form
         _lblDuplicateKeyWarn.ForeColor = dup ? DarkTheme.CardWarn : DarkTheme.FgDimGray;
     }
 
-    private void CheckAutoLoginHotkeyConflicts()
-    {
-        if (_lblAutoLoginHotkeyWarn == null) return;
-
-        var entries = new (string Key, string Label)[] {
-            // Phase 5a: Account hotkeys edited via dialogs — Team entries only on this tab.
-            (_txtTeamLogin1Hotkey?.Text.Trim() ?? "", "Team 1"),
-            (_txtTeamLogin2Hotkey?.Text.Trim() ?? "", "Team 2"),
-            (_txtTeamLogin3Hotkey?.Text.Trim() ?? "", "Team 3"),
-            (_txtTeamLogin4Hotkey?.Text.Trim() ?? "", "Team 4"),
-        };
-
-        // Collect all other hotkeys in the form for conflict checking
-        var otherHotkeys = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (_txtSwitchKey?.Text.Trim() is { Length: > 0 } sk) otherHotkeys[sk] = "Switch Key";
-        if (_txtGlobalSwitchKey?.Text.Trim() is { Length: > 0 } gsk) otherHotkeys[gsk] = "Global Switch Key";
-        if (_txtArrangeWindows?.Text.Trim() is { Length: > 0 } aw) otherHotkeys[aw] = "Arrange Windows";
-        if (_txtToggleMultiMon?.Text.Trim() is { Length: > 0 } mm) otherHotkeys[mm] = "Toggle Multi-Mon";
-        if (_txtLaunchOne?.Text.Trim() is { Length: > 0 } lo) otherHotkeys[lo] = "Launch One";
-        if (_txtLaunchAll?.Text.Trim() is { Length: > 0 } la) otherHotkeys[la] = "Launch All";
-        if (_txtTogglePip?.Text.Trim() is { Length: > 0 } tp) otherHotkeys[tp] = "Toggle PiP";
-
-        var warnings = new List<string>();
-
-        for (int i = 0; i < entries.Length; i++)
-        {
-            var (key, label) = entries[i];
-            if (key.Length == 0) continue;
-
-            // Needs modifier
-            if (!key.Contains('+'))
-                warnings.Add($"{label}: needs modifier");
-
-            // Conflicts with other hotkeys
-            if (otherHotkeys.TryGetValue(key, out var conflict))
-                warnings.Add($"{label} conflicts with {conflict}");
-
-            // Conflicts with another entry
-            for (int j = i + 1; j < entries.Length; j++)
-            {
-                if (entries[j].Key.Length > 0 && string.Equals(key, entries[j].Key, StringComparison.OrdinalIgnoreCase))
-                    warnings.Add($"{label} and {entries[j].Label} conflict");
-            }
-        }
-
-        if (warnings.Count > 0)
-        {
-            _lblAutoLoginHotkeyWarn.Text = "\u26A0 " + string.Join("  |  ", warnings);
-            _lblAutoLoginHotkeyWarn.ForeColor = DarkTheme.CardWarn;
-        }
-        else
-        {
-            _lblAutoLoginHotkeyWarn.Text = "";
-        }
-    }
-
+    // Team-hotkey conflict checks moved into TeamHotkeysDialog.OnSaveClicked
+    // (matches AccountHotkeysDialog / CharacterHotkeysDialog). ApplySettings
+    // still does a final all-up conflict scan across every family table +
+    // tab-level hotkey before returning success.
     /// <summary>
     /// Phase 5a: repopulate the Direct Bindings card contents. Called on tab build and
     /// after either hotkey dialog saves. Renders two rows ("X/N bound" + Configure
@@ -544,7 +503,10 @@ public class SettingsForm : Form
         int totalA = _config.Accounts.Count;
         int totalC = _config.Characters.Count;
 
-        int cy = 32;
+        // Header-less card — first row sits near the top of the panel.
+        // Per-row +4/-1 offsets keep the label vertically centered with the
+        // 26px Configure… button.
+        int cy = 6;
 
         DarkTheme.AddCardLabel(_cardDirectBindings, "Accounts", 10, cy + 4);
         var lblAcctCount = DarkTheme.AddCardLabel(_cardDirectBindings, $"{liveA} / {totalA} bound", 100, cy + 4);
@@ -558,6 +520,17 @@ public class SettingsForm : Form
         lblCharCount.ForeColor = DarkTheme.FgDimGray;
         var btnConfigureChars = DarkTheme.AddCardButton(_cardDirectBindings, "Configure\u2026", 350, cy - 1, 110);
         btnConfigureChars.Click += (_, _) => OpenCharacterHotkeysDialog();
+        cy += 28;
+
+        int liveT = (string.IsNullOrEmpty(_pendingTeamLogin1) ? 0 : 1)
+                  + (string.IsNullOrEmpty(_pendingTeamLogin2) ? 0 : 1)
+                  + (string.IsNullOrEmpty(_pendingTeamLogin3) ? 0 : 1)
+                  + (string.IsNullOrEmpty(_pendingTeamLogin4) ? 0 : 1);
+        DarkTheme.AddCardLabel(_cardDirectBindings, "Teams", 10, cy + 4);
+        var lblTeamCount = DarkTheme.AddCardLabel(_cardDirectBindings, $"{liveT} / 4 bound", 100, cy + 4);
+        lblTeamCount.ForeColor = DarkTheme.FgDimGray;
+        var btnConfigureTeams = DarkTheme.AddCardButton(_cardDirectBindings, "Configure\u2026", 350, cy - 1, 110);
+        btnConfigureTeams.Click += (_, _) => OpenTeamHotkeysDialog();
         cy += 28;
 
         if (staleA > 0 || staleC > 0)
@@ -635,22 +608,30 @@ public class SettingsForm : Form
             ("Launch All",       _txtLaunchAll.Text.Trim()),
             ("Multi-Mon Toggle", _txtToggleMultiMon.Text.Trim()),
             ("PiP Toggle",       _txtTogglePip.Text.Trim()),
-            ("Team 1",           _txtTeamLogin1Hotkey.Text.Trim()),
-            ("Team 2",           _txtTeamLogin2Hotkey.Text.Trim()),
-            ("Team 3",           _txtTeamLogin3Hotkey.Text.Trim()),
-            ("Team 4",           _txtTeamLogin4Hotkey.Text.Trim()),
+            ("Team 1",           _pendingTeamLogin1),
+            ("Team 2",           _pendingTeamLogin2),
+            ("Team 3",           _pendingTeamLogin3),
+            ("Team 4",           _pendingTeamLogin4),
         };
         foreach (var b in _config.Hotkeys.CharacterHotkeys)
             if (HotkeyBindingUtil.IsPopulated(b))
                 others.Add(($"Character '{b.TargetName}'", b.Combo));
 
-        using var dlg = new AccountHotkeysDialog(_config.Accounts, _config.Hotkeys.AccountHotkeys, others);
-        if (dlg.ShowDialog(this) == DialogResult.OK && dlg.Result != null)
+        if (FocusExistingHotkeyDialog()) return;
+        var dlg = new AccountHotkeysDialog(_config.Accounts, _config.Hotkeys.AccountHotkeys, others);
+        dlg.FormClosed += (_, _) =>
         {
-            _config.Hotkeys.AccountHotkeys = dlg.Result;
-            ConfigManager.Save(_config);
-            RefreshDirectBindingsCard();
-        }
+            if (dlg.DialogResult == DialogResult.OK && dlg.Result != null)
+            {
+                _config.Hotkeys.AccountHotkeys = dlg.Result;
+                ConfigManager.Save(_config);
+                RefreshDirectBindingsCard();
+            }
+            _openHotkeyDialog = null;
+            dlg.Dispose();
+        };
+        _openHotkeyDialog = dlg;
+        dlg.Show(this);
     }
 
     private void OpenCharacterHotkeysDialog()
@@ -662,22 +643,82 @@ public class SettingsForm : Form
             ("Launch All",       _txtLaunchAll.Text.Trim()),
             ("Multi-Mon Toggle", _txtToggleMultiMon.Text.Trim()),
             ("PiP Toggle",       _txtTogglePip.Text.Trim()),
-            ("Team 1",           _txtTeamLogin1Hotkey.Text.Trim()),
-            ("Team 2",           _txtTeamLogin2Hotkey.Text.Trim()),
-            ("Team 3",           _txtTeamLogin3Hotkey.Text.Trim()),
-            ("Team 4",           _txtTeamLogin4Hotkey.Text.Trim()),
+            ("Team 1",           _pendingTeamLogin1),
+            ("Team 2",           _pendingTeamLogin2),
+            ("Team 3",           _pendingTeamLogin3),
+            ("Team 4",           _pendingTeamLogin4),
         };
         foreach (var b in _config.Hotkeys.AccountHotkeys)
             if (HotkeyBindingUtil.IsPopulated(b))
                 others.Add(($"Account '{b.TargetName}'", b.Combo));
 
-        using var dlg = new CharacterHotkeysDialog(_config.Characters, _config.Hotkeys.CharacterHotkeys, others);
-        if (dlg.ShowDialog(this) == DialogResult.OK && dlg.Result != null)
+        if (FocusExistingHotkeyDialog()) return;
+        var dlg = new CharacterHotkeysDialog(_config.Characters, _config.Hotkeys.CharacterHotkeys, others);
+        dlg.FormClosed += (_, _) =>
         {
-            _config.Hotkeys.CharacterHotkeys = dlg.Result;
-            ConfigManager.Save(_config);
-            RefreshDirectBindingsCard();
-        }
+            if (dlg.DialogResult == DialogResult.OK && dlg.Result != null)
+            {
+                _config.Hotkeys.CharacterHotkeys = dlg.Result;
+                ConfigManager.Save(_config);
+                RefreshDirectBindingsCard();
+            }
+            _openHotkeyDialog = null;
+            dlg.Dispose();
+        };
+        _openHotkeyDialog = dlg;
+        dlg.Show(this);
+    }
+
+    private void OpenTeamHotkeysDialog()
+    {
+        var others = new List<(string label, string combo)>
+        {
+            ("Switch Key",       _txtSwitchKey.Text.Trim()),
+            ("Global Switch Key",_txtGlobalSwitchKey.Text.Trim()),
+            ("Fix Windows",      _txtArrangeWindows.Text.Trim()),
+            ("Launch One",       _txtLaunchOne.Text.Trim()),
+            ("Launch All",       _txtLaunchAll.Text.Trim()),
+            ("Multi-Mon Toggle", _txtToggleMultiMon.Text.Trim()),
+            ("PiP Toggle",       _txtTogglePip.Text.Trim()),
+        };
+        foreach (var b in _config.Hotkeys.AccountHotkeys)
+            if (HotkeyBindingUtil.IsPopulated(b))
+                others.Add(($"Account '{b.TargetName}'", b.Combo));
+        foreach (var b in _config.Hotkeys.CharacterHotkeys)
+            if (HotkeyBindingUtil.IsPopulated(b))
+                others.Add(($"Character '{b.TargetName}'", b.Combo));
+
+        if (FocusExistingHotkeyDialog()) return;
+        var dlg = new TeamHotkeysDialog(
+            _pendingTeamLogin1, _pendingTeamLogin2, _pendingTeamLogin3, _pendingTeamLogin4,
+            others);
+        dlg.FormClosed += (_, _) =>
+        {
+            if (dlg.DialogResult == DialogResult.OK && dlg.Result is { } r)
+            {
+                _pendingTeamLogin1 = r.Team1;
+                _pendingTeamLogin2 = r.Team2;
+                _pendingTeamLogin3 = r.Team3;
+                _pendingTeamLogin4 = r.Team4;
+                RefreshDirectBindingsCard();
+            }
+            _openHotkeyDialog = null;
+            dlg.Dispose();
+        };
+        _openHotkeyDialog = dlg;
+        dlg.Show(this);
+    }
+
+    /// <summary>
+    /// If a hotkey dialog is already up, bring it to front and return true so
+    /// the caller skips creating a second one. Returns false if no dialog is
+    /// currently open (caller proceeds normally).
+    /// </summary>
+    private bool FocusExistingHotkeyDialog()
+    {
+        if (_openHotkeyDialog == null || _openHotkeyDialog.IsDisposed) return false;
+        _openHotkeyDialog.Activate();
+        return true;
     }
 
     private void CheckDuplicateSlotAccounts()
@@ -792,45 +833,24 @@ public class SettingsForm : Form
 
         y += 150;
 
-        // Phase 5a: legacy Quick Login slot combos + Auto-Login hotkey TextBoxes
-        // moved to AccountHotkeysDialog / CharacterHotkeysDialog (opened from the
-        // Direct Bindings card below). QuickLogin1-4 + HotkeyConfig.AutoLogin1-4
-        // remain on AppConfig for v3.10.x back-compat; Phase 6 deletes them.
+        // Phase 5a + Teams: legacy Quick Login slot combos + Auto-Login hotkey
+        // TextBoxes + the inline Team Hotkeys card all collapsed into the
+        // Direct Bindings card below, edited via AccountHotkeysDialog /
+        // CharacterHotkeysDialog / TeamHotkeysDialog. QuickLogin1-4 and
+        // HotkeyConfig.AutoLogin1-4 remain on AppConfig for v3.10.x back-compat;
+        // Phase 6 deletes them.
 
-        // ─── Team Hotkeys ────────────────────────────────────────
-        var cardTeams = DarkTheme.MakeCard(page, "\uD83D\uDC65", "Team Hotkeys", DarkTheme.CardGold, 10, y, 480, 98);
-        const int teamHkL = 10, teamHkI = 65, teamHkCol2 = 240, teamHkCol2I = 295, teamHkW = 130;
-        int teamCy = 32;
-
-        DarkTheme.AddCardLabel(cardTeams, "Team 1:", teamHkL, teamCy + 3);
-        _txtTeamLogin1Hotkey = MakeHotkeyBox(cardTeams, teamHkI, teamCy + 1, teamHkW);
-        DarkTheme.AddCardLabel(cardTeams, "Team 2:", teamHkCol2, teamCy + 3);
-        _txtTeamLogin2Hotkey = MakeHotkeyBox(cardTeams, teamHkCol2I, teamCy + 1, teamHkW);
-        teamCy += 30;
-
-        DarkTheme.AddCardLabel(cardTeams, "Team 3:", teamHkL, teamCy + 3);
-        _txtTeamLogin3Hotkey = MakeHotkeyBox(cardTeams, teamHkI, teamCy + 1, teamHkW);
-        DarkTheme.AddCardLabel(cardTeams, "Team 4:", teamHkCol2, teamCy + 3);
-        _txtTeamLogin4Hotkey = MakeHotkeyBox(cardTeams, teamHkCol2I, teamCy + 1, teamHkW);
-
-        _lblAutoLoginHotkeyWarn = DarkTheme.AddCardHint(cardTeams, "", teamHkL, 82);
-        _lblAutoLoginHotkeyWarn.Size = new Size(460, 14);
-        _lblAutoLoginHotkeyWarn.ForeColor = DarkTheme.FgWarn;
-
-        _txtTeamLogin1Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
-        _txtTeamLogin2Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
-        _txtTeamLogin3Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
-        _txtTeamLogin4Hotkey.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
-        _txtTogglePip.TextChanged += (_, _) => CheckAutoLoginHotkeyConflicts();
-
-        y += 106;
 
         // ─── Direct Bindings (Account + Character hotkey families) ──
-        _cardDirectBindings = DarkTheme.MakeCard(page, "\u2328", "Direct Bindings",
-            DarkTheme.CardGreen, 10, y, 480, 130);
+        // Header-less card: Accounts / Characters / Teams rows. Each row is
+        // self-labelled with a Configure\u2026 button that opens its dialog. Height
+        // 118 fits 3 rows (cy increments of 28) plus the hint with ~10px of
+        // breathing room before the bottom border.
+        _cardDirectBindings = DarkTheme.MakeCard(page, "", "",
+            DarkTheme.CardGreen, 10, y, 480, 118);
         RefreshDirectBindingsCard();
 
-        y += 138;
+        y += 126;
 
         return page;
     }
@@ -923,7 +943,7 @@ public class SettingsForm : Form
         const int L = 10, I = 120, BRW = 380, IW = 250, R = 32;
 
         // ─── External Tools card ─────────────────────────────────
-        var cardPaths = DarkTheme.MakeCard(page, "📁", "External Tools", DarkTheme.CardGold, 10, y, 480, 170);
+        var cardPaths = DarkTheme.MakeCard(page, "📁", "External Tools", DarkTheme.CardGold, 10, y, 480, 240);
         int cy = 32;
 
         DarkTheme.AddCardLabel(cardPaths, "GINA Path:", L, cy);
@@ -938,6 +958,21 @@ public class SettingsForm : Form
                 InitialDirectory = Path.GetDirectoryName(_txtGinaPath.Text) ?? ""
             };
             if (ofd.ShowDialog() == DialogResult.OK) _txtGinaPath.Text = ofd.FileName;
+        };
+        cy += R;
+
+        DarkTheme.AddCardLabel(cardPaths, "Gamparse:", L, cy);
+        _txtGamparsePath = DarkTheme.AddCardTextBox(cardPaths, I, cy, IW);
+        var btnBrowseGamparse = DarkTheme.AddCardButton(cardPaths, "Browse...", BRW, cy - 3, 75);
+        btnBrowseGamparse.Click += (_, _) =>
+        {
+            using var ofd = new OpenFileDialog
+            {
+                Title = "Select Gamparse executable",
+                Filter = "Executables|*.exe|All Files|*.*",
+                InitialDirectory = Path.GetDirectoryName(_txtGamparsePath.Text) ?? ""
+            };
+            if (ofd.ShowDialog() == DialogResult.OK) _txtGamparsePath.Text = ofd.FileName;
         };
         cy += R;
 
@@ -971,16 +1006,11 @@ public class SettingsForm : Form
             if (ofd.ShowDialog() == DialogResult.OK) _txtDalayaPatcherPath.Text = ofd.FileName;
         };
         DarkTheme.AddCardHint(cardPaths, "Patcher may be deleted by antivirus — re-download from SoD if missing.", L, cy + 26);
+        cy += 52;
 
-        y += 178;
-
-        // ─── Tray Icon card ─────────────────────────────────────
-        var cardIcon = DarkTheme.MakeCard(page, "🎨", "Tray Icon", DarkTheme.CardPurple, 10, y, 480, 65);
-        cy = 32;
-
-        DarkTheme.AddCardLabel(cardIcon, "Custom Icon:", L, cy);
-        _txtCustomIconPath = DarkTheme.AddCardTextBox(cardIcon, I, cy, IW);
-        var btnBrowseIcon = DarkTheme.AddCardButton(cardIcon, "Browse...", BRW, cy - 3, 75);
+        DarkTheme.AddCardLabel(cardPaths, "Custom Icon:", L, cy);
+        _txtCustomIconPath = DarkTheme.AddCardTextBox(cardPaths, I, cy, IW);
+        var btnBrowseIcon = DarkTheme.AddCardButton(cardPaths, "Browse...", BRW, cy - 3, 75);
         btnBrowseIcon.Click += (_, _) =>
         {
             using var dlg = new OpenFileDialog
@@ -993,10 +1023,12 @@ public class SettingsForm : Form
                 _txtCustomIconPath.Text = dlg.FileName;
         };
 
-        y += 73;
+        y += 248;
 
         // ─── Startup card ───────────────────────────────────────
-        var cardStartup = DarkTheme.MakeCard(page, "🚀", "Startup", DarkTheme.CardGreen, 10, y, 480, 65);
+        // Three controls stacked at x=47 with even 30px stride, matching
+        // the user's layout brief: <pad><btn><pad><chk><pad><chk><pad>.
+        var cardStartup = DarkTheme.MakeCard(page, "🚀", "Startup", DarkTheme.CardGreen, 10, y, 480, 128);
         cy = 32;
 
         var btnShortcut = DarkTheme.AddCardButton(cardStartup, "Create Desktop Shortcut", 47, cy, 180);
@@ -1011,10 +1043,14 @@ public class SettingsForm : Form
                 reset.Start();
             });
         };
+        cy += 30;
 
-        _chkRunAtStartup = DarkTheme.AddCardCheckBox(cardStartup, "Run at Startup", 280, cy);
+        _chkShowTooltips = DarkTheme.AddCardCheckBox(cardStartup, "Show Tooltips", 47, cy);
+        cy += 30;
 
-        y += 73;
+        _chkRunAtStartup = DarkTheme.AddCardCheckBox(cardStartup, "Run at Startup", 47, cy);
+
+        y += 136;
 
         // ─── eqclient.ini actions card ─────────────────────────────
         var cardIni = DarkTheme.MakeCard(page, "💾", "eqclient.ini", DarkTheme.CardGold, 10, y, 480, 70);
@@ -1240,10 +1276,14 @@ public class SettingsForm : Form
         // Phase 5a: _txtAutoLogin1-4 removed from UI. v3 AutoLogin hotkeys are edited via
         // AccountHotkeysDialog / CharacterHotkeysDialog — legacy field values pass through
         // unchanged via BuildAppConfig below.
-        _txtTeamLogin1Hotkey.Text = _config.Hotkeys.TeamLogin1;
-        _txtTeamLogin2Hotkey.Text = _config.Hotkeys.TeamLogin2;
-        _txtTeamLogin3Hotkey.Text = _config.Hotkeys.TeamLogin3;
-        _txtTeamLogin4Hotkey.Text = _config.Hotkeys.TeamLogin4;
+        _pendingTeamLogin1 = _config.Hotkeys.TeamLogin1 ?? "";
+        _pendingTeamLogin2 = _config.Hotkeys.TeamLogin2 ?? "";
+        _pendingTeamLogin3 = _config.Hotkeys.TeamLogin3 ?? "";
+        _pendingTeamLogin4 = _config.Hotkeys.TeamLogin4 ?? "";
+        // Team count in Direct Bindings reads _pendingTeamLogin* — repaint
+        // now that they are set, since BuildHotkeysTab ran (and showed 0/4)
+        // before this function populated them.
+        if (_cardDirectBindings != null) RefreshDirectBindingsCard();
 
         // Layout
         _chkSlimTitlebar.Checked = _config.Layout.SlimTitlebar;
@@ -1264,9 +1304,11 @@ public class SettingsForm : Form
 
         // Paths
         _txtGinaPath.Text = _config.GinaPath;
+        _txtGamparsePath.Text = _config.GamparsePath;
         _txtNotesPath.Text = _config.NotesPath;
         _txtDalayaPatcherPath.Text = _config.DalayaPatcherPath;
         _chkRunAtStartup.Checked = _config.RunAtStartup;
+        _chkShowTooltips.Checked = _config.ShowTooltips;
 
         // PiP
         _chkPipEnabled.Checked = _config.Pip.Enabled;
@@ -1347,10 +1389,10 @@ public class SettingsForm : Form
             ("AutoLogin 2 (legacy)", _config.Hotkeys.AutoLogin2),
             ("AutoLogin 3 (legacy)", _config.Hotkeys.AutoLogin3),
             ("AutoLogin 4 (legacy)", _config.Hotkeys.AutoLogin4),
-            ("Team Login 1",     _txtTeamLogin1Hotkey.Text.Trim()),
-            ("Team Login 2",     _txtTeamLogin2Hotkey.Text.Trim()),
-            ("Team Login 3",     _txtTeamLogin3Hotkey.Text.Trim()),
-            ("Team Login 4",     _txtTeamLogin4Hotkey.Text.Trim()),
+            ("Team Login 1",     _pendingTeamLogin1),
+            ("Team Login 2",     _pendingTeamLogin2),
+            ("Team Login 3",     _pendingTeamLogin3),
+            ("Team Login 4",     _pendingTeamLogin4),
         };
         var familyHotkeys = Config.HotkeyBindingUtil.EnumeratePopulatedLabeled(_config)
             .Select(t => (t.label, t.combo));
@@ -1493,10 +1535,10 @@ public class SettingsForm : Form
                 AutoLogin2 = _config.Hotkeys.AutoLogin2,
                 AutoLogin3 = _config.Hotkeys.AutoLogin3,
                 AutoLogin4 = _config.Hotkeys.AutoLogin4,
-                TeamLogin1 = _txtTeamLogin1Hotkey.Text.Trim(),
-                TeamLogin2 = _txtTeamLogin2Hotkey.Text.Trim(),
-                TeamLogin3 = _txtTeamLogin3Hotkey.Text.Trim(),
-                TeamLogin4 = _txtTeamLogin4Hotkey.Text.Trim(),
+                TeamLogin1 = _pendingTeamLogin1,
+                TeamLogin2 = _pendingTeamLogin2,
+                TeamLogin3 = _pendingTeamLogin3,
+                TeamLogin4 = _pendingTeamLogin4,
                 // Once enabled, the hotkey is unlocked permanently
                 // Phase 5a: MultiMonitorEnabled gate removed. Preserve existing value for
                 // downgrade safety; SettingsForm no longer writes this field.
@@ -1541,9 +1583,11 @@ public class SettingsForm : Form
                 MiddleDoubleClick = TrayDisplayToAction(_cboMiddleDoubleClick.SelectedItem?.ToString() ?? "Settings")
             },
             GinaPath = _txtGinaPath.Text.Trim(),
+            GamparsePath = _txtGamparsePath.Text.Trim(),
             NotesPath = _txtNotesPath.Text.Trim(),
             DalayaPatcherPath = _txtDalayaPatcherPath.Text.Trim(),
             RunAtStartup = _chkRunAtStartup.Checked,
+            ShowTooltips = _chkShowTooltips.Checked,
             HotkeysLegacyBannerDismissed = _config.HotkeysLegacyBannerDismissed,
             // Phase 4: v4 lists are authoritative. LegacyAccounts is reverse-mapped
             // for downgrade safety. LegacyCharacterProfiles + CharacterAliases remain
@@ -1578,7 +1622,7 @@ public class SettingsForm : Form
             QuickLogin2 = _cboQuickLogin2 != null ? GetQuickLoginUsername(_cboQuickLogin2) : _config.QuickLogin2,
             QuickLogin3 = _cboQuickLogin3 != null ? GetQuickLoginUsername(_cboQuickLogin3) : _config.QuickLogin3,
             QuickLogin4 = _cboQuickLogin4 != null ? GetQuickLoginUsername(_cboQuickLogin4) : _config.QuickLogin4,
-            AutoEnterWorld = _chkAutoEnterWorld.Checked,
+            AutoEnterWorld = _config.AutoEnterWorld,   // pass-through (UI checkbox removed; one-shot v3→v4 migration trigger lives in AppConfig.Validate)
             LogTrimThresholdMB = (int)_nudLogTrimThreshold.Value,
             Team1Account1 = _pendingTeam1A,
             Team1Account2 = _pendingTeam1B,
@@ -1776,9 +1820,14 @@ public class SettingsForm : Form
         var btnImport = DarkTheme.AddCardButton(accountsCard, "\uD83D\uDCE5 Import", 305, btnY, 75);
         btnImport.Click += (_, _) => ImportAccounts();
 
-        // Login delay — compact, right side of button row
-        DarkTheme.AddCardLabel(accountsCard, "Delay:", 388, btnY + 3);
-        _nudLoginScreenDelay = DarkTheme.AddNumeric(accountsCard, 425, btnY, 45,
+        // Login delay — compact, right side of button row.
+        // Label at 380 (was 388) + input at 430 (was 425) gives ~17px between
+        // the colon and the input's left edge. FixedSingle border on dark
+        // backgrounds drops its left pixel (see DarkTheme.WrapWithBorder
+        // comment) — the extra gap keeps the colon from masking that visible
+        // ambiguity into "the input has no left border."
+        DarkTheme.AddCardLabel(accountsCard, "Delay:", 380, btnY + 3);
+        _nudLoginScreenDelay = DarkTheme.AddNumeric(accountsCard, 430, btnY, 45,
             _config.LoginScreenDelayMs / 1000m, 1, 15);
         _nudLoginScreenDelay.DecimalPlaces = 1;
         _nudLoginScreenDelay.Increment = 0.5m;
@@ -1840,12 +1889,15 @@ public class SettingsForm : Form
         _lblTeamSummary = DarkTheme.AddCardHint(teamsCard, BuildTeamSummary(), 140, 32);
         _lblTeamSummary.Size = new Size(330, 28);
 
-        // ─── Autologin defaults (flat row) ───────────────────────────
-        y += 72;
-        _chkAutoEnterWorld = DarkTheme.AddCheckBox(page, "Auto Enter World (legacy default)", 20, y);
-        _chkAutoEnterWorld.Checked = _config.AutoEnterWorld;
-        y += 22;
-        DarkTheme.AddHint(page, "Phase 4: Characters always enter world; Accounts stop at charselect. Team AutoEnter flags per-team.", 20, y);
+        // Phase 5b: removed "Auto Enter World (legacy default)" checkbox.
+        // It was a one-shot v3→v4 migration trigger consumed by AppConfig.Validate
+        // (clears itself after migrating LegacyAccounts). v4 paths don't read it:
+        //   • Character hotkeys → always enter world (hardcoded in FireCharacterLogin)
+        //   • Account hotkeys → always stop at charselect (hardcoded in FireAccountLogin)
+        //   • Per-team AutoEnter → still active via Team{N}AutoEnter on AppConfig
+        // The migration code in AppConfig.Validate is preserved — anyone who
+        // hand-edits the config to set AutoEnterWorld=true still triggers it.
+        // BuildAppConfig now passes _config.AutoEnterWorld through unchanged.
 
         RefreshAccountsGrid();
         RefreshCharactersGrid();

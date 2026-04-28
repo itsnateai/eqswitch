@@ -357,7 +357,11 @@ public static class DarkTheme
     {
         RepairDefaultFont();
         form.Text = title;
-        form.Size = size;
+        // ClientSize (not Size) — every caller positions controls in client
+        // coordinates and computes button Y as `formHeight - 44`. Setting
+        // outer Size made buttons clip behind the title bar by ~38px on
+        // dialogs near their max height (Team/Character hotkey dialogs).
+        form.ClientSize = size;
         form.FormBorderStyle = FormBorderStyle.FixedDialog;
         form.MaximizeBox = false;
         // Only override if caller hasn't already set CenterParent (dialogs need it)
@@ -421,15 +425,20 @@ public static class DarkTheme
             g.FillRectangle(accentBrush, 0, 0, 3, panel.Height);
         };
 
-        var lblTitle = new Label
+        // Title row is optional — pass empty title to make a header-less card
+        // (e.g. Hotkeys tab Direct Bindings, where rows are self-explanatory).
+        if (!string.IsNullOrEmpty(title))
         {
-            Text = $"{emoji}  {title}",
-            Location = new Point(10, 8),
-            AutoSize = true,
-            ForeColor = titleColor,
-            Font = FontSemibold95
-        };
-        panel.Controls.Add(lblTitle);
+            var lblTitle = new Label
+            {
+                Text = $"{emoji}  {title}",
+                Location = new Point(10, 8),
+                AutoSize = true,
+                ForeColor = titleColor,
+                Font = FontSemibold95
+            };
+            panel.Controls.Add(lblTitle);
+        }
 
         parent.Controls.Add(panel);
         return panel;

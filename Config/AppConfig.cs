@@ -57,6 +57,7 @@ public class AppConfig
 
     // Paths
     public string GinaPath { get; set; } = "";
+    public string GamparsePath { get; set; } = "";
     public string DalayaPatcherPath { get; set; } = "";
     public string NotesPath { get; set; } = "";
 
@@ -150,6 +151,16 @@ public class AppConfig
 
     /// <summary>Duration in ms for floating tooltips (default 1000ms).</summary>
     public int TooltipDurationMs { get; set; } = 1000;
+
+    /// <summary>
+    /// Master switch for status tooltips fired via TrayManager.ShowBalloon
+    /// (login progress, "Fix Windows", "PiP enabled", etc). When false the
+    /// helper short-circuits before scheduling FloatingTooltip.Show, so
+    /// AutoLoginManager.StatusUpdate stops appearing on screen. Warnings
+    /// (ShowWarning) intentionally bypass this flag — real problems still
+    /// surface. Settings UI: Paths tab → Startup card.
+    /// </summary>
+    public bool ShowTooltips { get; set; } = true;
 
     /// <summary>Show help tooltip when Ctrl+hovering the tray icon.</summary>
     public bool CtrlHoverHelp { get; set; } = true;
