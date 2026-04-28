@@ -1057,7 +1057,7 @@ public class TrayManager : IDisposable
         {
             Font = _boldMenuFont,
             ToolTipText = "Launch bare eqgame.exe patchme",
-            ShortcutKeyDisplayString = hk.LaunchOne
+            // Hotkey suffix omitted — root menu width budget. Hotkey still fires globally.
         };
         launchOneItem.Click += (_, _) => OnLaunchOne();
         _contextMenu.Items.Add(launchOneItem);
@@ -1066,7 +1066,7 @@ public class TrayManager : IDisposable
         {
             Font = _boldMenuFont,
             ToolTipText = "Auto-login Team 1 in parallel (same as Teams \u2192 Team 1)",
-            ShortcutKeyDisplayString = hk.TeamLogin1
+            // Hotkey suffix omitted — root menu width budget. Hotkey still fires globally.
         };
         launchTeamItem.Click += (_, _) => ExecuteTrayAction("LoginAll");
         _contextMenu.Items.Add(launchTeamItem);
@@ -1159,6 +1159,7 @@ public class TrayManager : IDisposable
         launcherMenu.DropDownItems.Add(new ToolStripSeparator());
         launcherMenu.DropDownItems.Add(linksMenu);
         launcherMenu.DropDownItems.Add(new ToolStripSeparator());
+        launcherMenu.DropDownItems.Add("\uD83D\uDCCA  Open Gamparse", null, (_, _) => FileOperations.OpenGamparse(_config, ShowBalloon, () => ShowSettings(5)));
         launcherMenu.DropDownItems.Add("\uD83C\uDFAF  Open GINA", null, (_, _) => FileOperations.OpenGina(_config, ShowBalloon, () => ShowSettings(5)));
         launcherMenu.DropDownItems.Add("\uD83D\uDCDD  Open Notes", null, (_, _) => FileOperations.OpenNotes(_config, ShowBalloon));
         _contextMenu.Items.Add(launcherMenu);
@@ -1297,6 +1298,7 @@ public class TrayManager : IDisposable
 
     private void ShowBalloon(string message)
     {
+        if (!_config.ShowTooltips) return;
         if (_config.TooltipDurationMs <= 0) return;
         // Marshal to UI thread if called from a background thread (e.g. FireTeam)
         if (_uiContext != null && SynchronizationContext.Current != _uiContext)
@@ -2068,6 +2070,7 @@ public class TrayManager : IDisposable
         _config.TrayClick.MiddleClick = newConfig.TrayClick.MiddleClick;
         _config.TrayClick.MiddleDoubleClick = newConfig.TrayClick.MiddleDoubleClick;
         _config.GinaPath = newConfig.GinaPath;
+        _config.GamparsePath = newConfig.GamparsePath;
         _config.NotesPath = newConfig.NotesPath;
         _config.DalayaPatcherPath = newConfig.DalayaPatcherPath;
         _config.LegacyCharacterProfiles = newConfig.LegacyCharacterProfiles;
@@ -2097,6 +2100,7 @@ public class TrayManager : IDisposable
         _config.AutoEnterWorld = newConfig.AutoEnterWorld;
         _config.LoginScreenDelayMs = newConfig.LoginScreenDelayMs;
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
+        _config.ShowTooltips = newConfig.ShowTooltips;
         _config.ShowTooltipErrors = newConfig.ShowTooltipErrors;
         _config.MinimizeToTray = newConfig.MinimizeToTray;
         _config.RunAtStartup = newConfig.RunAtStartup;

@@ -68,9 +68,12 @@ public sealed class AccountHotkeysDialog : Form
             else staleBindings.Add(b);
         }
 
+        // Tight layout matching TeamHotkeysDialog: card ends ~10px below the
+        // hint (was ~56px of dead space). Empty-state hint is 40px tall so
+        // floor card height at 82.
         int rowCount = accounts.Count + staleBindings.Count;
-        int bodyHeight = 80 + rowCount * 30;
-        int formHeight = Math.Min(140 + bodyHeight, 540);
+        int cardHeight = Math.Max(82, 64 + rowCount * 30);
+        int formHeight = Math.Min(70 + cardHeight, 540);
 
         StartPosition = FormStartPosition.CenterParent;
         DarkTheme.StyleForm(this, "Account Hotkeys", new Size(460, formHeight));
@@ -79,7 +82,7 @@ public sealed class AccountHotkeysDialog : Form
             "\uD83D\uDD11",
             "Direct Account Hotkeys",
             DarkTheme.CardGold,
-            10, 10, 430, bodyHeight + 30);
+            10, 10, 430, cardHeight);
 
         int cy = 32;
 
@@ -99,17 +102,20 @@ public sealed class AccountHotkeysDialog : Form
                 cy += 30;
             }
 
-            // Live rows in Accounts list order.
+            // Live rows in Accounts list order. Display = Username (so users can
+            // tell at a glance these are EQ login accounts, not characters);
+            // TargetName key for the binding stays as Account.Name to keep
+            // saved config compatibility with v3.10.x bindings.
             foreach (var a in accounts)
             {
                 byTargetName.TryGetValue(a.Name, out var currentCombo);
-                AddLiveRow(card, 10, cy, a.Name, currentCombo ?? "");
+                AddLiveRow(card, 10, cy, a.Name, a.Username, currentCombo ?? "");
                 cy += 30;
             }
 
             cy += 8;
             DarkTheme.AddCardHint(card,
-                "Press combo to capture. Backspace, Delete, or Escape clear. \u26A0 red rows = deleted target.",
+                "Press a combo to capture. Backspace, Delete, or Escape clears.",
                 10, cy);
         }
 
@@ -124,9 +130,10 @@ public sealed class AccountHotkeysDialog : Form
         CancelButton = btnCancel;
     }
 
-    private void AddLiveRow(Panel card, int x, int y, string accountName, string currentCombo)
+    private void AddLiveRow(Panel card, int x, int y, string accountName, string accountUsername, string currentCombo)
     {
-        var lbl = DarkTheme.AddCardLabel(card, accountName, x, y + 4);
+        // Display = Username; binding TargetName = accountName (the friendly Name).
+        var lbl = DarkTheme.AddCardLabel(card, accountUsername, x, y + 4);
         lbl.Size = new Size(220, 20);
         var tb = MakeHotkeyBox(card, x + 230, y + 1, 160, currentCombo);
         _liveRows.Add((accountName, tb));
@@ -180,6 +187,22 @@ public sealed class AccountHotkeysDialog : Form
     {
         if (disposing) _hotkeyFont.Dispose();
         base.Dispose(disposing);
+    }
+
+    /// <summary>
+    /// Intercept Escape so a focused hotkey TextBox clears its value
+    /// (matching the on-screen hint) instead of triggering CancelButton
+    /// and closing the dialog. Identified by ShortcutsEnabled=false, the
+    /// distinguishing flag set in MakeHotkeyBox.
+    /// </summary>
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData == Keys.Escape && ActiveControl is TextBox tb && !tb.ShortcutsEnabled)
+        {
+            tb.Text = "";
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
     }
 
     private static void HotkeyBoxKeyDown(object? sender, KeyEventArgs e)
