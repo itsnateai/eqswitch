@@ -988,9 +988,8 @@ public class TrayManager : IDisposable
     /// <summary>
     /// Phase 3 Teams submenu: parent item with populated team rows and "Manage Teams..." footer.
     /// Teams are populated if either slot string is non-empty. Empty-state row renders
-    /// when all four teams are unpopulated. Click fires ExecuteTrayAction("LoginAll[N]"),
-    /// which still routes through FireTeam + ExecuteQuickLogin + [Obsolete] LoginAccount
-    /// until Phase 5 rewires the team path.
+    /// when all four teams are unpopulated. Click fires ExecuteTrayAction("LoginAll[N]")
+    /// → FireTeam → LoginAndEnterWorld/LoginToCharselect per slot kind.
     /// </summary>
     private ToolStripMenuItem BuildTeamsSubmenu(AppConfig cfg, LegacyHotkeyLookup hkLookup)
     {
@@ -1795,7 +1794,7 @@ public class TrayManager : IDisposable
         }
 
         // v3 intent: enter world iff the legacy row had AutoEnterWorld=true AND a CharacterName.
-        // Otherwise stop at charselect — matches v3's own LoginAccount wrapper at AutoLoginManager.cs:127.
+        // Otherwise stop at charselect.
         bool enterWorld = legacyRow.AutoEnterWorld && !string.IsNullOrEmpty(legacyRow.CharacterName);
 
         if (enterWorld)
@@ -1903,33 +1902,6 @@ public class TrayManager : IDisposable
         }
     }
 
-    private Task ExecuteQuickLogin(string username, string slotName, bool? teamAutoEnter = null)
-    {
-        if (string.IsNullOrEmpty(username))
-        {
-            ShowBalloon($"{slotName}: no account assigned");
-            return Task.CompletedTask;
-        }
-        // TODO(Phase 5): both paths (FireLegacyQuickLoginSlot via FindAccountByName + this team path) must resolve against the same list. Currently LegacyAccounts here vs Accounts/Characters in the new helpers. Phase 5's ResolveTeamSlots will unify.
-        // Match by CharacterName first (unique), fall back to Username (legacy configs)
-        var account = _config.LegacyAccounts.FirstOrDefault(a => a.CharacterName == username)
-                   ?? _config.LegacyAccounts.FirstOrDefault(a => a.Username == username);
-        if (account == null)
-        {
-            ShowBalloon($"{slotName}: account '{username}' not found");
-            return Task.CompletedTask;
-        }
-        var label = string.IsNullOrEmpty(account.CharacterName) ? account.Username : account.CharacterName;
-        ShowBalloon($"Logging in {label}...");
-        try { return _autoLoginManager.LoginAccount(account, teamAutoEnter); }
-        catch (Exception ex)
-        {
-            FileLogger.Error($"AutoLogin CRASH: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}", ex);
-            ShowBalloon($"Login error: {ex.Message}");
-            return Task.CompletedTask;
-        }
-    }
-
     /// <summary>
     /// Resolves <c>_config.Team{N}*</c> fields into the tuple shape FireTeam needs.
     /// Pure function over <c>_config</c>; called from FireTeam and from BuildTeamsSubmenu
@@ -2018,10 +1990,6 @@ public class TrayManager : IDisposable
     ///   Account slot   → LoginToCharselect  → stops at character select.
     /// Mixed teams just get a mix (Character enters, Account stops). Want a
     /// character to stop at charselect? Put the backing Account in that slot.
-    ///
-    /// This method bypasses the legacy ExecuteQuickLogin path (which routed through the
-    /// [Obsolete] LoginAccount wrapper). ExecuteQuickLogin is now dead code — Phase 5
-    /// deletes it per plan.
     /// </summary>
     private void FireTeam(int teamIndex)
     {

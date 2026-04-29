@@ -164,48 +164,6 @@ public class AutoLoginManager
     }
 
     /// <summary>
-    /// Legacy entry point from the v3.x Tray menu. Synthesizes Account + optional
-    /// Character from the combined LoginAccount type, then delegates to BeginLogin.
-    /// The routing matches v3.9.x semantics exactly: AutoEnterWorld=true + non-empty
-    /// CharacterName → enter world as that character; otherwise stop at charselect.
-    ///
-    /// Phase 3+ will move Tray callers off this method; planned removal once
-    /// TrayManager.FireAccountLogin is migrated to the intent-explicit API.
-    /// </summary>
-    [Obsolete("Use LoginToCharselect(Account) or LoginAndEnterWorld(Character) for intent-explicit routing. Slated for removal once TrayManager.FireAccountLogin is migrated.")]
-    public Task LoginAccount(LoginAccount legacyAccount, bool? teamAutoEnter = null)
-    {
-        var account = new Account
-        {
-            Name = legacyAccount.Name,
-            Username = legacyAccount.Username,
-            EncryptedPassword = legacyAccount.EncryptedPassword,
-            Server = legacyAccount.Server,
-            UseLoginFlag = legacyAccount.UseLoginFlag,
-        };
-
-        // v3.9.x rule: enter-world if (team override says so) OR (per-account flag says so).
-        // Team null means "use account default". Team non-null forces the decision.
-        bool wantsEnterWorld = teamAutoEnter ?? legacyAccount.AutoEnterWorld;
-
-        if (wantsEnterWorld && !string.IsNullOrEmpty(legacyAccount.CharacterName))
-        {
-            var character = new Character
-            {
-                Name = legacyAccount.CharacterName,
-                AccountUsername = legacyAccount.Username,
-                AccountServer = legacyAccount.Server,
-                CharacterSlot = legacyAccount.CharacterSlot,
-            };
-            // Pass teamAutoEnter through so team-false can force charselect even on a Character target.
-            return BeginLogin(account, character, teamAutoEnter);
-        }
-        // Account-only path. teamAutoEnter=true on an Account-only row is logged inside
-        // RunLoginSequence as "enter-world requested but no Character target".
-        return BeginLogin(account, character: null, teamAutoEnter);
-    }
-
-    /// <summary>
     /// Launch EQ with the given Account credentials and (optionally) a specific
     /// Character to select + enter world. Non-blocking — runs the login sequence
     /// on a background thread. Returns a Task that completes when the full
