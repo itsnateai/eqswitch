@@ -455,9 +455,9 @@ public class SettingsForm : Form
         y += 56;
 
         // ─── Window Title card ───────────────────────────────────
-        var cardTitle = DarkTheme.MakeCard(page, "\uD83D\uDCDD", "Window Title", DarkTheme.CardGreen, 10, y, 480, 56);
+        // Height 40 (vs 56 for hinted cards): textbox bottom = 8+26 = 34, +6 padding.
+        var cardTitle = DarkTheme.MakeCard(page, "\uD83D\uDCDD", "Window Title", DarkTheme.CardGreen, 10, y, 480, 40);
         _txtWindowTitleTemplate = DarkTheme.AddCardTextBox(cardTitle, 130, 8, 330, 100);
-        DarkTheme.AddCardHint(cardTitle, "Applied after client is in world", 10, 36);
 
         return page;
     }
@@ -684,25 +684,27 @@ public class SettingsForm : Form
 
         if (FocusExistingHotkeyDialog()) return;
 
-        // Compute "natedogg / acpots" / "(empty)" previews per team so the dialog
-        // can show what each row's hotkey will actually launch — mirrors the
-        // Account/Character hotkey dialogs' "label = the thing being bound" pattern.
-        // Resolution: Character.Name → Account.Name → raw → "(empty)".
-        string ResolveSlot(string raw)
+        // Build structured per-slot previews so the dialog can color-code each
+        // name by kind (Character=blue, Account=purple) — matches the A/C pills
+        // in the Accounts team-configure window. Resolution per slot:
+        // Character.Name → IsCharacter=true; Account.Name → IsCharacter=false;
+        // raw fallback → IsCharacter=null (rendered uncolored).
+        (string Name, bool? IsCharacter)? ResolveSlot(string raw)
         {
-            if (string.IsNullOrEmpty(raw)) return "";
+            if (string.IsNullOrEmpty(raw)) return null;
             var ch = _pendingCharacters.FirstOrDefault(c => c.Name.Equals(raw, StringComparison.Ordinal));
-            if (ch != null) return ch.Name;
+            if (ch != null) return (ch.Name, true);
             var ac = _pendingAccounts.FirstOrDefault(a => a.Name.Equals(raw, StringComparison.Ordinal));
-            return ac != null ? ac.Name : raw;
+            return ac != null ? (ac.Name, false) : (raw, (bool?)null);
         }
-        string PreviewSlots(string a, string b)
+        IReadOnlyList<(string Name, bool? IsCharacter)> PreviewSlots(string a, string b)
         {
-            var names = new[] { ResolveSlot(a), ResolveSlot(b) }
-                .Where(s => !string.IsNullOrEmpty(s)).ToArray();
-            return names.Length > 0 ? string.Join(" / ", names) : "(empty)";
+            var slots = new List<(string Name, bool? IsCharacter)>();
+            if (ResolveSlot(a) is { } r1) slots.Add(r1);
+            if (ResolveSlot(b) is { } r2) slots.Add(r2);
+            return slots;
         }
-        var teamPreviews = new[]
+        var teamPreviews = new IReadOnlyList<(string Name, bool? IsCharacter)>[]
         {
             PreviewSlots(_pendingTeam1A, _pendingTeam1B),
             PreviewSlots(_pendingTeam2A, _pendingTeam2B),
