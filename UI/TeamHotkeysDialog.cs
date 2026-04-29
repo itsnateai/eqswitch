@@ -34,7 +34,7 @@ public sealed class TeamHotkeysDialog : Form
 
     public TeamHotkeysDialog(
         string team1, string team2, string team3, string team4,
-        IReadOnlyList<string> teamPreviews,
+        IReadOnlyList<IReadOnlyList<(string Name, bool? IsCharacter)>> teamPreviews,
         IReadOnlyList<(string label, string combo)> otherHotkeys)
     {
         _otherHotkeys = otherHotkeys;
@@ -67,15 +67,40 @@ public sealed class TeamHotkeysDialog : Form
         var initial = new[] { team1, team2, team3, team4 };
         for (int i = 0; i < 4; i++)
         {
-            // Show "Team N — slot1 / slot2" so the hotkey row is self-explanatory.
+            // Show "Team N — slot1 / slot2" with each slot color-coded by kind:
+            // Character=CardBlue, Account=CardPurple, unresolved=default. Matches
+            // the A/C pill colors in the Accounts team-configure window.
             // No destination suffix — destination is per-slot, dictated by kind:
             // Character → enters world, Account → charselect (handled at FireTeam).
-            var preview = i < teamPreviews.Count ? teamPreviews[i] : "(empty)";
-            var lbl = DarkTheme.AddCardLabel(card,
-                $"Team {i + 1} — {preview}", 10, cy + 4);
-            lbl.AutoSize = false;
-            lbl.Size = new Size(200, 20);
-            lbl.AutoEllipsis = true;
+            var slots = i < teamPreviews.Count ? teamPreviews[i] : Array.Empty<(string, bool?)>();
+            var prefix = DarkTheme.AddCardLabel(card, $"Team {i + 1} — ", 10, cy + 4);
+
+            if (slots.Count == 0)
+            {
+                var emptyLbl = DarkTheme.AddCardLabel(card, "(empty)", prefix.Right, cy + 4);
+                emptyLbl.ForeColor = DarkTheme.FgGray;
+            }
+            else
+            {
+                int xCursor = prefix.Right;
+                for (int s = 0; s < slots.Count; s++)
+                {
+                    var (name, isCharacter) = slots[s];
+                    var nameLbl = DarkTheme.AddCardLabel(card, name, xCursor, cy + 4);
+                    nameLbl.ForeColor = isCharacter switch
+                    {
+                        true  => DarkTheme.CardBlue,
+                        false => DarkTheme.CardPurple,
+                        null  => DarkTheme.FgGray,
+                    };
+                    xCursor = nameLbl.Right;
+                    if (s < slots.Count - 1)
+                    {
+                        var sep = DarkTheme.AddCardLabel(card, " / ", xCursor, cy + 4);
+                        xCursor = sep.Right;
+                    }
+                }
+            }
 
             _boxes[i] = MakeHotkeyBox(card, 220, cy + 1, 140, initial[i] ?? "");
             cy += 30;

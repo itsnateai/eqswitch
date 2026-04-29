@@ -881,7 +881,6 @@ public class TrayManager : IDisposable
         var menu = new ToolStripMenuItem("\uD83D\uDD11  Accounts")
         {
             Font = _boldMenuFont,
-            ToolTipText = "Login and stop at character select"
         };
 
         if (accounts.Count == 0)
@@ -937,7 +936,6 @@ public class TrayManager : IDisposable
         var menu = new ToolStripMenuItem("\uD83E\uDDD9  Characters")
         {
             Font = _boldMenuFont,
-            ToolTipText = "Login and enter world"
         };
 
         if (characters.Count == 0)
@@ -999,7 +997,6 @@ public class TrayManager : IDisposable
         var menu = new ToolStripMenuItem("\uD83D\uDC65  Teams")
         {
             Font = _boldMenuFont,
-            ToolTipText = "Launch multiple clients in parallel"
         };
         var hk = cfg.Hotkeys;
         var teams = new[]
@@ -1082,7 +1079,6 @@ public class TrayManager : IDisposable
         var launchOneItem = new ToolStripMenuItem("\u2694  Launch Client")
         {
             Font = _boldMenuFont,
-            ToolTipText = "Launch bare eqgame.exe patchme",
             // Hotkey suffix omitted — root menu width budget. Hotkey still fires globally.
         };
         launchOneItem.Click += (_, _) => OnLaunchOne();
@@ -1091,7 +1087,6 @@ public class TrayManager : IDisposable
         var launchTeamItem = new ToolStripMenuItem("\uD83C\uDFAE  Launch Team")
         {
             Font = _boldMenuFont,
-            ToolTipText = "Auto-login Team 1 in parallel (same as Teams \u2192 Team 1)",
             // Hotkey suffix omitted — root menu width budget. Hotkey still fires globally.
         };
         launchTeamItem.Click += (_, _) => ExecuteTrayAction("LoginAll");
@@ -1750,10 +1745,15 @@ public class TrayManager : IDisposable
         };
         if (string.IsNullOrEmpty(targetName))
         {
+            // v4 fallback: walk CharacterHotkeys ∪ AccountHotkeys (populated only)
+            // and fire the slot-th entry. Lets users with no v3 QuickLogin slots
+            // still bind tray AutoLoginN to their v4 hotkey-list entries.
+            if (TryFireV4QuickLoginFallback(slot)) return;
+
             // Always log — diagnostic trail for empty-slot fires. Balloon is rate-limited
             // to avoid tray-notification spam if a user holds down or rapidly repeats the hotkey.
             // First press ALWAYS balloons (rate-limit only kicks in on rapid repeat).
-            FileLogger.Info($"FireLegacyQuickLoginSlot: slot {slot} fired but QuickLogin{slot} is empty (no account assigned)");
+            FileLogger.Info($"FireLegacyQuickLoginSlot: slot {slot} fired but QuickLogin{slot} empty AND no v4 hotkey-list entry at index {slot}");
             if (!ShouldSuppressEmptySlotBalloon(slot))
                 ShowBalloon($"Quick Login {slot}: no account assigned");
             return;
@@ -1765,8 +1765,32 @@ public class TrayManager : IDisposable
                     ?? _config.LegacyAccounts.FirstOrDefault(a => a.Username == targetName);
         if (legacyRow == null)
         {
+            // v4 fallback for non-empty v3 slot whose target doesn't match any
+            // LegacyAccount row (post-migration drift). Try v4 Character.Name
+            // first (enter-world intent), then v4 Account.Name (charselect).
+            // Case-insensitive on this fallback ONLY: the v3 QuickLoginN strings
+            // were entered freehand and can drift in case from the v4 entity Name.
+            // (The v4 hotkey-list path stays ordinal — TargetName there is set
+            // by dialogs using the entity's exact Name, so no drift to forgive.)
+            var v4Char = _config.Characters.FirstOrDefault(c =>
+                c.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
+            if (v4Char != null)
+            {
+                LogFirstFire(slot, "Character (v3-target / v4-resolved)", v4Char.EffectiveLabel);
+                FireCharacterLogin(v4Char);
+                return;
+            }
+            var v4Account = _config.Accounts.FirstOrDefault(a =>
+                a.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
+            if (v4Account != null)
+            {
+                LogFirstFire(slot, "Account (v3-target / v4-resolved)", v4Account.EffectiveLabel);
+                FireAccountLogin(v4Account);
+                return;
+            }
+
             ShowBalloon($"Quick Login {slot}: '{targetName}' not found");
-            FileLogger.Warn($"Legacy QuickLogin{slot}: target '{targetName}' does not resolve to any LegacyAccount row");
+            FileLogger.Warn($"Legacy QuickLogin{slot}: target '{targetName}' does not resolve to any LegacyAccount row OR v4 Character/Account");
             return;
         }
 
@@ -1802,6 +1826,51 @@ public class TrayManager : IDisposable
 
         ShowBalloon($"Quick Login {slot}: v4 data missing for '{targetName}' (migration issue?)");
         FileLogger.Warn($"Legacy QuickLogin{slot}: resolved legacy row '{legacyRow.Name}' (key {accountKey}) but no v4 Account matches");
+    }
+
+    /// <summary>
+    /// v4 fallback for tray AutoLogin{N}: walks CharacterHotkeys then AccountHotkeys
+    /// (populated entries only), positionally indexed by slot. Characters first because
+    /// they enter world (higher-intent action); accounts after charselect-only.
+    /// Returns true if a binding was found and dispatched (caller skips empty-slot balloon).
+    /// </summary>
+    private bool TryFireV4QuickLoginFallback(int slot)
+    {
+        var hk = _config.Hotkeys;
+        var combined = hk.CharacterHotkeys.Select(b => (Binding: b, IsCharacter: true))
+            .Concat(hk.AccountHotkeys.Select(b => (Binding: b, IsCharacter: false)))
+            .Where(t => HotkeyBindingUtil.IsPopulated(t.Binding))
+            .ToList();
+        if (slot < 1 || slot > combined.Count) return false;
+
+        var (binding, isCharacter) = combined[slot - 1];
+        if (isCharacter)
+        {
+            var character = _config.FindCharacterByName(binding.TargetName);
+            if (character != null)
+            {
+                LogFirstFire(slot, "Character (v4 fallback)", character.EffectiveLabel);
+                FireCharacterLogin(character);
+                return true;
+            }
+        }
+        else
+        {
+            var account = _config.Accounts.FirstOrDefault(a =>
+                a.Name.Equals(binding.TargetName, StringComparison.Ordinal));
+            if (account != null)
+            {
+                LogFirstFire(slot, "Account (v4 fallback)", account.EffectiveLabel);
+                FireAccountLogin(account);
+                return true;
+            }
+        }
+
+        // Stale binding — TargetName doesn't resolve to any v4 entity. Surface it
+        // explicitly rather than silently falling through to "no account assigned".
+        ShowBalloon($"Quick Login {slot}: hotkey target '{binding.TargetName}' is stale (deleted)");
+        FileLogger.Warn($"v4 fallback for slot {slot}: TargetName '{binding.TargetName}' (kind={(isCharacter ? "Character" : "Account")}) does not resolve");
+        return true;  // we DID handle it (with an error balloon) — caller shouldn't double-balloon.
     }
 
     // Empty-slot balloon rate-limiter — tracks last fire per slot. Guards against
@@ -2680,6 +2749,8 @@ public class TrayManager : IDisposable
             Register(config.QuickLogin2, hk.AutoLogin2);
             Register(config.QuickLogin3, hk.AutoLogin3);
             Register(config.QuickLogin4, hk.AutoLogin4);
+            foreach (var b in hk.AccountHotkeys)   Register(b.TargetName, b.Combo);
+            foreach (var b in hk.CharacterHotkeys) Register(b.TargetName, b.Combo);
         }
 
         private void Register(string target, string combo)
