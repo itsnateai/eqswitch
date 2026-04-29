@@ -274,30 +274,13 @@ public class SettingsForm : Form
             catch (Exception ex) { FileLogger.Warn($"Failed to open GitHub URL: {ex.Message}"); }
         };
 
-        // Reset Defaults button (small, discreet, next to GitHub)
-        var btnReset = DarkTheme.MakeButton("\u26A0 Reset", DarkTheme.BgMedium, 100, 10);
-        btnReset.Size = new Size(70, 30);
-        btnReset.ForeColor = DarkTheme.CardWarn;
-        btnReset.Click += (_, _) =>
+        // Update button (small, discreet, next to GitHub)
+        var btnUpdate = DarkTheme.MakeButton("\u2B06 Update", DarkTheme.BgMedium, 100, 10);
+        btnUpdate.Size = new Size(70, 30);
+        btnUpdate.Click += (_, _) =>
         {
-            var result = MessageBox.Show(
-                "\u26A0\uFE0F NUCLEAR OPTION \u26A0\uFE0F\n\n" +
-                "This will reset ALL settings to factory defaults.\n" +
-                "Your current config will be lost forever.\n\n" +
-                "Are you absolutely sure?",
-                "Reset to Defaults",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning,
-                MessageBoxDefaultButton.Button2);
-            if (result == DialogResult.Yes)
-            {
-                var fresh = new AppConfig { IsFirstRun = false, EQPath = _config.EQPath };
-                _onApply(fresh);
-                ConfigManager.Save(fresh);
-                // Reopen Settings with fresh config so user sees the defaults
-                _reopenAfterClose = true;
-                Close();
-            }
+            using var dlg = new UpdateDialog();
+            dlg.ShowDialog(this);
         };
 
         // Version label
@@ -319,7 +302,7 @@ public class SettingsForm : Form
         var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 410, 10);
         btnCancel.Click += (_, _) => Close();
 
-        buttonPanel.Controls.AddRange(new Control[] { btnGitHub, btnReset, lblVersion, btnSave, btnApply, btnCancel });
+        buttonPanel.Controls.AddRange(new Control[] { btnGitHub, btnUpdate, lblVersion, btnSave, btnApply, btnCancel });
 
         Controls.Add(tabs);
         Controls.Add(buttonPanel);
@@ -1114,15 +1097,31 @@ public class SettingsForm : Form
         btnHelp.Click += (_, _) => HelpForm.Show(_config);
         page.Controls.Add(btnHelp);
 
-        // ─── Update button ──────────────────────────────────────
-        var btnUpdate = DarkTheme.MakeButton("⬆ Update", DarkTheme.BgMedium, 195, y);
-        btnUpdate.Size = new Size(100, 30);
-        btnUpdate.Click += (_, _) =>
+        // ─── Reset Defaults button (Nuclear) ────────────────────
+        var btnReset = DarkTheme.MakeButton("⚠ Reset", DarkTheme.BgMedium, 195, y);
+        btnReset.Size = new Size(100, 30);
+        btnReset.ForeColor = DarkTheme.CardWarn;
+        btnReset.Click += (_, _) =>
         {
-            using var dlg = new UpdateDialog();
-            dlg.ShowDialog(this);
+            var result = MessageBox.Show(
+                "⚠️ NUCLEAR OPTION ⚠️\n\n" +
+                "This will reset ALL settings to factory defaults.\n" +
+                "Your current config will be lost forever.\n\n" +
+                "Are you absolutely sure?",
+                "Reset to Defaults",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (result == DialogResult.Yes)
+            {
+                var fresh = new AppConfig { IsFirstRun = false, EQPath = _config.EQPath };
+                _onApply(fresh);
+                ConfigManager.Save(fresh);
+                _reopenAfterClose = true;
+                Close();
+            }
         };
-        page.Controls.Add(btnUpdate);
+        page.Controls.Add(btnReset);
 
         // ─── Uninstall button (right-aligned) ───────────────────
         var btnUninstall = DarkTheme.MakeButton("🗑 Uninstall", DarkTheme.CardWarn, 380, y);
