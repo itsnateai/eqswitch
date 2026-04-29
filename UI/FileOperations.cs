@@ -99,6 +99,9 @@ public static class FileOperations
 
         try
         {
+            // nosemgrep: gitlab.security_code_scan.SCS0001-1
+            // Path lives in eqswitch-config.json (local desktop-app config, no remote-attacker
+            // boundary). File.Exists guarded above. Patcher is user-installed, user-selected.
             using var proc = Process.Start(new ProcessStartInfo
             {
                 FileName = config.DalayaPatcherPath,
