@@ -3339,7 +3339,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                     } __except(EXCEPTION_EXECUTE_HANDLER) {}
                     // Repopulate slot names (SHM may have been reset)
                     for (int i = 0; i < count; i++) {
-                        char slotName[CHARSEL_NAME_LEN];
+                        char slotName[CHARSEL_NAME_LEN] = {};
                         wsprintfA(slotName, "Slot %d", i + 1);
                         memcpy((void *)shm->names[i], slotName, CHARSEL_NAME_LEN);
                         shm->levels[i] = 0;
@@ -3369,7 +3369,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                                 count = probeCount;
                                 g_cachedSlotCount = probeCount;
                                 for (int i = 0; i < count; i++) {
-                                    char slotName[CHARSEL_NAME_LEN];
+                                    char slotName[CHARSEL_NAME_LEN] = {};
                                     wsprintfA(slotName, "Slot %d", i + 1);
                                     memcpy((void *)shm->names[i], slotName, CHARSEL_NAME_LEN);
                                     shm->levels[i] = 0;
