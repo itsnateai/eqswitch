@@ -109,6 +109,8 @@ static const char *HexDump(const uint8_t *buf, int len) {
     char *p = hex;
     for (int i = 0; i < len && i < 48; i++) {
         if (i > 0) *p++ = ' ';
+        // nosemgrep: gitlab.flawfinder.sprintf-1.vsprintf-1.swprintf-1.vswprintf-1._stprintf-1._vstprintf-1
+        // Bounded: loop limited to i<48, hex[] is 48*3+1=145 bytes, each write is 2 chars + NUL.
         sprintf(p, "%02X", buf[i]);
         p += 2;
     }
