@@ -23,22 +23,33 @@ These are upstream third-party files that ship verbatim per their BSD-2 / MIT li
 
 These four are real-pattern false positives. Mark each "false positive" with the rationale below in https://semgrep.dev/orgs/itsnateai → Findings.
 
-### 1. `gitlab.flawfinder.strcpy-1` — `Native/eqmain_widgets_mq2style.h:477,481`
+### 1. `gitlab.flawfinder.strcpy-1` — `Native/eqmain_widgets.cpp:477,481`
 
 ```c
-strcpy(preview, "(empty)");
-strcpy(preview, "(SEH)");
+char preview[40] = {};            // line 467
+...
+strcpy(preview, "(empty)");       // line 477 — 7-byte literal
+...
+strcpy(preview, "(SEH)");         // line 481 — 5-byte literal
 ```
 
-**Why FP:** the source is a string literal of compile-time-known length. `preview` is a fixed-size stack buffer sized to comfortably exceed both literals. flawfinder cannot verify either fact, so it flags the pattern unconditionally.
+**Why FP:** the source is a string literal of compile-time-known length (7 and 5 bytes including NUL). `preview` is a fixed-size 40-byte stack buffer declared 10 lines earlier. flawfinder cannot verify either fact, so it flags the pattern unconditionally.
 
-### 2. `gitlab.flawfinder.sprintf-1.*` — `Native/hde32.c:112` (would be silenced by `.semgrepignore` once policy honors it)
+### 2. `gitlab.flawfinder.sprintf-1.*` — `Native/net_debug.cpp:112`
+
+This finding was originally mis-attributed in this doc to upstream HDE32 — it is actually in **first-party** `net_debug.cpp` and is **not** silenced by `.semgrepignore` (intentionally — first-party code stays scannable). Suppressed via inline `// nosemgrep:` annotation at the call site.
 
 ```c
-sprintf(p, "%02X", buf[i]);
+static char hex[48 * 3 + 1];      // 145-byte static buffer
+char *p = hex;
+for (int i = 0; i < len && i < 48; i++) {
+    if (i > 0) *p++ = ' ';
+    sprintf(p, "%02X", buf[i]);   // line 112 — writes 3 bytes (2 hex + NUL)
+    p += 2;                       // NUL gets overwritten next iter
+}
 ```
 
-**Why FP:** upstream HDE32 (third-party). Each call writes exactly 2 bytes plus NUL into a caller-sized buffer. Bounded by the format specifier itself.
+**Why FP:** loop bound `i < 48`, per-iteration write is 1 space + `sprintf("%02X")` = 3 bytes worst case, max total `48 * 3 = 144` < 145-byte buffer. Bounded by construction.
 
 ### 3. `gitlab.security_code_scan.SCS0001-1` — `UI/FileOperations.cs:102`
 
@@ -63,7 +74,14 @@ Process.Start(new ProcessStartInfo(exePath)
 });
 ```
 
-**Why FP:** `exePath` is the running EQSwitch.exe's own path (self-relaunch after the in-place self-update writes the new binary). `Arguments` is a hardcoded literal. The only way this becomes a vulnerability is if the running exe has already been replaced with a malicious binary — at which point the attacker already has code execution and does not need this Process.Start to exploit anything.
+**Why FP — but with a catch (now closed):** `exePath` is `Environment.ProcessPath` resolved at line 290, before the download. `Arguments` is a hardcoded literal. SCS0001's literal pattern-match concern is benign here.
+
+**Real concern that was hiding behind the FP — now fixed:** by the time `Process.Start` runs at line 411, the rename dance at line 406 has overwritten the on-disk exe with the freshly-downloaded payload. So the relaunched binary IS attacker-controlled if integrity verification was bypassed. The original code at lines 369-372 had a bare `catch { /* proceed without verification */ }` that swallowed any exception from the SHA256SUMS fetch — meaning an MITM could drop the SHA256SUMS request and silently bypass the hash check. **Fixed in the same commit as this triage doc** by converting to fail-closed:
+
+- The `catch (Exception ex)` block now logs, deletes the zip, shows an error, and returns. Network blips that take down SHA256SUMS now abort the update (user retries) instead of fail-opening.
+- The release workflow at `.github/workflows/release.yml` now generates `SHA256SUMS` alongside the zip — previously it didn't, which made the entire `if (!string.IsNullOrEmpty(_hashFileUrl))` block dead code on shipped releases. Without this, the catch fix has nothing to guard.
+
+The SCS0001 finding itself remains a UI-pattern FP — dismiss as before.
 
 ## Noise rule to disable platform-side
 

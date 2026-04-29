@@ -366,9 +366,17 @@ public class UpdateDialog : Form
                     }
                 }
                 catch (OperationCanceledException) { throw; }
-                catch
+                catch (Exception ex)
                 {
-                    // SHA256SUMS fetch failed — defense-in-depth, proceed without verification
+                    // Fail closed: any verification error (network failure, malformed
+                    // SHA256SUMS, hash compute IO error) aborts the update. Continuing
+                    // here would let an MITM that drops the SHA256SUMS request bypass
+                    // integrity check entirely.
+                    FileLogger.Warn($"SHA256 verification aborted: {ex.GetType().Name}: {ex.Message}");
+                    TryDelete(zipPath);
+                    ShowError("Hash verification failed.",
+                        "Couldn't verify the downloaded file's SHA256 checksum. Update aborted for safety. Try again or download manually from GitHub.");
+                    return;
                 }
             }
 
