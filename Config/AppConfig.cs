@@ -304,10 +304,9 @@ public class AppConfig
     }
 
     /// <summary>
-    /// Look up an Account by its user-facing Name. Ordinal comparison — matches v3
-    /// ExecuteQuickLogin semantics at TrayManager.cs:1321-1322. Returns null if
-    /// name is empty or no match found. Used by tray dispatch and Phase 5 hotkey
-    /// registration.
+    /// Look up an Account by its user-facing Name. Ordinal (case-sensitive) comparison.
+    /// Returns null if name is empty or no match found. Used by tray dispatch and
+    /// Phase 5 hotkey registration.
     /// </summary>
     public Account? FindAccountByName(string name) =>
         string.IsNullOrEmpty(name) ? null : Accounts.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.Ordinal));
