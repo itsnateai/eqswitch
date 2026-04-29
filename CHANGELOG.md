@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.14.4 — self-update: SHA256SUMS now required (close fail-open on missing manifest) (2026-04-29)
+
+### Security fix
+- **Self-updater now fails closed when a release has no SHA256SUMS asset.** v3.14.3 fixed the catch-block fail-open inside the integrity-check try, but the outer `if (!string.IsNullOrEmpty(_hashFileUrl))` still skipped verification entirely if the release didn't ship a manifest. As of this version, an empty `_hashFileUrl` aborts the update with a clear error. Combined with the workflow change in v3.14.3 (which always emits `SHA256SUMS`), self-update is now unconditionally fail-closed: every accepted payload has been hash-verified end-to-end.
+
 ## v3.14.3 — self-update: fail-closed on hash verification errors + ship SHA256SUMS (2026-04-29)
 
 ### Security fix
