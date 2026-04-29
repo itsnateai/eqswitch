@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.14.5 — defensive zero-init in MQ2 SHM bridge (2026-04-29)
+
+### Hardening
+- **`MQ2Bridge::Poll` slot-name fallback paths now zero-init the local `slotName[CHARSEL_NAME_LEN]` buffer before `wsprintfA`.** The subsequent `memcpy(shm->names[i], slotName, CHARSEL_NAME_LEN)` copies the full 64-byte buffer into the C#-readable shared-memory region, so any bytes past the NUL terminator written by `wsprintfA` were uninitialized stack contents leaking into SHM. Not exploitable — destination size is fixed and there's no path-length blowup — but unnecessary disclosure of return addresses / local pointers. Two call sites (`mq2_bridge.cpp:3342` and `:3372`) now match the surrounding `={}` zero-init pattern.
+
+### CI (no behavior change)
+- Semgrep workflow excludes `Native/` from scans; the `gitlab.flawfinder.*` community rules generated zero-signal noise on x86 RE / MQ2-port code (37 historical findings, all manually triaged as false positives).
+
 ## v3.14.4 — self-update: SHA256SUMS now required (close fail-open on missing manifest) (2026-04-29)
 
 ### Security fix
