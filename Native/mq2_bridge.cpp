@@ -1366,7 +1366,7 @@ static void EnumerateLiveWidgetVtablesOnce() {
     //   10c: heap scan for "LOGIN_PasswordEdit" CXStr (anchor)
     //
     // Goal: pin the offsets iter 11's compile-time-bound MQ2 port needs.
-    // See _.claude/_comms/handoff-eqswitch-combo-g-iterations1-9-20260424.md.
+    // See internal handoff `handoff-eqswitch-combo-g-iterations1-9-20260424.md`.
     // ───────────────────────────────────────────────────────────
 
     // ── 10a: XMLIndex shape filter (smarter than iter 9's reject-all-ptrs) ──
