@@ -416,9 +416,6 @@ public class UpdateDialog : Form
 
             // Relaunch and exit
             FileLogger.Info($"Update applied: {_remoteVersion}. Restarting...");
-            // nosemgrep: gitlab.security_code_scan.SCS0001-1
-            // exePath = Environment.ProcessPath (own exe), Arguments = literal. Hash-verified
-            // upstream at lines 329-372 (fail-closed catch + SHA256SUMS req'd if URL present).
             Process.Start(new ProcessStartInfo(exePath)
             {
                 Arguments = "--after-update",
