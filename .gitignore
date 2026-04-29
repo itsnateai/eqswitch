@@ -50,7 +50,6 @@ Native/*.exp
 Native/*.lib
 
 ## Claude Code
-# nosemgrep: ai.generic.detect-generic-ai-anthprop.detect-generic-ai-anthprop
 .claude/
 .superpowers/
 .worktrees/
