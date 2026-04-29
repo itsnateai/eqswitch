@@ -93,6 +93,28 @@ The SCS0001 finding itself remains a UI-pattern FP — dismiss as before.
 
 This rule has no security signal in this repo. Disable it for `itsnateai/eqswitch` in the Semgrep policy: https://semgrep.dev/orgs/itsnateai/policies → search `detect-generic-ai-anthprop` → set to **Disabled**.
 
-## Next-scan acceptance criteria
+## Status (2026-04-29 post-triage)
 
-After the steps above, the next push to `main` should report **≤ 5 non-blocking findings**, all of them low-severity `flawfinder.memcpy-1` patterns in our own (non-upstream) `Native/` code that warrant a separate review pass — not a triage doc entry. If findings exceed 5, this doc has gone stale and needs to be re-reviewed against the new scan output.
+The Semgrep workflow now uploads SARIF to GitHub's Security tab in addition to the Semgrep AppSec Platform — `gh api repos/itsnateai/eqswitch/code-scanning/alerts` is the canonical source of truth.
+
+**10 alerts dismissed via API** with rationale stored on each alert:
+
+| # | Rule | Reason | Location |
+|---|---|---|---|
+| 1 | `ai.generic.detect-generic-ai-anthprop` | won't fix | `.gitignore:54` (literal pattern required) |
+| 11 | `gitlab.flawfinder.strcpy-1` | false positive | `Native/eqmain_widgets.cpp:481` (5-byte literal → 40-byte buffer) |
+| 51 | `gitlab.flawfinder.strcpy-1` | false positive | `Native/eqmain_widgets.cpp:477` (7-byte literal → 40-byte buffer) |
+| 43 | `gitlab.flawfinder.sprintf-1.*` | false positive | `Native/net_debug.cpp:112` (bounded loop, static buffer) |
+| 45-50 | `gitlab.security_code_scan.SCS0001-1` | false positive | All 6 `Process.Start` UI sites (local-config paths or self-relaunch) |
+
+**36 alerts remain open — all flawfinder bound-checking complaints in first-party `Native/` C++:**
+
+- 26× `gitlab.flawfinder.memcpy-1.*` — `memcpy` calls in `Native/pattern_scan.cpp`, `net_debug.cpp`, `mq2_bridge.cpp`, `eqswitch-hook.cpp`, etc.
+- 6× `gitlab.flawfinder.strncpy-1` — bounded copies in `mq2_bridge.cpp`, `login_state_machine.cpp`
+- 4× `gitlab.flawfinder.strlen-1.*` — strlen patterns in `mq2_bridge.cpp`
+
+These are **NOT yet triaged**. They are flagged as boilerplate buffer-pattern warnings that *could* indicate real off-by-ones or *could* be bounded-by-construction. They warrant a dedicated review pass — not a blanket "false positive" dismissal. Tracked as a follow-up work item.
+
+## Re-suppressing on next scan
+
+GitHub's SARIF correlation keeps dismissed alerts dismissed across re-scans as long as the underlying finding (file/line/rule) is "the same finding." Re-scanning will not resurface the 10 dismissals listed above. Inline `// nosemgrep:` annotations were tried and **did not work** for community-tier rules in this Semgrep policy — the API-dismissal path is canonical.
