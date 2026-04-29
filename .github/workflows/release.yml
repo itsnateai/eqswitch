@@ -31,6 +31,14 @@ jobs:
           $csproj = $csproj -replace '<Version>.*?</Version>', "<Version>${{ steps.version.outputs.VERSION }}</Version>"
           Set-Content EQSwitch.csproj $csproj
 
+      # Gate: tracked Native/*.dll must not be older (in git history) than any of
+      # its sources. release.yml ships pre-built DLLs via `cp` rather than rebuilding
+      # C++ on tag, so a source-only commit (e.g. c479de1) can otherwise sneak through
+      # and ship the previous release's DLL with a new version sticker.
+      - name: Native DLL currency check
+        shell: bash
+        run: bash .github/scripts/check-native-dll-currency.sh
+
       - name: Build self-contained
         run: dotnet publish EQSwitch.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 
