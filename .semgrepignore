@@ -1,0 +1,24 @@
+# Semgrep ignore list.
+# Documented rationale for each entry lives in docs/SEMGREP_TRIAGE.md.
+
+# ─── Upstream third-party (MinHook + HDE) ────────────────────────────────────
+# These ship verbatim per their BSD-2 / MIT headers (see per-file SPDX).
+# We don't modify them and any "fix" would be a fork. Ignored wholesale.
+Native/buffer.c
+Native/hook.c
+Native/trampoline.c
+Native/hde32.c
+Native/hde32.h
+Native/hde64.c
+Native/hde64.h
+Native/MinHook.h
+
+# ─── Build / publish output ─────────────────────────────────────────────────
+bin/
+obj/
+**/publish/
+
+# ─── Test fixtures and dump artifacts ───────────────────────────────────────
+_tests/fixtures/
+dumps/
+_.diagnostics/
