@@ -325,8 +325,17 @@ public class UpdateDialog : Form
                 if (!success) return;
             }
 
-            // Verify SHA256 hash if the release includes a SHA256SUMS file (skip in test mode)
-            if (!TestMode && !string.IsNullOrEmpty(_hashFileUrl))
+            // Verify SHA256 hash. SHA256SUMS is required on every release as of v3.14.3
+            // (release.yml emits it). If a release accidentally omits it, fail closed —
+            // installing an unverified payload is the exact attack the manifest prevents.
+            if (!TestMode && string.IsNullOrEmpty(_hashFileUrl))
+            {
+                TryDelete(zipPath);
+                ShowError("Hash verification failed.",
+                    "Release is missing the SHA256SUMS integrity manifest. Update aborted for safety. Download manually from GitHub.");
+                return;
+            }
+            if (!TestMode)
             {
                 _lblStatus.Text = "Verifying integrity...";
                 try

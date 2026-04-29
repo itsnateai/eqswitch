@@ -64,7 +64,7 @@ using var proc = Process.Start(new ProcessStartInfo
 
 **Why FP:** `config.DalayaPatcherPath` is read from `eqswitch-config.json` next to the running exe. There is no remote-attacker write path to that file. `File.Exists(config.DalayaPatcherPath)` is checked at line 94. SCS0001 fires on the *pattern* (`Process.Start` with non-literal path), not on the threat-model question (is the path attacker-influenced?).
 
-### 4. `gitlab.security_code_scan.SCS0001-1` — `UI/UpdateDialog.cs:411`
+### 4. `gitlab.security_code_scan.SCS0001-1` — `UI/UpdateDialog.cs:419`
 
 ```csharp
 Process.Start(new ProcessStartInfo(exePath)
