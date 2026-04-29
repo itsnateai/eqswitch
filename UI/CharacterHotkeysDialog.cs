@@ -147,7 +147,9 @@ public sealed class CharacterHotkeysDialog : Form
     {
         var displayName = isOrphan ? $"{characterName} (no account)" : characterName;
         var lbl = DarkTheme.AddCardLabel(card, displayName, x, y + 4);
-        if (isOrphan) lbl.ForeColor = DarkTheme.FgDimGray;
+        // Orphan-dim outranks the role color — signals "this won't actually launch"
+        // until re-linked. Resolved characters get CardBlue to match the C-pill.
+        lbl.ForeColor = isOrphan ? DarkTheme.FgDimGray : DarkTheme.CardBlue;
         lbl.Size = new Size(220, 20);
 
         var tb = MakeHotkeyBox(card, x + 230, y + 1, 160, currentCombo);

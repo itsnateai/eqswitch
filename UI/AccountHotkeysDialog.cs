@@ -161,6 +161,8 @@ public sealed class AccountHotkeysDialog : Form
     {
         // Display = Username; binding TargetName = accountName (the friendly Name).
         var lbl = DarkTheme.AddCardLabel(card, accountUsername, x, y + 4);
+        // Match the A-pill purple in the Accounts team-configure window.
+        lbl.ForeColor = DarkTheme.CardPurple;
         lbl.Size = new Size(220, 20);
         var tb = MakeHotkeyBox(card, x + 230, y + 1, 160, currentCombo);
         _liveRows.Add((accountName, tb));
