@@ -217,9 +217,8 @@ bool IsEQMainWidgetClass(const void *pWnd) {
 // a no-op and the keystroke fallback quietly takes over — leaving no
 // trace in the log. Caught 2026-04-24 Combo G session: in-process path
 // was never carrying load and IsEQMainEditWidget's silent rejection was
-// why the bug was invisible for so long. See handoff
-// `_.claude/_comms/handoff-eqswitch-combo-g-continuation-20260424.md`
-// (Quick-win section).
+// why the bug was invisible for so long. See internal handoff
+// `handoff-eqswitch-combo-g-continuation-20260424.md` (Quick-win section).
 static void LogWidgetGateRejection(const char *gate, const void *pWnd) {
     static int g_rejLogCount = 0;
     if (g_rejLogCount >= 30) return;

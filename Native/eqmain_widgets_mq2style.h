@@ -30,8 +30,8 @@
 //     live Dalaya client session.
 //
 // dShow + CXMLDataManager-hash structure: pending Phase 2 sandbox + rz-ghidra
-// pseudocode review per
-// `_.claude/_comms/handoff-eqswitch-combo-g-pinning-EXECUTE-NEXT-SESSION.md`.
+// pseudocode review per internal handoff
+// `handoff-eqswitch-combo-g-pinning-EXECUTE-NEXT-SESSION.md`.
 // Until pinned, IsCXWndVisible() returns true unconditionally and
 // GetCXWndXMLName() returns nullptr — both produce a graceful "fall back to
 // legacy" path in callers.

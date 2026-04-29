@@ -9,8 +9,8 @@
 //
 // All RVAs and offsets sourced from iter 8/9/10 smokes — see
 // memory/reference_eqswitch_dalaya_widget_def_link.md for the offset
-// table and X:/_Projects/_.claude/_comms/handoff-eqswitch-combo-g-
-// iterations1-9-20260424.md for the recon trail.
+// table and internal handoff `handoff-eqswitch-combo-g-iterations1-9-
+// 20260424.md` for the recon trail.
 
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
@@ -474,10 +474,14 @@ void *FindLivePasswordCEditWnd_Legacy() {
                                            (size_t)len);
                                     preview[len] = 0;
                                 } else if (len == 0) {
+                                    // nosemgrep: gitlab.flawfinder.strcpy-1
+                                    // Bounded: 7-byte literal into 40-byte stack buffer (line 467).
                                     strcpy(preview, "(empty)");
                                 }
                             }
                         } __except (EXCEPTION_EXECUTE_HANDLER) {
+                            // nosemgrep: gitlab.flawfinder.strcpy-1
+                            // Bounded: 5-byte literal into 40-byte stack buffer (line 467).
                             strcpy(preview, "(SEH)");
                         }
                         DI8Log("eqmain_widgets:   cand[%d] @ 0x%08X vt=0x%08X XMLIndex=0x%08X InputText='%s'",
