@@ -201,12 +201,16 @@ Settings are **not enforced** until you explicitly click Save in the EQ Client S
 
 EQSwitch can be fully removed without leaving traces:
 
-**From the GUI:** Settings → General tab → **Uninstall** button
+**From the GUI:** Settings → Paths tab → **Uninstall** button
 
-This removes:
-- Startup shortcut
-- Desktop shortcut
-- Legacy proxy DLL from EQ directory (if one was deployed by an older version)
+This reverts all external system changes:
+- Restores Dalaya's `dinput8.dll` if a legacy proxy was renamed during the chain-load era
+- Removes legacy EQSwitch DLL artifacts from the EQ folder (size-detected — never touches Dalaya's MQ2 core)
+- Removes the startup shortcut
+- Removes the desktop shortcut
+- Removes the legacy `HKCU\...\Run\EQSwitch` registry entry from pre-shortcut versions
+
+**Fallback:** if the GUI won't launch, run `uninstall.bat` from the EQSwitch folder. It mirrors the GUI logic.
 
 Your `eqclient.ini` settings and EQSwitch config files are **not** modified — restore from `.bak` files in your EQ folder if needed.
 
