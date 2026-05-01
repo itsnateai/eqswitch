@@ -154,8 +154,11 @@ public class TrayManager : IDisposable
 
     public void Initialize()
     {
-        // One-time cleanup: remove legacy proxy DLL files from game directory
-        CleanupLegacyProxyFiles();
+        // One-time cleanup: remove legacy proxy DLL files from game directory + app folder.
+        // Single source of truth lives in UninstallHelper so the Uninstall button and
+        // startup cleanup can never drift apart. Actions are logged via FileLogger from
+        // inside the helper; we discard the human-readable list here.
+        _ = UninstallHelper.RestoreLegacyDlls(_config.EQPath ?? string.Empty);
 
         _trayIcon = new NotifyIcon
         {
@@ -2512,66 +2515,6 @@ public class TrayManager : IDisposable
             monitorOrder.Add(monitors[secondaryIdx]);
 
         return monitorOrder[clientIndex % monitorOrder.Count];
-    }
-
-    /// <summary>
-    /// Remove legacy proxy DLL files from the game directory and app directory.
-    /// Restores Dalaya's original dinput8.dll if we renamed it during chain-load era.
-    /// Each operation is independent — failure of one doesn't block the others.
-    /// </summary>
-    private void CleanupLegacyProxyFiles()
-    {
-        var eqPath = _config.EQPath;
-        if (string.IsNullOrEmpty(eqPath) || !Directory.Exists(eqPath)) return;
-
-        var dinput8Path = Path.Combine(eqPath, "dinput8.dll");
-        var dalayaPath = Path.Combine(eqPath, "dinput8_dalaya.dll");
-
-        // 1. If we renamed Dalaya's DLL to dinput8_dalaya.dll, restore it
-        try
-        {
-            if (File.Exists(dalayaPath))
-            {
-                if (!File.Exists(dinput8Path))
-                {
-                    File.Move(dalayaPath, dinput8Path);
-                    FileLogger.Info("Cleanup: restored dinput8_dalaya.dll → dinput8.dll");
-                }
-                else
-                {
-                    File.Delete(dalayaPath);
-                    FileLogger.Info("Cleanup: removed stale dinput8_dalaya.dll");
-                }
-            }
-        }
-        catch (Exception ex) { FileLogger.Warn($"Cleanup: dalaya DLL restore failed: {ex.Message}"); }
-
-        // 2. If dinput8.dll in game dir is our old proxy (~141-148KB), remove it
-        try
-        {
-            if (File.Exists(dinput8Path) && !File.Exists(dalayaPath))
-            {
-                var info = new FileInfo(dinput8Path);
-                if (info.Length < 200_000) // Ours is ~148KB, Dalaya's is ~1.3MB
-                {
-                    File.Delete(dinput8Path);
-                    FileLogger.Info($"Cleanup: removed legacy proxy dinput8.dll from game folder ({info.Length:N0} bytes)");
-                }
-            }
-        }
-        catch (Exception ex) { FileLogger.Warn($"Cleanup: game dir proxy removal failed: {ex.Message}"); }
-
-        // 3. Remove legacy dinput8.dll from app directory (no longer shipped)
-        try
-        {
-            var appDinput8 = Path.Combine(AppContext.BaseDirectory, "dinput8.dll");
-            if (File.Exists(appDinput8))
-            {
-                File.Delete(appDinput8);
-                FileLogger.Info("Cleanup: removed legacy dinput8.dll from app folder");
-            }
-        }
-        catch (Exception ex) { FileLogger.Warn($"Cleanup: app dir proxy removal failed: {ex.Message}"); }
     }
 
     private void CleanupHookInjection()
