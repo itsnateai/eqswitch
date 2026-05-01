@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright (C) 2026 itsnateai
+// © itsnateai
 
 // mq2_bridge.cpp -- MQ2 bridge for character select + in-process login
 //

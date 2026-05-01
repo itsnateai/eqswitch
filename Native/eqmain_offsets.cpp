@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright (C) 2026 itsnateai
+// © itsnateai
 
 // Native/eqmain_offsets.cpp -- eqmain.dll range tracking + ownership tests
 //

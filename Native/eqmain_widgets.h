@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright (C) 2026 itsnateai
+// © itsnateai
 
 // Native/eqmain_widgets.h -- structural live-widget lookup for Combo G
 //

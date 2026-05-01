@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright (C) 2026 itsnateai
+// © itsnateai
 
 // net_debug.cpp — Winsock hooks for diagnosing EQ server disconnects
 // Hooks send, recv, sendto, recvfrom, closesocket from WS2_32.dll via IAT.
