@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright (C) 2026 itsnateai
+// © itsnateai
 
 // Native/eqmain_cxstr.h -- eqmain-flavored CXStr ctor/dtor + Combo G text-write
 //
