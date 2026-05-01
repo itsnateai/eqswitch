@@ -60,6 +60,9 @@ if defined EQPATH if exist "!EQPATH!" (
     set "OLDBAK=!EQPATH!\dinput8.dll.old"
 
     :: 1. Chain-load era: restore Dalaya's MQ2 if we renamed it.
+    :: INVARIANT: never delete a >=200KB dinput8.dll. When both files coexist
+    :: (chain-load steady state), size-check dinput8.dll to decide which file is
+    :: the live MQ2 vs the legacy proxy.
     if exist "!DALAYA!" (
         if not exist "!DINPUT8!" (
             move /y "!DALAYA!" "!DINPUT8!" >nul 2>&1
@@ -70,12 +73,30 @@ if defined EQPATH if exist "!EQPATH!" (
                 set /a COUNT+=1
             )
         ) else (
-            del "!DALAYA!" >nul 2>&1
-            if exist "!DALAYA!" (
-                echo  [!!] Could not remove stale dinput8_dalaya.dll
+            for %%F in ("!DINPUT8!") do set "DINPUT8_SIZE=%%~zF"
+            if !DINPUT8_SIZE! lss 200000 (
+                :: dinput8.dll is our proxy; DALAYA is the real MQ2.
+                del "!DINPUT8!" >nul 2>&1
+                if exist "!DINPUT8!" (
+                    echo  [!!] Could not remove legacy proxy dinput8.dll -- file may be in use
+                ) else (
+                    move /y "!DALAYA!" "!DINPUT8!" >nul 2>&1
+                    if errorlevel 1 (
+                        echo  [!!] Could not restore dinput8_dalaya.dll over deleted proxy
+                    ) else (
+                        echo  [OK] Restored Dalaya's dinput8.dll over legacy proxy ^(!DINPUT8_SIZE! bytes^)
+                        set /a COUNT+=1
+                    )
+                )
             ) else (
-                echo  [OK] Removed stale dinput8_dalaya.dll from EQ folder
-                set /a COUNT+=1
+                :: dinput8.dll is already legit MQ2 ^(>=200KB^); DALAYA is the orphan.
+                del "!DALAYA!" >nul 2>&1
+                if exist "!DALAYA!" (
+                    echo  [!!] Could not remove stale dinput8_dalaya.dll
+                ) else (
+                    echo  [OK] Removed stale dinput8_dalaya.dll ^(dinput8.dll is !DINPUT8_SIZE! bytes, presumed Dalaya MQ2^)
+                    set /a COUNT+=1
+                )
             )
         )
     )

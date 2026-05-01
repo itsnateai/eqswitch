@@ -24,8 +24,9 @@ public static class UninstallHelper
     {
         var actions = new List<string>();
 
-        if (!string.IsNullOrEmpty(config.EQPath))
-            actions.AddRange(RestoreLegacyDlls(config.EQPath));
+        // Always call RestoreLegacyDlls — it has a deliberate empty-path branch
+        // that still cleans up legacy DLLs in EQSwitch's own app folder.
+        actions.AddRange(RestoreLegacyDlls(config.EQPath ?? string.Empty));
 
         actions.AddRange(RemoveShortcuts());
         actions.AddRange(RemoveLegacyRegistryEntry());
@@ -64,21 +65,43 @@ public static class UninstallHelper
         var oldBackup = Path.Combine(eqPath, "dinput8.dll.old");
 
         // 1. Chain-load era: restore Dalaya's MQ2 if we renamed it.
+        // INVARIANT: never delete a >=200KB dinput8.dll — that's Dalaya's MQ2 core.
+        // The size-check must run on Step 1's coexistence branch too, not just Step 2 —
+        // otherwise Step 1 would mutate the precondition Step 2's safety check relies on.
         try
         {
             if (File.Exists(dalayaPath))
             {
                 if (!File.Exists(dinput8Path))
                 {
+                    // Only dalayaPath exists — straightforward rename-back.
                     File.Move(dalayaPath, dinput8Path);
                     actions.Add("Restored Dalaya's dinput8.dll from chain-load rename");
                     FileLogger.Info("Uninstall: restored dinput8_dalaya.dll → dinput8.dll");
                 }
                 else
                 {
-                    File.Delete(dalayaPath);
-                    actions.Add("Removed stale dinput8_dalaya.dll from EQ folder");
-                    FileLogger.Info($"Uninstall: deleted {dalayaPath} (dinput8.dll already present)");
+                    // Both files coexist — chain-load steady state. The small one is
+                    // our proxy; the >=200KB one is Dalaya's live MQ2. Size-check
+                    // dinput8.dll to decide which file is canonical.
+                    var info = new FileInfo(dinput8Path);
+                    if (info.Length < 200_000)
+                    {
+                        // dinput8.dll is our proxy; dalayaPath is the real MQ2.
+                        // Delete the proxy, then rename the MQ2 back to dinput8.dll.
+                        File.Delete(dinput8Path);
+                        File.Move(dalayaPath, dinput8Path);
+                        actions.Add($"Restored Dalaya's dinput8.dll over legacy proxy ({info.Length:N0} bytes)");
+                        FileLogger.Info($"Uninstall: deleted proxy {dinput8Path} ({info.Length} bytes), restored {dalayaPath} → dinput8.dll");
+                    }
+                    else
+                    {
+                        // dinput8.dll is already legitimate MQ2 (>=200KB).
+                        // dalayaPath is the stale orphan — safe to delete.
+                        File.Delete(dalayaPath);
+                        actions.Add("Removed stale dinput8_dalaya.dll from EQ folder");
+                        FileLogger.Info($"Uninstall: deleted stale orphan {dalayaPath} (dinput8.dll {info.Length} bytes is presumed Dalaya MQ2)");
+                    }
                 }
             }
         }
@@ -92,6 +115,8 @@ public static class UninstallHelper
         // 2. Proxy era: size-detect and remove legacy proxy in EQ folder.
         // Dalaya's MQ2 dinput8.dll is ~1.3MB; our old proxies were 141-148KB.
         // The 200KB threshold is generous — anything bigger is presumed legitimate.
+        // (Step 1 may already have handled the dalayaPath case above; this branch
+        // catches the proxy-without-dalaya case.)
         try
         {
             if (File.Exists(dinput8Path) && !File.Exists(dalayaPath))

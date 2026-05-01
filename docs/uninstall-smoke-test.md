@@ -24,8 +24,8 @@ EQ folder contains Dalaya's real `dinput8.dll` (~1.3MB). Run-at-startup ON
   plus the trailing "delete the EQSwitch folder yourself" note.
 
 ### Scenario 2 — chain-load era artifacts (pre-v3.4.3)
-**Pre:** Dalaya's MQ2 dinput8.dll renamed to `dinput8_dalaya.dll`. Our old proxy
-(<200KB) sitting in the `dinput8.dll` slot.
+**Pre:** Dalaya's MQ2 dinput8.dll renamed to `dinput8_dalaya.dll` (~1.3MB).
+Our old proxy (<200KB) sitting in the `dinput8.dll` slot.
 
 **Run:** uninstall (GUI or .bat).
 
@@ -33,10 +33,28 @@ EQ folder contains Dalaya's real `dinput8.dll` (~1.3MB). Run-at-startup ON
 - `dinput8.dll` (the small proxy) deleted. Logged with byte size.
 - `dinput8_dalaya.dll` renamed back to `dinput8.dll`. Hash matches the original
   Dalaya MQ2 (compare to `_srcexamples` reference if available).
-- Order matters: helper deletes the proxy first (size check passes because
-  `dinput8_dalaya.dll` is present, so Step 2's `!File.Exists(dalayaPath)` guard
-  is false → step is skipped → step 1 already restored the rename). Verify by
-  reading log lines.
+- Step 1 handles both restores atomically inside its coexistence branch:
+  size-checks `dinput8.dll`, sees `<200KB`, deletes the proxy, then `File.Move`s
+  `dinput8_dalaya.dll` over. Step 2's `!File.Exists(dalayaPath)` guard means
+  Step 2 doesn't double-process the same files.
+- ⚠️ This is the case PR #4's first ultrareview pass (review-4213529313) caught:
+  the original Step 1 blindly deleted `dalayaPath` in the coexistence branch,
+  which would have wiped Dalaya's live MQ2 and left only the proxy (which
+  Step 2 then deleted too, leaving NO `dinput8.dll`). Always exercise this
+  scenario after touching Step 1.
+
+### Scenario 2b — chain-load era with MQ2 already restored (orphan case)
+**Pre:** Dalaya's MQ2 dinput8.dll in place (~1.3MB) AND a stale
+`dinput8_dalaya.dll` still around (also ~1.3MB) from an aborted earlier
+restore. Both files coexist but `dinput8.dll` is already legitimate.
+
+**Run:** uninstall.
+
+**Post:**
+- `dinput8.dll` UNTOUCHED (>=200KB, presumed legit MQ2).
+- `dinput8_dalaya.dll` deleted as the stale orphan.
+- Step 1 hits the `>=200KB` branch and chooses the orphan-delete path
+  instead of the rename-back path.
 
 ### Scenario 3 — legacy `.old` backup only
 **Pre:** Dalaya's real `dinput8.dll` in place. `dinput8.dll.old` from a v3.4.2-era
