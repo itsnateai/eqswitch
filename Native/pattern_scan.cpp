@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright (C) 2026 itsnateai
+// © itsnateai
 
 // pattern_scan.cpp — Locates EQ's internal g_bActive flag via binary scanning.
 //

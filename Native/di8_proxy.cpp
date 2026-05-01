@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright (C) 2026 itsnateai
+// © itsnateai
 
 // di8_proxy.cpp — IDirectInput8 COM proxy implementation
 // Forwards all methods to the real interface.

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Copyright (C) 2026 itsnateai
+// © itsnateai
 
 #pragma once
 // EQSwitch dinput8 proxy — IDirectInput8 COM wrapper
