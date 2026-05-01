@@ -1370,10 +1370,13 @@ public class SettingsForm : Form
     {
         var result = MessageBox.Show(
             "This will revert all external changes made by EQSwitch:\n\n" +
-            "  • Clean up any legacy DLL artifacts from EQ folder\n" +
+            "  • Restore Dalaya's dinput8.dll if a legacy proxy is in the way\n" +
+            "  • Remove legacy EQSwitch DLL artifacts from EQ folder\n" +
             "  • Remove startup shortcut\n" +
-            "  • Remove desktop shortcut\n\n" +
-            "EQSwitch's own config and logs will NOT be deleted.\n" +
+            "  • Remove desktop shortcut\n" +
+            "  • Remove legacy registry startup entry\n\n" +
+            "EQSwitch's own config and logs will NOT be deleted —\n" +
+            "delete the EQSwitch folder yourself to fully remove the app.\n" +
             "eqclient.ini settings will NOT be reverted (use .bak files).\n\n" +
             "Continue?",
             "EQSwitch — Uninstall",
@@ -1382,22 +1385,27 @@ public class SettingsForm : Form
 
         if (result != DialogResult.Yes) return;
 
+        // Persist RunAtStartup=false BEFORE running CleanUp so that if the user
+        // closes the result dialog with the X, ValidateStartupPath on next launch
+        // won't resurrect the shortcut RemoveShortcuts just deleted.
+        _chkRunAtStartup.Checked = false;
+        _config.RunAtStartup = false;
+        ConfigManager.Save(_config);
+        ConfigManager.FlushSave();
+
         var actions = UninstallHelper.CleanUp(_config);
 
         if (actions.Count == 0)
             actions.Add("Nothing to clean up — no external modifications found.");
+
+        actions.Add(string.Empty);
+        actions.Add("You can now close EQSwitch and delete the EQSwitch folder to fully remove it.");
 
         MessageBox.Show(
             string.Join("\n", actions),
             "EQSwitch — Uninstall Complete",
             MessageBoxButtons.OK,
             MessageBoxIcon.Information);
-
-        // Persist RunAtStartup=false so ValidateStartupPath doesn't recreate the shortcut
-        _chkRunAtStartup.Checked = false;
-        _config.RunAtStartup = false;
-        ConfigManager.Save(_config);
-        ConfigManager.FlushSave();
     }
 
     private bool ApplySettings()
