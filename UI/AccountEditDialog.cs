@@ -22,7 +22,7 @@ public sealed class AccountEditDialog : Form
     // Process lifetime only; cross-session persistence would need config.
     private static Point? _lastLocation;
 
-    private readonly TextBox _txtName;
+    private readonly TextBox _txtNotes;
     private readonly TextBox _txtUsername;
     private readonly TextBox _txtPassword;
     private readonly Button _btnRevealPassword;
@@ -34,6 +34,7 @@ public sealed class AccountEditDialog : Form
 
     private readonly bool _isEdit;
     private readonly string _existingEncryptedPassword;
+    private readonly string _existingName;
     private readonly string _selfUsername;
     private readonly string _selfServer;
     private bool _passwordRevealed;
@@ -50,6 +51,7 @@ public sealed class AccountEditDialog : Form
     {
         _isEdit = existing != null;
         _existingEncryptedPassword = existing?.EncryptedPassword ?? "";
+        _existingName = existing?.Name ?? "";
         _selfUsername = existing?.Username ?? "";
         _selfServer = existing?.Server ?? "";
 
@@ -79,7 +81,7 @@ public sealed class AccountEditDialog : Form
         int btnY = 10 + cardH + 12;
         int formH = btnY + 30 + 12;
 
-        DarkTheme.StyleForm(this, _isEdit ? $"Edit Account \u2014 {existing!.Name}" : "Add Account", new Size(formW, formH));
+        DarkTheme.StyleForm(this, _isEdit ? $"Edit Account \u2014 {existing!.Username}" : "Add Account", new Size(formW, formH));
 
         var card = DarkTheme.MakeCard(this, "\uD83D\uDD11",
             _isEdit ? "Edit Account" : "New Account",
@@ -119,11 +121,13 @@ public sealed class AccountEditDialog : Form
             cy += 20;
         }
 
-        // Note: optional. Stored as Account.Name in the model (rename was
-        // UI-only — JSON property stays "Name" for backward compat).
-        DarkTheme.AddCardLabel(card, "Note:", L, cy + 4);
-        _txtName = DarkTheme.AddCardTextBox(card, I, cy, inputW);
-        _txtName.Text = existing?.Name ?? "";
+        // Notes: free-form, optional. Maps to Account.Notes (since v3.14.8).
+        // Account.Name is no longer surfaced to the user — it's the persisted
+        // FK identity for hotkey + team-slot bindings and gets auto-shadowed
+        // to Username on creation. Editing here only touches Notes.
+        DarkTheme.AddCardLabel(card, "Notes:", L, cy + 4);
+        _txtNotes = DarkTheme.AddCardTextBox(card, I, cy, inputW);
+        _txtNotes.Text = existing?.Notes ?? "";
         cy += 30;
 
         DarkTheme.AddCardLabel(card, "Server:", L, cy + 4);
@@ -155,14 +159,12 @@ public sealed class AccountEditDialog : Form
 
     private void OnSaveClicked(IReadOnlyList<Account> otherAccounts)
     {
-        var name = _txtName.Text.Trim();
+        var notes = _txtNotes.Text.Trim();
         var username = _txtUsername.Text.Trim();
         var server = (_cboServer.Text ?? "").Trim();
         if (string.IsNullOrEmpty(server)) server = "Dalaya";
 
-        // Note (Account.Name) is optional — blanks are allowed and don't
-        // collide with each other. Username remains required (it's the
-        // pinning identity for AccountKey + autologin keystrokes).
+        // Notes are free-form metadata; uniqueness only on (Username, Server).
         if (string.IsNullOrEmpty(username))
         {
             MessageBox.Show("Username is required.", "Invalid Account",
@@ -180,15 +182,6 @@ public sealed class AccountEditDialog : Form
                 a.Server.Equals(_selfServer, StringComparison.Ordinal))
             {
                 continue;
-            }
-            // Note collision check skipped when name is blank — multiple
-            // accounts with empty Note are allowed (it's just metadata).
-            if (!string.IsNullOrEmpty(name) && a.Name.Equals(name, StringComparison.Ordinal))
-            {
-                MessageBox.Show($"An Account with Note '{name}' already exists.", "Duplicate Note",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                _txtName.Focus();
-                return;
             }
             if (a.Username.Equals(username, StringComparison.Ordinal) &&
                 a.Server.Equals(server, StringComparison.Ordinal))
@@ -229,6 +222,12 @@ public sealed class AccountEditDialog : Form
             }
         }
 
+        // Name = FK identity. On create, shadow it to Username so bindings have
+        // a stable key from day one. On edit, preserve the existing Name verbatim
+        // — touching it would silently break any hotkey / team-slot / tray
+        // binding whose TargetName == this.Name.
+        var name = _isEdit ? _existingName : username;
+
         Result = new Account
         {
             Name = name,
@@ -236,6 +235,7 @@ public sealed class AccountEditDialog : Form
             EncryptedPassword = encryptedPassword,
             Server = server,
             UseLoginFlag = true,
+            Notes = notes,
         };
         DialogResult = DialogResult.OK;
         Close();

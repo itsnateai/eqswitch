@@ -225,7 +225,12 @@ internal sealed class AutoLoginTeamsDialog : Form
         {
             // Don't duplicate: if Account.Name matches a Character.Name we've listed, skip.
             if (_characters.Any(c => c.Name.Equals(a.Name, StringComparison.Ordinal))) continue;
-            items.Add(new SlotOption(a.Name, $"\uD83D\uDD11  {a.Name}", SlotKind.Account));
+            // Display the Username (the login identity Nate recognizes); persist
+            // the FK identity (Account.Name) as the SlotOption value so existing
+            // saved team slots keep resolving via ResolveAccountForSlot. New
+            // accounts have Name == Username (auto-shadowed in AccountEditDialog),
+            // so display and persistence agree for fresh data.
+            items.Add(new SlotOption(a.Name, $"\uD83D\uDD11  {a.Username}", SlotKind.Account));
         }
 
         var cb = new ComboBox

@@ -201,6 +201,24 @@ public class AppConfig
         Accounts.RemoveAll(a => a == null!);
         Characters.RemoveAll(c => c == null!);
 
+        // v3.14.8 split: Account.Name became an internal FK shadow of Username
+        // and Notes is the new user-facing free-form column. For accounts that
+        // predate the split, the legacy "note" lived in Name. Copy it once into
+        // Notes for display continuity but leave Name unchanged — any existing
+        // hotkey / team-slot / tray binding still resolves by TargetName == Name.
+        // Idempotent: only fires when Notes is empty AND Name diverges from
+        // Username AND Name is non-empty, so a second pass is a no-op.
+        foreach (var a in Accounts)
+        {
+            if (string.IsNullOrEmpty(a.Notes) &&
+                !string.IsNullOrEmpty(a.Name) &&
+                !a.Name.Equals(a.Username, StringComparison.Ordinal))
+            {
+                a.Notes = a.Name;
+                mutated = true;
+            }
+        }
+
         // Defense-in-depth: if a v4 config arrives with empty v4 lists but populated
         // legacy data (hand-edit, dev build, or partial migration), re-derive v4 from
         // legacy. Otherwise Phase 3's tray would render empty Accounts/Characters
