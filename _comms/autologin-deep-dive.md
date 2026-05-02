@@ -392,12 +392,12 @@ For Cloud Claude — answer these in order, with file:line evidence:
 
 ## 10. Test + memory surface
 
-**Test files (already in repo — listed for cloud reviewers):**
-- `Tests/AppConfigValidateTests.cs` — covers `AppConfig.Validate` migration; should be extended for empty-Name repair when that follow-up lands
-- `Tests/CharacterSelectorTests.cs` — char-select path
-- `Tests/KeyInputWriterTests.cs` — DI8 SHM producer
-- `Tests/ShmLayoutTests.cs` — **load-bearing**: only mechanical guard against the C# producer / C++ consumer struct-layout mismatch noted in CLAUDE.md "Memory-mapped file struct must match exactly"
-- `Tests/TestAutoLoginRunner.cs` — orchestration smoke
+**Test files (already in repo — listed for cloud reviewers; all live under `Core/`, not a separate `Tests/` directory):**
+- `Core/AppConfigValidateTests.cs` — covers `AppConfig.Validate` migration; should be extended for empty-Name repair when that follow-up lands
+- `Core/CharacterSelectorTests.cs` — char-select path
+- `Core/KeyInputWriterTests.cs` — DI8 SHM producer
+- `Core/ShmLayoutTests.cs` — **load-bearing**: only mechanical guard against the C# producer / C++ consumer struct-layout mismatch noted in CLAUDE.md "Memory-mapped file struct must match exactly"
+- `Core/TestAutoLoginRunner.cs` — orchestration smoke
 
 **Memory pointers cloud reviewers should read:**
 - `memory/project_eqswitch_v7_goal_mq2_givetime_detour.md` — PATH C origin (16 days old; may be stale on offset count)
