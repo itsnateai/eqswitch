@@ -12,8 +12,10 @@ namespace EQSwitch.UI;
 
 /// <summary>
 /// Modal dialog for creating or editing a Character (v4 first-class launch target).
-/// Phase 4. ClassHint dropped from UI per 2026-04-15 design decision — no reliable
-/// source for EQ class data. Field persisted silently from existing record.
+/// Phase 4. ClassHint, DisplayLabel, and Notes are not edited in the UI — they don't
+/// surface in the main accounts/character grid, so the dialog stays focused on the
+/// fields that drive launch behavior (Name + Account + Slot). Existing values are
+/// preserved silently from the source record so legacy data survives an edit.
 /// </summary>
 public sealed class CharacterEditDialog : Form
 {
@@ -26,12 +28,12 @@ public sealed class CharacterEditDialog : Form
     private readonly TextBox _txtName = null!;
     private readonly ComboBox _cboAccount = null!;
     private readonly NumericUpDown _numSlot = null!;
-    private readonly TextBox _txtDisplayLabel = null!;
-    private readonly TextBox _txtNotes = null!;
 
     private readonly bool _isEdit;
     private readonly string _selfName;
     private readonly string _existingClassHint;
+    private readonly string _existingDisplayLabel;
+    private readonly string _existingNotes;
 
     /// <summary>Result of the dialog. Non-null only when DialogResult == OK.</summary>
     public Character? Result { get; private set; }
@@ -44,6 +46,8 @@ public sealed class CharacterEditDialog : Form
         _isEdit = existing != null;
         _selfName = existing?.Name ?? "";
         _existingClassHint = existing?.ClassHint ?? "";
+        _existingDisplayLabel = existing?.DisplayLabel ?? "";
+        _existingNotes = existing?.Notes ?? "";
 
         // Restore last-open position if available; otherwise center on parent.
         if (_lastLocation.HasValue)
@@ -57,15 +61,15 @@ public sealed class CharacterEditDialog : Form
         }
         FormClosing += (_, _) => _lastLocation = Location;
         // Tight layout: form ClientSize matches actual content + button row.
-        // Inputs are 200px (was 275); Notes textarea also 200x80. Card height
-        // computed from row count so the bottom doesn't leak empty space.
+        // Inputs are 200px wide; card height computed from row count so the
+        // bottom doesn't leak empty space.
         const int formW = 360;
         const int cardW = 340;
         const int L = 10, I = 105;
         const int inputW = 200;
 
-        // Content cy: 32 + Name 30 + Account 30 + Slot 30 + DisplayLabel 30 + Notes 90
-        int contentH = 32 + 30 * 4 + 90;
+        // Content cy: 32 (card header) + Name 30 + Account 30 + Slot 30
+        int contentH = 32 + 30 * 3;
         int cardH = contentH + 6;
         int btnY = 10 + cardH + 12;
         int formH = btnY + 30 + 12;
@@ -142,30 +146,11 @@ public sealed class CharacterEditDialog : Form
 
         DarkTheme.AddCardLabel(card, "Slot:", L, cy + 4);
         _numSlot = DarkTheme.AddCardNumeric(card, I, cy, 70, existing?.CharacterSlot ?? 0, 0, 10);
-        var slotHint = DarkTheme.AddCardHint(card, "0 = match by name (recommended)", I + 80, cy + 4);
-        slotHint.Size = new Size(200, 18);
+        // Hint sits to the right of the numeric. AddCardHint returns an AutoSize=true
+        // label so we can't pin width via Size; shorten the text instead so it fits
+        // within the card bounds (formW=360, card right edge at form-x=350).
+        DarkTheme.AddCardHint(card, "0 = match by name", I + 80, cy + 4);
         cy += 30;
-
-        DarkTheme.AddCardLabel(card, "Display Label:", L, cy + 4);
-        _txtDisplayLabel = DarkTheme.AddCardTextBox(card, I, cy, inputW);
-        _txtDisplayLabel.Text = existing?.DisplayLabel ?? "";
-        cy += 30;
-
-        DarkTheme.AddCardLabel(card, "Notes:", L, cy + 4);
-        _txtNotes = new TextBox
-        {
-            Location = new Point(I, cy),
-            Size = new Size(inputW, 80),
-            Multiline = true,
-            ScrollBars = ScrollBars.Vertical,
-            AcceptsReturn = true,
-            BackColor = DarkTheme.BgInput,
-            ForeColor = DarkTheme.FgWhite,
-            BorderStyle = BorderStyle.FixedSingle,
-            Text = existing?.Notes ?? "",
-        };
-        card.Controls.Add(_txtNotes);
-        cy += 90;
 
         int btnSaveX = formW - 200;
         int btnCancelX = formW - 100;
@@ -216,9 +201,11 @@ public sealed class CharacterEditDialog : Form
             AccountUsername = selectedAccount.Username,
             AccountServer = selectedAccount.Server,
             CharacterSlot = (int)_numSlot.Value,
-            DisplayLabel = _txtDisplayLabel.Text.Trim(),
-            ClassHint = _existingClassHint,   // preserved; not edited in UI
-            Notes = _txtNotes.Text,           // multiline — don't trim trailing newlines
+            // DisplayLabel / ClassHint / Notes are not edited in the UI; carry the
+            // existing values through so an edit doesn't wipe legacy data.
+            DisplayLabel = _existingDisplayLabel,
+            ClassHint = _existingClassHint,
+            Notes = _existingNotes,
         };
         DialogResult = DialogResult.OK;
         Close();

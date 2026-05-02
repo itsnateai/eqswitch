@@ -1832,12 +1832,13 @@ public class SettingsForm : Form
         _dgvAccounts.Columns.Add("Username", "Username");
         _dgvAccounts.Columns["Username"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
         _dgvAccounts.Columns["Username"]!.FillWeight = 30;
-        // "Note" column = the Account.Name model property surfaced as a
-        // user-friendly label. Username is the pinning identity; Name is just
-        // the note/nickname the user attaches. Display header is "Note".
-        _dgvAccounts.Columns.Add("Note", "Note");
-        _dgvAccounts.Columns["Note"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-        _dgvAccounts.Columns["Note"]!.FillWeight = 30;
+        // "Notes" column = the Account.Notes model property — free-form
+        // metadata only. Username is the pinning identity; Account.Name is an
+        // internal FK shadow of Username (since v3.14.8) and never surfaces
+        // in the grid.
+        _dgvAccounts.Columns.Add("Notes", "Notes");
+        _dgvAccounts.Columns["Notes"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        _dgvAccounts.Columns["Notes"]!.FillWeight = 30;
         _dgvAccounts.Columns.Add("Server", "Server");
         _dgvAccounts.Columns["Server"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
         _dgvAccounts.Columns["Server"]!.FillWeight = 20;
@@ -1980,6 +1981,16 @@ public class SettingsForm : Form
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
             AllowUserToResizeRows = false,
+            // User column resize is OFF by design. The Accounts/Characters
+            // grids mix fixed-width columns (Num/Slot/HK/Flag) with Fill
+            // columns (Username/Note/Server/Name/Account) and have no per-
+            // column MinimumWidth. WinForms silently flips a Fill column to
+            // AutoSizeMode=None when the user drags it, which collapses the
+            // neighboring Fill columns and produces a jumpy "glitch" the
+            // first time a user grabs a divider. The grid is sized for the
+            // data — disable resize so the layout stays stable.
+            AllowUserToResizeColumns = false,
+            ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
             MultiSelect = false,
             ReadOnly = true,
@@ -2009,7 +2020,7 @@ public class SettingsForm : Form
         for (int i = 0; i < _pendingAccounts.Count; i++)
         {
             var a = _pendingAccounts[i];
-            _dgvAccounts.Rows.Add(i + 1, a.Username, a.Name, a.Server, "");
+            _dgvAccounts.Rows.Add(i + 1, a.Username, a.Notes, a.Server, "");
         }
         RefreshQuickLoginCombos();
     }
@@ -2034,7 +2045,11 @@ public class SettingsForm : Form
             }
             else if (linkedAccount != null)
             {
-                acctDisplay = linkedAccount.Name;
+                // Show Username (the login identity), not Name (the FK shadow
+                // which can be a legacy custom display string on pre-v3.14.8
+                // accounts). Username is what the user actually thinks of as
+                // "the account this character belongs to."
+                acctDisplay = linkedAccount.Username;
                 acctFlagged = false;
             }
             else
