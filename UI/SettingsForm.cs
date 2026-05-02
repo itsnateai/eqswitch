@@ -192,7 +192,7 @@ public class SettingsForm : Form
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "\u2694  EQSwitch Settings  \u2694", new Size(530, 580));
+        DarkTheme.StyleForm(this, "\u2694  Dalaya Settings  \u2694", new Size(530, 580));
 
         // Restore last window position
         if (_config.SettingsWindowPos.Length >= 2)
@@ -1051,17 +1051,30 @@ public class SettingsForm : Form
         var cardStartup = DarkTheme.MakeCard(page, "🚀", "Startup", DarkTheme.CardGreen, 10, y, 480, 64);
         cy = 32;
 
-        var btnShortcut = DarkTheme.AddCardButton(cardStartup, "Create Desktop Shortcut", 47, cy, 180);
+        const string SHORTCUT_LABEL = "Create Desktop Shortcut";
+        var btnShortcut = DarkTheme.AddCardButton(cardStartup, SHORTCUT_LABEL, 47, cy, 180);
         btnShortcut.Click += (_, _) =>
         {
-            var originalText = btnShortcut.Text;
-            StartupManager.CreateDesktopShortcut(_ =>
+            // Re-enable + label-restore are driven by the timer, NOT by the
+            // CreateDesktopShortcut callback — so the button is guaranteed to
+            // recover regardless of which branch (success / already-exists /
+            // exception) fires inside StartupManager. Visible feedback is the
+            // 2s "Created!" flash; the showBalloon delegate is intentionally
+            // a no-op here (parity with prior behavior — the button text IS
+            // the surface).
+            btnShortcut.Enabled = false;
+            btnShortcut.Text = "Created!";
+
+            StartupManager.CreateDesktopShortcut(_ => { });
+
+            var reset = new System.Windows.Forms.Timer { Interval = 2000 };
+            reset.Tick += (__, ___) =>
             {
-                btnShortcut.Text = "Created!";
-                var reset = new System.Windows.Forms.Timer { Interval = 2000 };
-                reset.Tick += (__, ___) => { reset.Stop(); reset.Dispose(); btnShortcut.Text = originalText; };
-                reset.Start();
-            });
+                reset.Stop(); reset.Dispose();
+                btnShortcut.Text = SHORTCUT_LABEL;
+                btnShortcut.Enabled = true;
+            };
+            reset.Start();
         };
 
         _chkRunAtStartup = DarkTheme.AddCardCheckBox(cardStartup, "Run at Startup", 320, cy + 5);
@@ -1459,14 +1472,16 @@ public class SettingsForm : Form
         // Phase 4: cross-section validation — structural errors block Save.
         // Run after P3.5-D hotkey conflict check but before mutating _config.
 
-        // 0. No empty Account or Character Names. A hand-edited config or a degenerate
-        //    Import can slip these past UI-level checks; block before they corrupt the tray.
-        var emptyAcct = _pendingAccounts.FirstOrDefault(a => string.IsNullOrWhiteSpace(a.Name));
+        // 0. Account.Name (UI: "Note") is optional. Username is the pinning
+        //    identity (used by AccountKey, AutoLogin keystrokes, and ini writes)
+        //    and IS required — block degenerate accounts from hand-edited config
+        //    or Import. Character Names remain required (they're identity).
+        var emptyAcct = _pendingAccounts.FirstOrDefault(a => string.IsNullOrWhiteSpace(a.Username));
         if (emptyAcct != null)
         {
             MessageBox.Show(
-                $"An Account is missing a Name (Username '{emptyAcct.Username}'). Set a Name or delete it before saving.",
-                "Empty Account Name", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                $"An Account is missing a Username (Note '{emptyAcct.Name}'). Set a Username or delete it before saving.",
+                "Empty Account Username", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
         }
         var emptyChar = _pendingCharacters.FirstOrDefault(c => string.IsNullOrWhiteSpace(c.Name));
@@ -1814,15 +1829,21 @@ public class SettingsForm : Form
         _dgvAccounts = MakeDualSectionGrid();
         _dgvAccounts.Columns.Add("Num", "#");
         _dgvAccounts.Columns["Num"]!.Width = 30;
-        _dgvAccounts.Columns.Add("Name", "Name");
-        _dgvAccounts.Columns["Name"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-        _dgvAccounts.Columns["Name"]!.FillWeight = 30;
         _dgvAccounts.Columns.Add("Username", "Username");
         _dgvAccounts.Columns["Username"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
         _dgvAccounts.Columns["Username"]!.FillWeight = 30;
+        // "Note" column = the Account.Name model property surfaced as a
+        // user-friendly label. Username is the pinning identity; Name is just
+        // the note/nickname the user attaches. Display header is "Note".
+        _dgvAccounts.Columns.Add("Note", "Note");
+        _dgvAccounts.Columns["Note"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        _dgvAccounts.Columns["Note"]!.FillWeight = 30;
         _dgvAccounts.Columns.Add("Server", "Server");
         _dgvAccounts.Columns["Server"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
         _dgvAccounts.Columns["Server"]!.FillWeight = 20;
+        // "Flag" column — placeholder for now (cells empty). Reserved for the
+        // login-status indicator (✓/✗/—) per the deferred plan in
+        // memory/project_eqswitch_account_login_status_tracking.md.
         _dgvAccounts.Columns.Add("Flag", "Flag");
         _dgvAccounts.Columns["Flag"]!.Width = 42;
         _dgvAccounts.DoubleClick += (_, _) =>
@@ -1864,7 +1885,7 @@ public class SettingsForm : Form
         // ambiguity into "the input has no left border."
         DarkTheme.AddCardLabel(accountsCard, "Delay:", 380, btnY + 3);
         _nudLoginScreenDelay = DarkTheme.AddNumeric(accountsCard, 430, btnY, 45,
-            _config.LoginScreenDelayMs / 1000m, 1, 15);
+            _config.LoginScreenDelayMs / 1000m, 3, 10);
         _nudLoginScreenDelay.DecimalPlaces = 1;
         _nudLoginScreenDelay.Increment = 0.5m;
 
@@ -1988,7 +2009,7 @@ public class SettingsForm : Form
         for (int i = 0; i < _pendingAccounts.Count; i++)
         {
             var a = _pendingAccounts[i];
-            _dgvAccounts.Rows.Add(i + 1, a.Name, a.Username, a.Server, a.UseLoginFlag ? "\u2713" : "");
+            _dgvAccounts.Rows.Add(i + 1, a.Username, a.Name, a.Server, "");
         }
         RefreshQuickLoginCombos();
     }

@@ -253,7 +253,7 @@ public class AppConfig
         Launch.LaunchDelayMs = Math.Clamp(Launch.LaunchDelayMs, 500, 30000);
         Launch.FixDelayMs = Math.Clamp(Launch.FixDelayMs, 1000, 120000);
 
-        LoginScreenDelayMs = Math.Clamp(LoginScreenDelayMs, 1000, 15000);
+        LoginScreenDelayMs = Math.Clamp(LoginScreenDelayMs, 3000, 10000);
         WarmupDwellMs = Math.Clamp(WarmupDwellMs, 0, 15000);
 
         Pip.Opacity = Math.Clamp(Pip.Opacity, (byte)10, (byte)255);
@@ -432,7 +432,7 @@ public class HotkeyConfig
     public string ArrangeWindows { get; set; } = "";
 
     /// <summary>Toggle single-screen / multi-monitor mode.</summary>
-    public string ToggleMultiMonitor { get; set; } = "Alt+N";
+    public string ToggleMultiMonitor { get; set; } = "Ctrl+Alt+N";
 
     /// <summary>Launch one EQ client.</summary>
     public string LaunchOne { get; set; } = "";

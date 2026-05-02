@@ -1074,7 +1074,7 @@ public class TrayManager : IDisposable
 
         // Title bar
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
-        var titleItem = new ToolStripMenuItem($"\u2694  EQ Switch v{version}  \u2694") { Enabled = false, Font = _boldMenuFont };
+        var titleItem = new ToolStripMenuItem($"\u2694  Dalaya v{version}  \u2694") { Enabled = false, Font = _boldMenuFont };
         _contextMenu.Items.Add(titleItem);
         _contextMenu.Items.Add(new ToolStripSeparator());
 
