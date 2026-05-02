@@ -678,7 +678,9 @@ public class SettingsForm : Form
             var ch = _pendingCharacters.FirstOrDefault(c => c.Name.Equals(raw, StringComparison.Ordinal));
             if (ch != null) return (ch.Name, true);
             var ac = _pendingAccounts.FirstOrDefault(a => a.Name.Equals(raw, StringComparison.Ordinal));
-            return ac != null ? (ac.Name, false) : (raw, (bool?)null);
+            // Resolve by Name (the FK), but display Username so the team-row
+            // preview label reads as the actual login string the user knows.
+            return ac != null ? (ac.Username, false) : (raw, (bool?)null);
         }
         IReadOnlyList<(string Name, bool? IsCharacter)> PreviewSlots(string a, string b)
         {
@@ -2217,10 +2219,12 @@ public class SettingsForm : Form
 
         if (dependents.Count == 0)
         {
-            if (MessageBox.Show($"Delete Account '{acct.Name}'?", "Delete Account",
+            if (MessageBox.Show($"Delete Account '{acct.Username}'?", "Delete Account",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
                 return;
             _pendingAccounts.RemoveAt(idx);
+            // ClearStaleTeamSlots takes the FK string (Account.Name) — slot
+            // values were persisted as Name, so we have to clear by Name.
             ClearStaleTeamSlots(acct.Name);
         }
         else
