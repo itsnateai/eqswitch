@@ -88,8 +88,61 @@ public static class AppConfigValidateTests
             failures += Assert("v3-no-resync count", cfg.CharacterAliases.Count, 0);
         }
 
+        // Case 4 (v3.14.10): empty-Name FK repair. v3.14.7's broken Note→Name
+        // dialog could leave Name="" when the user saved with an empty Note
+        // field; v3.14.8's migration didn't repair these (its !IsNullOrEmpty
+        // guard skipped them). Validate() now restores the auto-shadow
+        // invariant: Name="" + Username!="" → Name = Username.
+        {
+            var cfg = new AppConfig
+            {
+                ConfigVersion = 4,
+                Accounts = new List<Account>
+                {
+                    new() { Name = "", Username = "gotquiz", EncryptedPassword = "x" },
+                    new() { Name = "nate", Username = "gotquiz1", EncryptedPassword = "y" },
+                },
+            };
+            cfg.Validate();
+            failures += Assert("empty-name shadowed to Username", cfg.Accounts[0].Name, "gotquiz");
+            failures += Assert("non-empty Name preserved", cfg.Accounts[1].Name, "nate");
+        }
+
+        // Case 5 (v3.14.10): empty-Name repair is idempotent. Running Validate()
+        // twice on the same config must not double-mutate or drift.
+        {
+            var cfg = new AppConfig
+            {
+                ConfigVersion = 4,
+                Accounts = new List<Account>
+                {
+                    new() { Name = "", Username = "solo", EncryptedPassword = "x" },
+                },
+            };
+            cfg.Validate();
+            cfg.Validate();
+            failures += Assert("idempotent shadow", cfg.Accounts[0].Name, "solo");
+        }
+
+        // Case 6 (v3.14.10): defensive — empty Name + empty Username does
+        // NOT shadow (would create an account whose Name='' equals
+        // Username='', defeating the FK invariant). The repair only fires
+        // when there's something useful to copy.
+        {
+            var cfg = new AppConfig
+            {
+                ConfigVersion = 4,
+                Accounts = new List<Account>
+                {
+                    new() { Name = "", Username = "", EncryptedPassword = "" },
+                },
+            };
+            cfg.Validate();
+            failures += Assert("no-shadow when Username also empty", cfg.Accounts[0].Name, "");
+        }
+
         Console.WriteLine(failures == 0
-            ? "AppConfigValidateTests: all 3 cases PASSED"
+            ? "AppConfigValidateTests: all 6 cases PASSED"
             : $"AppConfigValidateTests: {failures} assertion failure(s)");
         return failures == 0 ? 0 : 1;
     }
