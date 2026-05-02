@@ -362,9 +362,12 @@ public class AutoLoginManager
     ///
     /// Total wall-clock from method entry to BURST 1 deactivate, ASSUMING
     /// gameState ready (DLL boot ~2s after EQ window appears, separate gate):
-    ///   WarmupDwellMs (~4s default) + 500ms post-Activate + ~0.7s typing
-    ///   at 25+15ms inter-key = ~5s typical. Per-char typing went from
-    ///   ~130ms (v3.11.3) to ~40ms in v3.12.0.
+    ///   WarmupDwellMs (~4s default, post-Activate) + ~0.8s typing at 80+50ms
+    ///   inter-key (130ms/char) = ~5s typical. Per-char timing reverted from
+    ///   ~40ms back to ~130ms on 2026-05-02 — v3.12.0's "paste-like at 60fps"
+    ///   speedup was a regression: at 60Hz DI8 polling (~16.7ms/tick), 25ms
+    ///   after WM_CHAR = ~1.5 ticks/char (random drops); 80ms = ~5 ticks/char
+    ///   (deterministic pickup). Matches v3.10.0 anchor timing.
     ///
     /// Historical note: v3.12.0–v3.14.8 ran a "warmup ritual" in phase 1
     /// that sent SendLoginCommand → waited for PHASE_CLICKING_CONNECT →
@@ -380,7 +383,7 @@ public class AutoLoginManager
     /// </summary>
     private void RunCredentialEntry(int pid, IntPtr hwnd, KeyInputWriter writer,
         LoginShmWriter? loginShm, Account account, string password,
-        int warmupDwellMs)
+        int warmupDwellMs, int loginScreenDelayMs)
     {
         // ── Phase 1: DI8 settle window (PATH D, v3.14.9) ──
         // Replaces the prior SHM warmup ritual (SendLoginCommand → wait for
@@ -429,10 +432,15 @@ public class AutoLoginManager
         // post-Activate gives the proxy ~250 ticks of active coercion at
         // the default 4000ms WarmupDwellMs (vs ~31 ticks pre-fix).
         writer.Activate(pid, suppress: true);
-        int settleMs = Math.Max(warmupDwellMs, 500);
+        // 2026-05-02: honour BOTH knobs. Settings tab "Delay 5.0sec" maps to
+        // LoginScreenDelayMs; the deeper PATH D knob is WarmupDwellMs. Either
+        // can extend the post-Activate BACKGROUND-coercion window — take the
+        // larger so users tuning the visible UI knob actually get the effect.
+        // 500ms floor preserves a minimum settle even if both are zero.
+        int settleMs = Math.Max(Math.Max(warmupDwellMs, loginScreenDelayMs), 500);
         Report($"{account.Username}: settling DI8...");
         Thread.Sleep(settleMs);
-        FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid} (settled {settleMs}ms post-Activate)");
+        FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid} (settled {settleMs}ms post-Activate; warmupDwellMs={warmupDwellMs}, loginScreenDelayMs={loginScreenDelayMs})");
 
         // ── Phase 3: BURST 1 keystrokes ──
         Report("Typing credentials...");
@@ -469,10 +477,13 @@ public class AutoLoginManager
     {
         // Snapshot config values — RunLoginSequence runs on a background thread
         // while ReloadConfig can mutate _config on the UI thread.
-        // (LoginScreenDelayMs no longer snapshotted — PATH D collapsed the
-        // warmup-vs-flat-sleep branch to just WarmupDwellMs. Config field
-        // retained on AppConfig for future use / migration compat.)
+        // Both warmupDwellMs and loginScreenDelayMs feed into the post-Activate
+        // BACKGROUND-coercion settle window in RunCredentialEntry — Math.Max
+        // takes the larger so users tuning the Settings tab "Delay 5.0sec"
+        // (loginScreenDelayMs) actually get effect, not just the WarmupDwellMs
+        // PATH D knob.
         int warmupDwellMs = _config.WarmupDwellMs;
+        int loginScreenDelayMs = _config.LoginScreenDelayMs;
         string eqPath = _config.EQPath;
 
         // Parallel-safe background login via brief activation windows.
@@ -593,7 +604,7 @@ public class AutoLoginManager
             // nothing the wallclock alone can't, and the modal risk is gone.
             // ══════════════════════════════════════════════════════════════
             RunCredentialEntry(pid, hwnd, writer, loginShm, account, password,
-                warmupDwellMs);
+                warmupDwellMs, loginScreenDelayMs);
 
             // Fire LoginCredentialsSent — TrayManager uses this to apply slim-
             // titlebar + hook config + window title NOW (T+~7s) instead of
@@ -1344,8 +1355,17 @@ public class AutoLoginManager
     /// <summary>Type a string via SHM + PostMessage. Posts WM_KEYDOWN + WM_CHAR + WM_KEYUP.</summary>
     private static void CombinedTypeString(KeyInputWriter writer, int pid, IntPtr hwnd, string text)
     {
-        foreach (char c in text)
+        // 2026-05-02: per-char index logging for drop-pattern diagnostic.
+        // Logs only structural info (index, shift flag, vk, PostMessage success
+        // bools) — never the char value itself. Compare "sent N chars at these
+        // timestamps" against EQ's visible password-dot count to see WHICH
+        // positions dropped (front-stomped = DI8 not warm yet; tail-missing =
+        // late starvation; random middle = race condition → PATH C needed).
+        int total = text.Length;
+        for (int idx = 0; idx < total; idx++)
         {
+            char c = text[idx];
+            int oneBased = idx + 1;
             short vkScan = NativeMethods.VkKeyScanW(c);
             if (vkScan == -1)
             {
@@ -1355,7 +1375,7 @@ public class AutoLoginManager
                 // VkKeyScanW can't map on the user's keyboard layout was
                 // dropped without a log line, and EQ returned "wrong password"
                 // with zero diagnostic guidance.
-                FileLogger.Warn($"AutoLogin: CombinedTypeString skipping char '{c}' (U+{(int)c:X4}) — unmappable on current keyboard layout");
+                FileLogger.Warn($"AutoLogin: BURST char {oneBased}/{total} pid={pid} SKIPPED (U+{(int)c:X4} unmappable on current keyboard layout)");
                 continue;
             }
 
@@ -1365,7 +1385,7 @@ public class AutoLoginManager
                 // Hotfix v4 (L1): log skipped chars so European-layout passwords that
                 // need AltGr (e.g. @, {, }, [, ] on DE/FR/ES layouts) surface visibly
                 // instead of silently producing a mystery login failure.
-                FileLogger.Warn($"AutoLogin: CombinedTypeString skipping char '{c}' (U+{(int)c:X4}) — requires modifier 0x{modifiers:X} (Ctrl/Alt/AltGr)");
+                FileLogger.Warn($"AutoLogin: BURST char {oneBased}/{total} pid={pid} SKIPPED (U+{(int)c:X4} requires modifier 0x{modifiers:X} Ctrl/Alt/AltGr)");
                 continue;
             }
 
@@ -1375,18 +1395,31 @@ public class AutoLoginManager
             uint shiftScan = NativeMethods.MapVirtualKeyW(0x10, NativeMethods.MAPVK_VK_TO_VSC);
 
             // Shift down (both layers)
+            bool shiftDownOK = true;
             if (needShift)
             {
                 if (shiftScan > 0 && shiftScan < 256) writer.SetKey(pid, (byte)shiftScan, true);
-                PostR(writer, pid, hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)0x10, MakeKeyDownLParam(shiftScan));
+                shiftDownOK = PostR(writer, pid, hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)0x10, MakeKeyDownLParam(shiftScan));
                 Thread.Sleep(20);
             }
 
             // Key down (both layers) + WM_CHAR for text field
             if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, true);
-            PostR(writer, pid, hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
-            PostR(writer, pid, hwnd, (uint)NativeMethods.WM_CHAR, (IntPtr)c, MakeKeyDownLParam(scan));
-            Thread.Sleep(25); // was 80ms — tightened 2026-04-25 to make typing feel paste-like
+            bool keyDownOK = PostR(writer, pid, hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
+            bool wmCharOK = PostR(writer, pid, hwnd, (uint)NativeMethods.WM_CHAR, (IntPtr)c, MakeKeyDownLParam(scan));
+            // Privacy: log structural info only. `kind` classifies char without
+            // revealing value. Earlier iterations logged `vk=0xXX` which decodes
+            // to the actual character via standard keyboard scancode tables —
+            // password leak in the log. 2026-05-02 scrubbed.
+            string kind = char.IsLetter(c) ? "L" : char.IsDigit(c) ? "D" : "S";
+            FileLogger.Info($"AutoLogin: BURST char {oneBased}/{total} pid={pid} (kind={kind}, shift={needShift}, shiftDownOK={shiftDownOK}, keyDownOK={keyDownOK}, wmCharOK={wmCharOK})");
+            Thread.Sleep(80); // 2026-05-02: REVERTED from 25 → 80 (v3.10.0 timing). v3.12.0
+                              // dropped this to 25 "to make typing feel paste-like at 60fps"
+                              // and broke autologin — EQ's DI8 polls at ~60Hz (16.7ms/tick),
+                              // so 25ms = ~1.5 ticks/char (frequently missed) vs 80ms =
+                              // ~5 ticks/char (consistent pickup). Restored alongside the
+                              // shift-up + trailing delays for ~130ms full per-char (matches
+                              // v3.10.0 anchor `working-autologin-20260424-post-yesno-fix`).
 
             // Key up (both layers)
             if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, false);
@@ -1395,11 +1428,13 @@ public class AutoLoginManager
             // Shift up
             if (needShift)
             {
-                Thread.Sleep(15); // was 40ms
+                Thread.Sleep(40); // 2026-05-02: REVERTED from 15 → 40 (v3.10.0 timing).
                 if (shiftScan > 0 && shiftScan < 256) writer.SetKey(pid, (byte)shiftScan, false);
                 PostR(writer, pid, hwnd, NativeMethods.WM_KEYUP, (IntPtr)0x10, MakeKeyUpLParam(shiftScan));
             }
-            Thread.Sleep(15); // was 50ms — full per-char now ~40ms vs ~130ms (3x faster)
+            Thread.Sleep(50); // 2026-05-02: REVERTED from 15 → 50 (v3.10.0 timing).
+                              // Full per-char now ~130ms (80+50, or 80+40+50 with shift) —
+                              // matches v3.10.0 anchor that worked flawlessly in production.
         }
     }
 
