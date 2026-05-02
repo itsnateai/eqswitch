@@ -416,17 +416,26 @@ public class AutoLoginManager
             FileLogger.Info($"AutoLogin: DLL gameState ready after {gateSw.ElapsedMilliseconds}ms (PID {pid})");
         }
 
-        if (warmupDwellMs > 0)
-        {
-            Report($"{account.Username}: settling DI8...");
-            Thread.Sleep(warmupDwellMs);
-        }
-
-        // ── Phase 2: BURST 1 keystrokes ──
-        Report("Typing credentials...");
+        // ── Phase 2: KeyShm activation + BACKGROUND coercion settle ──
+        // v3.14.11 fix: WarmupDwellMs dwell moved to AFTER writer.Activate()
+        // so KeyShm is active during the entire wallclock window.
+        // ActivateThread (16Hz internal loop in the DLL,
+        // device_proxy.cpp:208-230) coerces SetCooperativeLevel BACKGROUND on
+        // every tick once KeyShm rises. Pre-v3.14.11, the dwell ran BEFORE
+        // Activate (KeyShm inactive — no coercion happening) and only 500ms
+        // of post-Activate coercion followed before BURST 1 — same window
+        // as pre-PATH D code, intermittently dropping 3-of-6 + 2-of-6 chars
+        // on team1 fire (verified dual-box 2026-05-02). Moving the dwell
+        // post-Activate gives the proxy ~250 ticks of active coercion at
+        // the default 4000ms WarmupDwellMs (vs ~31 ticks pre-fix).
         writer.Activate(pid, suppress: true);
-        Thread.Sleep(500); // let DLL switch coop + blast activation
-        FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
+        int settleMs = Math.Max(warmupDwellMs, 500);
+        Report($"{account.Username}: settling DI8...");
+        Thread.Sleep(settleMs);
+        FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid} (settled {settleMs}ms post-Activate)");
+
+        // ── Phase 3: BURST 1 keystrokes ──
+        Report("Typing credentials...");
 
         // NOTE: a pre-flight Enter before typing is NOT idempotent on Dalaya
         // patchme — empty-password Enter raises a "you need to enter a username
