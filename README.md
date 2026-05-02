@@ -228,6 +228,20 @@ Your `eqclient.ini` settings and EQSwitch config files are **not** modified — 
 | **Config lost after moving exe** | Move `eqswitch-config.json` with the exe. Backups in `backups/` subfolder |
 | **DLL blocked by antivirus** | Add your EQSwitch folder to Windows Defender exclusions |
 
+## Supporting This Project
+
+This app is free and open source. If it saves you time, consider supporting continued development:
+
+<p>
+  <a href="https://buymeacoffee.com/itsnate"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee"></a>
+</p>
+
+- **[Buy Me a Coffee](https://buymeacoffee.com/itsnate)** — one-time support
+
+You can also build from source for free — see the build instructions above.
+
+---
+
 ## License
 
 [GPL-2.0-or-later](LICENSE) — GNU General Public License, version 2, or (at your option) any later version.
