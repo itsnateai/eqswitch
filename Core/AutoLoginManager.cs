@@ -340,39 +340,43 @@ public class AutoLoginManager
     /// <summary>
     /// Enter the password into EQ's login screen and submit.
     ///
-    /// Two phases (PATH D, v3.14.9):
+    /// Three phases (PATH D, v3.14.9):
     ///
-    ///   1. **DI8 settle window.** Wait for the DLL to publish a non-zero
-    ///      gameState (DLL-alive sanity check), then Sleep(WarmupDwellMs).
-    ///      No SHM LOGIN command sent. The Sleep gives EQ's DirectInput
-    ///      cooperative-level negotiation wall-clock to settle into
-    ///      BACKGROUND mode — confirmed sufficient by cloud review on
-    ///      PR #5: the BACKGROUND coercion at device_proxy.cpp:586-625
-    ///      and the IAT hooks at iat_hook.cpp:171-189 gate on
-    ///      KeyShm::IsActive() (set by writer.Activate below), independent
-    ///      of LoginShm.
+    ///   1. **gameState gate + pre-Activate wallclock.** Wait for the DLL to
+    ///      publish a non-zero gameState (DLL-alive sanity check), then
+    ///      Sleep(WarmupDwellMs). KeyShm is INACTIVE during this Sleep —
+    ///      what the wallclock buys us is EQ's own DI8 state stabilizing
+    ///      (login-screen widget init + EQ's default cooperative-level
+    ///      handshake) before we flip the rising edge. Tuned default 4s.
     ///
-    ///   2. **BURST 1 keystrokes** — the workhorse. DI8 SendInput types the
-    ///      password (+ Tab/Tab/username if not /login: flag), then Enter
-    ///      to submit.
+    ///   2. **Activation + coop-level settle.** writer.Activate(pid) sets
+    ///      KeyShm::Active=1. ActivateThread (16Hz internal poll in the DLL)
+    ///      observes the rising edge and re-calls SetCooperativeLevel with
+    ///      BACKGROUND|NONEXCLUSIVE flags (device_proxy.cpp:208-230). The
+    ///      IAT hooks (iat_hook.cpp:171-189) start spoofing focus immediately
+    ///      on the same gate. The Thread.Sleep(500) below covers ~31 ticks
+    ///      of ActivateThread — comfortable margin for the switch to land.
+    ///
+    ///   3. **BURST 1 keystrokes.** DI8 SendInput types the password (+
+    ///      Tab/Tab/username if not /login: flag), then Enter to submit.
     ///
     /// Total wall-clock from method entry to BURST 1 deactivate, ASSUMING
     /// gameState ready (DLL boot ~2s after EQ window appears, separate gate):
-    ///   WarmupDwellMs (~4s default) + ~0.7s typing at 25+15ms inter-key =
-    ///   ~5s typical. Was ~7-10s pre-PATH D, ~21s in v3.11.3. Per-char
-    ///   typing went from ~130ms (v3.11.3) to ~40ms in v3.12.0.
+    ///   WarmupDwellMs (~4s default) + 500ms post-Activate + ~0.7s typing
+    ///   at 25+15ms inter-key = ~5s typical. Per-char typing went from
+    ///   ~130ms (v3.11.3) to ~40ms in v3.12.0.
     ///
-    /// Historical note: v3.12.0–v3.14.8 ran a "warmup ritual" here that
-    /// sent SendLoginCommand → waited for PHASE_CLICKING_CONNECT → dwelled
-    /// → sent SendCancelCommand. The ritual silent-no-op'd on Dalaya
-    /// (Combo G CXStr write at +0x1A8 didn't reach EQ's render/submit
-    /// buffer; see :570-573 below) but kept the DLL ClickButton-ing the
-    /// empty form, intermittently raising the empty-password modal
-    /// described at the chesterton fence on :436-440. That modal would
-    /// steal focus from the password field and cause BURST 1 to type into
-    /// it (90s timeout → 30s retry server-release → 3+ min total wall-
-    /// clock). PATH D removes the SHM activity entirely while preserving
-    /// the only useful side effect (wallclock).
+    /// Historical note: v3.12.0–v3.14.8 ran a "warmup ritual" in phase 1
+    /// that sent SendLoginCommand → waited for PHASE_CLICKING_CONNECT →
+    /// dwelled WarmupDwellMs → sent SendCancelCommand. The ritual silent-
+    /// no-op'd on Dalaya (Combo G CXStr write at +0x1A8 didn't reach EQ's
+    /// render/submit buffer) but kept the DLL ClickButton-ing the empty
+    /// form, intermittently raising an empty-password modal that stole
+    /// BURST 1's keystrokes → 90s timeout → 30s retry-path server-release
+    /// → 3+ min total wallclock. Cloud review (PR #5) confirmed all DI8/
+    /// IAT plumbing gates on KeyShm (independent of LoginShm), so the SHM
+    /// activity bought no useful settle behaviour and the modal risk is
+    /// pure downside. PATH D collapses the ritual to the wallclock alone.
     /// </summary>
     private void RunCredentialEntry(int pid, IntPtr hwnd, KeyInputWriter writer,
         LoginShmWriter? loginShm, Account account, string password,
@@ -556,22 +560,28 @@ public class AutoLoginManager
             // }
 
             // ══════════════════════════════════════════════════════════════
-            // Single credential-entry method:
-            //   warmup (SHM widget discovery + Combo G silent-no-op) →
-            //   dwell (DI8 cooperative-level settle) →
-            //   BURST 1 keystrokes (the actual password typing) →
-            //   cancel SHM (stop DLL retry loop)
+            // Credential entry — PATH D (v3.14.9):
+            //   gameState gate (DLL-alive sanity) →
+            //   Sleep(WarmupDwellMs)              (DI8 settle wallclock) →
+            //   writer.Activate(pid)              (KeyShm::Active=1 → IAT
+            //                                      hooks + DI8 BACKGROUND
+            //                                      coercion fire on rising
+            //                                      edge from ActivateThread,
+            //                                      ~16ms tick) →
+            //   Sleep(500)                        (let coop switch land) →
+            //   BURST 1 keystrokes
             //
-            // 2026-04-25: silent injection abandoned for now. Combo G's CXStr
-            // write at +0x1A8 doesn't reach EQ's render/submit buffer (read-
-            // back at +0x14 confirms we wrote somewhere, but EQ reads from a
-            // different field). The SHM LOGIN attempt is kept as warmup ritual
-            // ONLY — its widget-discovery activity warms up EQ's input pump and
-            // gives DI8 cooperative-level negotiation wall-clock to settle.
-            // Tunable via WarmupDwellMs config (default 4s post-phase-advance).
-            //
-            // Future stretch: fix Combo G to write the right widget/buffer
-            // (live render-side EditWnd), then BURST 1 can be removed entirely.
+            // The pre-PATH D ritual ran SendLoginCommand here, which on Dalaya
+            // silent-no-op'd the Combo G CXStr write at +0x1A8 (EQ reads from
+            // a different field — read-back at +0x14 confirms write landed
+            // *somewhere* but not the submit buffer). Kept it on life-support
+            // for ~6 days as "warmup" because of the wallclock side-effect
+            // chesterton fence at RunCredentialEntry — turned out to also
+            // trigger an empty-form modal that stole BURST 1's keystrokes
+            // (3-min retry-path recovery on cold logins). Cloud review on
+            // PR #5 confirmed all DI8/IAT plumbing gates on KeyShm
+            // (independent of LoginShm), so the SHM activity was buying
+            // nothing the wallclock alone can't, and the modal risk is gone.
             // ══════════════════════════════════════════════════════════════
             RunCredentialEntry(pid, hwnd, writer, loginShm, account, password,
                 warmupDwellMs);

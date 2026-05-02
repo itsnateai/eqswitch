@@ -69,19 +69,24 @@ public class AppConfig
     [JsonPropertyName("accountsV4")]
     public List<Account> Accounts { get; set; } = new();
 
-    /// <summary>Delay in ms after EQ window appears before typing credentials (default 5s).
-    /// Only applies when the SHM warmup ritual was skipped/failed — when the warmup
-    /// runs, the warmup itself IS the delay (DLL widget discovery + Combo G write
-    /// take ~3-5s) and this knob is bypassed.</summary>
+    /// <summary>Retained for migration compat; no longer consumed by the
+    /// autologin path since PATH D (v3.14.9). Pre-PATH D this was the fallback
+    /// wallclock when the SHM warmup ritual was skipped/failed; PATH D collapses
+    /// that branch into the single WarmupDwellMs sleep below. Field kept on the
+    /// model so existing user configs deserialize without warnings; future PR
+    /// can drop it after one release of compat.</summary>
     public int LoginScreenDelayMs { get; set; } = 5000;
 
-    /// <summary>Post-warmup dwell in ms before BURST 1 keystrokes fire. The DLL's
-    /// SHM warmup advances phase to ClickingConnect once login-screen widgets are
-    /// discovered (~2s), but EQ's DirectInput cooperative-level negotiation needs
-    /// extra wall-clock to settle so SendInput keystrokes don't get truncated.
-    /// 4s is the conservative starting default; bump to 6000 if the first chars of
-    /// the password get dropped, drop toward 2000 if BURST 1 lands clean.
-    /// See feedback_chesterton_fence_load_bearing_bugs.md for the prior baseline.</summary>
+    /// <summary>Pre-BURST DI8 settle window in ms (default 4s). PATH D: after
+    /// the DLL publishes a non-zero gameState, RunCredentialEntry sleeps this
+    /// long before flipping KeyShm::Active and firing BURST 1. The wallclock
+    /// gives EQ time to stabilize its own DI8 state (login-screen widget
+    /// init, default cooperative-level setup) before our IAT hooks + DI8
+    /// proxy coerce BACKGROUND mode. Empirical baseline: 4s sufficed for
+    /// dual-box logins on the user's hardware in v3.12.0–v3.14.8 (despite
+    /// the SHM warmup ritual that surrounded it adding intermittent
+    /// modal-collision risk). Bump to 5000–6000 if BURST 1's first chars get
+    /// dropped on slower hardware; drop toward 2000 if logins stay clean.</summary>
     public int WarmupDwellMs { get; set; } = 4000;
 
     /// <summary>When true, auto-login continues past character select into the world.
