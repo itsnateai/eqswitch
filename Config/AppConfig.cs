@@ -174,11 +174,9 @@ public class AppConfig
     /// </summary>
     public EQClientIniConfig EQClientIni { get; set; } = new();
 
-    /// <summary>
-    /// Clamp all numeric values to safe ranges. Call after deserialization
-    /// or before applying settings from the GUI.
-    /// </summary>
-    /// <summary>Clamp values and run one-time migrations. Returns true if config was mutated.</summary>
+    /// <summary>Clamp numeric values to safe ranges and run one-time migrations.
+    /// Call after deserialization or before applying settings from the GUI.
+    /// Returns true if config was mutated.</summary>
     public bool Validate()
     {
         bool mutated = false;
