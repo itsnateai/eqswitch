@@ -340,48 +340,73 @@ public class AutoLoginManager
     /// <summary>
     /// Enter the password into EQ's login screen and submit.
     ///
-    /// Conceptually two phases bundled into one method (because they're tightly
-    /// coupled by the load-bearing warmup contract — see chesterton-fence note
-    /// at memory/feedback_chesterton_fence_load_bearing_bugs.md):
+    /// Three phases (PATH D, v3.14.9):
     ///
-    ///   1. **Warmup ritual** via SHM LOGIN command. The DLL walks the
-    ///      SidlManager widget tree to find the live password CEditWnd and
-    ///      writes via Combo G's SetEditWndText. On Dalaya the write
-    ///      silent-no-ops (wrong buffer — EQ renders/submits from a
-    ///      different field), but the WIDGET DISCOVERY ACTIVITY warms up
-    ///      EQ's input pump and gives DI8 cooperative-level negotiation
-    ///      wall-clock to settle into BACKGROUND mode. Phase advances to
-    ///      ClickingConnect (=3) ~3-5s after SendLoginCommand on Dalaya.
+    ///   1. **gameState gate + pre-Activate wallclock.** Wait for the DLL to
+    ///      publish a non-zero gameState (DLL-alive sanity check), then
+    ///      Sleep(WarmupDwellMs). KeyShm is INACTIVE during this Sleep —
+    ///      what the wallclock buys us is EQ's own DI8 state stabilizing
+    ///      (login-screen widget init + EQ's default cooperative-level
+    ///      handshake) before we flip the rising edge. Tuned default 4s.
     ///
-    ///   2. **BURST 1 keystrokes** — the actual workhorse. DI8 SendInput
-    ///      types the password (+ Tab/Tab/username if not /login: flag)
-    ///      then Enter to submit.
+    ///   2. **Activation + coop-level settle.** writer.Activate(pid) sets
+    ///      KeyShm::Active=1. ActivateThread (16Hz internal poll in the DLL)
+    ///      observes the rising edge and re-calls SetCooperativeLevel with
+    ///      BACKGROUND|NONEXCLUSIVE flags (device_proxy.cpp:208-230). The
+    ///      IAT hooks (iat_hook.cpp:171-189) start spoofing focus immediately
+    ///      on the same gate. The Thread.Sleep(500) below covers ~31 ticks
+    ///      of ActivateThread — comfortable margin for the switch to land.
     ///
-    /// Between (1) and (2) we dwell for WarmupDwellMs (default 4s) — the
-    /// DLL keeps retrying ClickButton in the background during this dwell,
-    /// providing additional widget-tree activity to keep EQ's pump warm.
-    /// SendCancelCommand fires BEFORE BURST 1 (one mid-dev iteration tried
-    /// AFTER and caused 4-of-6 char truncation — DLL's ClickButton retry loop
-    /// contended with C# typing for EQ's message pump). Cancelling pre-Activate
-    /// gives the DLL ~500ms to observe LOGIN_CMD_CANCEL on its next tick and
-    /// stop polling, so BURST 1 types into a quiet pump.
+    ///   3. **BURST 1 keystrokes.** DI8 SendInput types the password (+
+    ///      Tab/Tab/username if not /login: flag), then Enter to submit.
     ///
     /// Total wall-clock from method entry to BURST 1 deactivate, ASSUMING
     /// gameState ready (DLL boot ~2s after EQ window appears, separate gate):
-    ///   ~2-5s (phase advance) + WarmupDwellMs (~4s default) + ~0.7s (typing
-    ///   at 25/15/15ms inter-key) = ~7-10s typical, vs ~21s in v3.11.3.
-    /// Per-char typing went from ~130ms (v3.11.3) to ~40ms in v3.12.0 — looks
-    /// paste-like at 60fps.
+    ///   WarmupDwellMs (~4s default) + 500ms post-Activate + ~0.7s typing
+    ///   at 25+15ms inter-key = ~5s typical. Per-char typing went from
+    ///   ~130ms (v3.11.3) to ~40ms in v3.12.0.
+    ///
+    /// Historical note: v3.12.0–v3.14.8 ran a "warmup ritual" in phase 1
+    /// that sent SendLoginCommand → waited for PHASE_CLICKING_CONNECT →
+    /// dwelled WarmupDwellMs → sent SendCancelCommand. The ritual silent-
+    /// no-op'd on Dalaya (Combo G CXStr write at +0x1A8 didn't reach EQ's
+    /// render/submit buffer) but kept the DLL ClickButton-ing the empty
+    /// form, intermittently raising an empty-password modal that stole
+    /// BURST 1's keystrokes → 90s timeout → 30s retry-path server-release
+    /// → 3+ min total wallclock. Cloud review (PR #5) confirmed all DI8/
+    /// IAT plumbing gates on KeyShm (independent of LoginShm), so the SHM
+    /// activity bought no useful settle behaviour and the modal risk is
+    /// pure downside. PATH D collapses the ritual to the wallclock alone.
     /// </summary>
     private void RunCredentialEntry(int pid, IntPtr hwnd, KeyInputWriter writer,
         LoginShmWriter? loginShm, Account account, string password,
-        int loginScreenDelayMs, int warmupDwellMs)
+        int warmupDwellMs)
     {
-        // ── Phase 1: SHM warmup ritual ──
-        bool warmupRan = false;
+        // ── Phase 1: DI8 settle window (PATH D, v3.14.9) ──
+        // Replaces the prior SHM warmup ritual (SendLoginCommand → wait for
+        // PHASE_CLICKING_CONNECT → dwell → SendCancelCommand). The ritual sent
+        // a real LOGIN command to the DLL, which on Dalaya silent-no-op'd the
+        // Combo G password write (CXStr at +0x1A8 doesn't reach EQ's render/
+        // submit buffer — see :606-609) but kept the DLL ClickButton-ing the
+        // empty form for ~4s, intermittently raising the empty-password modal
+        // described at the chesterton fence on :470-474. The retry path at
+        // :660-731 then dismissed that modal and re-typed — adding ~3 minutes
+        // wall-clock vs the 5-second spec.
+        //
+        // The ritual was load-bearing only for its wallclock side effect: it
+        // gave EQ's DirectInput cooperative-level negotiation time to settle
+        // into BACKGROUND mode before BURST 1 fires. Cloud review (PR #5,
+        // 2026-05-02) confirmed the BACKGROUND coercion in
+        // device_proxy.cpp:586-625 and the IAT hooks at iat_hook.cpp:171-189
+        // gate on KeyShm::IsActive() — set by writer.Activate(pid) below —
+        // and have NO dependency on LoginShm. So an explicit Sleep replaces
+        // the ritual cleanly: same wallclock side effect, no DLL ClickButton
+        // activity, no modal risk.
+        //
+        // gameState gate retained as a DLL-alive sanity check; future PR can
+        // move this to a non-LoginShm signal so we can fully delete PATH A.
         if (loginShm != null)
         {
-            // Wait for DLL state machine to be alive (gameState published).
             var gateSw = System.Diagnostics.Stopwatch.StartNew();
             while (gateSw.ElapsedMilliseconds < 30000)
             {
@@ -389,76 +414,12 @@ public class AutoLoginManager
                 Thread.Sleep(100);
             }
             FileLogger.Info($"AutoLogin: DLL gameState ready after {gateSw.ElapsedMilliseconds}ms (PID {pid})");
-
-            Report($"{account.Username}: warmup...");
-            if (loginShm.SendLoginCommand(pid, account.Username, password, account.Server, ""))
-            {
-                // Wait for phase >= ClickingConnect (=3) — proves login-screen
-                // widgets are discoverable AND Combo G actually wrote a CXStr
-                // (Fix 2's read-back guard would have left phase at Error if
-                // the write went to a stale ptr). Empirically advances in
-                // ~3-5s on Dalaya.
-                //
-                // We deliberately do NOT wait for WaitConnectResponse — the
-                // DLL's PHASE_CLICKING_CONNECT loop tries MQ2Bridge::ClickButton
-                // on 'LOGIN_ConnectButton' which returns a CXMLDataPtr def
-                // (Fix 1's IsEQMainButtonWidget rejects it), then retries for
-                // ~25s before SetError. We don't need that signal — C# fires
-                // BURST 1 instead.
-                const int phaseCeilingMs = 12000;
-                var phaseSw = System.Diagnostics.Stopwatch.StartNew();
-                while (phaseSw.ElapsedMilliseconds < phaseCeilingMs)
-                {
-                    var phase = loginShm.ReadPhase(pid);
-                    if (phase >= LoginPhase.ClickingConnect && phase != LoginPhase.Error)
-                    {
-                        warmupRan = true;
-                        FileLogger.Info($"AutoLogin: warmup phase advanced to {phase} after {phaseSw.ElapsedMilliseconds}ms (PID {pid})");
-                        break;
-                    }
-                    if (phase == LoginPhase.Error)
-                    {
-                        var err = loginShm.ReadError(pid);
-                        FileLogger.Warn($"AutoLogin: warmup phase errored ({err}) — falling back to flat sleep");
-                        break;
-                    }
-                    Thread.Sleep(50);
-                }
-                if (!warmupRan && phaseSw.ElapsedMilliseconds >= phaseCeilingMs)
-                {
-                    FileLogger.Warn($"AutoLogin: warmup phase didn't advance to ClickingConnect within {phaseCeilingMs}ms — falling back to flat sleep");
-                }
-            }
-            else
-            {
-                FileLogger.Warn($"AutoLogin: SendLoginCommand failed for PID {pid} — falling back to flat sleep");
-            }
         }
 
-        // ── Dwell: DI8 cooperative-level settle window ──
-        // When warmup ran, dwell for WarmupDwellMs (default 4s) — DLL retries
-        // ClickButton in the background during this period. When warmup didn't
-        // run, fall back to LoginScreenDelayMs (default 5s) without DLL activity.
-        int dwellMs = warmupRan ? warmupDwellMs : loginScreenDelayMs;
-        if (dwellMs > 0)
+        if (warmupDwellMs > 0)
         {
-            Report(warmupRan ? "Warmup done — settling..." : "Waiting for login screen...");
-            Thread.Sleep(dwellMs);
-        }
-
-        // ── Pre-BURST cancel: silence the DLL before typing ──
-        // The DLL's PHASE_CLICKING_CONNECT loop polls MQ2Bridge::ClickButton
-        // every ~500ms on EQ's game thread, doing SEH-wrapped widget heap-
-        // walks + WndNotification calls. If left running through BURST 1's
-        // typing window, those heap-walks contend with EQ's message pump and
-        // cause keystroke truncation (verified 2026-04-25 dual-box: 4-of-6
-        // chars on client 1, 0-of-6 on client 2). Cancelling BEFORE Activate
-        // gives the DLL ~500ms to observe LOGIN_CMD_CANCEL on its next tick
-        // and stop polling, so BURST 1 types into a quiet pump.
-        if (loginShm != null && warmupRan)
-        {
-            loginShm.SendCancelCommand(pid);
-            FileLogger.Info($"AutoLogin: warmup cancel sent pre-BURST 1 for PID {pid}");
+            Report($"{account.Username}: settling DI8...");
+            Thread.Sleep(warmupDwellMs);
         }
 
         // ── Phase 2: BURST 1 keystrokes ──
@@ -499,7 +460,9 @@ public class AutoLoginManager
     {
         // Snapshot config values — RunLoginSequence runs on a background thread
         // while ReloadConfig can mutate _config on the UI thread.
-        int loginScreenDelayMs = _config.LoginScreenDelayMs;
+        // (LoginScreenDelayMs no longer snapshotted — PATH D collapsed the
+        // warmup-vs-flat-sleep branch to just WarmupDwellMs. Config field
+        // retained on AppConfig for future use / migration compat.)
         int warmupDwellMs = _config.WarmupDwellMs;
         string eqPath = _config.EQPath;
 
@@ -597,25 +560,31 @@ public class AutoLoginManager
             // }
 
             // ══════════════════════════════════════════════════════════════
-            // Single credential-entry method:
-            //   warmup (SHM widget discovery + Combo G silent-no-op) →
-            //   dwell (DI8 cooperative-level settle) →
-            //   BURST 1 keystrokes (the actual password typing) →
-            //   cancel SHM (stop DLL retry loop)
+            // Credential entry — PATH D (v3.14.9):
+            //   gameState gate (DLL-alive sanity) →
+            //   Sleep(WarmupDwellMs)              (DI8 settle wallclock) →
+            //   writer.Activate(pid)              (KeyShm::Active=1 → IAT
+            //                                      hooks + DI8 BACKGROUND
+            //                                      coercion fire on rising
+            //                                      edge from ActivateThread,
+            //                                      ~16ms tick) →
+            //   Sleep(500)                        (let coop switch land) →
+            //   BURST 1 keystrokes
             //
-            // 2026-04-25: silent injection abandoned for now. Combo G's CXStr
-            // write at +0x1A8 doesn't reach EQ's render/submit buffer (read-
-            // back at +0x14 confirms we wrote somewhere, but EQ reads from a
-            // different field). The SHM LOGIN attempt is kept as warmup ritual
-            // ONLY — its widget-discovery activity warms up EQ's input pump and
-            // gives DI8 cooperative-level negotiation wall-clock to settle.
-            // Tunable via WarmupDwellMs config (default 4s post-phase-advance).
-            //
-            // Future stretch: fix Combo G to write the right widget/buffer
-            // (live render-side EditWnd), then BURST 1 can be removed entirely.
+            // The pre-PATH D ritual ran SendLoginCommand here, which on Dalaya
+            // silent-no-op'd the Combo G CXStr write at +0x1A8 (EQ reads from
+            // a different field — read-back at +0x14 confirms write landed
+            // *somewhere* but not the submit buffer). Kept it on life-support
+            // for ~6 days as "warmup" because of the wallclock side-effect
+            // chesterton fence at RunCredentialEntry — turned out to also
+            // trigger an empty-form modal that stole BURST 1's keystrokes
+            // (3-min retry-path recovery on cold logins). Cloud review on
+            // PR #5 confirmed all DI8/IAT plumbing gates on KeyShm
+            // (independent of LoginShm), so the SHM activity was buying
+            // nothing the wallclock alone can't, and the modal risk is gone.
             // ══════════════════════════════════════════════════════════════
             RunCredentialEntry(pid, hwnd, writer, loginShm, account, password,
-                loginScreenDelayMs, warmupDwellMs);
+                warmupDwellMs);
 
             // Fire LoginCredentialsSent — TrayManager uses this to apply slim-
             // titlebar + hook config + window title NOW (T+~7s) instead of
