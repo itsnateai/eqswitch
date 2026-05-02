@@ -120,7 +120,7 @@ Output: `bin/Release/net8.0-windows/win-x64/publish/EQSwitch.exe` + `eqswitch-ho
 |--------|--------|
 | `\` | Swap to last active EQ client (EQ must be focused) |
 | `]` | Global switch — cycle next / bring EQ to front |
-| Alt+N | Toggle single-screen / multi-monitor mode |
+| Ctrl+Alt+N | Toggle single-screen / multi-monitor mode |
 
 ### Tray Icon Actions (all configurable)
 
