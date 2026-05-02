@@ -340,38 +340,39 @@ public class AutoLoginManager
     /// <summary>
     /// Enter the password into EQ's login screen and submit.
     ///
-    /// Conceptually two phases bundled into one method (because they're tightly
-    /// coupled by the load-bearing warmup contract — see chesterton-fence note
-    /// at memory/feedback_chesterton_fence_load_bearing_bugs.md):
+    /// Two phases (PATH D, v3.14.9):
     ///
-    ///   1. **Warmup ritual** via SHM LOGIN command. The DLL walks the
-    ///      SidlManager widget tree to find the live password CEditWnd and
-    ///      writes via Combo G's SetEditWndText. On Dalaya the write
-    ///      silent-no-ops (wrong buffer — EQ renders/submits from a
-    ///      different field), but the WIDGET DISCOVERY ACTIVITY warms up
-    ///      EQ's input pump and gives DI8 cooperative-level negotiation
-    ///      wall-clock to settle into BACKGROUND mode. Phase advances to
-    ///      ClickingConnect (=3) ~3-5s after SendLoginCommand on Dalaya.
+    ///   1. **DI8 settle window.** Wait for the DLL to publish a non-zero
+    ///      gameState (DLL-alive sanity check), then Sleep(WarmupDwellMs).
+    ///      No SHM LOGIN command sent. The Sleep gives EQ's DirectInput
+    ///      cooperative-level negotiation wall-clock to settle into
+    ///      BACKGROUND mode — confirmed sufficient by cloud review on
+    ///      PR #5: the BACKGROUND coercion at device_proxy.cpp:586-625
+    ///      and the IAT hooks at iat_hook.cpp:171-189 gate on
+    ///      KeyShm::IsActive() (set by writer.Activate below), independent
+    ///      of LoginShm.
     ///
-    ///   2. **BURST 1 keystrokes** — the actual workhorse. DI8 SendInput
-    ///      types the password (+ Tab/Tab/username if not /login: flag)
-    ///      then Enter to submit.
-    ///
-    /// Between (1) and (2) we dwell for WarmupDwellMs (default 4s) — the
-    /// DLL keeps retrying ClickButton in the background during this dwell,
-    /// providing additional widget-tree activity to keep EQ's pump warm.
-    /// SendCancelCommand fires BEFORE BURST 1 (one mid-dev iteration tried
-    /// AFTER and caused 4-of-6 char truncation — DLL's ClickButton retry loop
-    /// contended with C# typing for EQ's message pump). Cancelling pre-Activate
-    /// gives the DLL ~500ms to observe LOGIN_CMD_CANCEL on its next tick and
-    /// stop polling, so BURST 1 types into a quiet pump.
+    ///   2. **BURST 1 keystrokes** — the workhorse. DI8 SendInput types the
+    ///      password (+ Tab/Tab/username if not /login: flag), then Enter
+    ///      to submit.
     ///
     /// Total wall-clock from method entry to BURST 1 deactivate, ASSUMING
     /// gameState ready (DLL boot ~2s after EQ window appears, separate gate):
-    ///   ~2-5s (phase advance) + WarmupDwellMs (~4s default) + ~0.7s (typing
-    ///   at 25/15/15ms inter-key) = ~7-10s typical, vs ~21s in v3.11.3.
-    /// Per-char typing went from ~130ms (v3.11.3) to ~40ms in v3.12.0 — looks
-    /// paste-like at 60fps.
+    ///   WarmupDwellMs (~4s default) + ~0.7s typing at 25+15ms inter-key =
+    ///   ~5s typical. Was ~7-10s pre-PATH D, ~21s in v3.11.3. Per-char
+    ///   typing went from ~130ms (v3.11.3) to ~40ms in v3.12.0.
+    ///
+    /// Historical note: v3.12.0–v3.14.8 ran a "warmup ritual" here that
+    /// sent SendLoginCommand → waited for PHASE_CLICKING_CONNECT → dwelled
+    /// → sent SendCancelCommand. The ritual silent-no-op'd on Dalaya
+    /// (Combo G CXStr write at +0x1A8 didn't reach EQ's render/submit
+    /// buffer; see :570-573 below) but kept the DLL ClickButton-ing the
+    /// empty form, intermittently raising the empty-password modal
+    /// described at the chesterton fence on :436-440. That modal would
+    /// steal focus from the password field and cause BURST 1 to type into
+    /// it (90s timeout → 30s retry server-release → 3+ min total wall-
+    /// clock). PATH D removes the SHM activity entirely while preserving
+    /// the only useful side effect (wallclock).
     /// </summary>
     private void RunCredentialEntry(int pid, IntPtr hwnd, KeyInputWriter writer,
         LoginShmWriter? loginShm, Account account, string password,
