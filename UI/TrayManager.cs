@@ -2466,11 +2466,13 @@ public class TrayManager : IDisposable
             else if (clientIndex < _config.LegacyAccounts.Count)
             {
                 // Fallback for externally-launched clients (no AutoLogin stamp):
-                // chain CharacterName → Name → Username so the slot still renders.
+                // chain CharacterName → Username → Name so the slot renders the
+                // login identity Nate recognizes; Name is the legacy FK shadow
+                // and may hold a custom string on pre-v3.14.8 accounts.
                 var acct = _config.LegacyAccounts[clientIndex];
                 if (!string.IsNullOrEmpty(acct.CharacterName)) charName = acct.CharacterName;
-                else if (!string.IsNullOrEmpty(acct.Name)) charName = acct.Name;
                 else if (!string.IsNullOrEmpty(acct.Username)) charName = acct.Username;
+                else if (!string.IsNullOrEmpty(acct.Name)) charName = acct.Name;
             }
             title = template
                 .Replace("{CHAR}", charName)

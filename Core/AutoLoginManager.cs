@@ -129,7 +129,7 @@ public class AutoLoginManager
     {
         if (enterWorldOverride == true)
         {
-            FileLogger.Warn($"AutoLogin: LoginToCharselect({account.Name}) called with enterWorldOverride=true — no Character target, staying at charselect");
+            FileLogger.Warn($"AutoLogin: LoginToCharselect({account.Username}) called with enterWorldOverride=true — no Character target, staying at charselect");
             // Don't pass the override through — without a Character target, enter-world
             // would downgrade inside RunLoginSequence anyway. Pass null for cleaner logs.
             return BeginLogin(account, character: null, enterWorldOverride: null);
@@ -187,23 +187,23 @@ public class AutoLoginManager
             // DPAPI unprotect failed — typically happens after cross-user config import
             // (DPAPI scope is CurrentUser on this machine). Surface the root cause so the
             // user knows to re-enter their password rather than assuming the app is broken.
-            FileLogger.Error($"AutoLogin: DPAPI decrypt failed for '{account.Name}' — likely encrypted on a different Windows user. Re-enter password in Settings.", ex);
+            FileLogger.Error($"AutoLogin: DPAPI decrypt failed for '{account.Username}' — likely encrypted on a different Windows user. Re-enter password in Settings.", ex);
             StatusUpdate?.Invoke(this,
-                $"Password for '{account.Name}' was encrypted on a different Windows user. Re-enter it in Settings \u2192 Accounts.");
+                $"Password for '{account.Username}' was encrypted on a different Windows user. Re-enter it in Settings \u2192 Accounts.");
             return Task.CompletedTask;
         }
         catch (FormatException ex)
         {
             // Stored blob is not valid Base64 — config file corruption.
-            FileLogger.Error($"AutoLogin: stored password for '{account.Name}' is not valid Base64 — config corruption.", ex);
+            FileLogger.Error($"AutoLogin: stored password for '{account.Username}' is not valid Base64 — config corruption.", ex);
             StatusUpdate?.Invoke(this,
-                $"Stored password for '{account.Name}' is corrupted. Re-enter it in Settings \u2192 Accounts.");
+                $"Stored password for '{account.Username}' is corrupted. Re-enter it in Settings \u2192 Accounts.");
             return Task.CompletedTask;
         }
         catch (Exception ex)
         {
-            FileLogger.Error($"AutoLogin: unexpected decrypt failure for '{account.Name}'", ex);
-            StatusUpdate?.Invoke(this, $"Unexpected error decrypting password for '{account.Name}': {ex.Message}");
+            FileLogger.Error($"AutoLogin: unexpected decrypt failure for '{account.Username}'", ex);
+            StatusUpdate?.Invoke(this, $"Unexpected error decrypting password for '{account.Username}': {ex.Message}");
             return Task.CompletedTask;
         }
 
@@ -223,7 +223,7 @@ public class AutoLoginManager
         if (account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
             args += $" /login:{account.Username}";
 
-        StatusUpdate?.Invoke(this, $"Launching {account.Name}...");
+        StatusUpdate?.Invoke(this, $"Launching {account.Username}...");
 
         int pid = -1;
         try
@@ -266,7 +266,7 @@ public class AutoLoginManager
             // Stamp the PID→bound-name mapping so TrayManager can render accurate
             // {CHAR} titles without relying on positional LegacyAccounts indexing
             // (which mis-maps team slots, e.g. team1Account2="backup" → "flotte").
-            var boundName = !string.IsNullOrEmpty(character?.Name) ? character!.Name : account.Name;
+            var boundName = !string.IsNullOrEmpty(character?.Name) ? character!.Name : account.Username;
             if (!string.IsNullOrEmpty(boundName))
                 _pidBoundName[pid] = boundName;
 
@@ -275,7 +275,7 @@ public class AutoLoginManager
             // Ensure handles are always closed, even if injection or resume throws
             try
             {
-                FileLogger.Info($"AutoLogin: created suspended PID {pid} for {account.Name}");
+                FileLogger.Info($"AutoLogin: created suspended PID {pid} for {account.Username}");
 
                 // Resume the main thread so the Windows loader initializes (loads kernel32, etc.)
                 // Without this, EnumProcessModulesEx finds no modules and cross-arch injection fails.
@@ -390,7 +390,7 @@ public class AutoLoginManager
             }
             FileLogger.Info($"AutoLogin: DLL gameState ready after {gateSw.ElapsedMilliseconds}ms (PID {pid})");
 
-            Report($"{account.Name}: warmup...");
+            Report($"{account.Username}: warmup...");
             if (loginShm.SendLoginCommand(pid, account.Username, password, account.Server, ""))
             {
                 // Wait for phase >= ClickingConnect (=3) — proves login-screen
@@ -526,7 +526,7 @@ public class AutoLoginManager
                 // the actual root cause was SHM creation (likely name collision
                 // or permission), not MQ2. Match the writer.Open failure handling
                 // above: surface the real error immediately.
-                Report($"Error: failed to create character-select shared memory for {account.Name}");
+                Report($"Error: failed to create character-select shared memory for {account.Username}");
                 FileLogger.Error($"AutoLogin: CharSelectReader SHM open failed for PID {pid} — aborting login");
                 return;
             }
@@ -583,7 +583,7 @@ public class AutoLoginManager
             //     bool shouldEnter = enterWorldOverride ?? (character != null);
             //     if (shouldEnter && character == null)
             //     {
-            //         FileLogger.Warn($"AutoLogin: {account.Name} requested enter-world but no Character target — staying at charselect (LoginShm path)");
+            //         FileLogger.Warn($"AutoLogin: {account.Username} requested enter-world but no Character target — staying at charselect (LoginShm path)");
             //         shouldEnter = false;
             //     }
             //
@@ -635,7 +635,7 @@ public class AutoLoginManager
             // ── Wait for server response (no focus-faking) ──
             Thread.Sleep(3000);
             hwnd = RefreshHandle(pid, hwnd);
-            if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window after login (crashed or closed)"); return; }
+            if (hwnd == IntPtr.Zero) { Report($"{account.Username}: lost EQ window after login (crashed or closed)"); return; }
 
             // ══════════════════════════════════════════════════════════
             // BURST 2: Confirm server select (~1 second active)
@@ -668,8 +668,8 @@ public class AutoLoginManager
             // re-fire the credential burst. One retry, then surface failure.
             if (hitTimeout && hwnd != IntPtr.Zero)
             {
-                Report($"{account.Name}: transition timed out — dismissing any modal dialog + retrying login");
-                FileLogger.Warn($"AutoLogin: {account.Name} hit 90s transition timeout — attempting stale-session recovery (one-shot retry)");
+                Report($"{account.Username}: transition timed out — dismissing any modal dialog + retrying login");
+                FileLogger.Warn($"AutoLogin: {account.Username} hit 90s transition timeout — attempting stale-session recovery (one-shot retry)");
 
                 // Enter clicks OK on any modal dialog; benign on a live login form.
                 writer.Activate(pid, suppress: true);
@@ -681,7 +681,7 @@ public class AutoLoginManager
                 // Server-release wait — empirically Dalaya releases stale sessions in ~30-45s.
                 Thread.Sleep(30000);
                 hwnd = RefreshHandle(pid, hwnd);
-                if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during recovery wait"); return; }
+                if (hwnd == IntPtr.Zero) { Report($"{account.Username}: lost EQ window during recovery wait"); return; }
 
                 // Re-fire BURST 1 (credentials + submit).
                 Report("Retry: typing credentials...");
@@ -710,7 +710,7 @@ public class AutoLoginManager
 
                 Thread.Sleep(3000);
                 hwnd = RefreshHandle(pid, hwnd);
-                if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during retry submit"); return; }
+                if (hwnd == IntPtr.Zero) { Report($"{account.Username}: lost EQ window during retry submit"); return; }
 
                 // Re-fire BURST 2 (server confirm).
                 Report("Retry: confirming server...");
@@ -732,11 +732,11 @@ public class AutoLoginManager
 
             if (hitTimeout)
             {
-                Report($"{account.Name}: char select didn't load (90s + retry) — check password / server / network");
-                FileLogger.Error($"AutoLogin: WaitForScreenTransition timeout even after stale-session recovery for {account.Name} — aborting login");
+                Report($"{account.Username}: char select didn't load (90s + retry) — check password / server / network");
+                FileLogger.Error($"AutoLogin: WaitForScreenTransition timeout even after stale-session recovery for {account.Username} — aborting login");
                 return;
             }
-            if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during charselect load (crashed or closed)"); return; }
+            if (hwnd == IntPtr.Zero) { Report($"{account.Username}: lost EQ window during charselect load (crashed or closed)"); return; }
             FileLogger.Info($"AutoLogin: charselect ready, hwnd=0x{hwnd:X} for PID {pid}");
 
             // ── Enter World gate ──
@@ -749,13 +749,13 @@ public class AutoLoginManager
             bool shouldEnterWorld = enterWorldOverride ?? (character != null);
             if (shouldEnterWorld && character == null)
             {
-                FileLogger.Warn($"AutoLogin: {account.Name} requested enter-world but no Character target — staying at charselect");
+                FileLogger.Warn($"AutoLogin: {account.Username} requested enter-world but no Character target — staying at charselect");
                 shouldEnterWorld = false;
             }
             if (!shouldEnterWorld)
             {
-                Report($"{account.Name} reached character select.");
-                FileLogger.Info($"AutoLogin: {account.Name} stopped at char select (enterWorldOverride={enterWorldOverride?.ToString() ?? "null"}, character={character?.Name ?? "<none>"})");
+                Report($"{account.Username} reached character select.");
+                FileLogger.Info($"AutoLogin: {account.Username} stopped at char select (enterWorldOverride={enterWorldOverride?.ToString() ?? "null"}, character={character?.Name ?? "<none>"})");
                 return;
             }
 
@@ -817,16 +817,16 @@ public class AutoLoginManager
                             && charNames[0].StartsWith("Slot ", StringComparison.Ordinal);
                         string cause = isSlotMode
                             ? $"MQ2 heap in slot-mode ({charNames.Length} placeholder slot(s)) — character names unavailable"
-                            : $"character '{character.Name}' not found in account '{account.Name}'";
+                            : $"character '{character.Name}' not found in account '{account.Username}'";
                         FileLogger.Error($"AutoLogin: {cause} — stopping at charselect to avoid wrong-character enter-world");
-                        Report($"{account.Name}: {cause} — stopped at char select");
+                        Report($"{account.Username}: {cause} — stopped at char select");
                         abortWrongCharacter = true;
                     }
                     else if (resolvedSlot > charCount)
                     {
                         // Slot out of range — same wrong-character guard as pre-extraction.
                         FileLogger.Error($"AutoLogin: slot {resolvedSlot} exceeds char count {charCount} — stopping at charselect to avoid wrong-character enter-world");
-                        Report($"{account.Name}: slot {resolvedSlot} out of range (only {charCount} characters) — stopped at char select");
+                        Report($"{account.Username}: slot {resolvedSlot} out of range (only {charCount} characters) — stopped at char select");
                         abortWrongCharacter = true;
                     }
                     else
@@ -859,7 +859,7 @@ public class AutoLoginManager
                             // was designed to prevent. The ack-timeout path was an
                             // unguarded hole in that design. Abort instead.
                             FileLogger.Error($"AutoLogin: DLL did not ack selection for slot {resolvedSlot} in 10s — stopping at charselect to avoid wrong-character enter-world");
-                            Report($"{account.Name}: character selection not confirmed — stopped at char select");
+                            Report($"{account.Username}: character selection not confirmed — stopped at char select");
                             return;
                         }
                         Thread.Sleep(200); // SetCurSel fires synchronously on game thread via TIMERPROC
@@ -873,7 +873,7 @@ public class AutoLoginManager
                     // CharacterSelector work. Abort with a user-visible Report instead of
                     // phantom-entering world on the wrong character.
                     FileLogger.Error($"AutoLogin: MQ2 bridge not ready after 30s for PID {pid} — stopping at char select to avoid wrong-character enter-world");
-                    Report($"{account.Name}: MQ2 bridge didn't initialize — stopped at char select");
+                    Report($"{account.Username}: MQ2 bridge didn't initialize — stopped at char select");
                     return;
                 }
             }
@@ -892,7 +892,7 @@ public class AutoLoginManager
                 {
                     // Check if already in-game
                     hwnd = RefreshHandle(pid, hwnd);
-                    if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during enter-world (crashed or closed)"); return; }
+                    if (hwnd == IntPtr.Zero) { Report($"{account.Username}: lost EQ window during enter-world (crashed or closed)"); return; }
                     if (IsInGame(charSelect, pid, hwnd))
                     {
                         entered = true;
@@ -935,7 +935,7 @@ public class AutoLoginManager
                         // PulseKey3D could deepen the fault or hang the client.
                         // Abort cleanly with a user-visible message instead.
                         FileLogger.Error($"AutoLogin: EQ client faulted during Enter World click (SEH in game, attempt {attempt + 1}) — stopping to avoid further damage");
-                        Report($"{account.Name}: EQ client faulted during Enter World — please restart the client");
+                        Report($"{account.Username}: EQ client faulted during Enter World — please restart the client");
                         return;
                     }
                     if (result != 1)
@@ -982,7 +982,7 @@ public class AutoLoginManager
                 for (int attempt = 0; attempt < 3 && !entered; attempt++)
                 {
                     hwnd = RefreshHandle(pid, hwnd);
-                    if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during PulseKey3D enter-world fallback (crashed or closed)"); return; }
+                    if (hwnd == IntPtr.Zero) { Report($"{account.Username}: lost EQ window during PulseKey3D enter-world fallback (crashed or closed)"); return; }
                     if (IsInGame(charSelect, pid, hwnd))
                     {
                         entered = true;
@@ -1009,18 +1009,18 @@ public class AutoLoginManager
 
             if (entered)
             {
-                Report($"{account.Name} logged in!");
-                FileLogger.Info($"AutoLogin: {account.Name} login complete (PID {pid})");
+                Report($"{account.Username} logged in!");
+                FileLogger.Info($"AutoLogin: {account.Username} login complete (PID {pid})");
             }
             else
             {
-                Report($"{account.Name}: reached char select but Enter World didn't register");
-                FileLogger.Warn($"AutoLogin: {account.Name} enter-world failed after all attempts (PID {pid})");
+                Report($"{account.Username}: reached char select but Enter World didn't register");
+                FileLogger.Warn($"AutoLogin: {account.Username} enter-world failed after all attempts (PID {pid})");
             }
         }
         catch (Exception ex)
         {
-            FileLogger.Error($"AutoLogin: sequence failed for {account.Name}", ex);
+            FileLogger.Error($"AutoLogin: sequence failed for {account.Username}", ex);
             Report($"Error: {ex.Message}");
         }
         finally
@@ -1131,7 +1131,7 @@ public class AutoLoginManager
             if (phase != lastReported)
             {
                 string status = LoginShmWriter.PhaseName(phase);
-                Report($"{account.Name}: {status}");
+                Report($"{account.Username}: {status}");
                 lastReported = phase;
                 FileLogger.Info($"AutoLogin: LoginShm phase={phase} for PID {pid} at {sw.ElapsedMilliseconds}ms");
             }
@@ -1140,8 +1140,8 @@ public class AutoLoginManager
             {
                 case LoginPhase.Error:
                     var error = loginShm.ReadError(pid);
-                    FileLogger.Error($"AutoLogin: LoginShm error for {account.Name}: {error}");
-                    Report($"{account.Name}: {error}");
+                    FileLogger.Error($"AutoLogin: LoginShm error for {account.Username}: {error}");
+                    Report($"{account.Username}: {error}");
                     return false; // Fall back to keyboard path
 
                 case LoginPhase.WaitLoginScreen:
@@ -1167,8 +1167,8 @@ public class AutoLoginManager
                         shouldEnterWorld, ref hwnd, sw);
 
                 case LoginPhase.Complete:
-                    Report($"{account.Name} logged in!");
-                    FileLogger.Info($"AutoLogin: {account.Name} login complete via LoginShm ({sw.ElapsedMilliseconds}ms, PID {pid})");
+                    Report($"{account.Username} logged in!");
+                    FileLogger.Info($"AutoLogin: {account.Username} login complete via LoginShm ({sw.ElapsedMilliseconds}ms, PID {pid})");
                     return true;
             }
 
@@ -1176,7 +1176,7 @@ public class AutoLoginManager
             hwnd = RefreshHandle(pid, hwnd);
             if (hwnd == IntPtr.Zero)
             {
-                Report($"{account.Name}: EQ process died during login");
+                Report($"{account.Username}: EQ process died during login");
                 return true; // Don't fall back — process is gone
             }
 
@@ -1185,7 +1185,7 @@ public class AutoLoginManager
 
         // Overall timeout — routes to keyboard injection when DLL advances
         // past phase 1 but can't complete (ABI-broken in-process credentials).
-        FileLogger.Error($"AutoLogin: LoginShm overall timeout (45s) for {account.Name}");
+        FileLogger.Error($"AutoLogin: LoginShm overall timeout (45s) for {account.Username}");
         loginShm.SendCancelCommand(pid);
         return false;
     }
@@ -1204,8 +1204,8 @@ public class AutoLoginManager
         {
             // Send CANCEL before DLL's 500ms debounce expires and auto-advances
             loginShm.SendCancelCommand(pid);
-            Report($"{account.Name} reached character select.");
-            FileLogger.Info($"AutoLogin: {account.Name} stopped at char select via LoginShm ({sw.ElapsedMilliseconds}ms, PID {pid})");
+            Report($"{account.Username} reached character select.");
+            FileLogger.Info($"AutoLogin: {account.Username} stopped at char select via LoginShm ({sw.ElapsedMilliseconds}ms, PID {pid})");
             return true;
         }
 
@@ -1228,10 +1228,10 @@ public class AutoLoginManager
                 && charNames[0].StartsWith("Slot ", StringComparison.Ordinal);
             string cause = isSlotMode
                 ? $"MQ2 heap in slot-mode ({charNames.Length} placeholder slot(s)) — character names unavailable"
-                : $"character '{character.Name}' not found in account '{account.Name}'";
+                : $"character '{character.Name}' not found in account '{account.Username}'";
             FileLogger.Error($"AutoLogin: LoginShm {cause} — sending CANCEL to prevent wrong-character enter-world");
             loginShm.SendCancelCommand(pid);
-            Report($"{account.Name}: {cause} — stopped at char select");
+            Report($"{account.Username}: {cause} — stopped at char select");
             return true; // Handled (safety abort) — don't fall back to keyboard
         }
 
@@ -1239,7 +1239,7 @@ public class AutoLoginManager
         {
             FileLogger.Error($"AutoLogin: LoginShm slot {resolvedSlot} exceeds char count {charCount} — sending CANCEL");
             loginShm.SendCancelCommand(pid);
-            Report($"{account.Name}: slot {resolvedSlot} out of range (only {charCount} characters) — stopped at char select");
+            Report($"{account.Username}: slot {resolvedSlot} out of range (only {charCount} characters) — stopped at char select");
             return true;
         }
 
@@ -1256,14 +1256,14 @@ public class AutoLoginManager
             switch (phase)
             {
                 case LoginPhase.Complete:
-                    Report($"{account.Name} logged in!");
-                    FileLogger.Info($"AutoLogin: {account.Name} login complete via LoginShm ({sw.ElapsedMilliseconds}ms, PID {pid})");
+                    Report($"{account.Username} logged in!");
+                    FileLogger.Info($"AutoLogin: {account.Username} login complete via LoginShm ({sw.ElapsedMilliseconds}ms, PID {pid})");
                     return true;
 
                 case LoginPhase.Error:
                     var error = loginShm.ReadError(pid);
-                    FileLogger.Error($"AutoLogin: LoginShm enter-world error for {account.Name}: {error}");
-                    Report($"{account.Name}: Enter World failed — {error}");
+                    FileLogger.Error($"AutoLogin: LoginShm enter-world error for {account.Username}: {error}");
+                    Report($"{account.Username}: Enter World failed — {error}");
                     // DLL's enter-world failed (CLW_EnterWorldButton not found, etc.)
                     // Fall back to keyboard path's PulseKey3D enter-world
                     return false;
@@ -1275,8 +1275,8 @@ public class AutoLoginManager
                     hwnd = RefreshHandle(pid, hwnd);
                     if (hwnd != IntPtr.Zero && IsInGame(loginShm.ReadGameState(pid), hwnd))
                     {
-                        Report($"{account.Name} logged in!");
-                        FileLogger.Info($"AutoLogin: {account.Name} in-game detected before DLL PHASE_COMPLETE ({sw.ElapsedMilliseconds}ms, PID {pid})");
+                        Report($"{account.Username} logged in!");
+                        FileLogger.Info($"AutoLogin: {account.Username} in-game detected before DLL PHASE_COMPLETE ({sw.ElapsedMilliseconds}ms, PID {pid})");
                         return true;
                     }
                     break;
@@ -1286,14 +1286,14 @@ public class AutoLoginManager
             hwnd = RefreshHandle(pid, hwnd);
             if (hwnd == IntPtr.Zero)
             {
-                Report($"{account.Name}: EQ process died during enter-world");
+                Report($"{account.Username}: EQ process died during enter-world");
                 return true;
             }
 
             Thread.Sleep(500);
         }
 
-        FileLogger.Error($"AutoLogin: LoginShm enter-world timeout for {account.Name}");
+        FileLogger.Error($"AutoLogin: LoginShm enter-world timeout for {account.Username}");
         return false; // Fall back to keyboard enter-world
     }
 
