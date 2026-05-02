@@ -74,16 +74,35 @@ public sealed class CharacterEditDialog : Form
             _isEdit ? $"Edit Character \u2014 {existing!.Name}" : "Add Character",
             new Size(formW, formH));
 
-        // Guard: can't create a Character without Accounts.
+        // Guard: can't create a Character without Accounts. Matches the
+        // padding/tightness of AccountEditDialog: 360 form, 340 card, 10/12/12 margins.
         if (availableAccounts.Count == 0)
         {
-            var lblNoAcct = DarkTheme.AddLabel(this,
-                "Add an Account first — Characters require an Account to launch into.",
-                14, 30);
-            lblNoAcct.Size = new Size(410, 50);
-            lblNoAcct.ForeColor = DarkTheme.FgDimGray;
+            const int warnW = 360;
+            const int warnCardW = 340;
+            const int warnL = 10;
+            const int labelH = 44;
+            int warnContentH = 32 + labelH;
+            int warnCardH = warnContentH + 6;
+            int warnBtnY = 10 + warnCardH + 12;
+            int warnH = warnBtnY + 30 + 12;
 
-            var btnCloseEmpty = DarkTheme.MakeButton("Close", DarkTheme.BgMedium, 330, 120);
+            DarkTheme.StyleForm(this, "Add Character", new Size(warnW, warnH));
+
+            var warnCard = DarkTheme.MakeCard(this, "⚠", "No Accounts",
+                DarkTheme.CardWarn, 10, 10, warnCardW, warnCardH);
+
+            var lblNoAcct = DarkTheme.AddCardLabel(warnCard,
+                "Add an Account first — Characters require an Account to launch into.",
+                warnL, 32);
+            // MaximumSize is what flips Label into wrap-mode — without it,
+            // AutoSize=false + a fixed Size renders single-line and clips.
+            // height=0 means "no max height" (label can grow to fit wrapped text).
+            lblNoAcct.MaximumSize = new Size(warnCardW - 20, 0);
+            lblNoAcct.AutoSize = false;
+            lblNoAcct.Size = new Size(warnCardW - 20, labelH);
+
+            var btnCloseEmpty = DarkTheme.MakeButton("Close", DarkTheme.BgMedium, warnW - 100, warnBtnY);
             btnCloseEmpty.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
             Controls.Add(btnCloseEmpty);
             CancelButton = btnCloseEmpty;

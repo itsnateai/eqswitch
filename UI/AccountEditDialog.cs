@@ -87,11 +87,8 @@ public sealed class AccountEditDialog : Form
 
         int cy = 32;
 
-        DarkTheme.AddCardLabel(card, "Name:", L, cy + 4);
-        _txtName = DarkTheme.AddCardTextBox(card, I, cy, inputW);
-        _txtName.Text = existing?.Name ?? "";
-        cy += 30;
-
+        // Row order matches the Accounts grid priority: Username (identity) →
+        // Password → Note (the user's friendly nickname; was "Name") → Server.
         DarkTheme.AddCardLabel(card, "Username:", L, cy + 4);
         _txtUsername = DarkTheme.AddCardTextBox(card, I, cy, inputW);
         _txtUsername.Text = existing?.Username ?? "";
@@ -122,10 +119,25 @@ public sealed class AccountEditDialog : Form
             cy += 20;
         }
 
+        // Note: optional. Stored as Account.Name in the model (rename was
+        // UI-only — JSON property stays "Name" for backward compat).
+        DarkTheme.AddCardLabel(card, "Note:", L, cy + 4);
+        _txtName = DarkTheme.AddCardTextBox(card, I, cy, inputW);
+        _txtName.Text = existing?.Name ?? "";
+        cy += 30;
+
         DarkTheme.AddCardLabel(card, "Server:", L, cy + 4);
         _cboServer = DarkTheme.AddCardComboBox(card, I, cy, inputW, new[] { "Dalaya" });
-        _cboServer.DropDownStyle = ComboBoxStyle.DropDown;
-        _cboServer.Text = string.IsNullOrEmpty(existing?.Server) ? "Dalaya" : existing!.Server;
+        // DropDownList style locks the field: user can only pick from the list.
+        // Since the list has just "Dalaya", the value is effectively hardcoded
+        // for the user. Server is part of AccountKey identity and is consumed
+        // by AutoLoginManager (eqclient.ini + login SHM bridge), so silent
+        // typos like "dalaya" lowercase would orphan characters from accounts.
+        // SelectedIndex=0 always lands on Dalaya — legacy non-Dalaya server
+        // values on existing accounts (e.g. "Tunaria") are intentionally
+        // discarded on save, by design.
+        _cboServer.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cboServer.SelectedIndex = 0;
 
         // Buttons outside the card, right-aligned (Save x = formW-200, Cancel x = formW-100).
         int btnSaveX = formW - 200;
@@ -148,13 +160,9 @@ public sealed class AccountEditDialog : Form
         var server = (_cboServer.Text ?? "").Trim();
         if (string.IsNullOrEmpty(server)) server = "Dalaya";
 
-        if (string.IsNullOrEmpty(name))
-        {
-            MessageBox.Show("Name is required.", "Invalid Account",
-                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            _txtName.Focus();
-            return;
-        }
+        // Note (Account.Name) is optional — blanks are allowed and don't
+        // collide with each other. Username remains required (it's the
+        // pinning identity for AccountKey + autologin keystrokes).
         if (string.IsNullOrEmpty(username))
         {
             MessageBox.Show("Username is required.", "Invalid Account",
@@ -173,9 +181,11 @@ public sealed class AccountEditDialog : Form
             {
                 continue;
             }
-            if (a.Name.Equals(name, StringComparison.Ordinal))
+            // Note collision check skipped when name is blank — multiple
+            // accounts with empty Note are allowed (it's just metadata).
+            if (!string.IsNullOrEmpty(name) && a.Name.Equals(name, StringComparison.Ordinal))
             {
-                MessageBox.Show($"An Account named '{name}' already exists.", "Duplicate Name",
+                MessageBox.Show($"An Account with Note '{name}' already exists.", "Duplicate Note",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 _txtName.Focus();
                 return;
