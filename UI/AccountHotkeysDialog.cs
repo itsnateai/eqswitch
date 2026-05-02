@@ -26,7 +26,11 @@ public sealed class AccountHotkeysDialog : Form
 
     private readonly IReadOnlyList<Account> _accounts;
     private readonly List<(string TargetName, TextBox HotkeyBox)> _liveRows = new();
-    private readonly List<(string TargetName, TextBox HotkeyBox, ComboBox RebindCombo)> _staleRows = new();
+    // RebindAccountList is the parallel ordered list backing the rebind dropdown:
+    // index N+1 in the combo (1-based; index 0 is "(none)") maps to RebindAccountList[N].
+    // The combo displays Account.Username for clarity, but persistence keys off
+    // RebindAccountList[selectedIndex-1].Name (the FK identity).
+    private readonly List<(string TargetName, TextBox HotkeyBox, ComboBox RebindCombo, IReadOnlyList<EQSwitch.Models.Account> RebindAccountList)> _staleRows = new();
     private readonly IReadOnlyList<(string label, string combo)> _otherHotkeys;
     // Single Consolas font shared across every hotkey TextBox — WinForms doesn't
     // dispose Control.Font on the control's Dispose, so a per-TextBox Font leaks GDI
@@ -179,13 +183,17 @@ public sealed class AccountHotkeysDialog : Form
         var tb = MakeHotkeyBox(card, x + 190, y + 1, 90, stale.Combo);
         tb.BackColor = DarkTheme.BgInput;
 
+        // Display Username (the login Nate recognizes); store the parallel
+        // _accounts list snapshot so OnSaveClicked can resolve selection back
+        // to Account.Name (the FK) without trusting the displayed text.
+        var rebindAccountList = _accounts.ToList();
         var rebindItems = new List<string> { "(none \u2014 clear binding)" };
-        rebindItems.AddRange(_accounts.Select(a => a.Name));
+        rebindItems.AddRange(rebindAccountList.Select(a => a.Username));
         var cboRebind = DarkTheme.AddCardComboBox(card, x + 285, y + 1, 130, rebindItems.ToArray());
         cboRebind.DropDownStyle = ComboBoxStyle.DropDownList;
         cboRebind.SelectedIndex = 0;
 
-        _staleRows.Add((stale.TargetName, tb, cboRebind));
+        _staleRows.Add((stale.TargetName, tb, cboRebind, rebindAccountList));
     }
 
     /// <summary>
@@ -279,12 +287,17 @@ public sealed class AccountHotkeysDialog : Form
                 newBindings.Add(new HotkeyBinding { Combo = combo, TargetName = targetName });
         }
 
-        foreach (var (_, tb, cboRebind) in _staleRows)
+        foreach (var (_, tb, cboRebind, rebindAccountList) in _staleRows)
         {
             var combo = tb.Text.Trim();
             if (string.IsNullOrEmpty(combo)) continue;    // stale row with cleared combo: drop entirely
             if (cboRebind.SelectedIndex <= 0) continue;   // "(none)" picked: drop binding
-            var newTarget = cboRebind.SelectedItem?.ToString() ?? "";
+            // Combo displays Username; resolve back to Account.Name (the FK) via
+            // the parallel list captured at AddStaleRow time. Index 0 is "(none)";
+            // accounts start at index 1 -> rebindAccountList[0].
+            var acctIdx = cboRebind.SelectedIndex - 1;
+            if (acctIdx < 0 || acctIdx >= rebindAccountList.Count) continue;
+            var newTarget = rebindAccountList[acctIdx].Name;
             if (string.IsNullOrEmpty(newTarget)) continue;
             newBindings.Add(new HotkeyBinding { Combo = combo, TargetName = newTarget });
         }

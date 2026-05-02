@@ -30,14 +30,17 @@ public class Account
     /// this never touches binding resolution.</summary>
     public string Notes { get; set; } = "";
 
-    /// <summary>User-facing display label. Falls back Name → Username → literal placeholder.
+    /// <summary>User-facing display label. Username-first since v3.14.8 — Name
+    /// is now an internal FK shadow and may hold a legacy custom display string
+    /// on pre-v3.14.8 accounts that the user no longer recognizes. Username is
+    /// the stable login identity. Falls back Username → Name → placeholder.
     /// Never empty — WinForms menu items with empty Text are unclickable.</summary>
     public string EffectiveLabel
     {
         get
         {
-            if (!string.IsNullOrEmpty(Name)) return Name;
             if (!string.IsNullOrEmpty(Username)) return Username;
+            if (!string.IsNullOrEmpty(Name)) return Name;
             return "(unnamed account)";
         }
     }

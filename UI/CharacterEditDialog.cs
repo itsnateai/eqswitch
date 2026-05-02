@@ -128,7 +128,9 @@ public sealed class CharacterEditDialog : Form
         DarkTheme.AddCardLabel(card, "Account:", L, cy + 4);
         _cboAccount = DarkTheme.AddCardComboBox(card, I, cy, inputW, Array.Empty<string>());
         _cboAccount.DropDownStyle = ComboBoxStyle.DropDownList;
-        _cboAccount.DisplayMember = nameof(Account.Name);
+        // Display the login Username, not the FK shadow Name (which can hold a
+        // legacy custom display string on pre-v3.14.8 accounts).
+        _cboAccount.DisplayMember = nameof(Account.Username);
         foreach (var a in availableAccounts)
             _cboAccount.Items.Add(a);
         if (existing != null)

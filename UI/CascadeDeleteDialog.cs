@@ -37,7 +37,7 @@ public sealed class CascadeDeleteDialog : Form
         int extraLines = (shown > 0 ? shown : 0) + (dependents.Count > shown ? 1 : 0);
         int formHeight = 260 + extraLines * 18;
 
-        DarkTheme.StyleForm(this, $"Delete Account '{account.Name}'?", new Size(500, formHeight));
+        DarkTheme.StyleForm(this, $"Delete Account '{account.Username}'?", new Size(500, formHeight));
 
         var card = DarkTheme.MakeCard(this, "\uD83D\uDDD1",
             "Delete Account with Dependents",
