@@ -211,6 +211,20 @@ public class AppConfig
         // hotkey / team-slot / tray binding still resolves by TargetName == Name.
         // Idempotent: only fires when Notes is empty AND Name diverges from
         // Username AND Name is non-empty, so a second pass is a no-op.
+        //
+        // v3.14.10 follow-up: v3.14.7's "Note column writes to Account.Name"
+        // dialog (subsequently fixed in v3.14.8) left some accounts with
+        // Name="" when the user saved with an empty Note field. The v3.14.8
+        // migration above doesn't repair these — its `!IsNullOrEmpty(a.Name)`
+        // guard skips them. Empty Name breaks every FK lookup (hotkey
+        // TargetName, team-slot SlotOption.Value, tray-menu binding,
+        // FindAccountByName at :333), so re-establish the v3.14.8 auto-shadow
+        // invariant: when Name is empty AND Username is non-empty, set
+        // Name = Username so bindings have a stable key from this load
+        // forward. Idempotent (second pass is a no-op since Name is now
+        // non-empty). Bindings that referenced the previously-empty Name
+        // stayed unresolvable; bindings created post-migration resolve to
+        // Username, matching what new accounts would create.
         foreach (var a in Accounts)
         {
             if (string.IsNullOrEmpty(a.Notes) &&
@@ -218,6 +232,11 @@ public class AppConfig
                 !a.Name.Equals(a.Username, StringComparison.Ordinal))
             {
                 a.Notes = a.Name;
+                mutated = true;
+            }
+            if (string.IsNullOrEmpty(a.Name) && !string.IsNullOrEmpty(a.Username))
+            {
+                a.Name = a.Username;
                 mutated = true;
             }
         }
