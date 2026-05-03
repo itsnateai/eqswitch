@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// © itsnateai
+// Copyright (C) 2026 itsnateai
 
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -129,7 +129,7 @@ public class AutoLoginManager
     {
         if (enterWorldOverride == true)
         {
-            FileLogger.Warn($"AutoLogin: LoginToCharselect({account.Username}) called with enterWorldOverride=true — no Character target, staying at charselect");
+            FileLogger.Warn($"AutoLogin: LoginToCharselect({account.Name}) called with enterWorldOverride=true — no Character target, staying at charselect");
             // Don't pass the override through — without a Character target, enter-world
             // would downgrade inside RunLoginSequence anyway. Pass null for cleaner logs.
             return BeginLogin(account, character: null, enterWorldOverride: null);
@@ -164,6 +164,48 @@ public class AutoLoginManager
     }
 
     /// <summary>
+    /// Legacy entry point from the v3.x Tray menu. Synthesizes Account + optional
+    /// Character from the combined LoginAccount type, then delegates to BeginLogin.
+    /// The routing matches v3.9.x semantics exactly: AutoEnterWorld=true + non-empty
+    /// CharacterName → enter world as that character; otherwise stop at charselect.
+    ///
+    /// Phase 3+ will move Tray callers off this method; planned removal once
+    /// TrayManager.FireAccountLogin is migrated to the intent-explicit API.
+    /// </summary>
+    [Obsolete("Use LoginToCharselect(Account) or LoginAndEnterWorld(Character) for intent-explicit routing. Slated for removal once TrayManager.FireAccountLogin is migrated.")]
+    public Task LoginAccount(LoginAccount legacyAccount, bool? teamAutoEnter = null)
+    {
+        var account = new Account
+        {
+            Name = legacyAccount.Name,
+            Username = legacyAccount.Username,
+            EncryptedPassword = legacyAccount.EncryptedPassword,
+            Server = legacyAccount.Server,
+            UseLoginFlag = legacyAccount.UseLoginFlag,
+        };
+
+        // v3.9.x rule: enter-world if (team override says so) OR (per-account flag says so).
+        // Team null means "use account default". Team non-null forces the decision.
+        bool wantsEnterWorld = teamAutoEnter ?? legacyAccount.AutoEnterWorld;
+
+        if (wantsEnterWorld && !string.IsNullOrEmpty(legacyAccount.CharacterName))
+        {
+            var character = new Character
+            {
+                Name = legacyAccount.CharacterName,
+                AccountUsername = legacyAccount.Username,
+                AccountServer = legacyAccount.Server,
+                CharacterSlot = legacyAccount.CharacterSlot,
+            };
+            // Pass teamAutoEnter through so team-false can force charselect even on a Character target.
+            return BeginLogin(account, character, teamAutoEnter);
+        }
+        // Account-only path. teamAutoEnter=true on an Account-only row is logged inside
+        // RunLoginSequence as "enter-world requested but no Character target".
+        return BeginLogin(account, character: null, teamAutoEnter);
+    }
+
+    /// <summary>
     /// Launch EQ with the given Account credentials and (optionally) a specific
     /// Character to select + enter world. Non-blocking — runs the login sequence
     /// on a background thread. Returns a Task that completes when the full
@@ -187,23 +229,23 @@ public class AutoLoginManager
             // DPAPI unprotect failed — typically happens after cross-user config import
             // (DPAPI scope is CurrentUser on this machine). Surface the root cause so the
             // user knows to re-enter their password rather than assuming the app is broken.
-            FileLogger.Error($"AutoLogin: DPAPI decrypt failed for '{account.Username}' — likely encrypted on a different Windows user. Re-enter password in Settings.", ex);
+            FileLogger.Error($"AutoLogin: DPAPI decrypt failed for '{account.Name}' — likely encrypted on a different Windows user. Re-enter password in Settings.", ex);
             StatusUpdate?.Invoke(this,
-                $"Password for '{account.Username}' was encrypted on a different Windows user. Re-enter it in Settings \u2192 Accounts.");
+                $"Password for '{account.Name}' was encrypted on a different Windows user. Re-enter it in Settings \u2192 Accounts.");
             return Task.CompletedTask;
         }
         catch (FormatException ex)
         {
             // Stored blob is not valid Base64 — config file corruption.
-            FileLogger.Error($"AutoLogin: stored password for '{account.Username}' is not valid Base64 — config corruption.", ex);
+            FileLogger.Error($"AutoLogin: stored password for '{account.Name}' is not valid Base64 — config corruption.", ex);
             StatusUpdate?.Invoke(this,
-                $"Stored password for '{account.Username}' is corrupted. Re-enter it in Settings \u2192 Accounts.");
+                $"Stored password for '{account.Name}' is corrupted. Re-enter it in Settings \u2192 Accounts.");
             return Task.CompletedTask;
         }
         catch (Exception ex)
         {
-            FileLogger.Error($"AutoLogin: unexpected decrypt failure for '{account.Username}'", ex);
-            StatusUpdate?.Invoke(this, $"Unexpected error decrypting password for '{account.Username}': {ex.Message}");
+            FileLogger.Error($"AutoLogin: unexpected decrypt failure for '{account.Name}'", ex);
+            StatusUpdate?.Invoke(this, $"Unexpected error decrypting password for '{account.Name}': {ex.Message}");
             return Task.CompletedTask;
         }
 
@@ -223,7 +265,7 @@ public class AutoLoginManager
         if (account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
             args += $" /login:{account.Username}";
 
-        StatusUpdate?.Invoke(this, $"Launching {account.Username}...");
+        StatusUpdate?.Invoke(this, $"Launching {account.Name}...");
 
         int pid = -1;
         try
@@ -266,7 +308,7 @@ public class AutoLoginManager
             // Stamp the PID→bound-name mapping so TrayManager can render accurate
             // {CHAR} titles without relying on positional LegacyAccounts indexing
             // (which mis-maps team slots, e.g. team1Account2="backup" → "flotte").
-            var boundName = !string.IsNullOrEmpty(character?.Name) ? character!.Name : account.Username;
+            var boundName = !string.IsNullOrEmpty(character?.Name) ? character!.Name : account.Name;
             if (!string.IsNullOrEmpty(boundName))
                 _pidBoundName[pid] = boundName;
 
@@ -275,7 +317,7 @@ public class AutoLoginManager
             // Ensure handles are always closed, even if injection or resume throws
             try
             {
-                FileLogger.Info($"AutoLogin: created suspended PID {pid} for {account.Username}");
+                FileLogger.Info($"AutoLogin: created suspended PID {pid} for {account.Name}");
 
                 // Resume the main thread so the Windows loader initializes (loads kernel32, etc.)
                 // Without this, EnumProcessModulesEx finds no modules and cross-arch injection fails.
@@ -340,73 +382,48 @@ public class AutoLoginManager
     /// <summary>
     /// Enter the password into EQ's login screen and submit.
     ///
-    /// Three phases (PATH D, v3.14.9):
+    /// Conceptually two phases bundled into one method (because they're tightly
+    /// coupled by the load-bearing warmup contract — see chesterton-fence note
+    /// at memory/feedback_chesterton_fence_load_bearing_bugs.md):
     ///
-    ///   1. **gameState gate + pre-Activate wallclock.** Wait for the DLL to
-    ///      publish a non-zero gameState (DLL-alive sanity check), then
-    ///      Sleep(WarmupDwellMs). KeyShm is INACTIVE during this Sleep —
-    ///      what the wallclock buys us is EQ's own DI8 state stabilizing
-    ///      (login-screen widget init + EQ's default cooperative-level
-    ///      handshake) before we flip the rising edge. Tuned default 4s.
+    ///   1. **Warmup ritual** via SHM LOGIN command. The DLL walks the
+    ///      SidlManager widget tree to find the live password CEditWnd and
+    ///      writes via Combo G's SetEditWndText. On Dalaya the write
+    ///      silent-no-ops (wrong buffer — EQ renders/submits from a
+    ///      different field), but the WIDGET DISCOVERY ACTIVITY warms up
+    ///      EQ's input pump and gives DI8 cooperative-level negotiation
+    ///      wall-clock to settle into BACKGROUND mode. Phase advances to
+    ///      ClickingConnect (=3) ~3-5s after SendLoginCommand on Dalaya.
     ///
-    ///   2. **Activation + coop-level settle.** writer.Activate(pid) sets
-    ///      KeyShm::Active=1. ActivateThread (16Hz internal poll in the DLL)
-    ///      observes the rising edge and re-calls SetCooperativeLevel with
-    ///      BACKGROUND|NONEXCLUSIVE flags (device_proxy.cpp:208-230). The
-    ///      IAT hooks (iat_hook.cpp:171-189) start spoofing focus immediately
-    ///      on the same gate. The Thread.Sleep(500) below covers ~31 ticks
-    ///      of ActivateThread — comfortable margin for the switch to land.
+    ///   2. **BURST 1 keystrokes** — the actual workhorse. DI8 SendInput
+    ///      types the password (+ Tab/Tab/username if not /login: flag)
+    ///      then Enter to submit.
     ///
-    ///   3. **BURST 1 keystrokes.** DI8 SendInput types the password (+
-    ///      Tab/Tab/username if not /login: flag), then Enter to submit.
+    /// Between (1) and (2) we dwell for WarmupDwellMs (default 4s) — the
+    /// DLL keeps retrying ClickButton in the background during this dwell,
+    /// providing additional widget-tree activity to keep EQ's pump warm.
+    /// SendCancelCommand fires BEFORE BURST 1 (one mid-dev iteration tried
+    /// AFTER and caused 4-of-6 char truncation — DLL's ClickButton retry loop
+    /// contended with C# typing for EQ's message pump). Cancelling pre-Activate
+    /// gives the DLL ~500ms to observe LOGIN_CMD_CANCEL on its next tick and
+    /// stop polling, so BURST 1 types into a quiet pump.
     ///
     /// Total wall-clock from method entry to BURST 1 deactivate, ASSUMING
     /// gameState ready (DLL boot ~2s after EQ window appears, separate gate):
-    ///   WarmupDwellMs (~4s default) + 500ms post-Activate + ~0.7s typing
-    ///   at 25+15ms inter-key = ~5s typical. Per-char typing went from
-    ///   ~130ms (v3.11.3) to ~40ms in v3.12.0.
-    ///
-    /// Historical note: v3.12.0–v3.14.8 ran a "warmup ritual" in phase 1
-    /// that sent SendLoginCommand → waited for PHASE_CLICKING_CONNECT →
-    /// dwelled WarmupDwellMs → sent SendCancelCommand. The ritual silent-
-    /// no-op'd on Dalaya (Combo G CXStr write at +0x1A8 didn't reach EQ's
-    /// render/submit buffer) but kept the DLL ClickButton-ing the empty
-    /// form, intermittently raising an empty-password modal that stole
-    /// BURST 1's keystrokes → 90s timeout → 30s retry-path server-release
-    /// → 3+ min total wallclock. Cloud review (PR #5) confirmed all DI8/
-    /// IAT plumbing gates on KeyShm (independent of LoginShm), so the SHM
-    /// activity bought no useful settle behaviour and the modal risk is
-    /// pure downside. PATH D collapses the ritual to the wallclock alone.
+    ///   ~2-5s (phase advance) + WarmupDwellMs (~4s default) + ~0.7s (typing
+    ///   at 25/15/15ms inter-key) = ~7-10s typical, vs ~21s in v3.11.3.
+    /// Per-char typing went from ~130ms (v3.11.3) to ~40ms in v3.12.0 — looks
+    /// paste-like at 60fps.
     /// </summary>
     private void RunCredentialEntry(int pid, IntPtr hwnd, KeyInputWriter writer,
         LoginShmWriter? loginShm, Account account, string password,
-        int warmupDwellMs)
+        int loginScreenDelayMs, int warmupDwellMs)
     {
-        // ── Phase 1: DI8 settle window (PATH D, v3.14.9) ──
-        // Replaces the prior SHM warmup ritual (SendLoginCommand → wait for
-        // PHASE_CLICKING_CONNECT → dwell → SendCancelCommand). The ritual sent
-        // a real LOGIN command to the DLL, which on Dalaya silent-no-op'd the
-        // Combo G password write (CXStr at +0x1A8 doesn't reach EQ's render/
-        // submit buffer — see :606-609) but kept the DLL ClickButton-ing the
-        // empty form for ~4s, intermittently raising the empty-password modal
-        // described at the chesterton fence on :470-474. The retry path at
-        // :660-731 then dismissed that modal and re-typed — adding ~3 minutes
-        // wall-clock vs the 5-second spec.
-        //
-        // The ritual was load-bearing only for its wallclock side effect: it
-        // gave EQ's DirectInput cooperative-level negotiation time to settle
-        // into BACKGROUND mode before BURST 1 fires. Cloud review (PR #5,
-        // 2026-05-02) confirmed the BACKGROUND coercion in
-        // device_proxy.cpp:586-625 and the IAT hooks at iat_hook.cpp:171-189
-        // gate on KeyShm::IsActive() — set by writer.Activate(pid) below —
-        // and have NO dependency on LoginShm. So an explicit Sleep replaces
-        // the ritual cleanly: same wallclock side effect, no DLL ClickButton
-        // activity, no modal risk.
-        //
-        // gameState gate retained as a DLL-alive sanity check; future PR can
-        // move this to a non-LoginShm signal so we can fully delete PATH A.
+        // ── Phase 1: SHM warmup ritual ──
+        bool warmupRan = false;
         if (loginShm != null)
         {
+            // Wait for DLL state machine to be alive (gameState published).
             var gateSw = System.Diagnostics.Stopwatch.StartNew();
             while (gateSw.ElapsedMilliseconds < 30000)
             {
@@ -414,28 +431,83 @@ public class AutoLoginManager
                 Thread.Sleep(100);
             }
             FileLogger.Info($"AutoLogin: DLL gameState ready after {gateSw.ElapsedMilliseconds}ms (PID {pid})");
+
+            Report($"{account.Name}: warmup...");
+            if (loginShm.SendLoginCommand(pid, account.Username, password, account.Server, ""))
+            {
+                // Wait for phase >= ClickingConnect (=3) — proves login-screen
+                // widgets are discoverable AND Combo G actually wrote a CXStr
+                // (Fix 2's read-back guard would have left phase at Error if
+                // the write went to a stale ptr). Empirically advances in
+                // ~3-5s on Dalaya.
+                //
+                // We deliberately do NOT wait for WaitConnectResponse — the
+                // DLL's PHASE_CLICKING_CONNECT loop tries MQ2Bridge::ClickButton
+                // on 'LOGIN_ConnectButton' which returns a CXMLDataPtr def
+                // (Fix 1's IsEQMainButtonWidget rejects it), then retries for
+                // ~25s before SetError. We don't need that signal — C# fires
+                // BURST 1 instead.
+                const int phaseCeilingMs = 12000;
+                var phaseSw = System.Diagnostics.Stopwatch.StartNew();
+                while (phaseSw.ElapsedMilliseconds < phaseCeilingMs)
+                {
+                    var phase = loginShm.ReadPhase(pid);
+                    if (phase >= LoginPhase.ClickingConnect && phase != LoginPhase.Error)
+                    {
+                        warmupRan = true;
+                        FileLogger.Info($"AutoLogin: warmup phase advanced to {phase} after {phaseSw.ElapsedMilliseconds}ms (PID {pid})");
+                        break;
+                    }
+                    if (phase == LoginPhase.Error)
+                    {
+                        var err = loginShm.ReadError(pid);
+                        FileLogger.Warn($"AutoLogin: warmup phase errored ({err}) — falling back to flat sleep");
+                        break;
+                    }
+                    Thread.Sleep(50);
+                }
+                if (!warmupRan && phaseSw.ElapsedMilliseconds >= phaseCeilingMs)
+                {
+                    FileLogger.Warn($"AutoLogin: warmup phase didn't advance to ClickingConnect within {phaseCeilingMs}ms — falling back to flat sleep");
+                }
+            }
+            else
+            {
+                FileLogger.Warn($"AutoLogin: SendLoginCommand failed for PID {pid} — falling back to flat sleep");
+            }
         }
 
-        // ── Phase 2: KeyShm activation + BACKGROUND coercion settle ──
-        // v3.14.11 fix: WarmupDwellMs dwell moved to AFTER writer.Activate()
-        // so KeyShm is active during the entire wallclock window.
-        // ActivateThread (16Hz internal loop in the DLL,
-        // device_proxy.cpp:208-230) coerces SetCooperativeLevel BACKGROUND on
-        // every tick once KeyShm rises. Pre-v3.14.11, the dwell ran BEFORE
-        // Activate (KeyShm inactive — no coercion happening) and only 500ms
-        // of post-Activate coercion followed before BURST 1 — same window
-        // as pre-PATH D code, intermittently dropping 3-of-6 + 2-of-6 chars
-        // on team1 fire (verified dual-box 2026-05-02). Moving the dwell
-        // post-Activate gives the proxy ~250 ticks of active coercion at
-        // the default 4000ms WarmupDwellMs (vs ~31 ticks pre-fix).
-        writer.Activate(pid, suppress: true);
-        int settleMs = Math.Max(warmupDwellMs, 500);
-        Report($"{account.Username}: settling DI8...");
-        Thread.Sleep(settleMs);
-        FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid} (settled {settleMs}ms post-Activate)");
+        // ── Dwell: DI8 cooperative-level settle window ──
+        // When warmup ran, dwell for WarmupDwellMs (default 4s) — DLL retries
+        // ClickButton in the background during this period. When warmup didn't
+        // run, fall back to LoginScreenDelayMs (default 5s) without DLL activity.
+        int dwellMs = warmupRan ? warmupDwellMs : loginScreenDelayMs;
+        if (dwellMs > 0)
+        {
+            Report(warmupRan ? "Warmup done — settling..." : "Waiting for login screen...");
+            Thread.Sleep(dwellMs);
+        }
 
-        // ── Phase 3: BURST 1 keystrokes ──
+        // ── Pre-BURST cancel: silence the DLL before typing ──
+        // The DLL's PHASE_CLICKING_CONNECT loop polls MQ2Bridge::ClickButton
+        // every ~500ms on EQ's game thread, doing SEH-wrapped widget heap-
+        // walks + WndNotification calls. If left running through BURST 1's
+        // typing window, those heap-walks contend with EQ's message pump and
+        // cause keystroke truncation (verified 2026-04-25 dual-box: 4-of-6
+        // chars on client 1, 0-of-6 on client 2). Cancelling BEFORE Activate
+        // gives the DLL ~500ms to observe LOGIN_CMD_CANCEL on its next tick
+        // and stop polling, so BURST 1 types into a quiet pump.
+        if (loginShm != null && warmupRan)
+        {
+            loginShm.SendCancelCommand(pid);
+            FileLogger.Info($"AutoLogin: warmup cancel sent pre-BURST 1 for PID {pid}");
+        }
+
+        // ── Phase 2: BURST 1 keystrokes ──
         Report("Typing credentials...");
+        writer.Activate(pid, suppress: true);
+        Thread.Sleep(500); // let DLL switch coop + blast activation
+        FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
 
         // NOTE: a pre-flight Enter before typing is NOT idempotent on Dalaya
         // patchme — empty-password Enter raises a "you need to enter a username
@@ -469,9 +541,7 @@ public class AutoLoginManager
     {
         // Snapshot config values — RunLoginSequence runs on a background thread
         // while ReloadConfig can mutate _config on the UI thread.
-        // (LoginScreenDelayMs no longer snapshotted — PATH D collapsed the
-        // warmup-vs-flat-sleep branch to just WarmupDwellMs. Config field
-        // retained on AppConfig for future use / migration compat.)
+        int loginScreenDelayMs = _config.LoginScreenDelayMs;
         int warmupDwellMs = _config.WarmupDwellMs;
         string eqPath = _config.EQPath;
 
@@ -498,7 +568,7 @@ public class AutoLoginManager
                 // the actual root cause was SHM creation (likely name collision
                 // or permission), not MQ2. Match the writer.Open failure handling
                 // above: surface the real error immediately.
-                Report($"Error: failed to create character-select shared memory for {account.Username}");
+                Report($"Error: failed to create character-select shared memory for {account.Name}");
                 FileLogger.Error($"AutoLogin: CharSelectReader SHM open failed for PID {pid} — aborting login");
                 return;
             }
@@ -555,7 +625,7 @@ public class AutoLoginManager
             //     bool shouldEnter = enterWorldOverride ?? (character != null);
             //     if (shouldEnter && character == null)
             //     {
-            //         FileLogger.Warn($"AutoLogin: {account.Username} requested enter-world but no Character target — staying at charselect (LoginShm path)");
+            //         FileLogger.Warn($"AutoLogin: {account.Name} requested enter-world but no Character target — staying at charselect (LoginShm path)");
             //         shouldEnter = false;
             //     }
             //
@@ -569,31 +639,25 @@ public class AutoLoginManager
             // }
 
             // ══════════════════════════════════════════════════════════════
-            // Credential entry — PATH D (v3.14.9):
-            //   gameState gate (DLL-alive sanity) →
-            //   Sleep(WarmupDwellMs)              (DI8 settle wallclock) →
-            //   writer.Activate(pid)              (KeyShm::Active=1 → IAT
-            //                                      hooks + DI8 BACKGROUND
-            //                                      coercion fire on rising
-            //                                      edge from ActivateThread,
-            //                                      ~16ms tick) →
-            //   Sleep(500)                        (let coop switch land) →
-            //   BURST 1 keystrokes
+            // Single credential-entry method:
+            //   warmup (SHM widget discovery + Combo G silent-no-op) →
+            //   dwell (DI8 cooperative-level settle) →
+            //   BURST 1 keystrokes (the actual password typing) →
+            //   cancel SHM (stop DLL retry loop)
             //
-            // The pre-PATH D ritual ran SendLoginCommand here, which on Dalaya
-            // silent-no-op'd the Combo G CXStr write at +0x1A8 (EQ reads from
-            // a different field — read-back at +0x14 confirms write landed
-            // *somewhere* but not the submit buffer). Kept it on life-support
-            // for ~6 days as "warmup" because of the wallclock side-effect
-            // chesterton fence at RunCredentialEntry — turned out to also
-            // trigger an empty-form modal that stole BURST 1's keystrokes
-            // (3-min retry-path recovery on cold logins). Cloud review on
-            // PR #5 confirmed all DI8/IAT plumbing gates on KeyShm
-            // (independent of LoginShm), so the SHM activity was buying
-            // nothing the wallclock alone can't, and the modal risk is gone.
+            // 2026-04-25: silent injection abandoned for now. Combo G's CXStr
+            // write at +0x1A8 doesn't reach EQ's render/submit buffer (read-
+            // back at +0x14 confirms we wrote somewhere, but EQ reads from a
+            // different field). The SHM LOGIN attempt is kept as warmup ritual
+            // ONLY — its widget-discovery activity warms up EQ's input pump and
+            // gives DI8 cooperative-level negotiation wall-clock to settle.
+            // Tunable via WarmupDwellMs config (default 4s post-phase-advance).
+            //
+            // Future stretch: fix Combo G to write the right widget/buffer
+            // (live render-side EditWnd), then BURST 1 can be removed entirely.
             // ══════════════════════════════════════════════════════════════
             RunCredentialEntry(pid, hwnd, writer, loginShm, account, password,
-                warmupDwellMs);
+                loginScreenDelayMs, warmupDwellMs);
 
             // Fire LoginCredentialsSent — TrayManager uses this to apply slim-
             // titlebar + hook config + window title NOW (T+~7s) instead of
@@ -613,7 +677,7 @@ public class AutoLoginManager
             // ── Wait for server response (no focus-faking) ──
             Thread.Sleep(3000);
             hwnd = RefreshHandle(pid, hwnd);
-            if (hwnd == IntPtr.Zero) { Report($"{account.Username}: lost EQ window after login (crashed or closed)"); return; }
+            if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window after login (crashed or closed)"); return; }
 
             // ══════════════════════════════════════════════════════════
             // BURST 2: Confirm server select (~1 second active)
@@ -646,8 +710,8 @@ public class AutoLoginManager
             // re-fire the credential burst. One retry, then surface failure.
             if (hitTimeout && hwnd != IntPtr.Zero)
             {
-                Report($"{account.Username}: transition timed out — dismissing any modal dialog + retrying login");
-                FileLogger.Warn($"AutoLogin: {account.Username} hit 90s transition timeout — attempting stale-session recovery (one-shot retry)");
+                Report($"{account.Name}: transition timed out — dismissing any modal dialog + retrying login");
+                FileLogger.Warn($"AutoLogin: {account.Name} hit 90s transition timeout — attempting stale-session recovery (one-shot retry)");
 
                 // Enter clicks OK on any modal dialog; benign on a live login form.
                 writer.Activate(pid, suppress: true);
@@ -659,7 +723,7 @@ public class AutoLoginManager
                 // Server-release wait — empirically Dalaya releases stale sessions in ~30-45s.
                 Thread.Sleep(30000);
                 hwnd = RefreshHandle(pid, hwnd);
-                if (hwnd == IntPtr.Zero) { Report($"{account.Username}: lost EQ window during recovery wait"); return; }
+                if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during recovery wait"); return; }
 
                 // Re-fire BURST 1 (credentials + submit).
                 Report("Retry: typing credentials...");
@@ -688,7 +752,7 @@ public class AutoLoginManager
 
                 Thread.Sleep(3000);
                 hwnd = RefreshHandle(pid, hwnd);
-                if (hwnd == IntPtr.Zero) { Report($"{account.Username}: lost EQ window during retry submit"); return; }
+                if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during retry submit"); return; }
 
                 // Re-fire BURST 2 (server confirm).
                 Report("Retry: confirming server...");
@@ -710,11 +774,11 @@ public class AutoLoginManager
 
             if (hitTimeout)
             {
-                Report($"{account.Username}: char select didn't load (90s + retry) — check password / server / network");
-                FileLogger.Error($"AutoLogin: WaitForScreenTransition timeout even after stale-session recovery for {account.Username} — aborting login");
+                Report($"{account.Name}: char select didn't load (90s + retry) — check password / server / network");
+                FileLogger.Error($"AutoLogin: WaitForScreenTransition timeout even after stale-session recovery for {account.Name} — aborting login");
                 return;
             }
-            if (hwnd == IntPtr.Zero) { Report($"{account.Username}: lost EQ window during charselect load (crashed or closed)"); return; }
+            if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during charselect load (crashed or closed)"); return; }
             FileLogger.Info($"AutoLogin: charselect ready, hwnd=0x{hwnd:X} for PID {pid}");
 
             // ── Enter World gate ──
@@ -727,13 +791,13 @@ public class AutoLoginManager
             bool shouldEnterWorld = enterWorldOverride ?? (character != null);
             if (shouldEnterWorld && character == null)
             {
-                FileLogger.Warn($"AutoLogin: {account.Username} requested enter-world but no Character target — staying at charselect");
+                FileLogger.Warn($"AutoLogin: {account.Name} requested enter-world but no Character target — staying at charselect");
                 shouldEnterWorld = false;
             }
             if (!shouldEnterWorld)
             {
-                Report($"{account.Username} reached character select.");
-                FileLogger.Info($"AutoLogin: {account.Username} stopped at char select (enterWorldOverride={enterWorldOverride?.ToString() ?? "null"}, character={character?.Name ?? "<none>"})");
+                Report($"{account.Name} reached character select.");
+                FileLogger.Info($"AutoLogin: {account.Name} stopped at char select (enterWorldOverride={enterWorldOverride?.ToString() ?? "null"}, character={character?.Name ?? "<none>"})");
                 return;
             }
 
@@ -795,16 +859,16 @@ public class AutoLoginManager
                             && charNames[0].StartsWith("Slot ", StringComparison.Ordinal);
                         string cause = isSlotMode
                             ? $"MQ2 heap in slot-mode ({charNames.Length} placeholder slot(s)) — character names unavailable"
-                            : $"character '{character.Name}' not found in account '{account.Username}'";
+                            : $"character '{character.Name}' not found in account '{account.Name}'";
                         FileLogger.Error($"AutoLogin: {cause} — stopping at charselect to avoid wrong-character enter-world");
-                        Report($"{account.Username}: {cause} — stopped at char select");
+                        Report($"{account.Name}: {cause} — stopped at char select");
                         abortWrongCharacter = true;
                     }
                     else if (resolvedSlot > charCount)
                     {
                         // Slot out of range — same wrong-character guard as pre-extraction.
                         FileLogger.Error($"AutoLogin: slot {resolvedSlot} exceeds char count {charCount} — stopping at charselect to avoid wrong-character enter-world");
-                        Report($"{account.Username}: slot {resolvedSlot} out of range (only {charCount} characters) — stopped at char select");
+                        Report($"{account.Name}: slot {resolvedSlot} out of range (only {charCount} characters) — stopped at char select");
                         abortWrongCharacter = true;
                     }
                     else
@@ -837,7 +901,7 @@ public class AutoLoginManager
                             // was designed to prevent. The ack-timeout path was an
                             // unguarded hole in that design. Abort instead.
                             FileLogger.Error($"AutoLogin: DLL did not ack selection for slot {resolvedSlot} in 10s — stopping at charselect to avoid wrong-character enter-world");
-                            Report($"{account.Username}: character selection not confirmed — stopped at char select");
+                            Report($"{account.Name}: character selection not confirmed — stopped at char select");
                             return;
                         }
                         Thread.Sleep(200); // SetCurSel fires synchronously on game thread via TIMERPROC
@@ -851,7 +915,7 @@ public class AutoLoginManager
                     // CharacterSelector work. Abort with a user-visible Report instead of
                     // phantom-entering world on the wrong character.
                     FileLogger.Error($"AutoLogin: MQ2 bridge not ready after 30s for PID {pid} — stopping at char select to avoid wrong-character enter-world");
-                    Report($"{account.Username}: MQ2 bridge didn't initialize — stopped at char select");
+                    Report($"{account.Name}: MQ2 bridge didn't initialize — stopped at char select");
                     return;
                 }
             }
@@ -870,7 +934,7 @@ public class AutoLoginManager
                 {
                     // Check if already in-game
                     hwnd = RefreshHandle(pid, hwnd);
-                    if (hwnd == IntPtr.Zero) { Report($"{account.Username}: lost EQ window during enter-world (crashed or closed)"); return; }
+                    if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during enter-world (crashed or closed)"); return; }
                     if (IsInGame(charSelect, pid, hwnd))
                     {
                         entered = true;
@@ -913,7 +977,7 @@ public class AutoLoginManager
                         // PulseKey3D could deepen the fault or hang the client.
                         // Abort cleanly with a user-visible message instead.
                         FileLogger.Error($"AutoLogin: EQ client faulted during Enter World click (SEH in game, attempt {attempt + 1}) — stopping to avoid further damage");
-                        Report($"{account.Username}: EQ client faulted during Enter World — please restart the client");
+                        Report($"{account.Name}: EQ client faulted during Enter World — please restart the client");
                         return;
                     }
                     if (result != 1)
@@ -960,7 +1024,7 @@ public class AutoLoginManager
                 for (int attempt = 0; attempt < 3 && !entered; attempt++)
                 {
                     hwnd = RefreshHandle(pid, hwnd);
-                    if (hwnd == IntPtr.Zero) { Report($"{account.Username}: lost EQ window during PulseKey3D enter-world fallback (crashed or closed)"); return; }
+                    if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during PulseKey3D enter-world fallback (crashed or closed)"); return; }
                     if (IsInGame(charSelect, pid, hwnd))
                     {
                         entered = true;
@@ -987,18 +1051,18 @@ public class AutoLoginManager
 
             if (entered)
             {
-                Report($"{account.Username} logged in!");
-                FileLogger.Info($"AutoLogin: {account.Username} login complete (PID {pid})");
+                Report($"{account.Name} logged in!");
+                FileLogger.Info($"AutoLogin: {account.Name} login complete (PID {pid})");
             }
             else
             {
-                Report($"{account.Username}: reached char select but Enter World didn't register");
-                FileLogger.Warn($"AutoLogin: {account.Username} enter-world failed after all attempts (PID {pid})");
+                Report($"{account.Name}: reached char select but Enter World didn't register");
+                FileLogger.Warn($"AutoLogin: {account.Name} enter-world failed after all attempts (PID {pid})");
             }
         }
         catch (Exception ex)
         {
-            FileLogger.Error($"AutoLogin: sequence failed for {account.Username}", ex);
+            FileLogger.Error($"AutoLogin: sequence failed for {account.Name}", ex);
             Report($"Error: {ex.Message}");
         }
         finally
@@ -1109,7 +1173,7 @@ public class AutoLoginManager
             if (phase != lastReported)
             {
                 string status = LoginShmWriter.PhaseName(phase);
-                Report($"{account.Username}: {status}");
+                Report($"{account.Name}: {status}");
                 lastReported = phase;
                 FileLogger.Info($"AutoLogin: LoginShm phase={phase} for PID {pid} at {sw.ElapsedMilliseconds}ms");
             }
@@ -1118,8 +1182,8 @@ public class AutoLoginManager
             {
                 case LoginPhase.Error:
                     var error = loginShm.ReadError(pid);
-                    FileLogger.Error($"AutoLogin: LoginShm error for {account.Username}: {error}");
-                    Report($"{account.Username}: {error}");
+                    FileLogger.Error($"AutoLogin: LoginShm error for {account.Name}: {error}");
+                    Report($"{account.Name}: {error}");
                     return false; // Fall back to keyboard path
 
                 case LoginPhase.WaitLoginScreen:
@@ -1145,8 +1209,8 @@ public class AutoLoginManager
                         shouldEnterWorld, ref hwnd, sw);
 
                 case LoginPhase.Complete:
-                    Report($"{account.Username} logged in!");
-                    FileLogger.Info($"AutoLogin: {account.Username} login complete via LoginShm ({sw.ElapsedMilliseconds}ms, PID {pid})");
+                    Report($"{account.Name} logged in!");
+                    FileLogger.Info($"AutoLogin: {account.Name} login complete via LoginShm ({sw.ElapsedMilliseconds}ms, PID {pid})");
                     return true;
             }
 
@@ -1154,7 +1218,7 @@ public class AutoLoginManager
             hwnd = RefreshHandle(pid, hwnd);
             if (hwnd == IntPtr.Zero)
             {
-                Report($"{account.Username}: EQ process died during login");
+                Report($"{account.Name}: EQ process died during login");
                 return true; // Don't fall back — process is gone
             }
 
@@ -1163,7 +1227,7 @@ public class AutoLoginManager
 
         // Overall timeout — routes to keyboard injection when DLL advances
         // past phase 1 but can't complete (ABI-broken in-process credentials).
-        FileLogger.Error($"AutoLogin: LoginShm overall timeout (45s) for {account.Username}");
+        FileLogger.Error($"AutoLogin: LoginShm overall timeout (45s) for {account.Name}");
         loginShm.SendCancelCommand(pid);
         return false;
     }
@@ -1182,8 +1246,8 @@ public class AutoLoginManager
         {
             // Send CANCEL before DLL's 500ms debounce expires and auto-advances
             loginShm.SendCancelCommand(pid);
-            Report($"{account.Username} reached character select.");
-            FileLogger.Info($"AutoLogin: {account.Username} stopped at char select via LoginShm ({sw.ElapsedMilliseconds}ms, PID {pid})");
+            Report($"{account.Name} reached character select.");
+            FileLogger.Info($"AutoLogin: {account.Name} stopped at char select via LoginShm ({sw.ElapsedMilliseconds}ms, PID {pid})");
             return true;
         }
 
@@ -1206,10 +1270,10 @@ public class AutoLoginManager
                 && charNames[0].StartsWith("Slot ", StringComparison.Ordinal);
             string cause = isSlotMode
                 ? $"MQ2 heap in slot-mode ({charNames.Length} placeholder slot(s)) — character names unavailable"
-                : $"character '{character.Name}' not found in account '{account.Username}'";
+                : $"character '{character.Name}' not found in account '{account.Name}'";
             FileLogger.Error($"AutoLogin: LoginShm {cause} — sending CANCEL to prevent wrong-character enter-world");
             loginShm.SendCancelCommand(pid);
-            Report($"{account.Username}: {cause} — stopped at char select");
+            Report($"{account.Name}: {cause} — stopped at char select");
             return true; // Handled (safety abort) — don't fall back to keyboard
         }
 
@@ -1217,7 +1281,7 @@ public class AutoLoginManager
         {
             FileLogger.Error($"AutoLogin: LoginShm slot {resolvedSlot} exceeds char count {charCount} — sending CANCEL");
             loginShm.SendCancelCommand(pid);
-            Report($"{account.Username}: slot {resolvedSlot} out of range (only {charCount} characters) — stopped at char select");
+            Report($"{account.Name}: slot {resolvedSlot} out of range (only {charCount} characters) — stopped at char select");
             return true;
         }
 
@@ -1234,14 +1298,14 @@ public class AutoLoginManager
             switch (phase)
             {
                 case LoginPhase.Complete:
-                    Report($"{account.Username} logged in!");
-                    FileLogger.Info($"AutoLogin: {account.Username} login complete via LoginShm ({sw.ElapsedMilliseconds}ms, PID {pid})");
+                    Report($"{account.Name} logged in!");
+                    FileLogger.Info($"AutoLogin: {account.Name} login complete via LoginShm ({sw.ElapsedMilliseconds}ms, PID {pid})");
                     return true;
 
                 case LoginPhase.Error:
                     var error = loginShm.ReadError(pid);
-                    FileLogger.Error($"AutoLogin: LoginShm enter-world error for {account.Username}: {error}");
-                    Report($"{account.Username}: Enter World failed — {error}");
+                    FileLogger.Error($"AutoLogin: LoginShm enter-world error for {account.Name}: {error}");
+                    Report($"{account.Name}: Enter World failed — {error}");
                     // DLL's enter-world failed (CLW_EnterWorldButton not found, etc.)
                     // Fall back to keyboard path's PulseKey3D enter-world
                     return false;
@@ -1253,8 +1317,8 @@ public class AutoLoginManager
                     hwnd = RefreshHandle(pid, hwnd);
                     if (hwnd != IntPtr.Zero && IsInGame(loginShm.ReadGameState(pid), hwnd))
                     {
-                        Report($"{account.Username} logged in!");
-                        FileLogger.Info($"AutoLogin: {account.Username} in-game detected before DLL PHASE_COMPLETE ({sw.ElapsedMilliseconds}ms, PID {pid})");
+                        Report($"{account.Name} logged in!");
+                        FileLogger.Info($"AutoLogin: {account.Name} in-game detected before DLL PHASE_COMPLETE ({sw.ElapsedMilliseconds}ms, PID {pid})");
                         return true;
                     }
                     break;
@@ -1264,14 +1328,14 @@ public class AutoLoginManager
             hwnd = RefreshHandle(pid, hwnd);
             if (hwnd == IntPtr.Zero)
             {
-                Report($"{account.Username}: EQ process died during enter-world");
+                Report($"{account.Name}: EQ process died during enter-world");
                 return true;
             }
 
             Thread.Sleep(500);
         }
 
-        FileLogger.Error($"AutoLogin: LoginShm enter-world timeout for {account.Username}");
+        FileLogger.Error($"AutoLogin: LoginShm enter-world timeout for {account.Name}");
         return false; // Fall back to keyboard enter-world
     }
 
