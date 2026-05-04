@@ -223,6 +223,17 @@ public class AutoLoginManager
         try
         {
             password = CredentialManager.Decrypt(account.EncryptedPassword);
+            // Diagnostic: surface decrypt outcome (length only, NEVER the value).
+            // Empty / suspiciously-short here = silent config corruption from a prior
+            // Settings save (DPAPI happily encrypts ""), which produces "Enter pressed
+            // on empty password field" symptom. WARN at <2 chars so reasonable
+            // passwords don't spam, but anything degenerate surfaces immediately.
+            if (string.IsNullOrEmpty(password))
+                FileLogger.Warn($"AutoLogin: decrypted password for '{account.Name}' is EMPTY — config may be corrupted; re-enter password in Settings → Accounts");
+            else if (password.Length < 2)
+                FileLogger.Warn($"AutoLogin: decrypted password for '{account.Name}' is suspiciously short (length={password.Length})");
+            else
+                FileLogger.Info($"AutoLogin: decrypted password for '{account.Name}' OK (length={password.Length})");
         }
         catch (System.Security.Cryptography.CryptographicException ex)
         {
@@ -508,6 +519,20 @@ public class AutoLoginManager
         writer.Activate(pid, suppress: true);
         Thread.Sleep(500); // let DLL switch coop + blast activation
         FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
+
+        // ── PRIMER: absorb first-keystroke drop ──
+        // EQ's GetDeviceData polling lags after the SHM-active flip — the FIRST
+        // 1-3 keystrokes are dropped before EQ's input pump catches up. Pure
+        // dwell-tuning (warmupDwellMs) only narrows this window; it doesn't close
+        // it (verified 2026-05-04: dwell=4s drops 2 chars, dwell=8s drops 1 char,
+        // dwell=12s pushes EQ into idle and drops ALL — peak is ~8s). Sending
+        // Backspace first deterministically absorbs whatever EQ drops:
+        //   - if EQ drops the primer (expected): no harm, password lands intact
+        //   - if EQ catches it on empty field: no-op (Backspace on empty is no-op)
+        // VK_BACK (0x08) chosen because it cannot insert a char or change focus
+        // even if it lands and the field is somehow non-empty.
+        CombinedPressKey(writer, pid, hwnd, 0x08);
+        Thread.Sleep(50);
 
         // NOTE: a pre-flight Enter before typing is NOT idempotent on Dalaya
         // patchme — empty-password Enter raises a "you need to enter a username
@@ -1408,6 +1433,14 @@ public class AutoLoginManager
     /// <summary>Type a string via SHM + PostMessage. Posts WM_KEYDOWN + WM_CHAR + WM_KEYUP.</summary>
     private static void CombinedTypeString(KeyInputWriter writer, int pid, IntPtr hwnd, string text)
     {
+        // Diagnostic counters: tell us whether typing actually executed. Catches
+        // the failure mode where DI8 SHM only sees the trailing Enter — if typed=0
+        // here despite text.Length > 0, every char failed VkKeyScan / modifier
+        // checks. If typed > 0 but the DI8 log shows no scancode injections,
+        // the SHM write path is broken downstream (writer state / DLL / EQ pump).
+        int typedCount = 0;
+        int skippedCount = 0;
+        FileLogger.Info($"AutoLogin: CombinedTypeString PID={pid} hwnd=0x{hwnd.ToInt64():X} input.Length={text.Length}");
         foreach (char c in text)
         {
             short vkScan = NativeMethods.VkKeyScanW(c);
@@ -1420,6 +1453,7 @@ public class AutoLoginManager
                 // dropped without a log line, and EQ returned "wrong password"
                 // with zero diagnostic guidance.
                 FileLogger.Warn($"AutoLogin: CombinedTypeString skipping char '{c}' (U+{(int)c:X4}) — unmappable on current keyboard layout");
+                skippedCount++;
                 continue;
             }
 
@@ -1430,6 +1464,7 @@ public class AutoLoginManager
                 // need AltGr (e.g. @, {, }, [, ] on DE/FR/ES layouts) surface visibly
                 // instead of silently producing a mystery login failure.
                 FileLogger.Warn($"AutoLogin: CombinedTypeString skipping char '{c}' (U+{(int)c:X4}) — requires modifier 0x{modifiers:X} (Ctrl/Alt/AltGr)");
+                skippedCount++;
                 continue;
             }
 
@@ -1464,7 +1499,9 @@ public class AutoLoginManager
                 PostR(writer, pid, hwnd, NativeMethods.WM_KEYUP, (IntPtr)0x10, MakeKeyUpLParam(shiftScan));
             }
             Thread.Sleep(15); // was 50ms — full per-char now ~40ms vs ~130ms (3x faster)
+            typedCount++;
         }
+        FileLogger.Info($"AutoLogin: CombinedTypeString PID={pid} done — typed={typedCount} skipped={skippedCount} input.Length={text.Length}");
     }
 
     private void Report(string message)
