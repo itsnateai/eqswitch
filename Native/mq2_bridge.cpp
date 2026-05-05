@@ -24,6 +24,12 @@
 
 void DI8Log(const char *fmt, ...);
 
+// Track B v3 (2026-05-05): pull target char name from LoginShm for anchor-scan
+// fallback (single-char accounts where threshold-5 heap scan can't satisfy).
+// `g_loginShm` lives in eqswitch-di8.cpp; declared `volatile` because the C#
+// host writes it from a different thread. Read-only access from this TU.
+extern volatile LoginShm* g_loginShm;
+
 // CXMLDataPtr vtable RVA — Dalaya x86 eqmain. Used in cross-ref scans
 // and walker indirect-backref check (live widget holds CXMLDataPtr* whose
 // m_pXMLData == def). Declared at file scope so both FindLiveCXWnd's
@@ -128,6 +134,11 @@ static volatile int      g_cachedSlotCount   = -1;  // slot probe result cache (
 static volatile bool     g_verificationDone  = false;
 static volatile uintptr_t g_heapScanArrayBase = 0;   // heap scan result (0 = not found/not scanned)
 static volatile bool     g_heapScanDone      = false; // one-shot per charselect session
+// Track B v3 (2026-05-05, T2 dual red-team v6 callout): distinguishes anchor-scan
+// cache (single entry, slot 0) from full-array cache (real array, real curSel).
+// In the re-read branch, anchor mode requires selectedIndex=0 each poll because
+// Path B2's GetCurSel write would otherwise drift selectedIndex away from 0.
+static volatile bool     g_anchorScanCached  = false;
 static int               g_standaloneDelay   = 0;    // delay standalone heap scan by N poll cycles
 
 // ─── Heap scan for character name array ───────────────────────
@@ -153,11 +164,32 @@ static bool IsPlausibleName(const uint8_t *p) {
     // Blocklist: common EQ/eqmain UI labels that pass strict title-case.
     // "Height" and "Heading" are the known false positives from eqmain's
     // character-info panel label block (see v6f hotfix notes).
+    // Track B v2/v3 (2026-05-05): UI-label additions per gap-audit verifiers,
+    // plus EQ class names + player race names which appear as plausible-name
+    // strings in eqgame's class/race description tables (live strings, not
+    // the field labels). Without these blocked, the heap scan picks the
+    // class-list (Cleric, Druid, ...) or race-list (Human, Halfling, ...)
+    // arrays as false positives. T2 Opus v3 verifier callout.
     static const char *const kBadNames[] = {
+        // UI field labels
         "Height", "Heading", "Class", "Level", "Name", "Race", "Deity",
         "Gender", "Strength", "Stamina", "Charisma", "Dexterity",
         "Agility", "Intelligence", "Wisdom", "Account", "Character",
         "Login", "Server", "World", "Select", "Options", "Default",
+        "Username", "Password", "Settings", "Network", "Inventory",
+        "Public", "Console", "Argument", "Target", "Inspect", "Trading",
+        // EQ class names (Dalaya/RoF2 set)
+        "Bard", "Cleric", "Druid", "Enchanter", "Magician", "Monk",
+        "Necromancer", "Paladin", "Ranger", "Rogue", "Shaman", "Warrior",
+        "Wizard", "Beastlord", "Berserker", "Shadowknight",
+        // EQ player race names
+        "Human", "Barbarian", "Erudite", "Woodelf", "Highelf", "Darkelf",
+        "Halfelf", "Dwarf", "Troll", "Ogre", "Halfling", "Gnome",
+        "Iksar", "Vahshir", "Froglok", "Drakkin",
+        // EQ-flavor short title-case strings present in zone/server/chat
+        // string tables (T2 Sonnet v3 callout).
+        "Zone", "Camp", "Raid", "Brave", "Bold", "Storm", "Swift",
+        "Hunter", "Shadow", "Rider", "Scout", "Valor", "Pride",
         nullptr
     };
     for (int k = 0; kBadNames[k]; k++) {
@@ -174,19 +206,44 @@ static const uint32_t HEAP_SCAN_STRIDE = 0x160;
 static uintptr_t HeapScanForCharArray() {
     MEMORY_BASIC_INFORMATION mbi;
     uintptr_t addr = 0x01000000; // skip low addresses
+    int regionsScanned = 0;
     int pagesScanned = 0;
+    // Track B v2 (2026-05-05): wall-clock budget. Without this, a fragmented heap
+    // (many small MEM_FREE regions) could keep the scan walking VirtualQuery for
+    // multiple seconds, blocking the bridge poll thread and starving Tick().
+    // T2 Sonnet/Opus verifier callout — `regionsScanned < 200000` cap was misleading
+    // because each iteration was a region (could be 2GB), not a 4KB page.
+    const DWORD scanStartMs = GetTickCount();
+    const DWORD scanBudgetMs = 1500;  // hard ceiling; observed normal scans 200-400ms
 
-    while (addr < 0x7FFF0000 && pagesScanned < 200000) {
+    while (addr < 0x7FFF0000 && regionsScanned < 200000) {
+        // Wall-clock abort takes precedence over region cap
+        if (GetTickCount() - scanStartMs > scanBudgetMs) {
+            DI8Log("mq2_bridge: heap scan: time budget exceeded (%ums, %d regions, %d pages) — clearing g_heapScanDone for retry next poll",
+                   scanBudgetMs, regionsScanned, pagesScanned);
+            // Track B v3 (2026-05-05, T3 Opus v3 HIGH callout): callers (Path C
+            // line ~3496, standalone line ~3587) set g_heapScanDone=true BEFORE
+            // calling us. On budget-abort, that gate would permanently lock all
+            // future scans in this charselect cycle (only cleared on transition).
+            // Clear it ourselves so next poll retries — at worst this means
+            // repeated 1.5s scans on a pathologically fragmented heap, but at
+            // best it gives the array a chance once swap pressure drops.
+            g_heapScanDone = false;
+            return 0;
+        }
         if (VirtualQuery((void *)addr, &mbi, sizeof(mbi)) == 0) break;
 
         uintptr_t base = (uintptr_t)mbi.BaseAddress;
         SIZE_T size = mbi.RegionSize;
 
+        regionsScanned++;
         if (mbi.State == MEM_COMMIT &&
             !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
             (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
 
-            pagesScanned++;
+            // Track actual page count (4KB) for honest accounting in the
+            // not-found log line. Track B v2 (2026-05-05).
+            pagesScanned += (int)(size / 0x1000);
             // Scan in 64KB chunks
             for (uintptr_t off = 0; off < size; off += 0x10000) {
                 uintptr_t chunk = base + off;
@@ -200,18 +257,38 @@ static uintptr_t HeapScanForCharArray() {
                     // Step through the chunk looking for name-like starts
                     for (uintptr_t i = 0; i + 10 * HEAP_SCAN_STRIDE <= chunkSize; i += 4) {
                         if (!IsPlausibleName(p + i)) continue;
-                        // Check if entries at stride 0x160 also have plausible names
+                        // Track B fix (2026-05-05): also require entry[0].race ∈ [1, 600].
+                        // Without this, Dalaya's race-table at-stride-0x160 wins the scan
+                        // (its names pass IsPlausibleName: "Dracnid","Wyvern","Pegasus"...
+                        // and race-table entries' +0x44 holds a heap pointer, value > 1e8).
+                        // Player CharSelectInfo has +0x44 as race int. Canonical RoF2 enum:
+                        // 1..16 (base races), 128 Iksar, 130 VahShir, 330 Froglok, 522 Drakkin.
+                        // Bound 600 covers all known player races while still rejecting heap
+                        // pointers (millions+) seen in race-table entries.
+                        int32_t entryRace = *(const int32_t *)(p + i + 0x44);
+                        if (entryRace < 1 || entryRace > 600) continue;
+                        // Check if entries at stride 0x160 also have plausible names AND
+                        // valid race values. Race-table also has +0x44 huge values, so this
+                        // strengthens validation beyond just name-pattern.
                         int validCount = 1;
                         for (int s = 1; s < 10; s++) {
-                            if (IsPlausibleName(p + i + s * HEAP_SCAN_STRIDE))
-                                validCount++;
-                            else
-                                break;
+                            if (!IsPlausibleName(p + i + s * HEAP_SCAN_STRIDE)) break;
+                            int32_t nextRace = *(const int32_t *)(p + i + s * HEAP_SCAN_STRIDE + 0x44);
+                            if (nextRace < 1 || nextRace > 600) break;
+                            validCount++;
                         }
                         if (validCount >= 5) {
-                            // Strong match — 5+ consecutive name-like entries at 0x160 stride
+                            // Track B fix: kept threshold at 5 (race-filter alone isn't enough
+                            // to disambiguate single-entry false positives — login-screen
+                            // strings like "Public"/"Console" pass name+race when the +0x44
+                            // field happens to fall in [1,200]). Single-char accounts
+                            // (gotquiz1: Natedogg) won't be discovered by heap scan; they
+                            // need a separate path (CListWnd row-array or anchor-by-known-name).
+                            // The race-byte filter now blocks the multi-entry race-table
+                            // false positive (Dalaya's race table happens to have 7 consecutive
+                            // name-pattern entries at stride 0x160 with +0x44 = heap pointer).
                             uintptr_t arrayAddr = chunk + i;
-                            DI8Log("mq2_bridge: heap scan FOUND char array at 0x%08X (%d/%d names valid)",
+                            DI8Log("mq2_bridge: heap scan FOUND char array at 0x%08X (%d/%d names valid, race-filtered)",
                                    arrayAddr, validCount, 10);
                             return arrayAddr;
                         }
@@ -226,7 +303,92 @@ static uintptr_t HeapScanForCharArray() {
         if (addr <= base) addr = base + 0x1000;
     }
 
-    DI8Log("mq2_bridge: heap scan: no char array found (%d pages scanned)", pagesScanned);
+    DI8Log("mq2_bridge: heap scan: no char array found (%d regions, %d pages, %ums)",
+           regionsScanned, pagesScanned, GetTickCount() - scanStartMs);
+    return 0;
+}
+
+// ─── Anchor-scan for single-char accounts ─────────────────────
+// Track B v3 (2026-05-05): when slot-probe = 1 and the threshold-5 heap scan
+// fails (Natedogg / single-char accounts), do a name-anchored scan.
+// We KNOW the target name (from LoginShm.character — what AutoLoginManager
+// is autologin-ing as), so search for that exact null-terminated byte
+// sequence in committed pages. For each match, verify the surrounding bytes
+// look like a CharSelectInfo entry (race byte at +0x44 in [1,600]). This
+// yields a genuine entry without needing 5+ consecutive name patterns.
+//
+// Safety: the target name must come from LoginShm (trusted source written
+// by C# autologin path with config-listed value). We never use an arbitrary
+// name from heap. False-positive risk: only if the same name string exists
+// elsewhere in heap with a coincidental [1,600] DWORD at +0x44 — vanishingly
+// rare for a fresh char-select state.
+static uintptr_t HeapScanForTargetName(const char *targetName) {
+    if (!targetName || !targetName[0]) return 0;
+
+    // Snapshot length once; targetName is from LoginShm and could in principle
+    // be raced by the C# writer, but for our purposes the snapshot is fine.
+    int targetLen = 0;
+    while (targetLen < 32 && targetName[targetLen] != '\0') targetLen++;
+    if (targetLen < 4 || targetLen > 15) return 0;  // EQ name length bounds
+
+    MEMORY_BASIC_INFORMATION mbi;
+    uintptr_t addr = 0x01000000;
+    int regionsScanned = 0;
+    const DWORD scanStartMs = GetTickCount();
+    const DWORD scanBudgetMs = 1500;
+
+    while (addr < 0x7FFF0000 && regionsScanned < 200000) {
+        if (GetTickCount() - scanStartMs > scanBudgetMs) {
+            DI8Log("mq2_bridge: anchor scan: budget exceeded for '%s' (%ums)",
+                   targetName, scanBudgetMs);
+            return 0;
+        }
+        if (VirtualQuery((void *)addr, &mbi, sizeof(mbi)) == 0) break;
+        uintptr_t base = (uintptr_t)mbi.BaseAddress;
+        SIZE_T size = mbi.RegionSize;
+        regionsScanned++;
+
+        if (mbi.State == MEM_COMMIT &&
+            !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
+            (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
+
+            // Scan in 64KB chunks. Need at least targetLen+1 (null) + 0x48
+            // bytes to validate +0x44 race byte after the name.
+            for (uintptr_t off = 0; off < size; off += 0x10000) {
+                uintptr_t chunk = base + off;
+                SIZE_T chunkSize = (size - off < 0x10000) ? (size - off) : 0x10000;
+                const SIZE_T MIN_TAIL = 0x48;
+                if (chunkSize < (SIZE_T)(targetLen + 1) + MIN_TAIL) continue;
+
+                __try {
+                    const uint8_t *p = (const uint8_t *)chunk;
+                    SIZE_T limit = chunkSize - (SIZE_T)(targetLen + 1) - MIN_TAIL;
+                    // 4-byte aligned scan — CharSelectInfo entries start aligned
+                    for (SIZE_T i = 0; i <= limit; i += 4) {
+                        if (p[i] != (uint8_t)targetName[0]) continue;
+                        if (memcmp(p + i, targetName, (size_t)targetLen) != 0) continue;
+                        if (p[i + targetLen] != 0) continue;  // require null-term
+                        // Validate +0x44 race byte
+                        int32_t race = *(const int32_t *)(p + i + 0x44);
+                        if (race < 1 || race > 600) continue;
+                        // Strong match: name + null-term + valid race byte
+                        uintptr_t entryAddr = chunk + i;
+                        DI8Log("mq2_bridge: anchor scan FOUND '%s' at 0x%08X (race=%d, %ums)",
+                               targetName, entryAddr, race, GetTickCount() - scanStartMs);
+                        return entryAddr;
+                    }
+                } __except(EXCEPTION_EXECUTE_HANDLER) {
+                    // Page became unreadable mid-scan, skip
+                }
+            }
+        }
+
+        addr = base + size;
+        if (addr <= base) addr = base + 0x1000;
+    }
+
+    DI8Log("mq2_bridge: anchor scan: '%s' not found (%d regions, %ums)",
+           targetName, regionsScanned, GetTickCount() - scanStartMs);
     return 0;
 }
 
@@ -301,10 +463,28 @@ static bool IsValidCharArray(const uint8_t *pEverQuest, uint32_t offset) {
         // heap-scan hit returned eqmain's character-info panel label block
         // instead of the charselect array. If one of these strings appears as
         // "name", we're reading from the wrong base.
+        // Track B v2/v3 (2026-05-05): harmonized with IsPlausibleName's blocklist
+        // (line ~156) so Path A and Path C reject the same UI labels + class
+        // names + race names.
         static const char *const kBadNames[] = {
-            "Height", "Class", "Level", "Name", "Race", "Deity", "Gender",
-            "Strength", "Stamina", "Charisma", "Dexterity", "Agility",
-            "Intelligence", "Wisdom", "Account", "Character", "Login",
+            "Height", "Heading", "Class", "Level", "Name", "Race", "Deity",
+            "Gender", "Strength", "Stamina", "Charisma", "Dexterity",
+            "Agility", "Intelligence", "Wisdom", "Account", "Character",
+            "Login", "Server", "World", "Select", "Options", "Default",
+            "Username", "Password", "Settings", "Network", "Inventory",
+            "Public", "Console", "Argument", "Target", "Inspect", "Trading",
+            "Bard", "Cleric", "Druid", "Enchanter", "Magician", "Monk",
+            "Necromancer", "Paladin", "Ranger", "Rogue", "Shaman", "Warrior",
+            "Wizard", "Beastlord", "Berserker", "Shadowknight",
+            "Human", "Barbarian", "Erudite", "Woodelf", "Highelf", "Darkelf",
+            "Halfelf", "Dwarf", "Troll", "Ogre", "Halfling", "Gnome",
+            "Iksar", "Vahshir", "Froglok", "Drakkin",
+            // EQ-flavor short title-case strings (parity with IsPlausibleName).
+            // T2 verifier callout: previously this list was 13 entries shorter
+            // than the IsPlausibleName list, which created Path A vs Path C
+            // predicate drift.
+            "Zone", "Camp", "Raid", "Brave", "Bold", "Storm", "Swift",
+            "Hunter", "Shadow", "Rider", "Scout", "Valor", "Pride",
             nullptr
         };
         for (int k = 0; kBadNames[k]; k++) {
@@ -341,14 +521,28 @@ static bool ValidateCharArrayOffset(const uint8_t *pEverQuest) {
         return true;
     }
 
-    // Log scan attempt only once per session (resets on game state transition)
-    if (!g_charArrayNotFoundLogged)
-        DI8Log("mq2_bridge: expected offset 0x%X failed -- scanning +-0x200", OFFSET_CHARSELECT_ARRAY);
+    // Track B fix (2026-05-05): widened scan from ±0x200 to full CEverQuest range
+    // (0..0x20000). The hardcoded OFFSET_CHARSELECT_ARRAY=0x18EC0 is the MQ2
+    // x64-RoF2 value; on Dalaya x86 every pointer-sized member halves so the
+    // array sits at a different (currently unknown) offset. IsValidCharArray's
+    // multi-layer validation (count∈[1,10], heap-range data ptr, A-Z+a-z name
+    // pattern, length [4,15], UI-label blocklist, level∈[0,10000]) keeps false-
+    // positive rate effectively zero across this widened scan.
+    //
+    // PERF GATE (2026-05-05, post Opus T2 verifier): if the scan failed once
+    // already this charselect cycle (g_charArrayNotFoundLogged), don't re-run
+    // the 32k-iteration scan every poll. Wait for the next charselect transition
+    // to clear the gate (see line ~2754 reset block). Previously the wide scan
+    // re-fired every Poll() call (~500ms cadence) for the entire charselect
+    // duration on Dalaya where this offset is genuinely unfindable.
+    if (g_charArrayNotFoundLogged) return false;
 
-    const uint32_t scanRange = 0x200;
+    DI8Log("mq2_bridge: expected offset 0x%X failed -- scanning 0..0x20000 (Track B widened)",
+           OFFSET_CHARSELECT_ARRAY);
+
     uint32_t baseOffset = OFFSET_CHARSELECT_ARRAY;
-    uint32_t startOffset = (baseOffset > scanRange) ? (baseOffset - scanRange) : 0;
-    uint32_t endOffset = baseOffset + scanRange;
+    uint32_t startOffset = 0;
+    uint32_t endOffset = 0x20000;
 
     for (uint32_t off = startOffset; off <= endOffset; off += 4) {
         if (off == baseOffset) continue;
@@ -362,10 +556,8 @@ static bool ValidateCharArrayOffset(const uint8_t *pEverQuest) {
         }
     }
 
-    if (!g_charArrayNotFoundLogged) {
-        DI8Log("mq2_bridge: charSelectPlayerArray NOT FOUND in scan range (suppressing future logs)");
-        g_charArrayNotFoundLogged = true;
-    }
+    DI8Log("mq2_bridge: charSelectPlayerArray NOT FOUND in 0..0x20000 (skipping rescan until next charselect transition)");
+    g_charArrayNotFoundLogged = true;
     return false;
 }
 
@@ -2726,6 +2918,32 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                 if (pCharSelWnd != lastObserved) {
                     DI8Log("mq2_bridge: pinstCCharacterSelect transition: %p -> %p",
                            (void *)lastObserved, pCharSelWnd);
+                    // Track B fix (2026-05-05): reset heap-scan one-shot gates whenever
+                    // pCharSelWnd is a *new non-null* pointer — covers null→non-null
+                    // (initial activation) AND non-null→different-non-null (heap reuse,
+                    // mid-process MQ2 re-init, fresh char-select instance after Shutdown
+                    // re-resolves at a different heap address). Does NOT reset on non-
+                    // null→null (zone-out / world-load) — preserves perf gate so we
+                    // don't thrash 32k-offset Path A re-scans on every world transition.
+                    //
+                    // Previously this was gated on (lastObserved == nullptr && pCharSelWnd
+                    // != nullptr), which missed the heap-reuse + cross-Shutdown cases —
+                    // T2 Sonnet/Opus verifier callout (2026-05-05). Dalaya keeps
+                    // gameState=0 across BOTH login and char-select, so the older
+                    // gameState=5 reset path doesn't fire on Dalaya at all. This block
+                    // is the primary gate-clearing path; Shutdown() is the secondary.
+                    if (pCharSelWnd != nullptr) {
+                        g_heapScanDone = false;
+                        g_heapScanArrayBase = 0;
+                        g_anchorScanCached = false;
+                        g_standaloneDelay = 0;
+                        g_uiFallbackLogged = false;
+                        g_cachedSlotCount = -1;
+                        g_cachedNameCol = -1;
+                        g_charArrayNotFoundLogged = false;
+                        g_offsetValidated = false;  // re-validate Path A under live char-select
+                        DI8Log("mq2_bridge: reset heap-scan + slot-mode caches on charselect transition");
+                    }
                     lastObserved = pCharSelWnd;
                 }
 
@@ -3078,12 +3296,21 @@ static void EmitVerificationReport(volatile CharSelectShm *shm) {
                 const ArrayClassHeader *arr = (const ArrayClassHeader *)((uint8_t *)pEQ + g_validatedOffset);
                 DI8Log("    charSelectPlayerArray at offset 0x%X: Count=%d", g_validatedOffset, arr->Count);
                 if (arr->Count > 0 && arr->Data) {
-                    const char *firstName = (const char *)(arr->Data + CSI_NAME_OFF);
+                    // Track B v2 (2026-05-05, T3 Sonnet callout): use IsPlausibleName
+                    // for the verification log too, so the diagnostic matches the
+                    // production predicate. Previously this used 0x20..0x7E (any
+                    // printable) and could log garbage like "Heading\0" while the
+                    // SHM path correctly rejected the same bytes — actively
+                    // misleading during a debug session.
+                    const uint8_t *firstName = (const uint8_t *)(arr->Data + CSI_NAME_OFF);
                     char nameBuf[64] = {};
-                    int len = 0;
-                    while (len < 63 && firstName[len] >= 0x20 && firstName[len] <= 0x7E) len++;
-                    memcpy(nameBuf, firstName, len);
-                    DI8Log("    first char: '%s'", nameBuf);
+                    if (IsPlausibleName(firstName)) {
+                        int len = 0;
+                        while (len < 63 && firstName[len] != 0) { nameBuf[len] = firstName[len]; len++; }
+                        DI8Log("    first char: '%s' (plausible)", nameBuf);
+                    } else {
+                        DI8Log("    first char: <fails IsPlausibleName predicate>");
+                    }
                 }
             }
         } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -3202,6 +3429,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         g_cachedSlotCount = -1;
         g_heapScanDone = false;
         g_heapScanArrayBase = 0;
+        g_anchorScanCached = false;
         g_standaloneDelay = 0;  // reset for next charselect cycle
         g_verificationDone = false;
         g_charArrayNotFoundLogged = false;
@@ -3230,10 +3458,19 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                     for (int i = 0; i < count; i++) {
                         const uint8_t *entry = data + (i * CSI_SIZE);
                         const char *name = (const char *)(entry + CSI_NAME_OFF);
+                        // Track B v3 (2026-05-05, T3 Opus v3 callout): use the
+                        // SAME IsPlausibleName predicate as Path C heap-scan readers
+                        // (lines 3512+, 3604+) so Path A and Path C agree on what
+                        // counts as a valid name byte. Previous A-Z/a-z loop accepted
+                        // "NATEDOGG"/"natedogg"/"NatEdogG" while IsPlausibleName
+                        // rejects all three (strict title-case: uppercase-first then
+                        // lowercase-only). On a divergence the SHM could be written
+                        // with mismatched name strings on the same tick.
                         int nameLen = 0;
-                        while (nameLen < CHARSEL_NAME_LEN - 1 && name[nameLen] != '\0' &&
-                               name[nameLen] >= 0x20 && name[nameLen] <= 0x7E) {
-                            nameLen++;
+                        if (IsPlausibleName((const uint8_t *)name)) {
+                            while (nameLen < CHARSEL_NAME_LEN - 1 && name[nameLen] != '\0') {
+                                nameLen++;
+                            }
                         }
                         memcpy((void *)shm->names[i], name, nameLen);
                         ((char *)shm->names[i])[nameLen] = '\0';
@@ -3337,13 +3574,23 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                         int curSel = g_fnGetCurSel(pCharList);
                         shm->selectedIndex = curSel;
                     } __except(EXCEPTION_EXECUTE_HANDLER) {}
-                    // Repopulate slot names (SHM may have been reset)
-                    for (int i = 0; i < count; i++) {
-                        char slotName[CHARSEL_NAME_LEN] = {};
-                        wsprintfA(slotName, "Slot %d", i + 1);
-                        memcpy((void *)shm->names[i], slotName, CHARSEL_NAME_LEN);
-                        shm->levels[i] = 0;
-                        shm->classes[i] = 0;
+                    // Track B v3 fix (2026-05-05, T2 Sonnet+Opus v5 callout): skip
+                    // the "Slot N" placeholder rewrite when Path C/anchor already
+                    // populated real names this charselect cycle. Without this gate,
+                    // each poll's cached path overwrites real names with "Slot 1"
+                    // BEFORE the re-read path restores them — a brief window where
+                    // C# can see charCount=1 + names[0]="Slot 1" + stale slot-mode
+                    // abort gate trips. g_heapScanArrayBase is set whenever Path C
+                    // (line ~3680) or anchor scan (line ~3680) found a live entry.
+                    if (!g_heapScanArrayBase) {
+                        // Repopulate slot names (SHM may have been reset)
+                        for (int i = 0; i < count; i++) {
+                            char slotName[CHARSEL_NAME_LEN] = {};
+                            wsprintfA(slotName, "Slot %d", i + 1);
+                            memcpy((void *)shm->names[i], slotName, CHARSEL_NAME_LEN);
+                            shm->levels[i] = 0;
+                            shm->classes[i] = 0;
+                        }
                     }
                 } else if (g_fnSetCurSel) {
                     // First probe — SetCurSel/GetCurSel on each slot to find actual count
@@ -3393,6 +3640,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 uintptr_t arrayBase = HeapScanForCharArray();
                 if (arrayBase) {
                     g_heapScanArrayBase = arrayBase;
+                    g_anchorScanCached = false;  // full-array path: real list, real curSel
                     __try {
                         for (int i = 0; i < count && i < CHARSEL_MAX_CHARS; i++) {
                             const uint8_t *entry = (const uint8_t *)(arrayBase + i * HEAP_SCAN_STRIDE);
@@ -3416,6 +3664,67 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                         DI8Log("mq2_bridge: SEH reading heap-scanned char array");
                         g_heapScanArrayBase = 0;
                     }
+                } else {
+                    // Track B v3 (2026-05-05): full-array scan failed (single-char
+                    // accounts can't satisfy threshold-5). Anchor-scan for the
+                    // specific char we're trying to log into — read target from
+                    // LoginShm.character. C# AutoLoginManager writes that field
+                    // before issuing autologin.
+                    char targetName[CHARSEL_NAME_LEN] = {};
+                    // Track B v3 fix (2026-05-05, T3 Opus v5 callout): wrap the
+                    // g_loginShm->magic dereference INSIDE __try too. The pointer
+                    // could be non-null with the underlying MMF unmapped (DLL detach
+                    // race), in which case the magic-read AVs before the inner __try
+                    // covered it. SEH covers the whole chain now.
+                    if (g_loginShm) {
+                        __try {
+                            if (g_loginShm->magic == LOGIN_SHM_MAGIC) {
+                                // Volatile snapshot — copy to local before scanning
+                                for (int k = 0; k < CHARSEL_NAME_LEN - 1 && k < LOGIN_CHAR_LEN; k++) {
+                                    char c = g_loginShm->character[k];
+                                    if (!c) break;
+                                    targetName[k] = c;
+                                }
+                            }
+                        } __except(EXCEPTION_EXECUTE_HANDLER) {
+                            targetName[0] = '\0';
+                        }
+                    }
+                    if (targetName[0]) {
+                        uintptr_t entry = HeapScanForTargetName(targetName);
+                        if (entry) {
+                            // Found the target name's CharSelectInfo entry.
+                            // We can't trust slot index from heap (which slot in
+                            // the visual list it occupies is unknown without the
+                            // array base) — but C# only needs name-match against
+                            // targetName to satisfy the c74a766 abort gate. Write
+                            // targetName to slot 0 (the highlighted slot per
+                            // GetCurSel) so name-match succeeds.
+                            __try {
+                                int nameLen = 0;
+                                while (nameLen < CHARSEL_NAME_LEN - 1 && targetName[nameLen] != '\0')
+                                    nameLen++;
+                                memcpy((void *)shm->names[0], targetName, nameLen);
+                                ((char *)shm->names[0])[nameLen] = '\0';
+                                // Track B v3 fix (2026-05-05, red-team Sonnet+Opus
+                                // dual callout): force selectedIndex=0 so C# Enter
+                                // World fires against slot 0 (where we just wrote
+                                // the target name), not against whatever GetCurSel
+                                // happened to return from Path B2 (which can be
+                                // non-zero on EQ pre-cursor or stale state).
+                                // Mirrors the standalone path's explicit assignment.
+                                shm->selectedIndex = 0;
+                                int32_t race = *(const int32_t *)(entry + 0x44);
+                                DI8Log("mq2_bridge: anchor populated slot 0 = \"%s\" race=%d (single-char fallback)",
+                                       targetName, race);
+                                // Cache the anchor address for re-read path below
+                                g_heapScanArrayBase = (uintptr_t)entry;
+                                g_anchorScanCached = true;  // re-read branch will re-pin selectedIndex=0
+                            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                                DI8Log("mq2_bridge: SEH writing anchor-scan name to SHM");
+                            }
+                        }
+                    }
                 }
             }
             // On subsequent polls, re-read names from cached heap array (names may update).
@@ -3436,6 +3745,17 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                         memcpy((void *)shm->names[i], entry, nameLen);
                         ((char *)shm->names[i])[nameLen] = '\0';
                         // class/level offsets unknown — don't touch shm fields
+                    }
+                    // Track B v3 fix (2026-05-05, T2 dual red-team v6 callout): when
+                    // the cached base came from anchor-scan (single entry, slot 0),
+                    // re-pin shm->selectedIndex=0 each poll. Path B2 above unconditionally
+                    // sets shm->selectedIndex=GetCurSel earlier in this same poll; without
+                    // this re-pin the anchor-scan target's slot would drift to whatever
+                    // GetCurSel returns (non-zero on EQ pre-cursor or stale state). For
+                    // full-array cached state (g_anchorScanCached=false), curSel from
+                    // Path B2 is the user's actual selection — leave it alone.
+                    if (g_anchorScanCached) {
+                        shm->selectedIndex = 0;
                     }
                     // Invalidate aggressively: any failure (not just all-zero) suggests heap reuse.
                     // Reset g_heapScanDone so the next poll triggers a fresh full scan, not just
@@ -3484,6 +3804,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
             uintptr_t arrayBase = HeapScanForCharArray();
             if (arrayBase) {
                 g_heapScanArrayBase = arrayBase;
+                g_anchorScanCached = false;  // full-array path: real list, real curSel
                 int count = 0;
                 __try {
                     for (int i = 0; i < CHARSEL_MAX_CHARS; i++) {
@@ -3514,6 +3835,56 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                     }
                     charDataRead = true;
                     DI8Log("mq2_bridge: heap scan populated %d characters (Path A+B both failed)", count);
+                }
+            } else {
+                // Track B v3 (2026-05-05): standalone full-array scan failed.
+                // Anchor-scan for the target char from LoginShm.character.
+                // Same fallback as Path C — handles single-char accounts.
+                char targetName[CHARSEL_NAME_LEN] = {};
+                // Track B v3 fix (2026-05-05, T3 Opus v5 callout): wrap magic check
+                // inside __try — see Path C site for rationale.
+                if (g_loginShm) {
+                    __try {
+                        if (g_loginShm->magic == LOGIN_SHM_MAGIC) {
+                            for (int k = 0; k < CHARSEL_NAME_LEN - 1 && k < LOGIN_CHAR_LEN; k++) {
+                                char c = g_loginShm->character[k];
+                                if (!c) break;
+                                targetName[k] = c;
+                            }
+                        }
+                    } __except(EXCEPTION_EXECUTE_HANDLER) {
+                        targetName[0] = '\0';
+                    }
+                }
+                if (targetName[0]) {
+                    uintptr_t entry = HeapScanForTargetName(targetName);
+                    if (entry) {
+                        __try {
+                            int nameLen = 0;
+                            while (nameLen < CHARSEL_NAME_LEN - 1 && targetName[nameLen] != '\0')
+                                nameLen++;
+                            memcpy((void *)shm->names[0], targetName, nameLen);
+                            ((char *)shm->names[0])[nameLen] = '\0';
+                            shm->levels[0] = 0;
+                            shm->classes[0] = 0;
+                            for (int i = 1; i < CHARSEL_MAX_CHARS; i++) {
+                                ((char *)shm->names[i])[0] = '\0';
+                                shm->levels[i] = 0;
+                                shm->classes[i] = 0;
+                            }
+                            MemoryBarrier();
+                            shm->charCount = 1;
+                            shm->selectedIndex = 0;
+                            charDataRead = true;
+                            int32_t race = *(const int32_t *)(entry + 0x44);
+                            DI8Log("mq2_bridge: anchor scan populated slot 0 = \"%s\" race=%d (standalone, single-char)",
+                                   targetName, race);
+                            g_heapScanArrayBase = (uintptr_t)entry;
+                            g_anchorScanCached = true;  // re-read branch will re-pin selectedIndex=0
+                        } __except(EXCEPTION_EXECUTE_HANDLER) {
+                            DI8Log("mq2_bridge: SEH writing standalone anchor-scan to SHM");
+                        }
+                    }
                 }
             }
         }
@@ -3634,4 +4005,16 @@ void MQ2Bridge::Shutdown() {
     // doesn't serve a stale count from the previous session's charselect.
     g_cachedSlotCount = -1;
     g_heapScanArrayBase = 0;
+
+    // Track B fix (2026-05-05, T2 Opus verifier callout): reset the perf-gate
+    // and heap-scan-done flags too. Otherwise a mid-process MQ2 re-init lands
+    // in an Init() with g_charArrayNotFoundLogged=true (or g_heapScanDone=true)
+    // from the previous cycle, and Path A's wide scan + Path C heap scan are
+    // permanently locked off until the next pinstCCharacterSelect transition
+    // — which may not fire promptly if the new char-select instance is
+    // resolved at the same heap address as the previous one (heap reuse).
+    g_charArrayNotFoundLogged = false;
+    g_heapScanDone = false;
+    g_anchorScanCached = false;
+    g_standaloneDelay = 0;
 }

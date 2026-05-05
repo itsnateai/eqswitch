@@ -428,7 +428,8 @@ public class AutoLoginManager
     /// </summary>
     private void RunCredentialEntry(int pid, IntPtr hwnd, KeyInputWriter writer,
         LoginShmWriter? loginShm, Account account, string password,
-        int loginScreenDelayMs, int warmupDwellMs)
+        int loginScreenDelayMs, int warmupDwellMs,
+        string targetCharacterName = "")
     {
         // ── Phase 1: SHM warmup ritual ──
         bool warmupRan = false;
@@ -444,7 +445,12 @@ public class AutoLoginManager
             FileLogger.Info($"AutoLogin: DLL gameState ready after {gateSw.ElapsedMilliseconds}ms (PID {pid})");
 
             Report($"{account.Name}: warmup...");
-            if (loginShm.SendLoginCommand(pid, account.Username, password, account.Server, ""))
+            // Track B v3 (2026-05-05): pass target character name into LoginShm so the
+            // bridge's anchor-scan path (mq2_bridge.cpp HeapScanForTargetName) can find
+            // single-char accounts via name-anchor instead of failing the threshold-5
+            // full-array heap scan. Empty string preserves the legacy "no target" mode
+            // for char-select-only flows (no enter-world).
+            if (loginShm.SendLoginCommand(pid, account.Username, password, account.Server, targetCharacterName ?? ""))
             {
                 // Wait for phase >= ClickingConnect (=3) — proves login-screen
                 // widgets are discoverable AND Combo G actually wrote a CXStr
@@ -682,7 +688,8 @@ public class AutoLoginManager
             // (live render-side EditWnd), then BURST 1 can be removed entirely.
             // ══════════════════════════════════════════════════════════════
             RunCredentialEntry(pid, hwnd, writer, loginShm, account, password,
-                loginScreenDelayMs, warmupDwellMs);
+                loginScreenDelayMs, warmupDwellMs,
+                targetCharacterName: character?.Name ?? "");
 
             // Fire LoginCredentialsSent — TrayManager uses this to apply slim-
             // titlebar + hook config + window title NOW (T+~7s) instead of
