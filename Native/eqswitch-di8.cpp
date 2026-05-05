@@ -191,7 +191,10 @@ static uint32_t g_charSelRetry = 0;
 // ─── Login Shared Memory ──────────────────────────────────────
 // Opened lazily — created by C# AutoLoginManager, DLL reads/writes.
 static HANDLE g_loginShmMap = nullptr;
-static volatile LoginShm* g_loginShm = nullptr;
+// External-linkage so mq2_bridge.cpp can read g_loginShm->character for
+// the single-char anchor-scan path (Track B v3 / 2026-05-05). Marked
+// volatile because C# writes it from a different thread.
+volatile LoginShm* g_loginShm = nullptr;
 static uint32_t g_loginShmRetry = 0;
 
 static bool TryOpenCharSelShm() {
