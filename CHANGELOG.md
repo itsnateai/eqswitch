@@ -1,5 +1,42 @@
 # Changelog
 
+## v3.15.2 — Cleanup release: bridge resilience + JSON-tunable autologin timing (2026-05-05)
+
+This is a quality release on the v3.15.1 baseline — defaults preserve v3.15.1's autologin behavior exactly, so observable wallclock is unchanged. The point is hardening for the long tail of edge cases.
+
+### Bridge resilience
+- **Heap scans now resume across polls instead of restarting from zero.** `HeapScanForCharArray` and `HeapScanForTargetName` carry `lastScanAddr` between polls — full-heap coverage in ~3 polls instead of timing out 1500ms-budget after 1500ms-budget on a fragmented heap. Fixes a class of "single-char account fails to find name" stalls that v3.15.1's structural-fallback was masking but not preventing.
+- **`HeapScanForWidget` now has a 1500ms wall-clock budget** and resets its `g_widgetScanCount` counter when the widget cache is reset. The counter was a function-local static — after the first 5 scans of a process lifetime it went silent (no more diagnostics) but the scans kept running. Budget-abort no longer poisons the cache (`g_widgetScanBudgetAborted` flag separates "budget hit" from "widget genuinely absent").
+
+### Account / character lookups
+- **All `(Username, Server)` and `(Account FK, Character)` lookups now use `OrdinalIgnoreCase` consistently.** Sites flipped: `Models/AccountKey`, `AppConfig.FindAccountByName`/`FindCharacterByName`, `TrayManager`, `HotkeyBindingUtil`, `SettingsForm`, `AutoLoginTeamsDialog`, `CharacterEditDialog`, `AccountHotkeysDialog`, `CharacterHotkeysDialog`. Aligns with v3.15.1's `AppConfig.Validate` / `AccountEditDialog` which already used `OrdinalIgnoreCase`. Eliminates a class of "account exists but UI says it doesn't" bugs when account names differ only in case.
+
+### Autologin retry path
+- **Retry-burst Backspace primer.** RETRY BURST 1 now fires the same `0x08` primer keystroke as the initial BURST 1. Without it, the v3.14.x first-keystroke-drop reappears after the 30s stale-session wait — invisible on clean dual-box (only fires on the 90s timeout retry path).
+
+### JSON-tunable autologin timing
+- **10 timing knobs surfaced under `LaunchConfig`** so power users can experiment without rebuilding: `WaitTransitionInitialDelayMs`, `WaitTransitionSettleMs`, `WaitTransitionPollIntervalMs`, `Burst1ActivationSettleMs`, `Burst1PostSubmitMs`, `Burst2ActivationSettleMs`, `Burst2PostKeystrokeMs`, `PostBurst1WaitMs`, `BridgeInitWaitMs`, `StaleSessionWaitMs`. Defaults preserve v3.15.1 behavior exactly. `AppConfig.Validate` clamps all 10 (`StaleSessionWaitMs` floor 10000ms, prevents `Thread.Sleep(-1)` lockup from hand-edited negatives). `SettingsForm.BuildAppConfig` round-trips them so opening Settings and clicking Apply doesn't silently clobber JSON-edited tunables. `TrayManager.ReloadConfig` propagates them to `AutoLoginManager`.
+
+### DPAPI defense-in-depth
+- **Removed `length=N` info leak** in success log — was a small but real signal about password lengths.
+- **`RunLoginSequence` wrapped in try/finally** in the BeginLogin Task.Run closure, so the captured plaintext password reference drops to GC promptly on any exit path. Caveat: structural `SecureString` migration is still future work — this is defense-in-depth only.
+
+### Hardening
+- **`AppConfig.Validate` null-guards** for `Accounts`/`Characters`/`Aliases`/`Teams`/`AutoLoginTeams`/`KeyHotkeys`/`KeyMaps`/`Pip` (7 List<T> properties) plus `CharacterAliases.RemoveAll(null)`.
+- **`HotkeyBindingUtil`** switched to null-safe `string.Equals` to avoid NRE on legacy malformed binding entries.
+- **`CharSelectReader.AttachWriter` MMF handle leak** fixed via new `WriterHandle` wrapper. Previously, transient SHM open failures could leak a NamedSharedMemory handle per attach attempt.
+
+### Tests
+- **New `Core/CharSelectReaderTests.cs`** with 8 unit tests covering the v3.15.0 latch, the v3.15.1 single-char structural fallback, and the new `WriterHandle` lifecycle. Run via `EQSwitch.exe --test-charselect-reader` (Debug only). All passing.
+- **`AppConfigValidateTests.cs`** expanded from 6 to 9 cases — clamp coverage for the new `LaunchConfig` knobs.
+
+### Cleanup
+- **Removed 5 unused `SendInput*` helpers** from `AutoLoginManager.cs` (~110 LOC). Pre-existing dead code from the v3.4.x SendInput → SHM transition.
+- **Doc-comment drift reconciled** across 6 files: stale "AccountKey.Matches Ordinal" comments, "declared below" → "above" comments in `mq2_bridge.cpp`, and a `LoginScreenDelayMs` doc that wrongly claimed "no longer consumed".
+
+### Live verification (2026-05-05)
+- Five consecutive dual-box team1 runs reached in-world end-to-end without operator intervention. Time-to-Enter-World 47.9-53.7s across all 5 passes (autologin spec target 35-50s; the additional ~5s is server-side server-select → char-select transition, identical to v3.15.1 baseline). No retry path triggered. Both clients in-world on every pass.
+
 ## v3.15.1 — Server-select unfreeze + single-char structural fallback (2026-05-05)
 
 ### Server-select responsiveness (the actual user-visible fix)
