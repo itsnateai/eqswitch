@@ -35,7 +35,7 @@ This is a quality release on the v3.15.1 baseline — defaults preserve v3.15.1'
 - **Doc-comment drift reconciled** across 6 files: stale "AccountKey.Matches Ordinal" comments, "declared below" → "above" comments in `mq2_bridge.cpp`, and a `LoginScreenDelayMs` doc that wrongly claimed "no longer consumed".
 
 ### Live verification (2026-05-05)
-- Five consecutive dual-box team1 runs reached in-world end-to-end without operator intervention. Time-to-Enter-World 47.9-53.7s across all 5 passes (autologin spec target 35-50s; the additional ~5s is server-side server-select → char-select transition, identical to v3.15.1 baseline). No retry path triggered. Both clients in-world on every pass.
+- Five consecutive dual-box team1 runs reached in-world end-to-end without operator intervention. Time-to-Enter-World 47.9-57.5s across all 5 passes (autologin spec target 35-50s; the additional ~7s is server-side server-select → char-select transition, identical to v3.15.1 baseline). No retry path triggered. Both clients in-world on every pass.
 
 ## v3.15.1 — Server-select unfreeze + single-char structural fallback (2026-05-05)
 
