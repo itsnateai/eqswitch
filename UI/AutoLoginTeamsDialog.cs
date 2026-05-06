@@ -160,8 +160,10 @@ internal sealed class AutoLoginTeamsDialog : Form
                 var accA = ResolveAccountForSlot(a);
                 var accB = ResolveAccountForSlot(b);
                 if (accA == null || accB == null) continue;
-                if (accA.Username.Equals(accB.Username, StringComparison.Ordinal) &&
-                    accA.Server.Equals(accB.Server, StringComparison.Ordinal))
+                // Case-insensitive: EQ usernames are server-side case-insensitive,
+                // so EQ kicks even if the user typed different cases per slot.
+                if (accA.Username.Equals(accB.Username, StringComparison.OrdinalIgnoreCase) &&
+                    accA.Server.Equals(accB.Server, StringComparison.OrdinalIgnoreCase))
                 {
                     lblWarn.Text = $"\u26a0 {name}: both slots share login '{accA.Username}' — EQ will kick one";
                     lblWarn.Visible = true;

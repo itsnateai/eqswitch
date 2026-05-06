@@ -841,26 +841,86 @@ public class AutoLoginManager
             if (wantSelection)
             {
                 bool charListReady = false;
+                bool singleCharSlotFallback = false;
+                bool alreadyInGame = false;
                 // Wait up to 30s for char list — Dalaya's CXWndManager populates
-                // ~25s after charselect screen appears (pinstCCharacterSelect timing)
+                // ~25s after charselect screen appears (pinstCCharacterSelect timing).
+                //
+                // v3.15.x gate: PRIMARY = `charSelectReady` latch AND charCount > 0.
+                // SECONDARY (single-char fallback) = charCount == 1 AND wait >= 20.
+                //
+                // Why two paths:
+                //  - charCount > 0 alone trips on Path B2's "Slot N" placeholder
+                //    (Path B2 sets count=1 and writes shm->charCount=1 BEFORE the
+                //    in-poll Path C anchor scan finishes; C# could read "Slot 1"
+                //    before bridge overwrites with the real name).
+                //  - The latch is set ONLY at the 5 real-name publish sites
+                //    (Path A struct, Path C heap-array, Path C anchor, standalone
+                //    heap-array, standalone anchor). Never on Path B2 placeholders.
+                //  - Single-char Dalaya accounts have flaky heap visibility for
+                //    the name string (anchor scan budget-exceeds without finding
+                //    'Natedogg' in some sessions). Path B2's SetCurSel/GetCurSel
+                //    slot probe is structurally reliable — count=1 means the
+                //    server says exactly one character on this account. After
+                //    10s grace (wait >= 20) for the anchor to land, fall back to
+                //    slot 1 by elimination IF user has a name target and no
+                //    explicit slot binding.
                 for (int wait = 0; wait < 60; wait++)
                 {
-                    if (charSelect.IsMQ2Available(pid) && charSelect.ReadCharCount(pid) > 0)
-                    { charListReady = true; break; }
+                    if (charSelect.IsMQ2Available(pid))
+                    {
+                        int count = charSelect.ReadCharCount(pid);
+                        bool latch = charSelect.IsCharSelectReady(pid);
+                        if (count > 0 && latch) { charListReady = true; break; }
+                        // Single-char structural fallback: see comment above.
+                        if (count == 1 && wait >= 20 &&
+                            character.CharacterSlot == 0 &&
+                            !string.IsNullOrEmpty(character.Name))
+                        {
+                            charListReady = true;
+                            singleCharSlotFallback = true;
+                            FileLogger.Warn($"AutoLogin: single-char structural fallback — bridge couldn't confirm real names from heap after {wait * 500}ms (latch=0), but Path B2 slot probe says exactly 1 character. Treating slot 1 as target '{character.Name}' for PID {pid}.");
+                            break;
+                        }
+                    }
 
-                    // Abort if user already entered the game (manual or other)
+                    // User already in-game (manual Enter, prior session race, etc.)
+                    // — exit the wait loop with a flag so the post-loop branch
+                    // treats this as success (not as the "MQ2 bridge not ready"
+                    // abort). Without `alreadyInGame`, control falls through to
+                    // the else branch and the user gets a misleading error
+                    // message even though we're actually in the world (R-final
+                    // verifier convergent finding, T2-S/T2-O/T3-S/T3-O).
                     hwnd = RefreshHandle(pid, hwnd);
                     if (hwnd != IntPtr.Zero && IsInGame(charSelect, pid, hwnd))
                     {
-                        FileLogger.Info("AutoLogin: already in-game during charlist wait, skipping selection");
+                        FileLogger.Info($"AutoLogin: {account.Name}: already in-game during charlist wait — treating as success");
+                        Report($"{account.Name} already in-game.");
+                        alreadyInGame = true;
                         break;
                     }
 
                     Thread.Sleep(500);
                 }
 
+                if (alreadyInGame)
+                {
+                    // User reached world before our wait completed — nothing
+                    // left to do for this PID.
+                    return;
+                }
+
                 if (charListReady)
                 {
+                    // If the latch tripped the gate but charCount is transiently 0
+                    // (bridge between cache-invalidation and next anchor scan), give
+                    // the bridge ~1s to republish names. Each retry is one bridge
+                    // poll-throttle cycle (500ms) so 4 retries ≈ 2s — generous.
+                    for (int retry = 0; retry < 4 && charSelect.ReadCharCount(pid) == 0; retry++)
+                    {
+                        Thread.Sleep(500);
+                    }
+
                     // Snapshot character list ONCE from ReadAllCharNames. `charCount` used by
                     // bounds checks below must equal the scan snapshot — ReadCharCount re-reads
                     // SHM and can diverge from charNames.Length if the DLL refreshes between
@@ -870,8 +930,26 @@ public class AutoLoginManager
                     int charCount = charNames.Length;
                     FileLogger.Info($"AutoLogin: {charCount} characters found: {string.Join(", ", charNames)}");
 
-                    var (resolvedSlot, resolvedByName, decisionLog) = CharacterSelector.Decide(
-                        character.CharacterSlot, character.Name, charNames);
+                    int resolvedSlot;
+                    bool resolvedByName;
+                    string decisionLog;
+                    if (singleCharSlotFallback && charCount == 1)
+                    {
+                        // Single-char structural fallback: Path B2 confirmed exactly
+                        // one character on the account. Bridge couldn't read the
+                        // name string from heap, but slot 1 is the target by
+                        // elimination. Bypass CharacterSelector.Decide (it would
+                        // return 0 because charNames[0] is a "Slot N" placeholder
+                        // that won't match character.Name).
+                        resolvedSlot = 1;
+                        resolvedByName = false;
+                        decisionLog = $"single-char structural fallback → slot 1 = '{character.Name}'";
+                    }
+                    else
+                    {
+                        (resolvedSlot, resolvedByName, decisionLog) = CharacterSelector.Decide(
+                            character.CharacterSlot, character.Name, charNames);
+                    }
                     FileLogger.Info($"AutoLogin: selector → {decisionLog}");
 
                     bool selected = false;

@@ -26,6 +26,33 @@ public static class ShmLayoutTests
         public uint Seq;
     }
 
+    // Mirrors Native/mq2_bridge.h CharSelectShm. Field order, types, and
+    // Pack=1 must match the C++ struct exactly. v3 added charSelectReady.
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private struct CharSelectShm
+    {
+        public uint Magic;
+        public uint Version;
+        public int  GameState;
+        public int  CharCount;
+        public int  SelectedIndex;
+        public uint Mq2Available;
+        public int  RequestedIndex;
+        public uint RequestSeq;
+        public uint AckSeq;
+        public uint EnterWorldReq;
+        public uint EnterWorldAck;
+        public int  EnterWorldResult;
+        // 10 chars * 64 bytes = 640
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 640)]
+        public byte[] Names;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 10)]
+        public int[]  Levels;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 10)]
+        public int[]  Classes;
+        public uint CharSelectReady;
+    }
+
     public static int RunAll()
     {
         int failures = 0;
@@ -46,6 +73,47 @@ public static class ShmLayoutTests
         // Magic value must match native KEY_SHM_MAGIC
         const uint ExpectedMagic = 0x45534B53; // "ESKS"
         failures += Assert("SharedKeyState.Magic value", 0x45534B53u, ExpectedMagic);
+
+        // CharSelectShm layout — must match Native/mq2_bridge.h. Locks the v3
+        // (772-byte) ABI so a future field add/reorder on either side surfaces
+        // as a test failure, not silent runtime SHM corruption.
+        failures += Assert("CharSelectShm.Size", Marshal.SizeOf<CharSelectShm>(), 772);
+        failures += Assert("CharSelectShm.Magic offset",
+            (int)Marshal.OffsetOf<CharSelectShm>(nameof(CharSelectShm.Magic)), 0);
+        failures += Assert("CharSelectShm.Version offset",
+            (int)Marshal.OffsetOf<CharSelectShm>(nameof(CharSelectShm.Version)), 4);
+        failures += Assert("CharSelectShm.GameState offset",
+            (int)Marshal.OffsetOf<CharSelectShm>(nameof(CharSelectShm.GameState)), 8);
+        failures += Assert("CharSelectShm.CharCount offset",
+            (int)Marshal.OffsetOf<CharSelectShm>(nameof(CharSelectShm.CharCount)), 12);
+        failures += Assert("CharSelectShm.SelectedIndex offset",
+            (int)Marshal.OffsetOf<CharSelectShm>(nameof(CharSelectShm.SelectedIndex)), 16);
+        failures += Assert("CharSelectShm.Mq2Available offset",
+            (int)Marshal.OffsetOf<CharSelectShm>(nameof(CharSelectShm.Mq2Available)), 20);
+        failures += Assert("CharSelectShm.RequestedIndex offset",
+            (int)Marshal.OffsetOf<CharSelectShm>(nameof(CharSelectShm.RequestedIndex)), 24);
+        failures += Assert("CharSelectShm.RequestSeq offset",
+            (int)Marshal.OffsetOf<CharSelectShm>(nameof(CharSelectShm.RequestSeq)), 28);
+        failures += Assert("CharSelectShm.AckSeq offset",
+            (int)Marshal.OffsetOf<CharSelectShm>(nameof(CharSelectShm.AckSeq)), 32);
+        failures += Assert("CharSelectShm.EnterWorldReq offset",
+            (int)Marshal.OffsetOf<CharSelectShm>(nameof(CharSelectShm.EnterWorldReq)), 36);
+        failures += Assert("CharSelectShm.EnterWorldAck offset",
+            (int)Marshal.OffsetOf<CharSelectShm>(nameof(CharSelectShm.EnterWorldAck)), 40);
+        failures += Assert("CharSelectShm.EnterWorldResult offset",
+            (int)Marshal.OffsetOf<CharSelectShm>(nameof(CharSelectShm.EnterWorldResult)), 44);
+        failures += Assert("CharSelectShm.Names offset",
+            (int)Marshal.OffsetOf<CharSelectShm>(nameof(CharSelectShm.Names)), 48);
+        failures += Assert("CharSelectShm.Levels offset",
+            (int)Marshal.OffsetOf<CharSelectShm>(nameof(CharSelectShm.Levels)), 688);
+        failures += Assert("CharSelectShm.Classes offset",
+            (int)Marshal.OffsetOf<CharSelectShm>(nameof(CharSelectShm.Classes)), 728);
+        failures += Assert("CharSelectShm.CharSelectReady offset",
+            (int)Marshal.OffsetOf<CharSelectShm>(nameof(CharSelectShm.CharSelectReady)), 768);
+
+        // Magic value must match CHARSEL_SHM_MAGIC
+        const uint ExpectedCharSelMagic = 0x45534353; // "ESCS"
+        failures += Assert("CharSelectShm.Magic value", 0x45534353u, ExpectedCharSelMagic);
 
         Console.WriteLine(failures == 0
             ? "ShmLayoutTests: all assertions PASSED"

@@ -175,16 +175,19 @@ public sealed class AccountEditDialog : Form
 
         // Uniqueness. In edit mode, the "self row" identified by (self-Username, self-Server)
         // is excluded. Username is read-only on edit so self-identity is stable.
+        // Case-insensitive: EQ usernames are server-side case-insensitive
+        // (gotquiz == Gotquiz routes the same login). Matches AppConfig.Validate's
+        // duplicate scan and AutoLoginTeamsDialog's team-slot uniqueness check.
         foreach (var a in otherAccounts)
         {
             if (_isEdit &&
-                a.Username.Equals(_selfUsername, StringComparison.Ordinal) &&
-                a.Server.Equals(_selfServer, StringComparison.Ordinal))
+                a.Username.Equals(_selfUsername, StringComparison.OrdinalIgnoreCase) &&
+                a.Server.Equals(_selfServer, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
-            if (a.Username.Equals(username, StringComparison.Ordinal) &&
-                a.Server.Equals(server, StringComparison.Ordinal))
+            if (a.Username.Equals(username, StringComparison.OrdinalIgnoreCase) &&
+                a.Server.Equals(server, StringComparison.OrdinalIgnoreCase))
             {
                 MessageBox.Show(
                     $"An Account with Username '{username}' on Server '{server}' already exists.",

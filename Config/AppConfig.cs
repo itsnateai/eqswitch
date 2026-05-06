@@ -255,6 +255,36 @@ public class AppConfig
             mutated = true;
         }
 
+        // (Username, Server) uniqueness scan. AccountEditDialog already prevents
+        // dialog-created duplicates inline; this catches hand-edited configs and
+        // migration edge-cases (LoginAccountSplitter on legacy data with the same
+        // username spread across multiple character rows). Tolerant on read —
+        // log + count, do NOT auto-delete (risks losing the user's notes /
+        // password). The strict enforcement still lives in AccountEditDialog
+        // for any new Add/Edit. v3.15.x (post-ship): surfaced when duplicate
+        // gotquiz config entries confused autologin lookup at session start.
+        {
+            // Case-insensitive: EQ usernames are server-side case-insensitive
+            // (gotquiz == Gotquiz routes the same login). Matches the
+            // LoginAccountSplitter's keyToCanonicalUsername behavior.
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int dupCount = 0;
+            foreach (var a in Accounts)
+            {
+                if (string.IsNullOrEmpty(a.Username)) continue;
+                var key = $"{a.Username}@{a.Server}";
+                if (!seen.Add(key))
+                {
+                    dupCount++;
+                    FileLogger.Warn($"AppConfig.Validate: duplicate Account (Username,Server) = '{key}' — Account.Name='{a.Name}', Notes='{a.Notes}'");
+                }
+            }
+            if (dupCount > 0)
+            {
+                FileLogger.Warn($"AppConfig.Validate: {dupCount} duplicate Account(s) detected — autologin selection may be ambiguous; resolve via Settings → Accounts.");
+            }
+        }
+
         // Same safety net for CharacterAliases: the Phase 1 migrator deep-clones
         // LegacyCharacterProfiles into CharacterAliases once, but nothing re-derives
         // it on save/reload. Hand-edits or migrator edge-cases that leave aliases
