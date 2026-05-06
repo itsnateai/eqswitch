@@ -135,9 +135,13 @@ public sealed class CharacterEditDialog : Form
             _cboAccount.Items.Add(a);
         if (existing != null)
         {
+            // Case-insensitive FK match: server-side EQ usernames are case-
+            // insensitive, so a Character whose AccountUsername casing drifted
+            // from its Account.Username should still bind. AppConfig.Validate's
+            // duplicate scan is also OrdinalIgnoreCase — keep these aligned.
             var match = availableAccounts.FirstOrDefault(a =>
-                a.Username.Equals(existing.AccountUsername, StringComparison.Ordinal) &&
-                a.Server.Equals(existing.AccountServer, StringComparison.Ordinal));
+                a.Username.Equals(existing.AccountUsername, StringComparison.OrdinalIgnoreCase) &&
+                a.Server.Equals(existing.AccountServer, StringComparison.OrdinalIgnoreCase));
             _cboAccount.SelectedItem = match ?? availableAccounts[0];
         }
         else

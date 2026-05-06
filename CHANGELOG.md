@@ -1,5 +1,35 @@
 # Changelog
 
+## v3.15.1 — Server-select unfreeze + single-char structural fallback (2026-05-05)
+
+### Server-select responsiveness (the actual user-visible fix)
+- **Server-select screen no longer sits frozen for 30+ seconds.** v3.15.0's standalone heap-scan path could fire during the login / server-select phases when EQ's login took longer than ~10 seconds — its 1500 ms `HeapScanForCharArray` + 1500 ms `HeapScanForTargetName` ran on the EQ game thread (via the `LoginController::GiveTime` detour) and blocked WindowMessage processing in a tight loop. The BURST 2 Enter keystroke would queue but never get consumed; C# eventually hit the 90 s `WaitForScreenTransition` timeout. The server-select transition now completes in the time EQ's own scene load takes (~21 s on this build), with no game-thread freeze added by the bridge.
+- **New gate:** standalone heap-scan path is now skipped while `pinstCCharacterSelect` is null. Bridge tracks `g_consecutiveNullPolls` (file-scope counter, capped at 100, reset on pinst-non-null + `gameState == 5` + `Shutdown()`); standalone scan can only run when the counter is 0, i.e. when there's structural evidence we're actually at char-select.
+
+### Char-select name discovery — single-char structural fallback
+- **Single-character accounts no longer abort with `MQ2 bridge not ready after 30s` on heap-flaky sessions.** When the bridge's anchor scan can't locate the target name string in heap (Dalaya's heap state varies launch-to-launch — in some runs `HeapScanForTargetName` budget-expires without finding anything), the C# wait loop now falls back at the 10 s mark (`wait >= 20`) to using slot 1 by elimination. Path B2's `SetCurSel`/`GetCurSel` slot probe is structurally reliable: when it returns count=1, the EQ server has confirmed exactly one character on this account, so slot 1 must be the user's target. Gated on `CharacterSlot == 0 && Name set` — explicit slot bindings still take precedence.
+- **`AutoLoginManager` post-gate path** bypasses `CharacterSelector.Decide` when `singleCharSlotFallback` is active (Decide would return slot 0 against a "Slot 1" placeholder), and uses `RequestSelectionBySlot(1)` directly with a logged-warn explaining the elimination reasoning.
+
+### Latch-based ready signal (the polling-window robustness fix)
+- **New `charSelectShm.charSelectReady` field** (uint32 at offset 768; struct grew 768 → 772 bytes; version bumped 2 → 3). The bridge writes 1 only at the five real-name publish sites: Path A struct read, Path C heap full-array scan, Path C anchor scan, standalone heap full-array scan, standalone anchor scan. Never on Path B2's `Slot N` placeholders. Cleared on `gameState == 5` (in-game), 30 consecutive pinst-null polls (~15 s, defends against user-backout-to-login without `gameState == 5` clearing), and `Shutdown()`.
+- **`AutoLoginManager` charlist gate** widened from `mq2Available && charCount > 0` to `mq2Available && charSelectReady && charCount > 0`. Closes the race window where C# could read `charCount == 1` from Path B2's placeholder before Path C's same-poll heap scan finished overwriting with the real name. Inner 4-retry loop handles transient `charCount == 0` between cache invalidation and next anchor publish.
+
+### `alreadyInGame` short-circuit (no more misleading abort message)
+- **If the user manually enters world during the charlist wait**, autologin now returns success cleanly. v3.15.0 broke out of the wait loop without setting `charListReady`, falling into the `MQ2 bridge not ready after 30s` else-branch — user saw a confusing error toast even though they were in-game.
+
+### Hardening
+- **`HeapScanForTargetName` budget-abort** now clears `g_heapScanDone = false`, mirroring `HeapScanForCharArray`. Without this, a single budget-exceeded anchor scan would lock out all anchor-scan retries until the next pinst transition. Single-char accounts on fragmented heaps now get retry chances within the same char-select cycle.
+- **`CharSelectReader.Open()` recycled-PID safety** — extracted `ResetShmHeader(accessor)` and now re-zeroes the SHM header on the existing-mapping early-return path. Defends against a recycled eqgame.exe PID inheriting stale `charSelectReady = 1` / stale char data from the prior process.
+
+### Account uniqueness alignment (case-insensitive)
+- **`(Username, Server)` matches now use `OrdinalIgnoreCase` consistently** across `AppConfig.Validate` (defensive duplicate scan, logs warnings without auto-deleting), `AccountEditDialog` (Add/Edit dialog uniqueness check), `AutoLoginTeamsDialog` (team-slot collision warning), and `CharacterEditDialog` (character → account FK lookup). EQ usernames are server-side case-insensitive — `gotquiz` and `Gotquiz` route to the same login — so the UI gates and validation now agree. `Models/AccountKey` and the FK lookups in `TrayManager` / `SettingsForm` remain `Ordinal` for now (changing them risks re-binding existing config FKs at load time).
+
+### ABI test coverage
+- **`ShmLayoutTests.cs` now asserts `CharSelectShm` layout** — 17 new assertions covering struct size (772), magic value (`0x45534353`), and all 16 field offsets including `charSelectReady` at 768. Run via `EQSwitch.exe --test-shm-layout` (Debug build); 25/25 passing.
+
+### Live verification (2026-05-05)
+- Three consecutive dual-box team1 runs reached in-world end-to-end without operator intervention. Mix of single-char structural fallback and multi-char heap-scan-success paths exercised; both clients consistently advance from server-select → char-select → in-world.
+
 ## v3.15.0 — Track B: char-select name discovery via race-byte filter + name-anchor (2026-05-05)
 
 ### Char-select name discovery (the slot-mode → real-name fix)

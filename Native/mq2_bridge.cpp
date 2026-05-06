@@ -141,6 +141,15 @@ static volatile bool     g_heapScanDone      = false; // one-shot per charselect
 static volatile bool     g_anchorScanCached  = false;
 static int               g_standaloneDelay   = 0;    // delay standalone heap scan by N poll cycles
 
+// v3 latch defense-in-depth (2026-05-05, R2 verifier callout): consecutive
+// pinstCCharacterSelect-null poll counter. Promoted to TU scope (was block
+// static) so the gameState==5 reset path can clear it across charselect
+// cycles — otherwise a session that left it mid-count would carry the count
+// into the next cycle and could spuriously trip the latch-clear threshold.
+// Capped at 100 to avoid wraparound + log spam. Threshold check is exact-30
+// (one-shot log per session), idempotent re-clears below the cap.
+static volatile uint32_t g_consecutiveNullPolls = 0;
+
 // ─── Heap scan for character name array ───────────────────────
 // Dalaya ROF2 stores char names in a heap-allocated array of 0x160-byte structs.
 // Standard MQ2 charSelectPlayerArray offset doesn't exist. We scan committed pages
@@ -339,8 +348,17 @@ static uintptr_t HeapScanForTargetName(const char *targetName) {
 
     while (addr < 0x7FFF0000 && regionsScanned < 200000) {
         if (GetTickCount() - scanStartMs > scanBudgetMs) {
-            DI8Log("mq2_bridge: anchor scan: budget exceeded for '%s' (%ums)",
+            DI8Log("mq2_bridge: anchor scan: budget exceeded for '%s' (%ums) — clearing g_heapScanDone for retry next poll",
                    targetName, scanBudgetMs);
+            // R-final verifier callout (T2-S #4): mirror HeapScanForCharArray's
+            // budget-abort behavior. Callers (Path C line ~3680, standalone
+            // line ~3870) set g_heapScanDone=true BEFORE calling us. On
+            // budget-abort without this clear, the gate locks all future
+            // anchor scans in this charselect cycle (only cleared on pinst
+            // transition). For single-char accounts on a fragmented heap that
+            // means we miss every chance the heap state opens up after the
+            // first attempt. Clear it ourselves so next poll retries.
+            g_heapScanDone = false;
             return 0;
         }
         if (VirtualQuery((void *)addr, &mbi, sizeof(mbi)) == 0) break;
@@ -3414,10 +3432,51 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     // gameState==1. Instead, attempt to read character data always — the
     // SEH guards and validation (IsReadablePtr, name checks) handle invalid states.
     // If we're not at charselect, charCount will be 0 and nothing happens.
+    // v3 latch defense-in-depth: clear charSelectReady after sustained
+    // pinstCCharacterSelect-null period. gameState=5 (below) is the primary
+    // clear path — fires when the user enters world. But Dalaya keeps
+    // gameState=0 across BOTH login and charselect, so a user who backs out of
+    // charselect to the login screen never trips the gameState=5 path. Without
+    // this defense, the latch stays stale across the back-out and a re-fired
+    // autologin in the same eqgame.exe PID would observe charSelectReady=1
+    // immediately + charCount=0 + empty names → 2s retry → "character not
+    // found" abort (misleading diagnostic, safe stop). Threshold: 30 polls
+    // (~15s) — comfortably above the worst observed pinst-flutter null period
+    // (~12s in the v3.15.0 bug logs) so brief flutter inside an active
+    // charselect cycle doesn't trip it.
+    //
+    // Counter is at TU scope (declared below as g_consecutiveNullPolls) so
+    // the gameState==5 reset block can clear it across charselect cycles.
+    {
+        bool pinstNull = true;
+        if (g_pinstCharSelect) {
+            __try {
+                uintptr_t storage = *g_pinstCharSelect;
+                if (storage && IsReadablePtr((void *)storage, sizeof(void *))) {
+                    void *pCharSelWnd = *(void **)storage;
+                    if (pCharSelWnd) pinstNull = false;
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) { /* treat SEH as null */ }
+        }
+        if (pinstNull) {
+            if (g_consecutiveNullPolls < 100) g_consecutiveNullPolls++;  // cap
+            if (g_consecutiveNullPolls == 30 && shm->charSelectReady) {
+                shm->charSelectReady = 0;
+                DI8Log("mq2_bridge: charSelectReady latch cleared (pinst null %u polls ~ %ums)",
+                       g_consecutiveNullPolls, g_consecutiveNullPolls * 500);
+            }
+        } else {
+            g_consecutiveNullPolls = 0;
+        }
+    }
+
     if (gameState == 5) {
         // gameState 5 = in-game on Dalaya. Clear char data + reset all charselect caches.
         shm->charCount = 0;
         shm->selectedIndex = -1;
+        // v3 latch: in-game means the prior charselect cycle is over. Clear so
+        // a future charselect (camp + return) starts with a fresh latch.
+        shm->charSelectReady = 0;
         // Drain any in-flight Enter World request so a later session in the same
         // process can't observe a stale ack/result from this charselect cycle.
         shm->enterWorldReq = 0;
@@ -3433,6 +3492,11 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         g_standaloneDelay = 0;  // reset for next charselect cycle
         g_verificationDone = false;
         g_charArrayNotFoundLogged = false;
+        // R2 verifier callout: latch-clear counter (file-scope below) must
+        // also reset on in-game transition — otherwise a session that left
+        // it mid-count would carry that count into the NEXT charselect cycle
+        // and could spuriously trip the 30-poll threshold there.
+        g_consecutiveNullPolls = 0;
         return;
     }
 
@@ -3479,6 +3543,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                     }
                     MemoryBarrier();
                     shm->charCount = count;
+                    shm->charSelectReady = 1;  // v3 latch: Path A wrote real names
                     for (int i = count; i < CHARSEL_MAX_CHARS; i++) {
                         ((char *)shm->names[i])[0] = '\0';
                         shm->levels[i] = 0;
@@ -3660,6 +3725,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                             DI8Log("mq2_bridge: heap scan: slot %d = \"%s\" race=%d (cls/lvl unknown)",
                                    i, (const char *)shm->names[i], race);
                         }
+                        shm->charSelectReady = 1;  // v3 latch: Path C heap scan wrote real names
                     } __except(EXCEPTION_EXECUTE_HANDLER) {
                         DI8Log("mq2_bridge: SEH reading heap-scanned char array");
                         g_heapScanArrayBase = 0;
@@ -3714,6 +3780,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                                 // non-zero on EQ pre-cursor or stale state).
                                 // Mirrors the standalone path's explicit assignment.
                                 shm->selectedIndex = 0;
+                                shm->charSelectReady = 1;  // v3 latch: anchor scan wrote real name
                                 int32_t race = *(const int32_t *)(entry + 0x44);
                                 DI8Log("mq2_bridge: anchor populated slot 0 = \"%s\" race=%d (single-char fallback)",
                                        targetName, race);
@@ -3793,8 +3860,27 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     // Delay: wait 20 poll cycles (~10 seconds) before scanning. Early scans hit
     // eqmain UI labels ("Height", "MinVSize") instead of character names because
     // charselect hasn't loaded its data yet.
+    //
+    // 2026-05-05 server-select-timeout fix: gate standalone path on pinstC-
+    // CharacterSelect actually being non-null. The 1500ms HeapScanForCharArray
+    // + 1500ms HeapScanForTargetName run on the EQ game thread (via the
+    // GiveTime detour) and block WindowMessages from being processed. If a
+    // user's login phase exceeds 10s (slow disk/network), the 20-poll delay
+    // expires while we're still at server-select; standalone scan fires,
+    // game thread freezes ~3s per cycle in a tight loop, EQ misses the
+    // BURST 2 Enter keystroke, server-select never advances → 90s C# screen-
+    // transition timeout. g_consecutiveNullPolls (incremented at top of Poll
+    // when pinst is null, reset to 0 when pinst is non-null) is the cleanest
+    // gate: skip the scan entirely until we have visual evidence of being at
+    // charselect. Path B's pCharList scan is the fast path once pinst lights
+    // up; standalone is the slow fallback that should only fire when pCharList
+    // is null DESPITE pinst being non-null.
     if (!charDataRead && !g_heapScanDone) {
-        if (g_standaloneDelay < 20) {
+        if (g_consecutiveNullPolls > 0) {
+            // pinst null this poll — login or server-select phase. Skip the
+            // 1.5s scan that would freeze the game thread. Resume when pinst
+            // populates (transition reset will also zero g_standaloneDelay).
+        } else if (g_standaloneDelay < 20) {
             if (g_standaloneDelay == 0 || g_standaloneDelay == 10 || g_standaloneDelay == 19)
                 DI8Log("mq2_bridge: standalone delay %d/20 (heapScanDone=%d)", g_standaloneDelay, (int)g_heapScanDone);
             g_standaloneDelay++;
@@ -3828,6 +3914,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 if (count > 0) {
                     MemoryBarrier();
                     shm->charCount = count;
+                    shm->charSelectReady = 1;  // v3 latch: standalone heap scan wrote real names
                     for (int i = count; i < CHARSEL_MAX_CHARS; i++) {
                         ((char *)shm->names[i])[0] = '\0';
                         shm->levels[i] = 0;
@@ -3874,6 +3961,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                             }
                             MemoryBarrier();
                             shm->charCount = 1;
+                            shm->charSelectReady = 1;  // v3 latch: standalone anchor wrote real name
                             shm->selectedIndex = 0;
                             charDataRead = true;
                             int32_t race = *(const int32_t *)(entry + 0x44);
@@ -4017,4 +4105,5 @@ void MQ2Bridge::Shutdown() {
     g_heapScanDone = false;
     g_anchorScanCached = false;
     g_standaloneDelay = 0;
+    g_consecutiveNullPolls = 0;
 }

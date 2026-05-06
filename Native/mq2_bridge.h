@@ -16,7 +16,7 @@
 #pragma pack(push, 1)
 struct CharSelectShm {
     uint32_t magic;            // CHARSEL_SHM_MAGIC
-    uint32_t version;          // 2 (was 1 — struct layout changed)
+    uint32_t version;          // 3 (v3 adds charSelectReady; v2 added Enter World; v1 baseline)
     int32_t  gameState;        // Current EQ game state (-1=pre, 1=charsel, 5=ingame)
     int32_t  charCount;        // Number of characters found (0 if not at char select)
     int32_t  selectedIndex;    // Currently selected index in list (-1 = none)
@@ -36,8 +36,18 @@ struct CharSelectShm {
     char     names[CHARSEL_MAX_CHARS][CHARSEL_NAME_LEN];  // 10 * 64 = 640
     int32_t  levels[CHARSEL_MAX_CHARS];                    // 10 * 4 = 40
     int32_t  classes[CHARSEL_MAX_CHARS];                   // 10 * 4 = 40
+
+    // v3: monotonic ready latch. Set to 1 the first time the bridge populates
+    // shm->names with at least one real (non-placeholder, non-empty) character
+    // name in the current charselect cycle. Stays 1 across pinst flutter and
+    // transient cache invalidations so C# polling can advance even when a
+    // pinstCCharacterSelect non-null→null→non-null transition zeros charCount
+    // for ~10s during the standalone-scan warm-up window. Cleared on
+    // gameState==5 (in-game) and Shutdown(); deliberately NOT cleared on
+    // pinst-transition cache resets (that is the bug we're fixing).
+    uint32_t charSelectReady;  // 0 = never populated this cycle; 1 = populated
 };
-// Total: 24 + 12 + 12 + 640 + 40 + 40 = 768 bytes
+// Total: 24 + 12 + 12 + 640 + 40 + 40 + 4 = 772 bytes
 #pragma pack(pop)
 
 // Forward declare LoginShm (defined in login_shm.h)

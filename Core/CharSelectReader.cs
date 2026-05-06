@@ -18,13 +18,13 @@ public sealed class CharSelectReader : IDisposable
 {
     private const string SharedMemoryPrefix = "Local\\EQSwitchCharSel_";
     private const uint Magic = 0x45534353; // "ESCS"
-    private const uint Version = 2;        // v2: 10 slots + Enter World fields
+    private const uint Version = 3;        // v3: charSelectReady latch (post-3.15.0)
     private const int MaxChars = 10;
     private const int NameLen = 64;
 
     // Must match Native/mq2_bridge.h CharSelectShm exactly
-    // Total: 768 bytes
-    private static readonly int ShmSize = 768;
+    // Total: 772 bytes (v3 added charSelectReady at the end)
+    private static readonly int ShmSize = 772;
 
     // Field offsets (matching #pragma pack(push,1) C++ struct)
     private const int OFF_MAGIC = 0;
@@ -45,7 +45,9 @@ public sealed class CharSelectReader : IDisposable
     private const int OFF_NAMES = 48;              // 10 * 64 = 640 bytes
     private const int OFF_LEVELS = 48 + 640;       // 10 * 4 = 40 bytes  (= 688)
     private const int OFF_CLASSES = 48 + 640 + 40; // 10 * 4 = 40 bytes  (= 728)
-    // Total: 728 + 40 = 768 ✓
+    // v3: monotonic ready latch — survives pinst flutter, cleared on gameState=5
+    private const int OFF_CHARSELREADY = 768;      // 4 bytes
+    // Total: 728 + 40 + 4 = 772 ✓
 
     private sealed class MappingEntry : IDisposable
     {
@@ -76,7 +78,19 @@ public sealed class CharSelectReader : IDisposable
     /// </summary>
     public bool Open(int pid)
     {
-        if (_mappings.ContainsKey(pid)) return true;
+        // R2 verifier callout: if Close(pid) was missed (orphan after eqgame
+        // crash without ClientLost firing) and a new eqgame.exe lands at the
+        // same recycled PID, the existing MappingEntry's SHM may carry stale
+        // header values from the prior session — including charSelectReady=1.
+        // Re-zero the header on the existing-mapping path so a recycled PID
+        // gets the same fresh-start invariants as a brand-new mapping.
+        if (_mappings.TryGetValue(pid, out var existing))
+        {
+            ResetShmHeader(existing.Accessor);
+            existing.RequestSeq = 0;
+            existing.EnterWorldSeq = 0;
+            return true;
+        }
 
         try
         {
@@ -84,19 +98,7 @@ public sealed class CharSelectReader : IDisposable
             var mmf = MemoryMappedFile.CreateOrOpen(name, ShmSize);
             var accessor = mmf.CreateViewAccessor(0, ShmSize);
 
-            // Write header
-            accessor.Write(OFF_MAGIC, Magic);
-            accessor.Write(OFF_VERSION, Version);
-            accessor.Write(OFF_GAMESTATE, -1);
-            accessor.Write(OFF_CHARCOUNT, 0);
-            accessor.Write(OFF_SELECTEDINDEX, -1);
-            accessor.Write(OFF_MQ2AVAILABLE, (uint)0);
-            accessor.Write(OFF_REQUESTEDINDEX, -1);
-            accessor.Write(OFF_REQUESTSEQ, (uint)0);
-            accessor.Write(OFF_ACKSEQ, (uint)0);
-            accessor.Write(OFF_ENTERWORLD_REQ, (uint)0);
-            accessor.Write(OFF_ENTERWORLD_ACK, (uint)0);
-            accessor.Write(OFF_ENTERWORLD_RESULT, 0);
+            ResetShmHeader(accessor);
 
             _mappings[pid] = new MappingEntry(mmf, accessor);
             FileLogger.Info($"CharSelectReader: opened SHM for PID {pid}");
@@ -107,6 +109,23 @@ public sealed class CharSelectReader : IDisposable
             FileLogger.Error($"CharSelectReader: failed to open SHM for PID {pid}", ex);
             return false;
         }
+    }
+
+    private static void ResetShmHeader(MemoryMappedViewAccessor accessor)
+    {
+        accessor.Write(OFF_MAGIC, Magic);
+        accessor.Write(OFF_VERSION, Version);
+        accessor.Write(OFF_GAMESTATE, -1);
+        accessor.Write(OFF_CHARCOUNT, 0);
+        accessor.Write(OFF_SELECTEDINDEX, -1);
+        accessor.Write(OFF_MQ2AVAILABLE, (uint)0);
+        accessor.Write(OFF_REQUESTEDINDEX, -1);
+        accessor.Write(OFF_REQUESTSEQ, (uint)0);
+        accessor.Write(OFF_ACKSEQ, (uint)0);
+        accessor.Write(OFF_ENTERWORLD_REQ, (uint)0);
+        accessor.Write(OFF_ENTERWORLD_ACK, (uint)0);
+        accessor.Write(OFF_ENTERWORLD_RESULT, 0);
+        accessor.Write(OFF_CHARSELREADY, (uint)0);
     }
 
     /// <summary>Read current game state from DLL. Returns -1 if not available.</summary>
@@ -121,6 +140,20 @@ public sealed class CharSelectReader : IDisposable
     {
         if (!_mappings.TryGetValue(pid, out var entry)) return false;
         return entry.Accessor.ReadUInt32(OFF_MQ2AVAILABLE) != 0;
+    }
+
+    /// <summary>
+    /// True once the bridge has populated at least one real character name in
+    /// the current charselect cycle. Monotonic — survives pinst flutter and
+    /// transient cache invalidations. Cleared by the bridge on gameState=5.
+    /// Use as an alternate ready signal alongside ReadCharCount &gt; 0 so the
+    /// 30s autologin gate does not time out during the bridge's standalone-
+    /// scan warm-up window if pinst transitioned more than once.
+    /// </summary>
+    public bool IsCharSelectReady(int pid)
+    {
+        if (!_mappings.TryGetValue(pid, out var entry)) return false;
+        return entry.Accessor.ReadUInt32(OFF_CHARSELREADY) != 0;
     }
 
     /// <summary>Read character count at char select. 0 if not at char select or MQ2 unavailable.</summary>
