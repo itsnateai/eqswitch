@@ -36,8 +36,9 @@ public static class LoginAccountSplitter
         var accounts = new List<Account>();
         var characters = new List<Character>();
         // See ConfigVersionMigrator.MigrateV3ToV4 for the same pattern: dedup key is
-        // case-insensitive but canonical FK casing must be preserved so runtime
-        // AccountKey.Matches (Ordinal) can resolve Character → Account reliably.
+        // case-insensitive. Canonical FK casing is still preserved so the JSON
+        // round-trip is stable, even though runtime AccountKey.Matches is now
+        // OrdinalIgnoreCase (v3.15.2 — was Ordinal in v3.15.0/v3.15.1).
         var accountKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var keyToCanonicalUsername = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var keyToCanonicalServer = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);

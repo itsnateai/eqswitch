@@ -675,9 +675,9 @@ public class SettingsForm : Form
         (string Name, bool? IsCharacter)? ResolveSlot(string raw)
         {
             if (string.IsNullOrEmpty(raw)) return null;
-            var ch = _pendingCharacters.FirstOrDefault(c => c.Name.Equals(raw, StringComparison.Ordinal));
+            var ch = _pendingCharacters.FirstOrDefault(c => c.Name.Equals(raw, StringComparison.OrdinalIgnoreCase));
             if (ch != null) return (ch.Name, true);
-            var ac = _pendingAccounts.FirstOrDefault(a => a.Name.Equals(raw, StringComparison.Ordinal));
+            var ac = _pendingAccounts.FirstOrDefault(a => a.Name.Equals(raw, StringComparison.OrdinalIgnoreCase));
             // Resolve by Name (the FK), but display Username so the team-row
             // preview label reads as the actual login string the user knows.
             return ac != null ? (ac.Username, false) : (raw, (bool?)null);
@@ -1540,8 +1540,8 @@ public class SettingsForm : Form
         {
             if (string.IsNullOrEmpty(c.AccountUsername)) continue;
             bool resolved = _pendingAccounts.Any(a =>
-                a.Username.Equals(c.AccountUsername, StringComparison.Ordinal) &&
-                a.Server.Equals(c.AccountServer, StringComparison.Ordinal));
+                a.Username.Equals(c.AccountUsername, StringComparison.OrdinalIgnoreCase) &&
+                a.Server.Equals(c.AccountServer, StringComparison.OrdinalIgnoreCase));
             if (!resolved)
             {
                 MessageBox.Show(
@@ -1615,7 +1615,21 @@ public class SettingsForm : Form
                 Arguments = _txtArgs.Text.Trim(),
                 NumClients = _config.Launch.NumClients,
                 LaunchDelayMs = (int)_nudLaunchDelay.Value * 1000,
-                FixDelayMs = _config.Launch.FixDelayMs
+                FixDelayMs = _config.Launch.FixDelayMs,
+                // v3.15.2: pass-through for the 10 autologin timing knobs. No UI
+                // surface yet — they are JSON-edit-only "advanced" tunables. Without
+                // this round-trip, every Settings → Apply would clobber the user's
+                // hand-edited values with the LaunchConfig class-initializer defaults.
+                WaitTransitionInitialDelayMs = _config.Launch.WaitTransitionInitialDelayMs,
+                WaitTransitionSettleMs       = _config.Launch.WaitTransitionSettleMs,
+                WaitTransitionPollIntervalMs = _config.Launch.WaitTransitionPollIntervalMs,
+                Burst1ActivationSettleMs     = _config.Launch.Burst1ActivationSettleMs,
+                Burst1PostSubmitMs           = _config.Launch.Burst1PostSubmitMs,
+                Burst2ActivationSettleMs     = _config.Launch.Burst2ActivationSettleMs,
+                Burst2PostKeystrokeMs        = _config.Launch.Burst2PostKeystrokeMs,
+                PostBurst1WaitMs             = _config.Launch.PostBurst1WaitMs,
+                BridgeInitWaitMs             = _config.Launch.BridgeInitWaitMs,
+                StaleSessionWaitMs           = _config.Launch.StaleSessionWaitMs,
             },
             Pip = new PipConfig
             {
@@ -1671,6 +1685,12 @@ public class SettingsForm : Form
             }).ToList(),
             CharacterAliases = _config.CharacterAliases,
             LoginScreenDelayMs = (int)(_nudLoginScreenDelay.Value * 1000),
+            // v3.15.2: pass-through. WarmupDwellMs has been consumed by AutoLoginManager
+            // since v3.12.0 but was missing from the BuildAppConfig round-trip — every
+            // Settings → Apply silently clobbered it to 4000 default (Round-3 verifier
+            // T4 catch). No UI control yet; JSON-edit-only tunable like the LaunchConfig
+            // timing knobs below.
+            WarmupDwellMs = _config.WarmupDwellMs,
             // Preserve existing QuickLogin values when the combos are not built (Phase 5a
             // removed the surface from the Hotkeys tab, leaving _cboQuickLoginN as null).
             // GetQuickLoginUsername returns "" on null, which would clobber user data on
@@ -1707,7 +1727,7 @@ public class SettingsForm : Form
         // Phase 4: same-name nudge — non-blocking, hash-deduped per collision set so the
         // balloon doesn't spam every Apply when the collision set is unchanged.
         var collisions = _pendingAccounts
-            .Where(a => _pendingCharacters.Any(c => c.Name.Equals(a.Name, StringComparison.Ordinal)))
+            .Where(a => _pendingCharacters.Any(c => c.Name.Equals(a.Name, StringComparison.OrdinalIgnoreCase)))
             .Select(a => a.Name)
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToList();
@@ -1779,8 +1799,8 @@ public class SettingsForm : Form
         foreach (var a in accounts)
         {
             var linked = characters
-                .Where(c => c.AccountUsername.Equals(a.Username, StringComparison.Ordinal) &&
-                            c.AccountServer.Equals(a.Server, StringComparison.Ordinal))
+                .Where(c => c.AccountUsername.Equals(a.Username, StringComparison.OrdinalIgnoreCase) &&
+                            c.AccountServer.Equals(a.Server, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
             if (linked.Count == 0)
@@ -2035,8 +2055,8 @@ public class SettingsForm : Form
         {
             var c = _pendingCharacters[i];
             var linkedAccount = _pendingAccounts.FirstOrDefault(a =>
-                a.Username.Equals(c.AccountUsername, StringComparison.Ordinal) &&
-                a.Server.Equals(c.AccountServer, StringComparison.Ordinal));
+                a.Username.Equals(c.AccountUsername, StringComparison.OrdinalIgnoreCase) &&
+                a.Server.Equals(c.AccountServer, StringComparison.OrdinalIgnoreCase));
 
             string acctDisplay;
             bool acctFlagged;
@@ -2098,7 +2118,7 @@ public class SettingsForm : Form
         };
         foreach (var (target, combo) in slots)
         {
-            if (!string.IsNullOrEmpty(combo) && target.Equals(targetName, StringComparison.Ordinal))
+            if (!string.IsNullOrEmpty(combo) && target.Equals(targetName, StringComparison.OrdinalIgnoreCase))
                 return combo;
         }
         return "";
@@ -2119,7 +2139,7 @@ public class SettingsForm : Form
         {
             // Don't duplicate: if an Account.Name matches a Character.Name we've already
             // added, skip — the character wins.
-            if (_pendingCharacters.Any(ch => ch.Name.Equals(a.Name, StringComparison.Ordinal))) continue;
+            if (_pendingCharacters.Any(ch => ch.Name.Equals(a.Name, StringComparison.OrdinalIgnoreCase))) continue;
             labels.Add(a.Name);
         }
 
@@ -2148,7 +2168,7 @@ public class SettingsForm : Form
         if (string.IsNullOrEmpty(identifier)) { cbo.SelectedIndex = 0; return; }
         for (int i = 0; i < cbo.Items.Count; i++)
         {
-            if (cbo.Items[i]?.ToString() is string s && s.Equals(identifier, StringComparison.Ordinal))
+            if (cbo.Items[i]?.ToString() is string s && s.Equals(identifier, StringComparison.OrdinalIgnoreCase))
             {
                 cbo.SelectedIndex = i;
                 return;
@@ -2197,8 +2217,10 @@ public class SettingsForm : Form
             var oldName = existing.Name;
             var newName = dlg.Result.Name;
             _pendingAccounts[idx] = dlg.Result;
-            // If Account.Name changed, propagate to any slot referencing the old name.
-            if (!oldName.Equals(newName, StringComparison.Ordinal))
+            // If Account.Name changed (case-insensitive — matches FK lookup semantics),
+            // propagate to any slot referencing the old name. Case-only renames don't
+            // need propagation because slot resolution is also OrdinalIgnoreCase.
+            if (!oldName.Equals(newName, StringComparison.OrdinalIgnoreCase))
             {
                 UpdateTeamSlotUsername(oldName, newName);
                 PropagateNameChangeToQuickLogins(oldName, newName);
@@ -2214,8 +2236,8 @@ public class SettingsForm : Form
         if (idx < 0 || idx >= _pendingAccounts.Count) return;
         var acct = _pendingAccounts[idx];
         var dependents = _pendingCharacters.Where(c =>
-            c.AccountUsername.Equals(acct.Username, StringComparison.Ordinal) &&
-            c.AccountServer.Equals(acct.Server, StringComparison.Ordinal)).ToList();
+            c.AccountUsername.Equals(acct.Username, StringComparison.OrdinalIgnoreCase) &&
+            c.AccountServer.Equals(acct.Server, StringComparison.OrdinalIgnoreCase)).ToList();
 
         if (dependents.Count == 0)
         {
@@ -2281,7 +2303,7 @@ public class SettingsForm : Form
             var oldName = existing.Name;
             var newName = dlg.Result.Name;
             _pendingCharacters[idx] = dlg.Result;
-            if (!oldName.Equals(newName, StringComparison.Ordinal))
+            if (!oldName.Equals(newName, StringComparison.OrdinalIgnoreCase))
             {
                 UpdateTeamSlotUsername(oldName, newName);
                 PropagateNameChangeToQuickLogins(oldName, newName);
@@ -2303,7 +2325,7 @@ public class SettingsForm : Form
         foreach (var cbo in combos)
         {
             if (cbo == null) continue;
-            if (cbo.SelectedItem?.ToString()?.Equals(oldName, StringComparison.Ordinal) == true)
+            if (cbo.SelectedItem?.ToString()?.Equals(oldName, StringComparison.OrdinalIgnoreCase) == true)
             {
                 // Intentionally mutate the item text before RefreshQuickLoginCombos
                 // replaces the list — this keeps the selection visually stable.
@@ -2333,9 +2355,9 @@ public class SettingsForm : Form
         string Resolve(string targetName)
         {
             if (string.IsNullOrEmpty(targetName)) return "";
-            var ch = _pendingCharacters.FirstOrDefault(c => c.Name.Equals(targetName, StringComparison.Ordinal));
+            var ch = _pendingCharacters.FirstOrDefault(c => c.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
             if (ch != null) return ch.Name;
-            var ac = _pendingAccounts.FirstOrDefault(a => a.Name.Equals(targetName, StringComparison.Ordinal));
+            var ac = _pendingAccounts.FirstOrDefault(a => a.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
             return ac != null ? ac.Name : targetName + "?";   // trailing '?' flags unresolved
         }
 

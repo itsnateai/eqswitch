@@ -226,7 +226,7 @@ internal sealed class AutoLoginTeamsDialog : Form
         foreach (var a in _accounts)
         {
             // Don't duplicate: if Account.Name matches a Character.Name we've listed, skip.
-            if (_characters.Any(c => c.Name.Equals(a.Name, StringComparison.Ordinal))) continue;
+            if (_characters.Any(c => c.Name.Equals(a.Name, StringComparison.OrdinalIgnoreCase))) continue;
             // Display the Username (the login identity Nate recognizes); persist
             // the FK identity (Account.Name) as the SlotOption value so existing
             // saved team slots keep resolving via ResolveAccountForSlot. New
@@ -266,7 +266,7 @@ internal sealed class AutoLoginTeamsDialog : Form
         }
         for (int i = 0; i < cbo.Items.Count; i++)
         {
-            if (cbo.Items[i] is SlotOption opt && opt.Value.Equals(value, StringComparison.Ordinal))
+            if (cbo.Items[i] is SlotOption opt && opt.Value.Equals(value, StringComparison.OrdinalIgnoreCase))
             {
                 cbo.SelectedIndex = i;
                 RefreshPillForCombo(cbo);
@@ -363,13 +363,13 @@ internal sealed class AutoLoginTeamsDialog : Form
         if (cbo.SelectedItem is not SlotOption opt || opt.Kind == SlotKind.None) return null;
         if (opt.Kind == SlotKind.Character)
         {
-            var ch = _characters.FirstOrDefault(c => c.Name.Equals(opt.Value, StringComparison.Ordinal));
+            var ch = _characters.FirstOrDefault(c => c.Name.Equals(opt.Value, StringComparison.OrdinalIgnoreCase));
             if (ch == null) return null;
             return _accounts.FirstOrDefault(a =>
-                a.Username.Equals(ch.AccountUsername, StringComparison.Ordinal) &&
-                a.Server.Equals(ch.AccountServer, StringComparison.Ordinal));
+                a.Username.Equals(ch.AccountUsername, StringComparison.OrdinalIgnoreCase) &&
+                a.Server.Equals(ch.AccountServer, StringComparison.OrdinalIgnoreCase));
         }
-        return _accounts.FirstOrDefault(a => a.Name.Equals(opt.Value, StringComparison.Ordinal));
+        return _accounts.FirstOrDefault(a => a.Name.Equals(opt.Value, StringComparison.OrdinalIgnoreCase));
     }
 
     private static string GetValue(ComboBox cbo) =>

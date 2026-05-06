@@ -30,25 +30,25 @@ public static class HotkeyBindingUtil
     public static int CountLiveAccountBindings(AppConfig cfg) =>
         cfg.Hotkeys.AccountHotkeys.Count(b =>
             IsPopulated(b) &&
-            cfg.Accounts.Any(a => a.Name.Equals(b.TargetName, StringComparison.Ordinal)));
+            cfg.Accounts.Any(a => string.Equals(a.Name, b.TargetName, StringComparison.OrdinalIgnoreCase)));
 
     /// <summary>Count of populated CharacterHotkeys whose TargetName resolves to a Character.</summary>
     public static int CountLiveCharacterBindings(AppConfig cfg) =>
         cfg.Hotkeys.CharacterHotkeys.Count(b =>
             IsPopulated(b) &&
-            cfg.Characters.Any(c => c.Name.Equals(b.TargetName, StringComparison.Ordinal)));
+            cfg.Characters.Any(c => string.Equals(c.Name, b.TargetName, StringComparison.OrdinalIgnoreCase)));
 
     /// <summary>Count of populated AccountHotkeys whose TargetName doesn't resolve.</summary>
     public static int CountStaleAccountBindings(AppConfig cfg) =>
         cfg.Hotkeys.AccountHotkeys.Count(b =>
             IsPopulated(b) &&
-            !cfg.Accounts.Any(a => a.Name.Equals(b.TargetName, StringComparison.Ordinal)));
+            !cfg.Accounts.Any(a => string.Equals(a.Name, b.TargetName, StringComparison.OrdinalIgnoreCase)));
 
     /// <summary>Count of populated CharacterHotkeys whose TargetName doesn't resolve.</summary>
     public static int CountStaleCharacterBindings(AppConfig cfg) =>
         cfg.Hotkeys.CharacterHotkeys.Count(b =>
             IsPopulated(b) &&
-            !cfg.Characters.Any(c => c.Name.Equals(b.TargetName, StringComparison.Ordinal)));
+            !cfg.Characters.Any(c => string.Equals(c.Name, b.TargetName, StringComparison.OrdinalIgnoreCase)));
 
     /// <summary>
     /// Enumerate all populated bindings across both families with a human label suitable

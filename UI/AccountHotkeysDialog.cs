@@ -72,7 +72,7 @@ public sealed class AccountHotkeysDialog : Form
                 continue;
             }
             if (!HotkeyBindingUtil.IsPopulated(b)) continue;
-            bool resolves = accounts.Any(a => a.Name.Equals(b.TargetName, StringComparison.Ordinal));
+            bool resolves = accounts.Any(a => a.Name.Equals(b.TargetName, StringComparison.OrdinalIgnoreCase));
             if (resolves) byTargetName[b.TargetName] = b.Combo;
             else staleBindings.Add(b);
         }

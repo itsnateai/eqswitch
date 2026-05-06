@@ -180,6 +180,26 @@ static class Program
             Environment.Exit(exitCode);
             return;
         }
+
+        // --test-charselect-reader — exercise CharSelectReader against simulated
+        // bridge writes (gate / latch / single-char fallback / recycled-PID safety).
+        // No external eqgame.exe needed — uses fake PIDs + paired MemoryMappedFile views.
+        if (args.Length >= 1 && args[0] == "--test-charselect-reader")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.CharSelectReaderTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"CharSelectReaderTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
 #endif
 
         // Enforce single instance

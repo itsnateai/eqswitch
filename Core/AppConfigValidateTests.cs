@@ -141,8 +141,103 @@ public static class AppConfigValidateTests
             failures += Assert("no-shadow when Username also empty", cfg.Accounts[0].Name, "");
         }
 
+        // Case 7 (v3.15.2): clamp out-of-range LaunchConfig timing knobs.
+        // Hand-edited JSON could set Burst1ActivationSettleMs=-1 (would block
+        // Thread.Sleep indefinitely) or PostBurst1WaitMs=999999 (would stall
+        // autologin for 16+ minutes). Validate() must clamp to the documented
+        // safe ranges before AutoLoginManager reads the values.
+        {
+            var cfg = new AppConfig
+            {
+                ConfigVersion = 4,
+                Launch = new LaunchConfig
+                {
+                    WaitTransitionInitialDelayMs = -1,
+                    WaitTransitionSettleMs       = 0,
+                    WaitTransitionPollIntervalMs = 99999,
+                    Burst1ActivationSettleMs     = -100,
+                    Burst1PostSubmitMs           = 0,
+                    Burst2ActivationSettleMs     = 50,
+                    Burst2PostKeystrokeMs        = -1,
+                    PostBurst1WaitMs             = 0,
+                    BridgeInitWaitMs             = 0,
+                    StaleSessionWaitMs           = 100,    // below 10000 floor
+                },
+            };
+            cfg.Validate();
+            failures += Assert("clamp WaitTransitionInitialDelayMs floor",
+                cfg.Launch.WaitTransitionInitialDelayMs, 100);
+            failures += Assert("clamp WaitTransitionSettleMs floor",
+                cfg.Launch.WaitTransitionSettleMs, 100);
+            failures += Assert("clamp WaitTransitionPollIntervalMs ceiling",
+                cfg.Launch.WaitTransitionPollIntervalMs, 5000);
+            failures += Assert("clamp Burst1ActivationSettleMs floor",
+                cfg.Launch.Burst1ActivationSettleMs, 100);
+            failures += Assert("clamp Burst1PostSubmitMs floor",
+                cfg.Launch.Burst1PostSubmitMs, 100);
+            failures += Assert("clamp Burst2ActivationSettleMs floor",
+                cfg.Launch.Burst2ActivationSettleMs, 100);
+            failures += Assert("clamp Burst2PostKeystrokeMs floor",
+                cfg.Launch.Burst2PostKeystrokeMs, 100);
+            failures += Assert("clamp PostBurst1WaitMs floor",
+                cfg.Launch.PostBurst1WaitMs, 500);
+            failures += Assert("clamp BridgeInitWaitMs floor",
+                cfg.Launch.BridgeInitWaitMs, 500);
+            failures += Assert("clamp StaleSessionWaitMs floor",
+                cfg.Launch.StaleSessionWaitMs, 10000);
+        }
+
+        // Case 8 (v3.15.2): in-range LaunchConfig values pass through unchanged.
+        // Critical for the dual-box-validated tuning workflow — the user adjusts
+        // a knob within range, the value must survive Validate() unmodified.
+        {
+            var cfg = new AppConfig
+            {
+                ConfigVersion = 4,
+                Launch = new LaunchConfig
+                {
+                    Burst1ActivationSettleMs = 250,
+                    Burst2PostKeystrokeMs    = 350,
+                    PostBurst1WaitMs         = 1500,
+                    StaleSessionWaitMs       = 45000,
+                },
+            };
+            cfg.Validate();
+            failures += Assert("in-range Burst1ActivationSettleMs preserved",
+                cfg.Launch.Burst1ActivationSettleMs, 250);
+            failures += Assert("in-range Burst2PostKeystrokeMs preserved",
+                cfg.Launch.Burst2PostKeystrokeMs, 350);
+            failures += Assert("in-range PostBurst1WaitMs preserved",
+                cfg.Launch.PostBurst1WaitMs, 1500);
+            failures += Assert("in-range StaleSessionWaitMs preserved",
+                cfg.Launch.StaleSessionWaitMs, 45000);
+        }
+
+        // Case 9 (v3.15.2): null-entry guards remove literal-null entries from
+        // List<T> properties. Hand-edited JSON like `"directSwitchKeys": [null, "F1"]`
+        // must not survive Validate() — downstream consumers don't always null-check.
+        {
+            var cfg = new AppConfig
+            {
+                ConfigVersion = 4,
+                CharacterAliases = new List<CharacterAlias> { null!, new() { Name = "Real" } },
+                CustomVideoPresets = new List<string> { null!, "Preset1", null! },
+            };
+            cfg.Hotkeys.DirectSwitchKeys = new List<string> { null!, "Alt+1" };
+            cfg.Hotkeys.AccountHotkeys = new List<HotkeyBinding>
+            {
+                null!,
+                new() { Combo = "Ctrl+1", TargetName = "X" },
+            };
+            cfg.Validate();
+            failures += Assert("CharacterAliases null removed", cfg.CharacterAliases.Count, 1);
+            failures += Assert("CustomVideoPresets nulls removed", cfg.CustomVideoPresets.Count, 1);
+            failures += Assert("DirectSwitchKeys null removed", cfg.Hotkeys.DirectSwitchKeys.Count, 1);
+            failures += Assert("AccountHotkeys null removed", cfg.Hotkeys.AccountHotkeys.Count, 1);
+        }
+
         Console.WriteLine(failures == 0
-            ? "AppConfigValidateTests: all 6 cases PASSED"
+            ? "AppConfigValidateTests: all 9 cases PASSED"
             : $"AppConfigValidateTests: {failures} assertion failure(s)");
         return failures == 0 ? 0 : 1;
     }

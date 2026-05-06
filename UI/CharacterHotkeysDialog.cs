@@ -58,7 +58,7 @@ public sealed class CharacterHotkeysDialog : Form
                 continue;
             }
             if (!HotkeyBindingUtil.IsPopulated(b)) continue;
-            bool resolves = characters.Any(c => c.Name.Equals(b.TargetName, StringComparison.Ordinal));
+            bool resolves = characters.Any(c => c.Name.Equals(b.TargetName, StringComparison.OrdinalIgnoreCase));
             if (resolves) byTargetName[b.TargetName] = b.Combo;
             else staleBindings.Add(b);
         }
