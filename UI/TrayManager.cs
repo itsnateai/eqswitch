@@ -1648,7 +1648,7 @@ public class TrayManager : IDisposable
         // names that semantically meant "enter world as character X". User can override
         // by explicitly rebinding in Settings → Hotkeys → Account vs Character family.
         var legacyRow = _config.LegacyAccounts.FirstOrDefault(a =>
-            a.CharacterName.Equals(name, StringComparison.Ordinal) && a.AutoEnterWorld);
+            a.CharacterName.Equals(name, StringComparison.OrdinalIgnoreCase) && a.AutoEnterWorld);
         if (legacyRow != null)
         {
             var character = _config.FindCharacterByName(name);
@@ -1859,7 +1859,7 @@ public class TrayManager : IDisposable
         else
         {
             var account = _config.Accounts.FirstOrDefault(a =>
-                a.Name.Equals(binding.TargetName, StringComparison.Ordinal));
+                a.Name.Equals(binding.TargetName, StringComparison.OrdinalIgnoreCase));
             if (account != null)
             {
                 LogFirstFire(slot, "Account (v4 fallback)", account.EffectiveLabel);
@@ -2121,6 +2121,22 @@ public class TrayManager : IDisposable
         _config.Launch.NumClients = newConfig.Launch.NumClients;
         _config.Launch.LaunchDelayMs = newConfig.Launch.LaunchDelayMs;
         _config.Launch.FixDelayMs = newConfig.Launch.FixDelayMs;
+        // v3.15.2 (Round 3 verifier T4 catch): the 10 timing tunables added in
+        // v3.15.2 must propagate from `newConfig` to the live `_config` here,
+        // otherwise SettingsForm Save would persist them to disk but
+        // AutoLoginManager keeps reading the pre-Apply values until process
+        // restart. Round 1+2 missed this because the cleanup pass focused on
+        // serialization (BuildAppConfig) without touching the live-mutate path.
+        _config.Launch.WaitTransitionInitialDelayMs = newConfig.Launch.WaitTransitionInitialDelayMs;
+        _config.Launch.WaitTransitionSettleMs       = newConfig.Launch.WaitTransitionSettleMs;
+        _config.Launch.WaitTransitionPollIntervalMs = newConfig.Launch.WaitTransitionPollIntervalMs;
+        _config.Launch.Burst1ActivationSettleMs     = newConfig.Launch.Burst1ActivationSettleMs;
+        _config.Launch.Burst1PostSubmitMs           = newConfig.Launch.Burst1PostSubmitMs;
+        _config.Launch.Burst2ActivationSettleMs     = newConfig.Launch.Burst2ActivationSettleMs;
+        _config.Launch.Burst2PostKeystrokeMs        = newConfig.Launch.Burst2PostKeystrokeMs;
+        _config.Launch.PostBurst1WaitMs             = newConfig.Launch.PostBurst1WaitMs;
+        _config.Launch.BridgeInitWaitMs             = newConfig.Launch.BridgeInitWaitMs;
+        _config.Launch.StaleSessionWaitMs           = newConfig.Launch.StaleSessionWaitMs;
         _config.Pip.Enabled = newConfig.Pip.Enabled;
         _config.Pip.SizePreset = newConfig.Pip.SizePreset;
         _config.Pip.CustomWidth = newConfig.Pip.CustomWidth;
@@ -2164,6 +2180,10 @@ public class TrayManager : IDisposable
         // Account → charselect). No per-team override anymore.
         _config.AutoEnterWorld = newConfig.AutoEnterWorld;
         _config.LoginScreenDelayMs = newConfig.LoginScreenDelayMs;
+        // v3.15.2 (Round 3 verifier T4 catch): WarmupDwellMs has been consumed by
+        // AutoLoginManager since v3.12.0 but was missing from this hand-copy block.
+        // Same regression class as the 10 new Launch knobs above.
+        _config.WarmupDwellMs = newConfig.WarmupDwellMs;
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
         _config.ShowTooltips = newConfig.ShowTooltips;
         _config.ShowTooltipErrors = newConfig.ShowTooltipErrors;

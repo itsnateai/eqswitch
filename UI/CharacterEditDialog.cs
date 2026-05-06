@@ -184,8 +184,8 @@ public sealed class CharacterEditDialog : Form
 
         foreach (var c in otherCharacters)
         {
-            if (_isEdit && c.Name.Equals(_selfName, StringComparison.Ordinal)) continue;
-            if (c.Name.Equals(name, StringComparison.Ordinal))
+            if (_isEdit && c.Name.Equals(_selfName, StringComparison.OrdinalIgnoreCase)) continue;
+            if (c.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
             {
                 MessageBox.Show($"A Character named '{name}' already exists.", "Duplicate Name",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);

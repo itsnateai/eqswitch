@@ -47,10 +47,10 @@ public static class CharacterSelector
         // can drift vs. the user's saved Character.Name (server renames, scrape
         // artifacts, historical config edits). Pre-extraction the DLL-side
         // RequestSelectionByName used OrdinalIgnoreCase for exactly this reason.
-        // Other codebase compares (FindCharacterByName, AccountKey.Matches) use
-        // Ordinal because they operate on config-to-config data where casing is
-        // stable by construction — this function operates on config-to-heap and
-        // must be tolerant.
+        // v3.15.2 (2026-05-05): config-to-config compares (FindCharacterByName,
+        // AccountKey.Matches, etc.) were also flipped to OrdinalIgnoreCase to
+        // align with the (Username, Server) uniqueness rule and avoid a hidden
+        // case-mismatch trap when the user retypes a name in different casing.
         if (requestedSlot == 0 && !string.IsNullOrEmpty(requestedName))
         {
             for (int i = 0; i < charNamesInHeap.Length; i++)

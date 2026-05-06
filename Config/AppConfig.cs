@@ -69,12 +69,13 @@ public class AppConfig
     [JsonPropertyName("accountsV4")]
     public List<Account> Accounts { get; set; } = new();
 
-    /// <summary>Retained for migration compat; no longer consumed by the
-    /// autologin path since PATH D (v3.14.9). Pre-PATH D this was the fallback
-    /// wallclock when the SHM warmup ritual was skipped/failed; PATH D collapses
-    /// that branch into the single WarmupDwellMs sleep below. Field kept on the
-    /// model so existing user configs deserialize without warnings; future PR
-    /// can drop it after one release of compat.</summary>
+    /// <summary>Pre-BURST settle wallclock (ms, default 5s) used as the fallback
+    /// when the SHM warmup ritual didn't run for a given launch. AutoLoginManager
+    /// chooses WarmupDwellMs when warmup succeeded, this value otherwise. The
+    /// v3.14.9 PATH D refactor narrowed the consumption — the comment that
+    /// previously claimed this was "no longer consumed" was stale; the
+    /// `dwellMs = warmupRan ? warmupDwellMs : loginScreenDelayMs` branch at
+    /// AutoLoginManager line ~526 still reads it. Fixed in v3.15.2.</summary>
     public int LoginScreenDelayMs { get; set; } = 5000;
 
     /// <summary>Pre-BURST DI8 settle window in ms (default 4s). PATH D: after
@@ -203,6 +204,18 @@ public class AppConfig
         LegacyCharacterProfiles ??= new();
         Accounts.RemoveAll(a => a == null!);
         Characters.RemoveAll(c => c == null!);
+        // v3.15.2: null-guards across all List<T> properties. A hand-edited
+        // config with a literal `null` entry would otherwise NRE in any
+        // consumer that iterates without its own null check. Round-1+2 only
+        // covered Accounts/Characters/CharacterAliases; Round-3 verifier T2
+        // caught the remaining 4 lists. CustomVideoPresets is sufficiently
+        // late-bound (only consumed by SettingsForm video tab) but for
+        // consistency it gets the same guard.
+        CharacterAliases.RemoveAll(a => a == null!);
+        Hotkeys.DirectSwitchKeys.RemoveAll(d => d == null!);
+        Hotkeys.AccountHotkeys.RemoveAll(b => b == null!);
+        Hotkeys.CharacterHotkeys.RemoveAll(b => b == null!);
+        CustomVideoPresets.RemoveAll(p => p == null!);
 
         // v3.14.8 split: Account.Name became an internal FK shadow of Username
         // and Notes is the new user-facing free-form column. For accounts that
@@ -323,6 +336,26 @@ public class AppConfig
         Launch.LaunchDelayMs = Math.Clamp(Launch.LaunchDelayMs, 500, 30000);
         Launch.FixDelayMs = Math.Clamp(Launch.FixDelayMs, 1000, 120000);
 
+        // v3.15.2: clamp the 10 new autologin-timing tunables. Floors are
+        // calibrated against the comments next to each property in LaunchConfig
+        // (e.g. "below ~300 risks deactivating before EQ consumes the keystroke").
+        // Without these clamps a hand-edited JSON could set Thread.Sleep(-1)
+        // (blocks indefinitely on .NET) or Thread.Sleep(0) (skips the dwell
+        // entirely), producing failure modes that don't surface as crashes.
+        Launch.WaitTransitionInitialDelayMs = Math.Clamp(Launch.WaitTransitionInitialDelayMs, 100, 10000);
+        Launch.WaitTransitionSettleMs       = Math.Clamp(Launch.WaitTransitionSettleMs,       100, 10000);
+        Launch.WaitTransitionPollIntervalMs = Math.Clamp(Launch.WaitTransitionPollIntervalMs, 100, 5000);
+        Launch.Burst1ActivationSettleMs     = Math.Clamp(Launch.Burst1ActivationSettleMs,     100, 5000);
+        Launch.Burst1PostSubmitMs           = Math.Clamp(Launch.Burst1PostSubmitMs,           100, 5000);
+        Launch.Burst2ActivationSettleMs     = Math.Clamp(Launch.Burst2ActivationSettleMs,     100, 5000);
+        Launch.Burst2PostKeystrokeMs        = Math.Clamp(Launch.Burst2PostKeystrokeMs,        100, 5000);
+        Launch.PostBurst1WaitMs             = Math.Clamp(Launch.PostBurst1WaitMs,             500, 30000);
+        Launch.BridgeInitWaitMs             = Math.Clamp(Launch.BridgeInitWaitMs,             500, 30000);
+        // StaleSessionWaitMs floor is calibrated against Dalaya's empirical
+        // 30-45s release window. Lowering risks the retry firing while the
+        // server still holds the prior session, getting a second rejection.
+        Launch.StaleSessionWaitMs           = Math.Clamp(Launch.StaleSessionWaitMs,           10000, 120000);
+
         LoginScreenDelayMs = Math.Clamp(LoginScreenDelayMs, 3000, 10000);
         WarmupDwellMs = Math.Clamp(WarmupDwellMs, 0, 15000);
 
@@ -374,19 +407,19 @@ public class AppConfig
     }
 
     /// <summary>
-    /// Look up an Account by its user-facing Name. Ordinal (case-sensitive) comparison.
-    /// Returns null if name is empty or no match found. Used by tray dispatch and
-    /// Phase 5 hotkey registration.
+    /// Look up an Account by its user-facing Name. Case-insensitive (v3.15.2 — matches
+    /// the OrdinalIgnoreCase uniqueness check in Validate()). Returns null if name is
+    /// empty or no match found. Used by tray dispatch and Phase 5 hotkey registration.
     /// </summary>
     public Account? FindAccountByName(string name) =>
-        string.IsNullOrEmpty(name) ? null : Accounts.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.Ordinal));
+        string.IsNullOrEmpty(name) ? null : Accounts.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// Look up a Character by its in-game Name. Ordinal comparison. Returns null if
-    /// name is empty or no match found.
+    /// Look up a Character by its in-game Name. Case-insensitive (v3.15.2). Returns
+    /// null if name is empty or no match found.
     /// </summary>
     public Character? FindCharacterByName(string name) =>
-        string.IsNullOrEmpty(name) ? null : Characters.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.Ordinal));
+        string.IsNullOrEmpty(name) ? null : Characters.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase));
 }
 
 public class WindowLayout
@@ -579,6 +612,91 @@ public class LaunchConfig
 
     /// <summary>Delay in ms after all clients launched before arranging windows.</summary>
     public int FixDelayMs { get; set; } = 15000;
+
+    // ── v3.15.2 autologin timing tunables (defaults preserve v3.15.1 behavior) ──
+    // Surfaced after the v3.15.1 perf audit identified ~1.5–2s of slack across the
+    // hard-coded waits in WaitForScreenTransition + BURST 2. NOT changed in v3.15.2;
+    // any tuning needs feedback_dual_box_test_before_autologin_tag.md (5+ runs across
+    // reboots before tagging) because too-aggressive values miss-detect on slow
+    // hardware / bad network days.
+
+    /// <summary>
+    /// Pre-poll grace period (ms) at the start of WaitForScreenTransition. Lets EQ
+    /// begin the transition before we start polling IsHungAppWindow / GetWindowRect.
+    /// Aggressive target ~200; default 1000 preserves v3.15.1 behavior. Reducing
+    /// risks polling the pre-transition steady state and missing the transition edge.
+    /// </summary>
+    public int WaitTransitionInitialDelayMs { get; set; } = 1000;
+
+    /// <summary>
+    /// Settle period (ms) after WaitForScreenTransition detects the responsive edge,
+    /// before returning. Brief render time. Aggressive target 300–500; default 1000.
+    /// </summary>
+    public int WaitTransitionSettleMs { get; set; } = 1000;
+
+    /// <summary>
+    /// Poll cadence (ms) inside WaitForScreenTransition's main loop. Aggressive
+    /// target 250 (doubles polling rate); default 500. Tighter cadence increases
+    /// CPU on the autologin thread but can shave detection latency.
+    /// </summary>
+    public int WaitTransitionPollIntervalMs { get; set; } = 500;
+
+    /// <summary>
+    /// Post-keystroke dwell (ms) at end of BURST 2 server-select Enter, before
+    /// deactivating focus-faking. Aggressive target 300; default 500. Below ~300
+    /// risks deactivating before EQ's input pump consumes the keystroke.
+    /// </summary>
+    public int Burst2PostKeystrokeMs { get; set; } = 500;
+
+    // ── v3.15.2 second-pass autologin tunables (defaults preserve current behavior) ──
+    // Same caveat as the four knobs above: any default change needs the dual-box
+    // gate (feedback_dual_box_test_before_autologin_tag.md) before tagging.
+
+    /// <summary>
+    /// Settle time (ms) after activating focus-faking, before BURST 1 starts
+    /// typing credentials. Gives the inline-hook + WndProc subclass time to
+    /// install before keystrokes flow. Default 500.
+    /// </summary>
+    public int Burst1ActivationSettleMs { get; set; } = 500;
+
+    /// <summary>
+    /// Post-submit dwell (ms) at end of BURST 1 (after pressing Enter to submit
+    /// credentials), before deactivating focus-faking. Default 500 (mirrors
+    /// Burst2PostKeystrokeMs). Below ~300 risks deactivating before EQ consumes
+    /// the Enter keystroke.
+    /// </summary>
+    public int Burst1PostSubmitMs { get; set; } = 500;
+
+    /// <summary>
+    /// Settle time (ms) after activating focus-faking, before BURST 2 sends
+    /// the server-select Enter. Default 300 (BURST 2 has less work than BURST 1
+    /// so the settle window can be tighter without losing reliability).
+    /// </summary>
+    public int Burst2ActivationSettleMs { get; set; } = 300;
+
+    /// <summary>
+    /// Wait (ms) after BURST 1 submit, before BURST 2 fires for server-select
+    /// Enter. Covers login-server response time. Default 3000. Aggressive
+    /// target ~1500 if server is local + fast. Below ~1000 risks BURST 2
+    /// firing before login response arrives.
+    /// </summary>
+    public int PostBurst1WaitMs { get; set; } = 3000;
+
+    /// <summary>
+    /// Wait (ms) after a 90s WaitForScreenTransition timeout before retrying
+    /// the login (stale-session recovery). Dalaya releases stale sessions in
+    /// ~30-45s — this default is calibrated against that window. DO NOT
+    /// reduce below 30000 without a Dalaya-server confirmation that the
+    /// release window has shortened. Default 30000.
+    /// </summary>
+    public int StaleSessionWaitMs { get; set; } = 30000;
+
+    /// <summary>
+    /// Wait (ms) after process resume, before the C# host expects the injected
+    /// MQ2 bridge to have initialized its SHM and resolved Dalaya exports.
+    /// Default 2000. Below ~1500 risks reading SHM before bridge populates it.
+    /// </summary>
+    public int BridgeInitWaitMs { get; set; } = 2000;
 }
 
 public class PipConfig

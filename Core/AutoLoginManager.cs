@@ -53,10 +53,12 @@ public class AutoLoginManager
     // single dead PID. TryAdd makes the warn fire once per (PID, lifetime).
     private static readonly ConcurrentDictionary<int, byte> _loggedExitPids = new();
 
-    /// <summary>Serializes login sequences — only one login types credentials at a time.
-    /// Multiple logins are queued and run sequentially to avoid timing issues under CPU load.</summary>
-    // No serialization — logins run concurrently. Focus-faking is kept to
-    // brief windows (activate → type → deactivate) to avoid conflicts.
+    // Logins run concurrently (one Task per BeginLogin call, no global gate).
+    // Focus-faking is kept to brief windows (activate → type → deactivate) so
+    // overlapping logins on different PIDs don't fight over foreground state.
+    // An older queueing implementation existed but was removed; the prior XML
+    // doc-comment claiming "serializes login sequences" was stale and was
+    // dropped in v3.15.2 to match runtime behavior.
 
     /// <summary>UI thread sync context for marshaling events. Captured at construction
     /// as a best-effort fallback, then replaced by TrayManager.Initialize() via
@@ -223,17 +225,19 @@ public class AutoLoginManager
         try
         {
             password = CredentialManager.Decrypt(account.EncryptedPassword);
-            // Diagnostic: surface decrypt outcome (length only, NEVER the value).
-            // Empty / suspiciously-short here = silent config corruption from a prior
-            // Settings save (DPAPI happily encrypts ""), which produces "Enter pressed
-            // on empty password field" symptom. WARN at <2 chars so reasonable
-            // passwords don't spam, but anything degenerate surfaces immediately.
+            // Diagnostic: surface decrypt outcome (degenerate cases ONLY, NEVER the
+            // value AND NEVER the length on success). Empty / suspiciously-short
+            // here = silent config corruption from a prior Settings save (DPAPI
+            // happily encrypts ""), which produces "Enter pressed on empty
+            // password field" symptom. v3.15.2 (T3 Opus callout): the success
+            // path no longer logs `length=N`. Even the password length is a
+            // small information leak that aids brute-force ranging.
             if (string.IsNullOrEmpty(password))
                 FileLogger.Warn($"AutoLogin: decrypted password for '{account.Name}' is EMPTY — config may be corrupted; re-enter password in Settings → Accounts");
             else if (password.Length < 2)
-                FileLogger.Warn($"AutoLogin: decrypted password for '{account.Name}' is suspiciously short (length={password.Length})");
+                FileLogger.Warn($"AutoLogin: decrypted password for '{account.Name}' is suspiciously short — re-check Settings → Accounts");
             else
-                FileLogger.Info($"AutoLogin: decrypted password for '{account.Name}' OK (length={password.Length})");
+                FileLogger.Info($"AutoLogin: decrypted password for '{account.Name}' OK");
         }
         catch (System.Security.Cryptography.CryptographicException ex)
         {
@@ -384,10 +388,34 @@ public class AutoLoginManager
         }
 
         // Run the login sequence on a background thread.
+        // v3.15.2 (T3-Opus security callout, refined by T3-Sonnet round 2):
+        // try/finally drops the LOCAL alias to the password string when the
+        // lambda exits. Note this is a soft fix — strings in .NET are
+        // immutable, so we can't overwrite the bytes in-place, AND the closure-
+        // captured copy in the lambda's compiler-synthesized closure object
+        // remains until the lambda itself is GC'd. Net effect: still no
+        // semantic guarantee of bounded password residence in heap; the only
+        // structural fix is a SecureString or char[] migration. Kept as a
+        // defense-in-depth nudge plus an explicit place to hang the comment
+        // for the future migration. Concurrent BeginLogin calls each get
+        // their own closure, so there is no cross-call race.
         var capturedAccount = account;
         var capturedCharacter = character;
         var capturedOverride = enterWorldOverride;
-        return Task.Run(() => RunLoginSequence(pid, capturedAccount, capturedCharacter, password, capturedOverride));
+        var capturedPassword = password;
+        return Task.Run(() =>
+        {
+            try
+            {
+                RunLoginSequence(pid, capturedAccount, capturedCharacter, capturedPassword, capturedOverride);
+            }
+            finally
+            {
+                // ReSharper disable once RedundantAssignment — drops the strong reference
+                // (we can't truly scrub a .NET string; this is best-effort GC eligibility).
+                capturedPassword = string.Empty;
+            }
+        });
     }
 
     /// <summary>
@@ -523,7 +551,8 @@ public class AutoLoginManager
         // ── Phase 2: BURST 1 keystrokes ──
         Report("Typing credentials...");
         writer.Activate(pid, suppress: true);
-        Thread.Sleep(500); // let DLL switch coop + blast activation
+        // v3.15.2: tunable via Launch.Burst1ActivationSettleMs (default 500).
+        Thread.Sleep(_config.Launch.Burst1ActivationSettleMs); // let DLL switch coop + blast activation
         FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
 
         // ── PRIMER: absorb first-keystroke drop ──
@@ -563,7 +592,8 @@ public class AutoLoginManager
 
         Report("Submitting login...");
         CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = submit
-        Thread.Sleep(500);
+        // v3.15.2: tunable via Launch.Burst1PostSubmitMs (default 500).
+        Thread.Sleep(_config.Launch.Burst1PostSubmitMs);
         writer.Deactivate(pid);
         FileLogger.Info($"AutoLogin: BURST 1 deactivated for PID {pid}");
     }
@@ -707,7 +737,8 @@ public class AutoLoginManager
             }
 
             // ── Wait for server response (no focus-faking) ──
-            Thread.Sleep(3000);
+            // v3.15.2: tunable via Launch.PostBurst1WaitMs (default 3000).
+            Thread.Sleep(_config.Launch.PostBurst1WaitMs);
             hwnd = RefreshHandle(pid, hwnd);
             if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window after login (crashed or closed)"); return; }
 
@@ -716,10 +747,12 @@ public class AutoLoginManager
             // ══════════════════════════════════════════════════════════
             Report("Confirming server...");
             writer.Activate(pid, suppress: true);
-            Thread.Sleep(300);
+            // v3.15.2: tunable via Launch.Burst2ActivationSettleMs (default 300).
+            Thread.Sleep(_config.Launch.Burst2ActivationSettleMs);
             FileLogger.Info($"AutoLogin: BURST 2 activated for PID {pid}");
             CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = confirm
-            Thread.Sleep(500);
+            // v3.15.2: post-keystroke dwell tunable via Launch.Burst2PostKeystrokeMs (default 500).
+            Thread.Sleep(_config.Launch.Burst2PostKeystrokeMs);
             writer.Deactivate(pid); // ← OFF
             FileLogger.Info($"AutoLogin: BURST 2 deactivated for PID {pid}");
 
@@ -753,15 +786,27 @@ public class AutoLoginManager
                 writer.Deactivate(pid);
 
                 // Server-release wait — empirically Dalaya releases stale sessions in ~30-45s.
-                Thread.Sleep(30000);
+                // v3.15.2: tunable via Launch.StaleSessionWaitMs (default 30000).
+                // DO NOT lower below 30000 without server-side confirmation that the release
+                // window has shortened — too short → second login attempt also rejected.
+                Thread.Sleep(_config.Launch.StaleSessionWaitMs);
                 hwnd = RefreshHandle(pid, hwnd);
                 if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during recovery wait"); return; }
 
                 // Re-fire BURST 1 (credentials + submit).
                 Report("Retry: typing credentials...");
                 writer.Activate(pid, suppress: true);
-                Thread.Sleep(500);
+                // v3.15.2: tunable via Launch.Burst1ActivationSettleMs (default 500).
+                Thread.Sleep(_config.Launch.Burst1ActivationSettleMs);
                 FileLogger.Info($"AutoLogin: RETRY BURST 1 activated for PID {pid}");
+                // v3.15.2 (T3 verifier HIGH callout): primer Backspace, same as the
+                // initial BURST 1 at line ~540. After a 30s server-release wait,
+                // EQ's GetDeviceData polling has been idle long enough that the
+                // SHM-active flip can drop the first 1-3 keystrokes — without a
+                // primer to absorb them, the retry tabs/types could be truncated
+                // identically to the v3.14.x first-keystroke-drop bug.
+                CombinedPressKey(writer, pid, hwnd, 0x08);
+                Thread.Sleep(50);
                 if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
                 {
                     CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to username
@@ -778,21 +823,25 @@ public class AutoLoginManager
                 Thread.Sleep(100);
                 Report("Retry: submitting login...");
                 CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = submit
-                Thread.Sleep(500);
+                // v3.15.2: tunable via Launch.Burst1PostSubmitMs (default 500).
+                Thread.Sleep(_config.Launch.Burst1PostSubmitMs);
                 writer.Deactivate(pid);
                 FileLogger.Info($"AutoLogin: RETRY BURST 1 deactivated for PID {pid}");
 
-                Thread.Sleep(3000);
+                // v3.15.2: tunable via Launch.PostBurst1WaitMs (default 3000).
+                Thread.Sleep(_config.Launch.PostBurst1WaitMs);
                 hwnd = RefreshHandle(pid, hwnd);
                 if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during retry submit"); return; }
 
                 // Re-fire BURST 2 (server confirm).
                 Report("Retry: confirming server...");
                 writer.Activate(pid, suppress: true);
-                Thread.Sleep(300);
+                // v3.15.2: tunable via Launch.Burst2ActivationSettleMs (default 300).
+                Thread.Sleep(_config.Launch.Burst2ActivationSettleMs);
                 FileLogger.Info($"AutoLogin: RETRY BURST 2 activated for PID {pid}");
                 CombinedPressKey(writer, pid, hwnd, 0x0D);
-                Thread.Sleep(500);
+                // v3.15.2: tunable via Launch.Burst2PostKeystrokeMs (default 500).
+                Thread.Sleep(_config.Launch.Burst2PostKeystrokeMs);
                 writer.Deactivate(pid);
                 FileLogger.Info($"AutoLogin: RETRY BURST 2 deactivated for PID {pid}");
 
@@ -835,7 +884,8 @@ public class AutoLoginManager
 
             // ── Character selection via MQ2 bridge (no focus-faking needed) ──
             // Priority: slot > name > default. character != null here (enforced by gate above).
-            Thread.Sleep(2000); // let MQ2 bridge init
+            // v3.15.2: tunable via Launch.BridgeInitWaitMs (default 2000).
+            Thread.Sleep(_config.Launch.BridgeInitWaitMs);
 
             bool wantSelection = character!.CharacterSlot > 0 || !string.IsNullOrEmpty(character.Name);
             if (wantSelection)
@@ -1634,7 +1684,10 @@ public class AutoLoginManager
     /// window rect instability detection if the window never fully hangs.
     /// Returns the (possibly refreshed) window handle, or IntPtr.Zero if the process died.
     /// </summary>
-    private static IntPtr WaitForScreenTransition(int pid, IntPtr hwnd, int maxWaitMs = 90000)
+    // v3.15.2: was static; now reads timing knobs from _config.Launch (defaults
+    // preserve prior 1000/1000/500ms behavior, so the visibility change is benign
+    // for callers that haven't tuned the config).
+    private IntPtr WaitForScreenTransition(int pid, IntPtr hwnd, int maxWaitMs = 90000)
     {
         var sw = Stopwatch.StartNew();
         bool sawHung = false;
@@ -1643,8 +1696,9 @@ public class AutoLoginManager
         var lastRect = initialRect;
         long lastRectChangeMs = 0;
 
-        // Give EQ a moment to start the transition before polling
-        Thread.Sleep(1000);
+        // Give EQ a moment to start the transition before polling.
+        // v3.15.2: tunable via Launch.WaitTransitionInitialDelayMs (default 1000).
+        Thread.Sleep(_config.Launch.WaitTransitionInitialDelayMs);
 
         while (sw.ElapsedMilliseconds < maxWaitMs)
         {
@@ -1669,7 +1723,8 @@ public class AutoLoginManager
             {
                 // Was hung, now responsive — transition complete
                 FileLogger.Info($"AutoLogin: EQ responsive after loading PID {pid}, elapsed={sw.ElapsedMilliseconds}ms");
-                Thread.Sleep(1000); // brief settle time for render
+                // v3.15.2: settle tunable via Launch.WaitTransitionSettleMs (default 1000).
+                Thread.Sleep(_config.Launch.WaitTransitionSettleMs);
                 return RefreshHandle(pid, hwnd);
             }
 
@@ -1706,7 +1761,8 @@ public class AutoLoginManager
                 }
             }
 
-            Thread.Sleep(500);
+            // v3.15.2: poll cadence tunable via Launch.WaitTransitionPollIntervalMs (default 500).
+            Thread.Sleep(_config.Launch.WaitTransitionPollIntervalMs);
         }
 
         // Timeout — proceed anyway (better than hanging forever)
@@ -1825,115 +1881,6 @@ public class AutoLoginManager
         }
 
         return IntPtr.Zero;
-    }
-
-    // ─── Foreground Flash + SendInput Helpers ──────────────────────
-    //
-    // EQ's login screen uses standard Windows message input (WM_CHAR/WM_KEYDOWN)
-    // for text fields, NOT DirectInput. SendInput synthesizes keystrokes at the
-    // kernel level — works with any input method, but requires foreground focus.
-    // We briefly flash each EQ window to the front during its typing phase.
-
-    private static readonly int InputSize = Marshal.SizeOf<NativeMethods.INPUT>();
-
-    /// <summary>
-    /// Send a single key down or up event via SendInput.
-    /// </summary>
-    private static void SendKeyEvent(ushort vk, bool down)
-    {
-        var input = new NativeMethods.INPUT
-        {
-            type = NativeMethods.INPUT_KEYBOARD,
-            U = new NativeMethods.INPUTUNION
-            {
-                ki = new NativeMethods.KEYBDINPUT
-                {
-                    wVk = vk,
-                    wScan = (ushort)NativeMethods.MapVirtualKeyW(vk, NativeMethods.MAPVK_VK_TO_VSC),
-                    dwFlags = down ? 0u : NativeMethods.KEYEVENTF_KEYUP,
-                    time = 0,
-                    dwExtraInfo = IntPtr.Zero
-                }
-            }
-        };
-        NativeMethods.SendInput(1, [input], InputSize);
-    }
-
-    /// <summary>
-    /// Press and release a single key via SendInput.
-    /// </summary>
-    private static void SendPressKey(ushort vk)
-    {
-        SendKeyEvent(vk, true);
-        Thread.Sleep(60);
-        SendKeyEvent(vk, false);
-        Thread.Sleep(60);
-    }
-
-    /// <summary>
-    /// Type a string via SendInput. Handles Shift for uppercase and symbols.
-    /// </summary>
-    private static void SendTypeString(string text)
-    {
-        foreach (char c in text)
-        {
-            short vkScan = NativeMethods.VkKeyScanW(c);
-            if (vkScan == -1) continue; // unmappable character
-
-            byte modifiers = (byte)(vkScan >> 8);
-            if ((modifiers & ~0x01) != 0) continue; // skip chars needing Ctrl/Alt
-
-            ushort vk = (ushort)(vkScan & 0xFF);
-            bool needShift = (modifiers & 0x01) != 0;
-
-            if (needShift)
-                SendKeyEvent(0x10, true); // VK_SHIFT down
-            SendKeyEvent(vk, true);
-            Thread.Sleep(50);
-            SendKeyEvent(vk, false);
-            if (needShift)
-                SendKeyEvent(0x10, false); // VK_SHIFT up
-            Thread.Sleep(40);
-        }
-    }
-
-    /// <summary>
-    /// Bring a window to the foreground using the AttachThreadInput trick.
-    /// Returns true if the window is now the foreground window.
-    /// </summary>
-    private static bool BringToForeground(IntPtr hwnd)
-    {
-        var curForeground = NativeMethods.GetForegroundWindow();
-        if (curForeground == hwnd) return true;
-
-        var foreThread = NativeMethods.GetWindowThreadProcessId(curForeground, out _);
-        var curThread = NativeMethods.GetCurrentThreadId();
-        bool attached = false;
-
-        // Attach to the foreground thread so Windows allows us to steal focus
-        if (foreThread != curThread)
-            attached = NativeMethods.AttachThreadInput(curThread, foreThread, true);
-
-        NativeMethods.ShowWindow(hwnd, NativeMethods.SW_RESTORE);
-        NativeMethods.BringWindowToTop(hwnd);
-        NativeMethods.SetForegroundWindow(hwnd);
-
-        if (attached)
-            NativeMethods.AttachThreadInput(curThread, foreThread, false);
-
-        // Verify focus arrived
-        Thread.Sleep(100);
-        return NativeMethods.GetForegroundWindow() == hwnd;
-    }
-
-    /// <summary>
-    /// Restore a previously saved foreground window. Best-effort — if the
-    /// window was closed in the meantime, this is a no-op.
-    /// </summary>
-    private static void RestoreForeground(IntPtr hwnd)
-    {
-        if (hwnd == IntPtr.Zero || !NativeMethods.IsWindow(hwnd)) return;
-        NativeMethods.SetForegroundWindow(hwnd);
     }
 
     // ─── EQ INI Helpers ──────────────────────────────────────────────

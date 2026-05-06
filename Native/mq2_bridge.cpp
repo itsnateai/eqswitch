@@ -134,6 +134,16 @@ static volatile int      g_cachedSlotCount   = -1;  // slot probe result cache (
 static volatile bool     g_verificationDone  = false;
 static volatile uintptr_t g_heapScanArrayBase = 0;   // heap scan result (0 = not found/not scanned)
 static volatile bool     g_heapScanDone      = false; // one-shot per charselect session
+// v3.15.2 (2026-05-05) chunked-resume scan position. When budget fires before the array
+// is found, save the next region base and resume there next poll instead of restarting at
+// 0x01000000. After 2-3 polls the full address space (~0x7E000000) is covered exactly
+// once, vs. the prior behavior of pounding the same low region forever on fragmented
+// heaps. Reset to 0 on: full-walk-no-find, found, transition, Init(), and cache-stale.
+// Anchor scan tracks its own resume cursor + the name it was scanning for; a name change
+// restarts at 0x01000000 (different target = different match locations).
+static volatile uintptr_t g_lastHeapScanAddr   = 0;
+static volatile uintptr_t g_lastAnchorScanAddr = 0;
+static char               g_lastAnchorScanName[16] = {0};
 // Track B v3 (2026-05-05, T2 dual red-team v6 callout): distinguishes anchor-scan
 // cache (single entry, slot 0) from full-array cache (real array, real curSel).
 // In the re-read branch, anchor mode requires selectedIndex=0 each poll because
@@ -214,7 +224,13 @@ static const uint32_t HEAP_SCAN_STRIDE = 0x160;
 
 static uintptr_t HeapScanForCharArray() {
     MEMORY_BASIC_INFORMATION mbi;
-    uintptr_t addr = 0x01000000; // skip low addresses
+    // v3.15.2 (2026-05-05): chunked-resume. Pick up where the prior budget-aborted
+    // scan stopped. After 2-3 polls the full 0x01000000..0x7FFF0000 range is covered
+    // exactly once. On fragmented heaps where any single 1500ms slice can't reach
+    // the array, the prior behavior was to restart at 0x01000000 every poll and
+    // never make forward progress. Cleared on found / full-walk-no-find / transition.
+    const uintptr_t startAddr = g_lastHeapScanAddr ? g_lastHeapScanAddr : 0x01000000;
+    uintptr_t addr = startAddr;
     int regionsScanned = 0;
     int pagesScanned = 0;
     // Track B v2 (2026-05-05): wall-clock budget. Without this, a fragmented heap
@@ -225,11 +241,14 @@ static uintptr_t HeapScanForCharArray() {
     const DWORD scanStartMs = GetTickCount();
     const DWORD scanBudgetMs = 1500;  // hard ceiling; observed normal scans 200-400ms
 
+    if (startAddr != 0x01000000)
+        DI8Log("mq2_bridge: heap scan: resuming from 0x%08X (chunked-resume)", startAddr);
+
     while (addr < 0x7FFF0000 && regionsScanned < 200000) {
         // Wall-clock abort takes precedence over region cap
         if (GetTickCount() - scanStartMs > scanBudgetMs) {
-            DI8Log("mq2_bridge: heap scan: time budget exceeded (%ums, %d regions, %d pages) — clearing g_heapScanDone for retry next poll",
-                   scanBudgetMs, regionsScanned, pagesScanned);
+            DI8Log("mq2_bridge: heap scan: time budget exceeded (%ums, %d regions, %d pages, stopped at 0x%08X) — chunked-resume next poll",
+                   scanBudgetMs, regionsScanned, pagesScanned, addr);
             // Track B v3 (2026-05-05, T3 Opus v3 HIGH callout): callers (Path C
             // line ~3496, standalone line ~3587) set g_heapScanDone=true BEFORE
             // calling us. On budget-abort, that gate would permanently lock all
@@ -238,6 +257,9 @@ static uintptr_t HeapScanForCharArray() {
             // repeated 1.5s scans on a pathologically fragmented heap, but at
             // best it gives the array a chance once swap pressure drops.
             g_heapScanDone = false;
+            // v3.15.2: persist resume cursor so next poll picks up from here
+            // instead of re-scanning addresses we already cleared.
+            g_lastHeapScanAddr = addr;
             return 0;
         }
         if (VirtualQuery((void *)addr, &mbi, sizeof(mbi)) == 0) break;
@@ -299,6 +321,9 @@ static uintptr_t HeapScanForCharArray() {
                             uintptr_t arrayAddr = chunk + i;
                             DI8Log("mq2_bridge: heap scan FOUND char array at 0x%08X (%d/%d names valid, race-filtered)",
                                    arrayAddr, validCount, 10);
+                            // v3.15.2: reset resume cursor on success — next time we scan,
+                            // it'll be a new charselect cycle that needs a fresh full search.
+                            g_lastHeapScanAddr = 0;
                             return arrayAddr;
                         }
                     }
@@ -312,8 +337,13 @@ static uintptr_t HeapScanForCharArray() {
         if (addr <= base) addr = base + 0x1000;
     }
 
-    DI8Log("mq2_bridge: heap scan: no char array found (%d regions, %d pages, %ums)",
-           regionsScanned, pagesScanned, GetTickCount() - scanStartMs);
+    DI8Log("mq2_bridge: heap scan: no char array found (%d regions, %d pages, %ums, full-walk from 0x%08X)",
+           regionsScanned, pagesScanned, GetTickCount() - scanStartMs, startAddr);
+    // v3.15.2: full address space walked (within budget) without finding the array.
+    // Reset the resume cursor so any future cycle starts cleanly. g_heapScanDone is
+    // left as caller set it (true) — caller's "don't retry until cycle reset" semantic
+    // remains intact.
+    g_lastHeapScanAddr = 0;
     return 0;
 }
 
@@ -340,16 +370,33 @@ static uintptr_t HeapScanForTargetName(const char *targetName) {
     while (targetLen < 32 && targetName[targetLen] != '\0') targetLen++;
     if (targetLen < 4 || targetLen > 15) return 0;  // EQ name length bounds
 
+    // v3.15.2 (2026-05-05): chunked-resume. Same pattern as HeapScanForCharArray.
+    // Additional wrinkle: if the target name changed since the last attempt
+    // (different account / different highlighted slot), restart at 0x01000000 —
+    // the prior cursor is stale because we're hunting different bytes now.
+    bool nameMatchesPrior = (strncmp(g_lastAnchorScanName, targetName, sizeof(g_lastAnchorScanName) - 1) == 0);
+    const uintptr_t startAddr = (nameMatchesPrior && g_lastAnchorScanAddr) ? g_lastAnchorScanAddr : 0x01000000;
+    if (!nameMatchesPrior) {
+        // Save the new target so subsequent budget-abort resumes share a cursor.
+        size_t nlen = (size_t)targetLen < sizeof(g_lastAnchorScanName) - 1
+                          ? (size_t)targetLen
+                          : sizeof(g_lastAnchorScanName) - 1;
+        memcpy(g_lastAnchorScanName, targetName, nlen);
+        g_lastAnchorScanName[nlen] = '\0';
+    }
     MEMORY_BASIC_INFORMATION mbi;
-    uintptr_t addr = 0x01000000;
+    uintptr_t addr = startAddr;
     int regionsScanned = 0;
     const DWORD scanStartMs = GetTickCount();
     const DWORD scanBudgetMs = 1500;
 
+    if (startAddr != 0x01000000)
+        DI8Log("mq2_bridge: anchor scan: resuming from 0x%08X for '%s' (chunked-resume)", startAddr, targetName);
+
     while (addr < 0x7FFF0000 && regionsScanned < 200000) {
         if (GetTickCount() - scanStartMs > scanBudgetMs) {
-            DI8Log("mq2_bridge: anchor scan: budget exceeded for '%s' (%ums) — clearing g_heapScanDone for retry next poll",
-                   targetName, scanBudgetMs);
+            DI8Log("mq2_bridge: anchor scan: budget exceeded for '%s' (%ums, stopped at 0x%08X) — chunked-resume next poll",
+                   targetName, scanBudgetMs, addr);
             // R-final verifier callout (T2-S #4): mirror HeapScanForCharArray's
             // budget-abort behavior. Callers (Path C line ~3680, standalone
             // line ~3870) set g_heapScanDone=true BEFORE calling us. On
@@ -359,6 +406,8 @@ static uintptr_t HeapScanForTargetName(const char *targetName) {
             // means we miss every chance the heap state opens up after the
             // first attempt. Clear it ourselves so next poll retries.
             g_heapScanDone = false;
+            // v3.15.2: persist resume cursor so next poll picks up here.
+            g_lastAnchorScanAddr = addr;
             return 0;
         }
         if (VirtualQuery((void *)addr, &mbi, sizeof(mbi)) == 0) break;
@@ -393,6 +442,8 @@ static uintptr_t HeapScanForTargetName(const char *targetName) {
                         uintptr_t entryAddr = chunk + i;
                         DI8Log("mq2_bridge: anchor scan FOUND '%s' at 0x%08X (race=%d, %ums)",
                                targetName, entryAddr, race, GetTickCount() - scanStartMs);
+                        // v3.15.2: reset resume cursor on success.
+                        g_lastAnchorScanAddr = 0;
                         return entryAddr;
                     }
                 } __except(EXCEPTION_EXECUTE_HANDLER) {
@@ -405,8 +456,10 @@ static uintptr_t HeapScanForTargetName(const char *targetName) {
         if (addr <= base) addr = base + 0x1000;
     }
 
-    DI8Log("mq2_bridge: anchor scan: '%s' not found (%d regions, %ums)",
-           targetName, regionsScanned, GetTickCount() - scanStartMs);
+    DI8Log("mq2_bridge: anchor scan: '%s' not found (%d regions, %ums, full-walk from 0x%08X)",
+           targetName, regionsScanned, GetTickCount() - scanStartMs, startAddr);
+    // v3.15.2: full address space walked without finding. Reset resume cursor.
+    g_lastAnchorScanAddr = 0;
     return 0;
 }
 
@@ -980,13 +1033,29 @@ static const int WIDGET_CACHE_MAX = 16;
 static WidgetCacheEntry g_widgetCache[WIDGET_CACHE_MAX] = {};
 static int              g_widgetCacheCount = 0;
 static volatile bool    g_widgetScanDone = false;  // true after first full scan
+// v3.15.2: file-scope scan-call counter so ResetWidgetCache can clear it on
+// charselect transitions. Was a function-local static — meant the "first 5
+// scans get a log line" diagnostic went silent after the first 5 calls of the
+// process lifetime and never recovered, masking failures across cycles.
+static int              g_widgetScanCount = 0;
+// v3.15.2: signals to FindWidgetByHeapScan that the last scan budget-aborted
+// (don't cache the resulting nullptr — that would lock out retries until
+// ResetWidgetCache fires). Reset to false at every HeapScanForWidget entry.
+static volatile bool    g_widgetScanBudgetAborted = false;
 
 static void *HeapScanForWidget(const char *name) {
-    static int scanCallCount = 0;
-    if (scanCallCount < 5) {
+    g_widgetScanBudgetAborted = false;
+    if (g_widgetScanCount < 5) {
         DI8Log("mq2_bridge: HeapScanForWidget('%s') — starting scan", name);
-        scanCallCount++;
+        g_widgetScanCount++;
     }
+    // v3.15.2 (T3 Sonnet HIGH callout): wall-clock budget mirrors HeapScanFor-
+    // CharArray. Without it, a fragmented heap could freeze the EQ game thread
+    // for several seconds inside this scan (it runs synchronously from the
+    // bridge poll). Observed normal scans complete in 50-300ms; 1500ms is a
+    // generous ceiling that still bounds worst-case hitch to ~90 frames @60fps.
+    const DWORD scanStartMs = GetTickCount();
+    const DWORD scanBudgetMs = 1500;
 
     // Find eqmain.dll range (ASLR — resolves fresh each call)
     HMODULE hEqmain = GetModuleHandleA("eqmain.dll");
@@ -1021,6 +1090,12 @@ static void *HeapScanForWidget(const char *name) {
     uintptr_t lastAddr = 0;
 
     while (addr < 0x7FFF0000 && pagesScanned < 300000) {
+        if (GetTickCount() - scanStartMs > scanBudgetMs) {
+            DI8Log("mq2_bridge: HeapScanForWidget('%s') — time budget exceeded (%ums, %d pages, %d regions, last=0x%08X)",
+                   name, scanBudgetMs, pagesScanned, regionsTotal, lastAddr);
+            g_widgetScanBudgetAborted = true;
+            return nullptr;
+        }
         if (VirtualQuery((void *)addr, &mbi, sizeof(mbi)) == 0) {
             DI8Log("mq2_bridge: HeapScanForWidget — VirtualQuery failed at 0x%08X (err=%d), last=0x%08X",
                    addr, GetLastError(), lastAddr);
@@ -1114,8 +1189,12 @@ static void *FindWidgetByHeapScan(const char *name) {
     // Not in cache — do the scan
     void *result = HeapScanForWidget(name);
 
-    // Cache the result (even if nullptr, to avoid re-scanning)
-    if (g_widgetCacheCount < WIDGET_CACHE_MAX) {
+    // Cache the result (even if nullptr, to avoid re-scanning) UNLESS the scan
+    // budget-aborted. v3.15.2: caching a budget-abort nullptr would lock out
+    // retries until ResetWidgetCache, defeating the budget's purpose (retry on
+    // a less fragmented heap). The HeapScanForCharArray pattern uses the same
+    // "clear g_heapScanDone on budget-abort" idea.
+    if (!g_widgetScanBudgetAborted && g_widgetCacheCount < WIDGET_CACHE_MAX) {
         g_widgetCache[g_widgetCacheCount].name = name;
         g_widgetCache[g_widgetCacheCount].pWidget = result;
         g_widgetCache[g_widgetCacheCount].searched = true;
@@ -1136,6 +1215,12 @@ void MQ2Bridge::ResetWidgetCache() {
     }
     g_widgetCacheCount = 0;
     g_widgetScanDone = false;
+    // v3.15.2: re-arm the "first 5 scan-start" diagnostic so the next charselect
+    // cycle's first widget scans get logged again. Without this the counter
+    // keeps incrementing across cycles and goes silent for the rest of the
+    // process lifetime, hiding regressions.
+    g_widgetScanCount = 0;
+    g_widgetScanBudgetAborted = false;
 
     // Also clear live CXWnd cache (Phase 6)
     ResetLiveWidgetCache();
@@ -2960,6 +3045,11 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                         g_cachedNameCol = -1;
                         g_charArrayNotFoundLogged = false;
                         g_offsetValidated = false;  // re-validate Path A under live char-select
+                        // v3.15.2: clear chunked-resume cursors so a fresh charselect
+                        // cycle starts at 0x01000000 instead of mid-walk from prior cycle.
+                        g_lastHeapScanAddr = 0;
+                        g_lastAnchorScanAddr = 0;
+                        g_lastAnchorScanName[0] = '\0';
                         DI8Log("mq2_bridge: reset heap-scan + slot-mode caches on charselect transition");
                     }
                     lastObserved = pCharSelWnd;
@@ -3445,8 +3535,9 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     // (~12s in the v3.15.0 bug logs) so brief flutter inside an active
     // charselect cycle doesn't trip it.
     //
-    // Counter is at TU scope (declared below as g_consecutiveNullPolls) so
-    // the gameState==5 reset block can clear it across charselect cycles.
+    // Counter is at TU scope (declared above as g_consecutiveNullPolls — was
+    // promoted from block-static to TU scope in v3.15.1 so the gameState==5
+    // reset block can clear it across charselect cycles).
     {
         bool pinstNull = true;
         if (g_pinstCharSelect) {
@@ -3492,7 +3583,11 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         g_standaloneDelay = 0;  // reset for next charselect cycle
         g_verificationDone = false;
         g_charArrayNotFoundLogged = false;
-        // R2 verifier callout: latch-clear counter (file-scope below) must
+        // v3.15.2: clear chunked-resume cursors on in-game transition.
+        g_lastHeapScanAddr = 0;
+        g_lastAnchorScanAddr = 0;
+        g_lastAnchorScanName[0] = '\0';
+        // R2 verifier callout: latch-clear counter (file-scope above) must
         // also reset on in-game transition — otherwise a session that left
         // it mid-count would carry that count into the NEXT charselect cycle
         // and could spuriously trip the 30-poll threshold there.
@@ -3832,11 +3927,15 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                                validated, count);
                         g_heapScanArrayBase = 0;
                         g_heapScanDone = false;
+                        // v3.15.2: cache turned stale → next scan should be a clean
+                        // full search, not a chunked resume from where we last stopped.
+                        g_lastHeapScanAddr = 0;
                     }
                 } __except(EXCEPTION_EXECUTE_HANDLER) {
                     DI8Log("mq2_bridge: SEH re-reading heap array -- rescanning next poll");
                     g_heapScanArrayBase = 0;
                     g_heapScanDone = false;
+                    g_lastHeapScanAddr = 0;
                 }
             }
 
@@ -3996,6 +4095,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         } __except(EXCEPTION_EXECUTE_HANDLER) {
             g_heapScanArrayBase = 0;
             g_heapScanDone = false;
+            g_lastHeapScanAddr = 0;
         }
         if (count > 0) {
             MemoryBarrier();
@@ -4005,6 +4105,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
             // Cache stale, rescan next poll
             g_heapScanArrayBase = 0;
             g_heapScanDone = false;
+            g_lastHeapScanAddr = 0;
         }
     }
 
@@ -4106,4 +4207,8 @@ void MQ2Bridge::Shutdown() {
     g_anchorScanCached = false;
     g_standaloneDelay = 0;
     g_consecutiveNullPolls = 0;
+    // v3.15.2: clear chunked-resume cursors on Init() (mid-process MQ2 re-init).
+    g_lastHeapScanAddr = 0;
+    g_lastAnchorScanAddr = 0;
+    g_lastAnchorScanName[0] = '\0';
 }

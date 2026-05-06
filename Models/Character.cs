@@ -30,7 +30,10 @@ public class Character
     /// <summary>
     /// Typed FK to the backing Account. Computed from the serialized
     /// (AccountUsername, AccountServer) pair — not round-tripped separately
-    /// in JSON. Use with AccountKey.Matches(account) or direct equality.
+    /// in JSON. Use with AccountKey.Matches(account) for FK resolution
+    /// (case-insensitive as of v3.15.2). NOTE: the auto-generated record
+    /// equality on AccountKey itself remains case-sensitive — don't rely on
+    /// raw `==` for FK matching, prefer the explicit Matches() helper.
     /// </summary>
     [JsonIgnore]
     public AccountKey AccountKey => new(AccountUsername, AccountServer);

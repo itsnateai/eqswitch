@@ -200,10 +200,10 @@ public static class ConfigVersionMigrator
         var newCharacters = new JsonArray();
         // Dedup key is (Username, Server) compared case-insensitively, but the Account's
         // canonical Username/Server is whichever casing the first-seen row had. Characters
-        // must FK against THAT exact casing because AccountKey.Matches at runtime is Ordinal.
-        // Without this, a user with `{Username: "MyAcct"}` and `{Username: "myacct"}` (same
-        // account, different case) dedups correctly but Characters for the second row would
-        // point at "myacct" while the Account stores "MyAcct" — orphaning the Character.
+        // FK against that canonical casing for stable JSON round-trip. v3.15.2 made
+        // AccountKey.Matches case-insensitive at runtime, so a casing-drifted Character
+        // FK no longer orphans — but preserving canonical casing on migration still
+        // produces the cleaner config and avoids surprising the next reader.
         var accountKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var accountKeyToName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var accountKeyToCanonicalUsername = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -259,8 +259,9 @@ public static class ConfigVersionMigrator
             if (!string.IsNullOrEmpty(characterName))
             {
                 // Write FK using canonical casing from the dedup winner, NOT the current row's
-                // casing. This keeps AccountKey.Matches (Ordinal) from orphaning Characters
-                // whose source row had different-case Username from the account's winning row.
+                // casing. Pre-v3.15.2 this was load-bearing because AccountKey.Matches was
+                // Ordinal; from v3.15.2 it's only a JSON-cleanliness concern (case-drifted
+                // FKs would still resolve via OrdinalIgnoreCase but produce confusing diffs).
                 var fkUsername = accountKeyToCanonicalUsername.TryGetValue(key, out var cu) ? cu : username;
                 var fkServer = accountKeyToCanonicalServer.TryGetValue(key, out var cs) ? cs : server;
                 newCharacters.Add(new JsonObject
