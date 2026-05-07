@@ -78,6 +78,7 @@ public class SettingsForm : Form
     // ─── Paths tab controls
     private TextBox _txtGinaPath = null!;
     private TextBox _txtGamparsePath = null!;
+    private TextBox _txtEqLogParserPath = null!;
     private TextBox _txtNotesPath = null!;
     private TextBox _txtDalayaPatcherPath = null!;
     private CheckBox _chkRunAtStartup = null!;
@@ -964,7 +965,7 @@ public class SettingsForm : Form
         const int L = 10, I = 120, BRW = 380, IW = 250, R = 32;
 
         // ─── External Tools card ─────────────────────────────────
-        var cardPaths = DarkTheme.MakeCard(page, "📁", "External Tools", DarkTheme.CardGold, 10, y, 480, 240);
+        var cardPaths = DarkTheme.MakeCard(page, "📁", "External Tools", DarkTheme.CardGold, 10, y, 480, 272);
         int cy = 32;
 
         DarkTheme.AddCardLabel(cardPaths, "GINA Path:", L, cy);
@@ -994,6 +995,21 @@ public class SettingsForm : Form
                 InitialDirectory = Path.GetDirectoryName(_txtGamparsePath.Text) ?? ""
             };
             if (ofd.ShowDialog() == DialogResult.OK) _txtGamparsePath.Text = ofd.FileName;
+        };
+        cy += R;
+
+        DarkTheme.AddCardLabel(cardPaths, "EQLogParser:", L, cy);
+        _txtEqLogParserPath = DarkTheme.AddCardTextBox(cardPaths, I, cy, IW);
+        var btnBrowseEqLogParser = DarkTheme.AddCardButton(cardPaths, "Browse...", BRW, cy - 3, 75);
+        btnBrowseEqLogParser.Click += (_, _) =>
+        {
+            using var ofd = new OpenFileDialog
+            {
+                Title = "Select EQLogParser executable",
+                Filter = "Executables|*.exe|All Files|*.*",
+                InitialDirectory = Path.GetDirectoryName(_txtEqLogParserPath.Text) ?? ""
+            };
+            if (ofd.ShowDialog() == DialogResult.OK) _txtEqLogParserPath.Text = ofd.FileName;
         };
         cy += R;
 
@@ -1044,7 +1060,7 @@ public class SettingsForm : Form
                 _txtCustomIconPath.Text = dlg.FileName;
         };
 
-        y += 248;
+        y += 280;
 
         // ─── Startup card ───────────────────────────────────────
         // Single row, original x=47 left padding preserved. Button on the left,
@@ -1352,6 +1368,7 @@ public class SettingsForm : Form
         // Paths
         _txtGinaPath.Text = _config.GinaPath;
         _txtGamparsePath.Text = _config.GamparsePath;
+        _txtEqLogParserPath.Text = _config.EqLogParserPath;
         _txtNotesPath.Text = _config.NotesPath;
         _txtDalayaPatcherPath.Text = _config.DalayaPatcherPath;
         _chkRunAtStartup.Checked = _config.RunAtStartup;
@@ -1655,6 +1672,7 @@ public class SettingsForm : Form
             },
             GinaPath = _txtGinaPath.Text.Trim(),
             GamparsePath = _txtGamparsePath.Text.Trim(),
+            EqLogParserPath = _txtEqLogParserPath.Text.Trim(),
             NotesPath = _txtNotesPath.Text.Trim(),
             DalayaPatcherPath = _txtDalayaPatcherPath.Text.Trim(),
             RunAtStartup = _chkRunAtStartup.Checked,

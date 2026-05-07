@@ -58,6 +58,7 @@ public class AppConfig
     // Paths
     public string GinaPath { get; set; } = "";
     public string GamparsePath { get; set; } = "";
+    public string EqLogParserPath { get; set; } = "";
     public string DalayaPatcherPath { get; set; } = "";
     public string NotesPath { get; set; } = "";
 

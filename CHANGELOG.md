@@ -1,5 +1,39 @@
 # Changelog
 
+## v3.15.3 — EQLogParser launcher slot + external-tool launcher hardening (2026-05-07)
+
+This is a quality release on the v3.15.2 baseline. Autologin behavior is unchanged — this release adds a new external-tool launcher slot and hardens the existing four (`OpenGina`, `OpenGamparse`, `OpenEqLogParser`, `OpenDalayaPatcher`) plus several adjacent helpers that were carrying pre-existing bugs.
+
+### EQLogParser launcher slot
+- **New "EQLogParser" path entry on the Settings → Paths tab**, mirroring Gamparse: label + textbox + Browse… button with `*.exe` filter. Card height bumped from 240→272 so the existing Custom Icon row no longer clips with the new entry stacked above.
+- **New tray-menu entry "📈 Open EQLogParser"** in the Launcher submenu, sitting directly above "📊 Open Gamparse". Like the other slots, it's user-rebindable — power users / GMs can wire any executable, not just EQLogParser, for whatever workflow they want.
+- New `AppConfig.EqLogParserPath` field; `TrayManager.ApplyNewConfig` propagates it on Settings → Save.
+
+### External-tool launcher hardening (all four `Open*` helpers)
+Each helper independently went through 5 verifier-driven hardening rounds. The four methods stay separate by design (per the "separate guarded slots" principle) — each can evolve quirks (DalayaPatcher's AV-aware messaging) without flag-explosion in a unified helper.
+- **3-tier path resolution:** `rawPath` (what the user typed) → `expanded` (after `Environment.ExpandEnvironmentVariables`, so `%PROGRAMFILES%\X.exe` resolves) → `path` (after `.Trim()` + paired-quote strip, so `"C:\X.exe"` from Windows "Copy as Path" works). Quote-strip is paired (`StartsWith('"') && EndsWith('"')`) — orphan quotes like `"C:\X.exe` are no longer silently swallowed.
+- **3-way guard order on every helper:** `IsNullOrEmpty(rawPath)` → opens Settings → Paths; `!Path.IsPathFullyQualified(path)` → balloon + opens Paths (relative paths can no longer resolve against EQSwitch's cwd); `!File.Exists(path)` → balloon + opens Paths.
+- **`WorkingDirectory` set to `Path.GetDirectoryName(path)`** on Process.Start. Tools that load plugins/configs from their own directory now find them.
+- **Error balloons show what the user typed AND what we resolved to** when env-var expansion changed the string (`Got: %MYTOOLS%\GINA.exe\nResolved to: C:\Tools\GINA.exe`). Cosmetic-only normalization (whitespace, quotes) stays silent.
+- **DalayaPatcher missing-file balloon now shows the path checked** (was bare AV message) and now opens Settings → Paths so the user can re-pick. Docstring updated to reflect the new flow.
+
+### Adjacent helper hardening
+- **`OpenLogFile` and `OpenEqClientIni`** now refuse to operate when `config.EQPath` is empty, balloon a meaningful message, and jump to Settings → General (where EQ Path lives). Previously they'd `Path.Combine` an empty string and silently open the wrong folder.
+- **`OpenUrl` now reports launch failures** to the user via balloon (`Failed to open link: …`). Previously failures only hit `FileLogger.Warn` — a broken browser association silently produced no UI feedback.
+- **Recent-logs picker cap** extracted into `private const int MaxRecentLogsInPicker = 25` (was hardcoded `10` in two places that had to stay in sync). Bumped from 10 → 25 — multi-character GMs no longer lose the bottom of the list to a single "more" entry.
+
+### TrimLogFiles — atomic, race-safe, and honest
+- **Atomic via temp file + `File.Replace`.** Tail is streamed to `<logFile>.trim.tmp` (disk-backed, not `MemoryStream` — kills the silent 2 GB cap on large logs and removes LOH pressure), then `File.Replace` atomically swaps. A process crash mid-trim now leaves the original log intact instead of partially overwritten.
+- **Read-pass opens with `FileShare.Read` instead of `FileShare.ReadWrite`.** If EQ has the log open for write, the read-pass fails fast with a sharing violation (caught + logged + skipped) before we write the archive/temp files. Closes the silent-corruption window where `File.Replace` could swap a trimmed file under EQ's stale write handle.
+- **Re-entry guard via `Interlocked.CompareExchange`.** Rapid menu double-clicks see "Log trim already in progress" balloon — no race on `.trim.tmp` paths between two concurrent Tasks.
+- **Zero-byte-tail guard.** If a single line spans the entire trim window (no `\n` between split point and EOF — corrupted log, or one giant burst), the file is skipped with a logged warning rather than silently emptied.
+- **`SynchronizationContext.Current` captured at the menu-click site** and used to post the result balloon back. Replaces the brittle `Application.OpenForms[0]` access that lost balloons when the user closed all windows mid-trim.
+- **Honest summary.** `(trimmed, skipped)` switch produces accurate messages: "nothing to trim" only fires when nothing actually needed trimming. If files were skipped due to locks/errors, the user sees "Could not trim any logs — N skipped (file in use or other error)" or the mixed equivalent.
+- **`config.EQPath` empty-check** at the top, matching the sibling helpers. Previously `Path.Combine` would throw silently in the background Task.
+
+### Cleanup
+- **AHK migration removed.** `Config/ConfigMigration.cs` deleted (it was dedicated to importing the legacy AutoHotkey `eqswitch.cfg` for users migrating from the AHK version of EQSwitch). The AHK userbase is gone — every active user has been on the C# build for many releases. `Program.cs` first-run flow simplified accordingly: drops the `if (migrated != null) { ... } else { ... }` AHK fallback and just shows `FirstRunDialog` directly. Net: -195 LOC, one fewer source file, simpler first-run path.
+
 ## v3.15.2 — Cleanup release: bridge resilience + JSON-tunable autologin timing (2026-05-05)
 
 This is a quality release on the v3.15.1 baseline — defaults preserve v3.15.1's autologin behavior exactly, so observable wallclock is unchanged. The point is hardening for the long tail of edge cases.
