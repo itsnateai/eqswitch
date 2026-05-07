@@ -266,31 +266,17 @@ static class Program
         {
             var config = ConfigManager.Load();
 
-            // First-run: try migrating from AHK config, then show EQ path picker
+            // First-run: show EQ path picker
             bool isNewUser = false;
             if (config.IsFirstRun)
             {
-                var migrated = ConfigMigration.TryImportFromAhk();
-                if (migrated != null)
-                {
-                    config = migrated;
-                    isNewUser = true;
-                    MessageBox.Show(
-                        "Imported settings from eqswitch.cfg (AHK version).\nCheck Settings to verify everything looks right.",
-                        "EQSwitch — Migration",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information);
-                }
-                else
-                {
-                    using var dialog = new FirstRunDialog();
-                    if (dialog.ShowDialog() != DialogResult.OK)
-                        return; // User cancelled — don't start
+                using var dialog = new FirstRunDialog();
+                if (dialog.ShowDialog() != DialogResult.OK)
+                    return; // User cancelled — don't start
 
-                    config.EQPath = dialog.SelectedEQPath;
-                    config.IsFirstRun = false;
-                    isNewUser = true;
-                }
+                config.EQPath = dialog.SelectedEQPath;
+                config.IsFirstRun = false;
+                isNewUser = true;
 
                 // Seed EQ client settings from actual ini so AppConfig reflects reality
                 // instead of hardcoded defaults — prevents silent overwrites on first Save

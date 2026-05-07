@@ -1167,21 +1167,22 @@ public class TrayManager : IDisposable
         // Launcher submenu (files + links)
         var launcherMenu = new ToolStripMenuItem("\uD83D\uDCC2  Launcher") { DropDownDirection = ToolStripDropDownDirection.Right };
         var linksMenu = new ToolStripMenuItem("\uD83C\uDF10  Links");
-        linksMenu.DropDownItems.Add("\uD83C\uDFE0  Dalaya", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/"));
+        linksMenu.DropDownItems.Add("\uD83C\uDFE0  Dalaya", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/", ShowBalloon));
         linksMenu.DropDownItems.Add(new ToolStripSeparator());
-        linksMenu.DropDownItems.Add("\uD83D\uDDE1  Shards Wiki", null, (_, _) => FileOperations.OpenUrl("https://wiki.shardsofdalaya.com/wiki/Main_Page"));
-        linksMenu.DropDownItems.Add("\uD83D\uDCD6  Dalaya Wiki", null, (_, _) => FileOperations.OpenUrl("https://wiki.dalaya.org/"));
-        linksMenu.DropDownItems.Add("\uD83C\uDFC6  Fomelo Dalaya", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/fomelo/"));
-        linksMenu.DropDownItems.Add("\uD83D\uDCDC  Dalaya Listsold", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/listsold.php"));
+        linksMenu.DropDownItems.Add("\uD83D\uDDE1  Shards Wiki", null, (_, _) => FileOperations.OpenUrl("https://wiki.shardsofdalaya.com/wiki/Main_Page", ShowBalloon));
+        linksMenu.DropDownItems.Add("\uD83D\uDCD6  Dalaya Wiki", null, (_, _) => FileOperations.OpenUrl("https://wiki.dalaya.org/", ShowBalloon));
+        linksMenu.DropDownItems.Add("\uD83C\uDFC6  Fomelo Dalaya", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/fomelo/", ShowBalloon));
+        linksMenu.DropDownItems.Add("\uD83D\uDCDC  Dalaya Listsold", null, (_, _) => FileOperations.OpenUrl("https://dalaya.org/listsold.php", ShowBalloon));
         launcherMenu.DropDownItems.Add("\uD83D\uDD27  Dalaya Patcher", null, (_, _) => FileOperations.OpenDalayaPatcher(_config, ShowBalloon, () => ShowSettings(5)));
-        launcherMenu.DropDownItems.Add("\uD83D\uDCAC  Dalaya Discord", null, (_, _) => FileOperations.OpenUrl("discord://discord.com/channels/1233224126353768490/1249250739918864446"));
+        launcherMenu.DropDownItems.Add("\uD83D\uDCAC  Dalaya Discord", null, (_, _) => FileOperations.OpenUrl("discord://discord.com/channels/1233224126353768490/1249250739918864446", ShowBalloon));
         launcherMenu.DropDownItems.Add(new ToolStripSeparator());
         launcherMenu.DropDownItems.Add("✂  Trim Log Files", null, (_, _) => FileOperations.TrimLogFiles(_config, ShowBalloon));
-        launcherMenu.DropDownItems.Add("\uD83D\uDCDC  Open Log File...", null, (_, _) => FileOperations.OpenLogFile(_config, ShowBalloon));
-        launcherMenu.DropDownItems.Add("\uD83D\uDCC4  Open eqclient.ini", null, (_, _) => FileOperations.OpenEqClientIni(_config, ShowBalloon));
+        launcherMenu.DropDownItems.Add("\uD83D\uDCDC  Open Log File...", null, (_, _) => FileOperations.OpenLogFile(_config, ShowBalloon, () => ShowSettings(0)));
+        launcherMenu.DropDownItems.Add("\uD83D\uDCC4  Open eqclient.ini", null, (_, _) => FileOperations.OpenEqClientIni(_config, ShowBalloon, () => ShowSettings(0)));
         launcherMenu.DropDownItems.Add(new ToolStripSeparator());
         launcherMenu.DropDownItems.Add(linksMenu);
         launcherMenu.DropDownItems.Add(new ToolStripSeparator());
+        launcherMenu.DropDownItems.Add("\uD83D\uDCC8  Open EQLogParser", null, (_, _) => FileOperations.OpenEqLogParser(_config, ShowBalloon, () => ShowSettings(5)));
         launcherMenu.DropDownItems.Add("\uD83D\uDCCA  Open Gamparse", null, (_, _) => FileOperations.OpenGamparse(_config, ShowBalloon, () => ShowSettings(5)));
         launcherMenu.DropDownItems.Add("\uD83C\uDFAF  Open GINA", null, (_, _) => FileOperations.OpenGina(_config, ShowBalloon, () => ShowSettings(5)));
         launcherMenu.DropDownItems.Add("\uD83D\uDCDD  Open Notes", null, (_, _) => FileOperations.OpenNotes(_config, ShowBalloon));
@@ -2154,6 +2155,7 @@ public class TrayManager : IDisposable
         _config.TrayClick.MiddleDoubleClick = newConfig.TrayClick.MiddleDoubleClick;
         _config.GinaPath = newConfig.GinaPath;
         _config.GamparsePath = newConfig.GamparsePath;
+        _config.EqLogParserPath = newConfig.EqLogParserPath;
         _config.NotesPath = newConfig.NotesPath;
         _config.DalayaPatcherPath = newConfig.DalayaPatcherPath;
         _config.LegacyCharacterProfiles = newConfig.LegacyCharacterProfiles;
