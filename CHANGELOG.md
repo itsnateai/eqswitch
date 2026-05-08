@@ -1,5 +1,17 @@
 # Changelog
 
+## v3.15.4 — Win11 tray-icon auto-show + zombie cleanup (2026-05-07)
+
+This is a quality release on the v3.15.3 baseline. Autologin behavior is unchanged.
+
+### New
+- **Tray icon now appears in the taskbar by default on Windows 11.** Previously, every fresh install (or every WinGet upgrade that landed in a new versioned dir) defaulted to hidden-in-overflow until you manually toggled "Show icon in taskbar" under Settings → Personalization → Taskbar → Other system tray icons. EQSwitch now writes the per-icon `IsPromoted=1` flag automatically on first launch and after Explorer restarts, so the icon is visible from the moment the app starts. If you previously hid it deliberately (`IsPromoted=0`), that choice is respected — we only promote when the value is missing or already `1`.
+- **Cleanup of stale tray-icon entries from prior versions.** Each WinGet upgrade and each .NET single-file extraction left behind a registry subkey under `HKCU\Control Panel\NotifyIconSettings` pointing to a now-deleted install path; over time these accumulated as duplicate "EQSwitch" entries in the Settings list. On first launch of v3.15.4, any subkey whose `ExecutablePath` basename matches `EQSwitch.exe` AND points to a path that no longer exists is reaped. Conservative — never touches sparse/orphan subkeys, never touches other apps' subkeys, never touches your currently-running install, and the auto-login state machine is fully isolated from the promoter.
+
+### Notes
+- These changes are no-ops on Windows 10 and Server SKUs (the `NotifyIconSettings` registry schema is Win11 22H2+ only). The build-version guard short-circuits before any registry access.
+- All registry interaction is wrapped in try/catch and logged through `FileLogger.Info` / `FileLogger.Warn` (default log path `%LOCALAPPDATA%\EQSwitch\Logs\eqswitch.log`). A schema change in a future Windows build silently no-ops rather than crashing the tray.
+
 ## v3.15.3 — EQLogParser launcher slot + external-tool launcher hardening (2026-05-07)
 
 This is a quality release on the v3.15.2 baseline. Autologin behavior is unchanged — this release adds a new external-tool launcher slot and hardens the existing four (`OpenGina`, `OpenGamparse`, `OpenEqLogParser`, `OpenDalayaPatcher`) plus several adjacent helpers that were carrying pre-existing bugs.

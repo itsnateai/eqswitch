@@ -160,12 +160,28 @@ public class TrayManager : IDisposable
         // inside the helper; we discard the human-readable list here.
         _ = UninstallHelper.RestoreLegacyDlls(_config.EQPath ?? string.Empty);
 
+        // Win11 tray-icon hygiene (snippet:
+        // _.claude/_templates/snippets/csharp/tray-icon-promoter.md). Sweep first
+        // (zombies from prior versioned WinGet installs / single-file extraction
+        // caches), then capture the baseline so Phase-2 orphan claim has a
+        // "before NIM_ADD" reference. Existing Text seed below is non-empty, so
+        // Shell_NotifyIcon will pass NIF_TIP and Explorer writes the full schema.
+        TrayIconPromoter.SweepStaleEntries(
+            ourExeName: Path.GetFileName(Application.ExecutablePath),
+            currentExePath: Application.ExecutablePath);
+        var trayBaseline = TrayIconPromoter.CaptureBaseline();
+
         _trayIcon = new NotifyIcon
         {
             Icon = LoadIcon(),
             Text = "EQSwitch - 0 clients",
             Visible = true
         };
+
+        // Promote our subkey to visible-in-taskbar (vs hidden-in-overflow). Ticks
+        // for up to 10 s while Explorer populates the schema, then self-disposes.
+        // Runs entirely independently of the auto-login state machine.
+        StartTrayIconPromotion(trayBaseline);
 
         // Late-bind the WinForms UI sync context. NotifyIcon's hidden message-only
         // window forces WindowsFormsSynchronizationContext to be installed on this
@@ -213,14 +229,19 @@ public class TrayManager : IDisposable
             }
         };
 
-        // Listen for TaskbarCreated to recover tray icon after explorer.exe restarts
+        // Listen for TaskbarCreated to recover tray icon after explorer.exe restarts.
+        // Re-promote after re-show so a fresh Explorer doesn't exile us to overflow.
+        // Capture a fresh baseline first; Explorer's per-icon registry cache got
+        // nuked by the restart so subkeys may transit the orphan state again.
         _taskbarMessageWindow = new TaskbarMessageWindow(() =>
         {
             if (_trayIcon != null)
             {
+                var recoveryBaseline = TrayIconPromoter.CaptureBaseline();
                 _trayIcon.Visible = false;
                 _trayIcon.Visible = true;
                 FileLogger.Info("Explorer restarted — tray icon re-registered");
+                StartTrayIconPromotion(recoveryBaseline);
             }
         });
 
@@ -2605,6 +2626,32 @@ public class TrayManager : IDisposable
             _trayIcon.Dispose();
         }
         Application.Exit();
+    }
+
+    /// <summary>
+    /// Drive the TrayIconPromoter retry timer until our subkey is identified or
+    /// the 10 s budget elapses. Idempotent — Phase 1 no-ops once IsPromoted=1.
+    /// Snippet: _.claude/_templates/snippets/csharp/tray-icon-promoter.md.
+    /// Independent of the auto-login state machine — promoter never blocks
+    /// or interacts with the EQ login flow.
+    /// </summary>
+    private void StartTrayIconPromotion(HashSet<string>? baseline)
+    {
+        var promoteTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        int attempts = 0;
+        const int maxAttempts = 20;   // 500 ms * 20 = 10 s cap
+        promoteTimer.Tick += (_, _) =>
+        {
+            attempts++;
+            bool done = TrayIconPromoter.TryPromote(Application.ExecutablePath, baseline)
+                        || attempts >= maxAttempts;
+            if (done)
+            {
+                promoteTimer.Stop();
+                promoteTimer.Dispose();
+            }
+        };
+        promoteTimer.Start();
     }
 
     /// <summary>
