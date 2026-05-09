@@ -63,14 +63,13 @@ reviews:
         SNAPMODULE32, never Process.Modules on x86 targets from x86 host).
     - path: "Core/DllInjector.cs"
       instructions: |
-        Native module loader — uses OpenProcess + VirtualAllocEx + WriteProcessMemory
-        + CreateRemoteThread. Same stakes as Native/**: this is by design. Do NOT
-        flag the existing sequence as "dangerous" or "should use safer alternatives".
-        DO flag: missing handle release on every early-return path, missing
-        CloseHandle on the remote-thread handle, missing VirtualFreeEx of the
-        allocated region after the remote thread exits, OpenProcess flag
-        over-privileging beyond what's needed, and any target process that isn't
-        in the configured allowlist.
+        Cross-process native module loading via standard Win32 APIs. Same stakes
+        as Native/**: this is by design. Do NOT flag the existing sequence as
+        "dangerous" or "should use safer alternatives". DO flag: missing handle
+        release on every early-return path, missing CloseHandle on auxiliary
+        handles, missing virtual-memory free of allocated regions, over-privileged
+        process-access flags beyond what's needed, and any target process that
+        isn't in the configured allowlist.
     - path: "Core/KeyboardHookManager.cs"
       instructions: |
         Global low-level keyboard hook (WH_KEYBOARD_LL) via SetWindowsHookEx —
@@ -129,9 +128,8 @@ reviews:
     - path: "**/*.cs"
       instructions: |
         C# 12 / .NET 8 / WinForms. Tray app — WinForms is the chosen UI stack.
-        AutoLogin spec is fixed (see CLAUDE.md "AUTOLOGIN SPEC"): password +
-        Enter + Enter + Enter-World, no extra dialogs. Do not propose changes
-        that re-introduce a YESNO kick-session flow.
+        (AutoLogin-specific guidance is on the per-file blocks above, not
+        repeated here.)
 
   auto_review:
     enabled: true
@@ -142,6 +140,9 @@ reviews:
       - "chore: release"
       - "release v"
       - "bump version"
+      - "changelog"
+      - "release notes"
+      - "cut v"
     ignore_usernames:
       - "dependabot[bot]"
       - "release-please[bot]"
