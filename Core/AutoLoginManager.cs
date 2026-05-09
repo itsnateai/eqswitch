@@ -1153,9 +1153,12 @@ public class AutoLoginManager
             {
                 // v3.15.9: attempts 2 → 4 + retry sleep 2000 → 500. result=-1 means
                 // CLW_EnterWorldButton isn't in the CXWnd tree yet (charselect UI
-                // still building after SetCurSel). Polling 4× as fast at the same
-                // wall-clock budget catches the button as soon as it appears
-                // instead of sleeping past it. See the post-result-≠-1 branch below.
+                // still building after SetCurSel). Inter-attempt Sleep is gated
+                // (see post-result-≠-1 branch), so 4 attempts produces 3 sleeps
+                // = 1500ms of inter-retry budget (down from 2×2000=4000ms pre-fix
+                // because the prior code wasted a 2000ms sleep AFTER the last
+                // attempt). Net: 4× the polls AND ~2.5s less total SHM-path
+                // wall-clock — strict win on the failure path.
                 const int kMaxEnterWorldAttempts = 4;
                 for (int attempt = 0; attempt < kMaxEnterWorldAttempts; attempt++)
                 {
@@ -1216,7 +1219,8 @@ public class AutoLoginManager
                         // — pre-fix the loop slept 2000ms after the LAST attempt before falling
                         // through to the PulseKey3D fallback (pure waste). Verified in v3.15.8
                         // log: attempt 2 ended at 50.789, fallback fired at 52.790 = exactly
-                        // 2000ms wasted. With 4 attempts × 500ms = same 2s total budget but
+                        // 2000ms wasted. With 4 attempts the gate produces 3 sleeps × 500ms =
+                        // 1500ms inter-retry budget (down from 2×2000ms = 4000ms pre-fix), AND
                         // 4 polls for the button instead of 1.
                         if (attempt < kMaxEnterWorldAttempts - 1)
                             Thread.Sleep(500);

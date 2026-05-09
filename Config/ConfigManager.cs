@@ -47,10 +47,20 @@ public static class ConfigManager
             var config = JsonSerializer.Deserialize<AppConfig>(migratedJson, JsonOptions) ?? new AppConfig();
             bool validateMutated = config.Validate();
 
-            // Persist migrated config so migration doesn't re-run
+            // Persist migrated config so migration doesn't re-run.
+            // v3.15.10 follow-up: stage write under _saveLock for symmetry
+            // with Save() / FlushSave() / SaveImmediate(). Load() is called
+            // single-threaded at startup before any background work spins
+            // up, so the lock is uncontended here in practice — but the
+            // explicit cross-thread contract is "every _pendingSave write
+            // happens under _saveLock", and breaking that invariant in one
+            // call site silently invalidates it everywhere.
             if (didMigrate || validateMutated)
             {
-                _pendingSave = config;
+                lock (_saveLock)
+                {
+                    _pendingSave = config;
+                }
                 FlushSave();
             }
 
