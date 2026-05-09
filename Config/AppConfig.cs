@@ -77,7 +77,7 @@ public class AppConfig
     /// previously claimed this was "no longer consumed" was stale; the
     /// `dwellMs = warmupRan ? warmupDwellMs : loginScreenDelayMs` branch at
     /// AutoLoginManager line ~526 still reads it. Fixed in v3.15.2.</summary>
-    public int LoginScreenDelayMs { get; set; } = 5000;
+    public int LoginScreenDelayMs { get; set; } = 5500;
 
     /// <summary>Pre-BURST DI8 settle window in ms (default 4s). PATH D: after
     /// the DLL publishes a non-zero gameState, RunCredentialEntry sleeps this
@@ -159,8 +159,8 @@ public class AppConfig
     /// <summary>Last Settings window position [x, y]. Empty = center screen.</summary>
     public int[] SettingsWindowPos { get; set; } = Array.Empty<int>();
 
-    /// <summary>Duration in ms for floating tooltips (default 1000ms).</summary>
-    public int TooltipDurationMs { get; set; } = 1000;
+    /// <summary>Duration in ms for floating tooltips (default 700ms).</summary>
+    public int TooltipDurationMs { get; set; } = 700;
 
     /// <summary>
     /// Master switch for status tooltips fired via TrayManager.ShowBalloon
@@ -326,7 +326,7 @@ public class AppConfig
         }
         // Range matches SettingsForm NUD (100..5000ms). On/off lives in the
         // ShowTooltips checkbox — no zero-as-suppression backdoor here either.
-        TooltipDurationMs = Math.Clamp(TooltipDurationMs, 100, 5000);
+        TooltipDurationMs = Math.Clamp(TooltipDurationMs, 300, 5000);
 
         Layout.TargetMonitor = Math.Clamp(Layout.TargetMonitor, 0, 8);
         Layout.SecondaryMonitor = Math.Clamp(Layout.SecondaryMonitor, -1, 8);
@@ -338,7 +338,7 @@ public class AppConfig
         Affinity.LaunchRetryDelayMs = Math.Clamp(Affinity.LaunchRetryDelayMs, 500, 30000);
 
         Launch.NumClients = Math.Clamp(Launch.NumClients, 1, 6);
-        Launch.LaunchDelayMs = Math.Clamp(Launch.LaunchDelayMs, 500, 30000);
+        Launch.LaunchDelayMs = Math.Clamp(Launch.LaunchDelayMs, 2000, 30000);
         Launch.FixDelayMs = Math.Clamp(Launch.FixDelayMs, 1000, 120000);
 
         // v3.15.2: clamp the 10 new autologin-timing tunables. Floors are
@@ -361,7 +361,7 @@ public class AppConfig
         // server still holds the prior session, getting a second rejection.
         Launch.StaleSessionWaitMs           = Math.Clamp(Launch.StaleSessionWaitMs,           10000, 120000);
 
-        LoginScreenDelayMs = Math.Clamp(LoginScreenDelayMs, 3000, 10000);
+        LoginScreenDelayMs = Math.Clamp(LoginScreenDelayMs, 5000, 10000);
         WarmupDwellMs = Math.Clamp(WarmupDwellMs, 0, 15000);
 
         Pip.Opacity = Math.Clamp(Pip.Opacity, (byte)10, (byte)255);
@@ -613,7 +613,7 @@ public class LaunchConfig
     public int NumClients { get; set; } = 2;
 
     /// <summary>Delay in ms between launching each client.</summary>
-    public int LaunchDelayMs { get; set; } = 1000;
+    public int LaunchDelayMs { get; set; } = 3000;
 
     /// <summary>Delay in ms after all clients launched before arranging windows.</summary>
     public int FixDelayMs { get; set; } = 15000;
@@ -765,8 +765,9 @@ public class TrayClickConfig
     /// <summary>
     /// Action for single left-click on tray icon.
     /// Values: "None", "AutoLogin1", "AutoLogin2", "AutoLogin3", "AutoLogin4",
-    /// "LoginAll", "LoginAll2", "LoginAll3", "LoginAll4", "LoginAll5", "LoginAll6",
+    /// "LoginAll", "LoginAll2", "LoginAll3", "LoginAll4",
     /// "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp"
+    /// (Teams 5/6 are tray-right-click-only by design — not exposed as click bindings.)
     /// </summary>
     public string SingleClick { get; set; } = "LaunchOne";
 

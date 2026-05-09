@@ -201,7 +201,7 @@ public class SettingsForm : Form
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "\u2694  Dalaya Settings  \u2694", new Size(530, 580));
+        DarkTheme.StyleForm(this, "\u2694  Dalaya Settings  \u2694", new Size(530, 604));
 
         // Restore last window position
         if (_config.SettingsWindowPos.Length >= 2)
@@ -401,7 +401,7 @@ public class SettingsForm : Form
         y += 46;
 
         // ─── Tray Click Actions card ─────────────────────────────
-        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam1", "TogglePiP", "LaunchOne", "LaunchAll", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4", "AutoLoginTeam5", "AutoLoginTeam6" };
+        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam1", "TogglePiP", "LaunchOne", "LaunchAll", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4" };
         const int cboW = 140;
 
         var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 131);
@@ -881,7 +881,7 @@ public class SettingsForm : Form
         var cardLaunchDelay = DarkTheme.MakeCard(page, "", "",
             DarkTheme.CardCyan, 10, y, 480, 36);
         DarkTheme.AddCardLabel(cardLaunchDelay, "Client Launch Delay:", 280, 10);
-        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardLaunchDelay, 408, 8, 40, 3, 1, 30);
+        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardLaunchDelay, 408, 8, 40, 3, 2, 30);
         DarkTheme.AddCardHint(cardLaunchDelay, "sec", 458, 10);
 
         y += 44;
@@ -1878,6 +1878,11 @@ public class SettingsForm : Form
         int y = 8;
 
         page.AutoScroll = true;
+        // Default AutoScrollMargin is (0,0), so the scrollbar stops right at the
+        // last child's bottom edge — that ate the Autologin Teams card's bottom
+        // gold border at any DPI/form size that didn't have spare headroom.
+        // 20px margin gives the scroll area room past the last card.
+        page.AutoScrollMargin = new Size(0, 20);
 
         // ─── Accounts card ───────────────────────────────────────────
         var accountsCard = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Accounts", DarkTheme.CardGold, 10, y, 480, 216);
@@ -1942,7 +1947,7 @@ public class SettingsForm : Form
         // ambiguity into "the input has no left border."
         DarkTheme.AddCardLabel(accountsCard, "Delay:", 380, btnY + 3);
         _nudLoginScreenDelay = DarkTheme.AddNumeric(accountsCard, 430, btnY, 45,
-            _config.LoginScreenDelayMs / 1000m, 3, 10);
+            _config.LoginScreenDelayMs / 1000m, 5, 10);
         _nudLoginScreenDelay.DecimalPlaces = 1;
         _nudLoginScreenDelay.Increment = 0.5m;
 
@@ -2819,7 +2824,7 @@ public class SettingsForm : Form
         // ShowTooltips checkbox, not in this numeric. 100ms floor avoids
         // sub-perceptual flashes; 5000ms ceiling avoids sticky popups.
         DarkTheme.AddCardLabel(cardPrefs, "Tooltip Duration:", 240, cy);
-        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardPrefs, 360, cy, 55, 1000, 100, 5000);
+        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardPrefs, 360, cy, 55, 700, 300, 5000);
         _nudTooltipDuration.Increment = 100;
         DarkTheme.AddCardHint(cardPrefs, "ms", 425, cy);
 
@@ -3319,6 +3324,12 @@ public class SettingsForm : Form
         {
             _eqClientSettingsForm?.Close();
             _eqClientSettingsForm = null;
+            // Non-modal Teams dialog: close it before SettingsForm tears down so
+            // its FormClosed handler doesn't fire against half-disposed state.
+            // The handler nulls _openTeamsDialog and calls dlg.Dispose() itself,
+            // so we just need to trigger the close here.
+            _openTeamsDialog?.Close();
+            _openTeamsDialog = null;
             DismissMonitorOverlays();
             // Dispose inline Font objects on hotkey TextBoxes and other controls
             // that were created with new Font() — base.Dispose doesn't clean these up
@@ -3351,9 +3362,7 @@ public class SettingsForm : Form
         ["LoginAll"] = "AutoLoginTeam1",
         ["LoginAll2"] = "AutoLoginTeam2",
         ["LoginAll3"] = "AutoLoginTeam3",
-        ["LoginAll4"] = "AutoLoginTeam4",
-        ["LoginAll5"] = "AutoLoginTeam5",
-        ["LoginAll6"] = "AutoLoginTeam6"
+        ["LoginAll4"] = "AutoLoginTeam4"
     };
 
     private static readonly Dictionary<string, string> _trayDisplayActionMap = new()
@@ -3361,9 +3370,7 @@ public class SettingsForm : Form
         ["AutoLoginTeam1"] = "LoginAll",
         ["AutoLoginTeam2"] = "LoginAll2",
         ["AutoLoginTeam3"] = "LoginAll3",
-        ["AutoLoginTeam4"] = "LoginAll4",
-        ["AutoLoginTeam5"] = "LoginAll5",
-        ["AutoLoginTeam6"] = "LoginAll6"
+        ["AutoLoginTeam4"] = "LoginAll4"
     };
 
     /// <summary>Convert config action name to dropdown display name.</summary>
