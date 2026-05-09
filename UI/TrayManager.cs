@@ -1019,7 +1019,7 @@ public class TrayManager : IDisposable
     /// <summary>
     /// Phase 3 Teams submenu: parent item with populated team rows and "Manage Teams..." footer.
     /// Teams are populated if either slot string is non-empty. Empty-state row renders
-    /// when all four teams are unpopulated. Click fires ExecuteTrayAction("LoginAll[N]")
+    /// when all six teams are unpopulated. Click fires ExecuteTrayAction("LoginAll[N]")
     /// → FireTeam → LoginAndEnterWorld/LoginToCharselect per slot kind.
     /// </summary>
     private ToolStripMenuItem BuildTeamsSubmenu(AppConfig cfg, LegacyHotkeyLookup hkLookup)
@@ -1035,6 +1035,11 @@ public class TrayManager : IDisposable
             (Num: 2, Slot1: cfg.Team2Account1, Slot2: cfg.Team2Account2, Combo: hk.TeamLogin2, Action: "LoginAll2"),
             (Num: 3, Slot1: cfg.Team3Account1, Slot2: cfg.Team3Account2, Combo: hk.TeamLogin3, Action: "LoginAll3"),
             (Num: 4, Slot1: cfg.Team4Account1, Slot2: cfg.Team4Account2, Combo: hk.TeamLogin4, Action: "LoginAll4"),
+            // Teams 5/6 deliberately have no hotkey binding — user opted out of
+            // the General-tab dropdown for them. Tray right-click is the only
+            // launch surface; Combo is empty so ShortcutKeyDisplayString stays blank.
+            (Num: 5, Slot1: cfg.Team5Account1, Slot2: cfg.Team5Account2, Combo: "", Action: "LoginAll5"),
+            (Num: 6, Slot1: cfg.Team6Account1, Slot2: cfg.Team6Account2, Combo: "", Action: "LoginAll6"),
         };
         var populated = teams.Where(t => !string.IsNullOrEmpty(t.Slot1) || !string.IsNullOrEmpty(t.Slot2)).ToList();
 
@@ -1439,6 +1444,8 @@ public class TrayManager : IDisposable
         "LoginAll2" => "Auto-login Team 2",
         "LoginAll3" => "Auto-login Team 3",
         "LoginAll4" => "Auto-login Team 4",
+        "LoginAll5" => "Auto-login Team 5",
+        "LoginAll6" => "Auto-login Team 6",
         "AutoLogin1" => "Quick Login 1",
         "AutoLogin2" => "Quick Login 2",
         "AutoLogin3" => "Quick Login 3",
@@ -1589,6 +1596,8 @@ public class TrayManager : IDisposable
             case "LoginAll2": FireTeam(2); break;
             case "LoginAll3": FireTeam(3); break;
             case "LoginAll4": FireTeam(4); break;
+            case "LoginAll5": FireTeam(5); break;
+            case "LoginAll6": FireTeam(6); break;
             case "Settings":
                 ShowSettings();
                 break;
@@ -1943,9 +1952,9 @@ public class TrayManager : IDisposable
     private (IReadOnlyList<(string user, string slotLabel)> slots, string teamName)
         ResolveTeamConfig(int teamIndex)
     {
-        if (teamIndex < 1 || teamIndex > 4)
+        if (teamIndex < 1 || teamIndex > 6)
         {
-            FileLogger.Warn($"ResolveTeamConfig: teamIndex {teamIndex} out of range (expected 1-4)");
+            FileLogger.Warn($"ResolveTeamConfig: teamIndex {teamIndex} out of range (expected 1-6)");
             return (Array.Empty<(string, string)>(), $"Team {teamIndex}");
         }
         return teamIndex switch
@@ -1954,6 +1963,8 @@ public class TrayManager : IDisposable
             2 => (new[] { (_config.Team2Account1, "Team 2 Slot 1"), (_config.Team2Account2, "Team 2 Slot 2") }, "Team 2"),
             3 => (new[] { (_config.Team3Account1, "Team 3 Slot 1"), (_config.Team3Account2, "Team 3 Slot 2") }, "Team 3"),
             4 => (new[] { (_config.Team4Account1, "Team 4 Slot 1"), (_config.Team4Account2, "Team 4 Slot 2") }, "Team 4"),
+            5 => (new[] { (_config.Team5Account1, "Team 5 Slot 1"), (_config.Team5Account2, "Team 5 Slot 2") }, "Team 5"),
+            6 => (new[] { (_config.Team6Account1, "Team 6 Slot 1"), (_config.Team6Account2, "Team 6 Slot 2") }, "Team 6"),
             _ => throw new UnreachableException($"teamIndex {teamIndex} passed guard but hit switch default")
         };
     }
@@ -2206,6 +2217,10 @@ public class TrayManager : IDisposable
         _config.Team3Account2 = newConfig.Team3Account2;
         _config.Team4Account1 = newConfig.Team4Account1;
         _config.Team4Account2 = newConfig.Team4Account2;
+        _config.Team5Account1 = newConfig.Team5Account1;
+        _config.Team5Account2 = newConfig.Team5Account2;
+        _config.Team6Account1 = newConfig.Team6Account1;
+        _config.Team6Account2 = newConfig.Team6Account2;
         // Team{N}AutoEnter removed — destination dictated by slot kind (Character → enter world,
         // Account → charselect). No per-team override anymore.
         _config.AutoEnterWorld = newConfig.AutoEnterWorld;

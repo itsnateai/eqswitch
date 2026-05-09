@@ -119,6 +119,10 @@ public class AppConfig
     public string Team3Account2 { get; set; } = "";
     public string Team4Account1 { get; set; } = "";
     public string Team4Account2 { get; set; } = "";
+    public string Team5Account1 { get; set; } = "";
+    public string Team5Account2 { get; set; } = "";
+    public string Team6Account1 { get; set; } = "";
+    public string Team6Account2 { get; set; } = "";
 
     // Per-team Enter World toggle — BINARY interpretation per user 2026-04-15:
     //   true  = team enters world on launch (default, for Character teams)
@@ -761,7 +765,7 @@ public class TrayClickConfig
     /// <summary>
     /// Action for single left-click on tray icon.
     /// Values: "None", "AutoLogin1", "AutoLogin2", "AutoLogin3", "AutoLogin4",
-    /// "LoginAll", "LoginAll2", "LoginAll3", "LoginAll4",
+    /// "LoginAll", "LoginAll2", "LoginAll3", "LoginAll4", "LoginAll5", "LoginAll6",
     /// "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp"
     /// </summary>
     public string SingleClick { get; set; } = "LaunchOne";

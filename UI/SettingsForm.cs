@@ -116,6 +116,10 @@ public class SettingsForm : Form
     // double-open lets stale values shadow each other). Reusing the field
     // for any of the 3 dialogs is fine: they aren't simultaneously editable.
     private Form? _openHotkeyDialog;
+    // Teams dialog tracked separately from _openHotkeyDialog because it's a
+    // different surface (Configure Teams vs hotkey rebinding) and Nate wants
+    // non-modal behavior so Settings stays interactable while it's open.
+    private AutoLoginTeamsDialog? _openTeamsDialog;
     // Team login hotkeys: edited via TeamHotkeysDialog (opened from Direct
     // Bindings card on the Hotkeys tab). _pending* fields stage edits until
     // ApplySettings, mirroring the AccountHotkeys / CharacterHotkeys flow.
@@ -133,6 +137,10 @@ public class SettingsForm : Form
     private string _pendingTeam3B = "";
     private string _pendingTeam4A = "";
     private string _pendingTeam4B = "";
+    private string _pendingTeam5A = "";
+    private string _pendingTeam5B = "";
+    private string _pendingTeam6A = "";
+    private string _pendingTeam6B = "";
     // _pendingTeam{N}AutoEnter removed alongside the per-team Enter World toggle.
     // _chkAutoEnterWorld removed — see Phase 5b note in BuildAccountsTab.
 
@@ -245,6 +253,10 @@ public class SettingsForm : Form
         _pendingTeam3B = _config.Team3Account2;
         _pendingTeam4A = _config.Team4Account1;
         _pendingTeam4B = _config.Team4Account2;
+        _pendingTeam5A = _config.Team5Account1;
+        _pendingTeam5B = _config.Team5Account2;
+        _pendingTeam6A = _config.Team6Account1;
+        _pendingTeam6B = _config.Team6Account2;
 
         // Team{N}AutoEnter removed — kind alone dictates destination.
 
@@ -389,7 +401,7 @@ public class SettingsForm : Form
         y += 46;
 
         // ─── Tray Click Actions card ─────────────────────────────
-        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam1", "TogglePiP", "LaunchOne", "LaunchAll", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4" };
+        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam1", "TogglePiP", "LaunchOne", "LaunchAll", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4", "AutoLoginTeam5", "AutoLoginTeam6" };
         const int cboW = 140;
 
         var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 131);
@@ -505,7 +517,7 @@ public class SettingsForm : Form
                   + (string.IsNullOrEmpty(_pendingTeamLogin3) ? 0 : 1)
                   + (string.IsNullOrEmpty(_pendingTeamLogin4) ? 0 : 1);
         DarkTheme.AddCardLabel(_cardDirectBindings, "Teams", 10, cy + 4);
-        var lblTeamCount = DarkTheme.AddCardLabel(_cardDirectBindings, $"{liveT} / 4 bound", 100, cy + 4);
+        var lblTeamCount = DarkTheme.AddCardLabel(_cardDirectBindings, $"{liveT} / 4 hotkey-bound", 100, cy + 4);
         lblTeamCount.ForeColor = DarkTheme.FgDimGray;
         var btnConfigureTeams = DarkTheme.AddCardButton(_cardDirectBindings, "Configure\u2026", 350, cy - 1, 110);
         btnConfigureTeams.Click += (_, _) => OpenTeamHotkeysDialog();
@@ -1727,6 +1739,10 @@ public class SettingsForm : Form
             Team3Account2 = _pendingTeam3B,
             Team4Account1 = _pendingTeam4A,
             Team4Account2 = _pendingTeam4B,
+            Team5Account1 = _pendingTeam5A,
+            Team5Account2 = _pendingTeam5B,
+            Team6Account1 = _pendingTeam6A,
+            Team6Account2 = _pendingTeam6B,
         };
 
         // Apply startup registry change
@@ -1935,7 +1951,7 @@ public class SettingsForm : Form
         y += 224;
 
         // ─── Characters card ─────────────────────────────────────────
-        var charactersCard = DarkTheme.MakeCard(page, "\uD83E\uDDD9", "Characters", DarkTheme.CardPurple, 10, y, 480, 216);
+        var charactersCard = DarkTheme.MakeCard(page, "\uD83E\uDDD9", "Characters", DarkTheme.CardPurple, 10, y, 480, 196);
 
         _dgvCharacters = MakeDualSectionGrid();
         _dgvCharacters.Columns.Add("Num", "#");
@@ -1975,18 +1991,14 @@ public class SettingsForm : Form
                 OnDeleteCharacter(_dgvCharacters.SelectedRows[0].Index);
         };
 
-        DarkTheme.AddCardHint(charactersCard,
-            "Characters enter world; Accounts stop at charselect. Orphan chars (no Account) render '(unassigned)'.",
-            10, 196);
-
-        y += 224;
+        y += 204;
 
         // ─── Autologin Teams ─────────────────────────────────────────
-        var teamsCard = DarkTheme.MakeCard(page, "\uD83D\uDC65", "Autologin Teams", DarkTheme.CardGold, 10, y, 480, 64);
+        var teamsCard = DarkTheme.MakeCard(page, "\uD83D\uDC65", "Autologin Teams", DarkTheme.CardGold, 10, y, 480, 84);
         var btnTeams = DarkTheme.AddCardButton(teamsCard, "Configure Teams...", 10, 32, 120);
         btnTeams.Click += (_, _) => ShowTeamsDialog();
         _lblTeamSummary = DarkTheme.AddCardHint(teamsCard, BuildTeamSummary(), 140, 32);
-        _lblTeamSummary.Size = new Size(330, 28);
+        _lblTeamSummary.Size = new Size(330, 46);
 
         // Phase 5b: removed "Auto Enter World (legacy default)" checkbox.
         // It was a one-shot v3→v4 migration trigger consumed by AppConfig.Validate
@@ -2391,30 +2403,52 @@ public class SettingsForm : Form
         var t2 = $"T2: {Fmt(_pendingTeam2A, _pendingTeam2B)}";
         var t3 = $"T3: {Fmt(_pendingTeam3A, _pendingTeam3B)}";
         var t4 = $"T4: {Fmt(_pendingTeam4A, _pendingTeam4B)}";
-        return $"{t1}  |  {t2}\n{t3}  |  {t4}";
+        var t5 = $"T5: {Fmt(_pendingTeam5A, _pendingTeam5B)}";
+        var t6 = $"T6: {Fmt(_pendingTeam6A, _pendingTeam6B)}";
+        return $"{t1}  |  {t2}\n{t3}  |  {t4}\n{t5}  |  {t6}";
     }
 
     private void ShowTeamsDialog()
     {
-        using var dlg = new AutoLoginTeamsDialog(
+        // Non-modal: if the dialog is already up, surface it instead of
+        // stacking a second instance. Settings stays interactable while open.
+        if (_openTeamsDialog != null && !_openTeamsDialog.IsDisposed)
+        {
+            _openTeamsDialog.Activate();
+            return;
+        }
+        var dlg = new AutoLoginTeamsDialog(
             _pendingAccounts,
             _pendingCharacters,
             _pendingTeam1A, _pendingTeam1B,
             _pendingTeam2A, _pendingTeam2B,
             _pendingTeam3A, _pendingTeam3B,
-            _pendingTeam4A, _pendingTeam4B);
-        if (dlg.ShowDialog(this) == DialogResult.OK)
+            _pendingTeam4A, _pendingTeam4B,
+            _pendingTeam5A, _pendingTeam5B,
+            _pendingTeam6A, _pendingTeam6B);
+        dlg.FormClosed += (_, _) =>
         {
-            _pendingTeam1A = dlg.Team1Account1;
-            _pendingTeam1B = dlg.Team1Account2;
-            _pendingTeam2A = dlg.Team2Account1;
-            _pendingTeam2B = dlg.Team2Account2;
-            _pendingTeam3A = dlg.Team3Account1;
-            _pendingTeam3B = dlg.Team3Account2;
-            _pendingTeam4A = dlg.Team4Account1;
-            _pendingTeam4B = dlg.Team4Account2;
-            _lblTeamSummary.Text = BuildTeamSummary();
-        }
+            if (dlg.DialogResult == DialogResult.OK)
+            {
+                _pendingTeam1A = dlg.Team1Account1;
+                _pendingTeam1B = dlg.Team1Account2;
+                _pendingTeam2A = dlg.Team2Account1;
+                _pendingTeam2B = dlg.Team2Account2;
+                _pendingTeam3A = dlg.Team3Account1;
+                _pendingTeam3B = dlg.Team3Account2;
+                _pendingTeam4A = dlg.Team4Account1;
+                _pendingTeam4B = dlg.Team4Account2;
+                _pendingTeam5A = dlg.Team5Account1;
+                _pendingTeam5B = dlg.Team5Account2;
+                _pendingTeam6A = dlg.Team6Account1;
+                _pendingTeam6B = dlg.Team6Account2;
+                _lblTeamSummary.Text = BuildTeamSummary();
+            }
+            _openTeamsDialog = null;
+            dlg.Dispose();
+        };
+        _openTeamsDialog = dlg;
+        dlg.Show(this);
     }
 
     private void ClearStaleTeamSlots(string username)
@@ -2428,6 +2462,10 @@ public class SettingsForm : Form
         if (_pendingTeam3B == username) { _pendingTeam3B = ""; changed = true; }
         if (_pendingTeam4A == username) { _pendingTeam4A = ""; changed = true; }
         if (_pendingTeam4B == username) { _pendingTeam4B = ""; changed = true; }
+        if (_pendingTeam5A == username) { _pendingTeam5A = ""; changed = true; }
+        if (_pendingTeam5B == username) { _pendingTeam5B = ""; changed = true; }
+        if (_pendingTeam6A == username) { _pendingTeam6A = ""; changed = true; }
+        if (_pendingTeam6B == username) { _pendingTeam6B = ""; changed = true; }
         if (changed) _lblTeamSummary.Text = BuildTeamSummary();
     }
 
@@ -2442,6 +2480,10 @@ public class SettingsForm : Form
         if (_pendingTeam3B == oldUsername) { _pendingTeam3B = newUsername; changed = true; }
         if (_pendingTeam4A == oldUsername) { _pendingTeam4A = newUsername; changed = true; }
         if (_pendingTeam4B == oldUsername) { _pendingTeam4B = newUsername; changed = true; }
+        if (_pendingTeam5A == oldUsername) { _pendingTeam5A = newUsername; changed = true; }
+        if (_pendingTeam5B == oldUsername) { _pendingTeam5B = newUsername; changed = true; }
+        if (_pendingTeam6A == oldUsername) { _pendingTeam6A = newUsername; changed = true; }
+        if (_pendingTeam6B == oldUsername) { _pendingTeam6B = newUsername; changed = true; }
         if (changed) _lblTeamSummary.Text = BuildTeamSummary();
     }
 
@@ -2789,7 +2831,7 @@ public class SettingsForm : Form
         using var dlg = new Form
         {
             Text = "Window Offsets",
-            Size = new Size(300, 240),
+            Size = new Size(300, 184),
             FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition = FormStartPosition.CenterParent,
             MaximizeBox = false,
@@ -3309,7 +3351,9 @@ public class SettingsForm : Form
         ["LoginAll"] = "AutoLoginTeam1",
         ["LoginAll2"] = "AutoLoginTeam2",
         ["LoginAll3"] = "AutoLoginTeam3",
-        ["LoginAll4"] = "AutoLoginTeam4"
+        ["LoginAll4"] = "AutoLoginTeam4",
+        ["LoginAll5"] = "AutoLoginTeam5",
+        ["LoginAll6"] = "AutoLoginTeam6"
     };
 
     private static readonly Dictionary<string, string> _trayDisplayActionMap = new()
@@ -3317,7 +3361,9 @@ public class SettingsForm : Form
         ["AutoLoginTeam1"] = "LoginAll",
         ["AutoLoginTeam2"] = "LoginAll2",
         ["AutoLoginTeam3"] = "LoginAll3",
-        ["AutoLoginTeam4"] = "LoginAll4"
+        ["AutoLoginTeam4"] = "LoginAll4",
+        ["AutoLoginTeam5"] = "LoginAll5",
+        ["AutoLoginTeam6"] = "LoginAll6"
     };
 
     /// <summary>Convert config action name to dropdown display name.</summary>
