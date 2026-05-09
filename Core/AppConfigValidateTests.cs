@@ -181,8 +181,12 @@ public static class AppConfigValidateTests
                 cfg.Launch.Burst2PostKeystrokeMs, 100);
             failures += Assert("clamp PostBurst1WaitMs floor",
                 cfg.Launch.PostBurst1WaitMs, 500);
+            // v3.15.8: floor lowered 500 → 0 (the char-list wait loop in
+            // AutoLoginManager is the actual bridge-readiness gate; this Sleep
+            // is now a vestigial settle pause). Test input was 0, expected
+            // value follows the new floor.
             failures += Assert("clamp BridgeInitWaitMs floor",
-                cfg.Launch.BridgeInitWaitMs, 500);
+                cfg.Launch.BridgeInitWaitMs, 0);
             failures += Assert("clamp StaleSessionWaitMs floor",
                 cfg.Launch.StaleSessionWaitMs, 10000);
         }

@@ -1,8 +1,8 @@
 # Changelog
 
-## v3.15.10 — Account.Notes round-trip + ConfigManager.Save lock (2026-05-09)
+## v3.15.10 — Account.Notes round-trip + ConfigManager Save/Load lock symmetry (2026-05-09)
 
-Two pre-existing v3.15.7 follow-ups that the verifier swarm flagged but never landed.
+Two pre-existing v3.15.7 follow-ups that the verifier swarm flagged but never landed, plus a third site of the same lock-symmetry issue caught during v3.15.10's own verification pass + a stale floor-clamp test assertion.
 
 ### Account.Notes round-trip bug
 
@@ -10,9 +10,13 @@ Two pre-existing v3.15.7 follow-ups that the verifier swarm flagged but never la
 
 The same field-by-field clone pattern also exists for Character objects on the same form, but those clones do copy `Notes` correctly — verified.
 
-### ConfigManager.Save / _saveLock symmetry
+### ConfigManager Save/Load `_saveLock` symmetry
 
-`Save()` wrote `_pendingSave = config` outside `_saveLock` while `FlushSave` and `SaveImmediate` both hold the lock for read+write. Currently safe because all callers pass the live `_config` reference — `Save(_config)` and `SaveImmediate(_config)` mutate the same object — but any future caller passing a different config object could collide with a concurrent autologin status write. Lock added around the staged-pointer write for explicit cross-thread contract.
+`Save()` AND `Load()` (the migration-persist branch — `if (didMigrate || validateMutated)`) both wrote `_pendingSave = config` outside `_saveLock`, while `FlushSave` and `SaveImmediate` both hold the lock for read+write. The Save-path miss was the original verifier-flagged issue; the Load-path miss surfaced during v3.15.10's own verification pass — same root cause (the cross-thread invariant "every `_pendingSave` write happens under `_saveLock`" was only partially enforced). Lock added around both staged-pointer writes for explicit cross-thread contract. `Load()` is single-threaded at startup so the lock is uncontended in practice, but breaking the invariant in one site silently invalidates it everywhere.
+
+### Stale `BridgeInitWaitMs` floor test
+
+`AppConfigValidateTests.cs:185` asserted post-clamp floor of 500 for `Launch.BridgeInitWaitMs`. v3.15.8 lowered the production clamp floor to 0; the test was not updated, so it would fail in Debug builds (Release excludes `*Tests.cs` per the csproj). Updated the expected value to 0 and added a comment cross-referencing v3.15.8's rationale.
 
 ### Native investigation (deferred to future session)
 
@@ -38,7 +42,7 @@ The SHM `RequestEnterWorld` path retries when `result == -1` ("button doesn't ex
 
 - **Bug**: `Thread.Sleep(2000)` fired *unconditionally at end of every iteration*, including the last — meaning we slept 2s before falling through to the PulseKey3D fallback. v3.15.8 log confirms it: attempt 2 ended at `50.789`, fallback fired at `52.790`, exactly 2000ms of waste. Sleep is now gated behind `attempt < kMaxEnterWorldAttempts - 1`.
 - **Tuning**: 2000ms between retries was too long given the button-render race typically resolves within hundreds of ms. Cut to 500ms.
-- **Retry budget**: bumped 2 → 4 attempts. Same ~2s total budget (4×500ms) but 4× the polls — catches the button as soon as it renders instead of sleeping past it.
+- **Retry budget**: bumped 2 → 4 attempts. Inter-retry Sleep is gated, so 4 attempts produces 3 sleeps = 1500ms inter-retry budget (down from 2×2000ms = 4000ms pre-fix, because the prior code wasted a 2000ms sleep AFTER the last attempt). Net: 4× the polls AND ~2.5s less wall-clock spent in the SHM-fail path before falling through to PulseKey3D.
 
 Inner ack-wait inside each enter-world attempt also tightened: 25×200ms → 100×50ms (cap unchanged at 5s).
 
