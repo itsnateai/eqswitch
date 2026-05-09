@@ -6,7 +6,7 @@ using EQSwitch.Models;
 namespace EQSwitch.UI;
 
 /// <summary>
-/// Dialog for configuring Autologin Teams 1-4 (v4: accepts Account + Character lists).
+/// Dialog for configuring Autologin Teams 1-6 (v4: accepts Account + Character lists).
 /// Each team has 2 slots. Slot dropdowns list Characters (enter-world targets, preferred)
 /// followed by Accounts (charselect-only fallback). A colored status pill next to each
 /// slot indicates resolution: green = Character, amber = Account-only, red = unresolved.
@@ -44,10 +44,14 @@ internal sealed class AutoLoginTeamsDialog : Form
     private readonly ComboBox _cboTeam2A, _cboTeam2B;
     private readonly ComboBox _cboTeam3A, _cboTeam3B;
     private readonly ComboBox _cboTeam4A, _cboTeam4B;
+    private readonly ComboBox _cboTeam5A, _cboTeam5B;
+    private readonly ComboBox _cboTeam6A, _cboTeam6B;
     private readonly Label _pillTeam1A, _pillTeam1B;
     private readonly Label _pillTeam2A, _pillTeam2B;
     private readonly Label _pillTeam3A, _pillTeam3B;
     private readonly Label _pillTeam4A, _pillTeam4B;
+    private readonly Label _pillTeam5A, _pillTeam5B;
+    private readonly Label _pillTeam6A, _pillTeam6B;
     private readonly System.Windows.Forms.ToolTip _tooltip = new();
 
     public string Team1Account1 => GetValue(_cboTeam1A);
@@ -58,13 +62,19 @@ internal sealed class AutoLoginTeamsDialog : Form
     public string Team3Account2 => GetValue(_cboTeam3B);
     public string Team4Account1 => GetValue(_cboTeam4A);
     public string Team4Account2 => GetValue(_cboTeam4B);
+    public string Team5Account1 => GetValue(_cboTeam5A);
+    public string Team5Account2 => GetValue(_cboTeam5B);
+    public string Team6Account1 => GetValue(_cboTeam6A);
+    public string Team6Account2 => GetValue(_cboTeam6B);
     public AutoLoginTeamsDialog(
         IReadOnlyList<Account> accounts,
         IReadOnlyList<Character> characters,
         string team1A, string team1B,
         string team2A, string team2B,
         string team3A, string team3B,
-        string team4A, string team4B)
+        string team4A, string team4B,
+        string team5A, string team5B,
+        string team6A, string team6B)
     {
         _accounts = accounts;
         _characters = characters;
@@ -81,9 +91,9 @@ internal sealed class AutoLoginTeamsDialog : Form
         }
         FormClosing += (_, _) => _lastLocation = Location;
         // Width 480 (was 560) — Enter World column removed; rightmost element
-        // is now the second pill ending at ~x=444. Height 254 keeps the
-        // warning row + button row layout symmetric (18px top/bottom pads).
-        DarkTheme.StyleForm(this, "Autologin Teams", new Size(480, 254));
+        // is now the second pill ending at ~x=444. Height 344 fits 6 team
+        // rows + legend + behavior-hint row + warn row + button row.
+        DarkTheme.StyleForm(this, "Autologin Teams", new Size(480, 344));
         MinimizeBox = false;
 
         const int L = 15, I = 80, CW = 150, gap = 8, PILLW = 24;
@@ -97,6 +107,8 @@ internal sealed class AutoLoginTeamsDialog : Form
         (_cboTeam2A, _pillTeam2A, _cboTeam2B, _pillTeam2B) = AddTeamRow("Team 2:", L, I, CW, gap, PILLW, ref y);
         (_cboTeam3A, _pillTeam3A, _cboTeam3B, _pillTeam3B) = AddTeamRow("Team 3:", L, I, CW, gap, PILLW, ref y);
         (_cboTeam4A, _pillTeam4A, _cboTeam4B, _pillTeam4B) = AddTeamRow("Team 4:", L, I, CW, gap, PILLW, ref y);
+        (_cboTeam5A, _pillTeam5A, _cboTeam5B, _pillTeam5B) = AddTeamRow("Team 5:", L, I, CW, gap, PILLW, ref y);
+        (_cboTeam6A, _pillTeam6A, _cboTeam6B, _pillTeam6B) = AddTeamRow("Team 6:", L, I, CW, gap, PILLW, ref y);
 
         // Legend \u2014 describes slot KIND only. Destination is the team's call,
         // controlled by the Enter World column header (with its own tooltip).
@@ -109,6 +121,17 @@ internal sealed class AutoLoginTeamsDialog : Form
         legend.ForeColor = DarkTheme.FgDimGray;
         legend.Font = DarkTheme.FontUI75;
         legend.AutoSize = true;
+        y += 18;
+
+        // Behavior hint \u2014 explains the kind\u2192destination rule users see in pills above.
+        // Sits directly under the legend so the legend's "C/A/\u2717" symbols and the
+        // sentence describing what they DO read as one paragraph.
+        var behaviorHint = DarkTheme.AddLabel(this,
+            "Characters enter world; Accounts stop at charselect. Orphan chars (no Account) render '(unassigned)'.",
+            L, y);
+        behaviorHint.ForeColor = DarkTheme.FgDimGray;
+        behaviorHint.Font = DarkTheme.FontUI75;
+        behaviorHint.AutoSize = true;
         y += 22;
 
         // Warning / contextual-hint label — gets its own row above the buttons
@@ -134,6 +157,8 @@ internal sealed class AutoLoginTeamsDialog : Form
                 (_cboTeam2A, "Team 2 Slot 1"), (_cboTeam2B, "Team 2 Slot 2"),
                 (_cboTeam3A, "Team 3 Slot 1"), (_cboTeam3B, "Team 3 Slot 2"),
                 (_cboTeam4A, "Team 4 Slot 1"), (_cboTeam4B, "Team 4 Slot 2"),
+                (_cboTeam5A, "Team 5 Slot 1"), (_cboTeam5B, "Team 5 Slot 2"),
+                (_cboTeam6A, "Team 6 Slot 1"), (_cboTeam6B, "Team 6 Slot 2"),
             };
             var unresolved = slots
                 .Where(s => s.Item1.Tag is string tag && !string.IsNullOrEmpty(tag))
@@ -154,6 +179,8 @@ internal sealed class AutoLoginTeamsDialog : Form
                 (_cboTeam2A, _cboTeam2B, "Team 2"),
                 (_cboTeam3A, _cboTeam3B, "Team 3"),
                 (_cboTeam4A, _cboTeam4B, "Team 4"),
+                (_cboTeam5A, _cboTeam5B, "Team 5"),
+                (_cboTeam6A, _cboTeam6B, "Team 6"),
             };
             foreach (var (a, b, name) in teams)
             {
@@ -184,6 +211,8 @@ internal sealed class AutoLoginTeamsDialog : Form
         SelectByValue(_cboTeam2A, team2A);  SelectByValue(_cboTeam2B, team2B);
         SelectByValue(_cboTeam3A, team3A);  SelectByValue(_cboTeam3B, team3B);
         SelectByValue(_cboTeam4A, team4A);  SelectByValue(_cboTeam4B, team4B);
+        SelectByValue(_cboTeam5A, team5A);  SelectByValue(_cboTeam5B, team5B);
+        SelectByValue(_cboTeam6A, team6A);  SelectByValue(_cboTeam6B, team6B);
     }
 
     private (ComboBox a, Label pa, ComboBox b, Label pb) AddTeamRow(
@@ -292,6 +321,10 @@ internal sealed class AutoLoginTeamsDialog : Form
             _ when cbo == _cboTeam3B => _pillTeam3B,
             _ when cbo == _cboTeam4A => _pillTeam4A,
             _ when cbo == _cboTeam4B => _pillTeam4B,
+            _ when cbo == _cboTeam5A => _pillTeam5A,
+            _ when cbo == _cboTeam5B => _pillTeam5B,
+            _ when cbo == _cboTeam6A => _pillTeam6A,
+            _ when cbo == _cboTeam6B => _pillTeam6B,
             _ => null,
         };
         if (pill != null) RefreshPill(cbo, pill);
