@@ -91,9 +91,9 @@ internal sealed class AutoLoginTeamsDialog : Form
         }
         FormClosing += (_, _) => _lastLocation = Location;
         // Width 480 (was 560) — Enter World column removed; rightmost element
-        // is now the second pill ending at ~x=444. Height 344 fits 6 team
+        // is now the second pill ending at ~x=444. Height 332 fits 6 team
         // rows + legend + behavior-hint row + warn row + button row.
-        DarkTheme.StyleForm(this, "Autologin Teams", new Size(480, 344));
+        DarkTheme.StyleForm(this, "Autologin Teams", new Size(480, 332));
         MinimizeBox = false;
 
         const int L = 15, I = 80, CW = 150, gap = 8, PILLW = 24;
@@ -132,7 +132,7 @@ internal sealed class AutoLoginTeamsDialog : Form
         behaviorHint.ForeColor = DarkTheme.FgDimGray;
         behaviorHint.Font = DarkTheme.FontUI75;
         behaviorHint.AutoSize = true;
-        y += 22;
+        y += 18;
 
         // Warning / contextual-hint label — gets its own row above the buttons
         // so it never overlaps Save/Cancel (was sharing y with buttons before).
@@ -143,7 +143,7 @@ internal sealed class AutoLoginTeamsDialog : Form
         lblWarn.Font = DarkTheme.FontUI75;
         lblWarn.AutoSize = true;
         lblWarn.Visible = false;
-        y += 22;
+        y += 14;
 
         var btnOK = DarkTheme.MakePrimaryButton("Save", L, y);
         btnOK.Width = 100;
@@ -197,13 +197,21 @@ internal sealed class AutoLoginTeamsDialog : Form
                     return;
                 }
             }
+            // Non-modal Show() doesn't auto-close on DialogResult set the way
+            // ShowDialog() does — set the result THEN call Close() so the
+            // FormClosed handler in SettingsForm fires with the right verdict.
             DialogResult = DialogResult.OK;
+            Close();
         };
         Controls.Add(btnOK);
 
         var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 130, y);
         btnCancel.Width = 100;
-        btnCancel.Click += (_, _) => DialogResult = DialogResult.Cancel;
+        btnCancel.Click += (_, _) =>
+        {
+            DialogResult = DialogResult.Cancel;
+            Close();
+        };
         Controls.Add(btnCancel);
 
         // Select saved values (after event subscription so pills refresh).
