@@ -355,7 +355,13 @@ public class AppConfig
         Launch.Burst2ActivationSettleMs     = Math.Clamp(Launch.Burst2ActivationSettleMs,     100, 5000);
         Launch.Burst2PostKeystrokeMs        = Math.Clamp(Launch.Burst2PostKeystrokeMs,        100, 5000);
         Launch.PostBurst1WaitMs             = Math.Clamp(Launch.PostBurst1WaitMs,             500, 30000);
-        Launch.BridgeInitWaitMs             = Math.Clamp(Launch.BridgeInitWaitMs,             500, 30000);
+        // v3.15.8: floor lowered 500→0. The char-list wait loop in AutoLoginManager
+        // (latch + ReadCharCount, 60×500ms cap) is the actual bridge-readiness gate;
+        // this Sleep is a vestigial settle pause. Default is now 1ms — the loop's
+        // first iteration polls without delay and absorbs any genuine bridge lag
+        // via its 500ms inter-poll sleep. Users may still tune higher if their
+        // setup needs a longer pre-poll buffer.
+        Launch.BridgeInitWaitMs             = Math.Clamp(Launch.BridgeInitWaitMs,             0, 30000);
         // StaleSessionWaitMs floor is calibrated against Dalaya's empirical
         // 30-45s release window. Lowering risks the retry firing while the
         // server still holds the prior session, getting a second rejection.
@@ -697,11 +703,19 @@ public class LaunchConfig
     public int StaleSessionWaitMs { get; set; } = 30000;
 
     /// <summary>
-    /// Wait (ms) after process resume, before the C# host expects the injected
-    /// MQ2 bridge to have initialized its SHM and resolved Dalaya exports.
-    /// Default 2000. Below ~1500 risks reading SHM before bridge populates it.
+    /// Vestigial settle pause between WaitForScreenTransition reporting
+    /// charselect-ready and the first MQ2 bridge poll for the char list.
+    /// By this point the EQ process has been running 30–90s (login →
+    /// server-select → charselect load), so the bridge has long since
+    /// initialized — this is NOT a bridge-init wait. The char-list wait
+    /// loop that follows (latch + ReadCharCount, 60×500ms cap) is the
+    /// actual bridge-readiness gate; its first iteration polls without
+    /// delay and its inter-poll 500ms sleep absorbs any genuine bridge
+    /// lag, making this Sleep redundant. Default 1ms in v3.15.8 (was
+    /// 2000 — pure tax in the success path, ~750ms saved per box vs
+    /// the v3.15.8 conservative midpoint of 750). Floor 0, ceiling 30000.
     /// </summary>
-    public int BridgeInitWaitMs { get; set; } = 2000;
+    public int BridgeInitWaitMs { get; set; } = 1;
 }
 
 public class PipConfig
