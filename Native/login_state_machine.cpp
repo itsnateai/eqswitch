@@ -253,8 +253,11 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
             g_yesBtnAttempts = 0;
             InvalidateWidgets();
             SetPhase(loginShm, PHASE_WAIT_LOGIN_SCREEN);
-            DI8Log("login_sm: LOGIN command — user='%s' server='%s' char='%s'",
-                   g_username, g_server, g_character);
+            // Username is a credential half on Dalaya — redacted for parity with
+            // the v3.15.5 LoginShmWriter.SendLoginCommand C# log change. Server
+            // and character are non-secret. (v3.15.6 — closed asymmetric leak.)
+            DI8Log("login_sm: LOGIN command — user=<redacted> server='%s' char='%s'",
+                   g_server, g_character);
         }
         else if (cmd == LOGIN_CMD_CANCEL) {
             memset(g_password, 0, sizeof(g_password));

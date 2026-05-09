@@ -349,9 +349,10 @@ void MQ2BridgePollTick() {
     // declining server prompts the user wanted to see. Re-add only after
     // confirming the SIDL name is exclusive to dismissable retail prompts.
     //
-    // Nate 2026-05-08 reported a "Login Accounts Option" window between the
-    // EULA and the login screen — SIDL name pending screenshot ID, then add
-    // to kPromptWindows below.
+    // 2026-05-08 update: the screen Nate observed between EULA and login was
+    // "main" (Dalaya's post-EULA login-options menu) — handled by the second
+    // pair of kPromptWindows entries below. Verified end-to-end via screenshot
+    // capture during smoketest: bare Launch Client lands on the login screen.
     if (MQ2Bridge::ReadGameState() != 5) {
         struct PromptWindow { const char *windowName; const char *buttonName; };
         static const PromptWindow kPromptWindows[] = {
