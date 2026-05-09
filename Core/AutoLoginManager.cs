@@ -276,9 +276,13 @@ public class AutoLoginManager
             return Task.CompletedTask;
         }
 
-        var args = _config.Launch.Arguments;
-        if (account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
-            args += $" /login:{account.Username}";
+        var args = _config.Launch.Arguments ?? string.Empty;
+        // Skip the /login:USERNAME append if the user has already wired /login: into
+        // their custom Launch.Arguments — eqgame's argv parser silently drops the
+        // duplicate, but which one wins is undocumented; cleaner to never emit two.
+        if (account.UseLoginFlag && !string.IsNullOrEmpty(account.Username) &&
+            !args.Contains("/login:", StringComparison.OrdinalIgnoreCase))
+            args = string.IsNullOrEmpty(args) ? $"/login:{account.Username}" : $"{args} /login:{account.Username}";
 
         StatusUpdate?.Invoke(this, $"Launching {account.Name}...");
 
@@ -295,6 +299,8 @@ public class AutoLoginManager
             var commandLine = string.IsNullOrEmpty(args)
                 ? new StringBuilder($"\"{exePath}\"")
                 : new StringBuilder($"\"{exePath}\" {args}");
+
+            FileLogger.Info($"AutoLogin: launching: {FileLogger.RedactLogin(commandLine.ToString())}");
 
             var si = new NativeMethods.STARTUPINFOA
             {

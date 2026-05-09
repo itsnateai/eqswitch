@@ -29,6 +29,7 @@
 #include "login_givetime_detour.h"
 #include "login_state_machine.h"
 #include "eqmain_offsets.h"
+#include "eqmain_widgets_mq2style.h"
 
 extern "C" void DeviceProxy_Shutdown();
 
@@ -312,6 +313,104 @@ void MQ2BridgePollTick() {
             g_mq2InitRetry--;
         }
         if (!g_mq2Initialized) return;
+    }
+
+    // Auto-dismiss pre-login modals. SIDL widget names ported from MQ2:
+    //   _.src/_srcexamples/macroquest-rof2-emu/src/plugins/autologin/MQ2AutoLogin.cpp:1199-1206
+    //
+    // Background — confirmed by Nate 2026-05-08: DECLINE is the default Enter
+    // focus on Dalaya's EULA. The keystroke approach (sending VK_RETURN via
+    // DI8 SHM) closed the game on every Launch Client. Direct widget-click
+    // via WndNotification(XWM_LCLICK) targets the right button by SIDL name
+    // regardless of focus.
+    //
+    // Session gate: only run when gameState != 5 (NOT in-game). After
+    // charselect transitions to PRE_CHARSELECT (gameState == 0) the prompt
+    // chain is gone, but the explicit `gameState == 5` skip prevents this
+    // walk from racing autologin BURST 1's keystrokes during in-game state
+    // (kMQ2StyleWidgetLookup=false rationale — heap walks can stall the EQ
+    // input pump and drop background-client BURST keys). gameState reading
+    // returns -99 on SEH; we still run in that case (fresh-launch
+    // pre-init — EULA may be up before exports resolve).
+    //
+    // Lookup strategy per row:
+    //   1. EQMainWidgetsMQ2::FindChildByName(window, button) — anchored
+    //      hierarchical walk. Returns the LIVE CButtonWnd; ClickButton
+    //      dispatches via vtable.
+    //   2. Fallback: MQ2Bridge::FindWindowByName(button). Often returns a
+    //      CXMLDataPtr definition; ClickButton will skip + log. Kept cheap.
+    //
+    // Loop continues across all rows per tick — `break` on first FOUND but
+    // skipped-by-ClickButton would leave subsequent prompts un-tried. Each
+    // ClickButton is idempotent (no-op if not a live button vtable).
+    //
+    // OrderWindow / OrderExpansionWindow intentionally OMITTED — auto-clicking
+    // DECLINE on a future Dalaya-repurposed "OrderWindow" risks silently
+    // declining server prompts the user wanted to see. Re-add only after
+    // confirming the SIDL name is exclusive to dismissable retail prompts.
+    //
+    // Nate 2026-05-08 reported a "Login Accounts Option" window between the
+    // EULA and the login screen — SIDL name pending screenshot ID, then add
+    // to kPromptWindows below.
+    if (MQ2Bridge::ReadGameState() != 5) {
+        struct PromptWindow { const char *windowName; const char *buttonName; };
+        static const PromptWindow kPromptWindows[] = {
+            // MQ2's SIDL widget name first; Dalaya visible-label fallback
+            // second. Verified 2026-05-08 via DumpSubtreeNamesOnce + screen-
+            // capture: Dalaya widgets store their visible button label as the
+            // first CXStr field reachable by the heuristic scan. The SIDL
+            // identifier exists but at a higher offset our scanner doesn't
+            // reach — the visible-label fallback is the empirically working
+            // path on Dalaya.
+            //
+            // EULA dismiss verified working 2026-05-08: ACCEPT match landed
+            // the live CButtonWnd at vtRva 0x10B53C, ClickButton dispatched
+            // WndNotification(XWM_LCLICK), modal closed, advanced to "main"
+            // menu (Dalaya's post-EULA login-options screen).
+            { "EulaWindow",           "EULA_AcceptButton"       },
+            { "EulaWindow",           "ACCEPT"                  },
+            // "main" = Dalaya's post-EULA login-options screen with buttons
+            // LOGIN / ACCOUNT / EQ LIVE WEBPAGE / HELP / OPTIONS / EXIT. We
+            // want LOGIN. MAIN_ConnectButton is MQ2's SIDL name (Dalaya may
+            // or may not match); LOGIN is the visible-label fallback.
+            { "main",                 "MAIN_ConnectButton"      },
+            { "main",                 "LOGIN"                   },
+            { "seizurewarning",       "HELP_OKButton"           },
+            { "news",                 "NEWS_OKButton"           },
+        };
+
+        for (const auto &pw : kPromptWindows) {
+            // First, find the live screen (top-level CXWnd named windowName).
+            // CRITICAL: also gate on IsCXWndVisible — Dalaya keeps prompt
+            // CXWnds in the live tree after they're dismissed (just with
+            // dShow=0). Without this gate, the polling loop fires clicks
+            // on stale-but-invisible widgets every 500ms forever, spamming
+            // the log + risking unintended notification dispatch.
+            void *pScreen = EQMainWidgetsMQ2::FindLiveScreenByName(pw.windowName);
+            if (!pScreen) continue;
+            if (!EQMainWidgetsMQ2::IsCXWndVisible(pScreen)) continue;
+
+            void *pBtn = EQMainWidgetsMQ2::RecurseAndFindName(pScreen, pw.buttonName);
+            const char *via = "live (anchored)";
+            if (!pBtn) {
+                // Live visible screen exists but recursive walk can't find the
+                // button by name — fall back to top-level FindWindowByName
+                // (often a CXMLDataPtr def; ClickButton skips + logs).
+                // For diagnosing what IS in the subtree, re-attach the
+                // DumpSubtreeNamesOnce diagnostic from
+                // _.claude/_tools/eqswitch-debug/re-enable-debug.md.
+                pBtn = MQ2Bridge::FindWindowByName(pw.buttonName);
+                via = "def fallback";
+            }
+            if (pBtn) {
+                MQ2Bridge::ClickButton(pBtn);
+                DI8Log("eqswitch-di8: prompt dismiss attempted '%s'→'%s' via %s @ %p",
+                       pw.windowName, pw.buttonName, via, pBtn);
+                // No `break` — try every row each tick. ClickButton is
+                // idempotent on def-pointer skips, and the visibility gate
+                // above ensures we only click on actually-shown windows.
+            }
+        }
     }
 
     if (g_charSelShm && g_charSelShm->magic == CHARSEL_SHM_MAGIC) {

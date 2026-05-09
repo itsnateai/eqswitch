@@ -201,7 +201,7 @@ public class LaunchManager : IDisposable
                 return -1;
             }
 
-            return LaunchSuspendedAndInject(exePath, _config.Launch.Arguments, _config.EQPath);
+            return LaunchSuspendedAndInject(exePath, _config.Launch.Arguments ?? string.Empty, _config.EQPath);
         }
         catch (Exception ex)
         {
@@ -222,6 +222,8 @@ public class LaunchManager : IDisposable
         var commandLine = string.IsNullOrEmpty(arguments)
             ? new StringBuilder($"\"{exePath}\"")
             : new StringBuilder($"\"{exePath}\" {arguments}");
+
+        FileLogger.Info($"LaunchManager: launching: {FileLogger.RedactLogin(commandLine.ToString())}");
 
         var si = new NativeMethods.STARTUPINFOA
         {

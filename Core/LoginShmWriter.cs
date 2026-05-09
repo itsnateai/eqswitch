@@ -153,8 +153,11 @@ public sealed class LoginShmWriter : IDisposable
             entry.CommandSeq++;
             entry.Accessor.Write(OFF_COMMAND_SEQ, entry.CommandSeq);
 
+            // Username is a credential half on Dalaya (pairs with the DPAPI-encrypted
+            // password). Mirror the v3.15.2 + round-3 redaction stance: don't log the
+            // username, even structurally. Server and character are non-secret.
             FileLogger.Info($"LoginShmWriter: LOGIN command sent for PID {pid} " +
-                $"(user='{username}', server='{server}', char='{character}', seq={entry.CommandSeq})");
+                $"(user=<redacted>, server='{server}', char='{character}', seq={entry.CommandSeq})");
             return true;
         }
         catch (Exception ex)
