@@ -174,15 +174,36 @@ public static class ConfigManager
     {
         lock (_saveLock)
         {
-            // If a UI-thread Save() had queued a pending write that hasn't
-            // flushed yet, dropping our caller's config in front of it would
-            // lose those changes. Instead, install our config as the pending
-            // write and let WriteToDisk flush it; any UI-thread caller racing
-            // us will queue behind the lock and re-flush on next tick.
-            _pendingSave = config;
-            var toWrite = _pendingSave;
-            _pendingSave = null;
-            return WriteToDisk(toWrite);
+            // Race: a UI-thread Save() may have queued `_pendingSave` already.
+            // Three cases:
+            //   1. _pendingSave is null               → just write `config`.
+            //   2. _pendingSave == config (same ref)  → write `config`, clear
+            //      the queue (we just persisted what was queued).
+            //   3. _pendingSave is a DIFFERENT ref    → write `config` now,
+            //      LEAVE the queued config alone for the timer to flush.
+            //      Pre-v3.15.10 this branch silently overwrote and then
+            //      cleared `_pendingSave` — losing the UI-thread write.
+            //
+            // In current callers (AutoLoginManager / TrayManager / Settings)
+            // the `config` arg is always the live `_config` reference, so
+            // case 3 never fires in practice — but the code now matches what
+            // the comment promises. Future callers that pass a different
+            // config object won't silently lose user state.
+            //
+            // Caveat for case 3 (verifier-flagged, R3): if SaveImmediate
+            // writes `config`(=B) and then the timer fires writing
+            // `_pendingSave`(=A, queued earlier), disk ends up with A —
+            // overwriting our fresher B with a stale UI snapshot. This is
+            // unreachable in current callers (same-ref invariant) but
+            // future callers that hit case 3 should ensure `config` is
+            // either authoritative on the same fields A touches OR call
+            // FlushSave() afterward to drain the queued config first.
+            if (_pendingSave == null || ReferenceEquals(_pendingSave, config))
+            {
+                _pendingSave = null;
+            }
+            // else: a different config is queued — leave it; the timer flushes it.
+            return WriteToDisk(config);
         }
     }
 

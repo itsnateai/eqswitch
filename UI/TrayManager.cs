@@ -2231,8 +2231,9 @@ public class TrayManager : IDisposable
         _config.WarmupDwellMs = newConfig.WarmupDwellMs;
         _config.TooltipDurationMs = newConfig.TooltipDurationMs;
         _config.ShowTooltips = newConfig.ShowTooltips;
-        _config.ShowTooltipErrors = newConfig.ShowTooltipErrors;
-        _config.MinimizeToTray = newConfig.MinimizeToTray;
+        // v3.15.10: ShowTooltipErrors / MinimizeToTray removed — both were
+        // round-tripped here but had no consumer reading them. See AppConfig.cs
+        // comment near the deleted properties.
         _config.RunAtStartup = newConfig.RunAtStartup;
         _config.HotkeysLegacyBannerDismissed = newConfig.HotkeysLegacyBannerDismissed;
         _config.CustomVideoPresets = newConfig.CustomVideoPresets;
