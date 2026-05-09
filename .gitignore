@@ -88,3 +88,6 @@ EQSwitch.Tests/
 ## Local-only history-rewrite artifacts
 .git.bak-*/
 .mailmap-rewrite
+
+# Internal — Claude Code project memory, not for public repo
+CLAUDE.md
