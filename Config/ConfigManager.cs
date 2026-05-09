@@ -73,6 +73,13 @@ public static class ConfigManager
     private static System.Windows.Forms.Timer? _saveTimer;
     private static AppConfig? _pendingSave;
 
+    // Serializes file I/O across SaveImmediate (background-thread callers) and
+    // FlushSave (UI-thread coalesced flush). Without this, a background
+    // SaveImmediate could collide with a UI-thread FlushSave mid-write,
+    // producing a torn temp-file or a corrupted backup. Held only across the
+    // critical section of read-pending + write-disk + reset-pending.
+    private static readonly object _saveLock = new();
+
     /// <summary>
     /// Save config to disk. Coalesces rapid calls — the actual write happens
     /// after a 250ms quiet period so rapid toggles don't stall the UI.
@@ -113,10 +120,60 @@ public static class ConfigManager
     {
         _saveTimer?.Stop();
 
-        var config = _pendingSave;
-        _pendingSave = null;
+        AppConfig? config;
+        lock (_saveLock)
+        {
+            config = _pendingSave;
+            _pendingSave = null;
+        }
         if (config == null) return true;
 
+        bool ok = WriteToDisk(config);
+
+        // If Save() was called during the write, re-queue so it's not lost.
+        // _saveTimer access is UI-thread-only by contract; FlushSave is invoked
+        // from the timer Tick (UI thread) or from Shutdown (UI thread), so this
+        // is safe.
+        if (_pendingSave != null)
+        {
+            _saveTimer?.Stop();
+            _saveTimer?.Start();
+        }
+        return ok;
+    }
+
+    /// <summary>
+    /// Thread-safe synchronous save. Bypasses the WinForms-Timer coalescing path
+    /// in <see cref="Save"/>, which is unsafe to call from background threads
+    /// (the Timer's Tick fires on the thread that called Start, so a background
+    /// caller would create a Timer that never ticks because the worker thread
+    /// has no message pump). Use this for any save originating off the UI
+    /// thread (e.g. AutoLoginManager status writes from the login worker).
+    /// Synchronous file I/O — call sparingly.
+    /// </summary>
+    public static bool SaveImmediate(AppConfig config)
+    {
+        lock (_saveLock)
+        {
+            // If a UI-thread Save() had queued a pending write that hasn't
+            // flushed yet, dropping our caller's config in front of it would
+            // lose those changes. Instead, install our config as the pending
+            // write and let WriteToDisk flush it; any UI-thread caller racing
+            // us will queue behind the lock and re-flush on next tick.
+            _pendingSave = config;
+            var toWrite = _pendingSave;
+            _pendingSave = null;
+            return WriteToDisk(toWrite);
+        }
+    }
+
+    /// <summary>
+    /// Atomic write of the JSON to disk via temp + Move. Caller is responsible
+    /// for any synchronization. Updates LastSaveError + raises SaveFailed on
+    /// failure. Returns true on success.
+    /// </summary>
+    private static bool WriteToDisk(AppConfig config)
+    {
         try
         {
             if (File.Exists(ConfigPath))
@@ -136,13 +193,6 @@ public static class ConfigManager
         }
 
         LastSaveError = null;
-
-        // If Save() was called during the write, re-queue so it's not lost.
-        if (_pendingSave != null)
-        {
-            _saveTimer?.Stop();
-            _saveTimer?.Start();
-        }
         return true;
     }
 

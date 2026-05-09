@@ -649,6 +649,20 @@ public class AutoLoginManager
                 loginShm.Dispose();
                 loginShm = null;
             }
+            else
+            {
+                // v3.15.7 (2026-05-09): mark autologin-active for this PID so
+                // eqswitch-di8.cpp's kPromptWindows[] dismiss machinery stands
+                // down. Without this, the native dismiss iterates every poll
+                // tick from gameState=0 through in-game and can click transient
+                // widgets at server-select / charselect-load, closing the EQ
+                // process (root cause of the 2026-05-09 team1 regression: 4
+                // consecutive failures with both EQ procs self-exiting ~7s
+                // after BURST 2). Cleared in the finally block below on every
+                // exit path.
+                loginShm.SetAutoLoginActive(pid, true);
+                FileLogger.Info($"AutoLogin: SetAutoLoginActive(true) for PID {pid} — native dismiss suppressed");
+            }
 
             // ── Wait for EQ window ──
             Report("Waiting for EQ window...");
@@ -863,10 +877,38 @@ public class AutoLoginManager
             {
                 Report($"{account.Name}: char select didn't load (90s + retry) — check password / server / network");
                 FileLogger.Error($"AutoLogin: WaitForScreenTransition timeout even after stale-session recovery for {account.Name} — aborting login");
+                // Login-status indicator: AutoLoginManager-owned timeout. The hwnd-zero
+                // path below is process death (EQ crashed), which we deliberately don't
+                // mark — it's not the password's fault. See risk register in
+                // memory/project_eqswitch_account_login_status_tracking.md.
+                //
+                // Write ORDER: LastLoginAt first, LastLoginResult last. The UI thread
+                // reads LastLoginResult to decide the glyph and only then dereferences
+                // LastLoginAt for the tooltip. Nullable<DateTime> is 16 bytes on x64
+                // (not atomic); writing it BEFORE the atomic string-reference assignment
+                // means a UI-thread reader that sees a non-default LastLoginResult is
+                // guaranteed (under x64 memory ordering) to see the matching LastLoginAt.
+                account.LastLoginAt = DateTime.UtcNow;
+                account.LastLoginResult = "fail";
+                // SaveImmediate: thread-safe synchronous write. Save() uses a
+                // System.Windows.Forms.Timer whose Tick fires on the creating thread —
+                // calling Save from this background worker creates a Timer with no
+                // message pump, and the write never reaches disk until app shutdown
+                // drain (or never, on a hard kill). SaveImmediate bypasses the timer.
+                ConfigManager.SaveImmediate(_config);
                 return;
             }
             if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during charselect load (crashed or closed)"); return; }
             FileLogger.Info($"AutoLogin: charselect ready, hwnd=0x{hwnd:X} for PID {pid}");
+            // Login-status indicator: WaitForScreenTransition succeeded → password
+            // was accepted by the login server AND char-select rendered. Everything
+            // past this point is character-selection / enter-world plumbing, not
+            // login. Mark ok now so a downstream MQ2-bridge timeout doesn't downgrade
+            // a successful login to ✗. Write ordering + SaveImmediate rationale:
+            // see the matching "fail" branch above.
+            account.LastLoginAt = DateTime.UtcNow;
+            account.LastLoginResult = "ok";
+            ConfigManager.SaveImmediate(_config);
 
             // ── Enter World gate ──
             // Default intent from type: Character target = enter world, Account-only = stop here.
@@ -1247,6 +1289,14 @@ public class AutoLoginManager
             try { writer.Dispose(); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: Dispose failed: {ex.Message}"); }
             if (loginShm != null)
             {
+                // Clear autoLoginActive BEFORE closing the SHM so the native
+                // DLL sees the flag drop on its next poll tick. Without this,
+                // the SHM stays alive (DLL still has its own handle) but the
+                // C# clear never fires — kPromptWindows would remain
+                // suppressed for the rest of the process lifetime, defeating
+                // EULA dismiss on any subsequent native re-entry.
+                try { loginShm.SetAutoLoginActive(pid, false); }
+                catch (Exception ex) { FileLogger.Warn($"AutoLogin: SetAutoLoginActive(false) failed for PID {pid}: {ex.Message}"); }
                 try { loginShm.Close(pid); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: loginShm.Close failed for PID {pid}: {ex.Message}"); }
                 try { loginShm.Dispose(); } catch (Exception ex) { FileLogger.Warn($"AutoLogin: loginShm.Dispose failed: {ex.Message}"); }
             }

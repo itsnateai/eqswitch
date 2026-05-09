@@ -21,7 +21,13 @@ public sealed class LoginShmWriter : IDisposable
 {
     private const string SharedMemoryPrefix = "Local\\EQSwitchLogin_";
     private const uint Magic = 0x45534C53;   // "ESLS"
-    private const uint Version = 1;
+    // v2 (2026-05-09): added autoLoginActive field at offset 1340. Backward-
+    // compatible append — pre-v2 native readers see the first 1340 bytes
+    // unchanged. New autoLoginActive field controls whether eqswitch-di8.cpp's
+    // pre-login kPromptWindows[] dismiss machinery suppresses itself for this
+    // PID (so AutoLoginManager's BURST flow isn't competed-against during
+    // server-select / charselect-load).
+    private const uint Version = 2;
     private const int MaxChars = 10;         // LOGIN_MAX_CHARS
     private const int NameLen = 64;          // LOGIN_NAME_LEN
     private const int PassLen = 128;         // LOGIN_PASS_LEN
@@ -29,8 +35,9 @@ public sealed class LoginShmWriter : IDisposable
     private const int CharLen = 64;          // LOGIN_CHAR_LEN
     private const int ErrorLen = 256;        // LOGIN_ERROR_LEN
 
-    // Total struct size: 1340 bytes (verified against login_shm.h)
-    private const int ShmSize = 1340;
+    // Total struct size: 1344 bytes (verified against login_shm.h v2)
+    // v1 was 1340; v2 appends a 4-byte autoLoginActive field at offset 1340.
+    private const int ShmSize = 1344;
 
     // ── Commands (C# → DLL) ──────────────────────────────────────
     private const uint CMD_NONE = 0;
@@ -57,7 +64,8 @@ public sealed class LoginShmWriter : IDisposable
     private const int OFF_CHAR_LEVELS = 1256;  // int32[10]    = 40
     private const int OFF_CHAR_CLASSES = 1296; // int32[10]    = 40
     private const int OFF_DIAGNOSTIC = 1336;   // uint32  (4)
-    // Total: 1340 ✓
+    private const int OFF_AUTO_LOGIN_ACTIVE = 1340;  // uint32  (4)  — v2 append
+    // Total: 1344 ✓
 
     private sealed class MappingEntry : IDisposable
     {
@@ -114,6 +122,10 @@ public sealed class LoginShmWriter : IDisposable
             accessor.Write(OFF_CHAR_COUNT, 0);
             accessor.Write(OFF_SELECTED_IDX, -1);
             accessor.Write(OFF_DIAGNOSTIC, (uint)0);
+            // Default 0 = not active. AutoLoginManager flips to 1 immediately
+            // after Open succeeds (see SetAutoLoginActive); bare-launch path
+            // leaves it at 0 so eqswitch-di8.cpp's kPromptWindows dismiss runs.
+            accessor.Write(OFF_AUTO_LOGIN_ACTIVE, (uint)0);
 
             _mappings[pid] = new MappingEntry(mmf, accessor);
             FileLogger.Info($"LoginShmWriter: opened {name} ({ShmSize} bytes)");
@@ -189,6 +201,42 @@ public sealed class LoginShmWriter : IDisposable
         catch (Exception ex)
         {
             FileLogger.Error($"LoginShmWriter: SendCancelCommand failed for PID {pid}", ex);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Set or clear the autoLoginActive flag for a PID. When set to true,
+    /// eqswitch-di8.cpp's pre-login kPromptWindows[] dismiss machinery (the
+    /// v3.15.5 EULA / main-menu auto-clicker) STANDS DOWN for this PID — the
+    /// C#-side BURST flow owns keystroke injection, and concurrent native
+    /// widget-clicks at server-select / charselect-load can close the EQ
+    /// process (the 2026-05-09 team1 regression root cause).
+    ///
+    /// Call SetAutoLoginActive(pid, true) immediately after Open succeeds.
+    /// Call SetAutoLoginActive(pid, false) in the autologin cleanup finally
+    /// block — bare-launch path stays at 0 (the default) so EULA dismiss
+    /// continues to fire as designed.
+    /// </summary>
+    public bool SetAutoLoginActive(int pid, bool active)
+    {
+        if (!_mappings.TryGetValue(pid, out var entry)) return false;
+        try
+        {
+            entry.Accessor.Write(OFF_AUTO_LOGIN_ACTIVE, active ? (uint)1 : (uint)0);
+            // Symmetry with SendLoginCommand (line 164): publish the write
+            // before any subsequent code observes a "ready" signal. On x86/x64
+            // TSO this is redundant, but matches the explicit-barrier pattern
+            // used elsewhere in this class so cross-process visibility doesn't
+            // depend on MSVC's `/volatile:ms` default for the native reader's
+            // `volatile uint32_t autoLoginActive` field. Verifier convergence
+            // 2026-05-09 (T2-S, T3-S, T3-O all flagged).
+            Thread.MemoryBarrier();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Error($"LoginShmWriter: SetAutoLoginActive({pid}, {active}) failed", ex);
             return false;
         }
     }
