@@ -2,9 +2,10 @@
 language: "en-US"
 
 tone_instructions: >-
-  EverQuest tray app — Native/ contains intentional RE code (pattern scans, vtable
-  walks, Marshal memory reads, DLL hooking). Focus on offset correctness, null
-  guards, handle release, and AutoLogin reliability — not "unsafe interop" alarms.
+  Windows tray app for managing multiple EverQuest character logins. Native/
+  contains intentional low-level Win32 interop. Focus on handle release, null
+  guards, COM lifetime, and AutoLogin reliability — not generic "unsafe interop"
+  alarms.
 
 reviews:
   profile: "chill"
@@ -46,39 +47,31 @@ reviews:
   path_instructions:
     - path: "Native/**"
       instructions: |
-        Intentional reverse-engineering of eqmain.dll for the EverQuest Project Dalaya
-        client (RoF2/Underfoot-derivative, x86). Mix of C / C++ / header files
-        (buffer.c, eqmain_offsets.cpp, mq2_bridge.cpp, etc.) plus pre-built injectable
-        DLLs. Pattern scans (ToolHelp32 / module enumeration), vtable walks, manual
-        memory reads via ReadProcessMemory or Marshal helpers (when bridged from C#),
-        DLL hooking via detours, and unsafe code blocks ARE the product — this is what
-        the app does and how it works.
+        This directory contains intentional low-level Win32 interop. Mix of C / C++ /
+        header files plus pre-built helper DLLs. The unsafe code patterns here are
+        load-bearing for the app's core functionality.
 
-        Do NOT flag EXISTING patterns (vtable walks, raw memory reads, detour
-        installation, DLL injection into the EQ process) as "security concerns",
+        Do NOT flag EXISTING patterns in this directory as "security concerns",
         "should use safer APIs", "consider P/Invoke instead", or "unsafe code should
-        be avoided". They are by design and load-bearing.
+        be avoided". They are by design.
 
-        DO flag: (1) NEW patterns that go beyond the existing RE surface — e.g.
-        injecting into non-EQ processes, hooking outside the existing detour set,
-        memory operations on a process not in the allowlist; (2) offset arithmetic
-        that could overflow or read past struct boundaries; (3) missing null-pointer
-        guards before dereferencing; (4) early-return paths that skip handle/HMODULE
-        release; (5) thread safety when reading game memory from the tray's UI thread;
-        (6) mismatched x86 vs x64 assumptions; (7) deviation from the MQ2 emu branch
-        port pattern (the MQ2 emu sources are the authoritative port reference);
-        (8) WoW64 Process.Modules gotchas (use Toolhelp32 SNAPMODULE32, never
-        Process.Modules on x86 targets from x86 host).
+        DO flag: (1) NEW patterns that go beyond the existing interop surface;
+        (2) integer / pointer arithmetic that could overflow or read past buffer
+        boundaries; (3) missing null-pointer guards before dereferencing;
+        (4) early-return paths that skip handle / HMODULE release; (5) thread
+        safety when sharing data across threads; (6) mismatched x86 vs x64
+        assumptions; (7) WoW64 Process.Modules gotchas (use Toolhelp32
+        SNAPMODULE32, never Process.Modules on x86 targets from x86 host).
     - path: "Core/DllInjector.cs"
       instructions: |
-        DLL injection engine — OpenProcess + VirtualAllocEx + WriteProcessMemory +
-        CreateRemoteThread. SAME stakes as Native/**: this is by design. Do NOT
-        flag the existing injection sequence as "dangerous" or "should use safer
-        alternatives". DO flag: missing handle release on every early-return path,
-        missing CloseHandle on the remote-thread handle, missing VirtualFreeEx of
-        the allocated region after the remote thread exits, OpenProcess flag
-        over-privileging beyond what's needed, and any injection target that
-        isn't an allowlisted EQ process.
+        Native module loader — uses OpenProcess + VirtualAllocEx + WriteProcessMemory
+        + CreateRemoteThread. Same stakes as Native/**: this is by design. Do NOT
+        flag the existing sequence as "dangerous" or "should use safer alternatives".
+        DO flag: missing handle release on every early-return path, missing
+        CloseHandle on the remote-thread handle, missing VirtualFreeEx of the
+        allocated region after the remote thread exits, OpenProcess flag
+        over-privileging beyond what's needed, and any target process that isn't
+        in the configured allowlist.
     - path: "Core/KeyboardHookManager.cs"
       instructions: |
         Global low-level keyboard hook (WH_KEYBOARD_LL) via SetWindowsHookEx —
@@ -90,37 +83,36 @@ reviews:
         SetWindowsHookEx, and slow callbacks (Windows times out hook callbacks).
     - path: "Core/KeyInputWriter.cs"
       instructions: |
-        SendInput keystroke injection into EQ's HWND for password / Enter /
+        SendInput keystroke automation into EQ's HWND for password / Enter /
         char-select advancement. Per AUTOLOGIN SPEC in CLAUDE.md the sequence is
         fixed: password → Enter → Enter → Enter-World. Do NOT propose adding
-        YESNO / kick-session dialog handling — that flow does not exist in
-        patchme mode. DO flag: SendInput racing against EQ's first-keystroke
-        drop (the "primer Backspace" pattern in v3.14.12 is load-bearing —
-        do not remove); missing focus checks before sending; any input sent
-        to a non-EQ window.
+        YESNO / kick-session dialog handling — that flow does not exist in the
+        current login mode. DO flag: SendInput racing against EQ's first-keystroke
+        drop (the "primer Backspace" pattern in v3.14.12 is load-bearing — do not
+        remove); missing focus checks before sending; any input sent to a non-EQ
+        window.
     - path: "Core/AutoLoginManager.cs"
       instructions: |
-        AutoLogin orchestrator. Per CLAUDE.md AUTOLOGIN SPEC, requirement is:
-        for each client within 5s of login screen ready — type password,
-        press Enter, press Enter at server-select, char-select auto-loads,
-        fire Enter-World. Zero manual clicks. Do NOT propose changes that
-        re-introduce a YESNO kick-session dialog (it does not exist in
-        patchme mode), nor changes that move username typing into this
-        manager (username is auto-populated from eqlsPlayerData*.ini by
-        LaunchManager before launch).
+        AutoLogin orchestrator. Per CLAUDE.md AUTOLOGIN SPEC, the requirement is:
+        for each client within 5s of login screen ready — type password, press
+        Enter, press Enter at server-select, char-select auto-loads, fire
+        Enter-World. Zero manual clicks. Do NOT propose changes that re-introduce
+        a YESNO kick-session dialog (it does not exist in the current login mode),
+        nor changes that move username typing into this manager (username is
+        auto-populated by LaunchManager before launch).
     - path: "**/{WindowsApi,AffinityManager,SecureMemoryMappedFile,NativeMethods,HotkeyManager,HookConfigWriter,StartupManager,LaunchManager,FileLogger,LoginShmWriter}.cs"
       instructions: |
         Win32 P/Invoke / COM-lifetime / IPC files. Standard hygiene applies:
-        every native handle (HMODULE, HANDLE, HHOOK, OVERLAPPED, MMF view)
-        must have a release on every code path including exceptions; OpenProcess
-        / CreateFileMapping flags must be minimal (least privilege); COM via
+        every native handle (HMODULE, HANDLE, HHOOK, OVERLAPPED, MMF view) must
+        have a release on every code path including exceptions; OpenProcess /
+        CreateFileMapping flags must be minimal (least privilege); COM via
         Type.GetTypeFromProgID requires Marshal.FinalReleaseComObject /
-        Marshal.ReleaseComObject in try/finally; SetWindowsHookEx callbacks
-        must never throw, must be fast (Windows times them out), and the
-        GCHandle on the delegate must be pinned for the hook's lifetime and
-        freed on unhook. Cross-process named primitives (mutex, MMF, event)
-        should use ACL/SECURITY_ATTRIBUTES that don't widen access beyond
-        what's needed. Flag any handle leak on early-return paths.
+        Marshal.ReleaseComObject in try/finally; SetWindowsHookEx callbacks must
+        never throw, must be fast (Windows times them out), and the GCHandle on
+        the delegate must be pinned for the hook's lifetime and freed on unhook.
+        Cross-process named primitives (mutex, MMF, event) should use ACL /
+        SECURITY_ATTRIBUTES that don't widen access beyond what's needed. Flag
+        any handle leak on early-return paths.
     - path: "Models/**"
       instructions: |
         Plain data models. Should be POCOs with no I/O, no static state, no Win32.
@@ -132,9 +124,9 @@ reviews:
     - path: "**/*Tests.cs"
       instructions: |
         Test files (live alongside production code, not in a separate _tests/ dir).
-        Tests must NOT require a running EQ client and must NOT touch real eqmain.dll
-        memory — use mocked process handles, fake module tables, and the JSON
-        fixtures under _tests/.
+        Tests must NOT require a running EQ client and must NOT touch real
+        cross-process memory — use mocked process handles, fake module tables,
+        and the JSON fixtures under _tests/.
     - path: "**/*.cs"
       instructions: |
         C# 12 / .NET 8 / WinForms. Tray app — WinForms is the chosen UI stack.
@@ -156,7 +148,7 @@ reviews:
       - "release-please[bot]"
       - "github-actions[bot]"
     base_branches:
-      - "main"
+      - ".*"
 
   tools:
     gitleaks:
