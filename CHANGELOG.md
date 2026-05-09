@@ -1,5 +1,17 @@
 # Changelog
 
+## v3.15.6 — Native log redaction parity (2026-05-08)
+
+Hotfix on the v3.15.5 baseline. Closes an asymmetric credential-half leak the v3.15.5 redaction work missed: while `LoginShmWriter.SendLoginCommand` (C# managed log) was scrubbed to `user=<redacted>`, the parallel native-side log line at `login_state_machine.cpp:256` still wrote `user='<plaintext_username>'` to the per-PID DI8 log file (`eqswitch-dinput8-<PID>.log` in the EQ install dir). Same credential half (the SoD account username), different log file. v3.15.6 redacts the native line for parity.
+
+### Security
+
+- **`Native/login_state_machine.cpp` LOGIN-command log line**: `user='%s'` → `user=<redacted>`. The `%s` arg removed from the format string. Server and character names remain logged unredacted (non-secret, useful for diagnostics).
+
+### Internal
+
+- **Stale TODO comment removed** from `eqswitch-di8.cpp` referencing a "Login Accounts Option" window between EULA and login screen — that window is `main` (Dalaya's post-EULA login-options menu) and v3.15.5 already handles it. Comment updated to reflect verified end-to-end behavior.
+
 ## v3.15.5 — Pre-login modal auto-dismiss + log redaction (2026-05-08)
 
 This release closes the gap between **bare Launch Client** and **Launch Team / autologin** on Shards of Dalaya. Previously, left-clicking the tray icon (or right-click → Launch Client) launched eqgame.exe and stopped at Dalaya's pre-login prompt chain (EULA → main menu); the user had to manually click ACCEPT and then LOGIN before reaching the credentials screen. Autologin teams skipped these incidentally because BURST 1's Enter keystroke happened to dismiss them. v3.15.5 makes the bare path skip them too — directly, via widget-click — landing on the login screen with the pre-filled username, ready for password entry.
