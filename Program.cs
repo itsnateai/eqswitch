@@ -104,6 +104,31 @@ static class Program
             return;
         }
 
+#if !DEBUG
+        // v3.15.10: test CLI flags (--test-character-selector / --test-config-validate /
+        // --test-key-input-writer / --test-shm-layout / --test-charselect-reader) are
+        // Debug-only by design — the tests live in Core/*Tests.cs which the csproj
+        // excludes from Release builds (avoids ~50KB of bloat and Console output
+        // surface in the shipped 155MB single-file binary). `--test-autologin` above
+        // is the exception: it ships in Release because a failing autologin is a
+        // shippable bug a user would want to diagnose.
+        //
+        // Without this guard, `--test-foo` in Release would silently fall through to
+        // the normal tray-app launch path — confusing for anyone running the flag
+        // expecting a test runner. Exit cleanly with a distinct code instead so a
+        // calling shell can tell the flag was rejected (vs the app launching).
+        if (args.Length >= 1
+            && args[0].StartsWith("--test-", StringComparison.Ordinal)
+            && args[0] != "--test-autologin")
+        {
+            // No console attached in WinExe Release, so a Console.Error.WriteLine
+            // wouldn't be visible — but the exit code is observable to the calling
+            // shell ($LASTEXITCODE in PowerShell, $? in bash via && / ||).
+            Environment.Exit(3);
+            return;
+        }
+#endif
+
 #if DEBUG
         // --test-character-selector — run Core/CharacterSelectorTests.RunAll() and
         // exit with its return code. Used to gate Phase 5b's pure decision helper.

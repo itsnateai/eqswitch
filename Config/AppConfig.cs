@@ -144,8 +144,12 @@ public class AppConfig
     public string CustomIconPath { get; set; } = "";
 
     // Misc
-    public bool ShowTooltipErrors { get; set; } = true;
-    public bool MinimizeToTray { get; set; } = true;
+    // ShowTooltipErrors / MinimizeToTray removed v3.15.10 — verifier audit found
+    // both fields were declared and round-tripped via ReloadConfig but had ZERO
+    // actual consumers. SettingsForm.BuildAppConfig also dropped them on every
+    // Apply (silent reset to default), but the reset was harmless because
+    // nothing read the value. Existing configs with these JSON keys deserialize
+    // cleanly — System.Text.Json ignores unknown properties by default.
     public bool RunAtStartup { get; set; } = false;
 
     /// <summary>
@@ -172,8 +176,10 @@ public class AppConfig
     /// </summary>
     public bool ShowTooltips { get; set; } = true;
 
-    /// <summary>Show help tooltip when Ctrl+hovering the tray icon.</summary>
-    public bool CtrlHoverHelp { get; set; } = true;
+    // CtrlHoverHelp removed v3.15.10 — was deprecated in CHANGELOG ~v3.x
+    // ("Removed CtrlHoverHelp (unreliable in overflow tray)") but the field
+    // declaration was left behind. No consumer in the codebase. Existing
+    // configs with the JSON key deserialize cleanly (ignored as unknown).
 
     /// <summary>
     /// Persistent eqclient.ini overrides — applied on every save/launch.

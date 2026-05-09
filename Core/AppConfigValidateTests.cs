@@ -240,8 +240,98 @@ public static class AppConfigValidateTests
             failures += Assert("AccountHotkeys null removed", cfg.Hotkeys.AccountHotkeys.Count, 1);
         }
 
+        // Case 10 (v3.15.10): ceiling clamps for LaunchConfig timing knobs +
+        // top-level LoginScreenDelayMs / WarmupDwellMs. Verifier-flagged gap —
+        // Case 7 covered floor clamps but no ceiling assertion existed for
+        // these knobs. Out-of-range hand-edits could otherwise survive
+        // Validate() and produce absurd timeouts in production.
+        {
+            var cfg = new AppConfig
+            {
+                LoginScreenDelayMs = 999_999,
+                WarmupDwellMs      = 999_999,
+                Launch = new LaunchConfig
+                {
+                    WaitTransitionInitialDelayMs = 999_999,
+                    WaitTransitionSettleMs       = 999_999,
+                    WaitTransitionPollIntervalMs = 999_999,
+                    Burst1ActivationSettleMs     = 999_999,
+                    Burst1PostSubmitMs           = 999_999,
+                    Burst2ActivationSettleMs     = 999_999,
+                    Burst2PostKeystrokeMs        = 999_999,
+                    PostBurst1WaitMs             = 999_999,
+                    BridgeInitWaitMs             = 999_999,
+                    StaleSessionWaitMs           = 999_999,
+                    NumClients                   = 999,
+                    LaunchDelayMs                = 999_999,
+                    FixDelayMs                   = 999_999,
+                },
+            };
+            cfg.Validate();
+            // Top-level
+            failures += Assert("clamp LoginScreenDelayMs ceiling",
+                cfg.LoginScreenDelayMs, 10000);
+            failures += Assert("clamp WarmupDwellMs ceiling",
+                cfg.WarmupDwellMs, 15000);
+            // LaunchConfig
+            failures += Assert("clamp WaitTransitionInitialDelayMs ceiling",
+                cfg.Launch.WaitTransitionInitialDelayMs, 10000);
+            failures += Assert("clamp WaitTransitionSettleMs ceiling",
+                cfg.Launch.WaitTransitionSettleMs, 10000);
+            failures += Assert("clamp WaitTransitionPollIntervalMs ceiling",
+                cfg.Launch.WaitTransitionPollIntervalMs, 5000);
+            failures += Assert("clamp Burst1ActivationSettleMs ceiling",
+                cfg.Launch.Burst1ActivationSettleMs, 5000);
+            failures += Assert("clamp Burst1PostSubmitMs ceiling",
+                cfg.Launch.Burst1PostSubmitMs, 5000);
+            failures += Assert("clamp Burst2ActivationSettleMs ceiling",
+                cfg.Launch.Burst2ActivationSettleMs, 5000);
+            failures += Assert("clamp Burst2PostKeystrokeMs ceiling",
+                cfg.Launch.Burst2PostKeystrokeMs, 5000);
+            failures += Assert("clamp PostBurst1WaitMs ceiling",
+                cfg.Launch.PostBurst1WaitMs, 30000);
+            failures += Assert("clamp BridgeInitWaitMs ceiling",
+                cfg.Launch.BridgeInitWaitMs, 30000);
+            failures += Assert("clamp StaleSessionWaitMs ceiling",
+                cfg.Launch.StaleSessionWaitMs, 120000);
+            failures += Assert("clamp NumClients ceiling",
+                cfg.Launch.NumClients, 6);
+            failures += Assert("clamp LaunchDelayMs ceiling",
+                cfg.Launch.LaunchDelayMs, 30000);
+            failures += Assert("clamp FixDelayMs ceiling",
+                cfg.Launch.FixDelayMs, 120000);
+
+            // Floor coverage for the two top-level knobs (Case 7 only
+            // covered LaunchConfig floors).
+            var floorCfg = new AppConfig
+            {
+                LoginScreenDelayMs = 0,
+                WarmupDwellMs      = -100,
+            };
+            floorCfg.Validate();
+            failures += Assert("clamp LoginScreenDelayMs floor",
+                floorCfg.LoginScreenDelayMs, 5000);
+            failures += Assert("clamp WarmupDwellMs floor",
+                floorCfg.WarmupDwellMs, 0);
+
+            // In-range pass-through for the two top-level knobs (Case 8
+            // covers LaunchConfig in-range but missed these). A mutation
+            // that accidentally clamped a valid 7000ms value to the floor
+            // would otherwise survive both the floor and ceiling tests.
+            var inRangeCfg = new AppConfig
+            {
+                LoginScreenDelayMs = 7000,
+                WarmupDwellMs      = 8000,
+            };
+            inRangeCfg.Validate();
+            failures += Assert("in-range LoginScreenDelayMs preserved",
+                inRangeCfg.LoginScreenDelayMs, 7000);
+            failures += Assert("in-range WarmupDwellMs preserved",
+                inRangeCfg.WarmupDwellMs, 8000);
+        }
+
         Console.WriteLine(failures == 0
-            ? "AppConfigValidateTests: all 9 cases PASSED"
+            ? "AppConfigValidateTests: all 10 cases PASSED"
             : $"AppConfigValidateTests: {failures} assertion failure(s)");
         return failures == 0 ? 0 : 1;
     }
