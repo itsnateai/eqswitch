@@ -37,7 +37,6 @@ reviews:
     - "!.code-graph/**"
     - "!.superpowers/**"
     - "!.worktrees/**"
-    - "!CHANGELOG.md"
     - "!CONTRIBUTING.md"
     - "!TODO_LIST.md"
     - "!**/PLAN_*.md"
