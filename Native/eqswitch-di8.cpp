@@ -354,6 +354,26 @@ void MQ2BridgePollTick() {
     // pair of kPromptWindows entries below. Verified end-to-end via screenshot
     // capture during smoketest: bare Launch Client lands on the login screen.
     if (MQ2Bridge::ReadGameState() != 5) {
+        // v3.15.7 (2026-05-09): suppress kPromptWindows dismiss machinery when
+        // C# AutoLoginManager is driving the login flow for this PID. Without
+        // this gate, the dismiss iterates EVERY native poll-tick from
+        // gameState=0 (login screen) all the way to gameState=5 (in-game) —
+        // including server-select transitions and the char-select load window.
+        // The 2026-05-09 team1 regression: at server-select / charselect-load,
+        // a transient kPromptWindows match (news / stale main / repurposed
+        // widget slipping past IsCXWndVisible) fired WndNotification(XWM_LCLICK)
+        // and the EQ process self-exited within ~7 seconds. 4-of-4 reproduction.
+        //
+        // Bare-launch path (no autologin) still hits the dismiss as designed —
+        // autoLoginActive defaults to 0 in that case, so EULA + main-menu
+        // auto-click continues to work for the v3.15.5 use case.
+        bool suppressDismiss = (g_loginShm != nullptr && g_loginShm->autoLoginActive != 0);
+        if (suppressDismiss) {
+            // AutoLoginManager owns the keystroke flow for this PID. Skip the
+            // entire prompt-dismiss block; the rest of the poll tick (gameState
+            // updates, char-data publishing) still runs.
+            goto SkipPromptDismiss;
+        }
         struct PromptWindow { const char *windowName; const char *buttonName; };
         static const PromptWindow kPromptWindows[] = {
             // MQ2's SIDL widget name first; Dalaya visible-label fallback
@@ -412,6 +432,7 @@ void MQ2BridgePollTick() {
                 // above ensures we only click on actually-shown windows.
             }
         }
+    SkipPromptDismiss:;  // jumped here from the autologin-active suppress path
     }
 
     if (g_charSelShm && g_charSelShm->magic == CHARSEL_SHM_MAGIC) {

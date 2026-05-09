@@ -37,6 +37,11 @@ public sealed class AccountEditDialog : Form
     private readonly string _existingName;
     private readonly string _selfUsername;
     private readonly string _selfServer;
+    // Carry-through for the Flag column. A cosmetic edit (notes/server) shouldn't
+    // wipe the prior ✓/✗; only a password change makes the previous outcome
+    // misleading. Detection at OK time uses _isEdit + blank-password-textbox.
+    private readonly string _existingLastLoginResult;
+    private readonly DateTime? _existingLastLoginAt;
     private bool _passwordRevealed;
 
     /// <summary>Result of the dialog. Non-null only when DialogResult == OK.</summary>
@@ -54,6 +59,8 @@ public sealed class AccountEditDialog : Form
         _existingName = existing?.Name ?? "";
         _selfUsername = existing?.Username ?? "";
         _selfServer = existing?.Server ?? "";
+        _existingLastLoginResult = existing?.LastLoginResult ?? "";
+        _existingLastLoginAt = existing?.LastLoginAt;
 
         // Restore last-open position if available; otherwise center on parent.
         if (_lastLocation.HasValue)
@@ -231,6 +238,11 @@ public sealed class AccountEditDialog : Form
         // binding whose TargetName == this.Name.
         var name = _isEdit ? _existingName : username;
 
+        // Flag column carry-through. A cosmetic edit (notes/server only) keeps
+        // the prior ✓/✗ glyph; a password change resets to "untried" because
+        // the previous outcome is no longer informative about the new password.
+        // New accounts (_isEdit=false) always start untried regardless.
+        bool passwordUnchanged = _isEdit && string.IsNullOrEmpty(_txtPassword.Text);
         Result = new Account
         {
             Name = name,
@@ -239,6 +251,8 @@ public sealed class AccountEditDialog : Form
             Server = server,
             UseLoginFlag = true,
             Notes = notes,
+            LastLoginResult = passwordUnchanged ? _existingLastLoginResult : "",
+            LastLoginAt = passwordUnchanged ? _existingLastLoginAt : null,
         };
         DialogResult = DialogResult.OK;
         Close();

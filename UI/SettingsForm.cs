@@ -232,6 +232,8 @@ public class SettingsForm : Form
             EncryptedPassword = a.EncryptedPassword,
             Server = a.Server,
             UseLoginFlag = a.UseLoginFlag,
+            LastLoginResult = a.LastLoginResult,
+            LastLoginAt = a.LastLoginAt,
         }).ToList();
 
         _pendingCharacters = _config.Characters.Select(c => new Character
@@ -1710,13 +1712,31 @@ public class SettingsForm : Form
             // pure passthrough until Phase 5 surfaces CharacterAlias editing in the UI.
             LegacyCharacterProfiles = _config.LegacyCharacterProfiles,
             LegacyAccounts = legacyAccountsForConfig,
-            Accounts = _pendingAccounts.Select(a => new Account
+            Accounts = _pendingAccounts.Select(a =>
             {
-                Name = a.Name,
-                Username = a.Username,
-                EncryptedPassword = a.EncryptedPassword,
-                Server = a.Server,
-                UseLoginFlag = a.UseLoginFlag,
+                // Race fix: if the user fires a team-login from the tray menu while
+                // Settings is open, AutoLoginManager updates the LIVE Account's
+                // LastLoginResult — but our staged snapshot still holds the value
+                // captured at form-open. Naively round-tripping the staged value
+                // would clobber the in-flight update. Resolution: when the password
+                // hasn't changed (EncryptedPassword identical to live), the live
+                // value is authoritative. When the password changed, the dialog
+                // already reset the staged value to "" per its own reset semantic
+                // (AccountEditDialog), so the staged value wins.
+                var live = _config.Accounts.FirstOrDefault(la =>
+                    la.Username.Equals(a.Username, StringComparison.OrdinalIgnoreCase) &&
+                    la.Server.Equals(a.Server, StringComparison.OrdinalIgnoreCase));
+                bool passwordUnchanged = live != null && live.EncryptedPassword == a.EncryptedPassword;
+                return new Account
+                {
+                    Name = a.Name,
+                    Username = a.Username,
+                    EncryptedPassword = a.EncryptedPassword,
+                    Server = a.Server,
+                    UseLoginFlag = a.UseLoginFlag,
+                    LastLoginResult = passwordUnchanged ? live!.LastLoginResult : a.LastLoginResult,
+                    LastLoginAt = passwordUnchanged ? live!.LastLoginAt : a.LastLoginAt,
+                };
             }).ToList(),
             Characters = _pendingCharacters.Select(c => new Character
             {
@@ -1900,7 +1920,9 @@ public class SettingsForm : Form
         page.AutoScrollMargin = new Size(0, 20);
 
         // ─── Accounts card ───────────────────────────────────────────
-        var accountsCard = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Accounts", DarkTheme.CardGold, 10, y, 480, 216);
+        // Card height 234 (was 216) leaves room for the second hint row added
+        // below \u2014 single-line "DPAPI ... + Flag legend" overflowed 480 width.
+        var accountsCard = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Accounts", DarkTheme.CardGold, 10, y, 480, 234);
 
         _dgvAccounts = MakeDualSectionGrid();
         _dgvAccounts.Columns.Add("Num", "#");
@@ -1918,9 +1940,11 @@ public class SettingsForm : Form
         _dgvAccounts.Columns.Add("Server", "Server");
         _dgvAccounts.Columns["Server"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
         _dgvAccounts.Columns["Server"]!.FillWeight = 20;
-        // "Flag" column — placeholder for now (cells empty). Reserved for the
-        // login-status indicator (✓/✗/—) per the deferred plan in
-        // memory/project_eqswitch_account_login_status_tracking.md.
+        // "Flag" column — last-autologin outcome glyph. ✓ = transitioned to
+        // charselect, ✗ = AutoLoginManager-owned timeout, — = untried. Populated
+        // in RefreshAccountsGrid from Account.LastLoginResult; written by
+        // AutoLoginManager at the WaitForScreenTransition success/failure
+        // boundary.
         _dgvAccounts.Columns.Add("Flag", "Flag");
         _dgvAccounts.Columns["Flag"]!.Width = 42;
         _dgvAccounts.DoubleClick += (_, _) =>
@@ -1967,8 +1991,9 @@ public class SettingsForm : Form
         _nudLoginScreenDelay.Increment = 0.5m;
 
         DarkTheme.AddCardHint(accountsCard, "DPAPI-encrypted passwords — same Windows user only.", 10, 196);
+        DarkTheme.AddCardHint(accountsCard, "Flag: ✓ ok    ✗ failed    — untried", 10, 212);
 
-        y += 224;
+        y += 242;
 
         // ─── Characters card ─────────────────────────────────────────
         var charactersCard = DarkTheme.MakeCard(page, "\uD83E\uDDD9", "Characters", DarkTheme.CardPurple, 10, y, 480, 196);
@@ -2092,7 +2117,29 @@ public class SettingsForm : Form
         for (int i = 0; i < _pendingAccounts.Count; i++)
         {
             var a = _pendingAccounts[i];
-            _dgvAccounts.Rows.Add(i + 1, a.Username, a.Notes, a.Server, "");
+            // Snapshot atomically-related fields ONCE. AutoLoginManager runs on a
+            // background thread and writes LastLoginAt before LastLoginResult; we
+            // read LastLoginResult first to pin the glyph, then dereference our
+            // snapshot of LastLoginAt for the tooltip. Avoids both a re-read race
+            // and a torn-read of Nullable<DateTime> (16 bytes, non-atomic on x64)
+            // showing up as a garbage tooltip timestamp.
+            string lastResult = a.LastLoginResult;
+            DateTime? lastAt = a.LastLoginAt;
+            // Flag column = last-autologin outcome glyph. Color tracks meaning so a
+            // glance distinguishes ✓ (green) from ✗ (red) without reading the char.
+            (string glyph, Color glyphColor) = lastResult switch
+            {
+                "ok"   => ("✓", DarkTheme.StatusOk),     // ✓
+                "fail" => ("✗", DarkTheme.StatusFail),   // ✗
+                _      => ("—", DarkTheme.FgDimGray),    // —
+            };
+            int rowIdx = _dgvAccounts.Rows.Add(i + 1, a.Username, a.Notes, a.Server, glyph);
+            var flagCell = _dgvAccounts.Rows[rowIdx].Cells["Flag"];
+            flagCell.Style.ForeColor = glyphColor;
+            flagCell.Style.Alignment = DataGridViewContentAlignment.MiddleCenter;
+            flagCell.ToolTipText = lastAt.HasValue
+                ? $"Last autologin {lastResult} at {lastAt.Value.ToLocalTime():yyyy-MM-dd HH:mm}"
+                : "No autologin attempt recorded yet";
         }
         RefreshQuickLoginCombos();
     }
@@ -2624,6 +2671,11 @@ public class SettingsForm : Form
             }
             if (string.IsNullOrEmpty(account.Server)) account.Server = "Dalaya";
             if (string.IsNullOrEmpty(account.Name)) account.Name = account.Username;
+            // Login-status flags are per-machine truth — strip on import so an
+            // exported "✓" doesn't bleed onto a different machine where the
+            // password may not actually work. Fresh imports start untried.
+            account.LastLoginResult = "";
+            account.LastLoginAt = null;
             _pendingAccounts.Add(account);
             added++;
         }

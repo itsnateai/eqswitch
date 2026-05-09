@@ -12,7 +12,11 @@
 #include <stdint.h>
 
 #define LOGIN_SHM_MAGIC   0x45534C53  // "ESLS"
-#define LOGIN_SHM_VERSION 1
+// Version 2 (2026-05-09): added autoLoginActive field at end. Native readers
+// at version 1 still see all prior fields correctly (backward-compatible
+// append). C# version-2 writers send a 1344-byte mapping; v1 native readers
+// see the first 1340 bytes and ignore the trailing field.
+#define LOGIN_SHM_VERSION 2
 
 // C# -> DLL: what to do
 enum LoginCommand : uint32_t {
@@ -73,5 +77,25 @@ struct LoginShm {
 
     // Diagnostic: widget enumeration mode
     uint32_t     diagnosticMode;                // 1 = enumerate all widgets to log
+
+    // C# -> DLL: AutoLoginManager active flag (v2 / 2026-05-09).
+    // Set to 1 by C# AutoLoginManager from BURST 1 setup through cleanup;
+    // cleared on every exit path (success/failure/exception) in the finally
+    // block. Used by eqswitch-di8.cpp's pre-login kPromptWindows[] dismiss
+    // machinery (v3.15.5) to STAND DOWN during autologin — the C#-driven
+    // BURST flow owns keystroke injection, and concurrent native widget-
+    // clicks at server-select / charselect-load can close the EQ process
+    // (root cause of the 2026-05-09 team1 regression).
+    //
+    // volatile because C# writes from a different process via the shared
+    // mapping; volatile prevents the compiler from caching the read across
+    // the per-tick poll loop.
+    //
+    // 0 = bare launch (kPromptWindows iteration runs as designed for EULA
+    //     auto-dismiss). Default state — old configs / pre-autologin start
+    //     /post-autologin cleanup all read 0 here.
+    // 1 = autologin in progress (kPromptWindows iteration is suppressed for
+    //     this PID). C# clears in the RunLoginSequence finally block.
+    volatile uint32_t autoLoginActive;
 };
 #pragma pack(pop)

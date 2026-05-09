@@ -1,5 +1,32 @@
 # Changelog
 
+## v3.15.7 — Autologin / native dismiss interlock (2026-05-09)
+
+Hotfix for a regression introduced by v3.15.5. The `kPromptWindows[]` pre-login auto-dismiss machinery (added in v3.15.5 to give bare Launch Client an EULA + main-menu auto-click) was gated only on `gameState != 5` (not in-game). That gate was correct for bare launch — gameState transitions to 5 once in-world — but for autologin teams the same gate left the dismiss machinery iterating *every native poll tick* from gameState=0 (login screen) through server-select and char-select-load, while AutoLoginManager's BURST keystroke flow was driving the same UI. At server-select / charselect-load, transient widget matches (`news`, stale `main` slipping past `IsCXWndVisible`) fired `WndNotification(XWM_LCLICK)` and the EQ process self-exited within ~7 seconds of BURST 2. Reproduced 4 of 4 attempts on team1 (2026-05-09 09:53–09:56).
+
+### Fix
+
+- **New `autoLoginActive` SHM field** appended to `LoginShm` (offset 1340, struct now 1344 bytes, version bumped 1→2). C# `AutoLoginManager` writes `1` immediately after `LoginShmWriter.Open(pid)` succeeds and clears to `0` in the cleanup `finally` block before `Close`. Backward-compatible append — pre-v2 native readers see all prior fields unchanged.
+- **Native gate** in `eqswitch-di8.cpp`'s `MQ2BridgePollTick`: when `g_loginShm->autoLoginActive != 0`, the entire `kPromptWindows[]` iteration is skipped for this PID (rest of the poll tick — gameState updates, char-data publishing — still runs). Bare-launch path is unchanged: `autoLoginActive` defaults to 0, so EULA + main-menu auto-click continues to fire as designed.
+- **`Thread.MemoryBarrier()` in `SetAutoLoginActive`** for symmetry with `SendLoginCommand` — defends against future memory-model regressions on non-x64 targets and removes dependence on MSVC's `/volatile:ms` default for the native reader.
+
+### Internal
+
+- New public `LoginShmWriter.SetAutoLoginActive(int pid, bool active)` API.
+- `g_loginShm->autoLoginActive` declared `volatile uint32_t` in `login_shm.h:99` so the per-tick poll-loop read isn't hoisted by the optimizer.
+
+### Known limitation
+
+- If `EQSwitch.exe` is force-killed mid-autologin without the cleanup `finally` running, the SHM section remains alive in the injected DLL's process with `autoLoginActive=1` until the EQ process exits. Result: kPromptWindows dismiss is suppressed for that orphaned EQ session — a manual EULA click is required if EQ stays at the EULA screen. Rare in practice; addressed in a follow-up if it surfaces.
+
+### Also in this release — per-account login-status flag
+
+- **Settings → Accounts grid Flag column** now shows the last autologin outcome: ✓ (charselect reached), ✗ (`AutoLoginManager`-owned timeout — bad password / server / network), or — (untried). Tooltip on hover shows the timestamp. Persisted in `eqswitch-config.json` as new `Account.LastLoginResult` (string) + `Account.LastLoginAt` (DateTime?) properties; pre-feature configs deserialize as untried (default `""` / `null`).
+- **`AccountEditDialog`** preserves the flag on cosmetic edits (Notes/Server) and resets to untried on a password change (the prior outcome no longer reflects the new password). Detection uses DPAPI ciphertext inequality.
+- **Race-fix at `SettingsForm.BuildAppConfig`**: when an autologin fires from the tray menu while Settings is open, the live `LastLoginResult` is preferred over the staged copy (matched on `EncryptedPassword` equality), so the in-flight write isn't clobbered on Save.
+- **`ConfigManager.SaveImmediate(config)`** added for thread-safe synchronous saves from background threads (autologin status writes). The existing `Save()` path still uses the WinForms-Timer coalescing for UI-thread callers.
+- **Process-death paths deliberately do NOT mark `"fail"`** — only AutoLoginManager-owned timeouts. EQ crashes / window-loss leave the prior outcome unchanged.
+
 ## v3.15.6 — Native log redaction parity (2026-05-08)
 
 Hotfix on the v3.15.5 baseline. Closes an asymmetric credential-half leak the v3.15.5 redaction work missed: while `LoginShmWriter.SendLoginCommand` (C# managed log) was scrubbed to `user=<redacted>`, the parallel native-side log line at `login_state_machine.cpp:256` still wrote `user='<plaintext_username>'` to the per-PID DI8 log file (`eqswitch-dinput8-<PID>.log` in the EQ install dir). Same credential half (the SoD account username), different log file. v3.15.6 redacts the native line for parity.

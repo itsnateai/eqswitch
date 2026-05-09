@@ -48,4 +48,14 @@ public class Account
     /// <summary>Disambiguating tooltip for the tray menu. Distinguishes Accounts that share
     /// the same display Name across servers.</summary>
     public string Tooltip => $"{Username}@{Server}";
+
+    // Last-autologin outcome — populated by AutoLoginManager at the
+    // WaitForScreenTransition success/failure boundary. Surfaces as ✓/✗/—
+    // in the Settings → Accounts grid Flag column. "" = untried (default for
+    // new + pre-feature configs), "ok" = transitioned to charselect, "fail"
+    // = AutoLoginManager-owned timeout (90s + retry exhausted). Process-death
+    // and user-cancel paths leave this untouched. Forward-compatible JSON:
+    // missing properties on old configs deserialize to defaults.
+    public string LastLoginResult { get; set; } = "";
+    public DateTime? LastLoginAt { get; set; }
 }
