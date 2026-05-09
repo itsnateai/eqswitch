@@ -1,0 +1,103 @@
+# CodeRabbit configuration — schema: https://docs.coderabbit.ai/reference/yaml-template
+language: "en-US"
+
+tone_instructions: >-
+  EverQuest tray app — Native/ contains intentional RE code (pattern scans, vtable
+  walks, Marshal memory reads, DLL hooking). Focus on offset correctness, null
+  guards, handle release, and AutoLogin reliability — not "unsafe interop" alarms.
+
+reviews:
+  profile: "chill"
+  poem: false
+  collapse_walkthrough: true
+  changed_files_summary: true
+  high_level_summary: true
+  sequence_diagrams: false
+  assess_linked_issues: true
+  related_issues: true
+
+  path_filters:
+    - "!bin/**"
+    - "!obj/**"
+    - "!**/*.user"
+    - "!**/*.suo"
+    - "!**/*.pdb"
+    - "!**/*.dll"
+    - "!*.ico"
+    - "!*.exe"
+    - "!_.diagnostics/**"
+    - "!_comms/**"
+    - "!dumps/**"
+    - "!docs/**"
+    - "!CHANGELOG.md"
+    - "!CONTRIBUTING.md"
+    - "!PLAN_*.md"
+    - "!*HANDOFF.md"
+    - "!eqclient.ini.reference"
+
+  path_instructions:
+    - path: "Native/**"
+      instructions: |
+        This directory contains intentional reverse-engineering of eqmain.dll for
+        the EverQuest Project Dalaya client (RoF2/Underfoot-derivative, x86).
+        Pattern scans (ToolHelp32 / module enumeration), vtable walks, manual
+        Marshal.ReadIntPtr / WriteIntPtr / ReadInt32 / Copy on game-process memory,
+        DLL hooking via detours, and unsafe code blocks ARE the product — this is
+        what the app does and how it works.
+
+        Do NOT flag these patterns as "security concerns", "should use safer APIs",
+        "consider P/Invoke instead", "Marshal.ReadIntPtr is dangerous", or
+        "unsafe code should be avoided". They are by design and load-bearing.
+
+        DO flag: (1) offset arithmetic that could overflow or read past struct
+        boundaries; (2) missing null-pointer guards before dereferencing; (3) early-
+        return paths that skip handle/HMODULE release; (4) thread safety when
+        reading game memory from the tray's UI thread; (5) mismatched x86 vs x64
+        assumptions; (6) deviation from the MQ2 emu branch port pattern (the MQ2
+        sources at X:/_Projects/_.src/_srcexamples/macroquest-rof2-emu are the
+        authoritative port reference); (7) WoW64 Process.Modules gotchas (use
+        Toolhelp32 SNAPMODULE32, never Process.Modules on x86 targets from x86 host).
+    - path: "Core/**"
+      instructions: |
+        Core C# logic — config, launch manager, hotkey registration, log management,
+        process coordination. Focus on file-replace atomicity (use atomic moves,
+        not in-place truncate), INI parsing edge cases, cross-process locks, and
+        startup-folder shortcut correctness.
+    - path: "Models/**"
+      instructions: |
+        Plain data models. Should be POCOs with no I/O, no static state, no Win32.
+    - path: "Config/**"
+      instructions: |
+        Config schema and migration chain (v0 → v1 → v2 → v3). Migrations must be
+        forward-only and idempotent. Flag any breaking schema change without a
+        bumped SchemaVersion + migration step.
+    - path: "_tests/**"
+      instructions: |
+        Test project. Tests must NOT require a running EQ client and must NOT touch
+        real eqmain.dll memory (use mocked process handles / fake module tables).
+    - path: "**/*.cs"
+      instructions: |
+        C# 12 / .NET 8 / WinForms. Tray app — WinForms is the chosen UI stack.
+        AutoLogin spec is fixed (see CLAUDE.md "AUTOLOGIN SPEC"): password +
+        Enter + Enter + Enter-World, no extra dialogs. Do not propose changes
+        that re-introduce a YESNO kick-session flow.
+
+  auto_review:
+    enabled: true
+    drafts: false
+    auto_incremental_review: true
+    base_branches:
+      - "main"
+
+  tools:
+    gitleaks:
+      enabled: true
+    actionlint:
+      enabled: true
+    markdownlint:
+      enabled: true
+    yamllint:
+      enabled: true
+
+chat:
+  auto_reply: true
