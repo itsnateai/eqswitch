@@ -91,3 +91,6 @@ EQSwitch.Tests/
 
 # Internal — Claude Code project memory, not for public repo
 CLAUDE.md
+
+# Internal — session-local handoffs, not for public repo
+_comms/

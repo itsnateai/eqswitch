@@ -1,5 +1,30 @@
 # Changelog
 
+## v3.15.5 — Pre-login modal auto-dismiss + log redaction (2026-05-08)
+
+This release closes the gap between **bare Launch Client** and **Launch Team / autologin** on Shards of Dalaya. Previously, left-clicking the tray icon (or right-click → Launch Client) launched eqgame.exe and stopped at Dalaya's pre-login prompt chain (EULA → main menu); the user had to manually click ACCEPT and then LOGIN before reaching the credentials screen. Autologin teams skipped these incidentally because BURST 1's Enter keystroke happened to dismiss them. v3.15.5 makes the bare path skip them too — directly, via widget-click — landing on the login screen with the pre-filled username, ready for password entry.
+
+### New
+
+- **Native pre-login modal auto-dismiss.** `eqswitch-di8.dll`'s polling tick now iterates a small list of pre-login modals (`EulaWindow → ACCEPT`, `main → LOGIN`, plus `seizurewarning` and `news` defensively) and dispatches `WndNotification(XWM_LCLICK)` directly on each modal's accept-equivalent button when it's visible. SIDL widget names ported from MQ2's `MQ2AutoLogin.cpp:1199-1206` with Dalaya-specific visible-label fallbacks (Dalaya widgets store the visible button label as the first scannable CXStr; the SIDL identifier lives at a higher offset our heuristic doesn't reach). Two gates prevent unintended clicks: `gameState != 5` (not in-game) and `IsCXWndVisible(pScreen)` (window actually shown — Dalaya keeps dismissed prompts in the live tree with `dShow=0`). Net effect: bare Launch Client lands on the login screen ~1s after the pre-login chain renders, with zero clicks.
+- **Why widget-click instead of keystroke**: empirically, Dalaya's EULA defaults Enter focus to **DECLINE**, not ACCEPT. A VK_RETURN injection via DI8 SHM closed the game on every attempt. Direct widget-click via `WndNotification` targets ACCEPT explicitly, regardless of focus.
+- **`OrderWindow` and `OrderExpansionWindow` intentionally OMITTED** from the dismiss list (despite being in MQ2's canonical set) — auto-clicking DECLINE on a future Dalaya-repurposed `OrderWindow` (e.g. server-pushed motd) would silently dismiss content the user wanted to see. Re-add only after confirming the SIDL name is exclusive to dismissable retail prompts.
+
+### Security / Privacy
+
+- **Command-line log redaction**: `FileLogger.RedactLogin` strips `/login:VALUE` to `/login:<redacted>` before any log write. Both `LaunchManager` and `AutoLoginManager` route their pre-CreateProcessA log line through it. Bare `/login:` (no value) is preserved verbatim for forensics — distinguishes credentialed launches from bare ones.
+- **`LoginShmWriter.SendLoginCommand` log line** changed from `(user='{username}', ...)` to `(user=<redacted>, ...)` — closes the same credential-half leak the v3.15.2 password-length redaction pattern was built for. Server and character names remain logged unredacted (non-secret).
+
+### Internal
+
+- **`AutoLoginManager` `/login:` duplication guard**: when `_config.Launch.Arguments` already contains `/login:`, the autologin path skips its own `/login:USERNAME` append to avoid a malformed double-flag command line.
+- **`AutoLoginManager._config.Launch.Arguments` null-coalesced** to `string.Empty`. Defensive — was unguarded.
+
+### Notes
+
+- **Launch Team / autologin behavior unchanged.** The native dismiss loop is gated behind `IsCXWndVisible` so it doesn't fire on cached-but-hidden widgets — autologin's BURST 1 keystroke window is therefore unaffected. Sanity-tested 2026-05-08.
+- **`patchme` and `/login:` flags do NOT skip Dalaya's EULA / main screens.** Both are server-side modals EQ shows regardless of command-line args. The dismiss path is widget-click, not flag-based.
+
 ## v3.15.4 — Win11 tray-icon auto-show + zombie cleanup (2026-05-07)
 
 This is a quality release on the v3.15.3 baseline. Autologin behavior is unchanged.

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // © itsnateai
 
+using System.Text.RegularExpressions;
+
 namespace EQSwitch.Core;
 
 /// <summary>
@@ -76,6 +78,21 @@ public static class FileLogger
             return false;
         }
     }
+
+    // Redacts the value half of `/login:VALUE` so command-line logs don't leak
+    // the username (a credential half on Dalaya — pairs with the DPAPI-encrypted
+    // password to enable login). `\S+` (not `\S*`) so a bare `/login:` from
+    // LaunchManager's splash-bypass is preserved verbatim — useful for forensics
+    // (distinguishes credentialed launches from bare ones in the log).
+    private static readonly Regex LoginValueRegex =
+        new(@"/login:\S+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// Strip `/login:VALUE` to `/login:&lt;redacted&gt;` so command-line logs don't
+    /// expose the EQ account username. Bare `/login:` (no value) is left intact.
+    /// </summary>
+    public static string RedactLogin(string s) =>
+        s is null ? string.Empty : LoginValueRegex.Replace(s, "/login:<redacted>");
 
     public static void Info(string message) => Write("INFO", message);
     public static void Warn(string message) => Write("WARN", message);

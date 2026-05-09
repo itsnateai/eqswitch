@@ -372,6 +372,13 @@ public class TrayManager : IDisposable
                 _processManager.RefreshClients();
             };
             detectTimer.Start();
+
+            // EULA-dismiss happens NATIVE-side now: eqswitch-di8.cpp's polling
+            // tick calls EQMainWidgetsMQ2::FindChildByName('EulaWindow',
+            // 'EULA_AcceptButton') + MQ2Bridge::ClickButton — direct widget
+            // click via WndNotification(XWM_LCLICK), gated on gameState != 5.
+            // No keystroke involvement (Dalaya EULA defaults focus to DECLINE,
+            // confirmed 2026-05-08 — VK_RETURN keystroke closes the game).
         };
 
         // No tooltip for launch progress — TopMost windows during EQ init cause minimize
