@@ -1,0 +1,51 @@
+# EQSwitch release-leak-scan allowlist
+# Format: category|regex
+# Audited 2026-05-09 against EQSwitch.exe v3.15.10 (.NET 8 single-file publish, 155MB).
+# All 11 baseline findings traced to .NET 8 runtime strings, not EQSwitch code:
+#   - Version=10.x.x.x        : .NET BCL assembly version embeds (Version=10.0.0.0, 10.1.0.0)
+#   - 0.0.0.0 / 127.0.0.1     : System.Net error-message literals
+#   - localhost               : System.Net HTTP path / cookie diagnostics
+#   - boston.test             : ASP.NET Core test infrastructure mock domain
+#   - XXX                     : binary noise at metadata offset (3 chars, random)
+#   - /internal/documents     : .NET BAML resource path
+#
+# To re-audit: bash X:/_Projects/_.claude/_tools/security/release-leak-scan.py
+#              --binary <path-to-EQSwitch.exe> --unsafe-show
+#
+# DO NOT broaden these rules without re-running the audit. Each rule is scoped
+# to specific .NET runtime patterns; a wider regex risks masking a real leak.
+
+# .NET BCL assembly-version embeds, e.g. "System.X, Version=10.0.0.0, Culture=neutral"
+# or AssemblyVersion JSON field "10.1.0.0"
+private-net-class-a|Version=10\.\d+\.\d+\.\d+
+private-net-class-a|AssemblyVersion[\"':\s]+10\.\d+\.\d+\.\d+
+private-net-class-a|10\.0\.0\.0
+private-net-class-a|10\.1\.0\.0
+
+# System.Net diagnostic literal "IPv4 address 0.0.0.0 and IPv6 address" — the
+# scanner matches the 7-char `0.0.0.0` token only (m.group(0)), not surrounding
+# context, so the allowlist regex must match the literal token. EQSwitch is a
+# Windows tray app with no network bindings — no 0.0.0.0 usage in source code,
+# so allowlisting the bare token is safe-against-real-leaks here.
+all-zeroes-bind|^0\.0\.0\.0$
+
+# .NET runtime localhost / loopback strings (case-insensitive — .NET HttpClient
+# templates use 'LocalHost' PascalCase in some resource strings)
+loopback-hostname|(?i)localhost
+loopback-ipv4|127\.0\.0\.1
+
+# .NET BAML / framework resource paths (lms/internal/documents/etc.)
+debug-endpoint-path|/internal/documents
+
+# ASP.NET Core test mock domain
+reserved-tld-test|boston\.test
+reserved-tld-test|test_uri\.test
+
+# Binary noise at .NET PE metadata offset — match is the 3-char `XXX` token
+# only (scanner uses m.group(0)). Surrounding bytes are non-ASCII binary
+# garbage; this is .NET runtime metadata, not a source comment. EQSwitch
+# source code does not contain `XXX` markers (verified via repo grep), so
+# allowlisting the bare 3-char token is safe-against-real-leaks here.
+# If a future code change adds genuine "TODO XXX" comments, this allowlist
+# entry must be re-evaluated.
+dev-marker-xxx-hack|^XXX$
