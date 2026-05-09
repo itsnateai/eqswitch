@@ -1676,11 +1676,26 @@ public class SettingsForm : Form
             },
             TrayClick = new TrayClickConfig
             {
-                SingleClick = TrayDisplayToAction(_cboSingleClick.SelectedItem?.ToString() ?? "LaunchOne"),
-                DoubleClick = TrayDisplayToAction(_cboDoubleClick.SelectedItem?.ToString() ?? "None"),
-                TripleClick = TrayDisplayToAction(_cboTripleClick.SelectedItem?.ToString() ?? "None"),
-                MiddleClick = TrayDisplayToAction(_cboMiddleClick.SelectedItem?.ToString() ?? "TogglePiP"),
-                MiddleDoubleClick = TrayDisplayToAction(_cboMiddleDoubleClick.SelectedItem?.ToString() ?? "Settings")
+                // SelectedItem == null means the saved action string isn't in the
+                // dropdown's current Items (e.g. a config holding "LoginAll5"
+                // after Team5/6 were removed from clickActions). Preserve the
+                // current persisted value rather than clobber to a hardcoded
+                // default — round-trip-safe even when the option list shrinks.
+                SingleClick = _cboSingleClick.SelectedItem is { } singleSel
+                    ? TrayDisplayToAction(singleSel.ToString() ?? _config.TrayClick.SingleClick)
+                    : _config.TrayClick.SingleClick,
+                DoubleClick = _cboDoubleClick.SelectedItem is { } doubleSel
+                    ? TrayDisplayToAction(doubleSel.ToString() ?? _config.TrayClick.DoubleClick)
+                    : _config.TrayClick.DoubleClick,
+                TripleClick = _cboTripleClick.SelectedItem is { } tripleSel
+                    ? TrayDisplayToAction(tripleSel.ToString() ?? _config.TrayClick.TripleClick)
+                    : _config.TrayClick.TripleClick,
+                MiddleClick = _cboMiddleClick.SelectedItem is { } middleSel
+                    ? TrayDisplayToAction(middleSel.ToString() ?? _config.TrayClick.MiddleClick)
+                    : _config.TrayClick.MiddleClick,
+                MiddleDoubleClick = _cboMiddleDoubleClick.SelectedItem is { } middleDoubleSel
+                    ? TrayDisplayToAction(middleDoubleSel.ToString() ?? _config.TrayClick.MiddleDoubleClick)
+                    : _config.TrayClick.MiddleDoubleClick
             },
             GinaPath = _txtGinaPath.Text.Trim(),
             GamparsePath = _txtGamparsePath.Text.Trim(),
