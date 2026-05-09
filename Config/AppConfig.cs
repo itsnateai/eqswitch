@@ -324,7 +324,7 @@ public class AppConfig
             FileLogger.Warn($"AppConfig.Validate: characterAliases was empty with {LegacyCharacterProfiles.Count} legacy profile(s) — re-derived {CharacterAliases.Count} alias(es)");
             mutated = true;
         }
-        // Range matches SettingsForm NUD (100..5000ms). On/off lives in the
+        // Range matches SettingsForm NUD (300..5000ms). On/off lives in the
         // ShowTooltips checkbox — no zero-as-suppression backdoor here either.
         TooltipDurationMs = Math.Clamp(TooltipDurationMs, 300, 5000);
 
