@@ -1,5 +1,27 @@
 # Changelog
 
+## v3.15.10 — Account.Notes round-trip + ConfigManager.Save lock (2026-05-09)
+
+Two pre-existing v3.15.7 follow-ups that the verifier swarm flagged but never landed.
+
+### Account.Notes round-trip bug
+
+`SettingsForm.BuildAppConfig` and the form's initial Account-list snapshot both clone Account objects field-by-field (`new Account { Name = a.Name, Username = a.Username, ... }`) — but neither clone copied `Notes`. Effect: any user-set Notes on an Account would be silently cleared on every Settings → Apply. Fixed both clone sites by adding `Notes = a.Notes`.
+
+The same field-by-field clone pattern also exists for Character objects on the same form, but those clones do copy `Notes` correctly — verified.
+
+### ConfigManager.Save / _saveLock symmetry
+
+`Save()` wrote `_pendingSave = config` outside `_saveLock` while `FlushSave` and `SaveImmediate` both hold the lock for read+write. Currently safe because all callers pass the live `_config` reference — `Save(_config)` and `SaveImmediate(_config)` mutate the same object — but any future caller passing a different config object could collide with a concurrent autologin status write. Lock added around the staged-pointer write for explicit cross-thread contract.
+
+### Native investigation (deferred to future session)
+
+The remaining ~2s charselect dwell on Nate's setup is the bridge anchor scan in `eqswitch-di8.cpp` running at a 500ms throttle (`if (!bypassThrottle && now - lastPoll < 500) return;` at line 281). At charselect, both selection-ack and enter-world request handlers are gated by this throttle, paying ~250ms average latency per request.
+
+A surgical fix exists — bypass throttle when `requestSeq != ackSeq` or `enterWorldReq != enterWorldAck` — but several throttle-period-counted state variables (`g_consecutiveNullPolls` at mq2_bridge.cpp:3554 hardcodes `*500` for its 15s timeout) would need refactoring to wall-clock time. Estimated savings ~1.5s on the selection-ack path. Not in v3.15.10 — needs careful native build + dual-box regression testing.
+
+The SHM enter-world `result=-1` retry loop is a separate concern: the CLW_EnterWorldButton truly doesn't exist for several seconds after charselect-ready, so no amount of polling will find it. PulseKey3D fallback works because it goes through EQ's input handler, not the button object. Possible future cleanup: skip SHM attempts entirely on Dalaya, or have the bridge expose a `buttonReady` flag in SHM and have C# wait for it before firing.
+
 ## v3.15.9 — Charselect dwell, round 2: ack granularity + enter-world retry (2026-05-09)
 
 v3.15.8's `BridgeInitWaitMs` cut was a wash on the live dual-box test — Nate's setup has the bridge anchor scan needing ~2s after charselect-ready, so the 4×500ms wait-loop iterations consume the same budget as the upfront Sleep did. v3.15.9 attacks the next two cost centers in the charselect → in-game span:

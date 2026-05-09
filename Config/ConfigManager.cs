@@ -86,7 +86,16 @@ public static class ConfigManager
     /// </summary>
     public static void Save(AppConfig config)
     {
-        _pendingSave = config;
+        // v3.15.10: stage _pendingSave under _saveLock for symmetry with
+        // FlushSave / SaveImmediate. In current callers `config` is always
+        // the live `_config` reference, so the prior unlocked write was
+        // benign — but a future caller passing a different config object
+        // could collide with a concurrent SaveImmediate from AutoLoginManager.
+        // The lock makes the cross-thread contract explicit.
+        lock (_saveLock)
+        {
+            _pendingSave = config;
+        }
 
         if (_saveTimer == null)
         {

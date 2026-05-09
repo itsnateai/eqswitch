@@ -234,6 +234,7 @@ public class SettingsForm : Form
             UseLoginFlag = a.UseLoginFlag,
             LastLoginResult = a.LastLoginResult,
             LastLoginAt = a.LastLoginAt,
+            Notes = a.Notes,
         }).ToList();
 
         _pendingCharacters = _config.Characters.Select(c => new Character
@@ -1736,6 +1737,7 @@ public class SettingsForm : Form
                     UseLoginFlag = a.UseLoginFlag,
                     LastLoginResult = passwordUnchanged ? live!.LastLoginResult : a.LastLoginResult,
                     LastLoginAt = passwordUnchanged ? live!.LastLoginAt : a.LastLoginAt,
+                    Notes = a.Notes,
                 };
             }).ToList(),
             Characters = _pendingCharacters.Select(c => new Character
