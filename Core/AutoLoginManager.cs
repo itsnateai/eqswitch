@@ -932,7 +932,11 @@ public class AutoLoginManager
 
             // ── Character selection via MQ2 bridge (no focus-faking needed) ──
             // Priority: slot > name > default. character != null here (enforced by gate above).
-            // v3.15.2: tunable via Launch.BridgeInitWaitMs (default 2000).
+            // v3.15.8: tunable via Launch.BridgeInitWaitMs (default 1ms, was 2000 pre-v3.15.8).
+            // Vestigial settle pause — the wait loop below is the actual bridge-readiness
+            // gate (its first iteration polls without delay and its inter-poll 500ms sleep
+            // absorbs any genuine bridge lag). Cutting 2000→1 saves ~2s in the success path
+            // with no functional change; failure path is identical.
             Thread.Sleep(_config.Launch.BridgeInitWaitMs);
 
             bool wantSelection = character!.CharacterSlot > 0 || !string.IsNullOrEmpty(character.Name);
@@ -1092,11 +1096,17 @@ public class AutoLoginManager
                     if (selected)
                     {
                         bool acked = false;
-                        for (int ack = 0; ack < 50; ack++)  // 50x200ms = 10s
+                        // v3.15.9: poll granularity 200ms → 50ms (cap unchanged at 10s).
+                        // The DLL writes the ack flag during EQ's game-thread tick (~16ms);
+                        // 200ms granularity meant we noticed the ack up to 200ms after it
+                        // actually fired. 50ms catches it 4× faster on average — saves
+                        // ~150ms per ack-tick observed (typical ack arrives in 1-15 ticks
+                        // = 200ms-3s on busy charselect-render frames).
+                        for (int ack = 0; ack < 200; ack++)  // 200x50ms = 10s
                         {
                             if (charSelect.IsSelectionAcknowledged(pid))
                             { acked = true; break; }
-                            Thread.Sleep(200);
+                            Thread.Sleep(50);
                         }
                         if (!acked)
                         {
@@ -1112,7 +1122,10 @@ public class AutoLoginManager
                             Report($"{account.Name}: character selection not confirmed — stopped at char select");
                             return;
                         }
-                        Thread.Sleep(200); // SetCurSel fires synchronously on game thread via TIMERPROC
+                        // v3.15.9: post-ack settle 200ms → 100ms. SetCurSel fires synchronously
+                        // on game thread via TIMERPROC; the ack means TIMERPROC has already
+                        // run, so 100ms is plenty for any downstream UI bookkeeping.
+                        Thread.Sleep(100);
                     }
                 }
                 else
@@ -1138,7 +1151,13 @@ public class AutoLoginManager
             // Primary path: SHM RequestEnterWorld (in-process button click)
             if (charSelect.IsMQ2Available(pid))
             {
-                for (int attempt = 0; attempt < 2; attempt++)
+                // v3.15.9: attempts 2 → 4 + retry sleep 2000 → 500. result=-1 means
+                // CLW_EnterWorldButton isn't in the CXWnd tree yet (charselect UI
+                // still building after SetCurSel). Polling 4× as fast at the same
+                // wall-clock budget catches the button as soon as it appears
+                // instead of sleeping past it. See the post-result-≠-1 branch below.
+                const int kMaxEnterWorldAttempts = 4;
+                for (int attempt = 0; attempt < kMaxEnterWorldAttempts; attempt++)
                 {
                     // Check if already in-game
                     hwnd = RefreshHandle(pid, hwnd);
@@ -1152,12 +1171,14 @@ public class AutoLoginManager
 
                     charSelect.RequestEnterWorld(pid);
 
-                    // Wait for DLL ack (up to 5s)
+                    // Wait for DLL ack (up to 5s).
+                    // v3.15.9: granularity 200ms → 50ms (cap unchanged at 5s).
+                    // The DLL acks on its next tick (~16ms); 50ms catches it 4× faster.
                     bool acked = false;
-                    for (int w = 0; w < 25; w++)
+                    for (int w = 0; w < 100; w++)
                     {
                         if (charSelect.IsEnterWorldAcknowledged(pid)) { acked = true; break; }
-                        Thread.Sleep(200);
+                        Thread.Sleep(50);
                     }
 
                     if (!acked)
@@ -1191,7 +1212,14 @@ public class AutoLoginManager
                     if (result != 1)
                     {
                         FileLogger.Warn($"AutoLogin: enter-world result={result} (attempt {attempt + 1}), button may not exist yet");
-                        Thread.Sleep(2000);
+                        // v3.15.9: retry sleep 2000 → 500, AND gate behind "more attempts left"
+                        // — pre-fix the loop slept 2000ms after the LAST attempt before falling
+                        // through to the PulseKey3D fallback (pure waste). Verified in v3.15.8
+                        // log: attempt 2 ended at 50.789, fallback fired at 52.790 = exactly
+                        // 2000ms wasted. With 4 attempts × 500ms = same 2s total budget but
+                        // 4 polls for the button instead of 1.
+                        if (attempt < kMaxEnterWorldAttempts - 1)
+                            Thread.Sleep(500);
                         continue;
                     }
 

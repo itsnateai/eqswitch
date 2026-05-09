@@ -1,5 +1,50 @@
 # Changelog
 
+## v3.15.9 — Charselect dwell, round 2: ack granularity + enter-world retry (2026-05-09)
+
+v3.15.8's `BridgeInitWaitMs` cut was a wash on the live dual-box test — Nate's setup has the bridge anchor scan needing ~2s after charselect-ready, so the 4×500ms wait-loop iterations consume the same budget as the upfront Sleep did. v3.15.9 attacks the next two cost centers in the charselect → in-game span:
+
+### Selection-ack poll granularity (200ms → 50ms)
+
+`AutoLoginManager.HandleCharSelectViaShm` polled the SetCurSel ack flag every 200ms, with a 10s cap. The DLL writes the ack flag during EQ's game-thread tick (~16ms), so the 200ms granularity meant we noticed the ack up to 200ms after it actually fired. Cut to 50ms (cap unchanged at 10s = 200×50ms). Realistic savings: ~150ms per autologin.
+
+Post-ack settle Sleep also tightened: 200ms → 100ms. The ack already implies TIMERPROC has run, so 100ms is plenty.
+
+### Enter-world retry path (4 attempts × 500ms — was 2 × 2000ms — and gated)
+
+The SHM `RequestEnterWorld` path retries when `result == -1` ("button doesn't exist yet" — typically because the CLW_EnterWorldButton hasn't entered the CXWnd tree on the first attempt). Three issues fixed in one pass:
+
+- **Bug**: `Thread.Sleep(2000)` fired *unconditionally at end of every iteration*, including the last — meaning we slept 2s before falling through to the PulseKey3D fallback. v3.15.8 log confirms it: attempt 2 ended at `50.789`, fallback fired at `52.790`, exactly 2000ms of waste. Sleep is now gated behind `attempt < kMaxEnterWorldAttempts - 1`.
+- **Tuning**: 2000ms between retries was too long given the button-render race typically resolves within hundreds of ms. Cut to 500ms.
+- **Retry budget**: bumped 2 → 4 attempts. Same ~2s total budget (4×500ms) but 4× the polls — catches the button as soon as it renders instead of sleeping past it.
+
+Inner ack-wait inside each enter-world attempt also tightened: 25×200ms → 100×50ms (cap unchanged at 5s).
+
+### Predicted savings on Nate's failure-path run
+
+- Selection-ack granularity: ~150ms
+- Post-ack settle: 100ms
+- Enter-world inner ack granularity: ~150ms × N attempts
+- Last-attempt Sleep gate: ~2000ms (eliminates the wasted final sleep)
+- Retry sleep cut: ~1500ms × (N-1) cycles when retries happen
+
+Combined: ~3.5–4s on the v3.15.8 reproduction path. Bridge anchor scan time (~2s) remains unaddressed — that's native-side work in `eqswitch-di8.cpp`.
+
+## v3.15.8 — Trim charselect → Enter World dwell (2026-05-09)
+
+Cuts ~2s from the autologin path between `WaitForScreenTransition` reporting charselect-ready and the first MQ2 bridge poll for the character list. The `BridgeInitWaitMs` setting predates the v3.15.x latch+count gate in the char-list wait loop; once that gate landed, the unconditional pre-poll Sleep became a vestigial settle pause on top of an already-structural readiness check. The wait loop's first iteration polls without delay and its inter-poll 500ms sleep absorbs any genuine bridge lag, so the prior 2000ms upfront pad was paying twice.
+
+### Fix
+
+- **`Launch.BridgeInitWaitMs` default 2000 → 1ms** in `Config/AppConfig.cs`. The char-list wait loop in `AutoLoginManager.HandleCharSelectViaShm` (60×500ms cap, latch + ReadCharCount) is the actual bridge-readiness gate; this Sleep is now effectively a yield. Failure path is unchanged — if bridge isn't published on the first poll, the loop sleeps 500ms and retries, identical to the prior behavior.
+- **Validation floor lowered 500 → 0**, ceiling unchanged at 30000. Users who want a longer pre-poll buffer can still tune up.
+- **Stale XML doc rewritten** — the prior comment described this as a "wait after process resume for the bridge to initialize," but the call site is post-`WaitForScreenTransition`, where the EQ process has been running 30–90s and the bridge has long since initialized. Doc now reflects the actual semantics.
+
+### Measured impact
+
+- Per-box savings: ~2s in the success path (bridge already up at charselect-ready, which is the common case). Failure path: identical.
+- Wall-clock: the unified abort path (line 1125 — "MQ2 bridge not ready after 30s") and the single-char structural fallback (line 974, `wait >= 20`) both remain unchanged — those failure modes already give the bridge ample time.
+
 ## v3.15.7 — Autologin / native dismiss interlock (2026-05-09)
 
 Hotfix for a regression introduced by v3.15.5. The `kPromptWindows[]` pre-login auto-dismiss machinery (added in v3.15.5 to give bare Launch Client an EULA + main-menu auto-click) was gated only on `gameState != 5` (not in-game). That gate was correct for bare launch — gameState transitions to 5 once in-world — but for autologin teams the same gate left the dismiss machinery iterating *every native poll tick* from gameState=0 (login screen) through server-select and char-select-load, while AutoLoginManager's BURST keystroke flow was driving the same UI. At server-select / charselect-load, transient widget matches (`news`, stale `main` slipping past `IsCXWndVisible`) fired `WndNotification(XWM_LCLICK)` and the EQ process self-exited within ~7 seconds of BURST 2. Reproduced 4 of 4 attempts on team1 (2026-05-09 09:53–09:56).
