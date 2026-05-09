@@ -19,50 +19,108 @@ reviews:
   path_filters:
     - "!bin/**"
     - "!obj/**"
+    - "!publish/**"
     - "!**/*.user"
     - "!**/*.suo"
     - "!**/*.pdb"
     - "!**/*.dll"
-    - "!*.ico"
-    - "!*.exe"
+    - "!**/*.ico"
+    - "!**/*.exe"
     - "!_.diagnostics/**"
     - "!_comms/**"
     - "!dumps/**"
     - "!docs/**"
+    - "!third_party/**"
+    - "!_tests/**"
+    - "!.audit/**"
+    - "!.code-graph/**"
+    - "!.superpowers/**"
+    - "!.worktrees/**"
     - "!CHANGELOG.md"
     - "!CONTRIBUTING.md"
-    - "!PLAN_*.md"
-    - "!*HANDOFF.md"
+    - "!TODO_LIST.md"
+    - "!**/PLAN_*.md"
+    - "!**/*HANDOFF.md"
     - "!eqclient.ini.reference"
 
   path_instructions:
     - path: "Native/**"
       instructions: |
-        This directory contains intentional reverse-engineering of eqmain.dll for
-        the EverQuest Project Dalaya client (RoF2/Underfoot-derivative, x86).
-        Pattern scans (ToolHelp32 / module enumeration), vtable walks, manual
-        Marshal.ReadIntPtr / WriteIntPtr / ReadInt32 / Copy on game-process memory,
-        DLL hooking via detours, and unsafe code blocks ARE the product — this is
-        what the app does and how it works.
+        Intentional reverse-engineering of eqmain.dll for the EverQuest Project Dalaya
+        client (RoF2/Underfoot-derivative, x86). Mix of C / C++ / header files
+        (buffer.c, eqmain_offsets.cpp, mq2_bridge.cpp, etc.) plus pre-built injectable
+        DLLs. Pattern scans (ToolHelp32 / module enumeration), vtable walks, manual
+        memory reads via ReadProcessMemory or Marshal helpers (when bridged from C#),
+        DLL hooking via detours, and unsafe code blocks ARE the product — this is what
+        the app does and how it works.
 
-        Do NOT flag these patterns as "security concerns", "should use safer APIs",
-        "consider P/Invoke instead", "Marshal.ReadIntPtr is dangerous", or
-        "unsafe code should be avoided". They are by design and load-bearing.
+        Do NOT flag EXISTING patterns (vtable walks, raw memory reads, detour
+        installation, DLL injection into the EQ process) as "security concerns",
+        "should use safer APIs", "consider P/Invoke instead", or "unsafe code should
+        be avoided". They are by design and load-bearing.
 
-        DO flag: (1) offset arithmetic that could overflow or read past struct
-        boundaries; (2) missing null-pointer guards before dereferencing; (3) early-
-        return paths that skip handle/HMODULE release; (4) thread safety when
-        reading game memory from the tray's UI thread; (5) mismatched x86 vs x64
-        assumptions; (6) deviation from the MQ2 emu branch port pattern (the MQ2
-        sources at X:/_Projects/_.src/_srcexamples/macroquest-rof2-emu are the
-        authoritative port reference); (7) WoW64 Process.Modules gotchas (use
-        Toolhelp32 SNAPMODULE32, never Process.Modules on x86 targets from x86 host).
-    - path: "Core/**"
+        DO flag: (1) NEW patterns that go beyond the existing RE surface — e.g.
+        injecting into non-EQ processes, hooking outside the existing detour set,
+        memory operations on a process not in the allowlist; (2) offset arithmetic
+        that could overflow or read past struct boundaries; (3) missing null-pointer
+        guards before dereferencing; (4) early-return paths that skip handle/HMODULE
+        release; (5) thread safety when reading game memory from the tray's UI thread;
+        (6) mismatched x86 vs x64 assumptions; (7) deviation from the MQ2 emu branch
+        port pattern (the MQ2 emu sources are the authoritative port reference);
+        (8) WoW64 Process.Modules gotchas (use Toolhelp32 SNAPMODULE32, never
+        Process.Modules on x86 targets from x86 host).
+    - path: "Core/DllInjector.cs"
       instructions: |
-        Core C# logic — config, launch manager, hotkey registration, log management,
-        process coordination. Focus on file-replace atomicity (use atomic moves,
-        not in-place truncate), INI parsing edge cases, cross-process locks, and
-        startup-folder shortcut correctness.
+        DLL injection engine — OpenProcess + VirtualAllocEx + WriteProcessMemory +
+        CreateRemoteThread. SAME stakes as Native/**: this is by design. Do NOT
+        flag the existing injection sequence as "dangerous" or "should use safer
+        alternatives". DO flag: missing handle release on every early-return path,
+        missing CloseHandle on the remote-thread handle, missing VirtualFreeEx of
+        the allocated region after the remote thread exits, OpenProcess flag
+        over-privileging beyond what's needed, and any injection target that
+        isn't an allowlisted EQ process.
+    - path: "Core/KeyboardHookManager.cs"
+      instructions: |
+        Global low-level keyboard hook (WH_KEYBOARD_LL) via SetWindowsHookEx —
+        intentional, used to capture team-switch hotkeys before EQ swallows them.
+        Do NOT flag the global hook as a privacy concern. DO flag: hook callback
+        that throws (returns to OS context — must never throw), missing pinned
+        GCHandle on the delegate for the hook lifetime, GCHandle not freed on
+        unhook, UnhookWindowsHookEx not called on the same thread that called
+        SetWindowsHookEx, and slow callbacks (Windows times out hook callbacks).
+    - path: "Core/KeyInputWriter.cs"
+      instructions: |
+        SendInput keystroke injection into EQ's HWND for password / Enter /
+        char-select advancement. Per AUTOLOGIN SPEC in CLAUDE.md the sequence is
+        fixed: password → Enter → Enter → Enter-World. Do NOT propose adding
+        YESNO / kick-session dialog handling — that flow does not exist in
+        patchme mode. DO flag: SendInput racing against EQ's first-keystroke
+        drop (the "primer Backspace" pattern in v3.14.12 is load-bearing —
+        do not remove); missing focus checks before sending; any input sent
+        to a non-EQ window.
+    - path: "Core/AutoLoginManager.cs"
+      instructions: |
+        AutoLogin orchestrator. Per CLAUDE.md AUTOLOGIN SPEC, requirement is:
+        for each client within 5s of login screen ready — type password,
+        press Enter, press Enter at server-select, char-select auto-loads,
+        fire Enter-World. Zero manual clicks. Do NOT propose changes that
+        re-introduce a YESNO kick-session dialog (it does not exist in
+        patchme mode), nor changes that move username typing into this
+        manager (username is auto-populated from eqlsPlayerData*.ini by
+        LaunchManager before launch).
+    - path: "**/{WindowsApi,AffinityManager,SecureMemoryMappedFile,NativeMethods,HotkeyManager,HookConfigWriter,StartupManager,LaunchManager,FileLogger,LoginShmWriter}.cs"
+      instructions: |
+        Win32 P/Invoke / COM-lifetime / IPC files. Standard hygiene applies:
+        every native handle (HMODULE, HANDLE, HHOOK, OVERLAPPED, MMF view)
+        must have a release on every code path including exceptions; OpenProcess
+        / CreateFileMapping flags must be minimal (least privilege); COM via
+        Type.GetTypeFromProgID requires Marshal.FinalReleaseComObject /
+        Marshal.ReleaseComObject in try/finally; SetWindowsHookEx callbacks
+        must never throw, must be fast (Windows times them out), and the
+        GCHandle on the delegate must be pinned for the hook's lifetime and
+        freed on unhook. Cross-process named primitives (mutex, MMF, event)
+        should use ACL/SECURITY_ATTRIBUTES that don't widen access beyond
+        what's needed. Flag any handle leak on early-return paths.
     - path: "Models/**"
       instructions: |
         Plain data models. Should be POCOs with no I/O, no static state, no Win32.
@@ -71,10 +129,12 @@ reviews:
         Config schema and migration chain (v0 → v1 → v2 → v3). Migrations must be
         forward-only and idempotent. Flag any breaking schema change without a
         bumped SchemaVersion + migration step.
-    - path: "_tests/**"
+    - path: "**/*Tests.cs"
       instructions: |
-        Test project. Tests must NOT require a running EQ client and must NOT touch
-        real eqmain.dll memory (use mocked process handles / fake module tables).
+        Test files (live alongside production code, not in a separate _tests/ dir).
+        Tests must NOT require a running EQ client and must NOT touch real eqmain.dll
+        memory — use mocked process handles, fake module tables, and the JSON
+        fixtures under _tests/.
     - path: "**/*.cs"
       instructions: |
         C# 12 / .NET 8 / WinForms. Tray app — WinForms is the chosen UI stack.
@@ -86,6 +146,15 @@ reviews:
     enabled: true
     drafts: false
     auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 5
+    ignore_title_keywords:
+      - "chore: release"
+      - "release v"
+      - "bump version"
+    ignore_usernames:
+      - "dependabot[bot]"
+      - "release-please[bot]"
+      - "github-actions[bot]"
     base_branches:
       - "main"
 
@@ -97,6 +166,8 @@ reviews:
     markdownlint:
       enabled: true
     yamllint:
+      enabled: true
+    semgrep:
       enabled: true
 
 chat:
