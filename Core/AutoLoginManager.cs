@@ -1111,7 +1111,13 @@ public class AutoLoginManager
                         // first-read ackSeq value tell us which.
                         var ackSw = System.Diagnostics.Stopwatch.StartNew();
                         bool ackedAtFirstRead = charSelect.IsSelectionAcknowledged(pid);
-                        long firstReadElapsed = ackSw.ElapsedTicks;  // typically <1us
+                        // firstReadUs: sub-millisecond cost of the SHM read alone. If
+                        // ackedAtFirstRead==true AND firstReadUs is small, the bridge
+                        // had already written ackSeq before C# even started polling —
+                        // i.e., the fast-path bypass round-tripped within the time it
+                        // took C# to call RequestSelection + start the Stopwatch.
+                        long firstReadUs = ackSw.ElapsedTicks * 1_000_000L
+                            / System.Diagnostics.Stopwatch.Frequency;
                         int totalIters = 0;
                         if (ackedAtFirstRead)
                         {
@@ -1123,7 +1129,7 @@ public class AutoLoginManager
                             for (int ack = 0; ack < 200; ack++)  // 200x50ms = 10s
                             {
                                 Thread.Sleep(50);
-                                totalIters = ack + 2; // +2 because of the pre-read above
+                                totalIters = ack + 2; // +2: 1 pre-loop read + (ack+1) in-loop iterations
                                 if (charSelect.IsSelectionAcknowledged(pid))
                                 { acked = true; break; }
                             }
@@ -1131,7 +1137,7 @@ public class AutoLoginManager
                         ackSw.Stop();
                         if (acked)
                         {
-                            FileLogger.Info($"AutoLogin: selection ack observed after {totalIters} iter(s) / {ackSw.ElapsedMilliseconds}ms (firstRead={ackedAtFirstRead}, PID {pid})");
+                            FileLogger.Info($"AutoLogin: selection ack observed after {totalIters} iter(s) / {ackSw.ElapsedMilliseconds}ms (firstRead={ackedAtFirstRead}, firstReadUs={firstReadUs}, PID {pid})");
                         }
                         if (!acked)
                         {
