@@ -596,65 +596,58 @@ public class AutoLoginManager
         Thread.Sleep(_config.Launch.Burst1ActivationSettleMs); // let DLL switch coop + blast activation
         FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
 
-        // ── PRIMER + typing — ONLY when warmup didn't write the password ──
-        // v3.15.12 (2026-05-10): gate the keystroke-typing path on !warmupRan.
-        // When the SHM warmup ran successfully, the DLL's eqmain_cxstr.cpp
-        // WriteEditTextDirect ALREADY wrote the password into
-        // CEditBaseWnd::InputText at +0x1A8 with read-back verification (DLL
-        // log line "eqmain_cxstr: WriteEditTextDirect read-back OK — length=N,
-        // first byte 0x?? matches" is the proof; phase only advances to
-        // PHASE_CLICKING_CONNECT on that success). Re-typing on top of a
-        // correct structural write CORRUPTS THE FIELD — PRIMER (Backspace)
-        // deletes the last char of Combo G's clean write, and
-        // CombinedTypeString appends over the existing content.
+        // ── PRIMER: absorb first-keystroke drop ──
+        // EQ's GetDeviceData polling lags after the SHM-active flip — the FIRST
+        // 1-3 keystrokes are dropped before EQ's input pump catches up. Pure
+        // dwell-tuning (warmupDwellMs) only narrows this window; it doesn't close
+        // it (verified 2026-05-04: dwell=4s drops 2 chars, dwell=8s drops 1 char,
+        // dwell=12s pushes EQ into idle and drops ALL — peak is ~8s). Sending
+        // Backspace first deterministically absorbs whatever EQ drops:
+        //   - if EQ drops the primer (expected): no harm, password lands intact
+        //   - if EQ catches it on empty field: no-op (Backspace on empty is no-op)
+        // VK_BACK (0x08) chosen because it cannot insert a char or change focus
+        // even if it lands and the field is somehow non-empty.
         //
-        // The 2026-04-25 comment further down ("Combo G's CXStr write at
-        // +0x1A8 doesn't reach EQ's render/submit buffer") is STALE — that
-        // was true 16 days ago before iter 12's FindLivePasswordCEditWnd
-        // landed the correct live-widget lookup. Ground truth from
-        // eqswitch-dinput8-35296.log (2026-05-10): structural write at +0x1A8
-        // hit the field, login submitted, server advanced to charselect-load.
-        if (!warmupRan)
+        // v3.15.13 (2026-05-10): REVERTED v3.15.12's `if (!warmupRan)` gate.
+        // Live test result: skipping PRIMER+typing left EQ's password field
+        // EMPTY at submit — Combo G's structural write to InputText@+0x1A8
+        // does NOT reach EQ's render/submit buffer on Dalaya. The
+        // 2026-04-25 comment ("Combo G's CXStr write at +0x1A8 doesn't reach
+        // EQ's render/submit buffer") was correct; iter 12's FindLivePassword-
+        // CEditWnd finds the visible widget but the InputText FIELD on it
+        // isn't what EQ submits. Ground truth from eqswitch.log
+        // [2026-05-10 09:22:07.543] — gate fired, Enter sent on empty field,
+        // login didn't advance.
+        //
+        // The Combo G warmup STILL adds value as a screen-readiness gate
+        // (phase advances to CLICKING_CONNECT only after live widgets are
+        // discoverable), but the actual password delivery must be BURST 1
+        // keystrokes via WM_CHAR PostMessage. Until eqmain's render/submit
+        // buffer is identified and written to (separate RE work), keystrokes
+        // are the load-bearing path.
+        CombinedPressKey(writer, pid, hwnd, 0x08);
+        Thread.Sleep(50);
+
+        // NOTE: a pre-flight Enter before typing is NOT idempotent on Dalaya
+        // patchme — empty-password Enter raises a "you need to enter a username
+        // and password" modal that steals focus from the password field, causing
+        // BURST 1 to type into the modal and Enter to click OK instead of submit.
+        // Tested + reverted 2026-04-24.
+
+        if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
         {
-            // ── PRIMER: absorb first-keystroke drop ──
-            // EQ's GetDeviceData polling lags after the SHM-active flip — the FIRST
-            // 1-3 keystrokes are dropped before EQ's input pump catches up. Pure
-            // dwell-tuning (warmupDwellMs) only narrows this window; it doesn't close
-            // it (verified 2026-05-04: dwell=4s drops 2 chars, dwell=8s drops 1 char,
-            // dwell=12s pushes EQ into idle and drops ALL — peak is ~8s). Sending
-            // Backspace first deterministically absorbs whatever EQ drops:
-            //   - if EQ drops the primer (expected): no harm, password lands intact
-            //   - if EQ catches it on empty field: no-op (Backspace on empty is no-op)
-            // VK_BACK (0x08) chosen because it cannot insert a char or change focus
-            // even if it lands and the field is somehow non-empty.
-            CombinedPressKey(writer, pid, hwnd, 0x08);
-            Thread.Sleep(50);
-
-            // NOTE: a pre-flight Enter before typing is NOT idempotent on Dalaya
-            // patchme — empty-password Enter raises a "you need to enter a username
-            // and password" modal that steals focus from the password field, causing
-            // BURST 1 to type into the modal and Enter to click OK instead of submit.
-            // Tested + reverted 2026-04-24.
-
-            if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
-            {
-                CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to username
-                Thread.Sleep(100);
-                CombinedTypeString(writer, pid, hwnd, account.Username);
-                Thread.Sleep(100);
-            }
-            if (!account.UseLoginFlag)
-            {
-                CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to password
-                Thread.Sleep(100);
-            }
-            CombinedTypeString(writer, pid, hwnd, password);
+            CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to username
+            Thread.Sleep(100);
+            CombinedTypeString(writer, pid, hwnd, account.Username);
             Thread.Sleep(100);
         }
-        else
+        if (!account.UseLoginFlag)
         {
-            FileLogger.Info($"AutoLogin: BURST 1 PID {pid} — Combo G wrote password structurally; skipping PRIMER+typing to avoid double-write corruption, firing Enter only");
+            CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to password
+            Thread.Sleep(100);
         }
+        CombinedTypeString(writer, pid, hwnd, password);
+        Thread.Sleep(100);
 
         Report("Submitting login...");
         CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = submit
