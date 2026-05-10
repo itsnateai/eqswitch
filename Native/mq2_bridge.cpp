@@ -4056,6 +4056,12 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     // charselect. Path B's pCharList scan is the fast path once pinst lights
     // up; standalone is the slow fallback that should only fire when pCharList
     // is null DESPITE pinst being non-null.
+    // v3.15.11 INVARIANT (mirror of g_consecutiveNullPolls pin above): the
+    // 20-poll g_standaloneDelay threshold ALSO assumes one increment per
+    // 500ms cadence (= 10s wall-clock). Same caveat — must stay inside
+    // MQ2Bridge::Poll, NEVER moved into PollRequestsOnly. Convert to
+    // wall-clock timestamp first if you ever want this gate to run on
+    // the fast path.
     if (!charDataRead && !g_heapScanDone) {
         if (g_consecutiveNullPolls > 0) {
             // pinst null this poll — login or server-select phase. Skip the
