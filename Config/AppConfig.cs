@@ -722,6 +722,30 @@ public class LaunchConfig
     /// the v3.15.8 conservative midpoint of 750). Floor 0, ceiling 30000.
     /// </summary>
     public int BridgeInitWaitMs { get; set; } = 1;
+
+    // ── v3.15.11 Enter World fast-path knob ──
+    // (Target 2 Option A in the v3.15.11 work brief: skip SHM EnterWorld on
+    // Dalaya, fall straight to PulseKey3D. Empirical Dalaya behavior across
+    // every dual-box test up to v3.15.10: all 4 SHM EnterWorld attempts
+    // return -1 because CLW_EnterWorldButton isn't constructed by the time
+    // charselect-ready is signaled, then PulseKey3D fallback fires and works
+    // every time. Skipping the SHM path saves ~2-2.5s of failed retries per
+    // box. The structural fix — bridge writes a buttonReady flag in SHM and
+    // C# polls it — is filed as a follow-up; this knob is the empirical
+    // Dalaya-specific shortcut.)
+
+    /// <summary>
+    /// Skip SHM-based Enter World (in-process CLW_EnterWorldButton click) on
+    /// Dalaya and use the PulseKey3D keyboard fallback directly. Empirically,
+    /// the button isn't constructed by the time charselect-ready is signaled
+    /// on Dalaya — every SHM attempt returns -1 (button not found) and the
+    /// PulseKey3D fallback takes over after ~2-2.5s of failed retries. This
+    /// flag eliminates that wasted retry budget. Default true. Other servers
+    /// (account.Server != "Dalaya", case-insensitive) ignore this flag and
+    /// keep the SHM-primary path. Not exposed in Settings UI — power-user
+    /// opt-out via direct edit of eqswitch-config.json only.
+    /// </summary>
+    public bool SkipShmEnterWorldOnDalaya { get; set; } = true;
 }
 
 public class PipConfig

@@ -3433,6 +3433,125 @@ static void EmitVerificationReport(volatile CharSelectShm *shm) {
     DI8Log("=== END VERIFICATION REPORT ===");
 }
 
+// ─── Request handlers (extracted v3.15.11 for fast-path reuse) ────────────────
+// Both helpers are file-scope statics so they don't widen mq2_bridge.h. They
+// live above MQ2Bridge::Poll to satisfy the call site below.
+//
+// Invariants assumed by callers (Poll AND PollRequestsOnly):
+//  - shm != nullptr (validated by caller)
+//  - g_pGameState + g_ppEverQuest both non-null (validated by caller)
+//  - All SEH-prone EQ deref chains are guarded INSIDE the helpers
+//
+// HandleEnterWorldRequest is gated against gameState == 5 (in-game) so it is
+// safe to call even while the player has already entered the world.
+//
+// HandleSelectionRequest reads shm->charCount AS PUBLISHED BY A PRIOR FULL
+// POLL. The fast-path (PollRequestsOnly) does NOT republish char data on the
+// same tick — that is the point. C# only fires RequestSelectionBySlot after
+// observing charSelectReady == 1, so a valid charCount is guaranteed by the
+// time a selection request lands in SHM.
+
+static void HandleEnterWorldRequest(volatile CharSelectShm *shm, int gameState) {
+    // Handle Enter World request — gated against gameState=5 (in-game).
+    // Dalaya ROF2 uses gameState=0 at BOTH login and charselect, so we can't
+    // gate on charselect via gameState. But gameState=5 reliably means in-game,
+    // and CXWndManager keeps CLW_EnterWorldButton alive even after charselect
+    // closes — so without this gate, a request that arrives just after the user
+    // manually pressed Enter would phantom-click in-game.
+    //
+    // Result codes (read by C# AutoLoginManager — must keep in sync):
+    //   1  = clicked successfully
+    //  -1  = button not found
+    //  -2  = dropped (in-game when request arrived; success-equivalent)
+    //  -3  = bridge unavailable (g_fnWndNotification null)
+    //  -4  = SEH during click (UI stack faulted — abort, do not retry)
+    uint32_t ewReq = shm->enterWorldReq;
+    uint32_t ewAck = shm->enterWorldAck;
+
+    if (ewReq == ewAck) return;
+
+    DI8Log("mq2_bridge: Enter World request (seq %u->%u, gameState=%d)", ewAck, ewReq, gameState);
+    if (gameState == 5 || gameState == -99) {
+        // Already in-game OR could not read game state (SEH fallback).
+        // Either way, default-safe: drop the request to avoid phantom-
+        // clicking Enter World while the player is actually in-game
+        // (hotfix v3 HIGH-4).
+        shm->enterWorldResult = -2;
+        MemoryBarrier();
+        shm->enterWorldAck = ewReq;
+        DI8Log("mq2_bridge: dropped Enter World request (gameState=%d -- in-game or unreadable)", gameState);
+        return;
+    }
+
+    void *pEnterBtn = MQ2Bridge::FindWindowByName("CLW_EnterWorldButton");
+    if (!pEnterBtn) {
+        shm->enterWorldResult = -1;
+        DI8Log("mq2_bridge: CLW_EnterWorldButton not found (gameState=%d)", gameState);
+    } else if (!g_fnWndNotification) {
+        shm->enterWorldResult = -3;
+        DI8Log("mq2_bridge: WndNotification fn unresolved -- cannot click");
+    } else {
+        __try {
+            g_fnWndNotification(pEnterBtn, pEnterBtn, 1 /*XWM_LCLICK*/, nullptr);
+            shm->enterWorldResult = 1;
+            DI8Log("mq2_bridge: clicked CLW_EnterWorldButton");
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            // Hotfix v6c (Agent 2 F2.5, Agent 3 F3.4): disambiguate SEH
+            // from "button not found" (-1). Pre-v6c both cases wrote -1,
+            // so the C# caller retried and then fell back to PulseKey3D
+            // on what may be a faulted UI stack. A distinct -4 lets C#
+            // abort the login cleanly with a user-visible "client faulted"
+            // message instead of spamming Enter into a broken client.
+            shm->enterWorldResult = -4;
+            DI8Log("mq2_bridge: SEH clicking CLW_EnterWorldButton");
+        }
+    }
+    MemoryBarrier();
+    shm->enterWorldAck = ewReq;
+}
+
+static void HandleSelectionRequest(volatile CharSelectShm *shm) {
+    uint32_t reqSeq = shm->requestSeq;
+    uint32_t ackSeq = shm->ackSeq;
+
+    if (reqSeq == ackSeq) return;
+
+    int requestedIdx = shm->requestedIndex;
+    DI8Log("mq2_bridge: selection request -- index=%d (seq %u->%u)",
+           requestedIdx, ackSeq, reqSeq);
+
+    if (requestedIdx < 0 || requestedIdx >= shm->charCount) {
+        // Invalid index — ack to prevent infinite retry. (Either C# raced
+        // ahead of charCount publish — the next full poll will republish —
+        // or the slot really is out of range; C# guards against the latter
+        // before fire so this is mostly the race.)
+        DI8Log("mq2_bridge: selection SKIPPED -- index=%d charCount=%d",
+               requestedIdx, shm->charCount);
+        shm->ackSeq = reqSeq;
+        return;
+    }
+
+    void *pCharListWnd = MQ2Bridge::FindWindowByName("Character_List");
+    if (!pCharListWnd || !g_fnSetCurSel) {
+        DI8Log("mq2_bridge: selection DEFERRED -- Character_List=%p SetCurSel=%p",
+               pCharListWnd, g_fnSetCurSel);
+        // Don't ack — C# will retry on next poll
+        return;
+    }
+
+    __try {
+        g_fnSetCurSel(pCharListWnd, requestedIdx);
+        shm->selectedIndex = requestedIdx;
+        shm->ackSeq = reqSeq;  // ack ONLY on successful SetCurSel
+        DI8Log("mq2_bridge: selected character index %d (\"%s\")",
+               requestedIdx, (const char *)shm->names[requestedIdx]);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: SEH in SetCurSel(%d)", requestedIdx);
+    }
+}
+
 // ─── MQ2Bridge::Poll (existing -- CharSelectShm) ───────────────
 
 void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
@@ -3457,66 +3576,15 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         lastGameState = gameState;
     }
 
-    // Handle Enter World request — gated against gameState=5 (in-game).
-    // Dalaya ROF2 uses gameState=0 at BOTH login and charselect, so we can't
-    // gate on charselect via gameState. But gameState=5 reliably means in-game,
-    // and CXWndManager keeps CLW_EnterWorldButton alive even after charselect
-    // closes — so without this gate, a request that arrives just after the user
-    // manually pressed Enter would phantom-click in-game.
-    //
-    // Result codes (read by C# AutoLoginManager — must keep in sync):
-    //   1  = clicked successfully
-    //  -1  = button not found
-    //  -2  = dropped (in-game when request arrived; success-equivalent)
-    //  -3  = bridge unavailable (g_fnWndNotification null)
-    {
-        uint32_t ewReq = shm->enterWorldReq;
-        uint32_t ewAck = shm->enterWorldAck;
-
-        if (ewReq != ewAck) {
-            DI8Log("mq2_bridge: Enter World request (seq %u->%u, gameState=%d)", ewAck, ewReq, gameState);
-            if (gameState == 5 || gameState == -99) {
-                // Already in-game OR could not read game state (SEH fallback).
-                // Either way, default-safe: drop the request to avoid phantom-
-                // clicking Enter World while the player is actually in-game
-                // (hotfix v3 HIGH-4).
-                shm->enterWorldResult = -2;
-                MemoryBarrier();
-                shm->enterWorldAck = ewReq;
-                DI8Log("mq2_bridge: dropped Enter World request (gameState=%d — in-game or unreadable)", gameState);
-            } else {
-                void *pEnterBtn = FindWindowByName("CLW_EnterWorldButton");
-                if (!pEnterBtn) {
-                    shm->enterWorldResult = -1;
-                    DI8Log("mq2_bridge: CLW_EnterWorldButton not found (gameState=%d)", gameState);
-                } else if (!g_fnWndNotification) {
-                    shm->enterWorldResult = -3;
-                    DI8Log("mq2_bridge: WndNotification fn unresolved -- cannot click");
-                } else {
-                    __try {
-                        g_fnWndNotification(pEnterBtn, pEnterBtn, 1 /*XWM_LCLICK*/, nullptr);
-                        shm->enterWorldResult = 1;
-                        DI8Log("mq2_bridge: clicked CLW_EnterWorldButton");
-                    }
-                    __except (EXCEPTION_EXECUTE_HANDLER) {
-                        // Hotfix v6c (Agent 2 F2.5, Agent 3 F3.4): disambiguate SEH
-                        // from "button not found" (-1). Pre-v6c both cases wrote -1,
-                        // so the C# caller retried and then fell back to PulseKey3D
-                        // on what may be a faulted UI stack. A distinct -4 lets C#
-                        // abort the login cleanly with a user-visible "client faulted"
-                        // message instead of spamming Enter into a broken client.
-                        shm->enterWorldResult = -4;
-                        DI8Log("mq2_bridge: SEH clicking CLW_EnterWorldButton");
-                    }
-                }
-                MemoryBarrier();
-                shm->enterWorldAck = ewReq;
-            }
-        }
-    }
-
-    // Handle selection request — also no gameState gate for Dalaya compatibility.
-    // The selection handler below (after char data read) checks charCount > 0.
+    // v3.15.11: handlers extracted to file-scope helpers. Call sites moved
+    // up so the selection handler runs BEFORE the heavy heap-scan paths
+    // below — a selection request only needs the charCount that was
+    // published by a prior full Poll tick, so it can run early. The
+    // PollRequestsOnly fast path also calls these two helpers (and only
+    // these two) on the unthrottled fast-path tick when a request is
+    // pending — see eqswitch-di8.cpp::MQ2BridgePollTick two-tier throttle.
+    HandleEnterWorldRequest(shm, gameState);
+    HandleSelectionRequest(shm);
 
     // Dalaya ROF2: gameState=0 at login AND charselect. We can't gate on
     // gameState==1. Instead, attempt to read character data always — the
@@ -3538,6 +3606,20 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     // Counter is at TU scope (declared above as g_consecutiveNullPolls — was
     // promoted from block-static to TU scope in v3.15.1 so the gameState==5
     // reset block can clear it across charselect cycles).
+    //
+    // v3.15.11 INVARIANT (do not violate): g_consecutiveNullPolls + the
+    // log-line `g_consecutiveNullPolls * 500` arithmetic + the 30-poll
+    // threshold ALL assume one increment per 500ms — i.e. that this code
+    // path runs only inside MQ2Bridge::Poll under the 500ms throttle in
+    // eqswitch-di8.cpp::MQ2BridgePollTick. The v3.15.11 fast path
+    // (MQ2Bridge::PollRequestsOnly, called when a C# request is pending
+    // and the throttle hasn't expired) deliberately does NOT execute this
+    // block — moving the increment into PollRequestsOnly would tick the
+    // counter at ~16ms cadence and the latch would clear in ~480ms instead
+    // of ~15s. Same caveat applies to g_standaloneDelay (20-poll threshold
+    // = 10s) below at line ~3990. If you ever need the latch logic to run
+    // on the fast path, convert the counter to a wall-clock timestamp
+    // first; do NOT just relocate the increment.
     {
         bool pinstNull = true;
         if (g_pinstCharSelect) {
@@ -4118,41 +4200,46 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     if (charDataRead && !g_verificationDone)
         EmitVerificationReport(shm);
 
-    // Handle selection request from C#
-    uint32_t reqSeq = shm->requestSeq;
-    uint32_t ackSeq = shm->ackSeq;
+    // v3.15.11: selection request handler moved up — see HandleSelectionRequest
+    // call site near top of Poll. Running it before the heap-scan paths means a
+    // mid-cycle SetCurSel doesn't have to wait for the slow scans to re-run.
+}
 
-    if (reqSeq != ackSeq) {
-        int requestedIdx = shm->requestedIndex;
-        DI8Log("mq2_bridge: selection request -- index=%d (seq %u->%u)",
-               requestedIdx, ackSeq, reqSeq);
+// ─── MQ2Bridge::PollRequestsOnly (v3.15.11 fast-path) ──────────
+//
+// Two-tier throttle hook: invoked from MQ2BridgePollTick on unthrottled ticks
+// (~16ms cadence via ActivateThread + TIMERPROC) when a pending C# request is
+// detected in SHM but the 500ms full-poll throttle has not yet expired.
+//
+// What this DOES:
+//   - HandleEnterWorldRequest (CLW_EnterWorldButton click via WndNotification)
+//   - HandleSelectionRequest (Character_List SetCurSel)
+//
+// What this DOES NOT do (those stay in MQ2Bridge::Poll on the 500ms cadence):
+//   - shm->mq2Available / shm->gameState publish (full Poll already wrote them)
+//   - gameState transition logging (full Poll has lastGameState static)
+//   - g_consecutiveNullPolls increment + charSelectReady latch clear
+//     (counter assumes 500ms cadence — see invariant pin in Poll body)
+//   - g_standaloneDelay tick (also assumes 500ms cadence)
+//   - gameState==5 reset block (only reachable on full poll; if we reach
+//     in-game during a fast-path tick, the EW handler drops the request
+//     with -2 and the next full poll handles the cleanup)
+//   - Char data reads (Path A/B/B2/C/standalone) and verification report
+//
+// Pre-conditions (validated by caller MQ2BridgePollTick):
+//   - shm != nullptr
+//   - g_pGameState + g_ppEverQuest non-null (MQ2Bridge::Init succeeded)
+//
+// Race + reentry: PollReentryGuard at MQ2BridgePollTick top serializes calls.
+// Within a single eqgame.exe process this function never overlaps with Poll
+// or with itself.
+void MQ2Bridge::PollRequestsOnly(volatile CharSelectShm *shm) {
+    if (!shm) return;
+    if (!g_pGameState || !g_ppEverQuest) return;
 
-        if (requestedIdx >= 0 && requestedIdx < shm->charCount) {
-            void *pCharListWnd = FindWindowByName("Character_List");
-            if (pCharListWnd && g_fnSetCurSel) {
-                __try {
-                    g_fnSetCurSel(pCharListWnd, requestedIdx);
-                    shm->selectedIndex = requestedIdx;
-                    shm->ackSeq = reqSeq;  // ack ONLY on successful SetCurSel
-                    DI8Log("mq2_bridge: selected character index %d (\"%s\")",
-                           requestedIdx, (const char *)shm->names[requestedIdx]);
-                }
-                __except (EXCEPTION_EXECUTE_HANDLER) {
-                    DI8Log("mq2_bridge: SEH in SetCurSel(%d)", requestedIdx);
-                }
-            } else {
-                DI8Log("mq2_bridge: selection DEFERRED — Character_List=%p SetCurSel=%p",
-                       pCharListWnd, g_fnSetCurSel);
-                // Don't ack — C# will retry on next poll
-            }
-        } else {
-            // Invalid index — ack to prevent infinite retry
-            DI8Log("mq2_bridge: selection SKIPPED — index=%d charCount=%d",
-                   requestedIdx, shm->charCount);
-            shm->ackSeq = reqSeq;
-        }
-    }
-
+    int gameState = ReadGameState();
+    HandleEnterWorldRequest(shm, gameState);
+    HandleSelectionRequest(shm);
 }
 
 // ─── MQ2Bridge::Shutdown ───────────────────────────────────────

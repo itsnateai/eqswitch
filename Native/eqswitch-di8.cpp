@@ -266,20 +266,76 @@ struct PollReentryGuard {
     ~PollReentryGuard() { if (entered) InterlockedExchange(flag, 0); }
 };
 
+// MSVC C2712: __try/__except is not allowed in a function that has C++
+// destructors on the stack (PollReentryGuard). Wrap the SHM seq read in
+// this helper which has NO C++ unwinding so SEH can be used freely.
+// Defensive: SHM mapping can be torn during process shutdown; observing
+// that as "no pending" is the right default.
+static bool ShmHasPendingRequest(volatile CharSelectShm *shm) {
+    if (!shm) return false;
+    bool pending = false;
+    __try {
+        pending = (shm->requestSeq != shm->ackSeq) ||
+                  (shm->enterWorldReq != shm->enterWorldAck);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        pending = false;
+    }
+    return pending;
+}
+
 void MQ2BridgePollTick() {
     static volatile LONG s_pollInProgress = 0;
     PollReentryGuard guard(&s_pollInProgress);
     if (!guard.entered) return;  // another thread is already in Poll
 
-    static volatile DWORD lastPoll = 0;  // accessed from ActivateThread + TIMERPROC
+    // v3.15.11 two-tier throttle. The pre-v3.15.11 gate was:
+    //     if (!bypassThrottle && now - lastPoll < 500) return;
+    //     lastPoll = now;
+    // which made C# requests (selection ack, enter-world ack) wait avg 250ms
+    // (worst-case 500ms) before the bridge looked at them. v3.15.10 log showed
+    // slot-req → "Entering world..." span = 426ms — almost entirely throttle
+    // wait. The new gate keeps the 500ms cadence for the EXPENSIVE work
+    // (heap scans, latch counter, kPromptWindows walk, LoginStateMachine tick)
+    // but lets pending C# requests run through MQ2Bridge::PollRequestsOnly at
+    // the unthrottled ~16ms cadence of ActivateThread + TIMERPROC.
+    //
+    // CRITICAL INVARIANT: the fast path must NOT run any code that increments
+    // 500ms-cadence counters. mq2_bridge.cpp::g_consecutiveNullPolls (latch
+    // clear at 30 polls = 15s) + g_standaloneDelay (heap-scan gate at 20
+    // polls = 10s) + the lazy-init g_mq2InitRetry (10 polls = 5s) all assume
+    // exactly one tick per 500ms. PollRequestsOnly only runs the two cheap
+    // handlers — no counter increments, no heap walks. Don't move SHM open,
+    // MQ2 init guard, or kPromptWindows into the fast path.
+    //
+    // Iter 15 carry-over: bypassThrottle (eqmain.dll just loaded) still forces
+    // a full poll on the next tick so SHM open + state machine start
+    // immediately. The flag is consumed exactly once via InterlockedExchange.
+    static volatile DWORD lastFullPoll = 0;  // accessed from ActivateThread + TIMERPROC
     DWORD now = GetTickCount();
-    // Iter 15: skip throttle on first tick after eqmain.dll LOAD so SHM open
-    // happens immediately instead of waiting up to 500ms. Flag is set from
-    // LdrDllNotificationCallback under the loader lock and consumed exactly
-    // once via InterlockedExchange.
     bool bypassThrottle = (InterlockedExchange(&g_eqmainJustLoaded, 0) != 0);
-    if (!bypassThrottle && now - lastPoll < 500) return;
-    lastPoll = now;
+
+    // SHM seq probe via static helper — see ShmHasPendingRequest comment for
+    // why this isn't inline (MSVC C2712: __try forbidden in functions with
+    // C++ destructors, and PollReentryGuard above is one).
+    bool hasPendingRequest = ShmHasPendingRequest(g_charSelShm);
+
+    bool runFullPoll = bypassThrottle || (now - lastFullPoll >= 500);
+
+    if (!runFullPoll) {
+        if (!hasPendingRequest) return;
+        // Fast path: handle the request via the cheap PollRequestsOnly entry
+        // and return. lastFullPoll deliberately not updated — the next full
+        // poll still fires on its 500ms cadence. C# request protocol
+        // guarantees charSelectReady=1 + charCount were published by a prior
+        // full poll (RequestSelectionBySlot only fires after observing
+        // charSelectReady), so the handlers have what they need.
+        if (g_mq2Initialized && g_charSelShm) {
+            MQ2Bridge::PollRequestsOnly(g_charSelShm);
+        }
+        return;
+    }
+
+    lastFullPoll = now;
 
     // ── Iter 15 fix: SHM open + login state machine BEFORE MQ2 init guard ──
     // The prior order had MQ2Bridge::Init's failure-retry counter (set to 10 ticks
