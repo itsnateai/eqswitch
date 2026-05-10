@@ -1,5 +1,39 @@
 # Changelog
 
+## v3.15.11 — Native two-tier throttle + Dalaya SHM Enter World skip (2026-05-09)
+
+Closes the two "deferred to future session" follow-ups left at the bottom of the v3.15.10 entry. Both attack the remaining ~5–7s of charselect dwell + SHM enter-world retry waste; combined target is ~1–1.5s charselect dwell (was 4.4s/3.8s) and ~55s end-to-end SendKeys → "logged in" (was 61.7s).
+
+### Native two-tier throttle (Target 1 in the v3.15.11 work brief)
+
+`MQ2BridgePollTick` in `Native/eqswitch-di8.cpp` previously gated the entire poll body on a single 500ms throttle (`if (!bypassThrottle && now - lastPoll < 500) return;`). Result: when C# AutoLoginManager fired a SetCurSel ack request or an Enter World request, the bridge waited an avg 250ms (worst-case 500ms) before looking at the SHM seq counters. v3.15.10 logs measured the slot-req → "Entering world..." span at 426ms — almost entirely throttle wait.
+
+New gate splits into two tiers:
+
+- **Full poll** (heap scans, latch counter, `kPromptWindows` walk, `LoginStateMachine` tick) keeps the 500ms cadence via a renamed `lastFullPoll` static. The 30-poll latch-clear threshold (15s) and the 20-poll standalone-scan delay (10s) and the 10-poll lazy-MQ2-init retry (5s) ALL preserve their 500ms-tick assumption.
+- **Fast path** runs when SHM has a pending request (`requestSeq != ackSeq` OR `enterWorldReq != enterWorldAck`) but the full-poll throttle hasn't expired. It calls a new `MQ2Bridge::PollRequestsOnly(shm)` entry that runs ONLY the two cheap request handlers — no char-data reads, no latch counter, no transition logging, no heap walks. The handlers ack within ~16ms of the request landing in SHM (one ActivateThread/TIMERPROC tick).
+
+The handler bodies were factored into file-scope static helpers (`HandleEnterWorldRequest`, `HandleSelectionRequest`) shared between `MQ2Bridge::Poll` (full) and `MQ2Bridge::PollRequestsOnly` (fast). Selection-handler call site moved up — it only needs `shm->charCount` published by a prior full poll, so it can run before the heavy heap-scan paths.
+
+A new invariant pin at `mq2_bridge.cpp` documents that `g_consecutiveNullPolls` and `g_standaloneDelay` MUST stay in `MQ2Bridge::Poll` only — moving them into the fast path would tick at ~16ms cadence and clear the latch in ~480ms instead of ~15s. If anyone needs the latch logic on the fast path in the future, convert to wall-clock timestamps; do NOT relocate the increment.
+
+SHM struct unchanged — same v3 layout. No bridge or AutoLoginManager protocol change required.
+
+### Skip SHM Enter World on Dalaya (Target 2 Option A in the v3.15.11 work brief)
+
+Empirical evidence from every dual-box run up to v3.15.10: the SHM `RequestEnterWorld` path on Dalaya returns `result=-1` (button not found) on all 4 attempts, every time. `CLW_EnterWorldButton` isn't in the CXWnd tree by the time charselect-ready is signaled. PulseKey3D fallback then fires and works every time, costing ~2-2.5s of failed retry budget for no upside.
+
+New `Launch.SkipShmEnterWorldOnDalaya` config knob (default true) makes Dalaya skip the SHM Enter World path entirely and go straight to PulseKey3D. Other servers (`account.Server` case-insensitively != "Dalaya") still use the SHM-primary path. Settings UI is unchanged — Server dropdown is locked to "Dalaya" since v3.14.7, so effectively all v3.15.11 users get the fast path; the flag is the power-user opt-out via direct `eqswitch-config.json` edit.
+
+The structural fix (Option B in the work brief — bridge writes a `buttonReady` SHM flag, C# polls it with a hard timeout) is filed as a follow-up. Option A is the data-driven Dalaya shortcut; Option B is the portable fix for hypothetical other-server use.
+
+### What's NOT in this release
+
+- **No SHM struct version bump.** Both targets ride on existing v3 fields. Bare-launch + earlier-DLL compatibility is preserved.
+- **No `kPromptWindows` walk on the fast path.** Promo dismiss timing is unchanged (still 500ms cadence under the full-poll path).
+- **No widget-cache invalidation change.** `g_consecutiveNullPolls` semantics preserved verbatim.
+- **No new dependency on bridge initialization for the fast path.** If MQ2 isn't yet initialized when a request lands, the fast path defers (returns without touching SHM); the next full poll handles bridge init and the request together.
+
 ## v3.15.10 — Account.Notes round-trip + ConfigManager Save/Load lock symmetry (2026-05-09)
 
 Two pre-existing v3.15.7 follow-ups that the verifier swarm flagged but never landed, plus a third site of the same lock-symmetry issue caught during v3.15.10's own verification pass + a stale floor-clamp test assertion.

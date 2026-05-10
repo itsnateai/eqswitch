@@ -60,6 +60,18 @@ namespace MQ2Bridge {
     void Poll(volatile CharSelectShm* shm);
     void Shutdown();
 
+    // ─── Fast-path request handler (v3.15.11 two-tier throttle) ───────
+    // Cheap subset of Poll: runs ONLY the Enter World + selection request
+    // handlers; skips char-data reads, latch counter, gameState transition
+    // logging, and all heap scans. Caller (MQ2BridgePollTick) invokes this
+    // unthrottled (within ~16ms cadence of ActivateThread/TIMERPROC) when a
+    // C# request is pending in SHM but the 500ms throttle for full Poll has
+    // not yet expired. Pre-condition: shm->charCount must already be
+    // published by a prior full Poll tick — guaranteed by C# AutoLoginManager
+    // protocol (only fires RequestSelectionBySlot after observing
+    // charSelectReady == 1).
+    void PollRequestsOnly(volatile CharSelectShm* shm);
+
     // ─── Game state ────────────────────────────────────────────
     // Read gGameState safely (SEH-wrapped). Returns -99 if unavailable.
     int ReadGameState();

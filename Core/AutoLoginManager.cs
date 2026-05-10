@@ -1102,11 +1102,36 @@ public class AutoLoginManager
                         // actually fired. 50ms catches it 4× faster on average — saves
                         // ~150ms per ack-tick observed (typical ack arrives in 1-15 ticks
                         // = 200ms-3s on busy charselect-render frames).
-                        for (int ack = 0; ack < 200; ack++)  // 200x50ms = 10s
+                        //
+                        // v3.15.11 instrumentation (2026-05-09): the native two-tier
+                        // throttle made the bridge ack near-instant per its own log,
+                        // but C# observed ~1.23s gap from request to "Entering world..."
+                        // — diagnosing whether it's Windows Sleep granularity or
+                        // cross-process SHM visibility. Stopwatch + iter counter +
+                        // first-read ackSeq value tell us which.
+                        var ackSw = System.Diagnostics.Stopwatch.StartNew();
+                        bool ackedAtFirstRead = charSelect.IsSelectionAcknowledged(pid);
+                        long firstReadElapsed = ackSw.ElapsedTicks;  // typically <1us
+                        int totalIters = 0;
+                        if (ackedAtFirstRead)
                         {
-                            if (charSelect.IsSelectionAcknowledged(pid))
-                            { acked = true; break; }
-                            Thread.Sleep(50);
+                            acked = true;
+                            totalIters = 1;
+                        }
+                        else
+                        {
+                            for (int ack = 0; ack < 200; ack++)  // 200x50ms = 10s
+                            {
+                                Thread.Sleep(50);
+                                totalIters = ack + 2; // +2 because of the pre-read above
+                                if (charSelect.IsSelectionAcknowledged(pid))
+                                { acked = true; break; }
+                            }
+                        }
+                        ackSw.Stop();
+                        if (acked)
+                        {
+                            FileLogger.Info($"AutoLogin: selection ack observed after {totalIters} iter(s) / {ackSw.ElapsedMilliseconds}ms (firstRead={ackedAtFirstRead}, PID {pid})");
                         }
                         if (!acked)
                         {
@@ -1148,8 +1173,23 @@ public class AutoLoginManager
             Report("Entering world...");
             bool entered = false;
 
+            // v3.15.11 (Target 2 Option A): empirical short-circuit on Dalaya.
+            // CLW_EnterWorldButton isn't in the CXWnd tree by the time
+            // charselect-ready is signaled, so all 4 SHM attempts return -1
+            // and PulseKey3D fallback fires every time (~2-2.5s wasted on
+            // failed retries). Gate is opt-out via Launch.SkipShmEnterWorld-
+            // OnDalaya (default true). Other servers stay on the SHM-primary
+            // path. Structural fix (bridge writes buttonReady flag) deferred
+            // as Option B.
+            bool skipShmEnterWorld = ShouldSkipShmEnterWorld(account);
+            // Only log the skip when MQ2 was actually available — otherwise
+            // we'd be using PulseKey3D regardless and the "skipping" log
+            // line would be misleading.
+            if (skipShmEnterWorld && charSelect.IsMQ2Available(pid))
+                FileLogger.Info($"AutoLogin: skipping SHM Enter World on Dalaya (PID {pid}, account {account.Name}) — using PulseKey3D directly");
+
             // Primary path: SHM RequestEnterWorld (in-process button click)
-            if (charSelect.IsMQ2Available(pid))
+            if (charSelect.IsMQ2Available(pid) && !skipShmEnterWorld)
             {
                 // v3.15.9: attempts 2 → 4 + retry sleep 2000 → 500. result=-1 means
                 // CLW_EnterWorldButton isn't in the CXWnd tree yet (charselect UI
@@ -1256,7 +1296,9 @@ public class AutoLoginManager
             }
             if (!entered)
             {
-                if (charSelect.IsMQ2Available(pid))
+                if (charSelect.IsMQ2Available(pid) && skipShmEnterWorld)
+                    FileLogger.Info("AutoLogin: PulseKey3D enter-world (SHM skipped per Launch.SkipShmEnterWorldOnDalaya)");
+                else if (charSelect.IsMQ2Available(pid))
                     FileLogger.Warn("AutoLogin: SHM enter-world failed, falling back to PulseKey3D");
                 else
                     FileLogger.Info("AutoLogin: MQ2 not available, using PulseKey3D for enter-world");
@@ -1969,6 +2011,29 @@ public class AutoLoginManager
         }
 
         return IntPtr.Zero;
+    }
+
+    // ─── Per-server policy helpers (v3.15.11) ────────────────────────
+
+    /// <summary>
+    /// Returns true if the SHM-based Enter World path should be skipped for
+    /// this account, falling straight through to PulseKey3D. Currently only
+    /// Dalaya qualifies (per Launch.SkipShmEnterWorldOnDalaya, default true).
+    /// Empirically on Dalaya, CLW_EnterWorldButton isn't constructed by the
+    /// time charselect-ready is signaled — every SHM attempt returns -1 and
+    /// PulseKey3D fallback fires after ~2-2.5s of failed retries. This gate
+    /// eliminates that wasted retry budget. The structural fix (bridge
+    /// writes a buttonReady SHM flag and C# polls it) is filed as Option B
+    /// follow-up. Settings dropdown is locked to "Dalaya" in v3.14.7+ so
+    /// effectively all v3.15.11 users get the fast path; the flag is the
+    /// power-user opt-out for hypothetical other-server use via direct
+    /// edit of eqswitch-config.json.
+    /// </summary>
+    private bool ShouldSkipShmEnterWorld(Account account)
+    {
+        if (!_config.Launch.SkipShmEnterWorldOnDalaya) return false;
+        return string.Equals(account.Server?.Trim(), "Dalaya",
+            StringComparison.OrdinalIgnoreCase);
     }
 
     // ─── EQ INI Helpers ──────────────────────────────────────────────
