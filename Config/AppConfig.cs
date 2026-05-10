@@ -674,7 +674,19 @@ public class LaunchConfig
     /// typing credentials. Gives the inline-hook + WndProc subclass time to
     /// install before keystrokes flow. Default 500.
     /// </summary>
-    public int Burst1ActivationSettleMs { get; set; } = 500;
+    // v3.15.12 (2026-05-10): bumped 500→2000. The DLL's activation defense
+    // (WndProc subclass install + DI8 SetCooperativeLevel BACKGROUND switch
+    // + WM_ACTIVATEAPP blast) happens on the rising-edge of KeyShm active
+    // in device_proxy.cpp::ActivateThread (16ms tick cadence). Empirically
+    // 2026-05-10: 500ms wasn't enough — second-launched client (PID 28628)
+    // got ZERO GetDeviceData injection events while first client got ~10
+    // events. The race: KeyShm activates → ActivateThread next tick (up to
+    // 16ms) → SetCoopLevel + WM_ACTIVATEAPP blast → EQ processes blast +
+    // starts polling DI8 BACKGROUND. If g_realKeyboardDevice wasn't yet
+    // captured (EQ hadn't called CreateDevice yet), the coop switch is
+    // SKIPPED that tick. Bumping settle to 2000ms gives EQ time to finish
+    // DI8 init before keys fire.
+    public int Burst1ActivationSettleMs { get; set; } = 2000;
 
     /// <summary>
     /// Post-submit dwell (ms) at end of BURST 1 (after pressing Enter to submit
@@ -746,6 +758,34 @@ public class LaunchConfig
     /// opt-out via direct edit of eqswitch-config.json only.
     /// </summary>
     public bool SkipShmEnterWorldOnDalaya { get; set; } = true;
+
+    /// <summary>
+    /// Skip the SHM warmup ritual (loginShm.SendLoginCommand) before BURST 1.
+    /// Empirically (2026-05-10): the DLL's LoginStateMachine processes the
+    /// LOGIN command by heap-walking for LOGIN_ConnectButton via
+    /// HeapScanForWidget + LIVE-WIDGET HEAP ENUM (259 pages) + HEAP CROSS-REF
+    /// + TranslateDefToLive (523 nodes ×2). On Dalaya this takes 5-7s PER
+    /// PHASE_CLICKING_CONNECT iteration ON THE EQ GAME THREAD via the
+    /// GiveTime detour. EQ's input pump is blocked while scanning →
+    /// PostMessage'd BURST 1 keystrokes pile up and get coalesced/dropped
+    /// (verified: 4 of 7 password chars landing). The pre-BURST-1 CANCEL
+    /// only stops the NEXT iteration; an in-flight scan still blocks the
+    /// pump for seconds after BURST 1 activates.
+    ///
+    /// When this flag is set, C# skips Phase 1 entirely — no SendLoginCommand,
+    /// no warmup wait, no CANCEL race — and goes straight from "DLL gameState
+    /// ready" → loginScreenDelayMs grace → BURST 1. The DLL never starts the
+    /// heap-walk widget discovery, the game thread stays free, and all BURST 1
+    /// keystrokes land cleanly. Confirmed working with the v3.4.x baseline DLL
+    /// which lacks the structural-login widget discovery entirely.
+    ///
+    /// Default true. The "warm-up the input pump" rationale that justified the
+    /// ritual was true with lightweight discovery (v3.4.x); the heavier widget
+    /// code added since 04/24 (eqmain_widgets + eqmain_widgets_mq2style,
+    /// +900 lines) makes it net-negative on Dalaya. Not exposed in Settings
+    /// UI — power-user opt-out via direct eqswitch-config.json edit.
+    /// </summary>
+    public bool SkipNativeWarmup { get; set; } = true;
 }
 
 public class PipConfig

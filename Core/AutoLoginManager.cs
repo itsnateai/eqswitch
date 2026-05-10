@@ -267,6 +267,28 @@ public class AutoLoginManager
         // Write server to EQ INI files so server select is pre-filled
         WriteServerToIni(account.Server);
 
+        // v3.15.12 (2026-05-10): the WriteUsernameToIni(account.Username) call
+        // that lived here was the team-launch regression. The race window is
+        // wider than the original comment claimed:
+        //   T=0:    BeginLogin1 writes INI=User1 → launches eqgame1
+        //   T=3s:   BeginLogin2 writes INI=User2 (CLOBBERS) → launches eqgame2
+        //   T=5.6s: eqgame1's eqmain.dll loads → reads INI → User2 ✗
+        //   T=8.6s: eqgame2's eqmain.dll loads → reads INI → User2 ✓
+        // The eqlsPlayerData*.ini is read by eqmain.dll at login-screen render
+        // time (~T+5.6s per dinput8 log), NOT by eqgame.exe at startup. The
+        // 3s LaunchDelayMs is much smaller than the 5.6s eqmain-load window,
+        // so the second client's write reliably clobbers the first client's
+        // pre-fill. Result: client 1 types correct password against wrong
+        // pre-filled username → server rejects.
+        //
+        // Reverted call. The /login:USERNAME launch arg + BURST 1's Tab-and-type
+        // username path (when account.UseLoginFlag=false) already cover username
+        // delivery correctly per-PID. If the legacy INI pre-fill needs to land
+        // for a specific account, the proper place is a per-PID write done
+        // AFTER eqmain.dll loads (signaled via loginShm.gameState != 0) and
+        // BEFORE BURST 1 fires — i.e., inside RunLoginSequence, not BeginLogin.
+        // WriteUsernameToIni() helper kept defined for that future per-PID use.
+
         // Build launch args
         var exePath = Path.Combine(_config.EQPath, _config.Launch.ExeName);
         if (!File.Exists(exePath))
@@ -467,17 +489,30 @@ public class AutoLoginManager
     {
         // ── Phase 1: SHM warmup ritual ──
         bool warmupRan = false;
-        if (loginShm != null)
+        // v3.15.12 (2026-05-10): empirical Dalaya regression fix. The warmup
+        // ritual triggers the DLL's LoginStateMachine to do a 5-7s heap-walk
+        // PER iteration (HeapScanForWidget + LIVE-WIDGET HEAP ENUM 259 pages
+        // + HEAP CROSS-REF + TranslateDefToLive 523 nodes ×2) ON THE EQ GAME
+        // THREAD via the GiveTime detour. EQ's input pump is blocked during
+        // scans → BURST 1 keystrokes get dropped/coalesced (4 of 7 chars
+        // landing observed). The pre-BURST CANCEL only halts the NEXT
+        // iteration; in-flight scans still block the pump.
+        //
+        // Bypassing the warmup matches the v3.4.x baseline DLL behavior
+        // (verified 2026-05-10 via temporary baseline-DLL deploy: BURST 1
+        // typed 7/7 chars cleanly, both clients reached charselect, gotquiz1
+        // logged in). The "warm-up the input pump" justification is obsolete
+        // on Dalaya — the heavier widget discovery in eqmain_widgets +
+        // eqmain_widgets_mq2style (+900 lines since 04/24) made it net-
+        // negative.
+        //
+        // MQ2 parity: MQ2 (StateMachine.cpp:271-273) uses SetEditWndText for
+        // direct widget write — elegant on retail but writes to wrong buffer
+        // on Dalaya per CHANGELOG. Our BURST 1 keystroke path is the
+        // Dalaya-correct fallback; the warmup ritual that tries (and fails)
+        // the Combo G structural write is pure overhead AND breaks BURST 1.
+        if (loginShm != null && !_config.Launch.SkipNativeWarmup)
         {
-            // Wait for DLL state machine to be alive (gameState published).
-            var gateSw = System.Diagnostics.Stopwatch.StartNew();
-            while (gateSw.ElapsedMilliseconds < 30000)
-            {
-                if (loginShm.ReadGameState(pid) != 0) break;
-                Thread.Sleep(100);
-            }
-            FileLogger.Info($"AutoLogin: DLL gameState ready after {gateSw.ElapsedMilliseconds}ms (PID {pid})");
-
             Report($"{account.Name}: warmup...");
             // Track B v3 (2026-05-05): pass target character name into LoginShm so the
             // bridge's anchor-scan path (mq2_bridge.cpp HeapScanForTargetName) can find
@@ -561,40 +596,65 @@ public class AutoLoginManager
         Thread.Sleep(_config.Launch.Burst1ActivationSettleMs); // let DLL switch coop + blast activation
         FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
 
-        // ── PRIMER: absorb first-keystroke drop ──
-        // EQ's GetDeviceData polling lags after the SHM-active flip — the FIRST
-        // 1-3 keystrokes are dropped before EQ's input pump catches up. Pure
-        // dwell-tuning (warmupDwellMs) only narrows this window; it doesn't close
-        // it (verified 2026-05-04: dwell=4s drops 2 chars, dwell=8s drops 1 char,
-        // dwell=12s pushes EQ into idle and drops ALL — peak is ~8s). Sending
-        // Backspace first deterministically absorbs whatever EQ drops:
-        //   - if EQ drops the primer (expected): no harm, password lands intact
-        //   - if EQ catches it on empty field: no-op (Backspace on empty is no-op)
-        // VK_BACK (0x08) chosen because it cannot insert a char or change focus
-        // even if it lands and the field is somehow non-empty.
-        CombinedPressKey(writer, pid, hwnd, 0x08);
-        Thread.Sleep(50);
-
-        // NOTE: a pre-flight Enter before typing is NOT idempotent on Dalaya
-        // patchme — empty-password Enter raises a "you need to enter a username
-        // and password" modal that steals focus from the password field, causing
-        // BURST 1 to type into the modal and Enter to click OK instead of submit.
-        // Tested + reverted 2026-04-24.
-
-        if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
+        // ── PRIMER + typing — ONLY when warmup didn't write the password ──
+        // v3.15.12 (2026-05-10): gate the keystroke-typing path on !warmupRan.
+        // When the SHM warmup ran successfully, the DLL's eqmain_cxstr.cpp
+        // WriteEditTextDirect ALREADY wrote the password into
+        // CEditBaseWnd::InputText at +0x1A8 with read-back verification (DLL
+        // log line "eqmain_cxstr: WriteEditTextDirect read-back OK — length=N,
+        // first byte 0x?? matches" is the proof; phase only advances to
+        // PHASE_CLICKING_CONNECT on that success). Re-typing on top of a
+        // correct structural write CORRUPTS THE FIELD — PRIMER (Backspace)
+        // deletes the last char of Combo G's clean write, and
+        // CombinedTypeString appends over the existing content.
+        //
+        // The 2026-04-25 comment further down ("Combo G's CXStr write at
+        // +0x1A8 doesn't reach EQ's render/submit buffer") is STALE — that
+        // was true 16 days ago before iter 12's FindLivePasswordCEditWnd
+        // landed the correct live-widget lookup. Ground truth from
+        // eqswitch-dinput8-35296.log (2026-05-10): structural write at +0x1A8
+        // hit the field, login submitted, server advanced to charselect-load.
+        if (!warmupRan)
         {
-            CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to username
-            Thread.Sleep(100);
-            CombinedTypeString(writer, pid, hwnd, account.Username);
+            // ── PRIMER: absorb first-keystroke drop ──
+            // EQ's GetDeviceData polling lags after the SHM-active flip — the FIRST
+            // 1-3 keystrokes are dropped before EQ's input pump catches up. Pure
+            // dwell-tuning (warmupDwellMs) only narrows this window; it doesn't close
+            // it (verified 2026-05-04: dwell=4s drops 2 chars, dwell=8s drops 1 char,
+            // dwell=12s pushes EQ into idle and drops ALL — peak is ~8s). Sending
+            // Backspace first deterministically absorbs whatever EQ drops:
+            //   - if EQ drops the primer (expected): no harm, password lands intact
+            //   - if EQ catches it on empty field: no-op (Backspace on empty is no-op)
+            // VK_BACK (0x08) chosen because it cannot insert a char or change focus
+            // even if it lands and the field is somehow non-empty.
+            CombinedPressKey(writer, pid, hwnd, 0x08);
+            Thread.Sleep(50);
+
+            // NOTE: a pre-flight Enter before typing is NOT idempotent on Dalaya
+            // patchme — empty-password Enter raises a "you need to enter a username
+            // and password" modal that steals focus from the password field, causing
+            // BURST 1 to type into the modal and Enter to click OK instead of submit.
+            // Tested + reverted 2026-04-24.
+
+            if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
+            {
+                CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to username
+                Thread.Sleep(100);
+                CombinedTypeString(writer, pid, hwnd, account.Username);
+                Thread.Sleep(100);
+            }
+            if (!account.UseLoginFlag)
+            {
+                CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to password
+                Thread.Sleep(100);
+            }
+            CombinedTypeString(writer, pid, hwnd, password);
             Thread.Sleep(100);
         }
-        if (!account.UseLoginFlag)
+        else
         {
-            CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to password
-            Thread.Sleep(100);
+            FileLogger.Info($"AutoLogin: BURST 1 PID {pid} — Combo G wrote password structurally; skipping PRIMER+typing to avoid double-write corruption, firing Enter only");
         }
-        CombinedTypeString(writer, pid, hwnd, password);
-        Thread.Sleep(100);
 
         Report("Submitting login...");
         CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = submit
@@ -1522,7 +1582,11 @@ public class AutoLoginManager
         }
 
         // Overall timeout — routes to keyboard injection when DLL advances
-        // past phase 1 but can't complete (ABI-broken in-process credentials).
+        // past phase 1 but can't complete. The structural InputText write path
+        // (Native/eqmain_cxstr.cpp WriteEditTextDirect) exists and is RoF2-emu
+        // ABI-compatible on Dalaya, but is currently DORMANT — not wired into
+        // login_state_machine.cpp. Until it ships, password entry falls through
+        // to keystroke BURST 1.
         FileLogger.Error($"AutoLogin: LoginShm overall timeout (45s) for {account.Name}");
         loginShm.SendCancelCommand(pid);
         return false;
@@ -1756,7 +1820,23 @@ public class AutoLoginManager
             if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, true);
             PostR(writer, pid, hwnd, NativeMethods.WM_KEYDOWN, (IntPtr)vk, MakeKeyDownLParam(scan));
             PostR(writer, pid, hwnd, (uint)NativeMethods.WM_CHAR, (IntPtr)c, MakeKeyDownLParam(scan));
-            Thread.Sleep(25); // was 80ms — tightened 2026-04-25 to make typing feel paste-like
+            // v3.15.12 attempted to bump key-hold 25→80ms reasoning EQ polled
+            // DI8 at 30Hz so 25ms could miss a poll. EMPIRICALLY DISPROVEN
+            // 2026-05-10: post-deploy log shows EQ login-screen GetDeviceData
+            // polls at ~4Hz (~240ms/poll) — much slower than 30Hz, so the
+            // 80ms hold makes things WORSE not better. With ~4Hz polling and
+            // 130ms-per-char typing (80 hold + 50 gap), most down→up cycles
+            // complete entirely between polls and the SHM mask-state-only
+            // protocol shows no transitions to inject. Result: 7 chars sent
+            // → 2 chars seen in field (PID 27284, 07:17 run, eqswitch-dinput8.log).
+            // Reverted to the 25ms key-hold timing that worked end-to-end on
+            // 2026-05-09. The actual mechanism that makes typing reliable on
+            // Dalaya is the WM_CHAR PostMessage path above (queued to EQ's
+            // message thread, not subject to DI8 poll-cadence loss); fast
+            // 25/15/15 keeps DI8 SHM from going round-trip on something the
+            // login screen doesn't read for text input anyway. Per-char now
+            // ~40ms; 7-char password ~280ms; looks paste-like.
+            Thread.Sleep(25);
 
             // Key up (both layers)
             if (scan > 0 && scan < 256) writer.SetKey(pid, (byte)scan, false);
@@ -1765,11 +1845,11 @@ public class AutoLoginManager
             // Shift up
             if (needShift)
             {
-                Thread.Sleep(15); // was 40ms
+                Thread.Sleep(15); // matches working 2026-05-09 timing
                 if (shiftScan > 0 && shiftScan < 256) writer.SetKey(pid, (byte)shiftScan, false);
                 PostR(writer, pid, hwnd, NativeMethods.WM_KEYUP, (IntPtr)0x10, MakeKeyUpLParam(shiftScan));
             }
-            Thread.Sleep(15); // was 50ms — full per-char now ~40ms vs ~130ms (3x faster)
+            Thread.Sleep(15); // inter-char gap — matches working 2026-05-09 timing
             typedCount++;
         }
         FileLogger.Info($"AutoLogin: CombinedTypeString PID={pid} done — typed={typedCount} skipped={skippedCount} input.Length={text.Length}");
@@ -2064,6 +2144,72 @@ public class AutoLoginManager
         catch (Exception ex)
         {
             FileLogger.Warn($"AutoLogin: failed to write server to INI: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Write Username to the [PLAYER] section of all eqlsPlayerData*.ini files
+    /// so EQ pre-fills the LOGIN screen username field with this account.
+    ///
+    /// ⚠ DO NOT CALL FROM BeginLogin OR ANY PRE-LAUNCH PATH ⚠
+    /// The original integration in BeginLogin (reverted 2026-05-10) caused
+    /// dual-box team launch to fail. The race window is wider than initially
+    /// believed: eqlsPlayerData*.ini is read by eqmain.dll at LOGIN-SCREEN
+    /// RENDER time (~T+5.6s after process resume per
+    /// eqswitch-dinput8-PID.log), NOT by eqgame.exe at process start. With
+    /// the default 3000ms LaunchDelayMs, client 2's BeginLogin fires its
+    /// INI write at T+3s, clobbering client 1's pre-fill BEFORE client 1's
+    /// eqmain.dll has rendered the login screen and read the value. Result:
+    /// both clients pre-fill with the second account's username; for
+    /// UseLoginFlag=true accounts (which skip BURST 1's Tab+username retype)
+    /// this means client 1 types the right password against the wrong
+    /// pre-filled username and the server rejects.
+    ///
+    /// Safe call sites (per-PID, post-eqmain-load):
+    /// - Inside RunLoginSequence after the DLL signals gameState != 0
+    ///   (eqmain has loaded for THIS PID, has already read its INI).
+    /// - Anywhere AFTER the relevant client's eqmain.dll-loaded event.
+    /// - Single-client (non-team) launches at any pre-burst point.
+    ///
+    /// Helper kept defined for the per-PID future use case. The
+    /// IsNullOrWhiteSpace + control-char guards below stay relevant.
+    ///
+    /// Background: EQ writes the LAST USERNAME TYPED to this INI on exit.
+    /// Without our intervention, the field pre-fills with whichever account
+    /// most recently exited. For UseLoginFlag=true accounts on Dalaya, the
+    /// /login:USERNAME launch arg is the primary delivery mechanism. If a
+    /// future Dalaya patch breaks /login: parsing, this helper becomes the
+    /// safety net — but ONLY when called per-PID after eqmain load.
+    /// </summary>
+    private void WriteUsernameToIni(string username)
+    {
+        // Verifier-flagged guards (v3.15.11 follow-up):
+        // - IsNullOrWhiteSpace catches "   " which would write a blank-looking
+        //   field that pre-fills three spaces (silent UI failure).
+        // - Newline rejection prevents INI injection — a Username containing
+        //   "\nUsername=other\n" would inject a second line when WriteAllLines
+        //   serializes the entry. Usernames are alphanumeric in practice but
+        //   the AccountEditDialog doesn't validate, so config-edit attacks
+        //   could craft one. Cheap to reject.
+        if (string.IsNullOrWhiteSpace(username)) return;
+        if (username.IndexOfAny(new[] { '\n', '\r', '[', ']' }) >= 0)
+        {
+            FileLogger.Warn($"AutoLogin: refusing to write Username with control/section chars to INI: '{username}'");
+            return;
+        }
+
+        try
+        {
+            var files = Directory.GetFiles(_config.EQPath, "eqlsPlayerData*.ini");
+            foreach (var file in files)
+            {
+                WriteIniValue(file, "PLAYER", "Username", username);
+                FileLogger.Info($"AutoLogin: wrote Username={username} to {Path.GetFileName(file)}");
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Warn($"AutoLogin: failed to write username to INI: {ex.Message}");
         }
     }
 
