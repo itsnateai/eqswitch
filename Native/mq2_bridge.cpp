@@ -2618,6 +2618,23 @@ static bool EnumCallback(void *pWnd, void *context) {
     return false; // continue iterating
 }
 
+// ─── Diff 4 /OPT:REF anchor (file-scope volatile) ──────────────
+// Stores &MQ2Bridge::JoinServerDirect to defeat linker COMDAT elimination
+// when no in-DLL callers exist yet (C# wiring deferred to v3.19+). Volatile
+// + file-scope makes the assignment a non-elidable side-effect under any
+// /O2 + /OPT:REF + /OPT:ICF + /LTCG combination — the optimizer cannot
+// observe the write as dead. The cross-TU-callable getter wrapper below
+// provides a second escape route ICF would have to fold simultaneously.
+namespace { volatile void *g_keepJoinServerDirect = nullptr; }
+
+// Externally visible — gives the symbol a real cross-TU consumer that ICF
+// cannot fold without folding the getter too. Declared C linkage so any
+// future GetProcAddress-style debug probe can read the anchor.
+extern "C" __declspec(noinline) volatile void *
+MQ2Bridge_GetJoinServerDirectAnchor() {
+    return g_keepJoinServerDirect;
+}
+
 // ─── MQ2Bridge::Init ───────────────────────────────────────────
 
 bool MQ2Bridge::Init() {
@@ -2738,6 +2755,24 @@ bool MQ2Bridge::Init() {
                g_fnSetWindowText, g_fnWndNotification);
     else
         DI8Log("mq2_bridge: Init PARTIAL -- missing core exports");
+
+    // ─── Diff 4 primitive availability anchor (R2) ─────────
+    // Store the address of JoinServerDirect into a file-scope volatile so
+    // the linker cannot /OPT:REF-strip the COMDAT (no in-DLL callers yet —
+    // C# wiring deferred to v3.19+ to avoid clobbering v3.18.0 SHM-bump).
+    //
+    // R1 used a local-variable address-take followed by DI8Log. Verifier
+    // pair sweep flagged this as fragile: under /LTCG + /OPT:REF + /OPT:ICF
+    // the optimizer could observe the local never escapes and fold the
+    // anchor away. Volatile file-scope assignment is the durable fix —
+    // volatile writes are observable side-effects the optimizer must preserve
+    // per ISO C++. The function-wrapper getter (MQ2Bridge_GetJoinServerDirectAnchor)
+    // adds a second escape route: ICF would have to fold both the volatile
+    // store AND the cross-TU-callable getter, which it cannot.
+    g_keepJoinServerDirect = (volatile void *)(&MQ2Bridge::JoinServerDirect);
+    DI8Log("mq2_bridge: Diff 4 primitive available -- JoinServerDirect at %p "
+           "(call from native to bypass UI server-select chain; C# wiring "
+           "deferred to v3.19+)", (void *)g_keepJoinServerDirect);
 
     return ok;
 }
@@ -4304,4 +4339,197 @@ void MQ2Bridge::Shutdown() {
     g_lastHeapScanAddr = 0;
     g_lastAnchorScanAddr = 0;
     g_lastAnchorScanName[0] = '\0';
+}
+
+// ─── LoginServerAPI::JoinServer (Diff 4) ─────────────────────
+// In-process __thiscall to eqmain's LoginServerAPI::JoinServer at fixed
+// RVA 0x13C30, on the LoginServerAPI instance at *(eqmain+0x150164).
+//
+// Why a primitive (not yet wired into autologin):
+//   - C# AutoLoginManager.cs / login_state_machine.cpp are dirty in the
+//     v3.18.0 working tree (OK_Display SHM mirror in flight). Wiring this
+//     into the FSM would tangle with that work. We ship the primitive;
+//     the FSM call site lands in v3.19+.
+//   - Provides a clean callable surface that other native code (e.g., a
+//     future GiveTime-detour-driven server-select replacement) can use
+//     immediately.
+//
+// 2026-05-15 R1 verifier-pair sweep findings addressed in this revision:
+//   1. Vanishing-failure pattern (Rule 12): outResult* surfaces the actual
+//      JoinServer return code; bool return now means "dispatched cleanly,
+//      result is valid", not "this called something somewhere".
+//   2. /OPT:REF anchor durability: the address-take in Init() now stores
+//      to a `volatile` file-static — guaranteed not optimizable away under
+//      any /O2 + /OPT:REF + /OPT:ICF + /LTCG combination.
+//   3. Prologue-byte sanity: validates the JoinServer fn at +0x13C30
+//      starts with a known x86 thiscall prologue byte (0x55 push ebp /
+//      0x53 push ebx / 0x56 push esi / 0x57 push edi / 0x83 sub esp,N).
+//      Refuses + logs the actual byte if patched.
+//   4. eqmain unload TOCTOU: LoadLibraryA pin bumps refcount across the
+//      function's lifetime; FreeLibrary releases on every exit path.
+//      Closes the (small but real) window where eqmain could unload
+//      between GetModuleHandleA and the actual call.
+typedef unsigned int (__thiscall *FN_JoinServer)(void *thisPtr, int serverID,
+                                                 void *userdata, int timeoutSeconds);
+
+bool MQ2Bridge::JoinServerDirect(int serverID, unsigned int *outResult) {
+    // R3 fix (T2-Opus #1, T2-Sonnet C1 convergent): NO sentinel write here.
+    // Per idiomatic out-param contract: outResult is written ONLY when this
+    // function returns true. On false return, outResult is untouched —
+    // caller's pre-call value is preserved. This eliminates:
+    //   (a) Unguarded write to potentially invalid caller-supplied pointer
+    //   (b) Sentinel-collision risk with valid EQ codes (R2 used 0xFFFFFFFE
+    //       which equals (unsigned)-2 — a plausible JoinServer error code).
+    // Caller MUST init their own outResult variable before calling, AND
+    // check the bool return BEFORE reading outResult. Header documents this.
+
+    // R3 fix (T2-Sonnet C2): cross-check via GetModuleHandleA BEFORE
+    // LoadLibraryA. GetModuleHandleA returns the existing module handle
+    // without bumping refcount or triggering DLL search-order (no planted
+    // eqmain.dll on PATH/cwd will be loaded). If it returns null, eqmain
+    // genuinely isn't in the process — we refuse without LoadLibraryA at
+    // all. If non-null, we then LoadLibraryA for the refcount bump and
+    // verify it returned the SAME HMODULE — a different handle would
+    // indicate either DLL search-order hijack or a multi-load race.
+    HMODULE hEqmainCheck = GetModuleHandleA("eqmain.dll");
+    if (!hEqmainCheck) {
+        DI8Log("mq2_bridge: JoinServerDirect — eqmain.dll not in process "
+               "(GetModuleHandleA returned null)");
+        return false;
+    }
+
+    // R2 fix: pin eqmain.dll across the function lifetime via LoadLibraryA
+    // refcount bump. If eqmain was unloaded between callers' invocations,
+    // LoadLibraryA returns null (file not in process); if loaded, increments
+    // the loader-managed refcount so a competing thread's FreeLibrary doesn't
+    // drop it during our call. FreeLibrary balances on every exit path.
+    HMODULE hEqmain = LoadLibraryA("eqmain.dll");
+    if (!hEqmain) {
+        DI8Log("mq2_bridge: JoinServerDirect — LoadLibraryA(eqmain.dll) "
+               "failed despite GetModuleHandleA succeeding (race with unload?)");
+        return false;
+    }
+
+    // R3 fix (T2-Sonnet C2): handle mismatch ⇒ DLL planting / search-order
+    // hijack — refuse and FreeLibrary the unexpected module.
+    if (hEqmain != hEqmainCheck) {
+        DI8Log("mq2_bridge: JoinServerDirect — HMODULE mismatch: "
+               "GetModuleHandleA=%p LoadLibraryA=%p — possible DLL planting; "
+               "refusing call",
+               hEqmainCheck, hEqmain);
+        FreeLibrary(hEqmain);
+        return false;
+    }
+    uintptr_t eqmainBase = (uintptr_t)hEqmain;
+
+    // Read LoginServerAPI* from pinstLoginServerAPI (eqmain+0x150164).
+    void *pAPI = nullptr;
+    __try {
+        pAPI = *(void **)(eqmainBase + EQMainOffsets::RVA_PINST_LoginServerAPI);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: JoinServerDirect — SEH reading pinstLoginServerAPI");
+        FreeLibrary(hEqmain);
+        return false;
+    }
+    if (!pAPI) {
+        DI8Log("mq2_bridge: JoinServerDirect — pinstLoginServerAPI is NULL "
+               "(eqmain init incomplete?)");
+        FreeLibrary(hEqmain);
+        return false;
+    }
+
+    // Sanity gate: pointee's vtable[0] must match the documented
+    // LoginServerAPI secondary vtable at eqmain+0x1002D0. Mismatch ⇒
+    // the global at +0x150164 is something other than LoginServerAPI
+    // (Dalaya patch shifted layout? heap-garbage from a wrong RVA?) and
+    // calling JoinServer on it would crash.
+    void *vtable = nullptr;
+    __try {
+        vtable = *(void **)pAPI;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: JoinServerDirect — SEH reading vtable of pAPI=%p",
+               pAPI);
+        FreeLibrary(hEqmain);
+        return false;
+    }
+    uintptr_t expectedVtable = eqmainBase + EQMainOffsets::RVA_VTABLE_LoginServerAPI_Secondary;
+    if ((uintptr_t)vtable != expectedVtable) {
+        // R1 fix: log the actual vtable RVA so a post-Dalaya-patch debug run
+        // can identify the new value without a disassembler.
+        uintptr_t actualRva = (uintptr_t)vtable - eqmainBase;
+        DI8Log("mq2_bridge: JoinServerDirect — vtable mismatch: pAPI=%p "
+               "vtable=%p (eqmain+0x%06X) expected=%p (eqmain+0x%06X) — refusing call",
+               pAPI, vtable, (unsigned)actualRva,
+               (void *)expectedVtable,
+               (unsigned)EQMainOffsets::RVA_VTABLE_LoginServerAPI_Secondary);
+        FreeLibrary(hEqmain);
+        return false;
+    }
+
+    // Resolve the function pointer.
+    FN_JoinServer pJoinServer = (FN_JoinServer)(eqmainBase +
+        EQMainOffsets::RVA_FN_LoginServerAPI_JoinServer);
+
+    // R1 fix: prologue-byte sanity check. The vtable gate proves pAPI is a
+    // LoginServerAPI instance; this gate proves the bytes at +0x13C30 still
+    // look like an x86 function prologue. Defends against future Dalaya
+    // patches that shift the function address or anti-cheat hooks that
+    // INT3-trap or RET-stub the entry. Common x86 thiscall prologues:
+    //   0x55       push ebp           (most common; emu-branch JoinServer uses this)
+    //   0x53       push ebx           (occasional)
+    //   0x56       push esi           (occasional)
+    //   0x57       push edi           (occasional)
+    //   0x83       sub esp, N         (no-frame-pointer optimized prologue)
+    //   0x8B       mov reg, X         (frame-omitted; rare for non-trivial fns)
+    //   0x6A       push imm8          (immediate args before frame setup)
+    unsigned char firstByte = 0;
+    __try {
+        firstByte = *(const unsigned char *)pJoinServer;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: JoinServerDirect — SEH reading prologue at fn=%p "
+               "(eqmain+0x%X)", pJoinServer,
+               (unsigned)EQMainOffsets::RVA_FN_LoginServerAPI_JoinServer);
+        FreeLibrary(hEqmain);
+        return false;
+    }
+    if (firstByte != 0x55 && firstByte != 0x53 && firstByte != 0x56 &&
+        firstByte != 0x57 && firstByte != 0x83 && firstByte != 0x8B &&
+        firstByte != 0x6A) {
+        DI8Log("mq2_bridge: JoinServerDirect — prologue mismatch at fn=%p "
+               "(eqmain+0x%X): first byte 0x%02X is not a known x86 prologue "
+               "(expected one of 0x55/53/56/57/83/8B/6A) — refusing call",
+               pJoinServer,
+               (unsigned)EQMainOffsets::RVA_FN_LoginServerAPI_JoinServer,
+               firstByte);
+        FreeLibrary(hEqmain);
+        return false;
+    }
+
+    // Per emu-branch StateMachine.cpp:773, MQ2 always calls (serverID, nullptr, 30).
+    DI8Log("mq2_bridge: JoinServerDirect — dispatching pAPI=%p fn=%p "
+           "serverID=%d userdata=NULL timeout=30 prologue=0x%02X",
+           pAPI, pJoinServer, serverID, firstByte);
+
+    unsigned int result = 0;
+    bool dispatched = false;
+    __try {
+        result = pJoinServer(pAPI, serverID, nullptr, 30);
+        dispatched = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: JoinServerDirect — SEH inside JoinServer call "
+               "(serverID=%d, code=0x%08X)",
+               serverID, GetExceptionCode());
+        // dispatched stays false; outResult is UNTOUCHED per R3 idiomatic
+        // out-param contract (caller's pre-call value preserved on false
+        // return — no sentinel write that could collide with valid EQ
+        // result codes like (unsigned)-2 == 0xFFFFFFFE)
+    }
+
+    if (dispatched) {
+        if (outResult) *outResult = result;
+        DI8Log("mq2_bridge: JoinServerDirect — call returned 0x%08X (no SEH)", result);
+    }
+
+    FreeLibrary(hEqmain);
+    return dispatched;
 }

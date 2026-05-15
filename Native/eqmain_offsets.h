@@ -129,6 +129,32 @@ constexpr uint32_t RVA_VTABLE_CEditWnd       = 0x0010BE6C;
 constexpr uint32_t RVA_VTABLE_CListWnd       = 0x0010AE94;
 constexpr uint32_t RVA_VTABLE_CLabelWnd      = 0x0010AC2C;
 
+// ─── LoginServerAPI globals (Diff 4 of MQ2 RoF2-emu walkthrough) ─────
+// pinstLoginServerAPI is a void* at this RVA. Deref once → LoginServerAPI*.
+// JoinServer is a NON-VIRTUAL __thiscall at a fixed RVA (NOT a vtable slot).
+// Both pinned 2026-05-14 from upstream emu-branch
+// `_.src/_srcexamples/macroquest-rof2-emu/src/eqlib/include/eqlib/offsets/eqmain.h`
+// lines 26 + 34 (build date 20130510 matches Dalaya exactly). Live-verified
+// against Dalaya PID 7588 (2026-05-15, _.eqswitch-re/probe_login_globals.py):
+// *(eqmain+0x150164) populated, vtable[0] at eqmain+0x1002D0 (matches
+// findings.md Round 3's documented LoginServerAPI secondary vtable).
+//
+// Calling JoinServer directly bypasses the entire UI server-select click
+// chain — `JoinServer(serverID, nullptr, 30)` advances LVM from server-
+// select to char-select with no widget dispatch needed. Eliminates BURST
+// 1 keystroke uncertainty for the server-select Enter (the current 2026-
+// 05-15 dual-box failure mode where 40 retries to land gotquiz1 was
+// blamed on submit-buffer timing — JoinServer skips that pipeline entirely).
+constexpr uint32_t RVA_PINST_LoginServerAPI         = 0x00150164;
+constexpr uint32_t RVA_FN_LoginServerAPI_JoinServer = 0x00013C30;
+// LoginServerAPI's own vtable (the one at eqmain+0x1002D0 per the live
+// probe). Used as a sanity gate: the value at *(eqmain+0x150164)'s
+// vtable[0] should match this RVA. Mismatch ⇒ refuse the call.
+// The +0x1002D0 figure is from findings.md Round 3 ("LoginServerAPI
+// secondary vtable") — it's the secondary base subobject vtable, which
+// is the one stored in pinstLoginServerAPI per emu-branch class layout.
+constexpr uint32_t RVA_VTABLE_LoginServerAPI_Secondary = 0x001002D0;
+
 // Signatures match the eqgame-side dinput8 exports so call sites can
 // swap between them without adapter code:
 //   FN_WndNotification: `int (CXWnd*, CXWnd* sender, uint32_t msg, void* data)`

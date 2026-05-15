@@ -126,4 +126,86 @@ namespace MQ2Bridge {
     // stop iteration, false to continue.
     typedef bool (*PublicWndIterCallback)(void *pWnd, void *context);
     bool IterateAllWindowsPublic(PublicWndIterCallback callback, void *context);
+
+    // ─── LoginServerAPI::JoinServer (Diff 4 of MQ2 walkthrough) ─────
+    // In-process __thiscall to eqmain's LoginServerAPI::JoinServer at
+    // RVA 0x13C30, on the LoginServerAPI instance at *(eqmain+0x150164).
+    // Bypasses the UI server-select click loop entirely — when this lands,
+    // BURST keystroke fallback for the server-select Enter becomes dead
+    // weight (per emu-branch StateMachine.cpp:773 — MQ2 itself never
+    // clicks the server row, only this API call).
+    //
+    // Pre-conditions (validated internally; failures return false). The
+    // four checks form a layered defense — each catches a different threat
+    // model; collectively they bracket the call against runtime corruption
+    // and mid-session attack:
+    //   - eqmain.dll is currently loaded; this fn pins it via LoadLibraryA
+    //     refcount across its own lifetime (TOCTOU defense). Cross-checks
+    //     GetModuleHandleA == LoadLibraryA HMODULE — catches MID-SESSION
+    //     DLL drops via search-order hijack (planter sets up post-init).
+    //     ⚠️ Does NOT catch pre-init substitution (planter already loaded
+    //     when EQSwitch started); for that case the vtable + prologue
+    //     checks below are the load-bearing defense.
+    //   - *(eqmain+0x150164) is non-null (LoginServerAPI populated; this is
+    //     true any time after eqmain's globals init, well before login UI
+    //     becomes interactive — verified live 2026-05-15)
+    //   - Pointee's vtable[0] matches eqmain+0x1002D0 (the documented
+    //     LoginServerAPI secondary vtable; mismatch ⇒ refuse + log RVA).
+    //     ALSO catches pre-init substitution where the planter's eqmain.dll
+    //     has its own LoginServerAPI class with a different vtable layout.
+    //   - Function pointer at eqmain+0x13C30 begins with a known x86
+    //     prologue byte (0x55/53/56/57/83/8B/6A) — defends against
+    //     Dalaya-patch RVA shift, anti-cheat hooks, AND a planter that
+    //     somehow matched the vtable but stub'd the function entry.
+    //
+    // The call is __thiscall(this=pAPI, int serverID, void* userdata,
+    // int timeoutSeconds). MQ2 always passes (id, nullptr, 30) at the
+    // server-select moment per StateMachine.cpp:773 — we mirror that.
+    //
+    // Out-param contract (R3 — convergent T2-Opus + T2-Sonnet finding):
+    //   - On `true` return: *outResult is written with JoinServer's actual
+    //     return value (caller interprets EQ network-stack semantics —
+    //     0 = success, non-zero = EQ-side error code).
+    //   - On `false` return: *outResult is NEVER touched. Caller's pre-call
+    //     value is preserved. THIS IS LOAD-BEARING — no sentinel value is
+    //     written, because any sentinel collides with valid `unsigned int`
+    //     interpretations of negative EQ result codes (0xFFFFFFFE = -2,
+    //     0xFFFFFFFF = -1, etc.).
+    //   - outResult MAY be nullptr if the caller doesn't care about the
+    //     return code; bool dispatch-vs-failure is the primary signal.
+    //   - If outResult is non-null, it MUST point to writable memory —
+    //     no SEH wrap on the dereference (caller responsibility).
+    //
+    // ⚠️ C# wiring note for v3.19+ author (T2-Sonnet B):
+    //   Roslyn's `out uint` definite-assignment rule REQUIRES the callee to
+    //   write the parameter on every code path. Our "untouched on false"
+    //   contract is C++ idiom but conflicts with C#'s `out`. The correct
+    //   P/Invoke binding is `ref uint outResult`, NOT `out uint outResult`.
+    //   The C# caller MUST initialize the local before the call:
+    //     uint result = 0;  // pre-init required — C++ may not write
+    //     if (NativeBridge.JoinServerDirect(serverId, ref result)) {
+    //         // result holds JoinServer's actual return code
+    //     } else {
+    //         // result is whatever the C# caller pre-initialized it to
+    //     }
+    //   An `out uint` binding would compile but (a) silently zero the value
+    //   on `false` (CLR initializes outs) AND (b) violate the contract by
+    //   passing an uninitialized stack slot to native — the unguarded
+    //   *outResult write inside the `if (dispatched)` block on the success
+    //   path would still work, but the false-return path's "untouched"
+    //   semantics get clobbered by the CLR's auto-zero of outs.
+    //
+    // Thread-safety (R3 — T2-Opus #2):
+    //   - Caller MUST serialize concurrent invocations. EQ's LoginServerAPI
+    //     owns network sockets and a state machine; concurrent JoinServer
+    //     calls would corrupt that state in ways SEH cannot catch (logical
+    //     corruption, not AVs). This fn does NOT acquire a mutex; the
+    //     caller's calling protocol must guarantee serialization (e.g.,
+    //     by calling only from the GiveTime detour body which is
+    //     single-threaded on EQ's game thread).
+    //
+    // Caller should NOT assume true means "server-select advanced" — it
+    // only means the API didn't crash. Verify by polling subsequent EQ
+    // state (LVM transition to char-select, gameState change).
+    bool JoinServerDirect(int serverID, unsigned int *outResult);
 }

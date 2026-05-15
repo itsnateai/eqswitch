@@ -24,10 +24,16 @@
 //   documentation-only. Authoritative RVAs (from upstream emu-branch):
 //     pinstLoginController   = eqmain+0x15015C  — NULL at login (deferred ctor)
 //     pinstLoginServerAPI    = eqmain+0x150164  — populated at login
+//                              ↳ shipping as EQMainOffsets::RVA_PINST_LoginServerAPI
+//                                in Native/eqmain_offsets.h (single source of truth;
+//                                update there, not here)
 //     pinstCLoginViewManager = eqmain+0x150170  — populated at login
 //     pinstLoginClient       = eqmain+0x15016C  — populated at login
 //     0x150174               = unrelated helper struct (vtable not in eqmain)
-//     LoginServerAPI::JoinServer = eqmain+0x13C30  — newly pinned, unblocks Diff 4
+//     LoginServerAPI::JoinServer = eqmain+0x13C30  — pinned, Diff 4 primitive
+//                              ↳ shipping as EQMainOffsets::RVA_FN_LoginServerAPI_JoinServer
+//                                in Native/eqmain_offsets.h; callable as
+//                                MQ2Bridge::JoinServerDirect() in mq2_bridge.cpp
 //
 // GiveTime's calling convention is __thiscall: `this` arrives in ECX with no
 // stack args. For a method with zero extra args, __fastcall(ecx, edx) is
