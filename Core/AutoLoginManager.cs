@@ -931,6 +931,69 @@ public class AutoLoginManager
                 Report($"{account.Name}: transition timed out — retry {retryAttempt}/{retryCap}");
                 FileLogger.Warn($"AutoLogin: {account.Name} retry {retryAttempt}/{retryCap} starting (initial timeout = {initialTimeoutMs}ms, elapsed = {transitionSw.ElapsedMilliseconds}ms)");
 
+                // v3.18.0: read LIVE OK_Display SHM mirror at retry-loop entry.
+                // The native always-on probe (login_state_machine.cpp's
+                // PollOkDisplayToShm) publishes dialog text + classification on
+                // every poll regardless of state-machine phase, so this read is
+                // valid even though today's PATH B keystroke retry runs with
+                // the DLL state machine at PHASE_IDLE. None when no dialog up
+                // (DLL clears the field) or when LoginShm wasn't opened
+                // (loginShm == null bare-fallback case — handled by the
+                // null-coalesce below).
+                //
+                // Snapshot at retry-loop entry for race safety, alongside the
+                // R3-snapshotted tunables at the RunLoginSequence header. The
+                // text + class can change tick-to-tick if EQ dismisses the
+                // dialog mid-recovery, but we make the dispatch decision once
+                // per retry iteration based on the entry-snapshot value.
+                //
+                // R2 (v3.18.0 verifier T2-O #14 + T3-O P3): use the atomic
+                // ReadOkDisplaySnapshot helper instead of two separate reads.
+                // It performs a class-text-class read and detects torn writes
+                // (class differs across the bracketing reads), returning None
+                // on detected race. Without this, "class=Fatal text=''" or
+                // "class=None text='Invalid Password'" pairings were possible.
+                var okSnapshot = loginShm?.ReadOkDisplaySnapshot(pid) ?? (OkDisplayClass.None, "");
+                OkDisplayClass okClass = okSnapshot.Class;
+                string okText = okSnapshot.Text;
+                // R2 (v3.18.0 verifier T3-S MED + T3-O P1 #5): redact log
+                // line. EQ may surface dialogs that echo username back (e.g.,
+                // "User <name> entered an invalid password" — speculative for
+                // Dalaya but real for some EQ servers). Mirror the v3.15.6
+                // native-side credential-redaction stance. Log class + text
+                // length; full text remains accessible via the SHM mirror for
+                // the in-process classification logic that already saw it.
+                //
+                // R3 (v3.18.0 verifier T3-O LOW): gate the log on non-trivial
+                // snapshot — class==None && length==0 is the common happy-path
+                // "no dialog up" tick and produces ≤connectRetryCount info
+                // lines per login that convey nothing. Skip those.
+                if (okClass != OkDisplayClass.None || okText.Length > 0)
+                {
+                    FileLogger.Info($"AutoLogin: retry {retryAttempt} OK_Display snapshot — class={okClass}, text.length={okText.Length}");
+                }
+
+                // Fatal classification → no further retries can help. Re-typing
+                // doesn't fix "Invalid Password" or "you need to enter a username
+                // and password". Break out of the retry budget entirely so the
+                // user gets the actual error surfaced instead of N retries
+                // burning ~30s each before the same fatal dialog appears.
+                //
+                // R3 (v3.18.0 verifier T2-S REJECT): redact okText at ALL three
+                // sites. R2 only covered the info-level snapshot log above; the
+                // Fatal branch's FileLogger.Error and user-facing Report still
+                // surfaced verbatim text. Per the v3.15.6 redaction stance: if
+                // future EQ dialogs echo creds back, we want zero leak surface.
+                // Log a length-only diagnostic; surface a generic class-driven
+                // message to the user. The classification (Fatal) is itself
+                // sufficient to drive the abort — the WHY is debug-only.
+                if (okClass == OkDisplayClass.Fatal)
+                {
+                    FileLogger.Error($"AutoLogin: {account.Name} retry {retryAttempt} aborted — fatal OK_Display class (text.length={okText.Length})");
+                    Report($"{account.Name}: login rejected — credentials problem (check eqswitch.log for diagnostic)");
+                    break;
+                }
+
                 // (1) State-aware modal dismiss — gate on observable EQ state.
                 //
                 // ⚠️ DALAYA gameState VALUES ARE PARTIALLY UNKNOWN. Native/login_state_machine.cpp
@@ -970,13 +1033,54 @@ public class AutoLoginManager
                 }
 
                 // (2) Cancellable stale-session wait. Short-circuit on EQ death.
-                // ALWAYS use staleSessionWaitMs (default 30s) — C# alone can't
-                // distinguish truncated-creds (1s wait would suffice) from stale-
-                // session-held (needs 30-45s release). Distinguishing requires the
-                // OK_Display error-text probe deferred to v3.18 + SHM v3 bump.
-                // Net retry-cycle savings still ~75s on first retry from the
-                // initial-timeout shortening alone (90s → 5s).
-                if (!CancellableSleepUntilProcessDies(pid, staleSessionWaitMs, staleSessionPollIntervalMs))
+                //
+                // v3.18.0 (2026-05-15): tune the wait based on the OK_Display
+                // text snapshot taken at retry-loop entry (above). The v3.17.0
+                // code path always slept staleSessionWaitMs (default 30s) and
+                // explicitly noted that distinguishing required this SHM bump.
+                //
+                // Tuning rules (case-insensitive substring match):
+                //   "stale" / "still logged in" / "in use" → keep full
+                //     staleSessionWaitMs (30s default) — server is holding
+                //     the session slot and needs time to release.
+                //   "truncated" / "incomplete" → 1000ms — credentials were
+                //     mangled (e.g. layout-skip), short wait suffices.
+                //   anything else (Recoverable but unrecognized text, or no
+                //     dialog at all) → fall back to staleSessionWaitMs.
+                //
+                // Success class falls through to the default — the "Logging
+                // in to the server" message means EQ is mid-handshake and
+                // re-typing immediately would just collide with an in-flight
+                // login attempt.
+                int tunedRecoveryWaitMs = staleSessionWaitMs;
+                string tuningReason = "default (no text classification)";
+                if (okClass == OkDisplayClass.Recoverable && !string.IsNullOrEmpty(okText))
+                {
+                    string lower = okText.ToLowerInvariant();
+                    if (lower.Contains("truncated") || lower.Contains("incomplete"))
+                    {
+                        tunedRecoveryWaitMs = 1000;
+                        tuningReason = "truncated/incomplete creds";
+                    }
+                    else if (lower.Contains("stale") || lower.Contains("still logged") || lower.Contains("in use"))
+                    {
+                        tunedRecoveryWaitMs = staleSessionWaitMs;
+                        tuningReason = "stale session held";
+                    }
+                    else
+                    {
+                        // R3 (v3.18.0 verifier T2-S REJECT): don't embed okText
+                        // verbatim. Log length only — the diagnostic value of
+                        // "we got a recoverable dialog we don't recognize" is
+                        // captured by the length + the fact that the bucket
+                        // fell through. Future expansion of patterns is the
+                        // right fix path (CHANGELOG "deferred for empirical
+                        // capture"), not leaking unrecognized text via logs.
+                        tuningReason = $"recoverable (unrecognized text, length={okText.Length})";
+                    }
+                }
+                FileLogger.Info($"AutoLogin: retry {retryAttempt} recovery wait = {tunedRecoveryWaitMs}ms — {tuningReason}");
+                if (!CancellableSleepUntilProcessDies(pid, tunedRecoveryWaitMs, staleSessionPollIntervalMs))
                 {
                     FileLogger.Warn($"AutoLogin: {account.Name} EQ process exited during retry {retryAttempt} recovery wait — aborting");
                     Report($"{account.Name}: EQ exited during recovery wait — aborting");

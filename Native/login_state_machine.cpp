@@ -86,6 +86,119 @@ static void SetError(volatile LoginShm *shm, const char *msg) {
     DI8Log("login_sm: ERROR: %s", msg);
 }
 
+// v3 SHM (2026-05-15): publish the LIVE OK_Display dialog text + a pre-
+// classified bucket so C#'s RunLoginSequence retry loop can tune behavior
+// without re-implementing the strstr matching here. Distinct from
+// SetError() — SetError is SET-ONCE on fatal classification, this is LIVE
+// per-poll mirror that gets cleared when the dialog disappears.
+//
+// classBucket values:
+//   0 = none       (no dialog up, OR g_pOkDisplay returned empty text)
+//   1 = fatal      ("password were not valid", "Invalid Password",
+//                   "enter a username and password")
+//   2 = recoverable (any other dialog text — stale-session, server-busy,
+//                   truncated-creds, etc.)
+//   3 = success    ("Logging in to the server")
+static void SetOkDisplay(volatile LoginShm *shm, const char *text, uint32_t classBucket) {
+    if (text && text[0]) {
+        strncpy((char *)shm->okDisplayText, text, LOGIN_ERROR_LEN - 1);
+        ((char *)shm->okDisplayText)[LOGIN_ERROR_LEN - 1] = '\0';
+    } else {
+        ((char *)shm->okDisplayText)[0] = '\0';
+    }
+    shm->okDisplayClass = classBucket;
+}
+
+// Helper: clear the LIVE OK_Display fields. Called when we leave
+// PHASE_WAIT_CONNECT_RESP (no dialog is being polled there anymore) or
+// when g_pOkDisplay returns empty text on a tick where it was previously
+// populated. Safe to call repeatedly — idempotent.
+static void ClearOkDisplay(volatile LoginShm *shm) {
+    ((char *)shm->okDisplayText)[0] = '\0';
+    shm->okDisplayClass = 0;
+}
+
+// R2 (v3.18.0 verifier T2-O #4 + T3-O P1 #4 + T3-S LOW): single source of
+// truth for OK_Display dialog-text classification. Was duplicated between
+// PollOkDisplayToShm (always-on probe) and the in-phase
+// PHASE_WAIT_CONNECT_RESP body — adding a new fatal pattern to one site
+// without the other would cause silent classification drift. The duplication
+// was acknowledged in code-comments as "the honest cost of having a phase-
+// independent mirror" but the verifier sweep convergent-flagged it as a
+// real maintenance hazard worth fixing.
+//
+// Returns the classBucket value used by SetOkDisplay:
+//   1 = Fatal       (login server rejected — re-typing won't help)
+//   2 = Recoverable (any other dialog text — server-busy, stale-session, etc.)
+//   3 = Success     (server accepted, mid-handshake)
+//
+// Caller guarantees text is non-empty (this returns the wrong bucket for
+// empty text — empty should ClearOkDisplay, not Classify).
+static uint32_t ClassifyDialogText(const char *text) {
+    if (strstr(text, "password were not valid") ||
+        strstr(text, "Invalid Password") ||
+        strstr(text, "enter a username and password")) {
+        return 1; // Fatal
+    }
+    if (strstr(text, "Logging in to the server")) {
+        return 3; // Success ("connecting...")
+    }
+    return 2; // Recoverable (stale-session, server-busy, truncated, etc.)
+}
+
+// Forward decl — defined ~line 193 below. Needed because the standalone
+// always-on probe lives above the original PHASE_WAIT_CONNECT_RESP-only
+// callers in the file.
+static void DiscoverDialogWidgets();
+
+// v3 SHM (2026-05-15): standalone always-on OK_Display probe.
+//
+// Called from Tick() on every poll regardless of state machine phase.
+// The state machine sits at PHASE_IDLE for the entirety of today's PATH B
+// (C# keystroke retry) flow — PATH A (TryLoginViaShm in AutoLoginManager.cs
+// line ~795) is currently commented out, so the state machine never enters
+// PHASE_WAIT_CONNECT_RESP and the in-phase SetOkDisplay calls don't fire.
+//
+// Without this standalone probe, the v3 LIVE OK_Display SHM mirror would
+// be dormant in today's actual login flow (only useful when PATH A is
+// reanimated). The probe's purpose: publish dialog state to SHM
+// continuously so the C# v3.17.0 retry loop in AutoLoginManager.cs can
+// distinguish stale-session from wrong-password from truncated-creds even
+// while the DLL state machine is idle.
+//
+// Cost: two FindWindowByName heap-walks per 500ms tick. Negligible
+// compared to the bridge's existing pre-login kPromptWindows[] walk and
+// HeapScanForWidget calls. Re-uses g_pOkDisplay / g_pOkButton cache.
+//
+// Bypass policy: only fires when loginShm is mapped (i.e., AutoLoginManager
+// has explicitly opened the LoginShm for this PID via LoginShmWriter.Open).
+// Bare-launch processes (no LoginShm mapping) never reach this code path
+// — Tick() returns immediately at the magic-mismatch check at line 239.
+static void PollOkDisplayToShm(volatile LoginShm *shm) {
+    DiscoverDialogWidgets();   // resolves g_pOkDisplay if a dialog is up
+
+    if (!g_pOkDisplay) {
+        ClearOkDisplay(shm);
+        return;
+    }
+
+    char dialogText[512] = {};
+    MQ2Bridge::ReadWindowText(g_pOkDisplay, dialogText, sizeof(dialogText));
+
+    if (!dialogText[0]) {
+        // Widget cached but text empty — dialog was just dismissed, OR
+        // is mid-construction. Clear so C# doesn't see stale text from
+        // a prior tick where the dialog WAS populated.
+        ClearOkDisplay(shm);
+        return;
+    }
+
+    // R2 (v3.18.0): single source of truth via ClassifyDialogText helper.
+    // The in-phase PHASE_WAIT_CONNECT_RESP body uses the same helper, so
+    // adding a new pattern only needs editing one site.
+    SetOkDisplay(shm, dialogText, ClassifyDialogText(dialogText));
+}
+
 static DWORD PhaseAge() {
     return GetTickCount() - g_phaseEntryTick;
 }
@@ -266,6 +379,30 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         }
 
         loginShm->command = LOGIN_CMD_NONE;
+    }
+
+    // v3 SHM (2026-05-15): OK_Display SHM mirror — gated on autoLoginActive
+    // per in-flight smoke 2026-05-15 ~00:27 (3-sec system-wide UI lag +
+    // Windows "please close this program" popup; root cause hypothesis:
+    // FindWindowByName heap-walks every 500ms tick contend with EQ's
+    // allocator during mid-init / connect-retry, stalling the game thread
+    // → tray balloons queue on C# side → Windows flags UI as hung).
+    //
+    // Gate semantics: autoLoginActive==1 only during the
+    // AutoLoginManager.RunLoginSequence active window (set after
+    // LoginShmWriter.Open + SetAutoLoginActive, cleared in the finally
+    // block). Bare launches and post-login idle stay at 0 → probe never
+    // fires → zero overhead.
+    //
+    // Trade-off: the v3.18 OK_Display mirror is now scoped to active
+    // autologin only. PATH B (C# keystroke retry) is exactly the use-case
+    // that needs it today — autoLoginActive=1 during that whole window.
+    // PATH A (currently disabled) would also have autoLoginActive=1
+    // during its TryLoginViaShm run. The "fire even when no login is
+    // in progress" semantic was overly broad and produced no benefit at
+    // measurable cost.
+    if (loginShm->autoLoginActive) {
+        PollOkDisplayToShm(loginShm);
     }
 
     // Nothing to do if idle or terminal state
@@ -471,6 +608,9 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
             if (gameState != g_connectGameState && g_connectGameState != -99) {
                 DI8Log("login_sm: connect response — gameState changed %d -> %d", g_connectGameState, gameState);
                 g_connectGameState = -99; // reset for next login
+                // v3 SHM: clear LIVE OK_Display fields on successful advance
+                // so C# retry path doesn't see stale text from a prior tick.
+                ClearOkDisplay(loginShm);
                 SetPhase(loginShm, PHASE_SERVER_SELECT);
                 break;
             }
@@ -487,22 +627,26 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
             if (dialogText[0]) {
                 DI8Log("login_sm: dialog text: '%s'", dialogText);
 
-                // Fatal errors — stop login
-                if (strstr(dialogText, "password were not valid") ||
-                    strstr(dialogText, "Invalid Password") ||
-                    strstr(dialogText, "enter a username and password")) {
+                // R2 (v3.18.0): single classification site via shared helper.
+                // Publish to SHM BEFORE acting so C# retry path observes the
+                // classification at any poll cadence (including the post-
+                // SetError-triggered PHASE_ERROR transition for fatal, and
+                // the post-OK-click dismiss for recoverable).
+                uint32_t classBucket = ClassifyDialogText(dialogText);
+                SetOkDisplay(loginShm, dialogText, classBucket);
+
+                if (classBucket == 1) {
+                    // Fatal — stop login
                     SetError(loginShm, dialogText);
                     break;
                 }
-
-                // Success message — server is connecting
-                if (strstr(dialogText, "Logging in to the server")) {
+                if (classBucket == 3) {
+                    // Success — server is connecting; wait for gameState change
                     DI8Log("login_sm: server connecting...");
-                    // Wait for game state to change
                     break;
                 }
 
-                // Recoverable error — click OK and retry
+                // Recoverable (classBucket == 2) — click OK and retry
                 if (g_pOkButton) {
                     g_retryCount++;
                     loginShm->retryCount = g_retryCount;
@@ -516,7 +660,19 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
                     InvalidateWidgets();
                     SetPhase(loginShm, PHASE_WAIT_LOGIN_SCREEN);
                 }
+            } else {
+                // g_pOkDisplay exists but ReadWindowText returned empty —
+                // dialog widget is up but not yet populated, OR was just
+                // dismissed. Clear LIVE fields so C# doesn't see stale text
+                // from a prior tick.
+                ClearOkDisplay(loginShm);
             }
+        } else {
+            // No OK_Display widget cached on this poll. Clear LIVE fields.
+            // (Note: this fires every tick on the happy path where no error
+            // dialog is up — that's fine, ClearOkDisplay is idempotent and
+            // cheap.)
+            ClearOkDisplay(loginShm);
         }
 
         // Check for "already logged in" yes/no dialog
