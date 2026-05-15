@@ -52,6 +52,34 @@ static constexpr uint8_t PROLOGUE_FREEREP[8] = { 0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0
 // LoginFrontend.h:799 (`/*0x278*/ CXStr InputText`) compressed for x86.
 static constexpr uint32_t OFFSET_INPUT_TEXT = 0x1A8;
 
+// ─── eqgame.exe __ScreenMode (Diff 1 from mq2-autologin-eqswitch-diff.md) ────
+// Empirical enum (live-verified 2026-05-14 across all 4 screen states):
+//   1 = login screen (eqmain.dll UI)
+//   1 = server-select (eqmain.dll UI, same)
+//   2 = char-select transition (eqgame.exe takes over)
+//   2 = in-world (eqgame.exe natural)
+//   3 = NEVER natural — special "fullscreen-UI-input" mode MQ2's autologin
+//       forces during writes (cross-confirmed via MQ2HUD.cpp:617 HUDTYPE_FULLSCREEN
+//       gate and MQ2FrameLimiter.cpp:271 *pScreenMode != 3 branch).
+//
+// MQ2's autologin pattern (StateMachine.cpp:265-279) swaps to 3 during the
+// password/username writes + Connect click, then restores. The hypothesis B-1
+// premise (mq2-autologin-walkthrough.md §3.2): without this swap, EQ's natural
+// state-1 login UI may apply input filters that prevent Combo G's CXStr write
+// from propagating to the submit pipeline at Connect-click time.
+//
+// Source: emu-branch eqlib/include/eqlib/offsets/eqgame.h:84
+//   __ScreenMode_x = 0xD1F3B8 (absolute at preferred ImageBase 0x400000)
+//   → RVA 0xD1F3B8 - 0x400000 = 0x91F3B8
+// Live-verified at this RVA against running Dalaya PID 8596 on 2026-05-14.
+// Build-date match confirmed: emu-branch __ClientDate = 20130510u "May 10 2013"
+// matches Dalaya eqgame.exe exactly.
+//
+// ASLR active on Dalaya — eqgame.exe rebases (observed: 0x006E0000 vs preferred
+// 0x400000). MUST use GetModuleHandleA(NULL) + RVA at runtime; absolute value
+// 0xD1F3B8 will be wrong on every launch.
+static constexpr uint32_t RVA_GLOBAL_ScreenMode = 0x0091F3B8;
+
 // ─── Cached function pointers ───────────────────────────────
 typedef CXStr_Dalaya *(__thiscall *FN_CtorFromCStr)(CXStr_Dalaya *self, const char *s);
 typedef void          (__thiscall *FN_FreeRep)     (CXStr_Dalaya *self, CStrRep_Dalaya *rep);
@@ -192,7 +220,86 @@ void Free(CXStr_Dalaya *x) {
 // filters by exact vtable match. If pEditWnd is a wrapper or stale, the
 // SEH-wrapped touch-test on +0x1A8 catches and we return false cleanly so
 // the caller falls back to keystroke (b142afe path).
+
+// Forward decl for the inner implementation. WriteEditTextDirect wraps this
+// with the ScreenMode = 3 swap (per Diff 1; see mq2-autologin-eqswitch-diff.md).
+static bool WriteEditTextDirectImpl(void *pEditWnd, const char *text);
+
 bool WriteEditTextDirect(void *pEditWnd, const char *text) {
+    // ScreenMode swap (Diff 1, hypothesis B-1 from the walkthrough).
+    // Resolved at-call to keep the function callable from any thread without
+    // a cached-pointer-staleness concern; GetModuleHandleA(NULL) is O(1) on
+    // an already-loaded module (returns the cached PE-loader pointer).
+    HMODULE hEqgame = GetModuleHandleA(NULL);
+    volatile DWORD *pScreenMode = nullptr;
+    DWORD oldScreenMode = 0;
+    bool screenModeSwapped = false;
+    if (hEqgame) {
+        pScreenMode = reinterpret_cast<volatile DWORD *>(
+            reinterpret_cast<uint8_t *>(hEqgame) + RVA_GLOBAL_ScreenMode);
+        __try {
+            // Empirical mapping (live probe 2026-05-14): natural ScreenMode is
+            //   - 1 at login screen (when user is VISUALLY at the password field)
+            //   - 2 at char-select / in-world
+            //   - 3 NEVER natural (MQ2's deliberate fullscreen-UI-input mode)
+            //
+            // But: live test 2026-05-14 PID 8048 showed ScreenMode=0 at write-time.
+            // The DLL's Combo G fires VERY EARLY in EQ's init (right after eqmain
+            // widget tree is built), BEFORE EQ sets ScreenMode = 1. At that window,
+            // ScreenMode is still BSS-zero. So the natural pre-write value can be
+            // 0 OR 1 depending on timing.
+            //
+            // Gate <=8 admits both natural values + rejects garbage.
+            // RESTORE policy: don't restore-to-0 — if we were at 0, EQ is about
+            // to set it to 1; restoring to 0 would race against EQ's init and
+            // could leave it inappropriately at 0. Restore only if was >=1.
+            oldScreenMode = *pScreenMode;
+            if (oldScreenMode <= 8) {
+                *pScreenMode = 3;
+                // Mark swapped only if we have a meaningful old value to restore.
+                // Was-0 → don't restore (EQ will set it itself; restoring to 0
+                // could race against EQ's natural init transition 0→1).
+                screenModeSwapped = (oldScreenMode >= 1);
+            } else {
+                DI8Log("eqmain_cxstr: ScreenMode swap skipped — natural value 0x%X out of expected range [0..8] (wrong RVA on this Dalaya build?)",
+                       (unsigned)oldScreenMode);
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            DI8Log("eqmain_cxstr: ScreenMode swap SEH fault — RVA 0x%08X unreadable at runtime",
+                   RVA_GLOBAL_ScreenMode);
+            screenModeSwapped = false;
+        }
+    }
+
+    // The actual write. Wrapped in __try/__except (NOT __finally) because
+    // MSVC C2702 forbids __try/__except inside a termination block, and the
+    // restore step below needs its own __try/__except. Catching here also
+    // SWALLOWS the SEH instead of letting it unwind to the caller — safer
+    // since the caller (login_state_machine.cpp:375) only checks the boolean
+    // return and isn't expecting to handle exceptions.
+    bool result = false;
+    __try {
+        result = WriteEditTextDirectImpl(pEditWnd, text);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("eqmain_cxstr: WriteEditTextDirectImpl SEH-unwind caught — returning false");
+        result = false;
+    }
+
+    // Restore ScreenMode AFTER the write (whether it succeeded, returned false,
+    // or SEH-faulted-and-was-caught above). Runs on all exit paths because we
+    // swallowed the SEH unwind in the __except above.
+    if (screenModeSwapped && pScreenMode) {
+        __try {
+            *pScreenMode = oldScreenMode;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            DI8Log("eqmain_cxstr: ScreenMode restore SEH fault — value left at 3");
+        }
+    }
+
+    return result;
+}
+
+static bool WriteEditTextDirectImpl(void *pEditWnd, const char *text) {
     if (!pEditWnd || !text) return false;
     if (!HasResolvedFunctions()) {
         DI8Log("eqmain_cxstr: WriteEditTextDirect refused — CXStr functions unresolved");

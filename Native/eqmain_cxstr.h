@@ -14,18 +14,30 @@
 //
 // Recon source: Native/recon/phase4-cxstr-recon.md (committed 2026-04-24)
 //
-// ─── DORMANT ────────────────────────────────────────────────
-// This translation unit ships as DORMANT CODE. It is NOT yet:
-//   * compiled into eqswitch-di8.dll (build.sh / build-di8-inject.sh do
-//     not reference these files yet)
-//   * called from any live code path in mq2_bridge.cpp,
-//     login_state_machine.cpp, or eqswitch-di8.cpp's DllMain
+// ─── STATUS (corrected 2026-05-14) ──────────────────────────
+// Earlier header text claimed this file ships as DORMANT CODE. THAT IS NO
+// LONGER ACCURATE — `build-di8-inject.sh` includes `eqmain_cxstr.cpp` in the
+// link line, and `login_state_machine.cpp:375` actively calls
+// `EQMainCXStr::WriteEditTextDirect(pPasswordWidget, g_password)` in the
+// shipping Combo G code path. The original "dormant" claim was from the
+// iter-11 era and was not updated when iter-12 wired the call site.
 //
-// The Native/ binary tree stays at e8faf9b state per
-// memory/feedback_eqswitch_e8faf9b_is_anchor.md — wire-up requires a
-// dual-box smoke test on Dalaya before flipping any call site to
-// WriteEditTextDirect(). Do not enable the build inclusion or invoke
-// these functions without that gate.
+// Implications for maintenance:
+//   * Edits to WriteEditTextDirect affect the live autologin flow on next
+//     rebuild — dual-box smoke (including BACKGROUND-client) is mandatory
+//     before tagging a release with changes to this file.
+//   * If a Dalaya patch shifts the eqmain.dll RVAs, the prologue-check in
+//     ResolveCXStrFunctions returns false → WriteEditTextDirect refuses →
+//     login_state_machine falls back to the b142afe keystroke path (per
+//     memory/feedback_eqswitch_no_regression_to_dinput8.md fail-mode rule).
+//
+// 2026-05-14: Added ScreenMode = 3 swap wrapper around WriteEditTextDirect
+// per Diff 1 of `_.eqswitch-re/mq2-autologin-eqswitch-diff.md`. Empirically
+// confirmed at login + server-select + char-select + in-world that natural
+// ScreenMode is {1, 1, 2, 2} respectively — value `3` is NEVER natural and is
+// MQ2's deliberate "fullscreen-UI-input" mode forced during writes. The
+// swap forces EQ to process Combo G's CXStr write under fullscreen-UI-input
+// semantics (cross-confirmed via MQ2HUD.cpp:617 + MQ2FrameLimiter.cpp:271).
 //
 // ─── Threat model ───────────────────────────────────────────
 // On every Dalaya patch the eqmain.dll RVAs and prologue bytes can drift.
