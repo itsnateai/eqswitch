@@ -5,7 +5,29 @@
 //
 //   Dalaya eqmain.dll RVAs:
 //     LoginController::GiveTime      0x128B0
-//     pLoginController (ptr-to-ptr)  0x150174  (for Phase 4 — not used here)
+//
+// HISTORICAL NOTE (corrected 2026-05-14):
+//   The original Phase 1 recon flagged 0x150174 as "pLoginController (ptr-to-ptr)
+//   for Phase 4 — not used here". That label is wrong per (a) authoritative
+//   upstream emu-branch eqlib/include/eqlib/offsets/eqmain.h:33 which puts
+//   pinstLoginController at 0x1015015C (RVA 0x15015C), and (b) live probe
+//   against Dalaya PID 8596 (2026-05-14, _.eqswitch-re/probe_login_globals.py)
+//   which read *(eqmain+0x150174) = 0x0286C510 whose vtable[0] = 0x021D8938
+//   (NOT an eqmain.dll vtable — heap-garbage object, NOT a real LoginController).
+//   The same probe confirmed *(eqmain+0x15015C) is NULL at login (LoginController
+//   only constructed later) while *(eqmain+0x150164) (the real pinstLoginServerAPI)
+//   points to a valid LoginServerAPI instance with vtable in eqmain.dll.
+//
+//   This detour's RUNTIME BEHAVIOR IS CORRECT regardless: g_loginController is
+//   populated from `thisPtr` of the GiveTime invocation (which IS the real
+//   LoginController*), never from reading the global directly. The bug was
+//   documentation-only. Authoritative RVAs (from upstream emu-branch):
+//     pinstLoginController   = eqmain+0x15015C  — NULL at login (deferred ctor)
+//     pinstLoginServerAPI    = eqmain+0x150164  — populated at login
+//     pinstCLoginViewManager = eqmain+0x150170  — populated at login
+//     pinstLoginClient       = eqmain+0x15016C  — populated at login
+//     0x150174               = unrelated helper struct (vtable not in eqmain)
+//     LoginServerAPI::JoinServer = eqmain+0x13C30  — newly pinned, unblocks Diff 4
 //
 // GiveTime's calling convention is __thiscall: `this` arrives in ECX with no
 // stack args. For a method with zero extra args, __fastcall(ecx, edx) is

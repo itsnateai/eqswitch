@@ -1,5 +1,57 @@
 # Changelog
 
+## v3.16.0 — ScreenMode swap during Combo G password write (2026-05-14)
+
+Closes hypothesis B-1 from this session's MQ2 RoF2-emu autologin deep-dive: MQ2's `MQ2AutoLogin/StateMachine.cpp:265` wraps each password write in a `ScreenMode = 3` swap that forces EQ into "fullscreen-UI-input" mode for the duration of the write, then restores. v3.15.13 shipped Combo G without this swap and the password CXStr write was reaching `CEditBaseWnd::InputText` at `+0x1A8` byte-perfectly but EQ's natural state-1 login UI was applying input filters that prevented the write from propagating to the LoginClient submit pipeline at Connect-click time.
+
+### Single-box smoke (PID 27748)
+40.3s wall-clock, EXIT 0 from `--test-autologin` runner, ZERO SEH faults across the native dispatch path. Password CXStr read-back length=7 first byte matches; eqmain.dll UNLOADED at end of run (proof EQ reached past charselect).
+
+### Dual-box BACKGROUND smoke (PIDs 23520 + 33344)
+Both clients independently completed autologin in parallel — the iter-12 failure mode (BACKGROUND-client SHM-keystroke drops under game-thread starvation) did NOT manifest. Both reached `ScreenMode = 2` (char-select / in-world) with zero SEH. Confirmed end-to-end (both clients in-world).
+
+### What changed in Native/
+
+**`Native/eqmain_cxstr.cpp` (the load-bearing diff):**
+
+Added `RVA_GLOBAL_ScreenMode = 0x0091F3B8` constant. Source: `github.com/macroquest/eqlib` @ `emu` branch, `include/eqlib/offsets/eqgame.h:84` (`__ScreenMode_x = 0xD1F3B8` absolute at preferred ImageBase `0x400000`). Build-date match verified (`__ClientDate = 20130510u "May 10 2013"` matches Dalaya `eqgame.exe` byte-for-byte). RVA validated against running Dalaya across 4 screen states (`probe_screenmode.py` against PIDs at login + server-select + char-select + in-world; values seen `1 / 1 / 2 / 2` respectively; `3` is never natural — MQ2's deliberate fullscreen-UI-input mode, cross-confirmed via `MQ2HUD.cpp:617` HUDTYPE_FULLSCREEN gate + `MQ2FrameLimiter.cpp:271` frame-limiter branch on `*pScreenMode != 3`).
+
+Refactored `WriteEditTextDirect` into a thin swap wrapper + a renamed-to-private `WriteEditTextDirectImpl` containing the original CXStr write body unchanged. Wrapper sequence:
+1. `GetModuleHandleA(NULL) → eqgame.exe runtime base` (ASLR-aware — Dalaya rebases eqgame.exe at runtime, observed slide `+0x2E0000`)
+2. Compute `pScreenMode = base + RVA_GLOBAL_ScreenMode`, SEH-wrapped DWORD read
+3. Sanity gate `oldScreenMode <= 8` admits the empirical natural values (0 in BSS-uninit pre-EQ-init OR 1 in post-EQ-init) and rejects out-of-range garbage from a wrong RVA on hypothetical Dalaya patches
+4. Write `*pScreenMode = 3` (the fullscreen-UI-input mode forcing)
+5. Call `WriteEditTextDirectImpl(pEditWnd, text)` in `__try/__except` (catches any SEH unwind from the impl so the caller sees clean false instead of an exception propagating)
+6. Restore `*pScreenMode = oldScreenMode` ONLY if pre-write value was `>=1` (no-restore policy when pre-write was 0 — lets EQ's natural init transition 0→1 race against our restore safely; restoring to 0 against an already-initialized EQ could leave it inappropriately in pre-init state)
+
+Restore step is its own SEH-wrapped block — separate from the impl's, because MSVC C2702 forbids `__try/__except` inside `__finally` termination blocks. Catching the impl's SEH means the wrapper guarantees the restore runs on every exit path (normal return, false return, SEH unwind).
+
+**`Native/eqmain_cxstr.h`:**
+
+Corrected the stale "DORMANT" status block at the top of the header. The file has been in `build-di8-inject.sh`'s link line and `login_state_machine.cpp:375` has been actively calling `EQMainCXStr::WriteEditTextDirect(pPasswordWidget, g_password)` since iter-12 wired the call site — the dormant-claim was leftover documentation from the iter-11 era. Replaced with current-status block documenting the ScreenMode swap rationale + the maintenance implication that edits to `WriteEditTextDirect` now affect the live autologin flow.
+
+**`Native/login_givetime_detour.cpp` (documentation-only):**
+
+Corrected the misleading `pLoginController (ptr-to-ptr) 0x150174 (for Phase 4 — not used here)` comment that's been wrong for years. Per upstream emu-branch `eqlib/include/eqlib/offsets/eqmain.h:33`, the real `pinstLoginController` is at RVA `0x15015C`, and live probe against running Dalaya (`probe_login_globals.py`) confirms `*(eqmain+0x150174)` points to a heap object whose vtable[0] = `0x021D8938` (NOT an eqmain.dll vtable) — i.e., `0x150174` is some unrelated helper struct, not pLoginController. The detour's RUNTIME BEHAVIOR was correct regardless because `g_loginController` is populated from `thisPtr` of the GiveTime invocation (the real `this`), never from reading the global address directly — but a future maintainer following the comment would have hit garbage. New comment block documents the authoritative RVAs:
+- `pinstLoginController = eqmain+0x15015C` (NULL at login — LoginController constructed lazily)
+- `pinstLoginServerAPI = eqmain+0x150164` (populated at login — unblocks Diff 4 follow-up)
+- `pinstCLoginViewManager = eqmain+0x150170` (populated at login)
+- `pinstLoginClient = eqmain+0x15016C` (populated at login)
+- `0x150174` = unrelated helper struct (vtable not in eqmain — confirmed live probe)
+- `LoginServerAPI::JoinServer = eqmain+0x13C30` (newly pinned, available for Diff 4 follow-up)
+
+### What's NOT in this release
+
+- **No change to the C# autologin orchestrator.** `AutoLoginManager` doesn't know about ScreenMode — the swap is purely DLL-internal around the CXStr write. No new SHM fields, no new IPC commands, no new state machine phases.
+- **No fix for the pre-existing LOGIN_ConnectButton heap-scan brittleness.** `mq2_bridge.cpp`'s heap-cross-ref scan still finds `CXMLDataPtr` definitions instead of live `CButtonWnd` instances on most launches, falls back to SHM keystroke for the Enter submit, gets there in the end. Reliability is unchanged from v3.15.13. The proper structural fix (use `pLoginViewManager + 0x14` anchor for ConnectWnd then `GetChildItem` for the button) is documented as follow-up Diff 2/3 in `_.eqswitch-re/mq2-autologin-eqswitch-diff.md` but deferred because keystroke fallback works.
+- **No tag of the broader `_.eqswitch-re/` corpus.** The walkthrough + diff docs + probe scripts are local-only (`_.eqswitch-re/` is under the `_.claude/**` local-only gate per `~/.claude/CLAUDE.md`). They're available to future Claude sessions via Syncthing but not on GitHub.
+
+### Provenance trail
+
+- Crash recovery for Opus session `23cf1bff` (2026-05-14 04:05-04:21 MDT, $58.57 stream-idle-timeout) — the original deep-dive that surfaced hypothesis B-1 + this session's empirical follow-up live-probed against running Dalaya across all 4 screen states.
+- 3 rounds of pair-by-topic verifier sweeps (Sonnet + Opus on Diff-clean, Gap-audit, Code-review topics) caught: stale `pinstLoginServerAPI` value contradicting itself across sections; sanity gate `<=16` admitting BSS-zero; `__except` inside `__finally` MSVC syntax error caught at compile time after the third sweep; misleading `pLoginController = 0x150174` shipping comment.
+- 7 reusable RE probe scripts now in `_.eqswitch-re/probe_*.py` for future Dalaya runtime verification.
+
 ## v3.15.11 — Native two-tier throttle + Dalaya SHM Enter World skip (2026-05-09)
 
 Closes the two "deferred to future session" follow-ups left at the bottom of the v3.15.10 entry. Both attack the remaining ~5–7s of charselect dwell + SHM enter-world retry waste; combined target is ~1–1.5s charselect dwell (was 4.4s/3.8s) and ~55s end-to-end SendKeys → "logged in" (was 61.7s).
