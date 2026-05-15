@@ -1662,6 +1662,17 @@ public class SettingsForm : Form
                 PostBurst1WaitMs             = _config.Launch.PostBurst1WaitMs,
                 BridgeInitWaitMs             = _config.Launch.BridgeInitWaitMs,
                 StaleSessionWaitMs           = _config.Launch.StaleSessionWaitMs,
+                // v3.17.0+ JSON-only tunables — added 2026-05-15 to match the
+                // pass-through pattern. Pre-fix every Settings → Apply
+                // silently clobbered these to LaunchConfig defaults; verifier
+                // T4-S 2026-05-15 caught JoinServerId, but ALL of these were
+                // missing — pre-existing bug for every field added since v3.17.x.
+                StaleSessionPollIntervalMs   = _config.Launch.StaleSessionPollIntervalMs,
+                ConnectRetryCount            = _config.Launch.ConnectRetryCount,
+                PostBurst2QuickFailCheckMs   = _config.Launch.PostBurst2QuickFailCheckMs,
+                SkipShmEnterWorldOnDalaya    = _config.Launch.SkipShmEnterWorldOnDalaya,
+                SkipNativeWarmup             = _config.Launch.SkipNativeWarmup,
+                JoinServerId                 = _config.Launch.JoinServerId,
             },
             Pip = new PipConfig
             {

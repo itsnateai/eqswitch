@@ -1,5 +1,30 @@
 # Changelog
 
+## v3.19.0 — Diff 4 wire-in (LoginServerAPI::JoinServer C# call) + Diff 2/3 toggle re-enable + SHM v4 → v5 (2026-05-15)
+
+> **Addendum (Fix 1):** SHM bumped further to v5 within the same release window after the 2026-05-15 PM smoke revealed a BURST 1 / Combo G double-write bug. New `comboGWriteOk` field (uint32 at offset 1624, total 1628) lets native publish "structural CXStr write at InputText+0x1A8 succeeded" so C# can SKIP BURST 1's primer + password retype, eliminating the 13-char field corruption that was causing EQ login server rejection and "Quick Connect failed" popups. Fix 1 also added defensive `comboGWriteOk = 0` clears in the LOGIN_CMD_CANCEL handler and SetError path. See `Native/login_shm.h:240+` for the v5 field doc and `Core/AutoLoginManager.cs:617+` for the gate logic.
+
+Closes the MQ2 RoF2-emu autologin walkthrough's structural shortcuts (`_.eqswitch-re/mq2-autologin-walkthrough.md` §5.1 + `mq2-autologin-eqswitch-diff.md` Diff 2/3/4). v3.18.0 shipped the `MQ2Bridge::JoinServerDirect` primitive as dormant; this release wires it from C# via SHM RPC AND re-enables the structural `kMQ2StyleWidgetLookup` toggle.
+
+**Behavior changes:**
+
+- **Structural LOGIN_ConnectButton click (Diff 2/3).** `Native/eqmain_widgets_mq2style.h:115` flipped `kMQ2StyleWidgetLookup = false → true`. The previous legacy heap-cross-ref path returned a `CXMLDataPtr` definition (rejected by `IsEQMainButtonWidget`), retried 3× then C# CANCELed and fell back to BURST 1. The structural path (`FindLiveScreenByName` via LVM+0x14 anchor + `RecurseAndFindName`) returns the LIVE widget. Iter-12 dormancy reason (game-thread starvation dropping BURST keystrokes) is now mitigated by v3.16.0's ScreenMode swap making Combo G writes reach the submit buffer — no BURST = no GetDeviceState race.
+- **JoinServerDirect bypasses BURST 2 (Diff 4).** C# `AutoLoginManager.TryJoinServerDirectOrFallback` calls eqmain's `LoginServerAPI::JoinServer` in-process via SHM RPC. Native handler in `login_state_machine.cpp` observes `joinServerReqSeq` increment, dispatches the `__thiscall` on the LoginServerAPI vtable at `+0x13C30`, writes outcome + fnResult, sets `ackSeq = reqSeq`. Replaces the BURST 2 (server-select VK_RETURN PostMessage) when JoinServer succeeds with `outcome=Success AND fnResult=0`. Fallback to BURST 2 preserved for all failure modes (LoginServerAPI null, vtable mismatch, prologue patch, SEH inside call, 2s ack timeout, non-zero EQ error code).
+- **Retry path symmetry.** Both primary and retry RunLoginSequence paths use the shared `TryJoinServerDirectOrFallback` helper. Pre-fix, retry bypassed Diff 4 entirely (BURST 2 only).
+- **SettingsForm pass-through bugs fixed.** 6 latent v3.17.0+ Launch fields were missing from the LaunchConfig builder — every Settings → Apply silently reset them to class-initializer defaults. `JoinServerId`, `StaleSessionPollIntervalMs`, `ConnectRetryCount`, `PostBurst2QuickFailCheckMs`, `SkipShmEnterWorldOnDalaya`, `SkipNativeWarmup` all preserved correctly now.
+
+**Native ABI:**
+
+- `LOGIN_SHM_VERSION 3 → 4`. Appended 5 × uint32 (20 bytes) at offset 1604: `joinServerSerialId` (in), `joinServerReqSeq` (in), `joinServerAckSeq` (out), `joinServerOutcome` (out: 0=pending/1=success/2=failed/3=gated), `joinServerFnResult` (out). Total LoginShm = 1624 bytes. v3 native readers see only the first 1604 bytes — they never observe `joinServerReqSeq` increment and never dispatch JoinServerDirect (graceful forward-compat).
+
+**Config:**
+
+- New `Launch.JoinServerId` (default `1` for Dalaya; `0` disables the wire and forces BURST 2 always; clamped 0..100 by `Validate()`).
+
+**Files changed:** `Native/eqmain_widgets_mq2style.h`, `Native/login_state_machine.cpp`, `Native/login_shm.h`, `Native/eqswitch-di8.cpp`, `Core/LoginShmWriter.cs`, `Core/AutoLoginManager.cs`, `Config/AppConfig.cs`, `UI/SettingsForm.cs`.
+
+**Verification:** 16 verifier agents across 2 rounds (Sonnet+Opus on Diff-clean / Gap-audit / Code-review / Blast-radius). Round 1 found CONCERNS; Round 2 fixes addressed read-side memory barrier, `fnResult==0` check, retry path symmetry, `ResetDllToCsharpFields` v4 field zeroing, SettingsForm pass-throughs, `Validate()` JoinServerId clamp. Single-box + dual-box smoke gated per `feedback_dual_box_test_before_autologin_tag.md`.
+
 ## v3.18.0 — Native OK_Display error-text probe + SHM v3 contract bump (2026-05-15)
 
 Closes the deferred work from v3.17.0's "Known deferred (out of v3.17 scope; tagged for v3.18+)" list. The v3.17.0 retry loop in `Core/AutoLoginManager.cs` always slept the full `staleSessionWaitMs` (default 30s) on every retry because C# couldn't distinguish "truncated creds, server didn't accept" from "stale-session, server holding slot" from "wrong password, will never accept". Two inline comments at lines ~954 and ~975 explicitly flagged the OK_Display error-text probe + SHM v3 bump as the structural fix. v3.18.0 ships it.

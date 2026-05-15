@@ -37,7 +37,30 @@ public sealed class LoginShmWriter : IDisposable
     // C# doesn't re-implement the strstr matching in login_state_machine.cpp.
     // Backward-compatible append — v2 native readers see the first 1344
     // bytes unchanged and ignore the trailing 260 bytes.
-    private const uint Version = 3;
+    //
+    // v4 (2026-05-15): Diff 4 JoinServerDirect RPC fields appended at offset
+    // 1604: joinServerSerialId, joinServerReqSeq, joinServerAckSeq,
+    // joinServerOutcome, joinServerFnResult (5 × uint32 = 20 bytes). C#
+    // writes serialId+reqSeq, native handler in login_state_machine.cpp
+    // calls MQ2Bridge::JoinServerDirect via in-process __thiscall on the
+    // LoginServerAPI vtable, writes outcome+fnResult+ackSeq. Replaces
+    // BURST 2 (server-select Enter PostMessage) when JoinServer succeeds.
+    // Backward-compatible append — v3 native readers see the first 1604
+    // bytes unchanged and never observe the reqSeq increment, so they never
+    // dispatch JoinServerDirect (graceful degradation).
+    //
+    // v5 (2026-05-15): Fix 1 for the BURST 1 / Combo G double-write bug.
+    // Single uint32 `comboGWriteOk` appended at offset 1624 (size 1628).
+    // Native sets to 1 inside PHASE_TYPING_CREDENTIALS after Combo G's
+    // WriteEditTextDirect read-back confirms the password landed at
+    // InputText+0x1A8. Cleared to 0 on every LOGIN_CMD_LOGIN. C# reads
+    // post-warmup; if set AND warmup advanced, BURST 1 SKIPS primer +
+    // retype (Backspace + 7-char re-type) and only fires Activate + Enter
+    // (submit). Eliminates the double-write that corrupted the field to
+    // ~13 chars on 2026-05-15 smoke. Backward-compatible append — v4
+    // native readers see the first 1624 bytes unchanged and never set
+    // the flag, so C# never observes 1 and always runs full BURST 1.
+    private const uint Version = 5;
     private const int MaxChars = 10;         // LOGIN_MAX_CHARS
     private const int NameLen = 64;          // LOGIN_NAME_LEN
     private const int PassLen = 128;         // LOGIN_PASS_LEN
@@ -45,16 +68,30 @@ public sealed class LoginShmWriter : IDisposable
     private const int CharLen = 64;          // LOGIN_CHAR_LEN
     private const int ErrorLen = 256;        // LOGIN_ERROR_LEN
 
-    // Total struct size: 1604 bytes (verified against login_shm.h v3)
+    // Total struct size: 1628 bytes (verified against login_shm.h v5)
     // v1 was 1340; v2 appended a 4-byte autoLoginActive field at offset 1340
-    // (size 1344); v3 appends okDisplayText[256] at offset 1344 + a 4-byte
-    // okDisplayClass at offset 1600 (size 1604).
-    private const int ShmSize = 1604;
+    // (size 1344); v3 appended okDisplayText[256] at offset 1344 + a 4-byte
+    // okDisplayClass at offset 1600 (size 1604); v4 appends 5×uint32
+    // JoinServer RPC fields at offset 1604 (size 1624); v5 appends 1×uint32
+    // comboGWriteOk at offset 1624 (size 1628).
+    private const int ShmSize = 1628;
 
     // ── Commands (C# → DLL) ──────────────────────────────────────
     private const uint CMD_NONE = 0;
     private const uint CMD_LOGIN = 1;
     private const uint CMD_CANCEL = 2;
+
+    // ── Diff 4 (v4 SHM) — JoinServerDirect outcome enum ──────────
+    public enum JoinServerOutcome : uint
+    {
+        Pending = 0,         // Initial state OR DLL hasn't observed reqSeq yet
+        Success = 1,         // JoinServerDirect dispatched cleanly; FnResult is valid
+        Failed  = 2,         // JoinServerDirect returned false (one of: eqmain not loaded,
+                             // pinstLoginServerAPI null, vtable mismatch, prologue patch,
+                             // SEH inside the call). Caller should fall back to BURST 2.
+        Gated   = 3,         // autoLoginActive was 0 — request refused. Should not occur
+                             // in practice (caller sets autoLoginActive before requesting).
+    }
 
     // ── Field offsets (matching #pragma pack(push,1) C++ struct) ──
     private const int OFF_MAGIC = 0;           // uint32  (4)
@@ -79,13 +116,26 @@ public sealed class LoginShmWriter : IDisposable
     private const int OFF_AUTO_LOGIN_ACTIVE = 1340;  // uint32  (4)  — v2 append
     private const int OFF_OK_DISPLAY_TEXT = 1344;    // char[256]    — v3 append
     private const int OFF_OK_DISPLAY_CLASS = 1600;   // uint32  (4)  — v3 append
-    // Total: 1604 ✓
+    private const int OFF_JS_SERIAL_ID    = 1604;    // uint32  (4)  — v4 append (in)
+    private const int OFF_JS_REQ_SEQ      = 1608;    // uint32  (4)  — v4 append (in)
+    private const int OFF_JS_ACK_SEQ      = 1612;    // uint32  (4)  — v4 append (out)
+    private const int OFF_JS_OUTCOME      = 1616;    // uint32  (4)  — v4 append (out)
+    private const int OFF_JS_FN_RESULT    = 1620;    // uint32  (4)  — v4 append (out)
+    private const int OFF_COMBOG_OK       = 1624;    // uint32  (4)  — v5 append (out)
+    // Total: 1628 ✓
 
     private sealed class MappingEntry : IDisposable
     {
         public readonly MemoryMappedFile Mmf;
         public readonly MemoryMappedViewAccessor Accessor;
         public uint CommandSeq;
+        // Diff 4 (v4 SHM): per-PID monotonic JoinServer request counter.
+        // Owned by C# (only LoginShmWriter writes joinServerReqSeq); native
+        // observes the increment and writes ackSeq when complete. Survives
+        // across multiple TryJoinServerDirect calls within the same mapping
+        // lifetime (the native side resets g_lastJoinServerReqSeq on each
+        // LOGIN_CMD_LOGIN to handle the C#-keeps-mapping-open case).
+        public uint JoinServerReqSeq;
 
         public MappingEntry(MemoryMappedFile mmf, MemoryMappedViewAccessor accessor)
         {
@@ -194,6 +244,27 @@ public sealed class LoginShmWriter : IDisposable
         // retry budget on the very first iteration before native re-publishes.
         accessor.WriteArray(OFF_OK_DISPLAY_TEXT, new byte[ErrorLen], 0, ErrorLen);
         accessor.Write(OFF_OK_DISPLAY_CLASS, (uint)0);
+        // v4 Diff 4 RPC fields — load-bearing for the same reason as the v3
+        // OK_Display fields. If a prior session left ackSeq==1 (matching the
+        // fresh MappingEntry's first reqSeq=1 increment), TryJoinServerDirect
+        // would observe ack-match on the very first poll and read STALE
+        // outcome+fnResult — silently skipping BURST 2 on a phantom signal.
+        // Reset ackSeq to 0 (so first reqSeq=1 increment forces a real wait
+        // for native to write ackSeq=1) AND zero outcome+fnResult so an
+        // outcome=0 (Pending) read after a torn cleanup is unambiguous.
+        accessor.Write(OFF_JS_ACK_SEQ, (uint)0);
+        accessor.Write(OFF_JS_OUTCOME, (uint)0);
+        accessor.Write(OFF_JS_FN_RESULT, (uint)0);
+        // joinServerSerialId + joinServerReqSeq are C#-owned writes — caller
+        // re-writes them on every TryJoinServerDirect call, so no zero needed
+        // here. (Native never reads serialId until reqSeq increments past
+        // g_lastJoinServerReqSeq.)
+        // v5 (2026-05-15): zero comboGWriteOk so a stale "1" from a prior
+        // session can't trick C# into skipping BURST 1 typing on a fresh
+        // session before native PHASE_TYPING_CREDENTIALS even runs. Native
+        // also clears this on every LOGIN_CMD_LOGIN, but the early Open()
+        // path may run before native has processed any command.
+        accessor.Write(OFF_COMBOG_OK, (uint)0);
     }
 
     // ─── Commands (C# → DLL) ─────────────────────────────────────
@@ -299,6 +370,100 @@ public sealed class LoginShmWriter : IDisposable
         }
     }
 
+    /// <summary>
+    /// Diff 4 (v4 SHM, 2026-05-15): synchronous JoinServerDirect dispatch
+    /// via the native handler in login_state_machine.cpp. Mirrors MQ2's
+    /// StateMachine.cpp:773 — calls eqmain's LoginServerAPI::JoinServer
+    /// in-process via __thiscall on the LoginServerAPI vtable, bypassing
+    /// the UI server-row click chain entirely.
+    ///
+    /// Protocol:
+    ///   1. C# writes serverID to OFF_JS_SERIAL_ID
+    ///   2. C# increments OFF_JS_REQ_SEQ (per-mapping monotonic counter)
+    ///   3. Native handler observes seq increment in next Tick (~16ms)
+    ///   4. Native calls MQ2Bridge::JoinServerDirect(serverID, &fnResult)
+    ///   5. Native writes outcome + fnResult, then ackSeq = reqSeq
+    ///   6. C# polls OFF_JS_ACK_SEQ until it equals our reqSeq, then
+    ///      reads outcome + fnResult.
+    ///
+    /// Pre-condition: caller MUST have set autoLoginActive=true. The native
+    /// handler refuses dispatches when autoLoginActive=0 (defense against
+    /// stray writes from leaked mappings). Returns
+    /// JoinServerOutcome.Gated in that case.
+    ///
+    /// Timeout: 2000ms (default) covers any LoadLibraryA contention inside
+    /// JoinServerDirect (which pins eqmain.dll across its lifetime).
+    ///
+    /// Returns the outcome enum + the JoinServer fn result (0 on non-success
+    /// outcomes). Caller's intended use: if outcome == Success, skip BURST 2
+    /// (server-select Enter PostMessage). If outcome != Success, fall back
+    /// to BURST 2 (preserves the v3.x behavior).
+    /// </summary>
+    public (JoinServerOutcome Outcome, uint FnResult) TryJoinServerDirect(
+        int pid, uint serverID, int timeoutMs = 2000)
+    {
+        if (!_mappings.TryGetValue(pid, out var entry))
+            return (JoinServerOutcome.Failed, 0);
+
+        try
+        {
+            // Write serialId BEFORE the seq increment. Native reads seq AFTER
+            // confirming it differs from g_lastJoinServerReqSeq, then reads
+            // serialId on that tick — so seq is the publication signal, must
+            // be written last.
+            entry.Accessor.Write(OFF_JS_SERIAL_ID, serverID);
+            Thread.MemoryBarrier();
+            entry.JoinServerReqSeq++;
+            entry.Accessor.Write(OFF_JS_REQ_SEQ, entry.JoinServerReqSeq);
+            Thread.MemoryBarrier();
+
+            FileLogger.Info($"LoginShmWriter: JOIN_SERVER request sent for PID {pid} " +
+                $"(serverID={serverID}, reqSeq={entry.JoinServerReqSeq})");
+
+            // Poll for ackSeq == reqSeq with bounded timeout. Native typically
+            // dispatches within one Tick (~16ms) but allow generous budget
+            // for LoadLibraryA contention + the JoinServer call itself
+            // (network handoff, but the API call is synchronous-return).
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            uint targetSeq = entry.JoinServerReqSeq;
+            while (sw.ElapsedMilliseconds < timeoutMs)
+            {
+                uint ack = entry.Accessor.ReadUInt32(OFF_JS_ACK_SEQ);
+                if (ack == targetSeq)
+                {
+                    // Read outcome + fnResult AFTER observing ackSeq. Native
+                    // wrote them BEFORE ackSeq (with MemoryBarrier between),
+                    // so by the time we see ackSeq match, both fields are
+                    // visible. Round 2 verifier-fix (T3-O HIGH 2026-05-15):
+                    // explicit Thread.MemoryBarrier here pairs the native-side
+                    // write barrier — defends against load-reordering across
+                    // the ack-check vs outcome/fnResult reads. On x86/x64 TSO
+                    // load-load reordering is forbidden so this is currently
+                    // a no-op at the hardware level, but adds discipline +
+                    // protects future ARM port + prevents JIT hoisting.
+                    Thread.MemoryBarrier();
+                    var outcome = (JoinServerOutcome)entry.Accessor.ReadUInt32(OFF_JS_OUTCOME);
+                    uint fnResult = entry.Accessor.ReadUInt32(OFF_JS_FN_RESULT);
+                    FileLogger.Info($"LoginShmWriter: JOIN_SERVER ack for PID {pid} " +
+                        $"(outcome={outcome}, fnResult=0x{fnResult:X8}, " +
+                        $"latencyMs={sw.ElapsedMilliseconds})");
+                    return (outcome, fnResult);
+                }
+                Thread.Sleep(20);
+            }
+
+            FileLogger.Warn($"LoginShmWriter: JOIN_SERVER timeout for PID {pid} " +
+                $"(reqSeq={entry.JoinServerReqSeq}, no ack within {timeoutMs}ms — " +
+                $"DLL not running or stalled)");
+            return (JoinServerOutcome.Failed, 0);
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Error($"LoginShmWriter: TryJoinServerDirect failed for PID {pid}", ex);
+            return (JoinServerOutcome.Failed, 0);
+        }
+    }
+
     // ─── State reads (DLL → C#) ──────────────────────────────────
 
     /// <summary>True if the DLL acknowledged the last command (commandAck == commandSeq).</summary>
@@ -335,6 +500,32 @@ public sealed class LoginShmWriter : IDisposable
     {
         if (!_mappings.TryGetValue(pid, out var entry)) return -1;
         return entry.Accessor.ReadInt32(OFF_GAMESTATE);
+    }
+
+    /// <summary>
+    /// Fix 1 (v5 SHM, 2026-05-15): true if native's Combo G write to the
+    /// password field at InputText+0x1A8 succeeded in the current login
+    /// session (set inside PHASE_TYPING_CREDENTIALS after WriteEditTextDirect
+    /// read-back OK; cleared on every new LOGIN_CMD_LOGIN).
+    ///
+    /// Caller (AutoLoginManager.RunCredentialEntry) uses this post-warmup
+    /// to decide whether BURST 1 should SKIP its primer (Backspace) and
+    /// password retype — when true, the field already has the correct 7-char
+    /// password and any keystroke retyping would corrupt it. BURST 1 still
+    /// fires Activate + Enter (submit) because Enter is what EQ interprets
+    /// as "click Connect" given an in-focus password field.
+    ///
+    /// Returns false on any of:
+    ///   - mapping not found (PID unknown)
+    ///   - native v4 reader still attached (won't observe the field, never sets 1)
+    ///   - native v5+ but Combo G hasn't yet succeeded in this session
+    ///   - any read fault (defensive default — falls through to full BURST 1)
+    /// </summary>
+    public bool ReadComboGWriteOk(int pid)
+    {
+        if (!_mappings.TryGetValue(pid, out var entry)) return false;
+        try { return entry.Accessor.ReadUInt32(OFF_COMBOG_OK) != 0; }
+        catch { return false; }
     }
 
     /// <summary>

@@ -384,8 +384,11 @@ void MQ2BridgePollTick() {
     // charselect transitions to PRE_CHARSELECT (gameState == 0) the prompt
     // chain is gone, but the explicit `gameState == 5` skip prevents this
     // walk from racing autologin BURST 1's keystrokes during in-game state
-    // (kMQ2StyleWidgetLookup=false rationale — heap walks can stall the EQ
-    // input pump and drop background-client BURST keys). gameState reading
+    // (legacy iter-12 starvation rationale — heap walks on game thread can
+    // stall the EQ input pump and drop background-client BURST keys; per the
+    // 2026-05-15 toggle re-enable comment in eqmain_widgets_mq2style.h, this
+    // gating is still load-bearing during in-game state where BURST is not
+    // active). gameState reading
     // returns -99 on SEH; we still run in that case (fresh-launch
     // pre-init — EULA may be up before exports resolve).
     //

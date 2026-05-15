@@ -33,7 +33,40 @@
 // (recoverable, ~1s wait suffices) — closes the gap explicitly flagged in
 // v3.17.0 CHANGELOG ("ALWAYS use staleSessionWaitMs ... distinguishing
 // requires the OK_Display error-text probe deferred to v3.18 + SHM v3 bump").
-#define LOGIN_SHM_VERSION 3
+//
+// Version 4 (2026-05-15): JoinServerDirect (Diff 4) RPC fields appended.
+// C# writes joinServerSerialId + joinServerReqSeq. Native handler in
+// login_state_machine.cpp Tick() observes seq increment, calls
+// MQ2Bridge::JoinServerDirect(serverID, &fnResult), writes outcome +
+// fnResult, then ackSeq = reqSeq. Replaces BURST 2 (server-select Enter
+// PostMessage) when the in-process __thiscall succeeds. Backward-
+// compatible append — v3 native readers see the first 1604 bytes
+// unchanged; C# v4 writers allocate 1624 bytes (v3 native readers ignore
+// the trailing 20 bytes — JoinServer never fires because reqSeq stays 0).
+//
+// Architectural note (per MQ2 RoF2-emu autologin walkthrough §5.1 +
+// Diff 4 of `_.eqswitch-re/mq2-autologin-eqswitch-diff.md`): MQ2's
+// StateMachine.cpp:773 calls g_pLoginServerAPI->JoinServer((int)server->ID)
+// directly to advance from server-select to char-select, bypassing the
+// UI server-row click chain entirely. EQSwitch's pre-Diff-4 path used
+// VK_RETURN PostMessage (BURST 2) which assumed Dalaya was already
+// highlighted. Diff 4's direct call is more deterministic AND removes
+// the only BURST surviving the Diff 2/3 structural button click flip.
+//
+// Version 5 (2026-05-15): single-byte append `comboGWriteOk` at offset 1624
+// (4 bytes for alignment). Native sets to 1 inside PHASE_TYPING_CREDENTIALS
+// after WriteEditTextDirect read-back succeeds. Cleared to 0 on every new
+// LOGIN_CMD_LOGIN. C# AutoLoginManager reads this post-warmup; when set,
+// SKIPS BURST 1's primer (Backspace) and password retype to avoid the
+// double-write bug — Combo G's structural CXStr write at +0x1A8 has
+// already populated the field with the correct 7-char password, and
+// keystroke retyping ON TOP would either prepend (cursor at 0) or append
+// (cursor at end), corrupting the password to ~13 chars and causing EQ
+// login server rejection. BURST 1's Activate + Enter (submit) is retained
+// — Enter is what EQ interprets as "click Connect". Backward-compatible
+// append: v4 native readers see the first 1624 bytes unchanged and never
+// observe the field, so they continue typing keystrokes.
+#define LOGIN_SHM_VERSION 5
 
 // C# -> DLL: what to do
 enum LoginCommand : uint32_t {
@@ -146,5 +179,75 @@ struct LoginShm {
     // first 1344 bytes unchanged and ignore the trailing 260 bytes.
     char              okDisplayText[LOGIN_ERROR_LEN];
     volatile uint32_t okDisplayClass;   // 0=None, 1=Fatal, 2=Recoverable, 3=Success
+
+    // ── v4 (2026-05-15) — Diff 4 JoinServerDirect RPC ─────────────
+    //
+    // C# → DLL: serverID + reqSeq increment requests one JoinServerDirect
+    //   dispatch. Native writes outcome + fnResult then sets ackSeq=reqSeq.
+    //
+    // C# init-side preconditions (caller responsibility):
+    //   - LoginShmWriter.Open succeeded (mapping is 1624 bytes, this version)
+    //   - autoLoginActive must be 1 (defends against stray seq increments
+    //     from leaked mappings on bare launches; native handler gates on it)
+    //   - reqSeq starts at 0 and increments PER REQUEST (per-PID, owned by C#)
+    //
+    // Outcome semantics (joinServerOutcome):
+    //   0 = pending (initial state, or DLL hasn't observed reqSeq yet)
+    //   1 = SUCCESS — JoinServerDirect returned true; fnResult contains
+    //       JoinServer's actual return code (0 = network dispatch OK,
+    //       non-zero = EQ-side error code; caller interprets per game state)
+    //   2 = JOINSERVER_FAILED — JoinServerDirect returned false (one of:
+    //       eqmain not loaded, pinstLoginServerAPI null, vtable mismatch,
+    //       prologue patch detected, SEH inside the call). fnResult is 0.
+    //       This is the "fall back to BURST 2" trigger on the C# side.
+    //   3 = SHM_GATED — autoLoginActive was 0 when reqSeq incremented.
+    //       Native refuses to dispatch (defense against leaked mappings).
+    //       fnResult is 0.
+    //
+    // Timing: native processes the request in Tick() (called from the
+    // ActivateThread + GiveTime detour cadence, ~16ms typical). Total
+    // round-trip from C# write to ackSeq observable is typically ~50ms.
+    // C# should poll with bounded timeout (recommend 2000ms — generous,
+    // covers any LoadLibraryA contention inside JoinServerDirect).
+    //
+    // volatile because cross-process shared mapping. Backward-compatible
+    // append: v3 native readers (1604-byte struct in their #include) see
+    // exactly the first 1604 bytes — they NEVER read these fields and
+    // NEVER fire JoinServerDirect, regardless of what C# writes here.
+    volatile uint32_t joinServerSerialId;   // C# in:  server ID for JoinServer call
+    volatile uint32_t joinServerReqSeq;     // C# in:  increment per request
+    volatile uint32_t joinServerAckSeq;     // DLL out: set to reqSeq when processed
+    volatile uint32_t joinServerOutcome;    // DLL out: 0=pending, 1=success, 2=failed, 3=gated
+    volatile uint32_t joinServerFnResult;   // DLL out: JoinServer return code (only valid if outcome==1)
+
+    // ── v5 (2026-05-15) — Combo G success signal (Fix 1 for the double-write bug) ──
+    //
+    // DLL → C#: set to 1 when WriteEditTextDirect read-back confirmed the
+    // password was written to InputText+0x1A8 in the current login session.
+    // Cleared to 0 on every LOGIN_CMD_LOGIN (new session).
+    //
+    // C# AutoLoginManager.RunCredentialEntry reads this post-warmup. When
+    // the warmup advanced AND comboGWriteOk == 1, BURST 1 SKIPS the primer
+    // (Backspace) and password retype but STILL fires Enter (submit). This
+    // eliminates the double-write — Combo G's CXStr write at +0x1A8 already
+    // populated the field correctly; keystrokes typed on top would corrupt
+    // the password to ~13 chars (cursor-at-0 prepend OR cursor-at-end
+    // append depending on EQ's edit-mode state).
+    //
+    // 2026-05-15 smoke evidence: with both Combo G AND BURST 1 firing,
+    // EQ login server rejected the corrupted password, no auth session
+    // was created, and the subsequent JoinServerDirect dispatch returned
+    // fnResult=3 ("no auth session") which EQ surfaces as "Quick Connect
+    // to server Dalaya failed. Going to server select instead." The user's
+    // observation: "quick connect would have been successful if we had
+    // entered the letters for the password" — i.e., correct 7-char
+    // password instead of the 13-char double-write garbage.
+    //
+    // volatile because cross-process shared mapping. Backward-compatible
+    // append: v4 native readers see exactly the first 1624 bytes — they
+    // never observe this field, so they always run BURST 1 (matches v4
+    // behavior). Field is never read on the bare-launch / non-autologin
+    // path either, so no overhead concern.
+    volatile uint32_t comboGWriteOk;
 };
 #pragma pack(pop)

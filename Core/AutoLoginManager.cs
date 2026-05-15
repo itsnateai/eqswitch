@@ -614,11 +614,55 @@ public class AutoLoginManager
         }
 
         // ── Phase 2: BURST 1 keystrokes ──
+        // Fix 1 (v3.19.1, 2026-05-15): if native's Combo G already wrote the
+        // password (PHASE_TYPING_CREDENTIALS → WriteEditTextDirect read-back
+        // OK → comboGWriteOk = 1), SKIP the primer (Backspace) and password
+        // retype. The 2026-05-15 dual-box smoke was failing because BOTH
+        // Combo G AND BURST 1 were firing — Combo G wrote 7 chars at +0x1A8,
+        // then BURST 1 typed 7 more, leaving the field with ~13 chars (cursor
+        // mode dependent). EQ login server rejected the corrupted password,
+        // no auth session was created, and the subsequent JoinServerDirect
+        // dispatch returned fnResult=3 ("no auth session") which EQ surfaces
+        // as "Quick Connect to server Dalaya failed". User's diagnosis:
+        // "quick connect would have been successful if we had entered the
+        // letters for the password" — i.e., correct 7-char password.
+        //
+        // The gate is conservative: requires BOTH warmupRan==true (proves
+        // we did the SHM ritual at all) AND comboGWriteOk==1 (proves the
+        // CXStr write actually landed). When skipping, BURST 1 still fires
+        // Activate + Enter — the Enter is what EQ interprets as "click
+        // Connect" given an in-focus password field.
+        bool comboGWritePassword = false;
+        if (loginShm != null && warmupRan)
+        {
+            comboGWritePassword = loginShm.ReadComboGWriteOk(pid);
+            if (comboGWritePassword)
+            {
+                FileLogger.Info($"AutoLogin: Combo G success signal observed for PID {pid} " +
+                    "— skipping BURST 1 primer + password retype (avoiding double-write)");
+            }
+        }
+
         Report("Typing credentials...");
         writer.Activate(pid, suppress: true);
         // v3.15.2: tunable via Launch.Burst1ActivationSettleMs (default 500).
         Thread.Sleep(burst1ActivationSettleMs); // let DLL switch coop + blast activation
         FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
+
+        if (comboGWritePassword)
+        {
+            // Combo G already populated the field. Fire Enter only — that's
+            // the equivalent of "click Connect" when the password edit has
+            // focus. No primer (would Backspace one char from the password),
+            // no retype (would double-write into the field).
+            Report("Submitting login (Combo G wrote password)...");
+            CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = submit
+            Thread.Sleep(burst1PostSubmitMs);
+            writer.Deactivate(pid);
+            FileLogger.Info($"AutoLogin: BURST 1 deactivated for PID {pid} " +
+                "(Combo G path: Activate + Enter only, no primer/typing)");
+            return;
+        }
 
         // ── PRIMER: absorb first-keystroke drop ──
         // EQ's GetDeviceData polling lags after the SHM-active flip — the FIRST
@@ -632,23 +676,34 @@ public class AutoLoginManager
         // VK_BACK (0x08) chosen because it cannot insert a char or change focus
         // even if it lands and the field is somehow non-empty.
         //
-        // v3.15.13 (2026-05-10): REVERTED v3.15.12's `if (!warmupRan)` gate.
-        // Live test result: skipping PRIMER+typing left EQ's password field
-        // EMPTY at submit — Combo G's structural write to InputText@+0x1A8
-        // does NOT reach EQ's render/submit buffer on Dalaya. The
-        // 2026-04-25 comment ("Combo G's CXStr write at +0x1A8 doesn't reach
-        // EQ's render/submit buffer") was correct; iter 12's FindLivePassword-
-        // CEditWnd finds the visible widget but the InputText FIELD on it
-        // isn't what EQ submits. Ground truth from eqswitch.log
-        // [2026-05-10 09:22:07.543] — gate fired, Enter sent on empty field,
-        // login didn't advance.
+        // ─── HISTORY (DO NOT REMOVE — informs the v3.19.1 gate above) ───
+        // v3.15.13 (2026-05-10) REVERTED v3.15.12's `if (!warmupRan)` skip-typing
+        // gate after a live-test regression: EMPTY field at submit because
+        // Combo G's CXStr write at InputText+0x1A8 was NOT reaching EQ's
+        // render/submit buffer. Ground truth: eqswitch.log [2026-05-10 09:22:07].
         //
-        // The Combo G warmup STILL adds value as a screen-readiness gate
-        // (phase advances to CLICKING_CONNECT only after live widgets are
-        // discoverable), but the actual password delivery must be BURST 1
-        // keystrokes via WM_CHAR PostMessage. Until eqmain's render/submit
-        // buffer is identified and written to (separate RE work), keystrokes
-        // are the load-bearing path.
+        // v3.16.0 (2026-05-14) added the ScreenMode=3 swap during Combo G writes
+        // (Native/eqmain_cxstr.cpp::WriteEditTextDirect) — the swap forces EQ
+        // into "fullscreen-UI-input" mode for the duration of the assignment,
+        // bypassing the input filter that was eating the structural write.
+        // Read-back at +0x1A8 + verifier evidence confirms Combo G now reaches
+        // the submit buffer. Hypothesis B-1 from the MQ2 RoF2-emu walkthrough
+        // §3.2 closed.
+        //
+        // v3.19.1 (2026-05-15) RE-ENABLES the gate via the SHM v5 comboGWriteOk
+        // signal (above, lines ~636-664). The v3.15.12 reversion's underlying
+        // cause (write didn't propagate) was fixed by v3.16.0; the gate is
+        // safe to re-instate. Critical difference from v3.15.12: the gate now
+        // reads a SUCCESS SIGNAL from native (comboGWriteOk only set after
+        // WriteEditTextDirect's read-back validation passes) instead of the
+        // proxy `warmupRan` (which only proved the SHM ritual happened, not
+        // that the write succeeded).
+        //
+        // If a future regression brings back the empty-field-at-submit symptom,
+        // SUSPECT v3.16.0 ScreenMode swap regression FIRST (probe ScreenMode
+        // RVA via _.eqswitch-re/probe_screenmode.py + verify swap fires) before
+        // re-reverting the gate. The keystroke fallback below remains intact
+        // for the non-Combo-G path (warmup didn't fire OR comboGWriteOk=0).
         CombinedPressKey(writer, pid, hwnd, 0x08);
         Thread.Sleep(50);
 
@@ -849,23 +904,57 @@ public class AutoLoginManager
 
             // ── Wait for server response (no focus-faking) ──
             // v3.15.2: tunable via Launch.PostBurst1WaitMs (default 3000).
-            Thread.Sleep(_config.Launch.PostBurst1WaitMs);
+            // R3 fix (verifier T2-S 2026-05-15): use snapshotted value, not
+            // live _config — every other PostBurst1WaitMs read elsewhere in
+            // this method already uses postBurst1WaitMs (see line 1203).
+            Thread.Sleep(postBurst1WaitMs);
             hwnd = RefreshHandle(pid, hwnd);
             if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window after login (crashed or closed)"); return; }
 
             // ══════════════════════════════════════════════════════════
-            // BURST 2: Confirm server select (~1 second active)
-            // ══════════════════════════════════════════════════════════
-            Report("Confirming server...");
-            writer.Activate(pid, suppress: true);
-            // v3.15.2: tunable via Launch.Burst2ActivationSettleMs (default 300).
-            Thread.Sleep(_config.Launch.Burst2ActivationSettleMs);
-            FileLogger.Info($"AutoLogin: BURST 2 activated for PID {pid}");
-            CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = confirm
-            // v3.15.2: post-keystroke dwell tunable via Launch.Burst2PostKeystrokeMs (default 500).
-            Thread.Sleep(_config.Launch.Burst2PostKeystrokeMs);
-            writer.Deactivate(pid); // ← OFF
-            FileLogger.Info($"AutoLogin: BURST 2 deactivated for PID {pid}");
+            // Diff 4 (v3.18+, 2026-05-15): JoinServerDirect — bypass BURST 2
+            //
+            // MQ2 RoF2-emu's StateMachine.cpp:773 calls
+            // g_pLoginServerAPI->JoinServer((int)server->ID) directly to
+            // advance from server-select to char-select. EQSwitch's pre-Diff-4
+            // path uses VK_RETURN PostMessage (BURST 2) which assumes Dalaya
+            // is already highlighted. Diff 4's direct call is more
+            // deterministic AND removes the only BURST surviving the
+            // Diff 2/3 structural button click flip (kMQ2StyleWidgetLookup
+            // re-enabled 2026-05-15).
+            //
+            // Routing:
+            //   - JoinServerId == 0     → wire disabled, fall through to BURST 2
+            //   - loginShm == null      → SHM open failed earlier, fall through
+            //   - outcome == Success    → skip BURST 2 entirely
+            //   - outcome != Success    → log + fall through to BURST 2 fallback
+            //
+            // Failure modes Diff 4 tolerates (all silent fall-through to BURST 2):
+            //   - LoginServerAPI not yet populated (timing race; native gates SEH)
+            //   - vtable mismatch (Dalaya patch shifted layout)
+            //   - prologue patch (anti-cheat hooked the function entry)
+            //   - SEH inside the JoinServer call itself
+            //   - 2-second ack timeout (DLL stalled or not running)
+            int joinServerId = _config.Launch.JoinServerId;
+            bool joinServerSucceeded = TryJoinServerDirectOrFallback(
+                loginShm, pid, joinServerId, account, isRetry: false);
+
+            if (!joinServerSucceeded)
+            {
+                // ══════════════════════════════════════════════════════════
+                // BURST 2: Confirm server select (~1 second active)
+                // ══════════════════════════════════════════════════════════
+                Report("Confirming server...");
+                writer.Activate(pid, suppress: true);
+                // v3.15.2: tunable via Launch.Burst2ActivationSettleMs (default 300).
+                Thread.Sleep(_config.Launch.Burst2ActivationSettleMs);
+                FileLogger.Info($"AutoLogin: BURST 2 activated for PID {pid}");
+                CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = confirm
+                // v3.15.2: post-keystroke dwell tunable via Launch.Burst2PostKeystrokeMs (default 500).
+                Thread.Sleep(_config.Launch.Burst2PostKeystrokeMs);
+                writer.Deactivate(pid); // ← OFF
+                FileLogger.Info($"AutoLogin: BURST 2 deactivated for PID {pid}");
+            }
 
             // ── v3.17.0 (2026-05-14): post-BURST-2 fast-failure detection ──
             // Before sinking into the 90s WaitForScreenTransition wait, poll for
@@ -1163,15 +1252,26 @@ public class AutoLoginManager
                     return;
                 }
 
-                // (4) Re-fire BURST 2 (server confirm).
-                Report($"Retry {retryAttempt}: confirming server...");
-                writer.Activate(pid, suppress: true);
-                Thread.Sleep(burst2ActivationSettleMs);
-                FileLogger.Info($"AutoLogin: RETRY {retryAttempt} BURST 2 activated for PID {pid}");
-                CombinedPressKey(writer, pid, hwnd, 0x0D);
-                Thread.Sleep(burst2PostKeystrokeMs);
-                writer.Deactivate(pid);
-                FileLogger.Info($"AutoLogin: RETRY {retryAttempt} BURST 2 deactivated for PID {pid}");
+                // (4) Re-fire server confirm — Diff 4 first, BURST 2 fallback.
+                // Verifier-fix 2026-05-15 (T2-S/T2-O/T3-O convergent):
+                // pre-fix the retry path was inline BURST 2 only, bypassing
+                // JoinServerDirect entirely. Asymmetric reliability between
+                // primary (Diff 4) and retry (BURST 2). Now both paths share
+                // TryJoinServerDirectOrFallback — identical contract.
+                int retryJoinServerId = _config.Launch.JoinServerId;
+                bool retryJoinSucceeded = TryJoinServerDirectOrFallback(
+                    loginShm, pid, retryJoinServerId, account, isRetry: true);
+                if (!retryJoinSucceeded)
+                {
+                    Report($"Retry {retryAttempt}: confirming server...");
+                    writer.Activate(pid, suppress: true);
+                    Thread.Sleep(burst2ActivationSettleMs);
+                    FileLogger.Info($"AutoLogin: RETRY {retryAttempt} BURST 2 activated for PID {pid}");
+                    CombinedPressKey(writer, pid, hwnd, 0x0D);
+                    Thread.Sleep(burst2PostKeystrokeMs);
+                    writer.Deactivate(pid);
+                    FileLogger.Info($"AutoLogin: RETRY {retryAttempt} BURST 2 deactivated for PID {pid}");
+                }
 
                 // (5) Re-wait for screen transition — 60s cap. Post-retry also
                 // gets the fast-fail probe so a second-retry-truncation hits the
@@ -1975,6 +2075,65 @@ public class AutoLoginManager
     // 2. PostMessage (WM_KEYDOWN/WM_CHAR) — delivers actual key events to the
     //    message queue for login text field processing
     // Both layers are needed because EQ checks focus before processing input.
+
+    /// <summary>
+    /// Diff 4 (2026-05-15): consolidated JoinServerDirect dispatch shared
+    /// by primary path (RunLoginSequence pre-BURST-2) AND retry path
+    /// (RunLoginSequence retry loop pre-BURST-2-retry). Both paths now have
+    /// identical Diff-4-first / BURST-2-fallback semantics.
+    ///
+    /// Returns true if BURST 2 should be SKIPPED (JoinServerDirect succeeded
+    /// AND fnResult == 0 = network dispatch OK). Returns false to signal
+    /// "fall back to BURST 2" — covers:
+    ///   - JoinServerId == 0 (wire disabled by config)
+    ///   - loginShm == null (SHM open failed earlier)
+    ///   - outcome != Success (LoginServerAPI null, vtable mismatch, prologue
+    ///     patch, SEH inside JoinServer call, 2s ack timeout, gated)
+    ///   - outcome == Success but fnResult != 0 (EQ-side error code returned;
+    ///     verifier-fix 2026-05-15: T2-O+T3-O convergent — non-zero fnResult
+    ///     indicates the API dispatched but EQ refused the join, e.g. bad
+    ///     server ID or server-not-in-list — BURST 2 fallback is the
+    ///     correct compensation, not skipping it)
+    /// </summary>
+    private bool TryJoinServerDirectOrFallback(LoginShmWriter? loginShm, int pid,
+        int joinServerId, Account account, bool isRetry)
+    {
+        if (loginShm == null || joinServerId <= 0)
+        {
+            // Wire disabled — silently fall through (no log spam; this is
+            // the configured-disable path, not an error).
+            return false;
+        }
+
+        string label = isRetry ? "Retry: " : "";
+        Report($"{label}Joining server (direct call)...");
+        var (outcome, fnResult) = loginShm.TryJoinServerDirect(pid, (uint)joinServerId);
+
+        if (outcome != LoginShmWriter.JoinServerOutcome.Success)
+        {
+            FileLogger.Warn($"AutoLogin: {account.Name} JoinServerDirect outcome={outcome} " +
+                $"(serverID={joinServerId}, retry={isRetry}) — falling back to BURST 2");
+            return false;
+        }
+
+        if (fnResult != 0)
+        {
+            // Native dispatched cleanly but EQ-side returned a non-zero error
+            // code. Per login_shm.h:182-188, fnResult is JoinServer's actual
+            // return value — 0 = network dispatch OK, non-zero = EQ-side
+            // error (bad server ID, server-not-in-list, server full, etc.).
+            // BURST 2 fallback gives EQ a second chance via the UI path that
+            // doesn't depend on knowing the right server ID.
+            FileLogger.Warn($"AutoLogin: {account.Name} JoinServerDirect dispatched but " +
+                $"fnResult=0x{fnResult:X8} != 0 (serverID={joinServerId}, retry={isRetry}) " +
+                $"— falling back to BURST 2");
+            return false;
+        }
+
+        FileLogger.Info($"AutoLogin: {account.Name} JoinServerDirect succeeded " +
+            $"(serverID={joinServerId}, fnResult=0, retry={isRetry}) — skipping BURST 2");
+        return true;
+    }
 
     private static IntPtr MakeKeyDownLParam(uint scanCode)
         => (IntPtr)(1 | ((int)scanCode << 16));
