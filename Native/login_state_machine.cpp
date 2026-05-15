@@ -19,8 +19,16 @@
 #include "eqmain_widgets.h"
 #include "eqmain_widgets_mq2style.h"  // ITER 12: MQ2-style structural lookup
 #include "eqmain_offsets.h"
+#include "mq2_bridge.h"               // Diff 4 — MQ2Bridge::JoinServerDirect
 
 void DI8Log(const char *fmt, ...);
+
+// ─── Diff 4 (2026-05-15) — JoinServerDirect request tracking ─────────
+// Per-DLL-load monotonic counter of the LAST joinServerReqSeq we processed.
+// Reset to 0 by the LOGIN_CMD_LOGIN handler so a new login session starts
+// with a clean slate (in case the prior session left a non-zero reqSeq in
+// the SHM mapping that's still around if C# kept the mapping open).
+static uint32_t g_lastJoinServerReqSeq = 0;
 
 // ─── XWM constants (from MQ2 EQClasses.h) ─────────────────────
 #define XWM_LCLICK          1
@@ -83,6 +91,12 @@ static void SetError(volatile LoginShm *shm, const char *msg) {
     strncpy((char *)shm->errorMessage, msg, LOGIN_ERROR_LEN - 1);
     ((char *)shm->errorMessage)[LOGIN_ERROR_LEN - 1] = '\0';
     memset(g_password, 0, sizeof(g_password)); // Clear password on error
+    // Fix 1 round-3 verifier-fix (T3-S MED, T3-O HIGH 2026-05-15): clear the
+    // v5 comboGWriteOk flag on error too. SetError is the terminal failure
+    // path — leaving the flag set could mislead a C# retry that reads it
+    // before the next LOGIN_CMD_LOGIN re-clears it. Self-healing on the
+    // next LOGIN regardless, but defensive consistency with the CANCEL clear.
+    shm->comboGWriteOk = 0;
     DI8Log("login_sm: ERROR: %s", msg);
 }
 
@@ -364,6 +378,24 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
             g_loginBtnClicked = false;
             g_loginBtnAttempts = 0;
             g_yesBtnAttempts = 0;
+            // Diff 4: reset JoinServer req-seq tracking so a stale C# reqSeq
+            // from a prior session (in case the mapping outlived the prior
+            // RunLoginSequence) doesn't get re-processed as if new. The
+            // canonical reset is "C# starts each login session with reqSeq=0
+            // for that PID" — but C# may keep the mapping open across
+            // logins, in which case reqSeq is monotonic across sessions,
+            // not per-session. Resetting g_last to current observed value
+            // (not 0) prevents re-processing without forcing C# to track
+            // per-session base seq.
+            g_lastJoinServerReqSeq = loginShm->joinServerReqSeq;
+            // Also clear stale outcome from any prior session so C# sees
+            // pending=0 until the next dispatch completes.
+            loginShm->joinServerOutcome = 0;
+            loginShm->joinServerFnResult = 0;
+            // Fix 1 (v5 SHM, 2026-05-15): clear comboGWriteOk so this session's
+            // Combo G success is not confused with a prior session's. C# only
+            // honors the gate when the flag is set DURING the current session.
+            loginShm->comboGWriteOk = 0;
             InvalidateWidgets();
             SetPhase(loginShm, PHASE_WAIT_LOGIN_SCREEN);
             // Username is a credential half on Dalaya — redacted for parity with
@@ -374,11 +406,80 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         }
         else if (cmd == LOGIN_CMD_CANCEL) {
             memset(g_password, 0, sizeof(g_password));
+            // Fix 1 round-3 verifier-fix (T2-O C1, T3-S H1, T3-O H2 convergent
+            // 2026-05-15): CANCEL must clear the v5 comboGWriteOk flag so that
+            // a future re-LOGIN doesn't observe a stale "1" from this aborted
+            // session before native PHASE_TYPING_CREDENTIALS re-runs and
+            // re-publishes. The next LOGIN_CMD_LOGIN handler also clears it
+            // (line ~395 above), but adding the clear here too closes the
+            // narrow race where C# reads ReadComboGWriteOk between CANCEL
+            // and the next LOGIN being processed.
+            loginShm->comboGWriteOk = 0;
             SetPhase(loginShm, PHASE_IDLE);
             DI8Log("login_sm: CANCEL command");
         }
 
         loginShm->command = LOGIN_CMD_NONE;
+    }
+
+    // ─── Diff 4 (v4 SHM, 2026-05-15) — JoinServerDirect RPC ────────
+    // Process JoinServer requests independently from the LOGIN command
+    // channel. C# fires this in the post-BURST-1 settle window after the
+    // login submit, when LoginServerAPI is expected to be populated (server
+    // list returned from network).
+    //
+    // Gated on autoLoginActive — if 0, the request is REFUSED (outcome=3).
+    // This defends against:
+    //   (a) Stray SHM writes from a leaked mapping after RunLoginSequence's
+    //       finally block clears autoLoginActive — keystroke retry path is
+    //       owned by C# at that point; firing JoinServerDirect would race.
+    //   (b) Bare launches that somehow get a non-zero reqSeq written —
+    //       autoLoginActive is the singular "C# is actively driving this
+    //       login" gate, mirroring the existing OK_Display polling gate.
+    //
+    // SEH-wrapped: MQ2Bridge::JoinServerDirect already wraps its internal
+    // calls, but the read of joinServerReqSeq itself crosses the process
+    // boundary; the volatile qualifier ensures the compiler doesn't cache
+    // it across iterations, but doesn't ward off torn reads on
+    // misconfigured mappings. The seq-comparison-then-process pattern is
+    // single-write-single-read so atomicity isn't required.
+    {
+        uint32_t reqSeq = loginShm->joinServerReqSeq;
+        if (reqSeq != g_lastJoinServerReqSeq) {
+            g_lastJoinServerReqSeq = reqSeq;
+
+            if (!loginShm->autoLoginActive) {
+                // Refuse without dispatching — defense against stray writes
+                // from leaked mappings on bare launches / post-cleanup state.
+                loginShm->joinServerFnResult = 0;
+                loginShm->joinServerOutcome  = 3;  // SHM_GATED
+                MemoryBarrier();
+                loginShm->joinServerAckSeq   = reqSeq;
+                DI8Log("login_sm: JOIN_SERVER refused — autoLoginActive=0 (seq=%u)",
+                       reqSeq);
+            } else {
+                int serverID = (int)loginShm->joinServerSerialId;
+                DI8Log("login_sm: JOIN_SERVER dispatch — seq=%u serverID=%d",
+                       reqSeq, serverID);
+
+                unsigned int fnResult = 0;
+                bool dispatched = MQ2Bridge::JoinServerDirect(serverID, &fnResult);
+
+                // Write outcome BEFORE ackSeq — C# polls ackSeq and reads
+                // outcome/fnResult once it observes ackSeq == reqSeq. The
+                // MemoryBarrier ensures publication order: outcome+fnResult
+                // visible before the ack flip.
+                loginShm->joinServerFnResult = dispatched ? fnResult : 0;
+                loginShm->joinServerOutcome  = dispatched ? 1u : 2u;
+                MemoryBarrier();
+                loginShm->joinServerAckSeq   = reqSeq;
+
+                DI8Log("login_sm: JOIN_SERVER ack — seq=%u dispatched=%d "
+                       "outcome=%u fnResult=0x%08X",
+                       reqSeq, dispatched ? 1 : 0,
+                       (unsigned)loginShm->joinServerOutcome, fnResult);
+            }
+        }
     }
 
     // v3 SHM (2026-05-15): OK_Display SHM mirror — gated on autoLoginActive
@@ -512,6 +613,14 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
             if (EQMainCXStr::WriteEditTextDirect(pPasswordWidget, g_password)) {
                 DI8Log("login_sm: set password via Combo G (direct field write @ +0x1A8)");
                 // Password stays in g_password until PHASE_COMPLETE for retry
+                // Fix 1 (v5 SHM, 2026-05-15): publish success signal so C#
+                // skips BURST 1 primer + retype (avoids double-write that
+                // corrupts the field to ~13 chars and gets login-rejected).
+                // Set AFTER WriteEditTextDirect returns true — the function
+                // already includes a read-back at +0x1A8 verifying the write
+                // landed; if read-back failed, WriteEditTextDirect returns
+                // false and the SetError branch below fires instead.
+                loginShm->comboGWriteOk = 1;
             } else {
                 SetError(loginShm,
                          "Combo G WriteEditTextDirect failed on password edit "
@@ -545,12 +654,16 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         // advancement and skipped its keystroke fallback. Verified via
         // eqswitch-dinput8-{pid}.log on 2026-04-25 dual-box test.
         if (!g_pConnectButton) {
-            // ITER 12 v2 (toggle on by default 2026-04-26 PM): try MQ2-style
-            // structural traversal first (~few ms), fall back to legacy
-            // heap-cross-ref scan (~3.2s) on miss. The outer `!g_pConnectButton`
-            // check is the cache-first guard — MQ2-style only runs when
-            // cache cold. With kMQ2StyleWidgetLookup == false the iter-12
-            // path is skipped entirely and behavior matches v3.12.0.
+            // ITER 12 v2 (toggle re-enabled 2026-05-15): try MQ2-style structural
+            // traversal first (~few ms), fall back to legacy heap-cross-ref scan
+            // (~3.2s) on miss. The outer `!g_pConnectButton` check is the
+            // cache-first guard — MQ2-style only runs when cache cold. Toggle
+            // was false 2026-04-26 → 2026-05-15 due to game-thread starvation
+            // (see eqmain_widgets_mq2style.h:82-105 for re-enable rationale).
+            // 2026-05-15 dual-box smoke regression: legacy heap-cross-ref
+            // returned a CXMLDataPtr definition for LOGIN_ConnectButton (rejected
+            // by IsEQMainButtonWidget), retried 3× then C# fell back to BURST 1
+            // — re-enabling structural lookup pulls the LIVE widget instead.
             void *pCandidate = nullptr;
             if (EQMainWidgetsMQ2::kMQ2StyleWidgetLookup) {
                 pCandidate = EQMainWidgetsMQ2::FindChildByName("connect", "LOGIN_ConnectButton");

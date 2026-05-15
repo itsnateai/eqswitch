@@ -29,12 +29,21 @@
 //     successfully traversed sibling chains to find LOGIN_* widgets in a
 //     live Dalaya client session.
 //
-// dShow + CXMLDataManager-hash structure: pending Phase 2 sandbox + rz-ghidra
-// pseudocode review per internal handoff
-// `handoff-eqswitch-combo-g-pinning-EXECUTE-NEXT-SESSION.md`.
-// Until pinned, IsCXWndVisible() returns true unconditionally and
-// GetCXWndXMLName() returns nullptr — both produce a graceful "fall back to
-// legacy" path in callers.
+// dShow PINNED 2026-04-26 (offset 0x196 from vtable slot disasm — see
+// OFFSET_CXWND_DSHOW comment below). IsCXWndVisible() now reads the byte
+// at +0x196 (no longer returns true unconditionally — header doc updated
+// 2026-05-15 to match implementation).
+//
+// CXMLDataManager-hash structure: STILL pending. GetCXWndXMLName() does
+// NOT return nullptr unconditionally — implementation falls back to a
+// CStrRep heuristic scan of the first 0x200/0x400 bytes of the widget body
+// (eqmain_widgets_mq2style.cpp:163-205). Returns the first plausible
+// CStrRep hit's UTF-8 buffer copied into a thread-local-shared static
+// (cpp:198 — caller MUST NOT cache the pointer across calls). Returns
+// nullptr only when no CStrRep field is found OR when SafeRead faults.
+// Has false-positive surface: tooltip / style / font-face strings can
+// match if they appear before the SIDL name. Phase 2 CXMLDataManager pin
+// would replace the heuristic with the canonical lookup.
 //
 // ─── Fail-mode contract ────────────────────────────────────────
 // All public functions return nullptr when:
@@ -79,31 +88,31 @@ constexpr uint32_t OFFSET_CXWND_MINIMIZED = 0x1CE;  // free byproduct
 // (engine-stable; confirmed via WndNotification call sites).
 constexpr uint32_t XWM_LCLICK = 1;
 
-// ─── ITER 12 v5 MASTER TOGGLE — DISABLED 2026-04-26 ────────
-// Set false after 4 background-fail dual-box runs across v1-v4. Three
-// review agents converged on the same root cause at 75% confidence:
-// the MQ2-style structural walk (IterateAllWindowsPublic + RecurseAndFindName)
-// runs from Tick() on EQ's game thread (via LoginController::GiveTime detour).
-// That thread also services IDirectInputDevice8::GetDeviceState, which is
-// how SHM-injected BURST keystrokes get observed by EQ's input loop.
-// When the walk is in flight, GetDeviceState polling stalls -> background
-// client's keystrokes drop. Foreground has a Win32 keyboard fallback path
-// that doesn't depend on GetDeviceState, hence deterministic
-// foreground-OK / background-fail across all 4 iter-12 builds.
+// ─── ITER 12 v5 MASTER TOGGLE — RE-ENABLED 2026-05-15 ──────
+// Re-enabled per the MQ2 RoF2-emu autologin diff (Diff 2/3): with the legacy
+// heap-cross-ref path, LOGIN_ConnectButton lookup returns a CXMLDataPtr
+// definition (not a live widget), gets rejected by IsEQMainButtonWidget,
+// retries 3× then C# falls back to BURST 1 keystrokes. The structural path
+// (FindLiveScreenByName via LVM+0x14 anchor → RecurseAndFindName) returns
+// the LIVE widget — verified working for OK_Display polling in DLL log
+// 2026-05-15 dual-box smoke (eqswitch-dinput8-13560.log: FindLiveScreenByName
+// for 'EulaWindow', 'main', 'seizurewarning', 'news' all return non-null
+// pointers with iterCompleted=1).
 //
-// With toggle == false, both call sites (FindLivePasswordCEditWnd in
-// eqmain_widgets.cpp and the ConnectButton lookup in login_state_machine.cpp)
-// skip the MQ2-style attempt entirely and use the legacy heap-cross-ref +
-// cache path that v3.12.0 / 17ce2ca shipped working.
-//
-// Iter-13/14 redesign brief (per Nate 2026-04-26):
-//   1. Combo G primary, no keystrokes — write password directly into the
-//      InputText CXStr at +0x1A8, skip BURST entirely.
-//   2. Sidequest: trace how eqmain populates username from
-//      eqlsPlayerData.ini and mirror that EXACT pattern for password —
-//      EQ's own username-write path doesn't have foreground/background
-//      asymmetry, so whatever it does works for both clients.
-constexpr bool kMQ2StyleWidgetLookup = false;
+// Background-starvation note (the original 2026-04-26 dormancy reason):
+//   - Iter-12 disabled this because game-thread structural walks starved
+//     IDirectInputDevice8::GetDeviceState polling, dropping BURST keystrokes
+//     on background clients.
+//   - Path A from diff doc: with structural Combo G + ScreenMode swap
+//     (v3.16.0 shipping) writing the password successfully, BURST keystrokes
+//     become unnecessary; no GetDeviceState race; walk-induced starvation
+//     is harmless. The 2026-05-15 DLL log confirms Combo G writes do reach
+//     +0x1A8 ("WriteEditTextDirect read-back OK — length=7, first byte 0x45
+//     matches"), so the prereq is met.
+//   - ConnectButton structural lookup adds ONE walk per PHASE_CLICKING_CONNECT
+//     tick — comparable cost to the OK_Display polling already firing every
+//     ~200ms today without measurable impact.
+constexpr bool kMQ2StyleWidgetLookup = true;
 
 // ─── Public API ─────────────────────────────────────────────
 // FindLiveScreenByName — finds the first top-level widget whose body

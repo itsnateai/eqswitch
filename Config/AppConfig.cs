@@ -375,6 +375,14 @@ public class AppConfig
         Launch.StaleSessionPollIntervalMs   = Math.Clamp(Launch.StaleSessionPollIntervalMs,   100, 5000);
         Launch.ConnectRetryCount            = Math.Clamp(Launch.ConnectRetryCount,            0, 5);
         Launch.PostBurst2QuickFailCheckMs   = Math.Clamp(Launch.PostBurst2QuickFailCheckMs,   0, 30000);
+        // Diff 4 (2026-05-15): JoinServerDirect server ID. 0 = disable wire
+        // (force BURST 2 always); 1 = Dalaya default; up to 100 covers any
+        // realistic eqlogin server-list index (EQ retail had ~75 servers at
+        // peak — emu single-server private emus have IDs in the 1..10 range).
+        // Negative values would write garbage into the SHM int32 field and
+        // pass to JoinServer's `int serverID` parameter as a negative — clamp
+        // floor to 0 to force the wire-disabled path on any out-of-range value.
+        Launch.JoinServerId                 = Math.Clamp(Launch.JoinServerId,                 0, 100);
 
         LoginScreenDelayMs = Math.Clamp(LoginScreenDelayMs, 5000, 10000);
         WarmupDwellMs = Math.Clamp(WarmupDwellMs, 0, 15000);
@@ -713,6 +721,26 @@ public class LaunchConfig
     /// firing before login response arrives.
     /// </summary>
     public int PostBurst1WaitMs { get; set; } = 3000;
+
+    /// <summary>
+    /// Diff 4 (v3.18+, 2026-05-15): server ID for the JoinServerDirect
+    /// in-process __thiscall on eqmain's LoginServerAPI vtable. When > 0 AND
+    /// the native DLL successfully dispatches the call, BURST 2 (server-select
+    /// Enter PostMessage) is SKIPPED — the structural call advances eqmain
+    /// from server-select to char-select directly.
+    ///
+    /// Default 1 — empirical Dalaya server ID (single-server private emu;
+    /// MQ2 RoF2-emu Companies.h has no Dalaya entry, so the ID was inferred
+    /// from "first non-locked entry in ServerList" semantics). If wrong on
+    /// a future Dalaya patch or a different emu, JoinServerDirect returns
+    /// false (one of: API null, vtable mismatch, prologue patch, SEH inside
+    /// the call), and C# falls back to BURST 2 — preserving v3.x behavior.
+    ///
+    /// Set to 0 to DISABLE the JoinServer wire entirely and force BURST 2
+    /// for every login (parity with v3.17.x and earlier). Useful for
+    /// bisecting if JoinServer dispatch causes problems on a future build.
+    /// </summary>
+    public int JoinServerId { get; set; } = 1;
 
     /// <summary>
     /// Wait (ms) after a 90s WaitForScreenTransition timeout before retrying
