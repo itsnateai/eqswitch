@@ -372,6 +372,9 @@ public class AppConfig
         // 30-45s release window. Lowering risks the retry firing while the
         // server still holds the prior session, getting a second rejection.
         Launch.StaleSessionWaitMs           = Math.Clamp(Launch.StaleSessionWaitMs,           10000, 120000);
+        Launch.StaleSessionPollIntervalMs   = Math.Clamp(Launch.StaleSessionPollIntervalMs,   100, 5000);
+        Launch.ConnectRetryCount            = Math.Clamp(Launch.ConnectRetryCount,            0, 5);
+        Launch.PostBurst2QuickFailCheckMs   = Math.Clamp(Launch.PostBurst2QuickFailCheckMs,   0, 30000);
 
         LoginScreenDelayMs = Math.Clamp(LoginScreenDelayMs, 5000, 10000);
         WarmupDwellMs = Math.Clamp(WarmupDwellMs, 0, 15000);
@@ -719,6 +722,38 @@ public class LaunchConfig
     /// release window has shortened. Default 30000.
     /// </summary>
     public int StaleSessionWaitMs { get; set; } = 30000;
+
+    /// <summary>
+    /// Poll interval (ms) inside the stale-session recovery wait. The wait
+    /// is now cancellable — if the EQ process dies mid-sleep (observed
+    /// 2026-05-10: gotquiz EQ exited during the 30s sleep after a blind
+    /// modal-dismiss Enter killed the wrong screen), the recovery short-
+    /// circuits instead of slogging through the full StaleSessionWaitMs.
+    /// Default 500. Floor 100, ceiling 5000.
+    /// </summary>
+    public int StaleSessionPollIntervalMs { get; set; } = 500;
+
+    /// <summary>
+    /// Maximum number of login-retry attempts after WaitForScreenTransition
+    /// times out. Mirrors MQ2AutoLogin's ConnectRetries semantics. Default 1
+    /// (one retry, then surface failure — matches v3.15.x behavior). Set to
+    /// 0 to disable retry entirely (90s timeout = hard fail). Floor 0,
+    /// ceiling 5 (each retry adds ~30s recovery wait + ~60s screen wait,
+    /// so 5 retries can push wall-clock past 8 minutes).
+    /// </summary>
+    public int ConnectRetryCount { get; set; } = 1;
+
+    /// <summary>
+    /// After BURST 2 fires, poll for evidence EQ has advanced past the login
+    /// screen (gameState change or window-size change) within this window.
+    /// If no advance is detected, the 90s screen-transition wait is short-
+    /// circuited to 5s and the retry loop kicks in much sooner. Addresses
+    /// the "BURST 1 typed only 4 chars and we wait 90s before retrying"
+    /// failure class (truncation, user-input collision, simply wrong creds).
+    /// Default 10000 (10s). Set to 0 to disable (legacy 90s-only behavior).
+    /// Floor 0, ceiling 30000.
+    /// </summary>
+    public int PostBurst2QuickFailCheckMs { get; set; } = 10000;
 
     /// <summary>
     /// Vestigial settle pause between WaitForScreenTransition reporting

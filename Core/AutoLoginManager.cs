@@ -18,6 +18,20 @@ namespace EQSwitch.Core;
 /// </summary>
 public class AutoLoginManager
 {
+    /// <summary>
+    /// Per-burst typing-validation result. <see cref="CombinedTypeString"/> returns
+    /// this so callers can detect when characters were dropped due to keyboard-layout
+    /// incompatibility (Skipped) or when the typing loop exited mid-flight (Typed +
+    /// Skipped != Expected — should never happen barring exceptions, defensive).
+    /// </summary>
+    private readonly record struct TypingResult(int Typed, int Skipped, int Expected)
+    {
+        /// <summary>True iff every input character was either typed or explicitly skipped.</summary>
+        public bool IsComplete => Typed + Skipped == Expected;
+        /// <summary>True iff at least one character was layout-skipped (user-action item).</summary>
+        public bool HasLayoutSkips => Skipped > 0;
+    }
+
     private readonly AppConfig _config;
 
     /// <summary>PIDs currently in the login sequence — DLL injection should be deferred for these.</summary>
@@ -487,6 +501,16 @@ public class AutoLoginManager
         int loginScreenDelayMs, int warmupDwellMs,
         string targetCharacterName = "")
     {
+        // v3.17.0 R3 fix: snapshot config values consumed BELOW. The R2 snapshot
+        // at RunLoginSequence header doesn't propagate into this method, and
+        // when called from the retry path during a 30s recovery sleep, a user-
+        // initiated Settings change would race these reads. Caught by T2 verifier
+        // pair (Sonnet+Opus convergent finding 2026-05-14). Snapshot here so
+        // every call (primary + retry) gets a consistent view per invocation.
+        bool skipNativeWarmup = _config.Launch.SkipNativeWarmup;
+        int burst1ActivationSettleMs = _config.Launch.Burst1ActivationSettleMs;
+        int burst1PostSubmitMs = _config.Launch.Burst1PostSubmitMs;
+
         // ── Phase 1: SHM warmup ritual ──
         bool warmupRan = false;
         // v3.15.12 (2026-05-10): empirical Dalaya regression fix. The warmup
@@ -511,7 +535,7 @@ public class AutoLoginManager
         // on Dalaya per CHANGELOG. Our BURST 1 keystroke path is the
         // Dalaya-correct fallback; the warmup ritual that tries (and fails)
         // the Combo G structural write is pure overhead AND breaks BURST 1.
-        if (loginShm != null && !_config.Launch.SkipNativeWarmup)
+        if (loginShm != null && !skipNativeWarmup)
         {
             Report($"{account.Name}: warmup...");
             // Track B v3 (2026-05-05): pass target character name into LoginShm so the
@@ -593,7 +617,7 @@ public class AutoLoginManager
         Report("Typing credentials...");
         writer.Activate(pid, suppress: true);
         // v3.15.2: tunable via Launch.Burst1ActivationSettleMs (default 500).
-        Thread.Sleep(_config.Launch.Burst1ActivationSettleMs); // let DLL switch coop + blast activation
+        Thread.Sleep(burst1ActivationSettleMs); // let DLL switch coop + blast activation
         FileLogger.Info($"AutoLogin: BURST 1 activated for PID {pid}");
 
         // ── PRIMER: absorb first-keystroke drop ──
@@ -638,7 +662,8 @@ public class AutoLoginManager
         {
             CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to username
             Thread.Sleep(100);
-            CombinedTypeString(writer, pid, hwnd, account.Username);
+            var userResult = CombinedTypeString(writer, pid, hwnd, account.Username);
+            LogTypingValidation("BURST 1 username", userResult, pid);
             Thread.Sleep(100);
         }
         if (!account.UseLoginFlag)
@@ -646,13 +671,14 @@ public class AutoLoginManager
             CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to password
             Thread.Sleep(100);
         }
-        CombinedTypeString(writer, pid, hwnd, password);
+        var passResult = CombinedTypeString(writer, pid, hwnd, password);
+        LogTypingValidation("BURST 1 password", passResult, pid);
         Thread.Sleep(100);
 
         Report("Submitting login...");
         CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = submit
         // v3.15.2: tunable via Launch.Burst1PostSubmitMs (default 500).
-        Thread.Sleep(_config.Launch.Burst1PostSubmitMs);
+        Thread.Sleep(burst1PostSubmitMs);
         writer.Deactivate(pid);
         FileLogger.Info($"AutoLogin: BURST 1 deactivated for PID {pid}");
     }
@@ -664,6 +690,18 @@ public class AutoLoginManager
         int loginScreenDelayMs = _config.LoginScreenDelayMs;
         int warmupDwellMs = _config.WarmupDwellMs;
         string eqPath = _config.EQPath;
+        // v3.17.0: snapshot the new retry-related tunables. The retry loop reads
+        // these during its iterations — without snapshot, a user opening Settings
+        // and hitting Apply during a 30s recovery sleep could swap values mid-
+        // iteration (one retry uses 30s wait, next uses 5s, etc.). The same
+        // ReloadConfig race applies to all tunables read inside the retry loop.
+        int connectRetryCount = _config.Launch.ConnectRetryCount;
+        int staleSessionWaitMs = _config.Launch.StaleSessionWaitMs;
+        int staleSessionPollIntervalMs = _config.Launch.StaleSessionPollIntervalMs;
+        int postBurst2QuickFailCheckMs = _config.Launch.PostBurst2QuickFailCheckMs;
+        int postBurst1WaitMs = _config.Launch.PostBurst1WaitMs;
+        int burst2ActivationSettleMs = _config.Launch.Burst2ActivationSettleMs;
+        int burst2PostKeystrokeMs = _config.Launch.Burst2PostKeystrokeMs;
 
         // Parallel-safe background login via brief activation windows.
         // Focus-faking (WndProc subclass + IAT hooks) is ONLY active during
@@ -829,107 +867,240 @@ public class AutoLoginManager
             writer.Deactivate(pid); // ← OFF
             FileLogger.Info($"AutoLogin: BURST 2 deactivated for PID {pid}");
 
-            // ── Wait for charselect load (no focus-faking, 5-60+ seconds) ──
-            Report("Loading character select...");
-            var transitionSw = System.Diagnostics.Stopwatch.StartNew();
-            hwnd = WaitForScreenTransition(pid, hwnd, 90000);
-            transitionSw.Stop();
-            bool hitTimeout = transitionSw.ElapsedMilliseconds >= 90000 - 500;
-
-            // Hotfix 2026-04-24: stale-session auto-recovery.
-            // On Dalaya, if the login server still holds a prior session for
-            // this account (e.g. previous run crashed, was killed hard, or a
-            // fresh hotkey fire within ~30-45s of the previous login), EQ
-            // shows a modal "Connection to the server could not be reached"
-            // dialog with a focused OK button. The dialog blocks the login
-            // flow — WaitForScreenTransition hits its 90s timeout and we
-            // bail without recovery. Dismiss the dialog (Enter clicks the
-            // focused OK button), wait for the server to release, and
-            // re-fire the credential burst. One retry, then surface failure.
-            if (hitTimeout && hwnd != IntPtr.Zero)
+            // ── v3.17.0 (2026-05-14): post-BURST-2 fast-failure detection ──
+            // Before sinking into the 90s WaitForScreenTransition wait, poll for
+            // ~10s for ANY sign EQ is advancing past the login screen (gameState
+            // bump or window-rect size change). If no signal, BURST 1 credentials
+            // were almost certainly rejected (truncation, user-input collision,
+            // bad password, account already in-use) — fast-fail to the retry loop
+            // instead of waiting the full 90s. Addresses Nate's stated symptom
+            // 2026-05-14: "i have not seen it retry typing a password if the first
+            // try only typed 4 chars". Tunable via Launch.PostBurst2QuickFailCheckMs
+            // (default 10000; set 0 to disable + restore legacy 90s-only behavior).
+            bool quickFailDetected = false;
+            if (postBurst2QuickFailCheckMs > 0 && hwnd != IntPtr.Zero)
             {
-                Report($"{account.Name}: transition timed out — dismissing any modal dialog + retrying login");
-                FileLogger.Warn($"AutoLogin: {account.Name} hit 90s transition timeout — attempting stale-session recovery (one-shot retry)");
-
-                // Enter clicks OK on any modal dialog; benign on a live login form.
-                writer.Activate(pid, suppress: true);
-                Thread.Sleep(300);
-                CombinedPressKey(writer, pid, hwnd, 0x0D);
-                Thread.Sleep(300);
-                writer.Deactivate(pid);
-
-                // Server-release wait — empirically Dalaya releases stale sessions in ~30-45s.
-                // v3.15.2: tunable via Launch.StaleSessionWaitMs (default 30000).
-                // DO NOT lower below 30000 without server-side confirmation that the release
-                // window has shortened — too short → second login attempt also rejected.
-                Thread.Sleep(_config.Launch.StaleSessionWaitMs);
-                hwnd = RefreshHandle(pid, hwnd);
-                if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during recovery wait"); return; }
-
-                // Re-fire BURST 1 (credentials + submit).
-                Report("Retry: typing credentials...");
-                writer.Activate(pid, suppress: true);
-                // v3.15.2: tunable via Launch.Burst1ActivationSettleMs (default 500).
-                Thread.Sleep(_config.Launch.Burst1ActivationSettleMs);
-                FileLogger.Info($"AutoLogin: RETRY BURST 1 activated for PID {pid}");
-                // v3.15.2 (T3 verifier HIGH callout): primer Backspace, same as the
-                // initial BURST 1 at line ~540. After a 30s server-release wait,
-                // EQ's GetDeviceData polling has been idle long enough that the
-                // SHM-active flip can drop the first 1-3 keystrokes — without a
-                // primer to absorb them, the retry tabs/types could be truncated
-                // identically to the v3.14.x first-keystroke-drop bug.
-                CombinedPressKey(writer, pid, hwnd, 0x08);
-                Thread.Sleep(50);
-                if (!account.UseLoginFlag && !string.IsNullOrEmpty(account.Username))
+                Report("Verifying login response...");
+                quickFailDetected = !PollForLoginAdvance(charSelect, pid, hwnd, postBurst2QuickFailCheckMs);
+                if (quickFailDetected)
                 {
-                    CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to username
-                    Thread.Sleep(100);
-                    CombinedTypeString(writer, pid, hwnd, account.Username);
-                    Thread.Sleep(100);
+                    FileLogger.Warn($"AutoLogin: {account.Name} fast-fail detected post-BURST-2 — short-circuiting 90s screen wait to 5s confirm");
+                }
+            }
+
+            // ── Wait for charselect load (no focus-faking, 5-60+ seconds) ──
+            // Adaptive timeout: 90s default, or 5s if fast-fail signal already
+            // told us the login didn't advance (just need to confirm before
+            // entering retry loop).
+            Report("Loading character select...");
+            int initialTimeoutMs = quickFailDetected ? 5000 : 90000;
+            var transitionSw = System.Diagnostics.Stopwatch.StartNew();
+            hwnd = WaitForScreenTransition(pid, hwnd, initialTimeoutMs);
+            transitionSw.Stop();
+            bool hitTimeout = transitionSw.ElapsedMilliseconds >= initialTimeoutMs - 500;
+
+            // ── v3.17.0: bounded retry loop (was: single inline if-block) ──
+            // Retry-loop architecture replaces the v3.15.x one-shot recovery
+            // block. Tunable via Launch.ConnectRetryCount (default 1 = matches
+            // v3.15.x behavior). Each iteration:
+            //   1. State-aware modal dismiss — only press Enter if EQ is STILL
+            //      on the login screen (gameState ≤ 1). If gameState advanced
+            //      but timeout hit anyway (rare), skip the Enter — blind Enter
+            //      into wrong screens has killed EQ (2026-05-10 incident:
+            //      gotquiz1 EQ died 3s after retry submit; per
+            //      feedback_eqswitch_no_yesno_in_patchme: "Dalaya's EULA
+            //      defaults Enter focus to DECLINE — closed the game on every
+            //      test").
+            //   2. Cancellable recovery sleep — Thread.Sleep(30000) was
+            //      undetectable as a 30s window where EQ could die without C#
+            //      noticing (2026-05-10 incident: gotquiz EQ exited DURING the
+            //      sleep, C# slept on a corpse). Now polls Process.HasExited.
+            //   3. Re-fire BURST 1 via RunCredentialEntry — parity with primary
+            //      path (Combo G + ScreenMode swap via warmup path is skipped
+            //      here by passing loginShm: null; pure-keystroke retry is the
+            //      empirically-working Dalaya path per the BURST 1 comment
+            //      block). Inherits future RunCredentialEntry improvements.
+            //   4. BURST 2 (server-confirm Enter) — kept inline; trivial.
+            //   5. Re-wait WaitForScreenTransition with 60s cap.
+            //   6. Loop until hitTimeout==false OR retry budget exhausted.
+            int retryCap = Math.Max(0, connectRetryCount);
+            int retryAttempt = 0;
+            while (hitTimeout && hwnd != IntPtr.Zero && retryAttempt < retryCap)
+            {
+                retryAttempt++;
+                Report($"{account.Name}: transition timed out — retry {retryAttempt}/{retryCap}");
+                FileLogger.Warn($"AutoLogin: {account.Name} retry {retryAttempt}/{retryCap} starting (initial timeout = {initialTimeoutMs}ms, elapsed = {transitionSw.ElapsedMilliseconds}ms)");
+
+                // (1) State-aware modal dismiss — gate on observable EQ state.
+                //
+                // ⚠️ DALAYA gameState VALUES ARE PARTIALLY UNKNOWN. Native/login_state_machine.cpp
+                // lines 30-36 explicitly say: "Known from DLL log: login screen = 0,
+                // charselect = ?, ingame = ?" and "Strategy: don't gate on gameState
+                // for login screen — gate on widget presence." mq2_bridge.cpp may
+                // report gameState=0 for BOTH login AND charselect (Dalaya RoF2 mapping
+                // differs from modern MQ2). Therefore the `<= 1` gate cannot reliably
+                // distinguish "on login screen" from "on charselect" — both may be 0.
+                //
+                // Practical implication: when we reach this retry path, WaitForScreenTransition
+                // *just timed out* without observing the charselect-load signal (hung→responsive
+                // OR window-rect size change). On Dalaya, that signal IS load-bearing for
+                // charselect detection — if we got here, we're almost certainly still on the
+                // login screen. The gameState check is a SUPPLEMENTAL safety: refuse dismiss
+                // on a definitively-not-login state (gameState=5 in-game).
+                //
+                // Additionally, ReadGameState returns -1 as the "PID not mapped / SHM not
+                // ready" sentinel — treat that as "don't know, fail safe to NOT dismiss".
+                // Honest acknowledgement: this gate doesn't protect against the EULA case
+                // (EULA likely has gameState=0 same as login). The right structural fix
+                // is a native widget-name probe (deferred to v3.18 + SHM v3).
+                int currentState = charSelect.ReadGameState(pid);
+                bool safeDismiss = currentState >= 0 && currentState <= 1;
+                if (safeDismiss)
+                {
+                    writer.Activate(pid, suppress: true);
+                    Thread.Sleep(300);
+                    CombinedPressKey(writer, pid, hwnd, 0x0D);
+                    Thread.Sleep(300);
+                    writer.Deactivate(pid);
+                    FileLogger.Info($"AutoLogin: retry {retryAttempt} modal-dismiss Enter sent (PID {pid}, gameState={currentState})");
+                }
+                else
+                {
+                    FileLogger.Info($"AutoLogin: retry {retryAttempt} SKIPPED modal-dismiss (PID {pid}, gameState={currentState} — sentinel or post-login state; blind Enter would risk EQ exit / wrong-screen submission)");
+                }
+
+                // (2) Cancellable stale-session wait. Short-circuit on EQ death.
+                // ALWAYS use staleSessionWaitMs (default 30s) — C# alone can't
+                // distinguish truncated-creds (1s wait would suffice) from stale-
+                // session-held (needs 30-45s release). Distinguishing requires the
+                // OK_Display error-text probe deferred to v3.18 + SHM v3 bump.
+                // Net retry-cycle savings still ~75s on first retry from the
+                // initial-timeout shortening alone (90s → 5s).
+                if (!CancellableSleepUntilProcessDies(pid, staleSessionWaitMs, staleSessionPollIntervalMs))
+                {
+                    FileLogger.Warn($"AutoLogin: {account.Name} EQ process exited during retry {retryAttempt} recovery wait — aborting");
+                    Report($"{account.Name}: EQ exited during recovery wait — aborting");
+                    return;
+                }
+                hwnd = RefreshHandle(pid, hwnd);
+                if (hwnd == IntPtr.Zero)
+                {
+                    FileLogger.Warn($"AutoLogin: {account.Name} lost EQ window post-recovery-sleep on retry {retryAttempt} — aborting");
+                    Report($"{account.Name}: lost EQ window during retry {retryAttempt} recovery");
+                    return;
+                }
+
+                // (3) Re-fire BURST 1 via shared RunCredentialEntry. Pass loginShm: null
+                // to skip the Combo G warmup ritual (already attempted on primary;
+                // its result is whatever it was — retry leans on keystroke path).
+                // Pass loginScreenDelayMs=0 / warmupDwellMs=0 — already on the
+                // login screen, no further dwell needed. Burst1ActivationSettleMs
+                // is the inner settle and covers the SHM/coop window.
+                //
+                // ⚠️ FIELD-CLEAR BEFORE RETRY TYPING: if primary's Combo G structural
+                // write to `CEditBaseWnd::InputText+0x1A8` actually landed (v3.16.0
+                // ScreenMode swap path), the password field already holds N chars.
+                // RunCredentialEntry's PRIMER backspace clears ONE char only — re-
+                // typing would concatenate, producing `<N-1 leftover><password>` and
+                // a definitively-wrong submission. Pre-flush with 16 Backspaces.
+                //
+                // Coverage: 16 Backspaces clears up to 16 chars from cursor-back.
+                // Passwords up to 16 chars are fully covered. Per Native/login_shm.h
+                // line 45, LOGIN_PASS_LEN=128 is the upper bound — passwords above 16
+                // chars where Combo G structural write succeeded would still concatenate
+                // on retry (filed as v3.17.1 follow-up; in practice Dalaya passwords
+                // are typically <16 chars).
+                //
+                // Two-field clear for UseLoginFlag=false: when LaunchManager doesn't
+                // auto-populate username via eqlsPlayerData.ini, BURST 1 types BOTH
+                // username and password. On retry, both fields may have stale chars.
+                // After clearing the currently-focused field, Tab to the other and
+                // clear it too. UseLoginFlag=true case (Nate's primary setup): only
+                // password field needs clearing — username is auto-populated by
+                // LaunchManager and clearing it would break the auto-populate.
+                // (T2-Opus R3 verifier catch 2026-05-14.)
+                Report($"Retry {retryAttempt}: re-firing credentials...");
+                writer.Activate(pid, suppress: true);
+                Thread.Sleep(200);
+                for (int i = 0; i < 16; i++)
+                {
+                    CombinedPressKey(writer, pid, hwnd, 0x08); // Backspace
+                    Thread.Sleep(15);
                 }
                 if (!account.UseLoginFlag)
                 {
-                    CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to password
+                    // Tab to the OTHER field and clear it. Direction (username↔password)
+                    // depends on which field had focus first — either way, after a Tab,
+                    // we're in the other one. A trailing Tab to return to the original
+                    // field isn't needed because RunCredentialEntry's flow Shift-resets
+                    // focus via its own Tab sequence.
+                    CombinedPressKey(writer, pid, hwnd, 0x09); // Tab
                     Thread.Sleep(100);
+                    for (int i = 0; i < 16; i++)
+                    {
+                        CombinedPressKey(writer, pid, hwnd, 0x08); // Backspace
+                        Thread.Sleep(15);
+                    }
                 }
-                CombinedTypeString(writer, pid, hwnd, password);
-                Thread.Sleep(100);
-                Report("Retry: submitting login...");
-                CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = submit
-                // v3.15.2: tunable via Launch.Burst1PostSubmitMs (default 500).
-                Thread.Sleep(_config.Launch.Burst1PostSubmitMs);
                 writer.Deactivate(pid);
-                FileLogger.Info($"AutoLogin: RETRY BURST 1 deactivated for PID {pid}");
+                int clearCount = account.UseLoginFlag ? 16 : 32;
+                FileLogger.Info($"AutoLogin: retry {retryAttempt} pre-typing field-clear ({clearCount}x Backspace, UseLoginFlag={account.UseLoginFlag}) for PID {pid}");
 
-                // v3.15.2: tunable via Launch.PostBurst1WaitMs (default 3000).
-                Thread.Sleep(_config.Launch.PostBurst1WaitMs);
+                RunCredentialEntry(pid, hwnd, writer, loginShm: null, account, password,
+                    loginScreenDelayMs: 0, warmupDwellMs: 0,
+                    targetCharacterName: character?.Name ?? "");
+
+                Thread.Sleep(postBurst1WaitMs);
                 hwnd = RefreshHandle(pid, hwnd);
-                if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during retry submit"); return; }
+                if (hwnd == IntPtr.Zero)
+                {
+                    FileLogger.Warn($"AutoLogin: {account.Name} lost EQ window mid-retry-{retryAttempt} BURST 1 — aborting");
+                    Report($"{account.Name}: lost EQ window during retry {retryAttempt} BURST 1");
+                    return;
+                }
 
-                // Re-fire BURST 2 (server confirm).
-                Report("Retry: confirming server...");
+                // (4) Re-fire BURST 2 (server confirm).
+                Report($"Retry {retryAttempt}: confirming server...");
                 writer.Activate(pid, suppress: true);
-                // v3.15.2: tunable via Launch.Burst2ActivationSettleMs (default 300).
-                Thread.Sleep(_config.Launch.Burst2ActivationSettleMs);
-                FileLogger.Info($"AutoLogin: RETRY BURST 2 activated for PID {pid}");
+                Thread.Sleep(burst2ActivationSettleMs);
+                FileLogger.Info($"AutoLogin: RETRY {retryAttempt} BURST 2 activated for PID {pid}");
                 CombinedPressKey(writer, pid, hwnd, 0x0D);
-                // v3.15.2: tunable via Launch.Burst2PostKeystrokeMs (default 500).
-                Thread.Sleep(_config.Launch.Burst2PostKeystrokeMs);
+                Thread.Sleep(burst2PostKeystrokeMs);
                 writer.Deactivate(pid);
-                FileLogger.Info($"AutoLogin: RETRY BURST 2 deactivated for PID {pid}");
+                FileLogger.Info($"AutoLogin: RETRY {retryAttempt} BURST 2 deactivated for PID {pid}");
 
-                // Re-wait for screen transition — 60s cap (already burned 90+30+burst).
-                Report("Retry: loading character select...");
+                // (5) Re-wait for screen transition — 60s cap. Post-retry also
+                // gets the fast-fail probe so a second-retry-truncation hits the
+                // next retry iteration quickly instead of waiting another 60s.
+                bool retryQuickFail = false;
+                if (postBurst2QuickFailCheckMs > 0)
+                {
+                    retryQuickFail = !PollForLoginAdvance(charSelect, pid, hwnd, postBurst2QuickFailCheckMs);
+                }
+                Report($"Retry {retryAttempt}: loading character select...");
+                int retryTimeoutMs = retryQuickFail ? 5000 : 60000;
                 transitionSw.Restart();
-                hwnd = WaitForScreenTransition(pid, hwnd, 60000);
+                hwnd = WaitForScreenTransition(pid, hwnd, retryTimeoutMs);
                 transitionSw.Stop();
-                hitTimeout = transitionSw.ElapsedMilliseconds >= 60000 - 500;
+                hitTimeout = transitionSw.ElapsedMilliseconds >= retryTimeoutMs - 500;
+                // Note: quickFailDetected is no longer read after this point —
+                // each retry iteration computes its own retryQuickFail fresh.
+                // The v0 version assigned `quickFailDetected = retryQuickFail`
+                // here with a "propagate" comment, but that propagation was
+                // dead code — no later read consumed it (verifier T1-Opus
+                // 2026-05-14). Removed.
+
+                if (!hitTimeout)
+                {
+                    FileLogger.Info($"AutoLogin: {account.Name} retry {retryAttempt}/{retryCap} succeeded — charselect loaded after {transitionSw.ElapsedMilliseconds}ms");
+                }
             }
 
             if (hitTimeout)
             {
-                Report($"{account.Name}: char select didn't load (90s + retry) — check password / server / network");
-                FileLogger.Error($"AutoLogin: WaitForScreenTransition timeout even after stale-session recovery for {account.Name} — aborting login");
+                string retryDesc = retryCap == 0 ? "no retries configured" : $"{retryAttempt}/{retryCap} retr{(retryCap == 1 ? "y" : "ies")} exhausted";
+                Report($"{account.Name}: char select didn't load ({retryDesc}) — check password / server / network");
+                FileLogger.Error($"AutoLogin: WaitForScreenTransition timeout — {retryDesc} for {account.Name} — aborting login");
                 // Login-status indicator: AutoLoginManager-owned timeout. The hwnd-zero
                 // path below is process death (EQ crashed), which we deliberately don't
                 // mark — it's not the password's fault. See risk register in
@@ -1759,7 +1930,7 @@ public class AutoLoginManager
     }
 
     /// <summary>Type a string via SHM + PostMessage. Posts WM_KEYDOWN + WM_CHAR + WM_KEYUP.</summary>
-    private static void CombinedTypeString(KeyInputWriter writer, int pid, IntPtr hwnd, string text)
+    private static TypingResult CombinedTypeString(KeyInputWriter writer, int pid, IntPtr hwnd, string text)
     {
         // Diagnostic counters: tell us whether typing actually executed. Catches
         // the failure mode where DI8 SHM only sees the trailing Enter — if typed=0
@@ -1846,6 +2017,186 @@ public class AutoLoginManager
             typedCount++;
         }
         FileLogger.Info($"AutoLogin: CombinedTypeString PID={pid} done — typed={typedCount} skipped={skippedCount} input.Length={text.Length}");
+        return new TypingResult(typedCount, skippedCount, text.Length);
+    }
+
+    /// <summary>
+    /// Log warnings/errors based on a <see cref="CombinedTypeString"/> result.
+    /// Layout-skips are user-action items (switch keyboard layout, change pw);
+    /// incompleteness (Typed+Skipped &lt; Expected) means the typing loop exited
+    /// mid-flight, which only happens via exception — surface loudly.
+    /// </summary>
+    private static void LogTypingValidation(string label, TypingResult r, int pid)
+    {
+        if (!r.IsComplete)
+        {
+            FileLogger.Error($"AutoLogin: {label} typing INCOMPLETE for PID {pid} — typed={r.Typed} skipped={r.Skipped} expected={r.Expected} (typing loop exited mid-flight; downstream submit will receive truncated input)");
+        }
+        if (r.HasLayoutSkips)
+        {
+            FileLogger.Warn($"AutoLogin: {label} typing layout-skipped {r.Skipped}/{r.Expected} char(s) for PID {pid} — login server will reject. Switch to a keyboard layout that maps every password char without modifiers (AltGr/Ctrl), or pick an ASCII-only password.");
+        }
+    }
+
+    /// <summary>
+    /// Sleep for <paramref name="totalMs"/>, polling the EQ process every
+    /// <paramref name="pollIntervalMs"/>. Returns false (short-circuit) if
+    /// the process exited mid-sleep; true if the full duration elapsed
+    /// without process death. Addresses the 2026-05-10 incident where
+    /// gotquiz's EQ process died DURING the 30s StaleSessionWaitMs sleep
+    /// after a blind modal-dismiss Enter, but the C# side didn't notice
+    /// until after the sleep finished — sat idle for ~28s on a corpse PID.
+    /// </summary>
+    private static bool CancellableSleepUntilProcessDies(int pid, int totalMs, int pollIntervalMs = 500)
+    {
+        if (totalMs <= 0) return true;
+        var sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < totalMs)
+        {
+            try
+            {
+                using var proc = Process.GetProcessById(pid);
+                if (proc.HasExited) return false;
+            }
+            catch (ArgumentException)
+            {
+                FileLogger.Info($"AutoLogin: CancellableSleepUntilProcessDies PID {pid} — process record gone at {sw.ElapsedMilliseconds}ms");
+                return false;
+            }
+            catch (InvalidOperationException)
+            {
+                FileLogger.Info($"AutoLogin: CancellableSleepUntilProcessDies PID {pid} — process exited between query and HasExited at {sw.ElapsedMilliseconds}ms");
+                return false;
+            }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                // access-denied — PID recycled to protected process; treat as gone.
+                FileLogger.Warn($"AutoLogin: CancellableSleepUntilProcessDies PID {pid} — Win32Exception at {sw.ElapsedMilliseconds}ms ({ex.Message}) — PID may have been recycled");
+                return false;
+            }
+
+            int remaining = totalMs - (int)sw.ElapsedMilliseconds;
+            if (remaining <= 0) break;
+            Thread.Sleep(Math.Min(pollIntervalMs, remaining));
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// After BURST 2 fires, poll for evidence EQ has actually advanced past the
+    /// login screen. Returns true if a transition signal is observed within
+    /// <paramref name="maxWaitMs"/>, false if EQ stayed put (likely credential
+    /// rejection from BURST 1 — caller should fast-retry instead of waiting
+    /// the full 90s screen-transition timeout).
+    ///
+    /// Signals (in order of reliability on Dalaya):
+    ///   (a) window-rect SIZE change — load-bearing on Dalaya. The charselect-
+    ///       load actually resizes/redraws the EQ window. PRIMARY signal.
+    ///   (b) gameState change from initial reading — SUPPLEMENTAL on Dalaya.
+    ///       Per Native/login_state_machine.cpp lines 30-36, "Known from DLL
+    ///       log: login screen = 0, charselect = ?, ingame = ?". gameState may
+    ///       not bump on the login→charselect transition (both could be 0).
+    ///       The check is kept as a fast-positive for cases where it DOES
+    ///       bump, but rect-change is the load-bearing signal.
+    ///
+    /// Returns false on process death.
+    ///
+    /// Window-minimize false-positive guard: if the EQ window is minimized
+    /// mid-poll, GetWindowRect returns icon-strip dimensions (small width/
+    /// height) that are STILL different from the initial fullscreen rect.
+    /// IsIconic skips the rect-change check while minimized — rect-change
+    /// only registers when the window returns to non-minimized state at a
+    /// different size. (Verifier T2-Sonnet caught this 2026-05-14.)
+    ///
+    /// Addresses Nate's stated symptom 2026-05-14: when BURST 1 typing is
+    /// truncated to 4-of-7 chars (first-keystroke-drop or user-input
+    /// collision), the login server rejects within ~1-2s but EQSwitch waits
+    /// the full 90s before retry. This shrinks that window to ~10s.
+    /// </summary>
+    private bool PollForLoginAdvance(CharSelectReader charSelect, int pid, IntPtr hwnd, int maxWaitMs)
+    {
+        if (maxWaitMs <= 0) return true; // disabled — preserve legacy 90s-wait behavior
+        var sw = Stopwatch.StartNew();
+        bool initialRectValid = NativeMethods.GetWindowRect(hwnd, out var initialRect);
+        int initialState = charSelect.ReadGameState(pid);
+
+        // Safety: if EQ has ALREADY advanced past login at probe entry (gameState
+        // > 0; rare but possible when server response races the C# call OR when
+        // initialState is the stale value from a prior session pre-restart),
+        // treat as already-advanced. Without this, the gameState-change check
+        // (state != initialState && state > initialState) can never fire and
+        // we'd falsely conclude "no advance" → short-circuit charselect-load
+        // wait to 5s before charselect actually renders.
+        if (initialState > 0)
+        {
+            FileLogger.Info($"AutoLogin: PollForLoginAdvance PID {pid} — entry gameState={initialState} > 0, login already advanced; skipping probe");
+            return true;
+        }
+        // Safety: if we couldn't get a valid initial rect (hwnd stale), the
+        // rect-change check would false-positive on the first valid sample.
+        // Bail and let WaitForScreenTransition handle this with its own retry.
+        if (!initialRectValid)
+        {
+            FileLogger.Warn($"AutoLogin: PollForLoginAdvance PID {pid} — GetWindowRect failed at entry; skipping probe (legacy 90s wait will run)");
+            return true;
+        }
+        FileLogger.Info($"AutoLogin: PollForLoginAdvance PID {pid} — initial gameState={initialState}, rect={initialRect.Width}x{initialRect.Height}, budget={maxWaitMs}ms");
+
+        while (sw.ElapsedMilliseconds < maxWaitMs)
+        {
+            try
+            {
+                using var proc = Process.GetProcessById(pid);
+                if (proc.HasExited)
+                {
+                    FileLogger.Warn($"AutoLogin: PollForLoginAdvance PID {pid} — process exited at {sw.ElapsedMilliseconds}ms");
+                    return false;
+                }
+            }
+            catch (ArgumentException)
+            {
+                FileLogger.Warn($"AutoLogin: PollForLoginAdvance PID {pid} — process record missing at {sw.ElapsedMilliseconds}ms (PID gone)");
+                return false;
+            }
+            catch (InvalidOperationException)
+            {
+                FileLogger.Warn($"AutoLogin: PollForLoginAdvance PID {pid} — process exited between query and HasExited at {sw.ElapsedMilliseconds}ms");
+                return false;
+            }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                // Win32Exception can fire on access-denied if the PID was recycled
+                // to a protected process. Treat same as ArgumentException — process
+                // we cared about is effectively gone. Log so the failure is visible
+                // (T3-Sonnet R3 verifier observability catch 2026-05-14).
+                FileLogger.Warn($"AutoLogin: PollForLoginAdvance PID {pid} — Win32Exception at {sw.ElapsedMilliseconds}ms ({ex.Message}) — PID may have been recycled to protected process");
+                return false;
+            }
+
+            int state = charSelect.ReadGameState(pid);
+            if (state != initialState && state > initialState)
+            {
+                FileLogger.Info($"AutoLogin: PollForLoginAdvance PID {pid} — advance detected (gameState {initialState}→{state}) at {sw.ElapsedMilliseconds}ms");
+                return true;
+            }
+
+            // Rect-change check is the LOAD-BEARING signal on Dalaya. Gate on
+            // !IsIconic — a minimized window returns icon-strip dimensions that
+            // differ from initial but indicate a user minimize, not a charselect
+            // transition. Without this guard, user-minimize during probe falsely
+            // returns "advance detected" → no retry fires even on real failure.
+            if (!NativeMethods.IsIconic(hwnd) && NativeMethods.GetWindowRect(hwnd, out var current))
+            {
+                if (current.Width != initialRect.Width || current.Height != initialRect.Height)
+                {
+                    FileLogger.Info($"AutoLogin: PollForLoginAdvance PID {pid} — rect SIZE change ({initialRect.Width}x{initialRect.Height} → {current.Width}x{current.Height}) at {sw.ElapsedMilliseconds}ms");
+                    return true;
+                }
+            }
+            Thread.Sleep(500);
+        }
+        FileLogger.Warn($"AutoLogin: PollForLoginAdvance PID {pid} — no advance signal within {maxWaitMs}ms; credentials likely rejected, fast-failing to retry");
+        return false;
     }
 
     private void Report(string message)
