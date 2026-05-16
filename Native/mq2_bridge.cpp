@@ -3575,15 +3575,153 @@ static void HandleSelectionRequest(volatile CharSelectShm *shm) {
         return;
     }
 
+    // v3.20.8: row-anchor re-resolve. shm->names[] is heap-anchored when
+    // populated by Path A / Path C / standalone heap-scan / anchor-scan; only
+    // Path B's GetItemText reader is CListWnd-row-anchored. SetCurSel operates
+    // on CListWnd row index. When heap order ≠ CListWnd row order (observed on
+    // Dalaya 2026-05-15 — gotquiz1 configured "Natedogg" loaded "acpots"),
+    // C#'s byName scan returns the right slot for the heap-anchored names but
+    // SetCurSel applies that slot to the wrong CListWnd row.
+    //
+    // Mirror MQ2's authoritative path (src/plugins/autologin/StateMachine.cpp:
+    // 631-642): scan CListWnd rows via GetListItemText, find the row whose
+    // name equals the targetName C# matched against, and SetCurSel that row.
+    // Falls back to requestedIdx when GetItemText is unavailable / no match —
+    // preserves current behavior on servers where heap order happens to agree
+    // with row order.
+    int rowIdx = requestedIdx;
+    // Defensive copy of the requested name out of SHM into a null-padded local
+    // buffer. shm->names[] is volatile and written by Path A/B/B2/C/anchor —
+    // most paths explicitly null-terminate within CHARSEL_NAME_LEN, but a
+    // torn read across the C#/DLL boundary could observe garbage past the
+    // logical end. Copying with a forced trailing null makes the compare loop
+    // below safe against any volatile-tear scenario the verifiers flagged.
+    char targetName[CHARSEL_NAME_LEN] = {};
     __try {
-        g_fnSetCurSel(pCharListWnd, requestedIdx);
-        shm->selectedIndex = requestedIdx;
+        for (int k = 0; k < CHARSEL_NAME_LEN - 1; k++) {
+            char c = ((const char *)shm->names[requestedIdx])[k];
+            if (!c) break;
+            targetName[k] = c;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("mq2_bridge: SEH reading targetName from shm->names[%d]", requestedIdx);
+        targetName[0] = '\0';
+    }
+    // Skip the row re-resolve when targetName is a Path-B2 slot-mode
+    // placeholder ("Slot 1", "Slot 2", ...). These synthetic names are
+    // written when GetItemText returned empty columns and the bridge fell
+    // back to SetCurSel/GetCurSel slot-probing — they will NEVER match a
+    // real CListWnd row name (which is a character name like "Natedogg"),
+    // and entering the scan would log a misleading "name NOT in CListWnd"
+    // and fall back to requestedIdx (= the v3.20.7 behavior). Detect them
+    // by the literal "Slot " prefix the wsprintfA path emits.
+    bool isSlotPlaceholder = (targetName[0] == 'S' && targetName[1] == 'l' &&
+                              targetName[2] == 'o' && targetName[3] == 't' &&
+                              targetName[4] == ' ');
+    if (g_fnGetItemText && targetName[0] && !isSlotPlaceholder) {
+        // Use cached nameCol from Path B's earlier probe, or probe on-demand
+        // here. g_cachedNameCol stays -1 when Path A succeeded first (Path B's
+        // probe code is gated by !charDataRead and never ran). Sentinel -2
+        // means "probed this cycle, no name column found" — skip the 10-column
+        // sweep so C# retries don't pay the probe cost repeatedly. Cleared
+        // alongside the other charselect-cycle caches on gameState==5.
+        int nameCol = g_cachedNameCol;
+        if (nameCol == -1) {
+            for (int tryCol = 0; tryCol <= 9 && nameCol < 0; tryCol++) {
+                char test[CHARSEL_NAME_LEN] = {};
+                if (ReadListItemText(pCharListWnd, 0, tryCol, test, CHARSEL_NAME_LEN) && test[0]) {
+                    bool looksLikeName = (test[0] >= 'A' && test[0] <= 'Z') && strlen(test) >= 4;
+                    if (looksLikeName) {
+                        bool allAlpha = true;
+                        for (int k = 0; test[k]; k++) {
+                            if (!((test[k] >= 'A' && test[k] <= 'Z') ||
+                                  (test[k] >= 'a' && test[k] <= 'z'))) {
+                                allAlpha = false; break;
+                            }
+                        }
+                        if (allAlpha) {
+                            nameCol = tryCol;
+                            g_cachedNameCol = nameCol;
+                            DI8Log("mq2_bridge: row re-resolve: probed nameCol=%d on-demand "
+                                   "(first row: '%s')", tryCol, test);
+                        }
+                    }
+                }
+            }
+            if (nameCol < 0) {
+                // Full 10-column sweep produced no name candidate. Cache the
+                // failure as -2 so we don't re-probe on every retry. Path B's
+                // own probe (line ~3796) checks against -1 explicitly, so it
+                // can still re-probe later in the cycle when more columns may
+                // be populated; it just won't double-pay this call's sweep.
+                g_cachedNameCol = -2;
+            }
+        }
+        if (nameCol >= 0) {
+            // Cap the row scan at the SHM-published charCount (which is itself
+            // capped at CHARSEL_MAX_CHARS=10 by the publishing paths). Avoids
+            // scanning empty rows past the actual char-count and reduces the
+            // false-positive log when the name isn't found.
+            int rowCap = shm->charCount;
+            if (rowCap > CHARSEL_MAX_CHARS) rowCap = CHARSEL_MAX_CHARS;
+            if (rowCap < 1) rowCap = CHARSEL_MAX_CHARS;  // defensive: charCount race
+            int matchedRow = -1;
+            for (int i = 0; i < rowCap; i++) {
+                char rowName[CHARSEL_NAME_LEN] = {};
+                if (!ReadListItemText(pCharListWnd, i, nameCol, rowName, CHARSEL_NAME_LEN)
+                    || !rowName[0]) {
+                    continue;
+                }
+                // Case-insensitive compare. EQ names are letters-only (server
+                // naming rule), so a simple ASCII case-fold is sufficient and
+                // matches the CharacterSelector.Decide OrdinalIgnoreCase rule
+                // the C# side uses to derive requestedIdx in the first place.
+                // Loop terminates when EITHER string ends (`!a || !b`) — guards
+                // against the verifier-flagged false-positive prefix match if
+                // one buffer lacks a null terminator within 64 bytes.
+                bool match = true;
+                for (int k = 0; k < CHARSEL_NAME_LEN; k++) {
+                    char a = rowName[k];
+                    char b = targetName[k];
+                    if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+                    if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
+                    if (a != b) { match = false; break; }
+                    if (!a || !b) break;
+                }
+                if (match) { matchedRow = i; break; }
+            }
+            if (matchedRow >= 0) {
+                if (matchedRow != requestedIdx) {
+                    DI8Log("mq2_bridge: row re-resolve: heap idx=%d ('%s') -> "
+                           "CListWnd row=%d (UI-anchored, MQ2-canonical)",
+                           requestedIdx, targetName, matchedRow);
+                }
+                rowIdx = matchedRow;
+            } else {
+                // Name not present in CListWnd — could be slot-mode placeholder
+                // ("Slot N"), CListWnd still loading, or genuinely-missing char.
+                // Fall back to requestedIdx and let C#'s pre-Enter abort gates
+                // catch a wrong-character landing if they would.
+                DI8Log("mq2_bridge: row re-resolve: name '%s' NOT in CListWnd "
+                       "(nameCol=%d, rowCap=%d) -- falling back to heap idx=%d",
+                       targetName, nameCol, rowCap, requestedIdx);
+            }
+        }
+    } else if (isSlotPlaceholder) {
+        DI8Log("mq2_bridge: row re-resolve: skipped (targetName='%s' is a slot "
+               "placeholder; falling back to heap idx=%d)",
+               targetName, requestedIdx);
+    }
+
+    __try {
+        g_fnSetCurSel(pCharListWnd, rowIdx);
+        shm->selectedIndex = rowIdx;
         shm->ackSeq = reqSeq;  // ack ONLY on successful SetCurSel
-        DI8Log("mq2_bridge: selected character index %d (\"%s\")",
-               requestedIdx, (const char *)shm->names[requestedIdx]);
+        DI8Log("mq2_bridge: selected character row %d (\"%s\") -- requested heap idx=%d",
+               rowIdx, (const char *)shm->names[requestedIdx], requestedIdx);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        DI8Log("mq2_bridge: SEH in SetCurSel(%d)", requestedIdx);
+        DI8Log("mq2_bridge: SEH in SetCurSel(%d)", rowIdx);
     }
 }
 
