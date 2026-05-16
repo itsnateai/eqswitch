@@ -1,5 +1,84 @@
 # Changelog
 
+## v3.21.1 — verifier-flagged cleanup (2026-05-16)
+
+Closes two of the three v3.21.0 known-follow-ups plus one verifier finding
+that didn't make the CHANGELOG known-follow-ups list. Pure micro-cleanup —
+no behavior change, no SHM bump, no version bump beyond the patch
+component. Ship-and-forget; foundation-protecting before v3.22.0 starts
+building on top of the v7 probes.
+
+### Changes
+
+- **`PollWidgetVisibilityToShm` reorder** (`Native/login_state_machine.cpp`)
+  — moves the `shm->gameState >= GAMESTATE_CHARSELECT` early-exit BEFORE
+  the `eqmainBase`-snapshot check, so the cheap `uint32` field read
+  short-circuits a `GetModuleHandleA("eqmain.dll")` syscall during the
+  entire char-select-and-beyond window (not just the brief transition
+  tick). Correctness preserved: cache invalidation only matters when
+  the function is about to probe, and the first tick `gameState <
+  CHARSELECT` re-runs the base check and invalidates if eqmain reloaded
+  at a different ASLR base. Comment block reworked to reflect the new
+  ordering's rationale (the prior comment still correctly described
+  fix-2 but no longer matched the code position).
+
+- **`ShmLayoutTests` covers `LoginShm` v7** (`Core/ShmLayoutTests.cs`) —
+  adds 37 new layout assertions (struct size 1912, plus offset-per-field
+  for the entire v7 struct). Closes the test-coverage gap that compounded
+  silently across the v3 → v4 → v5 → v6 → v7 SHM bump cascade. Same
+  `Marshal.SizeOf` + `Marshal.OffsetOf` pattern as the existing
+  `CharSelectShm` test, MINUS the tautological magic-value / version-value
+  assertions that the verifier sweep flagged in the pre-existing tests
+  (comparing a literal to a same-literal const proves nothing). The
+  pre-existing tautologies in `SharedKeyState`/`CharSelectShm` stay for
+  Chesterton-fence reasons — fixing them needs an MMF round-trip or
+  exposing `LoginShmWriter.Magic/Version` as `internal const`, both of
+  which are scope creep for this ship. `--test-shm-layout` now runs 62
+  assertions, all passing.
+
+- **`ResetDllToCsharpFields` zero-buffer consolidation**
+  (`Core/LoginShmWriter.cs`) — replaces six per-call `new byte[N]`
+  allocations (`ErrorLen` × 2, `MaxChars*NameLen`, `MaxChars*4` × 2,
+  `ConfirmTextLen`) with a single private static readonly `s_zeroBuffer`
+  sized for the largest single write (`MaxChars*NameLen` = 640 bytes).
+  Shorter writes pass a smaller count to `WriteArray`. Eliminates
+  ~1.2KB of GC pressure per `Open()`-on-existing-mapping re-call (the
+  v3.18.0 R2 path that fires on auto-login re-fire against the same
+  PID). Out of scope: `Open()` fresh-mapping path's credential-zero
+  allocs and `Close()`/`Dispose()` password-zero allocs (separate
+  patterns; safe to leave for a future micro-opt).
+
+- **`LOGIN_CMD_LOGIN` resets the v7 widget-visibility cache**
+  (`Native/login_state_machine.cpp`) — verifier-flagged convergent
+  CRITICAL (3 of 8 agents). The v3.21.0 base-snapshot defense only
+  catches eqmain reloads at a DIFFERENT ASLR base; same-base reloads
+  (common when a single `eqmain.dll` is unloaded and re-loaded into
+  the same preferred base in-process) would slip past layer 2 and
+  rely entirely on layer 1 (the `IsEQMainWidget` vtable-range check),
+  which is known-imperfect on recycled addresses. Fix: every
+  `LOGIN_CMD_LOGIN` now calls `InvalidateWidgetVisibilityCache()` and
+  resets `g_lastEqmainBase = 0`, guaranteeing the next probe re-resolves
+  via `FindLiveScreenByName` regardless of eqmain's load history.
+  Symmetric to the existing `g_lastJoinServerReqSeq` reset in the
+  same block.
+
+### Verification
+
+- `--test-shm-layout` — 62/62 assertions PASS (was 25/25 in v3.21.0).
+- Native build clean: `Native/build-di8-inject.sh` exit 0, eqswitch-di8.dll
+  242,176 → 242,688 bytes (instruction reorder + comment-block changes).
+- C# Debug + Release builds clean: 0 warnings, 0 errors.
+- Smoke verification: see commit message + release notes.
+
+### Reference
+
+- v3.21.0 known-follow-ups list (CHANGELOG entry below) — this release
+  resolves the two v3.21.1-prefixed items (gameState gate ordering +
+  ShmLayoutTests LoginShm coverage). The two v3.22.0-prefixed items
+  (`InvalidateWidgets` unification, `TryReadWidgetState` torn-read
+  guard) remain explicitly deferred — they're load-bearing for the
+  v3.22.0 state-driven dispatch but not for v3.21.0 observability.
+
 ## v3.21.0 — SHM v7 + Widget Probes (2026-05-16)
 
 Foundation for the v3.22.0 state-driven dispatch rewrite. Adds a native
