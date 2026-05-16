@@ -379,30 +379,21 @@ static void *ResolveCachedScreen(void **slot, const char *name) {
 }
 
 static void PollWidgetVisibilityToShm(volatile LoginShm *shm) {
-    // eqmain-reload detection (v3.21.0-fix-3): if eqmain's base address
-    // changed since the last probe, the cached widget ptrs reference a
-    // prior eqmain instance — invalidate so the next ResolveCachedScreen
-    // re-resolves cleanly via FindLiveScreenByName. On eqmain unload
-    // (currentBase=0), the invalidation also clears cleanly so a future
-    // reload starts with empty cache.
-    HMODULE hEqmain = GetModuleHandleA("eqmain.dll");
-    uintptr_t currentBase = (uintptr_t)hEqmain;
-    if (currentBase != g_lastEqmainBase) {
-        InvalidateWidgetVisibilityCache();
-        g_lastEqmainBase = currentBase;
-    }
-
-    // gameState gate (v3.21.0-fix-2): once gameState >= CHARSELECT, eqmain
-    // has unloaded and the 5 SIDL login screens no longer exist in the
-    // widget tree. Cached ptrs invalidate (IsEQMainWidget fails), forcing
-    // full FindLiveScreenByName re-resolves every Tick that return null.
-    // Empirical cost during char-select: ~5×23 = 115 widget scans per
-    // probe × ~2Hz = 230 scans/sec wasted. The 2026-05-16 12:35 smoke
-    // showed Backup (10-char account) crashing during Enter World →
-    // Loading-Zone transition; the residual probe cost during char-select
-    // is the most likely contributor (Natedogg, 1-char account, survived
-    // the same transition). Char-select-and-beyond state observability
-    // lives in CharSelectReader's separate SHM mapping — not this probe.
+    // gameState gate (v3.21.0-fix-2, v3.21.1 reorder): once gameState >=
+    // CHARSELECT, eqmain has unloaded and the 5 SIDL login screens no
+    // longer exist in the widget tree. Returning early here — BEFORE the
+    // eqmain-reload check below — also skips the GetModuleHandleA syscall
+    // during the char-select-and-beyond window. Correctness is preserved:
+    // cache invalidation only matters when we're about to probe, and the
+    // first tick we resume probing (gameState < CHARSELECT) re-runs the
+    // base check and invalidates if eqmain reloaded at a different base.
+    //
+    // The 2026-05-16 12:35 smoke showed Backup (10-char account) crashing
+    // during Enter World → Loading-Zone transition; the residual probe
+    // cost during char-select was the most likely contributor (Natedogg,
+    // 1-char account, survived the same transition). Char-select-and-
+    // beyond state observability lives in CharSelectReader's separate
+    // SHM mapping — not this probe.
     if (shm->gameState >= GAMESTATE_CHARSELECT) {
         // Clear visibility so C# observes "no login widgets" instead of
         // stale state from the prior tick. Bump seq so C# still knows the
@@ -415,6 +406,19 @@ static void PollWidgetVisibilityToShm(volatile LoginShm *shm) {
         shm->widgetConfirmDialogText[0] = 0;  // null-terminate; rest stays zero
         shm->widgetTickSeq = shm->widgetTickSeq + 1;
         return;
+    }
+
+    // eqmain-reload detection (v3.21.0-fix-3): if eqmain's base address
+    // changed since the last probe, the cached widget ptrs reference a
+    // prior eqmain instance — invalidate so the next ResolveCachedScreen
+    // re-resolves cleanly via FindLiveScreenByName. On eqmain unload
+    // (currentBase=0), the invalidation also clears cleanly so a future
+    // reload starts with empty cache.
+    HMODULE hEqmain = GetModuleHandleA("eqmain.dll");
+    uintptr_t currentBase = (uintptr_t)hEqmain;
+    if (currentBase != g_lastEqmainBase) {
+        InvalidateWidgetVisibilityCache();
+        g_lastEqmainBase = currentBase;
     }
 
     // Snapshot — read each named screen via the cache, gate on visibility.
@@ -663,6 +667,26 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
             g_lastReadyVtableRva = 0;
             loginShm->loginServerAPIReady = 0;
             InvalidateWidgets();
+            // v3.21.1 (verifier-flagged 2026-05-16, T2-S/T2-O/T3-O convergent):
+            // also reset the widget-visibility cache + eqmainBase snapshot.
+            // The base-snapshot path only catches eqmain reloads at a DIFFERENT
+            // ASLR base; same-base reloads (common when a single eqmain.dll is
+            // unloaded and re-loaded into the same preferred base in-process)
+            // would slip past layer 2 and rely entirely on layer 1 (the
+            // IsEQMainWidget vtable-range check), which is known-imperfect on
+            // recycled addresses. Forcing the cache clean here + zeroing the
+            // base snapshot is symmetric to the existing g_lastJoinServerReqSeq
+            // reset just above.
+            //
+            // Edge case: if eqmain isn't loaded yet at LOGIN_CMD_LOGIN time
+            // (early-init / pre-eqmain-DLL-load), the next PollWidgetVisibilityToShm
+            // tick sees currentBase=0 == g_lastEqmainBase=0 and SKIPS the
+            // base-change invalidation branch. That's safe because we already
+            // cleared the cache one line up — the skip just avoids a redundant
+            // re-clear. The first tick where eqmain IS loaded (currentBase != 0)
+            // then triggers the branch normally.
+            InvalidateWidgetVisibilityCache();
+            g_lastEqmainBase = 0;
             SetPhase(loginShm, PHASE_WAIT_LOGIN_SCREEN);
             // Username is a credential half on Dalaya — redacted for parity with
             // the v3.15.5 LoginShmWriter.SendLoginCommand C# log change. Server
