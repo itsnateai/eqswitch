@@ -778,8 +778,11 @@ public class LaunchConfig
     /// circuited to 5s and the retry loop kicks in much sooner. Addresses
     /// the "BURST 1 typed only 4 chars and we wait 90s before retrying"
     /// failure class (truncation, user-input collision, simply wrong creds).
-    /// Default 10000 (10s). Set to 0 to disable (legacy 90s-only behavior).
-    /// Floor 0, ceiling 30000.
+    /// Default 60000 (60s; v3.20.7 bump from 10000 — Dalaya char-select load
+    /// takes 15-25s after QUICK CONNECT click, so the prior 10s budget
+    /// timed out before the char-select SHM signal fired).
+    /// Set to 0 to disable (legacy 90s-only behavior).
+    /// Floor 0, ceiling 90000 (v3.20.7 raise from 30000).
     /// </summary>
     public int PostBurst2QuickFailCheckMs { get; set; } = 60000;
 

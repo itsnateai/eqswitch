@@ -47,7 +47,7 @@ ConnectWnd+0x48         → 1× CLabelWnd   (Dalaya branding)
 ```
 
 New `EQMainWidgetsMQ2::FindConnectButtonStructural()`:
-1. Resolves ConnectWnd by walking `pinstLoginViewManager+0..+0x200` for the slot whose pointee's vtable matches `RVA_VTABLE_ConnectWnd = 0x001035C0`.
+1. Resolves ConnectWnd by walking `pinstLoginViewManager+0..+0x200` for the slot whose pointee's vtable matches `RVA_VTABLE_ConnectWnd`. NOTE: this entry initially documented `0x001035C0`, but live verification in v3.20.7 showed the correct primary vtable RVA is `0x001035F4` — `0x001035C0` is a secondary base-class vtable. See the v3.20.7 entry above and `Native/eqmain_offsets.h:139`.
 2. Enumerates the 4 button slots, validates CButtonWnd vtable for each.
 3. Picks the slot whose body holds a CStrRep matching `"LOGIN_ConnectButton"` or `"ConnectButton"` (both names exist per Round 5 line 60-65 — Dalaya's SIDL XML defines BOTH the prefixed `item=` Name and bare `<ScreenID>`); falls back to first valid button with a loud log line so subsequent smokes can lock the slot if name-heuristic fails.
 
