@@ -318,9 +318,12 @@ static void PollOkDisplayToShm(volatile LoginShm *shm) {
 // hot path at ~500ms cadence without measurable impact per the
 // 2026-05-15 18:00 smoke).
 //
-// Bypass: only called from Tick() body, after the magic+version gate at
-// the start of Tick. Bare-launch PIDs without an open LoginShm mapping
-// never reach this code path.
+// Bypass: only called from Tick() body, inside the autoLoginActive gate
+// (currently around line 773), after the magic check at Tick entry. Bare-
+// launch PIDs without an open LoginShm mapping never reach this code path.
+// As of v3.20.11, Tick gates on magic ONLY (no runtime version-mismatch
+// rejection); autoLoginActive is the secondary filter that scopes probes
+// to active C#-driven login sessions only.
 static void PollWidgetVisibilityToShm(volatile LoginShm *shm) {
     // Snapshot — read each named screen, gate on visibility.
     void *pConnect      = EQMainWidgetsMQ2::FindLiveScreenByName("connect");
