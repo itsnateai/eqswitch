@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Â© itsnateai
+// © itsnateai
 
 // login_shm.h -- Shared memory for in-process login state machine
 //
@@ -17,20 +17,20 @@
 // append). C# version-2 writers send a 1344-byte mapping; v1 native readers
 // see the first 1340 bytes and ignore the trailing field.
 //
-// Version 3 (2026-05-15): appended live OK_Display poll-tick fields â€”
+// Version 3 (2026-05-15): appended live OK_Display poll-tick fields —
 // `okDisplayText[256]` and `okDisplayClass`. Distinct from the existing
 // `errorMessage` field (which is set ONCE on PHASE_ERROR via SetError and
 // stays until the next login). The v3 fields are LIVE: written on every
 // poll where g_pOkDisplay returns text, cleared to empty/0 when the dialog
 // is gone. Pre-classified by native (1=fatal/2=recoverable/3=success) so
-// C# doesn't re-implement strstr matching. Backward-compatible append â€”
+// C# doesn't re-implement strstr matching. Backward-compatible append —
 // v2 native readers see the first 1344 bytes unchanged. C# v3 writers
 // allocate 1604 bytes; v2 native readers ignore the trailing 260 bytes.
 //
 // Consumer in C#: AutoLoginManager.RunLoginSequence retry loop reads these
 // to distinguish "stale-session" (recoverable, needs ~30s wait) from
 // "wrong password" (fatal, abort retry budget) from "truncated creds"
-// (recoverable, ~1s wait suffices) â€” closes the gap explicitly flagged in
+// (recoverable, ~1s wait suffices) — closes the gap explicitly flagged in
 // v3.17.0 CHANGELOG ("ALWAYS use staleSessionWaitMs ... distinguishing
 // requires the OK_Display error-text probe deferred to v3.18 + SHM v3 bump").
 //
@@ -40,11 +40,11 @@
 // MQ2Bridge::JoinServerDirect(serverID, &fnResult), writes outcome +
 // fnResult, then ackSeq = reqSeq. Replaces BURST 2 (server-select Enter
 // PostMessage) when the in-process __thiscall succeeds. Backward-
-// compatible append â€” v3 native readers see the first 1604 bytes
+// compatible append — v3 native readers see the first 1604 bytes
 // unchanged; C# v4 writers allocate 1624 bytes (v3 native readers ignore
-// the trailing 20 bytes â€” JoinServer never fires because reqSeq stays 0).
+// the trailing 20 bytes — JoinServer never fires because reqSeq stays 0).
 //
-// Architectural note (per MQ2 RoF2-emu autologin walkthrough Â§5.1 +
+// Architectural note (per MQ2 RoF2-emu autologin walkthrough §5.1 +
 // Diff 4 of `_.eqswitch-re/mq2-autologin-eqswitch-diff.md`): MQ2's
 // StateMachine.cpp:773 calls g_pLoginServerAPI->JoinServer((int)server->ID)
 // directly to advance from server-select to char-select, bypassing the
@@ -58,27 +58,27 @@
 // after WriteEditTextDirect read-back succeeds. Cleared to 0 on every new
 // LOGIN_CMD_LOGIN. C# AutoLoginManager reads this post-warmup; when set,
 // SKIPS BURST 1's primer (Backspace) and password retype to avoid the
-// double-write bug â€” Combo G's structural CXStr write at +0x1A8 has
+// double-write bug — Combo G's structural CXStr write at +0x1A8 has
 // already populated the field with the correct 7-char password, and
 // keystroke retyping ON TOP would either prepend (cursor at 0) or append
 // (cursor at end), corrupting the password to ~13 chars and causing EQ
 // login server rejection. BURST 1's Activate + Enter (submit) is retained
-// â€” Enter is what EQ interprets as "click Connect". Backward-compatible
+// — Enter is what EQ interprets as "click Connect". Backward-compatible
 // append: v4 native readers see the first 1624 bytes unchanged and never
 // observe the field, so they continue typing keystrokes.
 //
 // Version 6 (2026-05-15): append `loginServerAPIReady` uint32 at offset
-// 1628 (Fix 2 â€” auth-completion gate for JoinServerDirect dispatch).
+// 1628 (Fix 2 — auth-completion gate for JoinServerDirect dispatch).
 // Native Tick() polls *(eqmain+0x150164) every tick:
 //   - 0 = pinstLoginServerAPI is NULL OR its vtable doesn't match
 //         eqmain+0x1002D0 (RVA_VTABLE_LoginServerAPI_Secondary)
-//   - 1 = pinstLoginServerAPI populated AND vtable matches, for â‰¥3
-//         CONSECUTIVE Ticks (stability counter â€” defends against the
+//   - 1 = pinstLoginServerAPI populated AND vtable matches, for ≥3
+//         CONSECUTIVE Ticks (stability counter — defends against the
 //         transient pinstLoginServerAPI construction state observed
-//         at very-early launch / EULAâ†’login screen transitions per
+//         at very-early launch / EULA→login screen transitions per
 //         2026-05-14 probe history)
 // Reset to 0 on every LOGIN_CMD_LOGIN. C# AutoLoginManager polls this
-// for up to 5000ms before dispatching JoinServerDirect â€” if still 0 at
+// for up to 5000ms before dispatching JoinServerDirect — if still 0 at
 // timeout, skips the dispatch entirely and falls through to BURST 2.
 // The 2026-05-15 PM smoke showed JoinServerDirect firing on a fixed 3s
 // post-BURST-1 timer returned fnResult=3 ("no auth session") because
@@ -86,7 +86,7 @@
 // timing with auth-state observation.
 // Backward-compatible append: v5 native readers see the first 1628
 // bytes unchanged and never publish the field, so C# v6 readers always
-// read 0 (timeout â†’ BURST 2 fallback â€” graceful degradation).
+// read 0 (timeout → BURST 2 fallback — graceful degradation).
 // Version 7 (2026-05-16): widget-presence probes appended for v3.21.0.
 // Native PollWidgetVisibilityToShm in login_state_machine.cpp polls 5
 // SIDL-screen widgets every Tick via EQMainWidgetsMQ2::FindLiveScreenByName
@@ -186,7 +186,7 @@ struct LoginShm {
     // Set to 1 by C# AutoLoginManager from BURST 1 setup through cleanup;
     // cleared on every exit path (success/failure/exception) in the finally
     // block. Used by eqswitch-di8.cpp's pre-login kPromptWindows[] dismiss
-    // machinery (v3.15.5) to STAND DOWN during autologin â€” the C#-driven
+    // machinery (v3.15.5) to STAND DOWN during autologin — the C#-driven
     // BURST flow owns keystroke injection, and concurrent native widget-
     // clicks at server-select / charselect-load can close the EQ process
     // (root cause of the 2026-05-09 team1 regression).
@@ -196,19 +196,19 @@ struct LoginShm {
     // the per-tick poll loop.
     //
     // 0 = bare launch (kPromptWindows iteration runs as designed for EULA
-    //     auto-dismiss). Default state â€” old configs / pre-autologin start
+    //     auto-dismiss). Default state — old configs / pre-autologin start
     //     /post-autologin cleanup all read 0 here.
     // 1 = autologin in progress (kPromptWindows iteration is suppressed for
     //     this PID). C# clears in the RunLoginSequence finally block.
     volatile uint32_t autoLoginActive;
 
-    // â”€â”€ v3 (2026-05-15) â€” Live OK_Display poll-tick mirror â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── v3 (2026-05-15) — Live OK_Display poll-tick mirror ─────────
     //
     // DLL -> C#: the LIVE text inside EQ's OK_Display widget on the most
     // recent poll, plus a pre-classification so C# doesn't have to re-
     // implement the strstr matching that login_state_machine.cpp already
     // does. Native classification lives in the `ClassifyDialogText` helper
-    // (single source of truth as of R2 2026-05-15) â€” both the always-on
+    // (single source of truth as of R2 2026-05-15) — both the always-on
     // PollOkDisplayToShm probe and the in-phase PHASE_WAIT_CONNECT_RESP
     // body call it.
     //
@@ -219,14 +219,14 @@ struct LoginShm {
     //
     // Consumer: AutoLoginManager.RunLoginSequence retry loop in C# uses
     // okDisplayClass to decide:
-    //   - Class=Fatal (1) â†’ break out of retry budget (no further retries
+    //   - Class=Fatal (1) → break out of retry budget (no further retries
     //     can help; "Invalid Password" doesn't get fixed by re-typing).
-    //   - Class=Recoverable (2) â†’ tune staleSessionWaitMs from text:
-    //     contains "stale" â†’ 30s; contains "truncated" â†’ 1s; else default.
-    //   - Class=Success (3) â†’ fall through to existing gameState gate (the
+    //   - Class=Recoverable (2) → tune staleSessionWaitMs from text:
+    //     contains "stale" → 30s; contains "truncated" → 1s; else default.
+    //   - Class=Success (3) → fall through to existing gameState gate (the
     //     "Logging in to the server" message means EQ is mid-handshake;
     //     don't dismiss with blind Enter).
-    //   - Class=None (0) â†’ no dialog; fall through to existing gateState gate.
+    //   - Class=None (0) → no dialog; fall through to existing gateState gate.
     //
     // volatile because cross-process shared mapping. Backward-compatible
     // append: v2 native readers (no recompile of bridge code) see the
@@ -234,9 +234,9 @@ struct LoginShm {
     char              okDisplayText[LOGIN_ERROR_LEN];
     volatile uint32_t okDisplayClass;   // 0=None, 1=Fatal, 2=Recoverable, 3=Success
 
-    // â”€â”€ v4 (2026-05-15) â€” Diff 4 JoinServerDirect RPC â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── v4 (2026-05-15) — Diff 4 JoinServerDirect RPC ─────────────
     //
-    // C# â†’ DLL: serverID + reqSeq increment requests one JoinServerDirect
+    // C# → DLL: serverID + reqSeq increment requests one JoinServerDirect
     //   dispatch. Native writes outcome + fnResult then sets ackSeq=reqSeq.
     //
     // C# init-side preconditions (caller responsibility):
@@ -247,26 +247,26 @@ struct LoginShm {
     //
     // Outcome semantics (joinServerOutcome):
     //   0 = pending (initial state, or DLL hasn't observed reqSeq yet)
-    //   1 = SUCCESS â€” JoinServerDirect returned true; fnResult contains
+    //   1 = SUCCESS — JoinServerDirect returned true; fnResult contains
     //       JoinServer's actual return code (0 = network dispatch OK,
     //       non-zero = EQ-side error code; caller interprets per game state)
-    //   2 = JOINSERVER_FAILED â€” JoinServerDirect returned false (one of:
+    //   2 = JOINSERVER_FAILED — JoinServerDirect returned false (one of:
     //       eqmain not loaded, pinstLoginServerAPI null, vtable mismatch,
     //       prologue patch detected, SEH inside the call). fnResult is 0.
     //       This is the "fall back to BURST 2" trigger on the C# side.
-    //   3 = SHM_GATED â€” autoLoginActive was 0 when reqSeq incremented.
+    //   3 = SHM_GATED — autoLoginActive was 0 when reqSeq incremented.
     //       Native refuses to dispatch (defense against leaked mappings).
     //       fnResult is 0.
     //
     // Timing: native processes the request in Tick() (called from the
     // ActivateThread + GiveTime detour cadence, ~16ms typical). Total
     // round-trip from C# write to ackSeq observable is typically ~50ms.
-    // C# should poll with bounded timeout (recommend 2000ms â€” generous,
+    // C# should poll with bounded timeout (recommend 2000ms — generous,
     // covers any LoadLibraryA contention inside JoinServerDirect).
     //
     // volatile because cross-process shared mapping. Backward-compatible
     // append: v3 native readers (1604-byte struct in their #include) see
-    // exactly the first 1604 bytes â€” they NEVER read these fields and
+    // exactly the first 1604 bytes — they NEVER read these fields and
     // NEVER fire JoinServerDirect, regardless of what C# writes here.
     volatile uint32_t joinServerSerialId;   // C# in:  server ID for JoinServer call
     volatile uint32_t joinServerReqSeq;     // C# in:  increment per request
@@ -274,16 +274,16 @@ struct LoginShm {
     volatile uint32_t joinServerOutcome;    // DLL out: 0=pending, 1=success, 2=failed, 3=gated
     volatile uint32_t joinServerFnResult;   // DLL out: JoinServer return code (only valid if outcome==1)
 
-    // â”€â”€ v5 (2026-05-15) â€” Combo G success signal (Fix 1 for the double-write bug) â”€â”€
+    // ── v5 (2026-05-15) — Combo G success signal (Fix 1 for the double-write bug) ──
     //
-    // DLL â†’ C#: set to 1 when WriteEditTextDirect read-back confirmed the
+    // DLL → C#: set to 1 when WriteEditTextDirect read-back confirmed the
     // password was written to InputText+0x1A8 in the current login session.
     // Cleared to 0 on every LOGIN_CMD_LOGIN (new session).
     //
     // C# AutoLoginManager.RunCredentialEntry reads this post-warmup. When
     // the warmup advanced AND comboGWriteOk == 1, BURST 1 SKIPS the primer
     // (Backspace) and password retype but STILL fires Enter (submit). This
-    // eliminates the double-write â€” Combo G's CXStr write at +0x1A8 already
+    // eliminates the double-write — Combo G's CXStr write at +0x1A8 already
     // populated the field correctly; keystrokes typed on top would corrupt
     // the password to ~13 chars (cursor-at-0 prepend OR cursor-at-end
     // append depending on EQ's edit-mode state).
@@ -294,25 +294,25 @@ struct LoginShm {
     // fnResult=3 ("no auth session") which EQ surfaces as "Quick Connect
     // to server Dalaya failed. Going to server select instead." The user's
     // observation: "quick connect would have been successful if we had
-    // entered the letters for the password" â€” i.e., correct 7-char
+    // entered the letters for the password" — i.e., correct 7-char
     // password instead of the 13-char double-write garbage.
     //
     // volatile because cross-process shared mapping. Backward-compatible
-    // append: v4 native readers see exactly the first 1624 bytes â€” they
+    // append: v4 native readers see exactly the first 1624 bytes — they
     // never observe this field, so they always run BURST 1 (matches v4
     // behavior). Field is never read on the bare-launch / non-autologin
     // path either, so no overhead concern.
     volatile uint32_t comboGWriteOk;
 
-    // â”€â”€ v6 (2026-05-15) â€” LoginServerAPI-ready gate (Fix 2) â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── v6 (2026-05-15) — LoginServerAPI-ready gate (Fix 2) ────────
     //
-    // DLL â†’ C#: 1 = `pinstLoginServerAPI` at eqmain+0x150164 is populated
+    // DLL → C#: 1 = `pinstLoginServerAPI` at eqmain+0x150164 is populated
     // AND its vtable[0] equals eqmain+0x1002D0 (the documented secondary
-    // vtable) for â‰¥3 CONSECUTIVE Ticks. 0 = not yet ready or has gone bad.
+    // vtable) for ≥3 CONSECUTIVE Ticks. 0 = not yet ready or has gone bad.
     //
     // The stability counter (3 consecutive populated ticks) defends against
     // the transient construction state observed at very-early launch /
-    // EULAâ†’login screen transitions per 2026-05-14 RVA probe history. A
+    // EULA→login screen transitions per 2026-05-14 RVA probe history. A
     // single-tick check would race the transition.
     //
     // C# AutoLoginManager.TryJoinServerDirectOrFallback polls this for up
@@ -328,8 +328,8 @@ struct LoginShm {
     // session's auth completes.
     //
     // volatile: cross-process shared mapping. Backward-compatible append:
-    // v5 native readers see exactly the first 1628 bytes â€” they never
-    // publish this field, so C# v6 readers always observe 0 â†’ timeout â†’
+    // v5 native readers see exactly the first 1628 bytes — they never
+    // publish this field, so C# v6 readers always observe 0 → timeout →
     // BURST 2 fallback (graceful degradation matching pre-Fix-2 behavior).
     volatile uint32_t loginServerAPIReady;
 
