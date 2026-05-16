@@ -80,7 +80,34 @@ branch on the new bools yet (deferred to v3.22.0).
   (`pCharacterListWnd->Quit()`) + `ServerList.StatusFlags` server-down
   detection (audit gaps #3, #4, #5, #6, #7, #8).
 
+### Cost-analysis lesson
+
+The original v3.21.0 plan claimed `PollWidgetVisibilityToShm`'s cost was
+"comparable to the existing `PollOkDisplayToShm` probe". This was wrong
+by 5×: the existing probe does ONE `FindWindowByName` walk; the new one
+did FIVE `FindLiveScreenByName` walks (~169 widget-node scans each =
+~846 scans per probe). 5 rounds of plan-doc verification did not catch
+this (the cost claim was internally self-consistent); the smoke at 12:00
+falsified it empirically by reproducing the iter-12 game-thread
+starvation pattern. Future plans introducing probes should count actual
+operations, not trust prose comparisons. Full lesson recorded in
+`X:/_Projects/_.claude/_comms/plan-eqswitch-v3.21.0.md` post-execution
+correction section.
+
 ### Known follow-ups (verifier-flagged, deferred from v3.21.0)
+- **v3.21.1**: micro-optimize `PollWidgetVisibilityToShm` ordering — move
+  the `gameState >= CHARSELECT` early-exit BEFORE the `eqmainBase`
+  snapshot so the cheap `uint32` field read short-circuits a `GetModuleHandleA`
+  call during the brief char-select-transition window. Correctness is
+  identical either ordering; this is purely a per-tick CPU win.
+- **v3.22.0**: `InvalidateWidgets()` does not currently call
+  `InvalidateWidgetVisibilityCache()`. The two caches diverge on gameState
+  transitions within the same eqmain instance (e.g., 0→1→0 retry loops).
+  Empirically benign for v3.21.0 because the v7 cache holds SCREEN-level
+  ptrs (stable across gameState transitions on Dalaya — they're hidden
+  via dShow, not destroyed) while `InvalidateWidgets` clears CHILD ptrs
+  (which DO get reallocated). When v3.22.0 dispatch reads the v7 cache
+  as a decision input, consider unifying invalidation for defense-in-depth.
 - **v3.21.1**: `ShmLayoutTests.cs` lacks `LoginShm` layout assertions —
   fifth SHM bump (v3→v7) without test coverage. Pre-existing gap, not
   a regression, but each bump compounds silent-corruption risk on the
