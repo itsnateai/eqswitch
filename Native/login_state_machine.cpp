@@ -359,6 +359,31 @@ static void *ResolveCachedScreen(void **slot, const char *name) {
 }
 
 static void PollWidgetVisibilityToShm(volatile LoginShm *shm) {
+    // gameState gate (v3.21.0-fix-2): once gameState >= CHARSELECT, eqmain
+    // has unloaded and the 5 SIDL login screens no longer exist in the
+    // widget tree. Cached ptrs invalidate (IsEQMainWidget fails), forcing
+    // full FindLiveScreenByName re-resolves every Tick that return null.
+    // Empirical cost during char-select: ~5×23 = 115 widget scans per
+    // probe × ~2Hz = 230 scans/sec wasted. The 2026-05-16 12:35 smoke
+    // showed Backup (10-char account) crashing during Enter World →
+    // Loading-Zone transition; the residual probe cost during char-select
+    // is the most likely contributor (Natedogg, 1-char account, survived
+    // the same transition). Char-select-and-beyond state observability
+    // lives in CharSelectReader's separate SHM mapping — not this probe.
+    if (shm->gameState >= GAMESTATE_CHARSELECT) {
+        // Clear visibility so C# observes "no login widgets" instead of
+        // stale state from the prior tick. Bump seq so C# still knows the
+        // probe path is alive (cache stays warm for the next login flow).
+        shm->widgetConnectVisible       = 0;
+        shm->widgetServerSelectVisible  = 0;
+        shm->widgetOkDialogVisible      = 0;
+        shm->widgetYesNoDialogVisible   = 0;
+        shm->widgetConfirmDialogVisible = 0;
+        shm->widgetConfirmDialogText[0] = 0;  // null-terminate; rest stays zero
+        shm->widgetTickSeq = shm->widgetTickSeq + 1;
+        return;
+    }
+
     // Snapshot — read each named screen via the cache, gate on visibility.
     void *pConnect      = ResolveCachedScreen(&g_cachedConnect,      "connect");
     void *pServerSel    = ResolveCachedScreen(&g_cachedServerSelect, "serverselect");
