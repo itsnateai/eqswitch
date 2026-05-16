@@ -1,5 +1,137 @@
 # Changelog
 
+## v3.21.0 — SHM v7 + Widget Probes (2026-05-16)
+
+Foundation for the v3.22.0 state-driven dispatch rewrite. Adds a native
+probe that snapshots 5 SIDL-screen widget visibilities into SHM every
+Tick (during PRECHARSELECT only, see fix-2 below), mirroring MQ2's
+OnPulse dispatcher pattern across `MQ2AutoLogin.cpp`'s `GAMESTATE_PRECHARSELECT`
+block (1195-1240) and `GAMESTATE_CHARSELECT` block (1156-1191). v3.21.0
+ships observability only — `RunLoginSequence` control flow does NOT
+branch on the new bools yet (deferred to v3.22.0).
+
+### Shipping iterations (smoke-driven)
+
+- **initial** — 5× `FindLiveScreenByName` per Tick (~846 widget-node scans).
+  Smoke 12:00 FAILED: both clients hit auth timeout. Root cause: probe
+  cost starved EQ's game thread during the login-server response window,
+  matching the iter-12 dormancy comment in `eqmain_widgets_mq2style.cpp:102`
+  ("game-thread structural walks starved IDirectInputDevice8::GetDeviceState
+  polling, dropping BURST keystrokes").
+- **fix-1 — widget-ptr cache.** Static cache slots + `ResolveCachedScreen`
+  helper validates cached ptrs via `EQMainOffsets::IsEQMainWidget` per
+  call. Per-Tick cost drops from 846 node scans → 5 byte reads (cache
+  hit). Smoke 12:36 FAILED differently: Natedogg (1-char account) reached
+  in-world; Backup (10-char account) crashed during Enter World →
+  Loading-Zone, 9s after EW keypress. Residual probe cost during char-select
+  (cache invalidates when eqmain unloads at char-select transition →
+  ~115 widget scans / probe re-resolve cycle) was contending with the
+  zone-load handshake on the heavier 10-char account.
+- **fix-2 — gameState gate.** `PollWidgetVisibilityToShm` early-exits
+  when `shm->gameState >= GAMESTATE_CHARSELECT` (=1, empirically verified
+  by 12:51 smoke). Cleared visibility bools so C# observes consistent
+  "no login widgets" state, still bumps `widgetTickSeq` so C# can
+  distinguish "probe alive but gated" from "probe dead". Smoke 12:51
+  PASS: both clients in-world with correct chars.
+- **fix-3 — verifier-driven hardening (8-agent Sonnet+Opus sweep).**
+  Convergent CRITICAL findings addressed: (a) `ResetDllToCsharpFields`
+  now zeros v7 fields on `Open()` re-call (prevents stale `widgetTickSeq`
+  from misleading the first `LogWidgetSnapshot` read); (b) per-tick
+  `eqmainBase` snapshot detects eqmain reload — invalidates cache when
+  DLL reloads at a different ASLR address (defends against false-positive
+  vtable-range validation on stale ptrs).
+
+### Native (eqswitch-di8.dll, 241,152 → 242,176 bytes)
+- `login_shm.h`: SHM v6 → v7. Appends `widgetConnectVisible`,
+  `widgetServerSelectVisible`, `widgetOkDialogVisible`,
+  `widgetYesNoDialogVisible`, `widgetConfirmDialogVisible`,
+  `widgetConfirmDialogText[256]`, `widgetTickSeq`. Backward-compatible
+  append — v6 native readers see the first 1632 bytes unchanged.
+  Total struct size 1632 → 1912 bytes.
+- `login_state_machine.cpp`: new `PollWidgetVisibilityToShm` called from
+  `Tick()` immediately after `PollOkDisplayToShm`. Uses existing
+  `EQMainWidgetsMQ2::FindLiveScreenByName` + `IsCXWndVisible` helpers.
+  Confirm-dialog text mirror via `FindChildByName("ConfirmationDialogBox",
+  "CD_TextOutput")` + `MQ2Bridge::ReadWindowText`. Manual byte-copy loop
+  on the volatile char array (memcpy on volatile is UB). `widgetTickSeq`
+  is the LAST write per consistency-ordering — when C# observes seq
+  advance, all visibility writes are visible.
+
+### C# (.NET 8)
+- `Core/WidgetState.cs`: new read-only record struct (5 bools + string +
+  uint) with `Empty` static, `AnyDialogVisible` computed property, and
+  `DiagSummary()` log formatter.
+- `Core/LoginShmWriter.cs`: 7 new `OFF_WIDGET_*` constants (1632-1908);
+  `ShmSize` 1632 → 1912; `Version` 6 → 7; new
+  `TryReadWidgetState(int pid, out WidgetState)` following the existing
+  `_mappings[pid].Accessor` pattern of `ReadPhase` / `ReadError`. Uses
+  named `ConfirmTextLen` const (256) and existing `ReadString` helper.
+- `Core/AutoLoginManager.cs`: 6 `LogWidgetSnapshot(loginShm, pid, label)`
+  calls at `RunLoginSequence` checkpoints (`login-screen-ready`,
+  `pre-burst1`, `post-burst1`, `post-wst-primary`,
+  `retry{N}-pre-wst`, `charselect-reached`) — proof-of-life for the
+  probe during dual-box smoke. RunLoginSequence control flow is unchanged.
+
+### Out-of-scope (deferred)
+- v3.22.0: state-driven dispatch loop replacing linear `RunLoginSequence`
+  (mq2-vs-eqswitch-fragility-audit gaps #1, #5, #10).
+- v3.23.0: OK_Display action codes (`Action_ClickYes`) +
+  `ConfirmationDialogBox` "Loading Characters" stuck-state recovery
+  (`pCharacterListWnd->Quit()`) + `ServerList.StatusFlags` server-down
+  detection (audit gaps #3, #4, #5, #6, #7, #8).
+
+### Cost-analysis lesson
+
+The original v3.21.0 plan claimed `PollWidgetVisibilityToShm`'s cost was
+"comparable to the existing `PollOkDisplayToShm` probe". This was wrong
+by 5×: the existing probe does ONE `FindWindowByName` walk; the new one
+did FIVE `FindLiveScreenByName` walks (~169 widget-node scans each =
+~846 scans per probe). 5 rounds of plan-doc verification did not catch
+this (the cost claim was internally self-consistent); the smoke at 12:00
+falsified it empirically by reproducing the iter-12 game-thread
+starvation pattern. Future plans introducing probes should count actual
+operations, not trust prose comparisons. Full lesson recorded in
+`X:/_Projects/_.claude/_comms/plan-eqswitch-v3.21.0.md` post-execution
+correction section.
+
+### Known follow-ups (verifier-flagged, deferred from v3.21.0)
+- **v3.21.1**: micro-optimize `PollWidgetVisibilityToShm` ordering — move
+  the `gameState >= CHARSELECT` early-exit BEFORE the `eqmainBase`
+  snapshot so the cheap `uint32` field read short-circuits a `GetModuleHandleA`
+  call during the brief char-select-transition window. Correctness is
+  identical either ordering; this is purely a per-tick CPU win.
+- **v3.22.0**: `InvalidateWidgets()` does not currently call
+  `InvalidateWidgetVisibilityCache()`. The two caches diverge on gameState
+  transitions within the same eqmain instance (e.g., 0→1→0 retry loops).
+  Empirically benign for v3.21.0 because the v7 cache holds SCREEN-level
+  ptrs (stable across gameState transitions on Dalaya — they're hidden
+  via dShow, not destroyed) while `InvalidateWidgets` clears CHILD ptrs
+  (which DO get reallocated). When v3.22.0 dispatch reads the v7 cache
+  as a decision input, consider unifying invalidation for defense-in-depth.
+- **v3.21.1**: `ShmLayoutTests.cs` lacks `LoginShm` layout assertions —
+  fifth SHM bump (v3→v7) without test coverage. Pre-existing gap, not
+  a regression, but each bump compounds silent-corruption risk on the
+  next change. Add assertions covering v7 offsets (1632-1908) and the
+  total 1912-byte size invariant.
+- **v3.22.0**: `TryReadWidgetState` torn-read guard. Read pattern needs
+  acquire-fence + seq-pair verification (read tickSeq, read fields,
+  re-read tickSeq, retry on change) — canonical lock-free seq-counter
+  pattern. Mirrors the `ReadOkDisplaySnapshot` discipline. Not load-bearing
+  for v3.21.0 observability-only scope; load-bearing once v3.22.0 dispatch
+  reads these bools as decision inputs.
+- **v3.22.0**: `WidgetState.AnyDialogVisible` excludes `Connect`/`ServerSelect`
+  by name — intentional, but the silent exclusion is a footgun for the
+  v3.22.0 dispatch loop ("if (!state.AnyDialogVisible) proceed" would
+  incorrectly proceed when server-select is up). Add explicit
+  `IsAtLoginScreen` / `IsAtServerSelect` properties OR rename for clarity
+  when v3.22.0 takes a dependency.
+- **v3.22.0**: Heap-recycle false-positive in `ResolveCachedScreen` —
+  if heap recycles a cached widget's address for a DIFFERENT eqmain
+  widget, `IsEQMainWidget` passes but visibility report is for the
+  wrong screen. Mitigation: per-call `GetCXWndXMLName()` match. Acknowledged
+  in code comments at `login_state_machine.cpp:325-330`. Benign in v3.21.0
+  (observability only).
+
 ## v3.20.11 — Keystroke-leak hardening: skip retry retype + per-keystroke in-game gate (2026-05-15)
 
 Closes the keystroke-leak vector Nate observed in the post-v3.20.10 smoke: passwords containing 'd' fired DUCK and 'x' fired bound EQ actions in-game when chars entered world mid-retry. Both fixes are direct ports from MQ2's authoritative pattern (see `_.claude/_comms/mq2-vs-eqswitch-fragility-audit-2026-05-15.md`).

@@ -130,8 +130,13 @@ static bool PollLoginServerAPIReady(int *outFailMode, uintptr_t *outVtableRva) {
 // PRECHARSELECT from 6 to -1). We discover the actual values at runtime.
 // Known from DLL log: login screen = 0, charselect = ?, ingame = ?
 // Strategy: don't gate on gameState for login screen — gate on widget presence.
-#define GAMESTATE_CHARSELECT      1    // Verify via testing
-#define GAMESTATE_INGAME          5    // Verify via testing
+// Empirically verified by the 2026-05-16 12:51 smoke: both clients
+// reached in-world with gameState transitioning 0 (login) → 1 (charselect)
+// → 5 (in-world). Gate at GAMESTATE_CHARSELECT correctly suppresses the
+// v7 widget probe at char-select+ where eqmain has unloaded and the 5
+// SIDL login screens no longer exist.
+#define GAMESTATE_CHARSELECT      1
+#define GAMESTATE_INGAME          5
 
 // ─── Internal state ────────────────────────────────────────────
 
@@ -301,6 +306,157 @@ static void PollOkDisplayToShm(volatile LoginShm *shm) {
     // The in-phase PHASE_WAIT_CONNECT_RESP body uses the same helper, so
     // adding a new pattern only needs editing one site.
     SetOkDisplay(shm, dialogText, ClassifyDialogText(dialogText));
+}
+
+// Widget-presence probe — fires every Tick alongside PollOkDisplayToShm.
+// Mirrors MQ2 OnPulse named-screen inspection across MQ2AutoLogin.cpp's
+// GAMESTATE_PRECHARSELECT block (1195-1240, for the 4 login screens) and
+// GAMESTATE_CHARSELECT block (1156-1191, for ConfirmationDialogBox).
+// v3.21.0 introduces this as pure observability for C#-side
+// logging + verification; the linear RunLoginSequence does not branch on
+// these bools yet. v3.22.0 will replace RunLoginSequence with a state
+// machine that reads them.
+//
+// Cost: cache hit = 5× IsEQMainWidget vtable-range check (cheap byte
+// reads). Cache miss = 5× FindLiveScreenByName top-level walk (~846 node
+// scans). Misses are rare in steady state — only on first probe, after
+// eqmain unload/reload, or when EQ heap-recycles a SIDL screen widget
+// outside eqmain's range. v3.21.0-fix-1 (this iteration): the pre-cache
+// version did 846 scans every Tick and starved EQ's game thread during
+// auth — confirmed 2026-05-16 smoke regression vs v3.20.11 (iter-12
+// dormancy comment in eqmain_widgets_mq2style.cpp:102-114 flagged the
+// same failure mode). Caching restores per-Tick cost to ~5 byte reads.
+//
+// Stale-but-still-eqmain risk: if heap recycles a cached widget's
+// address for a DIFFERENT eqmain widget, IsEQMainWidget still passes
+// (it's an eqmain-class widget) but the visibility report is for the
+// wrong screen. Benign in v3.21.0 (observability only). v3.22.0 should
+// add per-call GetCXWndXMLName() match when visibility bools become
+// decision inputs.
+//
+// Bypass: only called from Tick() body, inside the autoLoginActive gate
+// (currently around line 773), after the magic check at Tick entry. Bare-
+// launch PIDs without an open LoginShm mapping never reach this code path.
+// As of v3.20.11, Tick gates on magic ONLY (no runtime version-mismatch
+// rejection); autoLoginActive is the secondary filter that scopes probes
+// to active C#-driven login sessions only.
+
+// Cache slots for the 5 SIDL screens. Two defense layers:
+//   1. Per-call IsEQMainWidget vtable-range validation in ResolveCachedScreen
+//      (catches widget destroyed or memory recycled outside eqmain range)
+//   2. Per-tick eqmainBase-snapshot check in PollWidgetVisibilityToShm
+//      (catches eqmain unload+reload — if the DLL reloads at a different
+//      ASLR address, layer 1's vtable check can false-positive when the
+//      cached ptr coincidentally points to a valid eqmain widget at the
+//      new base; layer 2 invalidates the cache when base changes)
+// 4 verifiers convergent on the eqmain-reload gap post-v3.21.0-fix-2.
+static void     *g_cachedConnect      = nullptr;
+static void     *g_cachedServerSelect = nullptr;
+static void     *g_cachedOkDialog     = nullptr;
+static void     *g_cachedYesNoDialog  = nullptr;
+static void     *g_cachedConfirmDlg   = nullptr;
+static uintptr_t g_lastEqmainBase     = 0;
+
+static void InvalidateWidgetVisibilityCache() {
+    g_cachedConnect      = nullptr;
+    g_cachedServerSelect = nullptr;
+    g_cachedOkDialog     = nullptr;
+    g_cachedYesNoDialog  = nullptr;
+    g_cachedConfirmDlg   = nullptr;
+}
+
+static void *ResolveCachedScreen(void **slot, const char *name) {
+    // Cache hit: cached ptr is non-null AND still passes the eqmain
+    // vtable-range check. Returns immediately — no heap walk.
+    if (*slot && EQMainOffsets::IsEQMainWidget(*slot)) {
+        return *slot;
+    }
+    // Cache miss: re-resolve via the proven top-level walk. Result may
+    // be nullptr (screen not in widget tree right now) — that's fine,
+    // we'll retry on the next Tick.
+    *slot = EQMainWidgetsMQ2::FindLiveScreenByName(name);
+    return *slot;
+}
+
+static void PollWidgetVisibilityToShm(volatile LoginShm *shm) {
+    // eqmain-reload detection (v3.21.0-fix-3): if eqmain's base address
+    // changed since the last probe, the cached widget ptrs reference a
+    // prior eqmain instance — invalidate so the next ResolveCachedScreen
+    // re-resolves cleanly via FindLiveScreenByName. On eqmain unload
+    // (currentBase=0), the invalidation also clears cleanly so a future
+    // reload starts with empty cache.
+    HMODULE hEqmain = GetModuleHandleA("eqmain.dll");
+    uintptr_t currentBase = (uintptr_t)hEqmain;
+    if (currentBase != g_lastEqmainBase) {
+        InvalidateWidgetVisibilityCache();
+        g_lastEqmainBase = currentBase;
+    }
+
+    // gameState gate (v3.21.0-fix-2): once gameState >= CHARSELECT, eqmain
+    // has unloaded and the 5 SIDL login screens no longer exist in the
+    // widget tree. Cached ptrs invalidate (IsEQMainWidget fails), forcing
+    // full FindLiveScreenByName re-resolves every Tick that return null.
+    // Empirical cost during char-select: ~5×23 = 115 widget scans per
+    // probe × ~2Hz = 230 scans/sec wasted. The 2026-05-16 12:35 smoke
+    // showed Backup (10-char account) crashing during Enter World →
+    // Loading-Zone transition; the residual probe cost during char-select
+    // is the most likely contributor (Natedogg, 1-char account, survived
+    // the same transition). Char-select-and-beyond state observability
+    // lives in CharSelectReader's separate SHM mapping — not this probe.
+    if (shm->gameState >= GAMESTATE_CHARSELECT) {
+        // Clear visibility so C# observes "no login widgets" instead of
+        // stale state from the prior tick. Bump seq so C# still knows the
+        // probe path is alive (cache stays warm for the next login flow).
+        shm->widgetConnectVisible       = 0;
+        shm->widgetServerSelectVisible  = 0;
+        shm->widgetOkDialogVisible      = 0;
+        shm->widgetYesNoDialogVisible   = 0;
+        shm->widgetConfirmDialogVisible = 0;
+        shm->widgetConfirmDialogText[0] = 0;  // null-terminate; rest stays zero
+        shm->widgetTickSeq = shm->widgetTickSeq + 1;
+        return;
+    }
+
+    // Snapshot — read each named screen via the cache, gate on visibility.
+    void *pConnect      = ResolveCachedScreen(&g_cachedConnect,      "connect");
+    void *pServerSel    = ResolveCachedScreen(&g_cachedServerSelect, "serverselect");
+    void *pOkDialog     = ResolveCachedScreen(&g_cachedOkDialog,     "okdialog");
+    void *pYesNoDialog  = ResolveCachedScreen(&g_cachedYesNoDialog,  "yesnodialog");
+    void *pConfirmDlg   = ResolveCachedScreen(&g_cachedConfirmDlg,   "ConfirmationDialogBox");
+
+    shm->widgetConnectVisible       = (pConnect      && EQMainWidgetsMQ2::IsCXWndVisible(pConnect))      ? 1u : 0u;
+    shm->widgetServerSelectVisible  = (pServerSel    && EQMainWidgetsMQ2::IsCXWndVisible(pServerSel))    ? 1u : 0u;
+    shm->widgetOkDialogVisible      = (pOkDialog     && EQMainWidgetsMQ2::IsCXWndVisible(pOkDialog))     ? 1u : 0u;
+    shm->widgetYesNoDialogVisible   = (pYesNoDialog  && EQMainWidgetsMQ2::IsCXWndVisible(pYesNoDialog))  ? 1u : 0u;
+    shm->widgetConfirmDialogVisible = (pConfirmDlg   && EQMainWidgetsMQ2::IsCXWndVisible(pConfirmDlg))   ? 1u : 0u;
+
+    // ConfirmationDialogBox text mirror — only populated when visible.
+    if (shm->widgetConfirmDialogVisible) {
+        void *pStml = EQMainWidgetsMQ2::FindChildByName("ConfirmationDialogBox", "CD_TextOutput");
+        char text[LOGIN_ERROR_LEN] = {};
+        if (pStml) {
+            MQ2Bridge::ReadWindowText(pStml, text, sizeof(text));
+        }
+        // Write into volatile char array — manual copy (memcpy on volatile is UB).
+        for (size_t i = 0; i < LOGIN_ERROR_LEN; ++i) {
+            shm->widgetConfirmDialogText[i] = text[i];
+            if (text[i] == 0) {
+                // Zero-fill the rest so stale tail from prior tick doesn't leak.
+                for (size_t j = i + 1; j < LOGIN_ERROR_LEN; ++j) {
+                    shm->widgetConfirmDialogText[j] = 0;
+                }
+                break;
+            }
+        }
+    } else {
+        // Clear stale text on transition to not-visible.
+        for (size_t i = 0; i < LOGIN_ERROR_LEN; ++i) {
+            shm->widgetConfirmDialogText[i] = 0;
+        }
+    }
+
+    // Tick-seq bump — last write so C# readers see consistent state when seq advances.
+    shm->widgetTickSeq = shm->widgetTickSeq + 1;
 }
 
 static DWORD PhaseAge() {
@@ -711,6 +867,7 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
     // measurable cost.
     if (loginShm->autoLoginActive) {
         PollOkDisplayToShm(loginShm);
+        PollWidgetVisibilityToShm(loginShm);   // v3.21.0
     }
 
     // Nothing to do if idle or terminal state
