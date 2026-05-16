@@ -303,6 +303,67 @@ static void PollOkDisplayToShm(volatile LoginShm *shm) {
     SetOkDisplay(shm, dialogText, ClassifyDialogText(dialogText));
 }
 
+// Widget-presence probe — fires every Tick alongside PollOkDisplayToShm.
+// Mirrors MQ2 OnPulse named-screen inspection across MQ2AutoLogin.cpp's
+// GAMESTATE_PRECHARSELECT block (1195-1240, for the 4 login screens) and
+// GAMESTATE_CHARSELECT block (1156-1191, for ConfirmationDialogBox).
+// v3.21.0 introduces this as pure observability for C#-side
+// logging + verification; the linear RunLoginSequence does not branch on
+// these bools yet. v3.22.0 will replace RunLoginSequence with a state
+// machine that reads them.
+//
+// Cost: 5× FindLiveScreenByName per call. Each is a top-level walk
+// bounded by IterateAllWindowsPublic's existing cap. Empirically
+// comparable to the existing PollOkDisplayToShm probe (already in the
+// hot path at ~500ms cadence without measurable impact per the
+// 2026-05-15 18:00 smoke).
+//
+// Bypass: only called from Tick() body, after the magic+version gate at
+// the start of Tick. Bare-launch PIDs without an open LoginShm mapping
+// never reach this code path.
+static void PollWidgetVisibilityToShm(volatile LoginShm *shm) {
+    // Snapshot — read each named screen, gate on visibility.
+    void *pConnect      = EQMainWidgetsMQ2::FindLiveScreenByName("connect");
+    void *pServerSel    = EQMainWidgetsMQ2::FindLiveScreenByName("serverselect");
+    void *pOkDialog     = EQMainWidgetsMQ2::FindLiveScreenByName("okdialog");
+    void *pYesNoDialog  = EQMainWidgetsMQ2::FindLiveScreenByName("yesnodialog");
+    void *pConfirmDlg   = EQMainWidgetsMQ2::FindLiveScreenByName("ConfirmationDialogBox");
+
+    shm->widgetConnectVisible       = (pConnect      && EQMainWidgetsMQ2::IsCXWndVisible(pConnect))      ? 1u : 0u;
+    shm->widgetServerSelectVisible  = (pServerSel    && EQMainWidgetsMQ2::IsCXWndVisible(pServerSel))    ? 1u : 0u;
+    shm->widgetOkDialogVisible      = (pOkDialog     && EQMainWidgetsMQ2::IsCXWndVisible(pOkDialog))     ? 1u : 0u;
+    shm->widgetYesNoDialogVisible   = (pYesNoDialog  && EQMainWidgetsMQ2::IsCXWndVisible(pYesNoDialog))  ? 1u : 0u;
+    shm->widgetConfirmDialogVisible = (pConfirmDlg   && EQMainWidgetsMQ2::IsCXWndVisible(pConfirmDlg))   ? 1u : 0u;
+
+    // ConfirmationDialogBox text mirror — only populated when visible.
+    if (shm->widgetConfirmDialogVisible) {
+        void *pStml = EQMainWidgetsMQ2::FindChildByName("ConfirmationDialogBox", "CD_TextOutput");
+        char text[LOGIN_ERROR_LEN] = {};
+        if (pStml) {
+            MQ2Bridge::ReadWindowText(pStml, text, sizeof(text));
+        }
+        // Write into volatile char array — manual copy (memcpy on volatile is UB).
+        for (size_t i = 0; i < LOGIN_ERROR_LEN; ++i) {
+            shm->widgetConfirmDialogText[i] = text[i];
+            if (text[i] == 0) {
+                // Zero-fill the rest so stale tail from prior tick doesn't leak.
+                for (size_t j = i + 1; j < LOGIN_ERROR_LEN; ++j) {
+                    shm->widgetConfirmDialogText[j] = 0;
+                }
+                break;
+            }
+        }
+    } else {
+        // Clear stale text on transition to not-visible.
+        for (size_t i = 0; i < LOGIN_ERROR_LEN; ++i) {
+            shm->widgetConfirmDialogText[i] = 0;
+        }
+    }
+
+    // Tick-seq bump — last write so C# readers see consistent state when seq advances.
+    shm->widgetTickSeq = shm->widgetTickSeq + 1;
+}
+
 static DWORD PhaseAge() {
     return GetTickCount() - g_phaseEntryTick;
 }
@@ -711,6 +772,7 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
     // measurable cost.
     if (loginShm->autoLoginActive) {
         PollOkDisplayToShm(loginShm);
+        PollWidgetVisibilityToShm(loginShm);   // v3.21.0
     }
 
     // Nothing to do if idle or terminal state
