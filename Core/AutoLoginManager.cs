@@ -806,8 +806,16 @@ public class AutoLoginManager
         const int OverallTimeoutMs = 90_000;
         const int TickSeqStaleThresholdMs = 5_000;
 
+        // Interaction warning: if Launch.SkipNativeWarmup=true (default), the DLL bypasses
+        // its widget-discovery warmup loop after SendLoginCommand and may not advance
+        // nativePhase past WaitLoginScreen on its own — RunCredentialEntry's BURST 1 in
+        // the legacy path is what drives Native forward. The state machine doesn't fire
+        // BURST 1 yet (Iter-2 territory), so with both flags on, the Iter-1 smoke is
+        // expected to stall at WaitLoginScreen rather than reaching TypingCredentials.
+        // For a meaningful Iter-1 smoke target, set SkipNativeWarmup=false in config so
+        // Native's own warmup-completion advances nativePhase.
         FileLogger.Info($"AutoLogin-SM: starting state-machine dispatch for PID {pid} ({account.Name}, char='{character?.Name ?? string.Empty}', " +
-            $"enterWorldOverride={enterWorldOverride?.ToString() ?? "null"})");
+            $"enterWorldOverride={enterWorldOverride?.ToString() ?? "null"}, SkipNativeWarmup={_config.Launch.SkipNativeWarmup})");
 
         using var cts = new CancellationTokenSource(OverallTimeoutMs);
         var sw = Stopwatch.StartNew();
@@ -815,6 +823,12 @@ public class AutoLoginManager
         LoginShmWriter? loginShm = null;
         bool sentCancelOnExit = false;
         var current = LoginPhase.WaitLoginScreen;
+        // tickSeq staleness gate uses an "observed at least once" sentinel rather than
+        // gating on nonzero — the DLL can legitimately publish 0 indefinitely if its
+        // probe loop never starts, and `lastTickSeq != 0` would skip the staleness
+        // branch forever in that case (90s overall-timeout fallback instead of 5s
+        // staleness catch). Verifier-flagged convergent fix 2026-05-16 (T2-S/T2-O/T3-O).
+        bool tickSeqObserved = false;
         uint lastTickSeq = 0;
         long lastTickSeqAdvanceMs = 0;
         int tickCount = 0;
@@ -872,13 +886,22 @@ public class AutoLoginManager
                 LoginPhase nativePhase = loginShm.ReadPhase(pid);
 
                 // Staleness defense — bail when Native stops publishing tick advancements.
-                if (widgets.TickSeq != lastTickSeq)
+                // Gate on "observed at least once" sentinel, not on nonzero value: the DLL
+                // can publish 0 indefinitely if its probe loop never starts, and the prior
+                // `lastTickSeq != 0` guard would suppress staleness detection forever in
+                // that case.
+                if (!tickSeqObserved)
+                {
+                    tickSeqObserved = true;
+                    lastTickSeq = widgets.TickSeq;
+                    lastTickSeqAdvanceMs = sw.ElapsedMilliseconds;
+                }
+                else if (widgets.TickSeq != lastTickSeq)
                 {
                     lastTickSeq = widgets.TickSeq;
                     lastTickSeqAdvanceMs = sw.ElapsedMilliseconds;
                 }
-                else if (lastTickSeq != 0 &&
-                         sw.ElapsedMilliseconds - lastTickSeqAdvanceMs > TickSeqStaleThresholdMs)
+                else if (sw.ElapsedMilliseconds - lastTickSeqAdvanceMs > TickSeqStaleThresholdMs)
                 {
                     FileLogger.Error($"AutoLogin-SM: widgetTickSeq stalled at {widgets.TickSeq} for >{TickSeqStaleThresholdMs}ms — DLL probe dead (PID {pid})");
                     current = LoginPhase.Error;
@@ -902,8 +925,14 @@ public class AutoLoginManager
 
                 if (next != current)
                 {
+                    // Phase-skip detection — StepWaitLoginScreen uses `nativePhase >= TypingCredentials`
+                    // which silently swallows ServerSelect/WaitConnectResponse/etc into the
+                    // TypingCredentials Iter-1 stub-stall. Log when Native is already ahead of where
+                    // the C# transition lands; smoke output makes the desync loudly visible.
+                    bool nativeAhead = next == LoginPhase.TypingCredentials && nativePhase > LoginPhase.TypingCredentials;
+                    string aheadTag = nativeAhead ? $" [native-ahead: nativePhase={nativePhase}, C# stalling at {next} until Iter-2]" : string.Empty;
                     FileLogger.Info($"AutoLogin-SM: {current} → {next} (tick={tickCount}, t={sw.ElapsedMilliseconds}ms, " +
-                        $"{widgets.DiagSummary()}, gameState={gameState}, nativePhase={nativePhase})");
+                        $"{widgets.DiagSummary()}, gameState={gameState}, nativePhase={nativePhase}){aheadTag}");
                     current = next;
                 }
 
@@ -955,15 +984,29 @@ public class AutoLoginManager
             Report($"{account.Name}: state machine crashed: {ex.Message}");
             if (loginShm != null && !sentCancelOnExit)
             {
-                try { loginShm.SendCancelCommand(pid); } catch { /* best-effort */ }
+                // Parity with the Error-exit-path catch (line ~970) — log so a double-failure
+                // is visible in the log rather than silently swallowed. T3-S/T3-O flagged the
+                // inconsistency.
+                try { loginShm.SendCancelCommand(pid); }
+                catch (Exception cex) { FileLogger.Warn($"AutoLogin-SM: SendCancelCommand on exception-path exit failed: {cex.Message}"); }
             }
         }
         finally
         {
             if (loginShm != null)
             {
-                try { loginShm.SetAutoLoginActive(pid, false); } catch (Exception ex) { FileLogger.Warn($"AutoLogin-SM: SetAutoLoginActive(false) failed: {ex.Message}"); }
-                loginShm.Dispose();
+                // Nested try so Dispose ALWAYS runs even if SetAutoLoginActive (or its
+                // catch handler — e.g. FileLogger during disk-full) throws. T2-O flagged
+                // the prior ordering as a Dispose-skip risk.
+                try
+                {
+                    try { loginShm.SetAutoLoginActive(pid, false); }
+                    catch (Exception ex) { FileLogger.Warn($"AutoLogin-SM: SetAutoLoginActive(false) failed: {ex.Message}"); }
+                }
+                finally
+                {
+                    loginShm.Dispose();
+                }
             }
             _activeLoginPids.TryRemove(pid, out _);
             // Fire LoginComplete on the captured sync context so subscribers see consistent
