@@ -374,7 +374,7 @@ public class AppConfig
         Launch.StaleSessionWaitMs           = Math.Clamp(Launch.StaleSessionWaitMs,           10000, 120000);
         Launch.StaleSessionPollIntervalMs   = Math.Clamp(Launch.StaleSessionPollIntervalMs,   100, 5000);
         Launch.ConnectRetryCount            = Math.Clamp(Launch.ConnectRetryCount,            0, 5);
-        Launch.PostBurst2QuickFailCheckMs   = Math.Clamp(Launch.PostBurst2QuickFailCheckMs,   0, 30000);
+        Launch.PostBurst2QuickFailCheckMs   = Math.Clamp(Launch.PostBurst2QuickFailCheckMs,   0, 90000);
         // Diff 4 (2026-05-15): JoinServerDirect server ID. 0 = disable wire
         // (force BURST 2 always); 1 = Dalaya default; up to 100 covers any
         // realistic eqlogin server-list index (EQ retail had ~75 servers at
@@ -781,7 +781,7 @@ public class LaunchConfig
     /// Default 10000 (10s). Set to 0 to disable (legacy 90s-only behavior).
     /// Floor 0, ceiling 30000.
     /// </summary>
-    public int PostBurst2QuickFailCheckMs { get; set; } = 10000;
+    public int PostBurst2QuickFailCheckMs { get; set; } = 60000;
 
     /// <summary>
     /// Vestigial settle pause between WaitForScreenTransition reporting

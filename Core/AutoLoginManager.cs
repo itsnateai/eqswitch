@@ -2150,17 +2150,25 @@ public class AutoLoginManager
         // the dispatch fired — racing wall-clock against EQ's network
         // round-trip. This gate replaces wall-clock with auth-state.
         //
-        // Timeout: 5000ms covers the typical handshake (network RT + EQ
-        // LoginServerAPI construction, observed ~1-3s on Dalaya) with
-        // generous slack. If we exceed it, skip the dispatch entirely
-        // and fall through to BURST 2 — preserving the pre-Fix-2 safety
-        // net behavior on the slow-auth path.
+        // Timeout: 30000ms covers slow-auth scenarios on Dalaya's emu
+        // login server. Empirical data from 2026-05-15 19:00 dual-box
+        // smoke + probe_serverselectwnd.py at 19:08 (7 min later):
+        // pinstLoginServerAPI was NULL at 19:01-19:02 (5s + 5s retry
+        // window) and populated by 19:08. Actual ready-time appears
+        // to be ~30-60s post-LOGIN-click on Dalaya, much slower than
+        // the 1-3s historical estimate. The DLL's 3-tick stability
+        // gate fires within ~48ms once pAPI populates, so an extended
+        // C# poll lets the gate publish before timeout.
         //
-        // Backward-compatible: if native is still v5 (no field publish),
-        // ReadLoginServerAPIReady always returns false, this gate times
-        // out at 5s, and we fall through to BURST 2 — matching pre-v6
-        // behavior. Cost on the deployed v6 path: ~50-500ms typically
-        // (auth completes well before timeout).
+        // v3.20.6 (2026-05-15): reverted to 5s. With QUICK CONNECT
+        // (the new default structural button), auth + server-join are
+        // submitted atomically by the button itself — there's no
+        // distinct "wait for LoginServerAPI then JoinServerDirect"
+        // step. pinstLoginServerAPI may never populate on the
+        // shortened path (QUICK CONNECT lands at char-select directly).
+        // Fast-fail to BURST 2 / PollForLoginAdvance is correct —
+        // PollForLoginAdvance now has the char-select SHM signal that
+        // recognizes "we're past login" without needing LSAPI ready.
         const int loginServerAPIReadyTimeoutMs = 5000;
         Report($"{label}Waiting for auth (LoginServerAPI ready)...");
         var readySw = System.Diagnostics.Stopwatch.StartNew();
@@ -2510,6 +2518,22 @@ public class AutoLoginManager
             if (state != initialState && state > initialState)
             {
                 FileLogger.Info($"AutoLogin: PollForLoginAdvance PID {pid} — advance detected (gameState {initialState}→{state}) at {sw.ElapsedMilliseconds}ms");
+                return true;
+            }
+
+            // Char-select SHM signal (v3.20.6, 2026-05-15) — load-bearing on
+            // Dalaya when QUICK CONNECT was clicked. QUICK CONNECT skips
+            // server-select entirely, so neither gameState NOR window-rect
+            // changes (Dalaya keeps gameState at 0 across login/server-
+            // select/char-select). The DLL publishes IsMQ2Available + char
+            // count via SHM as SOON as pinstCCharacterSelect populates —
+            // that's char-select reached. Without this check, C# falsely
+            // declares "credentials likely rejected" and retries credential
+            // typing, knocking the client OUT of char-select.
+            if (charSelect.IsMQ2Available(pid) && charSelect.ReadCharCount(pid) > 0)
+            {
+                int charCount = charSelect.ReadCharCount(pid);
+                FileLogger.Info($"AutoLogin: PollForLoginAdvance PID {pid} — char-select SHM advance detected (mq2Available + {charCount} chars) at {sw.ElapsedMilliseconds}ms");
                 return true;
             }
 

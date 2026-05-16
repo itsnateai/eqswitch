@@ -917,12 +917,17 @@ void *FindConnectButtonStructural() {
     uintptr_t vtCButton = eqmBase + EQMainOffsets::RVA_VTABLE_CButtonWnd;
 
     // Pick priorities (in order):
-    //   1. CStrRep label match on "LOGIN" (button text — uniquely identifies
-    //      LOGIN_ConnectButton; the other 3 buttons are CANCEL/QUICK CONNECT/
-    //      CHAT and none have a CStrRep with that exact 5-char buffer).
-    //   2. Slot match at CONNECTWND_DEFAULT_LOGIN_SLOT (+0x30), live-verified
-    //      2026-05-15 on PIDs 24856 + 37432.
-    //   3. First valid CButtonWnd in the range (last-resort fallback).
+    //   1. ★ "QUICK CONNECT" — skips the server-select step entirely on
+    //      Dalaya (tooltip: "Quick connect to last server"). Per Nate
+    //      2026-05-15: this button submits auth AND server-join in one
+    //      shot, bypassing the slow LoginServerAPI populate dance + the
+    //      ServerSelectWnd Enter sequence. Live at ConnectWnd+0x34
+    //      (label "QUICK CONNECT").
+    //   2. "LOGIN" (button text) — regular path, lands at server-select.
+    //      Live at ConnectWnd+0x30.
+    //   3. Slot match at CONNECTWND_DEFAULT_LOGIN_SLOT (+0x30), live-verified.
+    //   4. First valid CButtonWnd in the range (last-resort fallback).
+    void *byQuickConnect  = nullptr;
     void *byLabelMatch    = nullptr;
     void *byDefaultSlot   = nullptr;
     void *firstValid      = nullptr;
@@ -948,14 +953,24 @@ void *FindConnectButtonStructural() {
                               reinterpret_cast<const void*>(slot),
                               OFFSET_CXWND_XMLINDEX)) : 0;
 
+        bool labelQuickConnect = false;
         bool labelLogin = false;
         bool labelLoginConnect = false;
         bool labelConnect = false;
         if (isButton) {
-            // Label "LOGIN" — the button's visible text. Live-verified
-            // uniqueness on Dalaya 2026-05-15 (other buttons are CANCEL /
-            // QUICK CONNECT / CHAT — none have a CStrRep equal to "LOGIN").
+            // ★ Label "QUICK CONNECT" — Dalaya's shortcut that skips
+            // server-select. Tooltip "Quick connect to last server". Live
+            // at ConnectWnd+0x34. Per Nate's operator insight 2026-05-15:
+            // submits auth + server-join atomically, bypassing the slow
+            // LoginServerAPI populate window.
+            labelQuickConnect = WidgetBodyContainsName(reinterpret_cast<void*>(slot),
+                                                      "QUICK CONNECT");
+
+            // Label "LOGIN" — regular path. Live-verified uniqueness on
+            // Dalaya 2026-05-15 (other buttons are CANCEL / QUICK CONNECT /
+            // CHAT — none have a CStrRep equal to "LOGIN").
             labelLogin = WidgetBodyContainsName(reinterpret_cast<void*>(slot), "LOGIN");
+
             // Secondary signals — SIDL names on RoF2-emu builds. Live Dalaya
             // doesn't store these in the widget body, but we check anyway in
             // case a future patch / fork re-embeds them.
@@ -967,9 +982,10 @@ void *FindConnectButtonStructural() {
 
         DI8Log("eqmain_widgets_mq2style: ConnectWnd+0x%02X slot=%p vt=%p "
                "isButton=%d dShow=%u min=%u xmlIdx=0x%08X "
-               "labelLOGIN=%d labelLOGIN_Connect=%d labelConnect=%d",
+               "labelQC=%d labelLOGIN=%d labelLOGIN_Connect=%d labelConnect=%d",
                off, (void*)slot, (void*)vt, isButton ? 1 : 0,
                (unsigned)dShow, (unsigned)minimized, xmlIdx,
+               labelQuickConnect ? 1 : 0,
                labelLogin ? 1 : 0, labelLoginConnect ? 1 : 0, labelConnect ? 1 : 0);
 
         if (!isButton) continue;
@@ -977,9 +993,19 @@ void *FindConnectButtonStructural() {
         if (!firstValid) { firstValid = reinterpret_cast<void*>(slot); slotIdxFirst = static_cast<int>(off); }
         lastValid    = reinterpret_cast<void*>(slot);
         slotIdxLast  = static_cast<int>(off);
+        if (labelQuickConnect && !byQuickConnect) {
+            byQuickConnect  = reinterpret_cast<void*>(slot);
+            slotIdxForLabel = static_cast<int>(off);
+        }
+        // Note: labelLogin matches BOTH the "LOGIN" button (exact) AND the
+        // "CHAT" button (whose body contains "Login to chat" tooltip).
+        // But CIEquals checks equality not substring, so "Login to chat"
+        // shouldn't match "LOGIN". Still — prefer LOGIN button explicitly
+        // by checking it via slot order: first button with label match is
+        // captured here only if QUICK CONNECT hasn't matched first.
         if ((labelLogin || labelLoginConnect || labelConnect) && !byLabelMatch) {
             byLabelMatch    = reinterpret_cast<void*>(slot);
-            slotIdxForLabel = static_cast<int>(off);
+            if (slotIdxForLabel < 0) slotIdxForLabel = static_cast<int>(off);
         }
         if (off == CONNECTWND_DEFAULT_LOGIN_SLOT && !byDefaultSlot) {
             byDefaultSlot = reinterpret_cast<void*>(slot);
@@ -989,10 +1015,14 @@ void *FindConnectButtonStructural() {
     void *pick;
     int   pickSlot;
     const char *reason;
-    if (byLabelMatch) {
+    if (byQuickConnect) {
+        pick     = byQuickConnect;
+        pickSlot = slotIdxForLabel;
+        reason   = "QUICK-CONNECT-skips-server-select";
+    } else if (byLabelMatch) {
         pick     = byLabelMatch;
         pickSlot = slotIdxForLabel;
-        reason   = "label-match";
+        reason   = "label-match-LOGIN";
     } else if (byDefaultSlot) {
         pick     = byDefaultSlot;
         pickSlot = CONNECTWND_DEFAULT_LOGIN_SLOT;

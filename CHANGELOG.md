@@ -1,5 +1,39 @@
 # Changelog
 
+## v3.20.7 — End-to-end autologin reaches in-world via QUICK CONNECT (2026-05-15)
+
+🎉 **AUTOLOGIN PLUG-AND-PLAY COMPLETE.** First successful end-to-end run 2026-05-15 19:33 — `gotquiz1` reached in-game without a single manual click.
+
+Two changes built on v3.20.6's structural breakthrough:
+
+### 1. QUICK CONNECT button preferred over LOGIN
+
+Per Nate's operator insight 2026-05-15: Dalaya's `QUICK CONNECT` button (tooltip "Quick connect to last server") submits auth AND server-join atomically, bypassing the slow LoginServerAPI populate window AND the ServerSelectWnd Enter dance. Live at `ConnectWnd+0x34`.
+
+`FindConnectButtonStructural()` now picks `byQuickConnect` first (CStrRep label match on "QUICK CONNECT"), falling back to "LOGIN" → default slot → first valid button. The whole "wait for LoginServerAPI ready then JoinServerDirect" detour is moot when QUICK CONNECT is used.
+
+### 2. Char-select SHM signal in `PollForLoginAdvance`
+
+`PollForLoginAdvance` previously checked only `gameState` transitions and window-rect changes. On Dalaya, `gameState` stays at 0 across login → server-select → char-select (only flips at in-game), so neither signal fires. Without a working advance signal, C# falsely declared "credentials likely rejected" and retried credential typing, knocking the client OUT of char-select.
+
+New third check: `charSelect.IsMQ2Available(pid) && charSelect.ReadCharCount(pid) > 0`. The DLL publishes both via SHM the moment `pinstCCharacterSelect` populates — that's the structural "we're past login" signal.
+
+### 3. `PostBurst2QuickFailCheckMs` default 10000 → 60000
+
+Dalaya emu char-select takes 15-25s to load after QUICK CONNECT click; the prior 10s budget timed out before the char-select SHM signal fired. 60s gives generous headroom and is still well below the 90s `WaitForScreenTransition` legacy fallback. Clamp ceiling raised from 30000 to 90000.
+
+### 4. `loginServerAPIReadyTimeoutMs` reverted 5000
+
+v3.20.6 bumped to 30000/60000 trying to wait out the slow LoginServerAPI populate on Dalaya. With QUICK CONNECT the LSAPI/JoinServerDirect path isn't needed — fast-fail to BURST 2 / PollForLoginAdvance (which now has the char-select SHM signal) is correct.
+
+**Verification:** `gotquiz1` smoke 19:32:23 → char-select SHM signal at 19222ms → 19:33:09 charselect ready → 19:33:11 PulseKey3D Enter World → `lastLoginResult: ok`. User confirmed in-game.
+
+**Known remaining issues** (NOT blocking ship — character-name-matching, not autologin):
+- Wrong character selected (`acpots` loaded instead of configured `Natedogg`). The byName slot resolution on slot 0 returned acpots. Investigate `RequestSelectionBySlot` name-vs-index handling.
+- Second client (`gotquiz`) sometimes hits 30s budget on slow load and gets knocked back to retry — 60s default fixes this for typical runs.
+
+**Files changed:** `Native/eqmain_widgets_mq2style.cpp` (QUICK CONNECT label priority), `Core/AutoLoginManager.cs` (char-select SHM signal, 5s LSAPI timeout), `Config/AppConfig.cs` (PostBurst2QuickFailCheckMs default 60000, ceiling 90000), `EQSwitch.csproj`, `CHANGELOG.md`.
+
 ## v3.20.6 — Structural ConnectButton via ConnectWnd-rooted fixed-slot enumeration (2026-05-15)
 
 v3.20.5's proximity-to-password heuristic walked ~69 CButtonWnd-shape widgets globally and picked the closest by address. Two `ConnectButton`s exist in eqmain.dll (MainWnd's vs ConnectWnd's), and "closest in heap" routinely tie-breaks to the wrong one — auth never completed despite Combo G writing the password correctly to both `+0x1A8` and `+0x1EC` CXStrs.
