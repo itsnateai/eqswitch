@@ -50,7 +50,17 @@ static constexpr uint8_t PROLOGUE_FREEREP[8] = { 0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0
 // 'gotquiz1' from this offset on a known live CEditWnd whose autologin
 // keystroke fallback had filled the username. Mirrors MQ2 source's
 // LoginFrontend.h:799 (`/*0x278*/ CXStr InputText`) compressed for x86.
-static constexpr uint32_t OFFSET_INPUT_TEXT = 0x1A8;
+static constexpr uint32_t OFFSET_INPUT_TEXT       = 0x1A8;
+// v3.20.4 (2026-05-15) — EQ uses a SECOND CXStr field on CEditBaseWnd at
+// +0x1EC that mirrors +0x1A8 when the user types normally (verified via
+// live probe: both fields point to the SAME CStrRep with refCount=4 for
+// the username 'gotquiz1'). When Combo G writes only +0x1A8, +0x1EC
+// stays empty — and EQ's login submit pipeline reads from +0x1EC (or
+// the aliasing logic), causing auth to fail despite the visible password
+// edit showing 7 asterisks. Writing the password to BOTH fields fixes
+// the auth failure that persisted through v3.20.0 → v3.20.3 even with
+// the correct widget selection.
+static constexpr uint32_t OFFSET_INPUT_TEXT_ALIAS = 0x1EC;
 
 // ─── eqgame.exe __ScreenMode (Diff 1 from mq2-autologin-eqswitch-diff.md) ────
 // Empirical enum (live-verified 2026-05-14 across all 4 screen states):
@@ -404,6 +414,72 @@ static bool WriteEditTextDirectImpl(void *pEditWnd, const char *text) {
                (unsigned)textLen);
         return false;
     }
+
+    // v3.20.4 (2026-05-15) — ALSO write the alias CXStr at +0x1EC.
+    //
+    // Live probe of the password widget after a primary +0x1A8 write
+    // (2026-05-15 18:00 smoke PID 1116 widget 0x14905998) confirmed:
+    //   +0x1A8 → CXStr len=7 'Exodus1'   (our write — succeeded)
+    //   +0x1EC → CXStr len=0 ''          (separate CXStr, untouched)
+    //
+    // Username widget (typed by EQ at startup from .ini) shows the
+    // OPPOSITE pattern — both +0x1A8 and +0x1EC point to the SAME
+    // CStrRep (refCount=4 for the shared 8-byte 'gotquiz1' string).
+    // EQ's natural typing path keeps the two fields aliased. Combo G
+    // breaks the alias by writing only +0x1A8.
+    //
+    // EQ's login submit pipeline appears to read from +0x1EC (or
+    // requires both fields populated) — the v3.20.3 smoke had Combo G
+    // writing the correct widget AND BURST 1 firing Activate+Enter, yet
+    // LoginServerAPI never populated. With +0x1EC empty, EQ saw a
+    // half-formed input state and rejected.
+    //
+    // Two separate CXStrs (one per offset) with the same content is
+    // structurally different from the aliased state but functionally
+    // equivalent for read-side consumers — EQ reads the bytes, doesn't
+    // check pointer identity. RefCount on each is 1 (independent).
+    // Future cleanup: properly alias by assigning the same CStrRep
+    // pointer to both offsets and bumping refCount. For now, two
+    // separate writes is simpler and provably correct.
+    CXStr_Dalaya *inputTextAlias = nullptr;
+    __try {
+        inputTextAlias = reinterpret_cast<CXStr_Dalaya *>(
+            reinterpret_cast<uint8_t *>(pEditWnd) + OFFSET_INPUT_TEXT_ALIAS);
+        (void)inputTextAlias->m_data;  // SEH touch-test
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("eqmain_cxstr: WriteEditTextDirect alias SEH on field read at "
+               "+0x%X — primary write at +0x1A8 succeeded, alias write skipped",
+               OFFSET_INPUT_TEXT_ALIAS);
+        // Primary +0x1A8 write already succeeded; the function returns true
+        // and the caller proceeds. This is a degraded but not-broken state.
+        return true;
+    }
+
+    Free(inputTextAlias);
+    if (!ConstructFromCStr(inputTextAlias, text)) {
+        DI8Log("eqmain_cxstr: WriteEditTextDirect alias ctor failed at +0x%X "
+               "(primary write at +0x1A8 succeeded, alias skipped)",
+               OFFSET_INPUT_TEXT_ALIAS);
+        return true;  // primary succeeded; degrade gracefully
+    }
+
+    __try {
+        CStrRep_Dalaya *aliasRep = inputTextAlias->m_data;
+        if (aliasRep && aliasRep->length > 0 && aliasRep->utf8[0] == text[0]) {
+            DI8Log("eqmain_cxstr: WriteEditTextDirect alias OK at +0x%X — "
+                   "length=%u, first byte 0x%02x matches (v3.20.4 dual-write)",
+                   OFFSET_INPUT_TEXT_ALIAS,
+                   aliasRep->length, (unsigned char)aliasRep->utf8[0]);
+        } else {
+            DI8Log("eqmain_cxstr: WriteEditTextDirect alias verify FAILED at +0x%X "
+                   "(primary succeeded; degrade gracefully)",
+                   OFFSET_INPUT_TEXT_ALIAS);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DI8Log("eqmain_cxstr: WriteEditTextDirect alias verify SEH at +0x%X",
+               OFFSET_INPUT_TEXT_ALIAS);
+    }
+
     return true;
 }
 

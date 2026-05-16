@@ -1,5 +1,130 @@
 # Changelog
 
+## v3.20.5 — Structural ConnectButton via proximity heuristic + WndNotification XWM_LCLICK (2026-05-15)
+
+v3.20.4 dual-write to `+0x1A8` AND `+0x1EC` verified working via live probe (`PID 33740 widget 0x14905338` had both CXStrs containing 'Exodus1' post-Combo-G). But auth still failed — meaning `+0x1EC` wasn't the missing piece. Reading MQ2's `StateMachine.cpp:271-275`:
+
+```cpp
+SetEditWndText(pPasswordEditWnd, accountPassword);   // +0x1A8 assignment
+if (CButtonWnd* pConnectButton = GetChildWindow<CButtonWnd>(m_currentWindow, "LOGIN_ConnectButton"))
+    pConnectButton->WndNotification(pConnectButton, XWM_LCLICK, 0);
+```
+
+MQ2 fires `WndNotification(XWM_LCLICK)` on the **connect button widget directly** — NOT a VK_RETURN keystroke. EQ's button onClick reads `InputText` from the password edit and submits. VK_RETURN through EQ's keyboard pump apparently doesn't fire that path.
+
+**Fix:** add `EQMainWidgetsMQ2::FindButtonNearWidget(anchor)` — global walk over CButtonWnd-vtable widgets, picks one closest to `anchor` (the password edit address). Wired into `login_state_machine.cpp` `PHASE_CLICKING_CONNECT` as the primary path, before MQ2-style FindChildByName and legacy XMLIndex. Re-uses `MQ2Bridge::ClickButton` which already fires `g_fnWndNotification(btn, btn, XWM_LCLICK, nullptr)`.
+
+The connect button is allocated in the same SIDL-screen cluster as the password edit, so address-proximity reliably identifies it (same mechanism the password edit uses on the username anchor).
+
+**Files changed:** `Native/eqmain_widgets_mq2style.h`, `Native/eqmain_widgets_mq2style.cpp`, `Native/login_state_machine.cpp`, `EQSwitch.csproj`, `CHANGELOG.md`.
+
+## v3.20.4 — Dual-write password to +0x1A8 AND +0x1EC alias CXStr (2026-05-15)
+
+The v3.20.3 18:00 smoke had the proximity heuristic + Fix 1 gate both firing perfectly — Combo G wrote 'Exodus1' to widget `0x14905998 +0x1A8`, BURST 1 fired Activate+Enter only — yet `LoginServerAPI` never populated. Live external probe of the live widgets:
+
+```
+PID 1116:  widget 0x14905998
+  +0x1A8 → CXStr@148E5F80 rc=1 al=8 len=7 text='Exodus1'   ← Combo G wrote here
+  +0x1EC → CXStr@148E60C0 rc=1 al=8 len=0 text=''          ← SEPARATE CXStr, EMPTY
+```
+
+Compare to the username widget (typed normally by EQ from `.ini`):
+```
+  +0x1A8 = CXStr@138B9358 len=8 'gotquiz1'
+  +0x1EC = CXStr@138B9358 len=8 'gotquiz1'   ← SAME POINTER (aliased, rc=4)
+```
+
+**EQ uses TWO CXStr fields on `CEditBaseWnd`.** When typed via the natural input path, both `+0x1A8` and `+0x1EC` point to the SAME `CStrRep` (refCount=4 from the multiple references). When Combo G writes only `+0x1A8`, `+0x1EC` stays empty. EQ's login submit pipeline reads from (or requires) `+0x1EC` — explains every auth failure since the structural-write path was introduced in v3.15.x: the visible password field shows the chars (read from `+0x1A8`), but the submit pipeline gets an empty buffer.
+
+**Fix:** `EQMainCXStr::WriteEditTextDirect` now writes the password to BOTH `+0x1A8` AND `+0x1EC`. Two separate CXStrs with the same content (functionally equivalent to the aliased state for read-side consumers — EQ reads bytes, not pointer identity). Each `Free` + `ConstructFromCStr` pair is SEH-wrapped; if the alias write fails, the primary `+0x1A8` write is preserved and we return true (degraded but not broken — log marker fires for next-iteration diagnostics).
+
+**Files changed:** `Native/eqmain_cxstr.cpp`, `EQSwitch.csproj`, `CHANGELOG.md`.
+
+## v3.20.3 — Proximity-to-username password widget heuristic + Fix 1 re-engage (2026-05-15)
+
+The v3.20.2 17:20 smoke showed `FindEmptyEditGlobal(filterByVisible=true)` correctly enumerated 4 CEditWnd-shape widgets globally but the visibility filter picked the WRONG widget — `1153BA30` (visible+empty but `0x37370` away from the username, unrelated UI input). The real password edit `115040F0` had `dShow=0` (rendered through asterisk-masking path that doesn't set the standard visibility flag).
+
+**v3.20.3 fix:** replace the visibility filter with **address-proximity to the username-bearing CEditWnd**. EQ allocates SIDL-screen widgets in a tight cluster — the password edit is consistently `0x5D0` below the username. Two-pass algorithm:
+1. **Pass 1 (collect):** walk all widgets globally, gather every CEditWnd-shape with valid CXStr at `+0x1A8`.
+2. **Pass 2 (proximity pick):** find the anchor (CEditWnd with non-empty CXStr — the ini-prefilled username), then among empties return the one with smallest `|address - anchorAddress|`.
+
+Verified via 17:56 smoke (PIDs 16784 + 29840): proximity heuristic picked `14904128` (PID 16784) and `135092D0` (PID 29840), each at `dist=0x5D0` below their respective anchors — matching the pattern in every smoke so far.
+
+**Also: Fix 1 RE-ENGAGED.** Now that Combo G writes to the right widget, the original double-write bug returns unless BURST 1's typing is suppressed. The `comboGWriteOk` SHM signal + the AutoLoginManager gate (`Core/AutoLoginManager.cs:649`) are re-wired: when Combo G's read-back succeeds, BURST 1 skips primer + retype and only fires Activate + Enter (submit). This is the original v3.15.12 design — finally correct because the widget lookup is finally right.
+
+**New tool: `smoke-team1.sh`** — automates the kill+deploy+launch+hotkey+tail cycle. Cuts iteration time on autologin work from ~minutes to ~30s per smoke.
+
+**Files changed:** `Native/eqmain_widgets_mq2style.h`, `Native/eqmain_widgets_mq2style.cpp`, `Native/eqmain_widgets.cpp`, `Core/AutoLoginManager.cs`, `EQSwitch.csproj`, `CHANGELOG.md`, `smoke-team1.sh` (new).
+
+## v3.20.2 — Global widget walk fallback + relaxed CXStr validation (2026-05-15)
+
+v3.20.1's `FindEmptyEditInScreen("connect")` smoke (PIDs 17360 + 31576, 17:05) showed `scanned=11 editShape=2 validCXStr=1 empty=0 result=00000000` — the structural walk reached only 2 CEditWnd-shape widgets in the connect screen subtree (vs 3 in the prior smoke's `mq2_bridge` diagnostic probe). The visible password edit isn't a direct subtree-descendant of the connect-screen widget on this Dalaya build. Falls through to the broken legacy XMLIndex path → wrong widget → user sees 0-1 chars in visible password field.
+
+**New:** `EQMainWidgetsMQ2::FindEmptyEditGlobal(bool filterByVisible)` — uses `MQ2Bridge::IterateAllWindowsPublic` to walk the entire `pinstCXWndManager` widget collection (the same enumeration the mq2_bridge diagnostic probe uses to find 3 CEditWnds). Same per-widget filter as `FindEmptyEditInScreen` — vt + valid +0x1A8 CXStr + length==0 — applied globally.
+
+Wired as path 4 in `FindLivePasswordCEditWnd`, between the connect-screen-subtree variant (path 3) and the legacy XMLIndex fallback (now path 5). Tries with `filterByVisible=true` first (`dShow != 0 AND minimized == 0` per `OFFSET_CXWND_DSHOW`/`OFFSET_CXWND_MINIMIZED`); falls back to unfiltered walk if visibility filter rejects everything.
+
+**Also:** loosened CXStr refCount upper bound from `0x10000` to `0x10000000` (Opus T2-C3 verifier 2026-05-15) — the prior bound was empirical-from-one-sample and could reject potentially-interned empty-string singletons.
+
+**Diagnostic logging:** every CEditWnd-shape widget visited globally is logged with vtable, CXStr pointer, refCount, alloc, length, and visibility/minimized state. The smoke output will narrow down exactly what's in the widget tree even if the lookup still fails.
+
+**Files changed:** `Native/eqmain_widgets_mq2style.h`, `Native/eqmain_widgets_mq2style.cpp`, `Native/eqmain_widgets.cpp`, `EQSwitch.csproj`, `CHANGELOG.md`.
+
+## v3.20.1 — Structural-empty password widget lookup (2026-05-15)
+
+The v3.20.0 dual-box smoke (PIDs 3180 + 10012, 16:25) revealed the **real** upstream bug behind autologin failure: the hardcoded `XMLIndex=0x00220001` fallback in `FindLivePasswordCEditWnd` returns a widget at `0x11504A08` that has the right vtable but **no valid CXStr at +0x1A8** — meaning Combo G's `WriteEditTextDirect` happily writes 7 bytes to that offset and the read-back succeeds, but those bytes go to memory that isn't bound to any visible CEditWnd's render path. **Screenshot of PID 10012 confirmed**: visible password field shows only 1 asterisk (the lone BURST 1 keystroke that landed before Enter), not 7.
+
+Ground truth from `eqswitch-dinput8-10012.log` lines 145-184 — the connect screen has 3 widgets with CEditWnd-or-CEditBaseWnd vtable:
+
+| Address | +0x1A8 (InputText) | Identity |
+|---|---|---|
+| `115040F0` | `CXStr len=0 data=''` | **Real visible password edit** (empty before typing) |
+| `115046C0` | `CXStr len=7 data='gotquiz'` | Username edit (ini-prefilled) |
+| `11504A08` | **no valid CXStr** | False-positive — vt matches but no real InputText. Picked by legacy XMLIndex fallback. |
+
+**Fix:** new `EQMainWidgetsMQ2::FindEmptyEditInScreen("connect")` — walks the connect screen subtree and returns the first CEditWnd-shape widget whose `+0x1A8` CXStr is valid AND has length 0. Wired as a third path in `FindLivePasswordCEditWnd`:
+1. Cache fast-path (unchanged)
+2. MQ2-style `FindChildByName('connect','LOGIN_PasswordEdit')` (broken on Dalaya, returns NULL — kept for forward-compat)
+3. **NEW: `FindEmptyEditInScreen("connect")`** — structural by shape + emptiness, doesn't depend on the broken XMLIndex
+4. Legacy XMLIndex fallback (kept as last-resort safety net; known broken on current Dalaya)
+
+The `+0x1A8` validity check (refCount in [1, 0x10000), length ≤ alloc, length ≤ 0x80) cleanly rejects the false-positive widget at `11504A08`. The empty-length filter cleanly excludes the username edit.
+
+**Edge case deferred to a future release:** on re-login when the visible password field still has leftover asterisks (length > 0), the structural-empty path returns NULL and we fall through to the broken legacy path. Mitigation: BURST 1 keystrokes (safety net, restored in v3.20.0) still fire and typically deliver enough characters that the next retry's field-clear (16x Backspace) plus type cycle gets the field back to empty. A future fix would use the CEditBaseWnd `bSecret`/`bPassword` flag (need to identify the offset via Ghidra-or-equivalent) for unambiguous identification.
+
+**Files changed:** `Native/eqmain_widgets_mq2style.h`, `Native/eqmain_widgets_mq2style.cpp`, `Native/eqmain_widgets.cpp`, `EQSwitch.csproj`, `CHANGELOG.md`.
+
+## v3.20.0 — Fix 2: LoginServerAPI-ready gate (SHM v5 → v6) + Fix 1 revert (2026-05-15)
+
+> **R2 addendum (verifier-driven, Sonnet+Opus T2/T3 convergent):** The initial v3.20.0 had a CRITICAL same-Tick race — the poll-and-publish block runs AFTER the LOGIN_CMD_LOGIN reset block in the same Tick. If `pinstLoginServerAPI` was still populated from a prior session (C#-keeps-mapping-open path / session ended at char-select), the stability counter climbed 0→3 within ~48ms and republished `ready=1` BEFORE BURST 1 had typed credentials. R2 adds a `g_sawNonReadyAfterLogin` gate: publish requires BOTH 3-tick stability AND at least one observed not-ready tick since the last LOGIN_CMD_LOGIN reset. At EQ's login screen `pinstLoginServerAPI` IS NULL per probe history, so the gate naturally clears on the happy path. Same R2 also: (a) distinguishes failure modes in DI8 logs (NULL pAPI vs vtable mismatch with observed RVA — closes Sonnet T2-C2's diagnostic gap for Dalaya patches), and (b) fixes BURST 2 primary path's live `_config.Launch.*` reads (snapshots `burst2ActivationSettleMs` + `burst2PostKeystrokeMs` matching the retry path's v3.17.0 R3 sweep).
+
+
+The 2026-05-15 PM smoke (PIDs 20836 + 36156, post-v3.19.0 Fix 1) failed: user observed **"neither character entered any password at all"** in the visible password field, and `JoinServerDirect` returned `fnResult=0x00000003` ("no auth session") on both clients. Root-cause via DLL log:
+
+1. `FindChildByName('connect','LOGIN_PasswordEdit')` returns NULL on current Dalaya — the structural password lookup falls back to a hardcoded `XMLIndex=0x00220001` → manager-walk match. Combo G writes 7 bytes to that widget's `+0x1A8` and the read-back confirms, **but the widget is NOT the visible password edit**. The `WriteEditTextDirect` read-back is verification-too-close-to-the-action: it reads from the same `+0x1A8` we just wrote to, so it gleefully confirms even when the target widget is wrong.
+2. With v3.19.0's Fix 1 active, BURST 1 SKIPPED its keystroke typing on the `comboGWriteOk=1` signal — leaving the visible password field empty.
+3. `JoinServerDirect` fired on a fixed `PostBurst1WaitMs=3000ms` timer before the auth handshake completed → no LoginServerAPI session → `fnResult=3` rejection.
+
+This is precisely the failure mode the v3.15.13 commit message documented: **"revert v3.15.12 BURST 1 gate — Combo G doesn't reach EQ submit buffer"**. Fix 1 was v3.15.12 redux with an SHM flag and re-discovered the same bug. v3.16.0's ScreenMode=3 swap closes the input-filter side of the problem but can't compensate for writing to the wrong widget entirely.
+
+**Behavior changes:**
+
+- **Fix 1 reverted (BURST 1 keystrokes always type).** `Core/AutoLoginManager.cs:617+` no longer reads `comboGWriteOk` to skip BURST 1's primer + password retype. BURST 1 keystrokes are the proven safety net per the session kick-off doc ("BURST 1 KEYSTROKE fallback is what actually carries the load"). Native still publishes `comboGWriteOk=1` after Combo G's read-back succeeds (kept for diagnostic + future use if a working structural password write is found), but C# ignores the signal.
+- **Fix 2: LoginServerAPI-ready gate (SHM v5 → v6).** Native `login_state_machine.cpp` Tick() polls `*(eqmain+0x150164)` every tick:
+  - 0 = `pinstLoginServerAPI` is NULL or its vtable doesn't match `eqmain+0x1002D0`
+  - 1 = populated AND vtable matches, for **≥3 CONSECUTIVE Ticks** (stability counter — defends against transient construction state at very-early launch / EULA→login screen transitions per 2026-05-14 probe history)
+  
+  A single bad tick resets the counter AND clears the SHM flag. Reset on every `LOGIN_CMD_LOGIN` so a stale "1" from a prior session can't bleed into the new one. Edge-logged at 0→1 and 1→0 transitions.
+- **C# polls the ready-flag before dispatching JoinServerDirect.** `TryJoinServerDirectOrFallback` calls `loginShm.WaitForLoginServerAPIReady(pid, 5000)` before sending the request. If the flag never reaches 1 within 5s, dispatch is SKIPPED — caller falls through to BURST 2 (server-select Enter PostMessage), preserving the pre-Fix-2 safety net behavior. Replaces wall-clock-only timing (`PostBurst1WaitMs=3000ms`) with auth-state observation.
+
+**Native ABI:**
+
+- `LOGIN_SHM_VERSION 5 → 6`. Appended `volatile uint32_t loginServerAPIReady` at offset 1628. Total `LoginShm` = 1632 bytes. v5 native readers see only the first 1628 bytes — they never publish the field, so C# v6 readers always observe 0 → 5s timeout → BURST 2 fallback (graceful degradation matching pre-v6 behavior).
+
+**Files changed:** `Native/login_shm.h`, `Native/login_state_machine.cpp`, `Core/LoginShmWriter.cs`, `Core/AutoLoginManager.cs`, `EQSwitch.csproj`, `CHANGELOG.md`.
+
+**Verification:** dual-box smoke gated per `feedback_dual_box_test_before_autologin_tag.md` — no tag until both clients reach in-world.
+
 ## v3.19.0 — Diff 4 wire-in (LoginServerAPI::JoinServer C# call) + Diff 2/3 toggle re-enable + SHM v4 → v5 (2026-05-15)
 
 > **Addendum (Fix 1):** SHM bumped further to v5 within the same release window after the 2026-05-15 PM smoke revealed a BURST 1 / Combo G double-write bug. New `comboGWriteOk` field (uint32 at offset 1624, total 1628) lets native publish "structural CXStr write at InputText+0x1A8 succeeded" so C# can SKIP BURST 1's primer + password retype, eliminating the 13-char field corruption that was causing EQ login server rejection and "Quick Connect failed" popups. Fix 1 also added defensive `comboGWriteOk = 0` clears in the LOGIN_CMD_CANCEL handler and SetError path. See `Native/login_shm.h:240+` for the v5 field doc and `Core/AutoLoginManager.cs:617+` for the gate logic.

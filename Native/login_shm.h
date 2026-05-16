@@ -66,7 +66,28 @@
 // — Enter is what EQ interprets as "click Connect". Backward-compatible
 // append: v4 native readers see the first 1624 bytes unchanged and never
 // observe the field, so they continue typing keystrokes.
-#define LOGIN_SHM_VERSION 5
+//
+// Version 6 (2026-05-15): append `loginServerAPIReady` uint32 at offset
+// 1628 (Fix 2 — auth-completion gate for JoinServerDirect dispatch).
+// Native Tick() polls *(eqmain+0x150164) every tick:
+//   - 0 = pinstLoginServerAPI is NULL OR its vtable doesn't match
+//         eqmain+0x1002D0 (RVA_VTABLE_LoginServerAPI_Secondary)
+//   - 1 = pinstLoginServerAPI populated AND vtable matches, for ≥3
+//         CONSECUTIVE Ticks (stability counter — defends against the
+//         transient pinstLoginServerAPI construction state observed
+//         at very-early launch / EULA→login screen transitions per
+//         2026-05-14 probe history)
+// Reset to 0 on every LOGIN_CMD_LOGIN. C# AutoLoginManager polls this
+// for up to 5000ms before dispatching JoinServerDirect — if still 0 at
+// timeout, skips the dispatch entirely and falls through to BURST 2.
+// The 2026-05-15 PM smoke showed JoinServerDirect firing on a fixed 3s
+// post-BURST-1 timer returned fnResult=3 ("no auth session") because
+// the auth handshake hadn't completed; the ready-gate replaces wall-clock
+// timing with auth-state observation.
+// Backward-compatible append: v5 native readers see the first 1628
+// bytes unchanged and never publish the field, so C# v6 readers always
+// read 0 (timeout → BURST 2 fallback — graceful degradation).
+#define LOGIN_SHM_VERSION 6
 
 // C# -> DLL: what to do
 enum LoginCommand : uint32_t {
@@ -249,5 +270,34 @@ struct LoginShm {
     // behavior). Field is never read on the bare-launch / non-autologin
     // path either, so no overhead concern.
     volatile uint32_t comboGWriteOk;
+
+    // ── v6 (2026-05-15) — LoginServerAPI-ready gate (Fix 2) ────────
+    //
+    // DLL → C#: 1 = `pinstLoginServerAPI` at eqmain+0x150164 is populated
+    // AND its vtable[0] equals eqmain+0x1002D0 (the documented secondary
+    // vtable) for ≥3 CONSECUTIVE Ticks. 0 = not yet ready or has gone bad.
+    //
+    // The stability counter (3 consecutive populated ticks) defends against
+    // the transient construction state observed at very-early launch /
+    // EULA→login screen transitions per 2026-05-14 RVA probe history. A
+    // single-tick check would race the transition.
+    //
+    // C# AutoLoginManager.TryJoinServerDirectOrFallback polls this for up
+    // to ~5000ms before sending the JoinServerDirect request. If still 0
+    // at timeout, dispatch is SKIPPED entirely and the caller falls through
+    // to BURST 2 (server-select Enter via PostMessage). This replaces the
+    // pre-Fix-2 wall-clock-only model (PostBurst1WaitMs=3000ms) which
+    // dispatched too early and returned fnResult=3 ("no auth session") on
+    // the 2026-05-15 PM smoke.
+    //
+    // Reset to 0 on every LOGIN_CMD_LOGIN so a stale "1" from a prior
+    // session can't trick C# into firing JoinServerDirect before the new
+    // session's auth completes.
+    //
+    // volatile: cross-process shared mapping. Backward-compatible append:
+    // v5 native readers see exactly the first 1628 bytes — they never
+    // publish this field, so C# v6 readers always observe 0 → timeout →
+    // BURST 2 fallback (graceful degradation matching pre-Fix-2 behavior).
+    volatile uint32_t loginServerAPIReady;
 };
 #pragma pack(pop)

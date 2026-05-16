@@ -375,6 +375,360 @@ void *FindChildByName(const char *screenName, const char *childName) {
     return child;
 }
 
+// ─── FindEmptyEditInScreen (structural password lookup) ──────
+//
+// Walks the named screen's subtree, returns the first CEditWnd-shape widget
+// (vt = CEditWnd or CEditBaseWnd) whose InputText CXStr at +0x1A8 is valid
+// AND has length == 0.
+//
+// Architectural fix for the 2026-05-15 PM smoke bug: the hardcoded
+// XMLIndex=0x00220001 fallback was returning a widget at 0x11504A08 that
+// has the right vtable but DOESN'T have a valid CXStr at +0x1A8. Combo G's
+// `WriteEditTextDirect` would happily write to that widget's +0x1A8 (the
+// read-back succeeded because we read what we just wrote), but the
+// rendered password field was unchanged — the bytes went to memory that
+// isn't bound to the visible CEditWnd's render path.
+//
+// The +0x1A8 validity check filters out that false-positive cleanly.
+// Among the remaining widgets, the password edit is the empty one
+// (username is ini-prefilled by EQ before the login UI is shown).
+
+constexpr uint32_t OFFSET_CEDITWND_INPUT_TEXT = 0x1A8;
+
+struct FindEmptyEditCtx {
+    uintptr_t vtCEditWnd;
+    uintptr_t vtCEditBaseWnd;
+    void *screenRoot;             // skip the root itself — defensive vs WalkSubtreeImpl
+                                  // visiting root before descending into children (Opus
+                                  // T2-C2 verifier finding 2026-05-15)
+    void *result;
+    int candidatesScanned;
+    int candidatesEditShape;
+    int candidatesValidCXStr;
+    int candidatesEmpty;
+};
+
+static bool FindEmptyEditCallback(void *pWnd, void *ctx) {
+    FindEmptyEditCtx *c = reinterpret_cast<FindEmptyEditCtx*>(ctx);
+    if (!pWnd || c->result) return c->result != nullptr;
+
+    // (0) Screen-root skip (Opus T2-C2 2026-05-15): WalkSubtreeImpl visits
+    //     pWnd BEFORE descending into children. The screen container has
+    //     a CSidlScreenWnd vtable in practice (rejected by the vt check
+    //     below), but if a future Dalaya patch ever puts a CEditWnd-shaped
+    //     screen root with empty +0x1A8 in the connect screen position,
+    //     this guard prevents structural-empty from returning the wrong
+    //     widget. Defensive depth-1 enforcement.
+    if (pWnd == c->screenRoot) return false;
+
+    c->candidatesScanned++;
+
+    // (1) vtable check — must be CEditWnd or CEditBaseWnd
+    uintptr_t vt = SafeRead4(pWnd, 0);
+    if (vt != c->vtCEditWnd && vt != c->vtCEditBaseWnd) return false;
+    c->candidatesEditShape++;
+
+    // (2) CXStr-at-+0x1A8 validity check — the false-positive widget
+    //     (vt=CEditWnd but no real InputText) fails this gate. Validates
+    //     refCount + length + alloc sanity against CStrRep_Dalaya layout.
+    uintptr_t pRep = SafeRead4(pWnd, OFFSET_CEDITWND_INPUT_TEXT);
+    if (!pRep) return false;
+    if (pRep < 0x00010000 || pRep >= 0x80000000) return false;
+    if (pRep & 0x3) return false;  // 4-byte aligned
+
+    uint32_t refCount  = static_cast<uint32_t>(SafeRead4(
+        reinterpret_cast<const void*>(pRep), CSTRREP_REFCOUNT));
+    if (refCount == 0 || refCount >= 0x10000) return false;
+
+    uint32_t allocSize = static_cast<uint32_t>(SafeRead4(
+        reinterpret_cast<const void*>(pRep), CSTRREP_ALLOC));
+    uint32_t length    = static_cast<uint32_t>(SafeRead4(
+        reinterpret_cast<const void*>(pRep), CSTRREP_LENGTH));
+    if (length > allocSize) return false;       // capacity sanity
+    if (length > 0x80) return false;            // password edits are short
+    c->candidatesValidCXStr++;
+
+    // (3) Empty check — password field starts empty; username is prefilled
+    if (length == 0) {
+        c->candidatesEmpty++;
+        c->result = pWnd;
+        return true;  // halt walk
+    }
+    return false;
+}
+
+void *FindEmptyEditInScreen(const char *screenName) {
+    if (!screenName) return nullptr;
+
+    void *screen = FindLiveScreenByName(screenName);
+    if (!screen) {
+        DI8Log("eqmain_widgets_mq2style: FindEmptyEditInScreen('%s') — "
+               "screen not found", screenName);
+        return nullptr;
+    }
+
+    uintptr_t eqmBase = 0;
+    uint32_t  eqmSize = 0;
+    EQMainOffsets::GetRange(&eqmBase, &eqmSize);
+    if (!eqmBase) {
+        DI8Log("eqmain_widgets_mq2style: FindEmptyEditInScreen('%s') — "
+               "eqmain base unresolved", screenName);
+        return nullptr;
+    }
+
+    FindEmptyEditCtx ctx{};
+    ctx.vtCEditWnd     = eqmBase + EQMainOffsets::RVA_VTABLE_CEditWnd;
+    ctx.vtCEditBaseWnd = eqmBase + EQMainOffsets::RVA_VTABLE_CEditBaseWnd;
+    ctx.screenRoot     = screen;
+
+    bool halted = false;
+    WalkSubtreeImpl(screen, FindEmptyEditCallback, &ctx, 0, &halted);
+
+    DI8Log("eqmain_widgets_mq2style: FindEmptyEditInScreen('%s') — "
+           "screen=%p scanned=%d editShape=%d validCXStr=%d empty=%d result=%p",
+           screenName, screen,
+           ctx.candidatesScanned, ctx.candidatesEditShape,
+           ctx.candidatesValidCXStr, ctx.candidatesEmpty, ctx.result);
+
+    return ctx.result;
+}
+
+// ─── FindEmptyEditGlobal — global widget walk variant ───────
+//
+// Uses MQ2Bridge::IterateAllWindowsPublic to walk the entire pinstCXWndManager
+// widget collection. Applies a two-pass algorithm:
+//   Pass 1: COLLECT every CEditWnd-shape widget with valid +0x1A8 CXStr.
+//           Record address, length, refCount. Cap at MAX_EDIT_CANDIDATES.
+//   Pass 2: ANCHOR + PROXIMITY pick:
+//           - Find the ANCHOR: a CEditWnd with non-empty CXStr (the
+//             ini-prefilled username — always present during autologin).
+//           - Among empty CEditWnds, return the one whose address is
+//             CLOSEST to the anchor. EQ allocates SIDL-screen widgets
+//             in a tight cluster — password edit is adjacent to username.
+//           - Falls back to first empty if no anchor (e.g., username
+//             isn't pre-populated yet, edge case).
+//
+// v3.20.3 (2026-05-15) rationale: the 17:20 smoke showed the prior
+// visibility-filter approach picked the wrong widget (a visible+empty
+// CEditWnd 0x37370 away from username — unrelated UI input). The password
+// edit had visible=0 (dShow flag unset, likely because password fields use
+// asterisk-masking rendering through a different path). Address-proximity
+// to the non-empty username CEditWnd is a much stronger signal.
+
+static constexpr int MAX_EDIT_CANDIDATES = 32;
+
+struct EditCandidate {
+    void *pWnd;
+    uintptr_t vt;
+    uintptr_t pRep;
+    uint32_t refCount;
+    uint32_t allocSize;
+    uint32_t length;
+    uint8_t  dShow;
+    uint8_t  minimized;
+};
+
+struct FindEmptyEditGlobalCtx {
+    uintptr_t vtCEditWnd;
+    uintptr_t vtCEditBaseWnd;
+    int candidatesScanned;
+    int candidatesEditShape;
+    int candidatesValidCXStr;
+    int candidateCount;
+    EditCandidate candidates[MAX_EDIT_CANDIDATES];
+};
+
+static bool CollectEditCandidatesCallback(void *pWnd, void *ctx) {
+    FindEmptyEditGlobalCtx *c = reinterpret_cast<FindEmptyEditGlobalCtx*>(ctx);
+    if (!pWnd) return false;
+    if (c->candidateCount >= MAX_EDIT_CANDIDATES) return true;  // halt
+    c->candidatesScanned++;
+
+    // (1) vtable check
+    uintptr_t vt = SafeRead4(pWnd, 0);
+    if (vt != c->vtCEditWnd && vt != c->vtCEditBaseWnd) return false;
+    c->candidatesEditShape++;
+
+    // (2) Read CXStr at +0x1A8 + validate via CStrRep_Dalaya layout
+    uintptr_t pRep = SafeRead4(pWnd, OFFSET_CEDITWND_INPUT_TEXT);
+    if (!pRep || pRep < 0x00010000 || pRep >= 0x80000000 || (pRep & 0x3) != 0) return false;
+    uint32_t refCount  = static_cast<uint32_t>(SafeRead4(reinterpret_cast<const void*>(pRep), CSTRREP_REFCOUNT));
+    uint32_t allocSize = static_cast<uint32_t>(SafeRead4(reinterpret_cast<const void*>(pRep), CSTRREP_ALLOC));
+    uint32_t length    = static_cast<uint32_t>(SafeRead4(reinterpret_cast<const void*>(pRep), CSTRREP_LENGTH));
+    if (refCount == 0 || refCount >= 0x10000000) return false;
+    if (length > allocSize || length > 0x80) return false;
+    c->candidatesValidCXStr++;
+
+    // Collect — defer the empty/anchor logic to the post-walk picker
+    EditCandidate &cand = c->candidates[c->candidateCount++];
+    cand.pWnd      = pWnd;
+    cand.vt        = vt;
+    cand.pRep      = pRep;
+    cand.refCount  = refCount;
+    cand.allocSize = allocSize;
+    cand.length    = length;
+    cand.dShow     = SafeRead1(pWnd, OFFSET_CXWND_DSHOW);
+    cand.minimized = SafeRead1(pWnd, OFFSET_CXWND_MINIMIZED);
+    return false;  // continue walking
+}
+
+void *FindEmptyEditGlobal() {
+    uintptr_t eqmBase = 0;
+    uint32_t  eqmSize = 0;
+    EQMainOffsets::GetRange(&eqmBase, &eqmSize);
+    if (!eqmBase) {
+        DI8Log("eqmain_widgets_mq2style: FindEmptyEditGlobal — "
+               "eqmain base unresolved");
+        return nullptr;
+    }
+
+    FindEmptyEditGlobalCtx ctx{};
+    ctx.vtCEditWnd     = eqmBase + EQMainOffsets::RVA_VTABLE_CEditWnd;
+    ctx.vtCEditBaseWnd = eqmBase + EQMainOffsets::RVA_VTABLE_CEditBaseWnd;
+
+    // Pass 1: collect every valid CEditWnd-shape widget with +0x1A8 CXStr
+    bool iterated = MQ2Bridge::IterateAllWindowsPublic(
+        reinterpret_cast<MQ2Bridge::PublicWndIterCallback>(CollectEditCandidatesCallback),
+        &ctx);
+
+    DI8Log("eqmain_widgets_mq2style: FindEmptyEditGlobal — pass-1 collect: "
+           "iterated=%d scanned=%d editShape=%d validCXStr=%d candidates=%d",
+           iterated ? 1 : 0,
+           ctx.candidatesScanned, ctx.candidatesEditShape,
+           ctx.candidatesValidCXStr, ctx.candidateCount);
+
+    // Log every candidate (capped naturally by MAX_EDIT_CANDIDATES = 32)
+    for (int i = 0; i < ctx.candidateCount; i++) {
+        const EditCandidate &c = ctx.candidates[i];
+        DI8Log("eqmain_widgets_mq2style:   cand[%d] pWnd=%p CXStr@%p "
+               "refCount=%u alloc=%u length=%u dShow=%u minimized=%u",
+               i, c.pWnd, (void*)c.pRep, c.refCount, c.allocSize, c.length,
+               (unsigned)c.dShow, (unsigned)c.minimized);
+    }
+
+    // Pass 2: find anchor (non-empty CEditWnd) + pick empty closest to it
+    void *anchor = nullptr;
+    uintptr_t anchorAddr = 0;
+    for (int i = 0; i < ctx.candidateCount; i++) {
+        if (ctx.candidates[i].length > 0) {
+            anchor = ctx.candidates[i].pWnd;
+            anchorAddr = reinterpret_cast<uintptr_t>(anchor);
+            break;
+        }
+    }
+
+    if (!anchor) {
+        // No anchor — return first empty as a fallback
+        for (int i = 0; i < ctx.candidateCount; i++) {
+            if (ctx.candidates[i].length == 0) {
+                DI8Log("eqmain_widgets_mq2style: FindEmptyEditGlobal — NO ANCHOR "
+                       "(no non-empty CEditWnd found); falling back to first empty @ %p",
+                       ctx.candidates[i].pWnd);
+                return ctx.candidates[i].pWnd;
+            }
+        }
+        DI8Log("eqmain_widgets_mq2style: FindEmptyEditGlobal — no empty CEditWnd "
+               "found in %d candidates", ctx.candidateCount);
+        return nullptr;
+    }
+
+    // Look up anchor's length for log
+    uint32_t anchorLength = 0;
+    for (int i = 0; i < ctx.candidateCount; i++) {
+        if (ctx.candidates[i].pWnd == anchor) {
+            anchorLength = ctx.candidates[i].length;
+            break;
+        }
+    }
+
+    // Find empty CEditWnd with smallest |address - anchorAddr|
+    void *bestPwd = nullptr;
+    uintptr_t bestDist = UINTPTR_MAX;
+    for (int i = 0; i < ctx.candidateCount; i++) {
+        const EditCandidate &c = ctx.candidates[i];
+        if (c.length != 0) continue;  // skip non-empty (including anchor itself)
+        uintptr_t addr = reinterpret_cast<uintptr_t>(c.pWnd);
+        uintptr_t dist = (addr > anchorAddr) ? (addr - anchorAddr) : (anchorAddr - addr);
+        if (dist < bestDist) {
+            bestDist = dist;
+            bestPwd = c.pWnd;
+        }
+    }
+
+    DI8Log("eqmain_widgets_mq2style: FindEmptyEditGlobal — anchor=%p "
+           "(non-empty CEditWnd len=%u) → result=%p (closest empty, dist=0x%X)",
+           anchor, anchorLength, bestPwd, (unsigned)bestDist);
+
+    return bestPwd;
+}
+
+// ─── FindButtonNearWidget — proximity heuristic for CButtonWnd ──
+
+struct FindButtonNearCtx {
+    uintptr_t vtCButtonWnd;
+    uintptr_t anchorAddr;
+    void *result;
+    uintptr_t bestDist;
+    int candidatesScanned;
+    int candidatesButtonShape;
+    int loggedCount;
+    static constexpr int MAX_LOG = 12;
+};
+
+static bool FindButtonNearCallback(void *pWnd, void *ctx) {
+    FindButtonNearCtx *c = reinterpret_cast<FindButtonNearCtx*>(ctx);
+    if (!pWnd) return false;
+    c->candidatesScanned++;
+
+    uintptr_t vt = SafeRead4(pWnd, 0);
+    if (vt != c->vtCButtonWnd) return false;
+    c->candidatesButtonShape++;
+
+    uintptr_t addr = reinterpret_cast<uintptr_t>(pWnd);
+    uintptr_t dist = (addr > c->anchorAddr) ? (addr - c->anchorAddr) : (c->anchorAddr - addr);
+
+    // Diagnostic log first N button widgets
+    if (c->loggedCount < FindButtonNearCtx::MAX_LOG) {
+        c->loggedCount++;
+        uint8_t dShow     = SafeRead1(pWnd, OFFSET_CXWND_DSHOW);
+        uint8_t minimized = SafeRead1(pWnd, OFFSET_CXWND_MINIMIZED);
+        DI8Log("eqmain_widgets_mq2style:   btn[%d] pWnd=%p vt=%p dist=0x%X dShow=%u minimized=%u",
+               c->loggedCount, pWnd, (void*)vt, (unsigned)dist,
+               (unsigned)dShow, (unsigned)minimized);
+    }
+
+    if (dist < c->bestDist) {
+        c->bestDist = dist;
+        c->result = pWnd;
+    }
+    return false;
+}
+
+void *FindButtonNearWidget(void *anchor) {
+    if (!anchor) return nullptr;
+    uintptr_t eqmBase = 0;
+    uint32_t  eqmSize = 0;
+    EQMainOffsets::GetRange(&eqmBase, &eqmSize);
+    if (!eqmBase) return nullptr;
+
+    FindButtonNearCtx ctx{};
+    ctx.vtCButtonWnd = eqmBase + EQMainOffsets::RVA_VTABLE_CButtonWnd;
+    ctx.anchorAddr   = reinterpret_cast<uintptr_t>(anchor);
+    ctx.bestDist     = UINTPTR_MAX;
+
+    bool iterated = MQ2Bridge::IterateAllWindowsPublic(
+        reinterpret_cast<MQ2Bridge::PublicWndIterCallback>(FindButtonNearCallback),
+        &ctx);
+
+    DI8Log("eqmain_widgets_mq2style: FindButtonNearWidget(anchor=%p) — "
+           "iterated=%d scanned=%d buttonShape=%d result=%p (dist=0x%X)",
+           anchor, iterated ? 1 : 0,
+           ctx.candidatesScanned, ctx.candidatesButtonShape,
+           ctx.result, (unsigned)ctx.bestDist);
+
+    return ctx.result;
+}
+
 // ─── Diagnostics ─────────────────────────────────────────────
 void LogStartupDiagnostics() {
     DI8Log("eqmain_widgets_mq2style: startup — pNext=+0x%X pFirstChild=+0x%X "

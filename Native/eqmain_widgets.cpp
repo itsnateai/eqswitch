@@ -333,15 +333,85 @@ void *FindLivePasswordCEditWnd() {
         }
         if (pPwd) {
             DI8Log("eqmain_widgets: FindLivePasswordCEditWnd — MQ2-style returned %p but failed "
-                   "IsEQMainEditWidget vtable check; falling back to legacy", pPwd);
+                   "IsEQMainEditWidget vtable check; falling back to structural-empty", pPwd);
         } else {
             DI8Log("eqmain_widgets: FindLivePasswordCEditWnd — MQ2-style returned null; "
-                   "falling back to legacy XMLIndex match");
+                   "falling back to structural-empty");
         }
     }
 
-    // 3) Legacy fallback — full bootstrap (ResolvePasswordXMLIndex if cold)
-    //    + heap scan with its own cache validation.
+    // 3) STRUCTURAL-EMPTY (v3.20.1, 2026-05-15) — bypasses CXMLDataManager
+    //    name resolution entirely. Walks the connect screen subtree, finds
+    //    the first CEditWnd-shape widget whose InputText CXStr at +0x1A8 is
+    //    valid AND empty. The empty-CXStr filter naturally excludes the
+    //    username edit (ini-prefilled with the account name) AND the
+    //    false-positive vt-but-no-InputText widget that the hardcoded
+    //    XMLIndex=0x00220001 manager-walk was selecting. Ground-truth from
+    //    PID 10012 smoke (2026-05-15 16:25) — eqswitch-dinput8-10012.log
+    //    lines 145-184 show 3 CEditWnd-shape widgets at 115040F0 (empty,
+    //    password), 115046C0 ('gotquiz', username), 11504A08 (no valid
+    //    InputText — the hardcoded fallback was picking this one).
+    //
+    //    Edge case (deferred): on re-login when the password field has
+    //    leftover asterisks, length > 0 here returns nullptr — caller
+    //    falls through to legacy XMLIndex path. The legacy path is
+    //    currently broken on Dalaya, but the legacy widget at 11504A08
+    //    has no real InputText so writes there are silent no-ops; BURST 1
+    //    keystrokes (safety net) still fire. Net effect: graceful
+    //    degradation to the pre-v3.20.1 behavior on the edge case.
+    {
+        void *pPwd = EQMainWidgetsMQ2::FindEmptyEditInScreen("connect");
+        if (pPwd && EQMainOffsets::IsEQMainEditWidget(pPwd)) {
+            DI8Log("eqmain_widgets: FindLivePasswordCEditWnd — STRUCTURAL-EMPTY hit @ %p "
+                   "(connect-screen walk, first CEditWnd with valid empty +0x1A8 CXStr)",
+                   pPwd);
+            InterlockedExchangePointer((PVOID volatile *)&g_cachedWidgetPtr, pPwd);
+            return pPwd;
+        }
+        if (pPwd) {
+            DI8Log("eqmain_widgets: FindLivePasswordCEditWnd — STRUCTURAL-EMPTY returned %p "
+                   "but failed IsEQMainEditWidget; falling back to legacy XMLIndex", pPwd);
+        } else {
+            DI8Log("eqmain_widgets: FindLivePasswordCEditWnd — STRUCTURAL-EMPTY returned null "
+                   "(no empty CEditWnd in connect screen, or screen not found); "
+                   "falling back to legacy XMLIndex");
+        }
+    }
+
+    // 4) STRUCTURAL-EMPTY-GLOBAL (v3.20.2, 2026-05-15) — same filter as
+    //    path 3 but uses MQ2Bridge::IterateAllWindowsPublic to walk the
+    //    entire pinstCXWndManager widget collection rather than the
+    //    "connect" screen subtree. The 2026-05-15 17:05 smoke (PIDs 17360
+    //    / 31576) showed FindEmptyEditInScreen reached only 2 CEditWnd-
+    //    shape widgets in the connect subtree (vs 3 in the mq2_bridge
+    //    diagnostic probe via the same global iteration) — the visible
+    //    password edit isn't a direct subtree-child of the connect screen
+    //    widget on this Dalaya build.
+    //
+    //    First try with visibility filter (dShow != 0 AND minimized == 0)
+    //    — narrows to currently-rendered widgets, defends against
+    //    false-positives in chat / search / pre-built UI panels.
+    //    If that returns nothing (e.g., dShow byte semantics shifted),
+    //    re-try without the visibility filter.
+    {
+        // v3.20.3: proximity-to-username heuristic (replaces broken visibility filter)
+        void *pPwd = EQMainWidgetsMQ2::FindEmptyEditGlobal();
+        if (pPwd && EQMainOffsets::IsEQMainEditWidget(pPwd)) {
+            DI8Log("eqmain_widgets: FindLivePasswordCEditWnd — STRUCTURAL-EMPTY-GLOBAL "
+                   "hit @ %p (closest empty to username-bearing anchor)", pPwd);
+            InterlockedExchangePointer((PVOID volatile *)&g_cachedWidgetPtr, pPwd);
+            return pPwd;
+        }
+        DI8Log("eqmain_widgets: FindLivePasswordCEditWnd — STRUCTURAL-EMPTY-GLOBAL "
+               "returned null (no anchor found, or no empty CEditWnd in walk); "
+               "falling back to legacy XMLIndex");
+    }
+
+    // 5) Legacy fallback — full bootstrap (ResolvePasswordXMLIndex if cold)
+    //    + heap scan with its own cache validation. KNOWN BROKEN on current
+    //    Dalaya (returns vt-match-but-no-InputText widget). Kept as
+    //    last-resort safety net only; structural-empty-global above is the
+    //    intended primary path post-v3.20.2.
     return FindLivePasswordCEditWnd_Legacy();
 }
 
