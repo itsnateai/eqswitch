@@ -1,5 +1,53 @@
 # Changelog
 
+## v3.21.0 — SHM v7 + Widget Probes (2026-05-16)
+
+Foundation for the v3.22.0 state-driven dispatch rewrite. Adds an always-on
+native probe that snapshots 5 SIDL-screen widget visibilities into SHM every
+Tick, mirroring MQ2's OnPulse dispatcher pattern across `MQ2AutoLogin.cpp`'s
+`GAMESTATE_PRECHARSELECT` block (1195-1240) and `GAMESTATE_CHARSELECT` block
+(1156-1191). v3.21.0 ships observability only — `RunLoginSequence` control
+flow does NOT branch on the new bools yet (deferred to v3.22.0).
+
+### Native (eqswitch-di8.dll, 241,152 → 242,176 bytes)
+- `login_shm.h`: SHM v6 → v7. Appends `widgetConnectVisible`,
+  `widgetServerSelectVisible`, `widgetOkDialogVisible`,
+  `widgetYesNoDialogVisible`, `widgetConfirmDialogVisible`,
+  `widgetConfirmDialogText[256]`, `widgetTickSeq`. Backward-compatible
+  append — v6 native readers see the first 1632 bytes unchanged.
+  Total struct size 1632 → 1912 bytes.
+- `login_state_machine.cpp`: new `PollWidgetVisibilityToShm` called from
+  `Tick()` immediately after `PollOkDisplayToShm`. Uses existing
+  `EQMainWidgetsMQ2::FindLiveScreenByName` + `IsCXWndVisible` helpers.
+  Confirm-dialog text mirror via `FindChildByName("ConfirmationDialogBox",
+  "CD_TextOutput")` + `MQ2Bridge::ReadWindowText`. Manual byte-copy loop
+  on the volatile char array (memcpy on volatile is UB). `widgetTickSeq`
+  is the LAST write per consistency-ordering — when C# observes seq
+  advance, all visibility writes are visible.
+
+### C# (.NET 8)
+- `Core/WidgetState.cs`: new read-only record struct (5 bools + string +
+  uint) with `Empty` static, `AnyDialogVisible` computed property, and
+  `DiagSummary()` log formatter.
+- `Core/LoginShmWriter.cs`: 7 new `OFF_WIDGET_*` constants (1632-1908);
+  `ShmSize` 1632 → 1912; `Version` 6 → 7; new
+  `TryReadWidgetState(int pid, out WidgetState)` following the existing
+  `_mappings[pid].Accessor` pattern of `ReadPhase` / `ReadError`. Uses
+  named `ConfirmTextLen` const (256) and existing `ReadString` helper.
+- `Core/AutoLoginManager.cs`: 6 `LogWidgetSnapshot(loginShm, pid, label)`
+  calls at `RunLoginSequence` checkpoints (`login-screen-ready`,
+  `pre-burst1`, `post-burst1`, `post-wst-primary`,
+  `retry{N}-pre-wst`, `charselect-reached`) — proof-of-life for the
+  probe during dual-box smoke. RunLoginSequence control flow is unchanged.
+
+### Out-of-scope (deferred)
+- v3.22.0: state-driven dispatch loop replacing linear `RunLoginSequence`
+  (mq2-vs-eqswitch-fragility-audit gaps #1, #5, #10).
+- v3.23.0: OK_Display action codes (`Action_ClickYes`) +
+  `ConfirmationDialogBox` "Loading Characters" stuck-state recovery
+  (`pCharacterListWnd->Quit()`) + `ServerList.StatusFlags` server-down
+  detection (audit gaps #3, #4, #5, #6, #7, #8).
+
 ## v3.20.11 — Keystroke-leak hardening: skip retry retype + per-keystroke in-game gate (2026-05-15)
 
 Closes the keystroke-leak vector Nate observed in the post-v3.20.10 smoke: passwords containing 'd' fired DUCK and 'x' fired bound EQ actions in-game when chars entered world mid-retry. Both fixes are direct ports from MQ2's authoritative pattern (see `_.claude/_comms/mq2-vs-eqswitch-fragility-audit-2026-05-15.md`).
