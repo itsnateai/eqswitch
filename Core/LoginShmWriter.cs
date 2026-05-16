@@ -85,7 +85,7 @@ public sealed class LoginShmWriter : IDisposable
     // bytes unchanged and never publish the field, so C# v6 readers
     // always observe 0 → 5s timeout → BURST 2 fallback (graceful
     // degradation matching pre-v6 behavior).
-    private const uint Version = 6;
+    private const uint Version = 7;
     private const int MaxChars = 10;         // LOGIN_MAX_CHARS
     private const int NameLen = 64;          // LOGIN_NAME_LEN
     private const int PassLen = 128;         // LOGIN_PASS_LEN
@@ -100,7 +100,7 @@ public sealed class LoginShmWriter : IDisposable
     // JoinServer RPC fields at offset 1604 (size 1624); v5 appends 1×uint32
     // comboGWriteOk at offset 1624 (size 1628); v6 appends 1×uint32
     // loginServerAPIReady at offset 1628 (size 1632).
-    private const int ShmSize = 1632;
+    private const int ShmSize = 1912;  // v7 layout — widget probes appended
 
     // ── Commands (C# → DLL) ──────────────────────────────────────
     private const uint CMD_NONE = 0;
@@ -149,7 +149,14 @@ public sealed class LoginShmWriter : IDisposable
     private const int OFF_JS_FN_RESULT    = 1620;    // uint32  (4)  — v4 append (out)
     private const int OFF_COMBOG_OK       = 1624;    // uint32  (4)  — v5 append (out)
     private const int OFF_LOGIN_SERVER_API_READY = 1628; // uint32 (4)  — v6 append (out)
-    // Total: 1632 ✓
+    private const int OFF_WIDGET_CONNECT       = 1632; // uint32 (4) — v7 append (out)
+    private const int OFF_WIDGET_SERVERSELECT  = 1636; // uint32 (4) — v7 append (out)
+    private const int OFF_WIDGET_OKDIALOG      = 1640; // uint32 (4) — v7 append (out)
+    private const int OFF_WIDGET_YESNODIALOG   = 1644; // uint32 (4) — v7 append (out)
+    private const int OFF_WIDGET_CONFIRMDIALOG = 1648; // uint32 (4) — v7 append (out)
+    private const int OFF_WIDGET_CONFIRMTEXT   = 1652; // char[256]  — v7 append (out)
+    private const int OFF_WIDGET_TICKSEQ       = 1908; // uint32 (4) — v7 append (out)
+    // Total: 1912 ✓ (was 1632 in v6)
 
     private sealed class MappingEntry : IDisposable
     {
@@ -561,6 +568,38 @@ public sealed class LoginShmWriter : IDisposable
         if (!_mappings.TryGetValue(pid, out var entry)) return false;
         try { return entry.Accessor.ReadUInt32(OFF_COMBOG_OK) != 0; }
         catch { return false; }
+    }
+
+    /// <summary>
+    /// Read widget-presence snapshot (v7). Returns false if mapping not open
+    /// for this PID or read failed.
+    /// </summary>
+    public bool TryReadWidgetState(int pid, out WidgetState state)
+    {
+        state = WidgetState.Empty;
+        if (!_mappings.TryGetValue(pid, out var entry)) return false;
+
+        try
+        {
+            uint cn  = entry.Accessor.ReadUInt32(OFF_WIDGET_CONNECT);
+            uint ss  = entry.Accessor.ReadUInt32(OFF_WIDGET_SERVERSELECT);
+            uint ok  = entry.Accessor.ReadUInt32(OFF_WIDGET_OKDIALOG);
+            uint yn  = entry.Accessor.ReadUInt32(OFF_WIDGET_YESNODIALOG);
+            uint cd  = entry.Accessor.ReadUInt32(OFF_WIDGET_CONFIRMDIALOG);
+            uint seq = entry.Accessor.ReadUInt32(OFF_WIDGET_TICKSEQ);
+
+            // Reuse existing ReadString helper used by ReadError (matches the
+            // null-terminated char[N] pattern in the rest of this class).
+            string text = ReadString(entry.Accessor, OFF_WIDGET_CONFIRMTEXT, 256);
+
+            state = new WidgetState(cn != 0, ss != 0, ok != 0, yn != 0, cd != 0, text, seq);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Warn($"TryReadWidgetState({pid}) failed: {ex.Message}");
+            return false;
+        }
     }
 
     /// <summary>
