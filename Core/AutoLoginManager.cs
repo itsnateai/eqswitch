@@ -885,25 +885,29 @@ public class AutoLoginManager
                 int gameState = loginShm.ReadGameState(pid);
                 LoginPhase nativePhase = loginShm.ReadPhase(pid);
 
-                // Staleness defense — bail when Native stops publishing tick advancements.
-                // Gate on "observed at least once" sentinel, not on nonzero value: the DLL
-                // can publish 0 indefinitely if its probe loop never starts, and the prior
-                // `lastTickSeq != 0` guard would suppress staleness detection forever in
-                // that case.
-                if (!tickSeqObserved)
+                // Staleness defense — only ARMS after the first NONZERO TickSeq observation.
+                // Real-world DLL boot timing (Iter-1 round-2 smoke 2026-05-16): eqmain.dll
+                // load + DLL game-thread tick + first PollWidgetVisibilityToShm runs takes
+                // ~20s post-eqgame-launch. Until then, TickSeq=0 is "probe not started yet",
+                // NOT "probe dead" — the overall 90s CTS timeout (OverallTimeoutMs) covers
+                // the never-starts case. Staleness defense is specifically for the "probe
+                // was alive, then died mid-flight" case, which it still catches because
+                // lastTickSeqAdvanceMs gets updated on every TickSeq change after arming.
+                if (widgets.TickSeq != 0 && !tickSeqObserved)
                 {
                     tickSeqObserved = true;
                     lastTickSeq = widgets.TickSeq;
                     lastTickSeqAdvanceMs = sw.ElapsedMilliseconds;
+                    FileLogger.Info($"AutoLogin-SM: first nonzero widgetTickSeq={widgets.TickSeq} observed at t={sw.ElapsedMilliseconds}ms — staleness defense armed (PID {pid})");
                 }
-                else if (widgets.TickSeq != lastTickSeq)
+                else if (tickSeqObserved && widgets.TickSeq != lastTickSeq)
                 {
                     lastTickSeq = widgets.TickSeq;
                     lastTickSeqAdvanceMs = sw.ElapsedMilliseconds;
                 }
-                else if (sw.ElapsedMilliseconds - lastTickSeqAdvanceMs > TickSeqStaleThresholdMs)
+                else if (tickSeqObserved && sw.ElapsedMilliseconds - lastTickSeqAdvanceMs > TickSeqStaleThresholdMs)
                 {
-                    FileLogger.Error($"AutoLogin-SM: widgetTickSeq stalled at {widgets.TickSeq} for >{TickSeqStaleThresholdMs}ms — DLL probe dead (PID {pid})");
+                    FileLogger.Error($"AutoLogin-SM: widgetTickSeq stalled at {widgets.TickSeq} for >{TickSeqStaleThresholdMs}ms after arming — DLL probe died (PID {pid})");
                     current = LoginPhase.Error;
                     break;
                 }
