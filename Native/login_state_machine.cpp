@@ -861,44 +861,62 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         // advancement and skipped its keystroke fallback. Verified via
         // eqswitch-dinput8-{pid}.log on 2026-04-25 dual-box test.
         if (!g_pConnectButton) {
-            // v3.20.5 (2026-05-15) — PROXIMITY-TO-PASSWORD heuristic for
-            // ConnectButton, matching the password-edit lookup pattern.
-            // Walks all CButtonWnd-vtable widgets globally, picks one closest
-            // to g_pPasswordEdit. The connect button is allocated in the same
-            // SIDL-screen cluster as the password edit. Prior legacy
-            // FindWindowByName returned CXMLDataPtr definitions (rejected by
-            // IsEQMainButtonWidget) so we never had a live button to click —
-            // C# fell back to a VK_RETURN keystroke which doesn't fire EQ's
-            // submit path the same way WndNotification(XWM_LCLICK) does.
+            // v3.20.6 (2026-05-15) — STRUCTURAL ConnectButton resolution.
+            // Plug-and-play port of MQ2's StateMachine.cpp:275 backed by
+            // findings.md Round 5 live verification (PID 22892 2026-05-04):
+            // ConnectWnd's button widgets live at fixed slots +0x2C..+0x38
+            // (NOT in the CXWnd pFirstChild list — that returns junk per
+            // probe_connectwnd_children.py). We enumerate the 4 button
+            // slots, pick the one whose body's CStrRep heuristic matches
+            // "LOGIN_ConnectButton" or "ConnectButton" (both names live on
+            // each widget per Round 5 line 60-65). If the name-match fails
+            // we still get a valid CButtonWnd from the connect screen (vs
+            // the prior proximity heuristic which routinely picked the
+            // wrong button out of ~69 CButtonWnd-shape widgets globally).
             void *pCandidate = nullptr;
-            // v3.20.5 — re-resolve g_pPasswordEdit if InvalidateWidgets nulled
-            // it on a gameState transition between PHASE_TYPING and here.
-            // The proximity-to-password heuristic NEEDS the password anchor;
-            // if absent we silently skip to MQ2-style which is broken on Dalaya.
             DI8Log("login_sm: PHASE_CLICKING_CONNECT entry — g_pPasswordEdit=%p "
                    "(pre-resolve)", g_pPasswordEdit);
-            if (!g_pPasswordEdit) {
-                g_pPasswordEdit = EQMainWidgets::FindLivePasswordCEditWnd();
-                DI8Log("login_sm: re-resolved password edit at click phase — "
-                       "g_pPasswordEdit=%p", g_pPasswordEdit);
+
+            // Primary: structural ConnectWnd-rooted enumeration
+            pCandidate = EQMainWidgetsMQ2::FindConnectButtonStructural();
+            if (pCandidate && EQMainOffsets::IsEQMainButtonWidget(pCandidate)) {
+                DI8Log("login_sm: LOGIN_ConnectButton resolved via STRUCTURAL "
+                       "ConnectWnd-rooted @ %p", pCandidate);
+            } else {
+                if (pCandidate) {
+                    DI8Log("login_sm: STRUCTURAL returned %p but failed "
+                           "IsEQMainButtonWidget; falling back to proximity",
+                           pCandidate);
+                }
+                pCandidate = nullptr;
             }
-            if (g_pPasswordEdit) {
-                pCandidate = EQMainWidgetsMQ2::FindButtonNearWidget(g_pPasswordEdit);
-                if (pCandidate && EQMainOffsets::IsEQMainButtonWidget(pCandidate)) {
-                    DI8Log("login_sm: LOGIN_ConnectButton resolved via PROXIMITY-TO-PASSWORD "
-                           "@ %p (anchor=%p)", pCandidate, g_pPasswordEdit);
-                } else {
-                    if (pCandidate) {
-                        DI8Log("login_sm: PROXIMITY-TO-PASSWORD returned %p but failed "
-                               "IsEQMainButtonWidget; falling back to MQ2-style + legacy",
-                               pCandidate);
+
+            // Secondary: proximity-to-password (prior v3.20.5 behavior).
+            // Re-resolve g_pPasswordEdit if InvalidateWidgets nulled it on a
+            // gameState transition between PHASE_TYPING and here.
+            if (!pCandidate) {
+                if (!g_pPasswordEdit) {
+                    g_pPasswordEdit = EQMainWidgets::FindLivePasswordCEditWnd();
+                    DI8Log("login_sm: re-resolved password edit at click phase — "
+                           "g_pPasswordEdit=%p", g_pPasswordEdit);
+                }
+                if (g_pPasswordEdit) {
+                    pCandidate = EQMainWidgetsMQ2::FindButtonNearWidget(g_pPasswordEdit);
+                    if (pCandidate && EQMainOffsets::IsEQMainButtonWidget(pCandidate)) {
+                        DI8Log("login_sm: LOGIN_ConnectButton resolved via PROXIMITY-TO-PASSWORD "
+                               "@ %p (anchor=%p)", pCandidate, g_pPasswordEdit);
+                    } else {
+                        if (pCandidate) {
+                            DI8Log("login_sm: PROXIMITY-TO-PASSWORD returned %p but failed "
+                                   "IsEQMainButtonWidget; falling back to MQ2-style + legacy",
+                                   pCandidate);
+                        }
+                        pCandidate = nullptr;
                     }
-                    pCandidate = nullptr;
                 }
             }
-            // Fallback chain: MQ2-style FindChildByName (broken on Dalaya
-            // CXMLDataManager-heuristic), then legacy FindWindowByName
-            // (returns CXMLDataPtr defs).
+
+            // Tertiary: legacy MQ2-style + FindWindowByName fallbacks
             if (!pCandidate && EQMainWidgetsMQ2::kMQ2StyleWidgetLookup) {
                 pCandidate = EQMainWidgetsMQ2::FindChildByName("connect", "LOGIN_ConnectButton");
                 if (pCandidate && EQMainOffsets::IsEQMainButtonWidget(pCandidate)) {

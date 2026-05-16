@@ -1,5 +1,26 @@
 # Changelog
 
+## v3.20.6 — Structural ConnectButton via ConnectWnd-rooted fixed-slot enumeration (2026-05-15)
+
+v3.20.5's proximity-to-password heuristic walked ~69 CButtonWnd-shape widgets globally and picked the closest by address. Two `ConnectButton`s exist in eqmain.dll (MainWnd's vs ConnectWnd's), and "closest in heap" routinely tie-breaks to the wrong one — auth never completed despite Combo G writing the password correctly to both `+0x1A8` and `+0x1EC` CXStrs.
+
+**Fix:** plug-and-play port of MQ2's `StateMachine.cpp:275` backed by `findings.md` Round 5 live verification (PID 22892 2026-05-04). Round 5 established that ConnectWnd's child widgets live at fixed slots in the screen body (NOT in the standard CXWnd pFirstChild list — that returns junk per `probe_connectwnd_children.py`):
+
+```
+ConnectWnd+0x2C..+0x38  → 4× CButtonWnd  (LOGIN_ConnectButton is one of these)
+ConnectWnd+0x3C..+0x40  → 2× CEditWnd    (username, password)
+ConnectWnd+0x48         → 1× CLabelWnd   (Dalaya branding)
+```
+
+New `EQMainWidgetsMQ2::FindConnectButtonStructural()`:
+1. Resolves ConnectWnd by walking `pinstLoginViewManager+0..+0x200` for the slot whose pointee's vtable matches `RVA_VTABLE_ConnectWnd = 0x001035C0`.
+2. Enumerates the 4 button slots, validates CButtonWnd vtable for each.
+3. Picks the slot whose body holds a CStrRep matching `"LOGIN_ConnectButton"` or `"ConnectButton"` (both names exist per Round 5 line 60-65 — Dalaya's SIDL XML defines BOTH the prefixed `item=` Name and bare `<ScreenID>`); falls back to first valid button with a loud log line so subsequent smokes can lock the slot if name-heuristic fails.
+
+Wired into `login_state_machine.cpp` `PHASE_CLICKING_CONNECT` as the PRIMARY path. Existing proximity, MQ2-style FindChildByName, and legacy FindWindowByName remain as ordered fallbacks for defense-in-depth.
+
+**Files changed:** `Native/eqmain_offsets.h` (new `RVA_VTABLE_ConnectWnd`, `RVA_PINST_LoginViewManager`), `Native/eqmain_widgets_mq2style.{h,cpp}` (new `FindConnectButtonStructural`, `ResolveConnectWnd`), `Native/login_state_machine.cpp` (reorder fallback chain), `EQSwitch.csproj`, `CHANGELOG.md`.
+
 ## v3.20.5 — Structural ConnectButton via proximity heuristic + WndNotification XWM_LCLICK (2026-05-15)
 
 v3.20.4 dual-write to `+0x1A8` AND `+0x1EC` verified working via live probe (`PID 33740 widget 0x14905338` had both CXStrs containing 'Exodus1' post-Combo-G). But auth still failed — meaning `+0x1EC` wasn't the missing piece. Reading MQ2's `StateMachine.cpp:271-275`:
