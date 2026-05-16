@@ -840,6 +840,7 @@ public class AutoLoginManager
             Report("Waiting for EQ window...");
             var hwnd = WaitForWindow(pid, TimeSpan.FromSeconds(30));
             if (hwnd == IntPtr.Zero) { Report("Timeout: EQ window did not appear"); return; }
+            LogWidgetSnapshot(loginShm, pid, "login-screen-ready");
 
             // ══════════════════════════════════════════════════════════════
             // PATH A: In-process login via LoginShm (zero keyboard injection)
@@ -909,10 +910,12 @@ public class AutoLoginManager
             // Future stretch: fix Combo G to write the right widget/buffer
             // (live render-side EditWnd), then BURST 1 can be removed entirely.
             // ══════════════════════════════════════════════════════════════
+            LogWidgetSnapshot(loginShm, pid, "pre-burst1");
             RunCredentialEntry(pid, hwnd, writer, loginShm, account, password,
                 loginScreenDelayMs, warmupDwellMs,
                 targetCharacterName: character?.Name ?? "",
                 charSelect: charSelect);
+            LogWidgetSnapshot(loginShm, pid, "post-burst1");
 
             // Fire LoginCredentialsSent — TrayManager uses this to apply slim-
             // titlebar + hook config + window title NOW (T+~7s) instead of
@@ -1050,6 +1053,7 @@ public class AutoLoginManager
             {
                 hwnd = WaitForScreenTransition(pid, hwnd, initialTimeoutMs);
             }
+            LogWidgetSnapshot(loginShm, pid, "post-wst-primary");
             transitionSw.Stop();
             bool hitTimeout = transitionSw.ElapsedMilliseconds >= initialTimeoutMs - 500;
 
@@ -1512,6 +1516,7 @@ public class AutoLoginManager
                 transitionSw.Restart();
                 bool retryCharSelectShmActive = charSelect.IsMQ2Available(pid)
                                                  && charSelect.ReadCharCount(pid) > 0;
+                LogWidgetSnapshot(loginShm, pid, $"retry{retryAttempt}-pre-wst");
                 if (retryCharSelectShmActive)
                 {
                     FileLogger.Info($"AutoLogin: {account.Name}: char-select SHM signal active on retry {retryAttempt} — skipping WaitForScreenTransition (PID {pid}, charCount={charSelect.ReadCharCount(pid)})");
@@ -1565,6 +1570,7 @@ public class AutoLoginManager
             }
             if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during charselect load (crashed or closed)"); return; }
             FileLogger.Info($"AutoLogin: charselect ready, hwnd=0x{hwnd:X} for PID {pid}");
+            LogWidgetSnapshot(loginShm, pid, "charselect-reached");
             // Login-status indicator: WaitForScreenTransition succeeded → password
             // was accepted by the login server AND char-select rendered. Everything
             // past this point is character-selection / enter-world plumbing, not
@@ -2838,6 +2844,15 @@ public class AutoLoginManager
         }
         FileLogger.Warn($"AutoLogin: PollForLoginAdvance PID {pid} — no advance signal within {maxWaitMs}ms; credentials likely rejected, fast-failing to retry");
         return false;
+    }
+
+    private static void LogWidgetSnapshot(LoginShmWriter? loginShm, int pid, string checkpoint)
+    {
+        if (loginShm == null) return;
+        if (loginShm.TryReadWidgetState(pid, out var widgets))
+        {
+            FileLogger.Info($"[widgets@{checkpoint} pid={pid}] {widgets.DiagSummary()}");
+        }
     }
 
     private void Report(string message)
