@@ -499,7 +499,8 @@ public class AutoLoginManager
     private void RunCredentialEntry(int pid, IntPtr hwnd, KeyInputWriter writer,
         LoginShmWriter? loginShm, Account account, string password,
         int loginScreenDelayMs, int warmupDwellMs,
-        string targetCharacterName = "")
+        string targetCharacterName = "",
+        CharSelectReader? charSelect = null)
     {
         // v3.17.0 R3 fix: snapshot config values consumed BELOW. The R2 snapshot
         // at RunLoginSequence header doesn't propagate into this method, and
@@ -742,7 +743,7 @@ public class AutoLoginManager
         {
             CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to username
             Thread.Sleep(100);
-            var userResult = CombinedTypeString(writer, pid, hwnd, account.Username);
+            var userResult = CombinedTypeString(writer, pid, hwnd, account.Username, charSelect);
             LogTypingValidation("BURST 1 username", userResult, pid);
             Thread.Sleep(100);
         }
@@ -751,7 +752,7 @@ public class AutoLoginManager
             CombinedPressKey(writer, pid, hwnd, 0x09); // Tab to password
             Thread.Sleep(100);
         }
-        var passResult = CombinedTypeString(writer, pid, hwnd, password);
+        var passResult = CombinedTypeString(writer, pid, hwnd, password, charSelect);
         LogTypingValidation("BURST 1 password", passResult, pid);
         Thread.Sleep(100);
 
@@ -910,7 +911,8 @@ public class AutoLoginManager
             // ══════════════════════════════════════════════════════════════
             RunCredentialEntry(pid, hwnd, writer, loginShm, account, password,
                 loginScreenDelayMs, warmupDwellMs,
-                targetCharacterName: character?.Name ?? "");
+                targetCharacterName: character?.Name ?? "",
+                charSelect: charSelect);
 
             // Fire LoginCredentialsSent — TrayManager uses this to apply slim-
             // titlebar + hook config + window title NOW (T+~7s) instead of
@@ -1012,10 +1014,42 @@ public class AutoLoginManager
             // Adaptive timeout: 90s default, or 5s if fast-fail signal already
             // told us the login didn't advance (just need to confirm before
             // entering retry loop).
+            //
+            // v3.20.9 SHM short-circuit (post-smoke fix 2026-05-15): when the
+            // char-select SHM signal is already active (mq2Available + ReadCharCount
+            // > 0), we KNOW we're past login. Skip the rect-based WaitForScreenTransition
+            // entirely — on Dalaya gameState stays at 0 across login → server-select
+            // → char-select, and the EQ window doesn't reliably change size at the
+            // login→charselect boundary. Both signals WaitForScreenTransition relies
+            // on (hung→responsive transition, rect size change) routinely miss the
+            // transition, so the 90s timeout fires, the retry path kicks in, fires
+            // Enter at char-select (where it becomes Enter World on the default-
+            // highlighted slot 0 character), and the wrong char enters world. This
+            // is exactly the failure mode v3.20.7's PollForLoginAdvance was meant to
+            // prevent — but PollForLoginAdvance only short-circuited the post-BURST-2
+            // verify probe (line above), not the subsequent WaitForScreenTransition.
+            // Same canonical "we're at char-select" signal applied here closes the gap.
+            //
+            // Observed 2026-05-15 smoke: PollForLoginAdvance saw the SHM signal at
+            // 17171ms → logged "char-select SHM advance detected" → WaitForScreenTransition
+            // then ran for 90000ms → retry → Enter World fired on slot 0 instead of
+            // the configured `Backup` (slot 1). Row-anchor fix in HandleSelectionRequest
+            // (v3.20.8) never ran because RequestSelectionBySlot was never called.
             Report("Loading character select...");
             int initialTimeoutMs = quickFailDetected ? 5000 : 90000;
             var transitionSw = System.Diagnostics.Stopwatch.StartNew();
-            hwnd = WaitForScreenTransition(pid, hwnd, initialTimeoutMs);
+            bool charSelectShmActive = charSelect.IsMQ2Available(pid)
+                                        && charSelect.ReadCharCount(pid) > 0;
+            if (charSelectShmActive)
+            {
+                FileLogger.Info($"AutoLogin: {account.Name}: char-select SHM signal active — skipping WaitForScreenTransition (PID {pid}, charCount={charSelect.ReadCharCount(pid)})");
+                Thread.Sleep(_config.Launch.WaitTransitionSettleMs);
+                hwnd = RefreshHandle(pid, hwnd);
+            }
+            else
+            {
+                hwnd = WaitForScreenTransition(pid, hwnd, initialTimeoutMs);
+            }
             transitionSw.Stop();
             bool hitTimeout = transitionSw.ElapsedMilliseconds >= initialTimeoutMs - 500;
 
@@ -1174,13 +1208,37 @@ public class AutoLoginManager
                 // login attempt.
                 int tunedRecoveryWaitMs = staleSessionWaitMs;
                 string tuningReason = "default (no text classification)";
+                // v3.20.11: gate credential retype on this flag (audit gap #3 — MQ2
+                // never retypes creds on retry; it only clicks buttons. Retype is
+                // only safe when server explicitly classifies creds as truncated/
+                // incomplete — i.e. the server PROVES the wire wasn't right, so
+                // re-sending with field-clear actually helps. Every other case
+                // (stale session, unknown recoverable, no dialog) shouldn't retype
+                // — re-typing the same correct password at the same login screen
+                // doesn't change the outcome, and any race where chars entered
+                // world mid-retry leaks password chars as in-game keystrokes.
+                bool credsTruncated = false;
                 if (okClass == OkDisplayClass.Recoverable && !string.IsNullOrEmpty(okText))
                 {
                     string lower = okText.ToLowerInvariant();
-                    if (lower.Contains("truncated") || lower.Contains("incomplete"))
+                    // v3.20.11 (T2 Sonnet+Opus conf 85 convergent finding 2026-05-15):
+                    // tighten substring match to require co-occurrence of
+                    // "password"/"credential" + "truncated"/"incomplete". Prevents
+                    // false-positive matches against unrelated server messages
+                    // like "Your connection was truncated" or "character file
+                    // appears incomplete" that have nothing to do with creds —
+                    // a spurious retype is exactly the keystroke-leak vector this
+                    // release closes. Trade-off: false-negative (real truncated-
+                    // creds dialog uses different wording than what we anchor on)
+                    // is safer than false-positive — autologin gives up cleanly
+                    // instead of typing passwords into wrong contexts.
+                    bool hasPasswordRef = lower.Contains("password") || lower.Contains("credential");
+                    bool hasTruncationRef = lower.Contains("truncated") || lower.Contains("incomplete");
+                    if (hasPasswordRef && hasTruncationRef)
                     {
                         tunedRecoveryWaitMs = 1000;
                         tuningReason = "truncated/incomplete creds";
+                        credsTruncated = true;
                     }
                     else if (lower.Contains("stale") || lower.Contains("still logged") || lower.Contains("in use"))
                     {
@@ -1200,7 +1258,13 @@ public class AutoLoginManager
                     }
                 }
                 FileLogger.Info($"AutoLogin: retry {retryAttempt} recovery wait = {tunedRecoveryWaitMs}ms — {tuningReason}");
-                if (!CancellableSleepUntilProcessDies(pid, tunedRecoveryWaitMs, staleSessionPollIntervalMs))
+                // v3.20.10: pass charSelect so the helper can poll gameState==5 mid-wait
+                // and exit early on in-world. Saves the remainder of tunedRecoveryWaitMs
+                // when chars enter world during the sleep (common path when step-1's
+                // modal-dismiss Enter landed Enter World on the default-selected char).
+                var recoveryOutcome = CancellableSleepUntilProcessDies(
+                    pid, tunedRecoveryWaitMs, staleSessionPollIntervalMs, charSelect);
+                if (recoveryOutcome == RecoveryWaitOutcome.ProcessDied)
                 {
                     FileLogger.Warn($"AutoLogin: {account.Name} EQ process exited during retry {retryAttempt} recovery wait — aborting");
                     Report($"{account.Name}: EQ exited during recovery wait — aborting");
@@ -1212,6 +1276,37 @@ public class AutoLoginManager
                     FileLogger.Warn($"AutoLogin: {account.Name} lost EQ window post-recovery-sleep on retry {retryAttempt} — aborting");
                     Report($"{account.Name}: lost EQ window during retry {retryAttempt} recovery");
                     return;
+                }
+
+                // v3.20.9 in-game keystroke gate (post-smoke fix 2026-05-15):
+                // if the character is already in-world (because the modal-dismiss
+                // Enter at step (1) above happened to land Enter World on the
+                // default-highlighted slot-0 character at char-select, then the
+                // 30s recovery sleep let EQ fully load the zone), abort the
+                // retry now — re-typing credentials in-game fires the password
+                // characters as keybind keystrokes, hitting whatever EQ keybinds
+                // they map to (Nate 2026-05-15: passwords containing 'd' triggered
+                // DUCK on both clients). IsInGame checks gameState==5 OR window
+                // title containing " - " (the post-EnterWorld "EverQuest - CharName"
+                // pattern) — both signals fire post-zone-load even on Dalaya where
+                // gameState stays at 0 through char-select. Defense in depth: the
+                // SHM short-circuit at line ~1015 should prevent retry from running
+                // at all on Dalaya now, but if it ever does, this gate stops the
+                // keystroke leak before BURST 1 / BURST 2 retyping.
+                //
+                // v3.20.10: triggers on EITHER the sleep-helper's gameState==5
+                // mid-wait detection OR the post-sleep IsInGame check (which adds
+                // the title-flip " - " signal as a fallback for any case where
+                // gameState lags behind the title — e.g., non-Dalaya servers).
+                if (recoveryOutcome == RecoveryWaitOutcome.InGame || IsInGame(charSelect, pid, hwnd))
+                {
+                    string source = recoveryOutcome == RecoveryWaitOutcome.InGame
+                        ? "during recovery wait (sleep-helper gameState==5)"
+                        : "post-recovery-wait (IsInGame title/gameState check)";
+                    FileLogger.Info($"AutoLogin: {account.Name} retry {retryAttempt} aborted — character already in-world {source}. Would fire passwords as in-game keystrokes (DUCK / SwitchKey / etc.); treating retry as success.");
+                    Report($"{account.Name} already in-game during retry — retry skipped");
+                    hitTimeout = false;
+                    break;
                 }
 
                 // (3) Re-fire BURST 1 via shared RunCredentialEntry. Pass loginShm: null
@@ -1243,44 +1338,128 @@ public class AutoLoginManager
                 // password field needs clearing — username is auto-populated by
                 // LaunchManager and clearing it would break the auto-populate.
                 // (T2-Opus R3 verifier catch 2026-05-14.)
-                Report($"Retry {retryAttempt}: re-firing credentials...");
-                writer.Activate(pid, suppress: true);
-                Thread.Sleep(200);
-                for (int i = 0; i < 16; i++)
+                //
+                // v3.20.11 (audit gap #3 — MQ2-canonical retry, 2026-05-15):
+                // Only retype credentials if the server EXPLICITLY classified them
+                // as truncated/incomplete (set by the okClass tuning block above).
+                // For every other retry case — stale session, unknown recoverable
+                // dialog, no dialog at all — skip the retype entirely. MQ2 never
+                // retypes creds on retry (StateMachine.cpp:344-369); it only
+                // clicks OK_OKButton. Same password at same screen produces same
+                // outcome; the only thing retype does is open a keystroke-leak
+                // window (if chars enter world during typing, password chars fire
+                // as in-game keybinds — Nate 2026-05-15 observed 'd'→DUCK, 'x'→
+                // bound action). The v3.20.9 IsInGame gate at line ~1275 protects
+                // against confirmed in-world entries; the v3.20.11 per-keystroke
+                // gate in CombinedTypeString protects against mid-typing transition;
+                // this block-level skip eliminates the entire vector for the
+                // common case.
+                if (!credsTruncated)
                 {
-                    CombinedPressKey(writer, pid, hwnd, 0x08); // Backspace
-                    Thread.Sleep(15);
+                    FileLogger.Info($"AutoLogin: {account.Name} retry {retryAttempt} — skipping credential retype (okClass={okClass}, credsTruncated=false). MQ2-canonical: re-typing same creds at same screen produces same outcome; keystroke-leak vector eliminated. Modal-dismiss Enter (step 1) + BURST 2 server-confirm Enter (step 4) carry the retry work.");
+                    Thread.Sleep(postBurst1WaitMs);
+                    // v3.20.11 (T3 Opus conf 85 finding 2026-05-15): post-skip
+                    // IsInGame check. If chars entered world during the
+                    // postBurst1WaitMs sleep (typical when modal-dismiss Enter
+                    // at step 1 landed Enter World on default-highlighted char),
+                    // exit retry as success now — preventing BURST 2's bare
+                    // Enter at step 4 from firing in-world (mostly benign for
+                    // Enter, but matches the defense-in-depth invariant: once
+                    // in-world, send NO further keystrokes).
+                    if (IsInGame(charSelect, pid, hwnd))
+                    {
+                        FileLogger.Info($"AutoLogin: {account.Name} retry {retryAttempt} skip-path detected in-world after postBurst1WaitMs sleep — exiting retry as success before BURST 2.");
+                        hitTimeout = false;
+                        goto postRetypeBlock;
+                    }
                 }
-                if (!account.UseLoginFlag)
+                else
                 {
-                    // Tab to the OTHER field and clear it. Direction (username↔password)
-                    // depends on which field had focus first — either way, after a Tab,
-                    // we're in the other one. A trailing Tab to return to the original
-                    // field isn't needed because RunCredentialEntry's flow Shift-resets
-                    // focus via its own Tab sequence.
-                    CombinedPressKey(writer, pid, hwnd, 0x09); // Tab
-                    Thread.Sleep(100);
+                    Report($"Retry {retryAttempt}: re-firing credentials...");
+                    writer.Activate(pid, suppress: true);
+                    Thread.Sleep(200);
                     for (int i = 0; i < 16; i++)
                     {
+                        // v3.20.11: per-iteration in-game gate. If chars entered
+                        // world during the field-clear (unlikely but possible on
+                        // a fast laptop where the modal-dismiss Enter at step 1
+                        // already advanced past char-select), abort the field
+                        // clear — the Backspace keystrokes themselves don't fire
+                        // EQ keybinds, but continuing to RunCredentialEntry would
+                        // type password chars that DO fire keybinds. Check every
+                        // 4 iterations to keep overhead minimal (4× SHM reads per
+                        // field-clear vs zero before).
+                        if ((i & 0x3) == 0 && IsInGame(charSelect, pid, hwnd))
+                        {
+                            FileLogger.Warn($"AutoLogin: {account.Name} retry {retryAttempt} field-clear ABORTED mid-loop at Backspace #{i} — detected in-world (gameState==5 OR title-has-dash). {16 - i} Backspaces NOT sent. Skipping credential retype to prevent keystroke leak.");
+                            writer.Deactivate(pid);
+                            hitTimeout = false;
+                            goto postRetypeBlock;
+                        }
                         CombinedPressKey(writer, pid, hwnd, 0x08); // Backspace
                         Thread.Sleep(15);
                     }
+                    if (!account.UseLoginFlag)
+                    {
+                        // Tab to the OTHER field and clear it. Direction (username↔password)
+                        // depends on which field had focus first — either way, after a Tab,
+                        // we're in the other one. A trailing Tab to return to the original
+                        // field isn't needed because RunCredentialEntry's flow Shift-resets
+                        // focus via its own Tab sequence.
+                        CombinedPressKey(writer, pid, hwnd, 0x09); // Tab
+                        Thread.Sleep(100);
+                        for (int i = 0; i < 16; i++)
+                        {
+                            if ((i & 0x3) == 0 && IsInGame(charSelect, pid, hwnd))
+                            {
+                                FileLogger.Warn($"AutoLogin: {account.Name} retry {retryAttempt} second-field-clear ABORTED mid-loop at Backspace #{i} — detected in-world. {16 - i} Backspaces NOT sent.");
+                                writer.Deactivate(pid);
+                                hitTimeout = false;
+                                goto postRetypeBlock;
+                            }
+                            CombinedPressKey(writer, pid, hwnd, 0x08); // Backspace
+                            Thread.Sleep(15);
+                        }
+                    }
+                    writer.Deactivate(pid);
+                    int clearCount = account.UseLoginFlag ? 16 : 32;
+                    FileLogger.Info($"AutoLogin: retry {retryAttempt} pre-typing field-clear ({clearCount}x Backspace, UseLoginFlag={account.UseLoginFlag}) for PID {pid}");
+
+                    // v3.20.11: belt-and-braces in-game check before RunCredentialEntry.
+                    // CombinedTypeString has its own per-keystroke gate (passed via
+                    // charSelect param), but checking here too lets us short-circuit
+                    // the entire BURST 1 / RunCredentialEntry call.
+                    if (IsInGame(charSelect, pid, hwnd))
+                    {
+                        FileLogger.Warn($"AutoLogin: {account.Name} retry {retryAttempt} BURST 1 retype ABORTED before RunCredentialEntry — detected in-world post-field-clear.");
+                        hitTimeout = false;
+                        goto postRetypeBlock;
+                    }
+
+                    RunCredentialEntry(pid, hwnd, writer, loginShm: null, account, password,
+                        loginScreenDelayMs: 0, warmupDwellMs: 0,
+                        targetCharacterName: character?.Name ?? "",
+                        charSelect: charSelect);
+
+                    Thread.Sleep(postBurst1WaitMs);
+                    hwnd = RefreshHandle(pid, hwnd);
+                    if (hwnd == IntPtr.Zero)
+                    {
+                        FileLogger.Warn($"AutoLogin: {account.Name} lost EQ window mid-retry-{retryAttempt} BURST 1 — aborting");
+                        Report($"{account.Name}: lost EQ window during retry {retryAttempt} BURST 1");
+                        return;
+                    }
                 }
-                writer.Deactivate(pid);
-                int clearCount = account.UseLoginFlag ? 16 : 32;
-                FileLogger.Info($"AutoLogin: retry {retryAttempt} pre-typing field-clear ({clearCount}x Backspace, UseLoginFlag={account.UseLoginFlag}) for PID {pid}");
 
-                RunCredentialEntry(pid, hwnd, writer, loginShm: null, account, password,
-                    loginScreenDelayMs: 0, warmupDwellMs: 0,
-                    targetCharacterName: character?.Name ?? "");
-
-                Thread.Sleep(postBurst1WaitMs);
-                hwnd = RefreshHandle(pid, hwnd);
-                if (hwnd == IntPtr.Zero)
+                postRetypeBlock:
+                // Common exit path. If hitTimeout==false (set by any in-game
+                // detection above), the outer while loop will exit on the next
+                // iteration check. Otherwise fall through to step (4) BURST 2 +
+                // step (5) WaitForScreenTransition.
+                if (!hitTimeout)
                 {
-                    FileLogger.Warn($"AutoLogin: {account.Name} lost EQ window mid-retry-{retryAttempt} BURST 1 — aborting");
-                    Report($"{account.Name}: lost EQ window during retry {retryAttempt} BURST 1");
-                    return;
+                    Report($"{account.Name} already in-game during retry — retry skipped");
+                    break;
                 }
 
                 // (4) Re-fire server confirm — Diff 4 first, BURST 2 fallback.
@@ -1289,7 +1468,16 @@ public class AutoLoginManager
                 // JoinServerDirect entirely. Asymmetric reliability between
                 // primary (Diff 4) and retry (BURST 2). Now both paths share
                 // TryJoinServerDirectOrFallback — identical contract.
-                int retryJoinServerId = _config.Launch.JoinServerId;
+                //
+                // v3.20.11 (T2 Sonnet conf 90 + T3 Sonnet I3 conf 80 convergent
+                // finding 2026-05-15): use R3-snapshotted `joinServerId` (line
+                // ~965) instead of live `_config.Launch.JoinServerId`. The retry
+                // path runs inside the same RunLoginSequence scope and inherits
+                // the snapshot discipline established by v3.17.0 — a mid-retry
+                // Settings → Apply could otherwise swap JoinServerId between
+                // primary and retry paths. Pre-existing bug; fixed while in
+                // verifier-driven hardening pass.
+                int retryJoinServerId = joinServerId;
                 bool retryJoinSucceeded = TryJoinServerDirectOrFallback(
                     loginShm, pid, retryJoinServerId, account, isRetry: true);
                 if (!retryJoinSucceeded)
@@ -1307,6 +1495,13 @@ public class AutoLoginManager
                 // (5) Re-wait for screen transition — 60s cap. Post-retry also
                 // gets the fast-fail probe so a second-retry-truncation hits the
                 // next retry iteration quickly instead of waiting another 60s.
+                //
+                // v3.20.10 SHM short-circuit (mirror of the primary path's check
+                // at ~line 1015): if the char-select SHM signal is already active
+                // when we reach this step, skip WaitForScreenTransition's 60s
+                // rect-based wait — on Dalaya that wait would time out unconditionally
+                // because gameState stays at 0 and the window doesn't reliably
+                // change size. Symmetric with the primary-path fix from v3.20.9.
                 bool retryQuickFail = false;
                 if (postBurst2QuickFailCheckMs > 0)
                 {
@@ -1315,7 +1510,18 @@ public class AutoLoginManager
                 Report($"Retry {retryAttempt}: loading character select...");
                 int retryTimeoutMs = retryQuickFail ? 5000 : 60000;
                 transitionSw.Restart();
-                hwnd = WaitForScreenTransition(pid, hwnd, retryTimeoutMs);
+                bool retryCharSelectShmActive = charSelect.IsMQ2Available(pid)
+                                                 && charSelect.ReadCharCount(pid) > 0;
+                if (retryCharSelectShmActive)
+                {
+                    FileLogger.Info($"AutoLogin: {account.Name}: char-select SHM signal active on retry {retryAttempt} — skipping WaitForScreenTransition (PID {pid}, charCount={charSelect.ReadCharCount(pid)})");
+                    Thread.Sleep(_config.Launch.WaitTransitionSettleMs);
+                    hwnd = RefreshHandle(pid, hwnd);
+                }
+                else
+                {
+                    hwnd = WaitForScreenTransition(pid, hwnd, retryTimeoutMs);
+                }
                 transitionSw.Stop();
                 hitTimeout = transitionSw.ElapsedMilliseconds >= retryTimeoutMs - 500;
                 // Note: quickFailDetected is no longer read after this point —
@@ -2271,7 +2477,8 @@ public class AutoLoginManager
     }
 
     /// <summary>Type a string via SHM + PostMessage. Posts WM_KEYDOWN + WM_CHAR + WM_KEYUP.</summary>
-    private static TypingResult CombinedTypeString(KeyInputWriter writer, int pid, IntPtr hwnd, string text)
+    private static TypingResult CombinedTypeString(KeyInputWriter writer, int pid, IntPtr hwnd, string text,
+        CharSelectReader? charSelect = null)
     {
         // Diagnostic counters: tell us whether typing actually executed. Catches
         // the failure mode where DI8 SHM only sees the trailing Enter — if typed=0
@@ -2283,6 +2490,44 @@ public class AutoLoginManager
         FileLogger.Info($"AutoLogin: CombinedTypeString PID={pid} hwnd=0x{hwnd.ToInt64():X} input.Length={text.Length}");
         foreach (char c in text)
         {
+            // v3.20.11 (MQ2-canonical gap #4 — per-keystroke in-game gate, audit
+            // 2026-05-15): abort if chars transitioned to in-world mid-typing.
+            // MQ2's OnPulse dispatcher (`MQ2AutoLogin.cpp:1149-1156`) branches on
+            // `GetGameState() == GAMESTATE_INGAME` BEFORE ever dispatching login-
+            // screen keystrokes — making the in-game gate structurally impossible
+            // to bypass. Our per-burst gate (the v3.20.9 check before BURST 1
+            // and the v3.20.10 mid-sleep gameState==5 check inside
+            // CancellableSleepUntilProcessDies) leaves a window between the gate
+            // check and the actual VK_KEYDOWN posts. If EQ enters world during
+            // that window, password chars fire as in-game keybinds: 'd' → DUCK,
+            // 'x' → bound action, etc. (Nate 2026-05-15).
+            //
+            // gameState==5 is the Dalaya-reliable in-world signal — gameState
+            // stays at 0 through login → server-select → char-select on Dalaya,
+            // and only flips to 5 once the zone-load completes. Reading SHM is
+            // ~microsecond cost; per-char polling is cheap (≤50us total for a
+            // 16-char password) vs the cost of leaked keystrokes.
+            //
+            // charSelect is optional — pre-v3.20.11 callers passing null preserve
+            // the old behavior (no in-game gate). RunCredentialEntry and the
+            // retry path pass it.
+            //
+            // v3.20.11 (T2 Opus Rule 7 finding): use IsInGame() which adds the
+            // post-Enter-World " - " title-check fallback alongside gameState==5.
+            // Belt-and-braces against the partially-unknown Dalaya gameState
+            // semantics flagged in login_state_machine.cpp:30-36 — title flip
+            // is a structurally-different signal from gameState that fires on
+            // zone-load even when gameState lags.
+            if (charSelect != null && IsInGame(charSelect, pid, hwnd))
+            {
+                int charsSent = typedCount;
+                int charsRemaining = text.Length - typedCount - skippedCount;
+                FileLogger.Warn($"AutoLogin: CombinedTypeString PID={pid} ABORTED mid-typing — detected in-world (gameState==5) after char #{charsSent}/{text.Length}. Remaining {charsRemaining} chars NOT sent — would have hit in-game keybinds. Caller should treat as keystroke-leak-prevented abort, not a retypeable error.");
+                // Surface as incomplete to LogTypingValidation downstream (the
+                // existing INCOMPLETE Error log will fire, plus this Warn for
+                // explicit in-game-abort attribution).
+                break;
+            }
             short vkScan = NativeMethods.VkKeyScanW(c);
             if (vkScan == -1)
             {
@@ -2380,47 +2625,86 @@ public class AutoLoginManager
     }
 
     /// <summary>
-    /// Sleep for <paramref name="totalMs"/>, polling the EQ process every
-    /// <paramref name="pollIntervalMs"/>. Returns false (short-circuit) if
-    /// the process exited mid-sleep; true if the full duration elapsed
-    /// without process death. Addresses the 2026-05-10 incident where
-    /// gotquiz's EQ process died DURING the 30s StaleSessionWaitMs sleep
-    /// after a blind modal-dismiss Enter, but the C# side didn't notice
-    /// until after the sleep finished — sat idle for ~28s on a corpse PID.
+    /// v3.20.10: tri-state result for <see cref="CancellableSleepUntilProcessDies"/>.
+    /// Replaces the prior bool return so the caller can distinguish "EQ died" from
+    /// "chars reached in-world during the wait" — the latter is a retry-success
+    /// short-circuit (chars are already in-game, no need to keep retrying credentials).
     /// </summary>
-    private static bool CancellableSleepUntilProcessDies(int pid, int totalMs, int pollIntervalMs = 500)
+    private enum RecoveryWaitOutcome
     {
-        if (totalMs <= 0) return true;
+        /// <summary>Full duration elapsed without process death or in-game detection.</summary>
+        Completed,
+        /// <summary>EQ process exited mid-wait — abort the retry path.</summary>
+        ProcessDied,
+        /// <summary>Chars reached in-world mid-wait — treat retry as success.</summary>
+        InGame
+    }
+
+    /// <summary>
+    /// Sleep for <paramref name="totalMs"/>, polling every <paramref name="pollIntervalMs"/>
+    /// for either process death or (when <paramref name="charSelect"/> is provided)
+    /// in-world detection. Originally added 2026-05-10 to address the gotquiz
+    /// incident where EQ died DURING the 30s StaleSessionWaitMs sleep and C#
+    /// sat idle for ~28s on a corpse PID. v3.20.10 added the in-world detection
+    /// branch so retry recovery waits don't burn the full duration when chars
+    /// already advanced — preventing the keystroke-leak race Nate observed
+    /// 2026-05-15 (password chars hitting in-game characters as keybinds).
+    /// Returns <see cref="RecoveryWaitOutcome.Completed"/> on full elapse,
+    /// <see cref="RecoveryWaitOutcome.ProcessDied"/> on process exit/recycled,
+    /// or <see cref="RecoveryWaitOutcome.InGame"/> when gameState==5 observed
+    /// (Dalaya-reliable in-world signal). Passing <c>charSelect: null</c>
+    /// preserves the pre-v3.20.10 bool-equivalent semantics — only the
+    /// Completed and ProcessDied outcomes can fire, never InGame.
+    /// </summary>
+    private static RecoveryWaitOutcome CancellableSleepUntilProcessDies(int pid, int totalMs,
+        int pollIntervalMs = 500, CharSelectReader? charSelect = null)
+    {
+        if (totalMs <= 0) return RecoveryWaitOutcome.Completed;
         var sw = Stopwatch.StartNew();
         while (sw.ElapsedMilliseconds < totalMs)
         {
             try
             {
                 using var proc = Process.GetProcessById(pid);
-                if (proc.HasExited) return false;
+                if (proc.HasExited) return RecoveryWaitOutcome.ProcessDied;
             }
             catch (ArgumentException)
             {
                 FileLogger.Info($"AutoLogin: CancellableSleepUntilProcessDies PID {pid} — process record gone at {sw.ElapsedMilliseconds}ms");
-                return false;
+                return RecoveryWaitOutcome.ProcessDied;
             }
             catch (InvalidOperationException)
             {
                 FileLogger.Info($"AutoLogin: CancellableSleepUntilProcessDies PID {pid} — process exited between query and HasExited at {sw.ElapsedMilliseconds}ms");
-                return false;
+                return RecoveryWaitOutcome.ProcessDied;
             }
             catch (System.ComponentModel.Win32Exception ex)
             {
                 // access-denied — PID recycled to protected process; treat as gone.
                 FileLogger.Warn($"AutoLogin: CancellableSleepUntilProcessDies PID {pid} — Win32Exception at {sw.ElapsedMilliseconds}ms ({ex.Message}) — PID may have been recycled");
-                return false;
+                return RecoveryWaitOutcome.ProcessDied;
+            }
+
+            // v3.20.10: adaptive in-game exit. When chars reach in-world mid-wait
+            // (typical when step-1 modal-dismiss Enter landed on the default char
+            // and zone-load completed during this sleep), exit the wait early so
+            // the retry path can abort and skip credential re-typing — which would
+            // otherwise fire password chars as in-game keystrokes (`d` → DUCK,
+            // `\` → SwitchKey, etc.). gameState==5 is the Dalaya-reliable in-world
+            // signal (per memory: gameState 0→5 only flips at zone-load). Skip
+            // when charSelect is null (caller didn't opt into the check) to keep
+            // backward compat with non-retry use cases.
+            if (charSelect != null && charSelect.ReadGameState(pid) == 5)
+            {
+                FileLogger.Info($"AutoLogin: CancellableSleepUntilProcessDies PID {pid} — gameState==5 (in-world) at {sw.ElapsedMilliseconds}ms — exiting wait early");
+                return RecoveryWaitOutcome.InGame;
             }
 
             int remaining = totalMs - (int)sw.ElapsedMilliseconds;
             if (remaining <= 0) break;
             Thread.Sleep(Math.Min(pollIntervalMs, remaining));
         }
-        return true;
+        return RecoveryWaitOutcome.Completed;
     }
 
     /// <summary>

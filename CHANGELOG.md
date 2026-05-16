@@ -1,5 +1,224 @@
 # Changelog
 
+## v3.20.11 — Keystroke-leak hardening: skip retry retype + per-keystroke in-game gate (2026-05-15)
+
+Closes the keystroke-leak vector Nate observed in the post-v3.20.10 smoke: passwords containing 'd' fired DUCK and 'x' fired bound EQ actions in-game when chars entered world mid-retry. Both fixes are direct ports from MQ2's authoritative pattern (see `_.claude/_comms/mq2-vs-eqswitch-fragility-audit-2026-05-15.md`).
+
+### Background — the leak window
+
+The v3.20.9 IsInGame gate at `AutoLoginManager.cs:1275` checks `IsInGame(charSelect, pid, hwnd)` ONCE after the recovery sleep. If the gate passes (chars not in-world yet), the retry proceeds to 16x Backspace field-clear + `RunCredentialEntry` + BURST 2. If chars enter world DURING those steps, password chars become in-game keybinds. The v3.20.10 mid-sleep `gameState==5` exit closed half the window; v3.20.11 closes the rest.
+
+### Fix 1: Skip retry credential retype unless server-classified truncated (audit gap #3)
+
+MQ2 (`StateMachine.cpp:344-369`) never retypes credentials on retry — it only clicks `OK_OKButton`. We previously always retyped. v3.20.11 wraps the entire retype block (16x Backspace + `RunCredentialEntry`) in `if (credsTruncated)`. The flag is set true only when `okClass == OkDisplayClass.Recoverable` AND the dialog text contains "truncated" or "incomplete" — i.e., the server explicitly told us creds were mangled. For every other retry case (stale session, unknown recoverable, no dialog), the retype is skipped; only the modal-dismiss Enter (step 1) + BURST 2 Enter (step 4) carry the retry work.
+
+Rationale: re-typing the same correct password at the same login screen produces the same outcome from the server. The only thing it changes is opening a keystroke-leak window. MQ2's authoritative pattern proves this is enough — they retry by clicking, not typing.
+
+### Fix 2: Per-keystroke in-game gate in CombinedTypeString (audit gap #4)
+
+MQ2 (`MQ2AutoLogin.cpp:1149-1156`) gates the entire OnPulse dispatcher on `GetGameState() == GAMESTATE_INGAME` BEFORE ever dispatching login-screen keystrokes — making the in-game gate structurally impossible to bypass. EQSwitch's per-burst gates have inherent windows between the check and the actual VK_KEYDOWN posts.
+
+v3.20.11 adds a `CharSelectReader? charSelect = null` parameter to `CombinedTypeString` and `RunCredentialEntry`. When provided, `CombinedTypeString` polls `charSelect.ReadGameState(pid) == 5` at the top of each per-char iteration. If true, it logs a Warn (with chars-sent + chars-remaining) and breaks out of the typing loop — the TypingResult's `IsComplete=false` will then surface via the existing `LogTypingValidation` Error log. Cost: ~microsecond per iteration; vs the cost of a leaked keystroke firing as a bound EQ action, infinite payoff.
+
+Both `RunCredentialEntry` call sites (primary path line ~911, retry path line ~1342) now pass `charSelect`. Pre-v3.20.11 callers passing `null` preserve the old behavior (no gate). Backward-compatible.
+
+### Fix 2b: Per-iteration in-game gate in the retry field-clear loop
+
+Same protection extended to the 16x Backspace loops in the retry path (and the second 16x loop when `!UseLoginFlag`). Check every 4 iterations (cheap — 4 SHM reads vs 16 keystrokes). On in-game detection: `writer.Deactivate(pid)` to release input lock, set `hitTimeout = false`, jump via labeled goto to the retry-aborted-in-game exit path.
+
+### Belt-and-braces: pre-RunCredentialEntry check
+
+Even with the per-keystroke gate inside CombinedTypeString, an explicit `IsInGame(charSelect, pid, hwnd)` check fires right before `RunCredentialEntry`. Lets us short-circuit the entire BURST 1 / RunCredentialEntry call without entering it.
+
+### Effect on the failure-mode chain
+
+| Step | Pre-v3.20.11 | v3.20.11 |
+|------|--------------|----------|
+| Retry modal-dismiss Enter → world (engine-side, can't gate) | possible | possible (unchanged) |
+| 30s recovery sleep | exits early on gameState==5 (v3.20.10) | same |
+| v3.20.9 IsInGame check after sleep | exits if in-world | same |
+| **16x Backspace loop** | unguarded — could fire mid-loop | **gated per-4-iterations (v3.20.11)** |
+| **RunCredentialEntry (typing password)** | unguarded mid-typing | **gated per-keystroke (v3.20.11)** |
+| **Retype gate** | always retyped | **skipped unless truncated (v3.20.11)** |
+| BURST 2 server-confirm Enter | unguarded | unchanged (Enter at server-select is benign) |
+
+The retry path remains useful for the canonical case (server held session, modal-dismiss Enter + BURST 2 advances) — it just no longer re-types the password.
+
+### Audit document
+
+Full MQ2 vs EQSwitch comparison: `_.claude/_comms/mq2-vs-eqswitch-fragility-audit-2026-05-15.md`. 10 ranked structural gaps, of which v3.20.11 addresses #3 and #4 (small fixes, high ROI). Remaining gaps (#1 widget probes, #5 state-driven dispatch, etc.) sized for v3.21+.
+
+**Files changed:** `Core/AutoLoginManager.cs` (CombinedTypeString signature + per-char gate, RunCredentialEntry signature, two call-site updates, retry-loop retype wrap + field-clear gating + label), `EQSwitch.csproj` (v3.20.11), `CHANGELOG.md`.
+
+### Verifier-driven hardenings (post-8-agent audit 2026-05-15)
+
+Eight verifiers (4 topic pairs × Sonnet+Opus) ran on v3.20.11. T1 both APPROVE. T2/T3/T4 flagged CONCERNS converging on 5 real findings, all addressed in the same commit:
+
+- **Tightened `credsTruncated` substring match** (T2 Sonnet+Opus conf 85 convergent). Was `lower.Contains("truncated") || lower.Contains("incomplete")` — too broad; would false-positive on unrelated server messages like "Your connection was truncated" or "character file appears incomplete". Now requires co-occurrence: `(lower.Contains("password") || lower.Contains("credential")) && (lower.Contains("truncated") || lower.Contains("incomplete"))`. Trade-off: false-negative on real truncated-creds dialogs that use different wording is safer than false-positive that triggers keystroke leak.
+- **Snapshotted `retryJoinServerId`** (T2 Sonnet conf 90 + T3 Sonnet I3 conf 80 convergent). Was reading live `_config.Launch.JoinServerId` inside the retry loop while every other tunable used the R3 snapshot from v3.17.0. Pre-existing race bug; fixed to `int retryJoinServerId = joinServerId;` (using the line-965 snapshot).
+- **`!credsTruncated` skip-path post-sleep IsInGame check** (T3 Opus important conf 85). The skip branch sleeps `postBurst1WaitMs` (default 3s) before BURST 2 fires. If chars enter world during that sleep, BURST 2's Enter fires in-world. Added `IsInGame(charSelect, pid, hwnd)` check after the sleep; on detection, `hitTimeout=false` + goto-exit before BURST 2.
+- **Renamed `retryAbortedInGame:` → `postRetypeBlock:`** (T2 Sonnet conf 80 + T3 Sonnet I2 conf 81 convergent). The label is reachable from both abort gotos AND fall-through from the `!credsTruncated` skip path. Old name implied "abort" semantics for what's actually a common post-retype exit point.
+- **`CombinedTypeString` per-char gate uses `IsInGame()` instead of raw `gameState == 5`** (T2 Opus Rule 7 finding). Adds the post-Enter-World " - " title-check fallback alongside the gameState check. Defense in depth against the Dalaya partially-unknown gameState semantics flagged in `login_state_machine.cpp:30-36`.
+
+Verifier false positives (rationale documented, not addressed): T3 Sonnet I1 `charsRemaining` off-by-one — math is actually correct (`text.Length - typedCount - skippedCount` correctly equals "remaining iterations INCLUDING the current char" at gate-fire time); current log message reads correctly. T3 Sonnet C1 `hitTimeout` edge case for `WaitTransitionSettleMs >= initialTimeoutMs - 500` — only triggers on user-misconfigured tunables; pre-existing pattern symmetric across primary + retry paths.
+
+Doc-level follow-ups (post-deploy housekeeping, not blocking):
+- `_.releases/eqswitch/{VERSION, CHANGELOG.md, SHA256SUMS}` need sync to v3.20.11 (T4 Sonnet+Opus convergent conf 90+).
+- `_.claude/_comms/next-session-eqswitch-v3.20.7-char-name-fix.md` handoff doc is 4 versions superseded — archive or annotate (T4 Opus).
+- `_comms/mq2-vs-eqswitch-fragility-audit-2026-05-15.md` line refs shifted by ~30 lines after v3.20.11 inserts — minor doc drift (T4 Sonnet conf 85).
+- `memory/MEMORY.md` index pins v3.20.7 IN-WORLD as ACTIVE — auto-updated on next `/save`.
+
+## v3.20.10 — Retry path advance-detection closures (2026-05-15)
+
+Closes two advance-detection gaps in the retry path that v3.20.9's primary-path fix exposed by symmetry. Both C# only — no native rebuild.
+
+### Background
+
+v3.20.9 added the canonical `mq2Available + ReadCharCount > 0` SHM short-circuit to the **primary** `WaitForScreenTransition` call at `AutoLoginManager.cs:1015`. That fix worked end-to-end in the v3.20.9 smoke (gotquiz1 → Natedogg, gotquiz → Backup; char-select 48s → 6s). But it left the **retry** path unprotected: if for any reason the retry kicks in, the retry's own WaitForScreenTransition call (line ~1372) still polls the Dalaya-unreliable `gameState` / rect signals and could time out at 60s. The 30s recovery sleep inside the retry path was also opaque to in-world advance — it would burn the full duration even when chars had already entered the world during step 1's modal-dismiss Enter.
+
+Nate flagged this 2026-05-15: "does the retry gate stop trying if successful advance is verified?" — the answer was "yes, but only at one specific check; the other two paths still waste time."
+
+### Fix 1: Retry's WaitForScreenTransition SHM short-circuit
+
+Mirror of v3.20.9's primary-path check, applied at the retry path's WST call (line ~1372). Before calling WaitForScreenTransition, check `IsMQ2Available + ReadCharCount > 0`. If active, skip the rect-based wait, settle, refresh handle, and continue. Symmetric with the primary path — both call sites of `WaitForScreenTransition` now honor the canonical char-select signal.
+
+### Fix 2: Adaptive recovery sleep — exit early on in-world
+
+`CancellableSleepUntilProcessDies` previously returned `bool` (`true` = full duration elapsed, `false` = process died). v3.20.10 expands it to a tri-state enum `RecoveryWaitOutcome`:
+
+- `Completed` — full duration elapsed without process death or in-game detection
+- `ProcessDied` — EQ process exited mid-wait (preserves the pre-v3.20.10 abort path)
+- `InGame` — chars reached in-world mid-wait (new exit signal — `gameState == 5` observed)
+
+The helper now accepts an optional `CharSelectReader? charSelect` parameter. When provided, it polls `charSelect.ReadGameState(pid) == 5` each iteration alongside the process-death check. When `null`, the helper preserves the pre-v3.20.10 semantics (only `Completed` and `ProcessDied` can fire). The retry path's caller passes `charSelect` to opt into the in-game branch.
+
+The caller branches on the enum:
+- `ProcessDied` → existing abort+return path
+- `InGame` OR (post-sleep `IsInGame(charSelect, pid, hwnd)`) → break with `hitTimeout = false` (retry treated as success, no credential re-typing)
+- `Completed` AND `!IsInGame` → continue with credential re-type as before
+
+The post-sleep `IsInGame` check is kept as a belt-and-braces fallback because it adds the title-flip " - " signal (`"EverQuest - CharName"` pattern) that fires on non-Dalaya servers where `gameState` may lag the title.
+
+### Why this matters
+
+The retry path's role in the keystroke-leak bug Nate observed 2026-05-15 was a chain:
+
+1. WaitForScreenTransition (primary) times out at 90s on Dalaya — **fixed in v3.20.9**
+2. Retry path's modal-dismiss Enter fires → lands Enter World on default char → chars enter world
+3. 30s recovery sleep burns the full duration — **fixed by v3.20.10 Fix 2** (gameState==5 mid-sleep detection)
+4. Step 3/4/5 keystrokes (16x Backspace + password retype + BURST 2 Enter) fire on in-game chars — **already prevented by v3.20.9 IsInGame gate**
+5. Retry path's own WaitForScreenTransition times out at 60s — **fixed by v3.20.10 Fix 1**
+
+v3.20.9's IsInGame gate at step 4 stopped the actual keystroke leak. v3.20.10 closes the remaining wasted-time gaps (steps 3, 5) so the retry exits cleanly and quickly even if it kicks in. Combined with v3.20.9's primary fix preventing retry from running at all on Dalaya, the retry path is now both rare AND fast-exit when it does fire.
+
+**Files changed:** `Core/AutoLoginManager.cs` (RecoveryWaitOutcome enum, CancellableSleepUntilProcessDies signature, retry-loop caller switch, retry WST SHM short-circuit), `EQSwitch.csproj` (v3.20.10), `CHANGELOG.md`.
+
+**Verification gate:** code review before deploy (Nate's standing request 2026-05-15 "verify the code is correct"). Smoke gate inherited from v3.20.9 — already passed dual-box-to-in-world with correct chars, so v3.20.10 ships on top of a green baseline.
+
+## v3.20.9 — WaitForScreenTransition SHM short-circuit + in-game retry abort (2026-05-15, post-v3.20.8 smoke)
+
+The v3.20.8 row-anchor fix in `HandleSelectionRequest` was correct but never got to run during the post-ship smoke. Smoke surfaced two separate, severe bugs that bypassed it entirely. Both fixed in v3.20.9, both C# only (no native rebuild).
+
+### The smoke evidence
+
+```
+20:32:37  PollForLoginAdvance PID 19348 — char-select SHM advance detected at 17171ms
+20:32:37  Loading character select...
+                                          ← 90 seconds of WaitForScreenTransition timeout
+20:34:08  screen transition timeout after 90000ms — char select may not have loaded
+20:34:08  retry 1/1 starting
+20:34:08  retry 1 modal-dismiss Enter sent (PID 19348, gameState=0)
+                                          ← Enter at char-select = Enter World on slot 0
+                                          ← Both clients in-game on default chars
+20:34:42  retry 1 pre-typing field-clear (16x Backspace)  ← keystrokes hit in-game chars
+20:34:42  Typing credentials...                            ← password chars hit in-game
+20:34:43  CombinedTypeString PID=19348 input.Length=7      ← 'd' in pw → DUCK
+```
+
+Nate observed: "both are ingame and i see it retrying server still", "it also seemed to DUCK maybe 'd' on both my characters", "buttons are def firing after in world so our inworld flag isnt solid".
+
+### Bug 1: WaitForScreenTransition Dalaya-blindness (root cause)
+
+`PollForLoginAdvance` returned `true` at 17s via the v3.20.7 char-select SHM signal (`mq2Available + ReadCharCount > 0`). Then C# called `WaitForScreenTransition` separately, which polls for a `gameState` transition OR an `IsHungAppWindow` hung→responsive cycle OR a window rect size change. On Dalaya:
+
+- `gameState` stays at 0 across login → server-select → char-select (only flips to 5 in-world).
+- The EQ window doesn't hang during the charselect render — it stays responsive.
+- The window rect doesn't change size at the login → charselect boundary.
+
+So all three of `WaitForScreenTransition`'s success signals miss the transition, the 90s timeout fires unconditionally, and the retry path kicks in even though we were already at char-select 73 seconds earlier. v3.20.7's fix to `PollForLoginAdvance` closed half the gap; v3.20.9 closes the other half.
+
+**Fix:** before calling `WaitForScreenTransition`, check the same canonical signal `PollForLoginAdvance` trusts (`charSelect.IsMQ2Available(pid) && charSelect.ReadCharCount(pid) > 0`). If it's already active, skip the rect-based wait entirely — just settle and return. Same fix would apply at any other call site of `WaitForScreenTransition` that fires post-PollForLoginAdvance.
+
+### Bug 2: retry path's credential-retype fires keystrokes after in-world (keystroke leak)
+
+When the 90s timeout fires, the retry path:
+1. Sends modal-dismiss Enter — gated by `gameState <= 1`. On Dalaya gameState=0 at char-select, so this gate ALLOWS the Enter. But the Enter at char-select fires Enter World on the default-highlighted character. The chars enter the world.
+2. Sleeps 30s for "stale-session recovery" — during which EQ finishes zone-load and the chars are fully in-world.
+3. Re-types credentials via 16 Backspaces + BURST 1 — **ungated** by any in-world check. The password characters become in-game keystrokes; characters that match EQ keybinds (`d` = DUCK, `\` = SwitchKey, etc.) fire those bindings on the in-game character.
+
+The `gameState <= 1` gate at step 1 doesn't help here because it's evaluated BEFORE the Enter enters world. By step 3, gameState may be 5 (Dalaya in-world) but the existing code path doesn't check it.
+
+**Fix:** after the recovery sleep returns (step 2 → step 3 boundary), check `IsInGame(charSelect, pid, hwnd)`. If true, abort the retry — set `hitTimeout = false`, break out, and report "already in-game during retry — retry skipped". `IsInGame` checks both `gameState == 5` and the post-Enter-World "EverQuest - CharName" window-title pattern, both of which fire reliably post-zone-load even on Dalaya.
+
+### Why these are separate from v3.20.8
+
+v3.20.8's row-anchor re-resolve in `HandleSelectionRequest` is correct and still ships. It's the right fix for the *originally-reported* wrong-character bug — when C# byName-matches against heap-anchored `shm->names[]` and the result's heap index doesn't agree with the CListWnd row index, the DLL now re-resolves via `GetListItemText` (mirror of MQ2 reference). But that fix only runs when C# actually calls `RequestSelectionBySlot` — which it didn't this smoke because `WaitForScreenTransition` ate the 90s window and the retry path's Enter took over the character selection. v3.20.9 closes the path to `HandleSelectionRequest` so the row-anchor fix can do its job on subsequent smokes.
+
+**Files changed:** `Core/AutoLoginManager.cs` (SHM short-circuit + IsInGame retry gate), `EQSwitch.csproj` (v3.20.9), `CHANGELOG.md`.
+
+**Verification gate:** dual-box smoke to in-world per `feedback_dual_box_test_before_autologin_tag.md`. Look for:
+- New log line `AutoLogin: gotquiz: char-select SHM signal active — skipping WaitForScreenTransition (PID N, charCount=N)` — confirms Bug 1 fix engaged.
+- `mq2_bridge: row re-resolve: heap idx=N ('Backup') -> CListWnd row=M` in DLL log — confirms the row-anchor logic ran (v3.20.8 fix exercised for the first time).
+- No `screen transition timeout after 90000ms` line — confirms the 90s wait no longer fires.
+- Right characters in-world per config (`gotquiz1`=Natedogg, `gotquiz`=Backup).
+
+## v3.20.8 — Row-anchor char-select via GetListItemText (2026-05-15)
+
+Fixes the v3.20.7-known "wrong character selected" regression: `gotquiz1` configured `characterName: Natedogg` loaded `acpots` instead. Root cause is a heap-vs-CListWnd index-space mismatch in the char-select bridge.
+
+### The bug
+
+The DLL has multiple paths that populate `shm->names[i]` from EQ's character data:
+
+- **Path A** (`charSelectPlayerArray`, line ~3725) — heap order
+- **Path B** (`Character_List` CListWnd via `GetListItemText`, line ~3776) — CListWnd row order
+- **Path C** (heap scan at stride 0x160, line ~3913) — heap order
+- **Standalone heap scan** (Path A+B both failed, line ~4100) — heap order
+- **Anchor scan** (single-char fallback, line ~3974) — synthetic slot 0
+
+Path B is the only CListWnd-row-anchored source. The others all use heap order. `HandleSelectionRequest` then calls `g_fnSetCurSel(pCharListWnd, requestedIdx)` — which operates on **CListWnd row index**. When heap order ≠ row order on Dalaya, C#'s byName scan returns the correct slot for the heap-anchored names, but SetCurSel applies that slot to the wrong CListWnd row → wrong character loads.
+
+### The fix
+
+`HandleSelectionRequest` now does a row-anchor re-resolve before SetCurSel. It reads the requested name from `shm->names[requestedIdx]`, scans `Character_List` rows via `GetListItemText` (case-insensitive, alpha-only ASCII compare matching `CharacterSelector.Decide`'s `OrdinalIgnoreCase`), and uses the matched row for SetCurSel. Falls back to `requestedIdx` when GetItemText is unavailable or no row matches — preserves current behavior on servers where heap order happens to agree with row order.
+
+Direct port of MQ2's authoritative pattern (`src/plugins/autologin/StateMachine.cpp:631-642`):
+
+```cpp
+for (int i = 0; i < itemsArray->Count; ++i) {
+    if (m_record && ci_equals(m_record->characterName,
+                              GetListItemText(pCharList, i, 2)))
+        return i;
+}
+```
+
+Includes on-demand `nameCol` probe when `g_cachedNameCol == -1` (Path A success leaves it unprobed). Diagnostic log fires only when `matchedRow != requestedIdx` (real divergence) or when the name isn't in the CListWnd at all.
+
+### Verifier-driven hardenings (post-8-agent audit 2026-05-15)
+
+Eight verifiers (4 topic pairs × Sonnet+Opus) ran on the surgical change. T1 Diff-clean both APPROVE'd; T2/T3/T4 flagged CONCERNS that converged on four issues, all now addressed in the same commit:
+
+- **Defensive null-padded copy of `targetName`.** `shm->names[requestedIdx]` is a volatile char[64] populated by multiple paths; a torn read across the C#/DLL boundary could observe trailing garbage past the logical name end. We now copy into a stack-local zero-initialized buffer via SEH-wrapped byte-by-byte read with explicit early-out on null, so the compare loop sees guaranteed termination.
+- **`!a || !b` break in the case-insensitive compare loop.** The original break-on-`!a` was correct for all length combinations (a single null on one side fails the `a != b` guard first), but the verifiers wanted the symmetric guard as a defense against the volatile-tear scenario above. Cheap defensive change.
+- **Skip re-resolve when `targetName` is a `"Slot N"` placeholder.** Path B2 writes synthetic `"Slot 1"`, `"Slot 2"`, ... when GetItemText failed and the bridge fell back to slot-probing. A row-anchor scan for `"Slot 0"` always fails against real CListWnd names, would log a misleading "name NOT in CListWnd," and fall back to `requestedIdx` — that's the v3.20.7 behavior the fix is supposed to correct. Now the prefix check skips the scan and logs the slot-mode reason explicitly.
+- **Probe-failure sentinel (`g_cachedNameCol = -2`) + `rowCap = min(charCount, MAX_CHARS)`.** If the on-demand 10-column probe fails to find a name-shaped column, cache that as `-2` so subsequent retries skip the 10× `ReadListItemText` sweep. Row scan now caps at `shm->charCount` (which is enforced ≤ `CHARSEL_MAX_CHARS` by every publishing path), avoiding scans past the published count. Path B's probe at line ~3796 still gates on `nameCol < 0` (re-probes every Poll cycle as before, unchanged) — only the per-request HandleSelectionRequest probe honors the new sentinel.
+
+Verifier false positives (not addressed, with rationale): the `selectedIndex = rowIdx` write is safe (`grep` confirms no C# caller consumes it as a heap-index; only `LoginShmWriter.ReadSelectedIndex` reads it as telemetry). `requestedIdx >= CHARSEL_MAX_CHARS` defense-in-depth is already gated by the existing `charCount` bounds check (which is enforced ≤ 10 at every SHM publish site).
+
+**Files changed:** `Native/mq2_bridge.cpp` (HandleSelectionRequest), `EQSwitch.csproj`, `CHANGELOG.md`.
+
+**Verification gate:** dual-box smoke to in-world per `feedback_dual_box_test_before_autologin_tag.md`. For the character-name-correctness check specifically, `gotquiz1` alone is sufficient — the log should show `selected character row N ("Natedogg")` with a preceding `row re-resolve: heap idx=0 ('Natedogg') -> CListWnd row=N` line if the heap/row orders actually diverge on this account, OR no re-resolve log if they happen to match (in which case the fix was a defense-in-depth no-op for this specific account but still corrects the failure mode that hit gotquiz1).
+
 ## v3.20.7 — End-to-end autologin reaches in-world via QUICK CONNECT (2026-05-15)
 
 🎉 **AUTOLOGIN PLUG-AND-PLAY COMPLETE.** First successful end-to-end run 2026-05-15 19:33 — `gotquiz1` reached in-game without a single manual click.
