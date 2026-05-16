@@ -93,13 +93,15 @@ public sealed class LoginShmWriter : IDisposable
     private const int CharLen = 64;          // LOGIN_CHAR_LEN
     private const int ErrorLen = 256;        // LOGIN_ERROR_LEN
 
-    // Total struct size: 1632 bytes (verified against login_shm.h v6)
+    // Total struct size: 1912 bytes (verified against login_shm.h v7)
     // v1 was 1340; v2 appended a 4-byte autoLoginActive field at offset 1340
     // (size 1344); v3 appended okDisplayText[256] at offset 1344 + a 4-byte
     // okDisplayClass at offset 1600 (size 1604); v4 appends 5×uint32
     // JoinServer RPC fields at offset 1604 (size 1624); v5 appends 1×uint32
     // comboGWriteOk at offset 1624 (size 1628); v6 appends 1×uint32
-    // loginServerAPIReady at offset 1628 (size 1632).
+    // loginServerAPIReady at offset 1628 (size 1632); v7 appends 5×uint32
+    // widget-visibility flags + char[256] widgetConfirmDialogText +
+    // 1×uint32 widgetTickSeq starting at offset 1632 (size 1912).
     private const int ShmSize = 1912;  // v7 layout — widget probes appended
 
     // ── Commands (C# → DLL) ──────────────────────────────────────
@@ -308,6 +310,19 @@ public sealed class LoginShmWriter : IDisposable
         // before native has processed any command on the C#-keeps-mapping-
         // open path.
         accessor.Write(OFF_LOGIN_SERVER_API_READY, (uint)0);
+        // v7 (2026-05-16) — widget-presence cache cleared on Open() so a
+        // stale ConfirmDialogText / Visible=1 / advanced tickSeq from the
+        // prior session can't mislead the first LogWidgetSnapshot read at
+        // 'login-screen-ready' (which fires BEFORE native's first probe
+        // tick on the re-Open path). 4 verifiers convergent on this gap
+        // post-v3.21.0-fix-2.
+        accessor.Write(OFF_WIDGET_CONNECT,       (uint)0);
+        accessor.Write(OFF_WIDGET_SERVERSELECT,  (uint)0);
+        accessor.Write(OFF_WIDGET_OKDIALOG,      (uint)0);
+        accessor.Write(OFF_WIDGET_YESNODIALOG,   (uint)0);
+        accessor.Write(OFF_WIDGET_CONFIRMDIALOG, (uint)0);
+        accessor.WriteArray(OFF_WIDGET_CONFIRMTEXT, new byte[ConfirmTextLen], 0, ConfirmTextLen);
+        accessor.Write(OFF_WIDGET_TICKSEQ,        (uint)0);
     }
 
     // ─── Commands (C# → DLL) ─────────────────────────────────────

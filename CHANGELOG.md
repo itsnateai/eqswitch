@@ -2,12 +2,44 @@
 
 ## v3.21.0 — SHM v7 + Widget Probes (2026-05-16)
 
-Foundation for the v3.22.0 state-driven dispatch rewrite. Adds an always-on
-native probe that snapshots 5 SIDL-screen widget visibilities into SHM every
-Tick, mirroring MQ2's OnPulse dispatcher pattern across `MQ2AutoLogin.cpp`'s
-`GAMESTATE_PRECHARSELECT` block (1195-1240) and `GAMESTATE_CHARSELECT` block
-(1156-1191). v3.21.0 ships observability only — `RunLoginSequence` control
-flow does NOT branch on the new bools yet (deferred to v3.22.0).
+Foundation for the v3.22.0 state-driven dispatch rewrite. Adds a native
+probe that snapshots 5 SIDL-screen widget visibilities into SHM every
+Tick (during PRECHARSELECT only, see fix-2 below), mirroring MQ2's
+OnPulse dispatcher pattern across `MQ2AutoLogin.cpp`'s `GAMESTATE_PRECHARSELECT`
+block (1195-1240) and `GAMESTATE_CHARSELECT` block (1156-1191). v3.21.0
+ships observability only — `RunLoginSequence` control flow does NOT
+branch on the new bools yet (deferred to v3.22.0).
+
+### Shipping iterations (smoke-driven)
+
+- **initial** — 5× `FindLiveScreenByName` per Tick (~846 widget-node scans).
+  Smoke 12:00 FAILED: both clients hit auth timeout. Root cause: probe
+  cost starved EQ's game thread during the login-server response window,
+  matching the iter-12 dormancy comment in `eqmain_widgets_mq2style.cpp:102`
+  ("game-thread structural walks starved IDirectInputDevice8::GetDeviceState
+  polling, dropping BURST keystrokes").
+- **fix-1 — widget-ptr cache.** Static cache slots + `ResolveCachedScreen`
+  helper validates cached ptrs via `EQMainOffsets::IsEQMainWidget` per
+  call. Per-Tick cost drops from 846 node scans → 5 byte reads (cache
+  hit). Smoke 12:36 FAILED differently: Natedogg (1-char account) reached
+  in-world; Backup (10-char account) crashed during Enter World →
+  Loading-Zone, 9s after EW keypress. Residual probe cost during char-select
+  (cache invalidates when eqmain unloads at char-select transition →
+  ~115 widget scans / probe re-resolve cycle) was contending with the
+  zone-load handshake on the heavier 10-char account.
+- **fix-2 — gameState gate.** `PollWidgetVisibilityToShm` early-exits
+  when `shm->gameState >= GAMESTATE_CHARSELECT` (=1, empirically verified
+  by 12:51 smoke). Cleared visibility bools so C# observes consistent
+  "no login widgets" state, still bumps `widgetTickSeq` so C# can
+  distinguish "probe alive but gated" from "probe dead". Smoke 12:51
+  PASS: both clients in-world with correct chars.
+- **fix-3 — verifier-driven hardening (8-agent Sonnet+Opus sweep).**
+  Convergent CRITICAL findings addressed: (a) `ResetDllToCsharpFields`
+  now zeros v7 fields on `Open()` re-call (prevents stale `widgetTickSeq`
+  from misleading the first `LogWidgetSnapshot` read); (b) per-tick
+  `eqmainBase` snapshot detects eqmain reload — invalidates cache when
+  DLL reloads at a different ASLR address (defends against false-positive
+  vtable-range validation on stale ptrs).
 
 ### Native (eqswitch-di8.dll, 241,152 → 242,176 bytes)
 - `login_shm.h`: SHM v6 → v7. Appends `widgetConnectVisible`,
@@ -47,6 +79,31 @@ flow does NOT branch on the new bools yet (deferred to v3.22.0).
   `ConfirmationDialogBox` "Loading Characters" stuck-state recovery
   (`pCharacterListWnd->Quit()`) + `ServerList.StatusFlags` server-down
   detection (audit gaps #3, #4, #5, #6, #7, #8).
+
+### Known follow-ups (verifier-flagged, deferred from v3.21.0)
+- **v3.21.1**: `ShmLayoutTests.cs` lacks `LoginShm` layout assertions —
+  fifth SHM bump (v3→v7) without test coverage. Pre-existing gap, not
+  a regression, but each bump compounds silent-corruption risk on the
+  next change. Add assertions covering v7 offsets (1632-1908) and the
+  total 1912-byte size invariant.
+- **v3.22.0**: `TryReadWidgetState` torn-read guard. Read pattern needs
+  acquire-fence + seq-pair verification (read tickSeq, read fields,
+  re-read tickSeq, retry on change) — canonical lock-free seq-counter
+  pattern. Mirrors the `ReadOkDisplaySnapshot` discipline. Not load-bearing
+  for v3.21.0 observability-only scope; load-bearing once v3.22.0 dispatch
+  reads these bools as decision inputs.
+- **v3.22.0**: `WidgetState.AnyDialogVisible` excludes `Connect`/`ServerSelect`
+  by name — intentional, but the silent exclusion is a footgun for the
+  v3.22.0 dispatch loop ("if (!state.AnyDialogVisible) proceed" would
+  incorrectly proceed when server-select is up). Add explicit
+  `IsAtLoginScreen` / `IsAtServerSelect` properties OR rename for clarity
+  when v3.22.0 takes a dependency.
+- **v3.22.0**: Heap-recycle false-positive in `ResolveCachedScreen` —
+  if heap recycles a cached widget's address for a DIFFERENT eqmain
+  widget, `IsEQMainWidget` passes but visibility report is for the
+  wrong screen. Mitigation: per-call `GetCXWndXMLName()` match. Acknowledged
+  in code comments at `login_state_machine.cpp:325-330`. Benign in v3.21.0
+  (observability only).
 
 ## v3.20.11 — Keystroke-leak hardening: skip retry retype + per-keystroke in-game gate (2026-05-15)
 

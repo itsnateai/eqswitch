@@ -130,8 +130,13 @@ static bool PollLoginServerAPIReady(int *outFailMode, uintptr_t *outVtableRva) {
 // PRECHARSELECT from 6 to -1). We discover the actual values at runtime.
 // Known from DLL log: login screen = 0, charselect = ?, ingame = ?
 // Strategy: don't gate on gameState for login screen — gate on widget presence.
-#define GAMESTATE_CHARSELECT      1    // Verify via testing
-#define GAMESTATE_INGAME          5    // Verify via testing
+// Empirically verified by the 2026-05-16 12:51 smoke: both clients
+// reached in-world with gameState transitioning 0 (login) → 1 (charselect)
+// → 5 (in-world). Gate at GAMESTATE_CHARSELECT correctly suppresses the
+// v7 widget probe at char-select+ where eqmain has unloaded and the 5
+// SIDL login screens no longer exist.
+#define GAMESTATE_CHARSELECT      1
+#define GAMESTATE_INGAME          5
 
 // ─── Internal state ────────────────────────────────────────────
 
@@ -336,14 +341,29 @@ static void PollOkDisplayToShm(volatile LoginShm *shm) {
 // rejection); autoLoginActive is the secondary filter that scopes probes
 // to active C#-driven login sessions only.
 
-// Cache slots for the 5 SIDL screens. Self-healing via per-call
-// IsEQMainWidget validation — no explicit eqmain-unload invalidation
-// needed (vtable check fails naturally when eqmain unloads).
-static void *g_cachedConnect      = nullptr;
-static void *g_cachedServerSelect = nullptr;
-static void *g_cachedOkDialog     = nullptr;
-static void *g_cachedYesNoDialog  = nullptr;
-static void *g_cachedConfirmDlg   = nullptr;
+// Cache slots for the 5 SIDL screens. Two defense layers:
+//   1. Per-call IsEQMainWidget vtable-range validation in ResolveCachedScreen
+//      (catches widget destroyed or memory recycled outside eqmain range)
+//   2. Per-tick eqmainBase-snapshot check in PollWidgetVisibilityToShm
+//      (catches eqmain unload+reload — if the DLL reloads at a different
+//      ASLR address, layer 1's vtable check can false-positive when the
+//      cached ptr coincidentally points to a valid eqmain widget at the
+//      new base; layer 2 invalidates the cache when base changes)
+// 4 verifiers convergent on the eqmain-reload gap post-v3.21.0-fix-2.
+static void     *g_cachedConnect      = nullptr;
+static void     *g_cachedServerSelect = nullptr;
+static void     *g_cachedOkDialog     = nullptr;
+static void     *g_cachedYesNoDialog  = nullptr;
+static void     *g_cachedConfirmDlg   = nullptr;
+static uintptr_t g_lastEqmainBase     = 0;
+
+static void InvalidateWidgetVisibilityCache() {
+    g_cachedConnect      = nullptr;
+    g_cachedServerSelect = nullptr;
+    g_cachedOkDialog     = nullptr;
+    g_cachedYesNoDialog  = nullptr;
+    g_cachedConfirmDlg   = nullptr;
+}
 
 static void *ResolveCachedScreen(void **slot, const char *name) {
     // Cache hit: cached ptr is non-null AND still passes the eqmain
@@ -359,6 +379,19 @@ static void *ResolveCachedScreen(void **slot, const char *name) {
 }
 
 static void PollWidgetVisibilityToShm(volatile LoginShm *shm) {
+    // eqmain-reload detection (v3.21.0-fix-3): if eqmain's base address
+    // changed since the last probe, the cached widget ptrs reference a
+    // prior eqmain instance — invalidate so the next ResolveCachedScreen
+    // re-resolves cleanly via FindLiveScreenByName. On eqmain unload
+    // (currentBase=0), the invalidation also clears cleanly so a future
+    // reload starts with empty cache.
+    HMODULE hEqmain = GetModuleHandleA("eqmain.dll");
+    uintptr_t currentBase = (uintptr_t)hEqmain;
+    if (currentBase != g_lastEqmainBase) {
+        InvalidateWidgetVisibilityCache();
+        g_lastEqmainBase = currentBase;
+    }
+
     // gameState gate (v3.21.0-fix-2): once gameState >= CHARSELECT, eqmain
     // has unloaded and the 5 SIDL login screens no longer exist in the
     // widget tree. Cached ptrs invalidate (IsEQMainWidget fails), forcing
