@@ -445,11 +445,20 @@ public class AutoLoginManager
         var capturedCharacter = character;
         var capturedOverride = enterWorldOverride;
         var capturedPassword = password;
+        // v3.22.0 Iter-1: opt-in routing to the new state machine. Default is false
+        // (LaunchConfig.UseStateMachine), so v3.21.1 behavior is preserved on the
+        // feature branch until Iter-4 flips the default. Snapshot the flag here so
+        // a mid-iteration Settings change (ReloadConfig) can't bait one PID into
+        // the new path and another into the legacy path within the same team launch.
+        bool useStateMachine = _config.Launch.UseStateMachine;
         return Task.Run(() =>
         {
             try
             {
-                RunLoginSequence(pid, capturedAccount, capturedCharacter, capturedPassword, capturedOverride);
+                if (useStateMachine)
+                    RunLoginStateMachine(pid, capturedAccount, capturedCharacter, capturedPassword, capturedOverride);
+                else
+                    RunLoginSequence(pid, capturedAccount, capturedCharacter, capturedPassword, capturedOverride);
             }
             finally
             {
@@ -762,6 +771,241 @@ public class AutoLoginManager
         Thread.Sleep(burst1PostSubmitMs);
         writer.Deactivate(pid);
         FileLogger.Info($"AutoLogin: BURST 1 deactivated for PID {pid}");
+    }
+
+    /// <summary>
+    /// v3.22.0 Iter-1 — tick-driven state machine dispatch. Opt-in via
+    /// <see cref="LaunchConfig.UseStateMachine"/> (default false). Replaces
+    /// the linear time-budgeted <see cref="RunLoginSequence"/> with a
+    /// ~250ms-tick observer that reads the v3.21.0 widget probes + Native
+    /// phase + gameState and transitions states on signal rather than sleep.
+    ///
+    /// Iter-1 SCOPE: skeleton dispatch loop + <c>WaitLoginScreen</c> →
+    /// <c>TypingCredentials</c> transition + <c>Error</c> terminal state.
+    /// All other states are pass-through (returning <c>current</c>). Smoke
+    /// target: with the flag enabled, reach <c>TypingCredentials</c> and
+    /// stall there until <c>overallTimeoutMs</c> fires Error. Verifies
+    /// state-machine plumbing without driving actual keystrokes. Iter-2
+    /// fills in TypingCredentials → WaitConnectResponse → ServerSelect;
+    /// Iter-3 adds CharSelect + EnteringWorld + Complete. Iter-4 ship gate
+    /// flips <see cref="LaunchConfig.UseStateMachine"/> default to true.
+    ///
+    /// Plan-doc: <c>X:/_Projects/_.claude/_comms/plan-eqswitch-v3.22.0.md</c>
+    /// </summary>
+    private void RunLoginStateMachine(int pid, Account account, Character? character, string password, bool? enterWorldOverride)
+    {
+        // Locked decisions (plan-doc § Decisions, 2026-05-16):
+        //   #1 Tick interval — 250ms (~15 Native probe ticks per C# tick).
+        //   #2 gameState source — SHM exclusive via LoginShmWriter.ReadGameState.
+        //   #3 Cancellation — three layers (top-of-tick check + token-aware delay +
+        //      SendCancelCommand on Error/cancel exit so Native stops mid-command).
+        //   #5 Internal rename — this replaces RunLoginSequence's body in Iter-4.
+        // Add-on A: read nativePhase via SHM every tick (gates state transitions).
+        // Add-on B: log widgetTickSeq deltas (Iter-2/3 ratchets the 5s threshold).
+        const int TickIntervalMs = 250;
+        const int OverallTimeoutMs = 90_000;
+        const int TickSeqStaleThresholdMs = 5_000;
+
+        FileLogger.Info($"AutoLogin-SM: starting state-machine dispatch for PID {pid} ({account.Name}, char='{character?.Name ?? string.Empty}', " +
+            $"enterWorldOverride={enterWorldOverride?.ToString() ?? "null"})");
+
+        using var cts = new CancellationTokenSource(OverallTimeoutMs);
+        var sw = Stopwatch.StartNew();
+
+        LoginShmWriter? loginShm = null;
+        bool sentCancelOnExit = false;
+        var current = LoginPhase.WaitLoginScreen;
+        uint lastTickSeq = 0;
+        long lastTickSeqAdvanceMs = 0;
+        int tickCount = 0;
+
+        try
+        {
+            loginShm = new LoginShmWriter();
+            if (!loginShm.Open(pid))
+            {
+                FileLogger.Error($"AutoLogin-SM: LoginShmWriter.Open failed for PID {pid}");
+                Report($"{account.Name}: SHM open failed");
+                current = LoginPhase.Error;
+                return;
+            }
+
+            // SetAutoLoginActive(true) prevents eqswitch-di8.cpp's pre-login kPromptWindows
+            // dismiss machinery from concurrent widget-clicks while the state machine drives
+            // the flow. Same pattern as RunLoginSequence (see SetAutoLoginActive XML doc).
+            if (!loginShm.SetAutoLoginActive(pid, true))
+                FileLogger.Warn($"AutoLogin-SM: SetAutoLoginActive(true) failed for PID {pid} — continuing");
+
+            // Issue SendLoginCommand ONCE on entry. The state machine observes Native's
+            // resulting phase progression rather than driving it tick-by-tick.
+            if (!loginShm.SendLoginCommand(pid, account.Username, password, account.Server, character?.Name ?? string.Empty))
+            {
+                FileLogger.Error($"AutoLogin-SM: SendLoginCommand failed for PID {pid}");
+                Report($"{account.Name}: SendLoginCommand failed");
+                current = LoginPhase.Error;
+                return;
+            }
+            Report($"{account.Name}: state machine — waiting for login screen...");
+
+            while (current != LoginPhase.Complete && current != LoginPhase.Error)
+            {
+                // Cancellation Layer 1 — explicit check at top of tick.
+                if (cts.IsCancellationRequested)
+                {
+                    FileLogger.Warn($"AutoLogin-SM: cancellation/timeout at state {current} after {sw.ElapsedMilliseconds}ms (PID {pid})");
+                    current = LoginPhase.Error;
+                    break;
+                }
+
+                tickCount++;
+
+                // SHM snapshot — read widgets + gameState + nativePhase per-tick (single source of truth).
+                // Decision #2: gameState comes from SHM exclusively. tickSeq staleness (>5s) is the
+                // dead-DLL safety net (Add-on B).
+                if (!loginShm.TryReadWidgetState(pid, out var widgets))
+                {
+                    FileLogger.Warn($"AutoLogin-SM: TryReadWidgetState failed at state {current} after {sw.ElapsedMilliseconds}ms (PID {pid})");
+                    current = LoginPhase.Error;
+                    break;
+                }
+                int gameState = loginShm.ReadGameState(pid);
+                LoginPhase nativePhase = loginShm.ReadPhase(pid);
+
+                // Staleness defense — bail when Native stops publishing tick advancements.
+                if (widgets.TickSeq != lastTickSeq)
+                {
+                    lastTickSeq = widgets.TickSeq;
+                    lastTickSeqAdvanceMs = sw.ElapsedMilliseconds;
+                }
+                else if (lastTickSeq != 0 &&
+                         sw.ElapsedMilliseconds - lastTickSeqAdvanceMs > TickSeqStaleThresholdMs)
+                {
+                    FileLogger.Error($"AutoLogin-SM: widgetTickSeq stalled at {widgets.TickSeq} for >{TickSeqStaleThresholdMs}ms — DLL probe dead (PID {pid})");
+                    current = LoginPhase.Error;
+                    break;
+                }
+
+                // Per-tick dispatch — Iter-1 implements WaitLoginScreen + (implicit) Error only.
+                // All other states pass through unchanged; they fill in across Iter-2/3.
+                LoginPhase next = current switch
+                {
+                    LoginPhase.WaitLoginScreen   => StepWaitLoginScreen(widgets, gameState, nativePhase),
+                    LoginPhase.TypingCredentials => current,    // Iter-2
+                    LoginPhase.ClickingConnect   => current,    // Iter-2
+                    LoginPhase.WaitConnectResponse => current,  // Iter-2
+                    LoginPhase.ServerSelect      => current,    // Iter-2
+                    LoginPhase.WaitServerLoad    => current,    // Iter-3
+                    LoginPhase.CharSelect        => current,    // Iter-3
+                    LoginPhase.EnteringWorld     => current,    // Iter-3
+                    _                            => current
+                };
+
+                if (next != current)
+                {
+                    FileLogger.Info($"AutoLogin-SM: {current} → {next} (tick={tickCount}, t={sw.ElapsedMilliseconds}ms, " +
+                        $"{widgets.DiagSummary()}, gameState={gameState}, nativePhase={nativePhase})");
+                    current = next;
+                }
+
+                // Cancellation Layer 2 — token-aware delay so the inter-tick gap honors cancellation.
+                try
+                {
+                    Task.Delay(TickIntervalMs, cts.Token).Wait(cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    FileLogger.Warn($"AutoLogin-SM: cancelled during tick delay at state {current} (PID {pid})");
+                    current = LoginPhase.Error;
+                    break;
+                }
+                catch (AggregateException aex) when (aex.InnerException is OperationCanceledException)
+                {
+                    FileLogger.Warn($"AutoLogin-SM: cancelled (Aggregate) during tick delay at state {current} (PID {pid})");
+                    current = LoginPhase.Error;
+                    break;
+                }
+            }
+
+            FileLogger.Info($"AutoLogin-SM: terminal state {current} after {sw.ElapsedMilliseconds}ms, {tickCount} ticks (PID {pid})");
+
+            if (current == LoginPhase.Error)
+            {
+                // Cancellation Layer 3 — tell Native to stop in case it's mid-command.
+                // Defense against the "ghost typing" failure mode where C# bails but
+                // Native's keystroke queue keeps firing into a focused field.
+                try
+                {
+                    loginShm.SendCancelCommand(pid);
+                    sentCancelOnExit = true;
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Warn($"AutoLogin-SM: SendCancelCommand on Error exit failed: {ex.Message}");
+                }
+                Report($"{account.Name}: state machine failed (terminal Error)");
+            }
+            else
+            {
+                Report($"{account.Name}: state machine completed");
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Error($"AutoLogin-SM: unhandled exception at state {current} after {sw.ElapsedMilliseconds}ms (PID {pid})", ex);
+            Report($"{account.Name}: state machine crashed: {ex.Message}");
+            if (loginShm != null && !sentCancelOnExit)
+            {
+                try { loginShm.SendCancelCommand(pid); } catch { /* best-effort */ }
+            }
+        }
+        finally
+        {
+            if (loginShm != null)
+            {
+                try { loginShm.SetAutoLoginActive(pid, false); } catch (Exception ex) { FileLogger.Warn($"AutoLogin-SM: SetAutoLoginActive(false) failed: {ex.Message}"); }
+                loginShm.Dispose();
+            }
+            _activeLoginPids.TryRemove(pid, out _);
+            // Fire LoginComplete on the captured sync context so subscribers see consistent
+            // event timing whether the legacy or state-machine path ran. Matches the
+            // RunLoginSequence cleanup pattern.
+            try { FireLoginComplete(pid); } catch (Exception ex) { FileLogger.Warn($"AutoLogin-SM: LoginComplete handler threw: {ex.Message}"); }
+        }
+    }
+
+    /// <summary>
+    /// Iter-1 transition: WaitLoginScreen → TypingCredentials once Native publishes
+    /// PHASE_TYPING_CREDENTIALS (or later) AND the connect widget is visible. The
+    /// double-gate prevents premature transition when Native phase advances ahead
+    /// of the visible login screen (e.g. transient phase ticks during DLL init).
+    /// Plan-doc table row: <c>LoginScreen → TypingCredentials on warmup-complete + cmd issued</c>.
+    /// </summary>
+    private static LoginPhase StepWaitLoginScreen(WidgetState widgets, int gameState, LoginPhase nativePhase)
+    {
+        // Native phase advanced past WaitLoginScreen means SendLoginCommand has been
+        // observed and Combo G warmup has started. Error phase is a terminal Native
+        // failure — propagate to C# Error so the outer loop's cleanup runs.
+        if (nativePhase == LoginPhase.Error)
+            return LoginPhase.Error;
+
+        if (nativePhase >= LoginPhase.TypingCredentials && widgets.ConnectVisible)
+            return LoginPhase.TypingCredentials;
+
+        return LoginPhase.WaitLoginScreen;
+    }
+
+    /// <summary>
+    /// Marshals the LoginComplete event to the captured UI sync context (when available),
+    /// matching the dispatch pattern RunLoginSequence uses for its terminal event firing.
+    /// Falls back to synchronous invoke when no sync context is captured.
+    /// </summary>
+    private void FireLoginComplete(int pid)
+    {
+        var ctx = _syncContext;
+        if (ctx != null)
+            ctx.Post(_ => LoginComplete?.Invoke(this, pid), null);
+        else
+            LoginComplete?.Invoke(this, pid);
     }
 
     private void RunLoginSequence(int pid, Account account, Character? character, string password, bool? enterWorldOverride)
