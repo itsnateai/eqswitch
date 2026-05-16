@@ -190,6 +190,13 @@ public sealed class LoginShmWriter : IDisposable
     private readonly Dictionary<int, MappingEntry> _mappings = new();
     private bool _disposed;
 
+    // v3.21.1: shared static zero buffer reused by ResetDllToCsharpFields. Sized
+    // for the largest single write in that method (MaxChars * NameLen = 640 for
+    // charNames); shorter writes pass a smaller count to WriteArray. Eliminates
+    // ~1.2KB of per-call heap allocs on the Open()-on-existing-mapping re-call
+    // path (verifier-flagged 2026-05-16 in the v3.21.0 sweep).
+    private static readonly byte[] s_zeroBuffer = new byte[MaxChars * NameLen];
+
     /// <summary>
     /// Create LoginShm for a process. Call early in the login sequence —
     /// the DLL's ActivateThread lazily opens it via OpenFileMappingA.
@@ -265,7 +272,7 @@ public sealed class LoginShmWriter : IDisposable
     {
         accessor.Write(OFF_PHASE, (uint)0);       // PHASE_IDLE
         accessor.Write(OFF_GAMESTATE, 0);
-        accessor.WriteArray(OFF_ERROR_MSG, new byte[ErrorLen], 0, ErrorLen);
+        accessor.WriteArray(OFF_ERROR_MSG, s_zeroBuffer, 0, ErrorLen);
         accessor.Write(OFF_RETRY_COUNT, (uint)0);
         accessor.Write(OFF_CHAR_COUNT, 0);
         accessor.Write(OFF_SELECTED_IDX, -1);
@@ -273,13 +280,13 @@ public sealed class LoginShmWriter : IDisposable
         // R3: charselect arrays — 640 + 40 + 40 = 720 bytes of stale data
         // would otherwise persist across Open() calls on the same PID. Tiny
         // cost; eliminates a class of phantom-char display bugs on re-login.
-        accessor.WriteArray(OFF_CHAR_NAMES, new byte[MaxChars * NameLen], 0, MaxChars * NameLen);
-        accessor.WriteArray(OFF_CHAR_LEVELS, new byte[MaxChars * 4], 0, MaxChars * 4);
-        accessor.WriteArray(OFF_CHAR_CLASSES, new byte[MaxChars * 4], 0, MaxChars * 4);
+        accessor.WriteArray(OFF_CHAR_NAMES, s_zeroBuffer, 0, MaxChars * NameLen);
+        accessor.WriteArray(OFF_CHAR_LEVELS, s_zeroBuffer, 0, MaxChars * 4);
+        accessor.WriteArray(OFF_CHAR_CLASSES, s_zeroBuffer, 0, MaxChars * 4);
         // v3 LIVE OK_Display fields — load-bearing for the v3.18.0 race fix:
         // a stale Fatal class from a prior session would short-circuit the
         // retry budget on the very first iteration before native re-publishes.
-        accessor.WriteArray(OFF_OK_DISPLAY_TEXT, new byte[ErrorLen], 0, ErrorLen);
+        accessor.WriteArray(OFF_OK_DISPLAY_TEXT, s_zeroBuffer, 0, ErrorLen);
         accessor.Write(OFF_OK_DISPLAY_CLASS, (uint)0);
         // v4 Diff 4 RPC fields — load-bearing for the same reason as the v3
         // OK_Display fields. If a prior session left ackSeq==1 (matching the
@@ -321,7 +328,7 @@ public sealed class LoginShmWriter : IDisposable
         accessor.Write(OFF_WIDGET_OKDIALOG,      (uint)0);
         accessor.Write(OFF_WIDGET_YESNODIALOG,   (uint)0);
         accessor.Write(OFF_WIDGET_CONFIRMDIALOG, (uint)0);
-        accessor.WriteArray(OFF_WIDGET_CONFIRMTEXT, new byte[ConfirmTextLen], 0, ConfirmTextLen);
+        accessor.WriteArray(OFF_WIDGET_CONFIRMTEXT, s_zeroBuffer, 0, ConfirmTextLen);
         accessor.Write(OFF_WIDGET_TICKSEQ,        (uint)0);
     }
 
