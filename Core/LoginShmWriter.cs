@@ -156,6 +156,7 @@ public sealed class LoginShmWriter : IDisposable
     private const int OFF_WIDGET_CONFIRMDIALOG = 1648; // uint32 (4) — v7 append (out)
     private const int OFF_WIDGET_CONFIRMTEXT   = 1652; // char[256]  — v7 append (out)
     private const int OFF_WIDGET_TICKSEQ       = 1908; // uint32 (4) — v7 append (out)
+    private const int ConfirmTextLen           = 256;  // paired with OFF_WIDGET_CONFIRMTEXT — named to match ErrorLen/ServerLen sibling convention
     // Total: 1912 ✓ (was 1632 in v6)
 
     private sealed class MappingEntry : IDisposable
@@ -590,7 +591,7 @@ public sealed class LoginShmWriter : IDisposable
 
             // Reuse existing ReadString helper used by ReadError (matches the
             // null-terminated char[N] pattern in the rest of this class).
-            string text = ReadString(entry.Accessor, OFF_WIDGET_CONFIRMTEXT, 256);
+            string text = ReadString(entry.Accessor, OFF_WIDGET_CONFIRMTEXT, ConfirmTextLen);
 
             state = new WidgetState(cn != 0, ss != 0, ok != 0, yn != 0, cd != 0, text, seq);
             return true;

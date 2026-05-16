@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // © itsnateai
 
-using System.Runtime.InteropServices;
-
 namespace EQSwitch.Core
 {
     public readonly record struct WidgetState(
