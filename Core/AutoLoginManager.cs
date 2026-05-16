@@ -2160,7 +2160,7 @@ public class AutoLoginManager
         // gate fires within ~48ms once pAPI populates, so an extended
         // C# poll lets the gate publish before timeout.
         //
-        // v3.20.6 (2026-05-15): reverted to 5s. With QUICK CONNECT
+        // v3.20.7 (2026-05-15): reverted to 5s. With QUICK CONNECT
         // (the new default structural button), auth + server-join are
         // submitted atomically by the button itself — there's no
         // distinct "wait for LoginServerAPI then JoinServerDirect"
