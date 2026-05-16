@@ -321,6 +321,28 @@ void *FindLivePasswordCEditWnd() {
         }
     }
 
+    // 1b) STRUCTURAL fixed-slot lookup (v3.20.6, 2026-05-15) — PRIMARY path.
+    //    Live verification on PIDs 24856/30496/34204/37432 established that
+    //    the password CEditWnd lives at ConnectWnd+0x44 (and username at
+    //    +0x40). These widgets are NOT enumerable via the standard CXWnd
+    //    pFirstChild list, which is why every prior global/proximity walk
+    //    picked the wrong widget. Reading the fixed slot is O(1), no walk,
+    //    and matches MQ2's own internal layout for the screen container.
+    {
+        void *pPwd = EQMainWidgetsMQ2::FindPasswordEditStructural();
+        if (pPwd && EQMainOffsets::IsEQMainEditWidget(pPwd)) {
+            DI8Log("eqmain_widgets: FindLivePasswordCEditWnd — "
+                   "STRUCTURAL-FIXED-SLOT hit @ %p (ConnectWnd+0x44)", pPwd);
+            InterlockedExchangePointer((PVOID volatile *)&g_cachedWidgetPtr, pPwd);
+            return pPwd;
+        }
+        if (pPwd) {
+            DI8Log("eqmain_widgets: FindLivePasswordCEditWnd — "
+                   "STRUCTURAL-FIXED-SLOT returned %p but failed "
+                   "IsEQMainEditWidget; falling back to MQ2-style", pPwd);
+        }
+    }
+
     // 2) MQ2-style attempt (gated). Only reached on cache miss/cold cache.
     if (EQMainWidgetsMQ2::kMQ2StyleWidgetLookup) {
         void *pPwd = EQMainWidgetsMQ2::FindChildByName("connect", "LOGIN_PasswordEdit");

@@ -729,6 +729,293 @@ void *FindButtonNearWidget(void *anchor) {
     return ctx.result;
 }
 
+// ─── FindConnectButtonStructural — Round 5 live-verified path ─
+//
+// MQ2's StateMachine.cpp:275 (RoF2 emu branch):
+//     GetChildWindow<CButtonWnd>(m_currentWindow, "LOGIN_ConnectButton")
+//
+// MQ2 calls `m_currentWindow->GetChildItem(name)` which recurses children
+// via CXMLDataManager. Two ports attempted that direct call (Round 7) and
+// both SEH-faulted — calling convention / preconditions unresolved.
+//
+// Live verification (findings.md Round 5, eqgame PID 22892 2026-05-04):
+// ConnectWnd's widget pointers live at fixed slots in the screen body —
+// NOT in the CXWnd::pFirstChild list (that returns junk per
+// probe_connectwnd_children.py). The 7 child widgets are at:
+//
+//     ConnectWnd+0x2C → CButtonWnd
+//     ConnectWnd+0x30 → CButtonWnd
+//     ConnectWnd+0x34 → CButtonWnd
+//     ConnectWnd+0x38 → CButtonWnd    (4 buttons total)
+//     ConnectWnd+0x3C → CEditWnd      (probably username)
+//     ConnectWnd+0x40 → CEditWnd      (probably password)
+//     ConnectWnd+0x48 → CLabelWnd     ("Dalaya" branding)
+//
+// This is the plug-and-play port: enumerate the 4 button slots, validate
+// each pointer points to a CButtonWnd, then disambiguate among the 4 by
+// scanning each button's body for a CStrRep buffer containing
+// "ConnectButton" or "LOGIN_ConnectButton" (both names exist per Round 5
+// line 60-65 — Dalaya's SIDL XML defines BOTH the prefixed Name and bare
+// ScreenID, and the live widget body's CStrRep heuristic hits whichever
+// the engine inlined into the widget's style/anim string table).
+//
+// Diagnostic log: for every slot we log address, vtable RVA, dShow, and
+// the first 0x40 bytes of the body so smoke logs are sufficient to lock
+// down which slot is LOGIN_ConnectButton on the next iteration.
+
+// Slot range live-verified 2026-05-15 via probe_connectwnd_slots.py on
+// PIDs 24856 + 37432. Note: Round 5's findings.md said +0x2C..+0x38 but
+// live shows +0x2C is NULL on current Dalaya (UI may have shifted by one
+// slot). The 4 buttons live at +0x30..+0x3C, with LOGIN at +0x30. We
+// scan +0x2C..+0x40 to be defensive — +0x2C and +0x40 are filtered out
+// by the CButtonWnd vtable check, so harmlessly skipped.
+static constexpr uint32_t CONNECTWND_BUTTON_SLOT_MIN = 0x2C;
+static constexpr uint32_t CONNECTWND_BUTTON_SLOT_MAX = 0x40;
+static constexpr uint32_t CONNECTWND_SLOT_STRIDE     = 0x04;
+
+// Live-verified default: LOGIN button is at ConnectWnd+0x30 on current
+// Dalaya build. If the CStrRep label-match misses (locale change, label
+// refresh, future UI patch), fall back to this slot.
+static constexpr uint32_t CONNECTWND_DEFAULT_LOGIN_SLOT = 0x30;
+
+// Live-verified 2026-05-15 (PIDs 24856 + 30496 + 34204 + 37432):
+//   ConnectWnd+0x40 → username CEditWnd (ini-prefilled)
+//   ConnectWnd+0x44 → password CEditWnd (empty pre-login)
+// CRITICAL: these CEditWnds are NOT reachable via CXWnd's pFirstChild
+// linked list — they're held only by the ConnectWnd screen body at fixed
+// offsets. FindEmptyEditGlobal walks pinstCXWndManager which doesn't
+// enumerate them, so its "closest-empty" proximity heuristic picks a
+// different (wrong) widget. Combo G writes the password to the wrong
+// CXStr; the LOGIN button reads the structural password (still empty)
+// at click time → auth submission contains empty password → login fails.
+static constexpr uint32_t CONNECTWND_USERNAME_SLOT = 0x40;
+static constexpr uint32_t CONNECTWND_PASSWORD_SLOT = 0x44;
+
+void *FindUsernameEditStructural() {
+    uintptr_t eqmBase = 0;
+    uint32_t  eqmSize = 0;
+    EQMainOffsets::GetRange(&eqmBase, &eqmSize);
+    if (!eqmBase) return nullptr;
+    void *pConnect = ResolveConnectWnd();
+    if (!pConnect) return nullptr;
+    uintptr_t slot = SafeRead4(pConnect, CONNECTWND_USERNAME_SLOT);
+    if (!slot || slot < 0x00010000 || slot >= 0xC0000000 || (slot & 0x3)) {
+        DI8Log("eqmain_widgets_mq2style: FindUsernameEditStructural — "
+               "slot @ ConnectWnd+0x%02X invalid (=%p)",
+               CONNECTWND_USERNAME_SLOT, (void*)slot);
+        return nullptr;
+    }
+    uintptr_t vt = SafeRead4(reinterpret_cast<const void*>(slot), 0);
+    if (vt != eqmBase + EQMainOffsets::RVA_VTABLE_CEditWnd &&
+        vt != eqmBase + EQMainOffsets::RVA_VTABLE_CEditBaseWnd) {
+        DI8Log("eqmain_widgets_mq2style: FindUsernameEditStructural — "
+               "slot=%p vt=%p mismatch (expected CEditWnd %p)",
+               (void*)slot, (void*)vt,
+               (void*)(eqmBase + EQMainOffsets::RVA_VTABLE_CEditWnd));
+        return nullptr;
+    }
+    DI8Log("eqmain_widgets_mq2style: FindUsernameEditStructural — "
+           "ConnectWnd+0x%02X → %p (CEditWnd)",
+           CONNECTWND_USERNAME_SLOT, (void*)slot);
+    return reinterpret_cast<void*>(slot);
+}
+
+void *FindPasswordEditStructural() {
+    uintptr_t eqmBase = 0;
+    uint32_t  eqmSize = 0;
+    EQMainOffsets::GetRange(&eqmBase, &eqmSize);
+    if (!eqmBase) return nullptr;
+    void *pConnect = ResolveConnectWnd();
+    if (!pConnect) return nullptr;
+    uintptr_t slot = SafeRead4(pConnect, CONNECTWND_PASSWORD_SLOT);
+    if (!slot || slot < 0x00010000 || slot >= 0xC0000000 || (slot & 0x3)) {
+        DI8Log("eqmain_widgets_mq2style: FindPasswordEditStructural — "
+               "slot @ ConnectWnd+0x%02X invalid (=%p)",
+               CONNECTWND_PASSWORD_SLOT, (void*)slot);
+        return nullptr;
+    }
+    uintptr_t vt = SafeRead4(reinterpret_cast<const void*>(slot), 0);
+    if (vt != eqmBase + EQMainOffsets::RVA_VTABLE_CEditWnd &&
+        vt != eqmBase + EQMainOffsets::RVA_VTABLE_CEditBaseWnd) {
+        DI8Log("eqmain_widgets_mq2style: FindPasswordEditStructural — "
+               "slot=%p vt=%p mismatch (expected CEditWnd %p)",
+               (void*)slot, (void*)vt,
+               (void*)(eqmBase + EQMainOffsets::RVA_VTABLE_CEditWnd));
+        return nullptr;
+    }
+    DI8Log("eqmain_widgets_mq2style: FindPasswordEditStructural — "
+           "ConnectWnd+0x%02X → %p (CEditWnd)",
+           CONNECTWND_PASSWORD_SLOT, (void*)slot);
+    return reinterpret_cast<void*>(slot);
+}
+
+// Resolve ConnectWnd via pinstLoginViewManager. Walks LVM+0..+0x200 in
+// 4-byte steps, returning the first DWORD whose pointee has vtable
+// matching RVA_VTABLE_ConnectWnd. Vtable match is the stable anchor;
+// the slot offset has historically been LVM+0x14 but may drift across
+// Dalaya patches (the probe-script approach over-fits).
+void *ResolveConnectWnd() {
+    uintptr_t eqmBase = 0;
+    uint32_t  eqmSize = 0;
+    EQMainOffsets::GetRange(&eqmBase, &eqmSize);
+    if (!eqmBase) return nullptr;
+
+    uintptr_t pinstLvm = eqmBase + EQMainOffsets::RVA_PINST_LoginViewManager;
+    uintptr_t lvmPtr   = SafeRead4(reinterpret_cast<const void*>(pinstLvm), 0);
+    if (!lvmPtr || lvmPtr < 0x00010000 || lvmPtr >= 0xC0000000) {
+        DI8Log("eqmain_widgets_mq2style: ResolveConnectWnd — pinstLVM=%p invalid",
+               (void*)lvmPtr);
+        return nullptr;
+    }
+
+    uintptr_t targetVt = eqmBase + EQMainOffsets::RVA_VTABLE_ConnectWnd;
+
+    for (uint32_t off = 0; off + 4 <= 0x200; off += 4) {
+        uintptr_t cand = SafeRead4(reinterpret_cast<const void*>(lvmPtr), off);
+        if (!cand || cand < 0x00010000 || cand >= 0xC0000000) continue;
+        if (cand & 0x3) continue;
+        uintptr_t vt = SafeRead4(reinterpret_cast<const void*>(cand), 0);
+        if (vt == targetVt) {
+            DI8Log("eqmain_widgets_mq2style: ResolveConnectWnd — found @ "
+                   "LVM+0x%03X → %p (vt=%p)",
+                   off, (void*)cand, (void*)vt);
+            return reinterpret_cast<void*>(cand);
+        }
+    }
+    DI8Log("eqmain_widgets_mq2style: ResolveConnectWnd — no ConnectWnd-vtable "
+           "slot in LVM+0..+0x200 (lvm=%p)", (void*)lvmPtr);
+    return nullptr;
+}
+
+// Scan widget body for a CStrRep DWORD whose UTF-8 buffer case-insensitive-
+// matches `targetName`. Returns true on first hit. Reuses TryReadCStrRepName
+// from earlier in this file.
+static bool WidgetBodyContainsName(void *pWnd, const char *targetName) {
+    if (!pWnd || !targetName) return false;
+    char tmp[64];
+    for (uint32_t off = 0; off + 4 <= SCAN_BYTES_WIDGET; off += 4) {
+        uintptr_t cand = SafeRead4(pWnd, off);
+        if (!TryReadCStrRepName(cand, tmp, sizeof(tmp))) continue;
+        if (CIEquals(tmp, targetName)) return true;
+    }
+    return false;
+}
+
+void *FindConnectButtonStructural() {
+    uintptr_t eqmBase = 0;
+    uint32_t  eqmSize = 0;
+    EQMainOffsets::GetRange(&eqmBase, &eqmSize);
+    if (!eqmBase) {
+        DI8Log("eqmain_widgets_mq2style: FindConnectButtonStructural — "
+               "eqmain base unresolved");
+        return nullptr;
+    }
+
+    void *pConnect = ResolveConnectWnd();
+    if (!pConnect) return nullptr;
+
+    uintptr_t vtCButton = eqmBase + EQMainOffsets::RVA_VTABLE_CButtonWnd;
+
+    // Pick priorities (in order):
+    //   1. CStrRep label match on "LOGIN" (button text — uniquely identifies
+    //      LOGIN_ConnectButton; the other 3 buttons are CANCEL/QUICK CONNECT/
+    //      CHAT and none have a CStrRep with that exact 5-char buffer).
+    //   2. Slot match at CONNECTWND_DEFAULT_LOGIN_SLOT (+0x30), live-verified
+    //      2026-05-15 on PIDs 24856 + 37432.
+    //   3. First valid CButtonWnd in the range (last-resort fallback).
+    void *byLabelMatch    = nullptr;
+    void *byDefaultSlot   = nullptr;
+    void *firstValid      = nullptr;
+    void *lastValid       = nullptr;
+    int   validCount      = 0;
+    int   slotIdxForLabel = -1;
+    int   slotIdxFirst    = -1;
+    int   slotIdxLast     = -1;
+
+    for (uint32_t off = CONNECTWND_BUTTON_SLOT_MIN;
+         off <= CONNECTWND_BUTTON_SLOT_MAX;
+         off += CONNECTWND_SLOT_STRIDE) {
+        uintptr_t slot = SafeRead4(pConnect, off);
+        bool valid = (slot != 0 && slot >= 0x00010000 && slot < 0xC0000000 &&
+                      (slot & 0x3) == 0);
+        uintptr_t vt = valid ? SafeRead4(reinterpret_cast<const void*>(slot), 0) : 0;
+        bool isButton = valid && (vt == vtCButton);
+        uint8_t dShow     = isButton ? SafeRead1(reinterpret_cast<const void*>(slot),
+                                                 OFFSET_CXWND_DSHOW) : 0;
+        uint8_t minimized = isButton ? SafeRead1(reinterpret_cast<const void*>(slot),
+                                                 OFFSET_CXWND_MINIMIZED) : 0;
+        uint32_t xmlIdx   = isButton ? static_cast<uint32_t>(SafeRead4(
+                              reinterpret_cast<const void*>(slot),
+                              OFFSET_CXWND_XMLINDEX)) : 0;
+
+        bool labelLogin = false;
+        bool labelLoginConnect = false;
+        bool labelConnect = false;
+        if (isButton) {
+            // Label "LOGIN" — the button's visible text. Live-verified
+            // uniqueness on Dalaya 2026-05-15 (other buttons are CANCEL /
+            // QUICK CONNECT / CHAT — none have a CStrRep equal to "LOGIN").
+            labelLogin = WidgetBodyContainsName(reinterpret_cast<void*>(slot), "LOGIN");
+            // Secondary signals — SIDL names on RoF2-emu builds. Live Dalaya
+            // doesn't store these in the widget body, but we check anyway in
+            // case a future patch / fork re-embeds them.
+            labelLoginConnect = WidgetBodyContainsName(reinterpret_cast<void*>(slot),
+                                                      "LOGIN_ConnectButton");
+            labelConnect      = WidgetBodyContainsName(reinterpret_cast<void*>(slot),
+                                                      "ConnectButton");
+        }
+
+        DI8Log("eqmain_widgets_mq2style: ConnectWnd+0x%02X slot=%p vt=%p "
+               "isButton=%d dShow=%u min=%u xmlIdx=0x%08X "
+               "labelLOGIN=%d labelLOGIN_Connect=%d labelConnect=%d",
+               off, (void*)slot, (void*)vt, isButton ? 1 : 0,
+               (unsigned)dShow, (unsigned)minimized, xmlIdx,
+               labelLogin ? 1 : 0, labelLoginConnect ? 1 : 0, labelConnect ? 1 : 0);
+
+        if (!isButton) continue;
+        ++validCount;
+        if (!firstValid) { firstValid = reinterpret_cast<void*>(slot); slotIdxFirst = static_cast<int>(off); }
+        lastValid    = reinterpret_cast<void*>(slot);
+        slotIdxLast  = static_cast<int>(off);
+        if ((labelLogin || labelLoginConnect || labelConnect) && !byLabelMatch) {
+            byLabelMatch    = reinterpret_cast<void*>(slot);
+            slotIdxForLabel = static_cast<int>(off);
+        }
+        if (off == CONNECTWND_DEFAULT_LOGIN_SLOT && !byDefaultSlot) {
+            byDefaultSlot = reinterpret_cast<void*>(slot);
+        }
+    }
+
+    void *pick;
+    int   pickSlot;
+    const char *reason;
+    if (byLabelMatch) {
+        pick     = byLabelMatch;
+        pickSlot = slotIdxForLabel;
+        reason   = "label-match";
+    } else if (byDefaultSlot) {
+        pick     = byDefaultSlot;
+        pickSlot = CONNECTWND_DEFAULT_LOGIN_SLOT;
+        reason   = "default-slot-+0x30";
+    } else if (firstValid) {
+        pick     = firstValid;
+        pickSlot = slotIdxFirst;
+        reason   = "first-valid-button-fallback";
+    } else {
+        pick     = nullptr;
+        pickSlot = -1;
+        reason   = "no-valid-button";
+    }
+
+    DI8Log("eqmain_widgets_mq2style: FindConnectButtonStructural — "
+           "ConnectWnd=%p validButtons=%d pick=%p (slot=+0x%02X reason=%s) "
+           "firstValid=%p (slot=+0x%02X) lastValid=%p (slot=+0x%02X)",
+           pConnect, validCount, pick, pickSlot, reason,
+           firstValid, slotIdxFirst, lastValid, slotIdxLast);
+
+    return pick;
+}
+
 // ─── Diagnostics ─────────────────────────────────────────────
 void LogStartupDiagnostics() {
     DI8Log("eqmain_widgets_mq2style: startup — pNext=+0x%X pFirstChild=+0x%X "

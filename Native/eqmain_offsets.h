@@ -128,6 +128,23 @@ constexpr uint32_t RVA_VTABLE_CEditBaseWnd   = 0x0010BCDC;
 constexpr uint32_t RVA_VTABLE_CEditWnd       = 0x0010BE6C;
 constexpr uint32_t RVA_VTABLE_CListWnd       = 0x0010AE94;
 constexpr uint32_t RVA_VTABLE_CLabelWnd      = 0x0010AC2C;
+// ConnectWnd PRIMARY vtable on live Dalaya. Findings.md / probe_lvm_anchor.py
+// had 0x001035C0 (which appears to be a SECONDARY base-class vtable in MSVC's
+// multiple-inheritance layout). Live verification 2026-05-15 via
+// probe_connectwnd_slots.py on PIDs 24856 + 37432:
+//     LVM+0x14 → ConnectWnd  vt at +0x00 = eqmain+0x001035F4
+// The 0x34-byte delta between the two RVAs is consistent with a TListNode<CXWnd>
+// or TList<CXWnd> sub-object vtable. Pointee.vtable[0] is always the
+// most-derived class vtable; that's the RVA we anchor on.
+constexpr uint32_t RVA_VTABLE_ConnectWnd     = 0x001035F4;
+
+// pinstLoginViewManager: deref → CLoginViewManager*. LVM has slots pointing
+// to ConnectWnd / MainWnd / ServerSelectWnd within its first ~0x200 bytes.
+// Walk LVM+0..+0x200 and pick the slot whose pointee's vtable matches
+// RVA_VTABLE_ConnectWnd. Per probe_lvm_anchor.py output the slot has
+// historically been LVM+0x14 but the offset can shift across Dalaya
+// patches — vtable match is the stable anchor.
+constexpr uint32_t RVA_PINST_LoginViewManager = 0x00150170;
 
 // ─── LoginServerAPI globals (Diff 4 of MQ2 RoF2-emu walkthrough) ─────
 // pinstLoginServerAPI is a void* at this RVA. Deref once → LoginServerAPI*.

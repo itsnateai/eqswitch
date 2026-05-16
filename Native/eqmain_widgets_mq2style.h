@@ -227,6 +227,58 @@ void *FindEmptyEditInScreen(const char *screenName);
 // vtable, +0x1A8 CXStr status, distance-to-anchor when applicable.
 void *FindEmptyEditGlobal();
 
+// ─── FindConnectButtonStructural — Round 5 plug-and-play port ──
+//
+// Round 5 live verification (findings.md, PID 22892 2026-05-04) established
+// that ConnectWnd's child widgets live at FIXED slots in the screen body
+// (NOT via CXWnd's pFirstChild list — that returns junk per
+// probe_connectwnd_children.py). Layout:
+//
+//     ConnectWnd+0x2C..+0x38 → 4× CButtonWnd  (one of which is LOGIN_ConnectButton)
+//     ConnectWnd+0x3C..+0x40 → 2× CEditWnd    (username, password)
+//     ConnectWnd+0x48        → 1× CLabelWnd   (Dalaya branding)
+//
+// FindConnectButtonStructural:
+//   1. Resolves ConnectWnd by walking pinstLoginViewManager+0..+0x200
+//      for the slot whose pointee has vtable matching RVA_VTABLE_ConnectWnd.
+//   2. Enumerates the 4 button slots, validates CButtonWnd vtable for each,
+//      and logs full diagnostics (address, dShow, XMLIndex, name-hits).
+//   3. Picks the slot whose body contains a CStrRep matching
+//      "LOGIN_ConnectButton" or "ConnectButton" via CIEquals — if both fail,
+//      falls back to the first valid button with a loud log line so smoke
+//      iterations can lock the slot.
+//
+// Why this beats FindButtonNearWidget (proximity):
+//   - Two `ConnectButton`s exist in eqmain.dll (MainWnd's vs ConnectWnd's)
+//     and proximity tie-breaks unreliably across the ~69 CButtonWnd-shape
+//     widgets enumerated globally. Scoping by ConnectWnd narrows to 4
+//     candidates; one of them IS the login submit button by SIDL design.
+//
+// Returns nullptr if ConnectWnd can't be resolved (LVM unloaded, slot drift)
+// OR if none of the 4 slots holds a CButtonWnd vtable.
+void *FindConnectButtonStructural();
+
+// ResolveConnectWnd — exposed for callers that want to anchor a structural
+// walk on ConnectWnd themselves. Walks pinstLoginViewManager+0..+0x200,
+// returns the first slot whose pointee.vtable matches RVA_VTABLE_ConnectWnd.
+// Returns nullptr if LVM is unloaded or no ConnectWnd-vtable slot exists.
+void *ResolveConnectWnd();
+
+// FindUsernameEditStructural / FindPasswordEditStructural — Round 5 fixed
+// slots on ConnectWnd (+0x40 username, +0x44 password). Live-verified
+// 2026-05-15 (PIDs 24856 + 30496 + 34204 + 37432). These CEditWnds are
+// NOT reachable from the standard CXWnd pFirstChild linked list — the
+// previous proximity-via-FindEmptyEditGlobal heuristic picked a different
+// (wrong) widget because the global CXWndManager walk doesn't enumerate
+// them. Combo G must write to the structural password edit, not the
+// proximity one, for the LOGIN button click to read a populated CXStr.
+//
+// Each function: resolves ConnectWnd, reads the fixed slot, validates
+// CEditWnd/CEditBaseWnd vtable, returns the pointer. Returns nullptr
+// on LVM unloaded / slot invalid / vtable mismatch.
+void *FindUsernameEditStructural();
+void *FindPasswordEditStructural();
+
 // FindButtonNearWidget — walk all CButtonWnd-shape widgets globally, pick the
 // one whose address is closest to `anchor`. Used to find LOGIN_ConnectButton
 // after FindEmptyEditGlobal identifies the password edit — the connect button
