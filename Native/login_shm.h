@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-or-later
 // Â© itsnateai
 
 // login_shm.h -- Shared memory for in-process login state machine
