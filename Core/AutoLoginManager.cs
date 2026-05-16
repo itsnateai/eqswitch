@@ -681,7 +681,7 @@ public class AutoLoginManager
             // the equivalent of "click Connect" when the password edit has
             // focus. No primer (would Backspace one char from the password),
             // no retype (would double-write into the field).
-            Report("Submitting login (Combo G wrote password)...");
+            Report("Submitting login...");
             CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = submit
             Thread.Sleep(burst1PostSubmitMs);
             writer.Deactivate(pid);

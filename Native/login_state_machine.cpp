@@ -312,11 +312,22 @@ static void PollOkDisplayToShm(volatile LoginShm *shm) {
 // these bools yet. v3.22.0 will replace RunLoginSequence with a state
 // machine that reads them.
 //
-// Cost: 5× FindLiveScreenByName per call. Each is a top-level walk
-// bounded by IterateAllWindowsPublic's existing cap. Empirically
-// comparable to the existing PollOkDisplayToShm probe (already in the
-// hot path at ~500ms cadence without measurable impact per the
-// 2026-05-15 18:00 smoke).
+// Cost: cache hit = 5× IsEQMainWidget vtable-range check (cheap byte
+// reads). Cache miss = 5× FindLiveScreenByName top-level walk (~846 node
+// scans). Misses are rare in steady state — only on first probe, after
+// eqmain unload/reload, or when EQ heap-recycles a SIDL screen widget
+// outside eqmain's range. v3.21.0-fix-1 (this iteration): the pre-cache
+// version did 846 scans every Tick and starved EQ's game thread during
+// auth — confirmed 2026-05-16 smoke regression vs v3.20.11 (iter-12
+// dormancy comment in eqmain_widgets_mq2style.cpp:102-114 flagged the
+// same failure mode). Caching restores per-Tick cost to ~5 byte reads.
+//
+// Stale-but-still-eqmain risk: if heap recycles a cached widget's
+// address for a DIFFERENT eqmain widget, IsEQMainWidget still passes
+// (it's an eqmain-class widget) but the visibility report is for the
+// wrong screen. Benign in v3.21.0 (observability only). v3.22.0 should
+// add per-call GetCXWndXMLName() match when visibility bools become
+// decision inputs.
 //
 // Bypass: only called from Tick() body, inside the autoLoginActive gate
 // (currently around line 773), after the magic check at Tick entry. Bare-
@@ -324,13 +335,36 @@ static void PollOkDisplayToShm(volatile LoginShm *shm) {
 // As of v3.20.11, Tick gates on magic ONLY (no runtime version-mismatch
 // rejection); autoLoginActive is the secondary filter that scopes probes
 // to active C#-driven login sessions only.
+
+// Cache slots for the 5 SIDL screens. Self-healing via per-call
+// IsEQMainWidget validation — no explicit eqmain-unload invalidation
+// needed (vtable check fails naturally when eqmain unloads).
+static void *g_cachedConnect      = nullptr;
+static void *g_cachedServerSelect = nullptr;
+static void *g_cachedOkDialog     = nullptr;
+static void *g_cachedYesNoDialog  = nullptr;
+static void *g_cachedConfirmDlg   = nullptr;
+
+static void *ResolveCachedScreen(void **slot, const char *name) {
+    // Cache hit: cached ptr is non-null AND still passes the eqmain
+    // vtable-range check. Returns immediately — no heap walk.
+    if (*slot && EQMainOffsets::IsEQMainWidget(*slot)) {
+        return *slot;
+    }
+    // Cache miss: re-resolve via the proven top-level walk. Result may
+    // be nullptr (screen not in widget tree right now) — that's fine,
+    // we'll retry on the next Tick.
+    *slot = EQMainWidgetsMQ2::FindLiveScreenByName(name);
+    return *slot;
+}
+
 static void PollWidgetVisibilityToShm(volatile LoginShm *shm) {
-    // Snapshot — read each named screen, gate on visibility.
-    void *pConnect      = EQMainWidgetsMQ2::FindLiveScreenByName("connect");
-    void *pServerSel    = EQMainWidgetsMQ2::FindLiveScreenByName("serverselect");
-    void *pOkDialog     = EQMainWidgetsMQ2::FindLiveScreenByName("okdialog");
-    void *pYesNoDialog  = EQMainWidgetsMQ2::FindLiveScreenByName("yesnodialog");
-    void *pConfirmDlg   = EQMainWidgetsMQ2::FindLiveScreenByName("ConfirmationDialogBox");
+    // Snapshot — read each named screen via the cache, gate on visibility.
+    void *pConnect      = ResolveCachedScreen(&g_cachedConnect,      "connect");
+    void *pServerSel    = ResolveCachedScreen(&g_cachedServerSelect, "serverselect");
+    void *pOkDialog     = ResolveCachedScreen(&g_cachedOkDialog,     "okdialog");
+    void *pYesNoDialog  = ResolveCachedScreen(&g_cachedYesNoDialog,  "yesnodialog");
+    void *pConfirmDlg   = ResolveCachedScreen(&g_cachedConfirmDlg,   "ConfirmationDialogBox");
 
     shm->widgetConnectVisible       = (pConnect      && EQMainWidgetsMQ2::IsCXWndVisible(pConnect))      ? 1u : 0u;
     shm->widgetServerSelectVisible  = (pServerSel    && EQMainWidgetsMQ2::IsCXWndVisible(pServerSel))    ? 1u : 0u;
