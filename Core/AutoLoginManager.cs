@@ -614,24 +614,49 @@ public class AutoLoginManager
         }
 
         // ── Phase 2: BURST 1 keystrokes ──
-        // Fix 1 (v3.19.1, 2026-05-15): if native's Combo G already wrote the
-        // password (PHASE_TYPING_CREDENTIALS → WriteEditTextDirect read-back
-        // OK → comboGWriteOk = 1), SKIP the primer (Backspace) and password
-        // retype. The 2026-05-15 dual-box smoke was failing because BOTH
-        // Combo G AND BURST 1 were firing — Combo G wrote 7 chars at +0x1A8,
-        // then BURST 1 typed 7 more, leaving the field with ~13 chars (cursor
-        // mode dependent). EQ login server rejected the corrupted password,
-        // no auth session was created, and the subsequent JoinServerDirect
-        // dispatch returned fnResult=3 ("no auth session") which EQ surfaces
-        // as "Quick Connect to server Dalaya failed". User's diagnosis:
-        // "quick connect would have been successful if we had entered the
-        // letters for the password" — i.e., correct 7-char password.
+        // v3.20.0 (2026-05-15) REVERTED Fix 1's typing-skip gate. The
+        // 2026-05-15 PM smoke (PIDs 20836, 36156) showed the visible
+        // password field stayed EMPTY when BURST 1 skipped typing — the
+        // user's eyes are ground truth ("neither character entered any
+        // password at all"), and the DLL log confirmed the failure mode:
+        // `FindChildByName('connect','LOGIN_PasswordEdit')` returns NULL
+        // on current Dalaya, so the structural password lookup falls back
+        // to a hardcoded XMLIndex=0x00220001 → manager-walk match. Combo G
+        // writes 7 bytes to that widget's +0x1A8 and the read-back confirms,
+        // but the widget is NOT the visible password edit. The read-back
+        // is verification too close to the action.
         //
-        // The gate is conservative: requires BOTH warmupRan==true (proves
-        // we did the SHM ritual at all) AND comboGWriteOk==1 (proves the
-        // CXStr write actually landed). When skipping, BURST 1 still fires
-        // Activate + Enter — the Enter is what EQ interprets as "click
-        // Connect" given an in-focus password field.
+        // This is precisely the failure mode the v3.15.13 commit message
+        // documented: "revert v3.15.12 BURST 1 gate — Combo G doesn't reach
+        // EQ submit buffer". Today's Fix 1 was v3.15.12 redux with an SHM
+        // flag, and re-discovered the same bug. v3.16.0's ScreenMode=3
+        // swap was supposed to close it, but on Dalaya the wrong-widget
+        // problem makes the swap moot — we write the right BYTES to the
+        // wrong WIDGET.
+        //
+        // BURST 1 keystrokes are the proven safety net: per the doc kicked
+        // off this session ("BURST 1 KEYSTROKE fallback is what actually
+        // carries the load"). Force BURST 1 to ALWAYS type — the native
+        // side still does Combo G (logged in DLL for diagnostic) but C#
+        // ignores the comboGWriteOk signal. The flag remains in SHM for
+        // future use if a working structural write path is found (i.e.,
+        // when FindChildByName for the password widget actually succeeds
+        // v3.20.3 (2026-05-15) RE-ENGAGED the Fix 1 gate. Combo G's widget
+        // lookup is now fixed via FindEmptyEditGlobal's proximity-to-username
+        // heuristic (Native/eqmain_widgets_mq2style.cpp): the 17:56 smoke
+        // confirmed Combo G writes to the widget exactly 0x5D0 below the
+        // username-bearing CEditWnd, which is the visible password edit
+        // (allocated adjacent to username in the SIDL screen's allocation
+        // cluster). With Combo G now hitting the right field, the original
+        // double-write bug (v3.15.13: Combo G + BURST 1 both typing → ~14
+        // chars in field → login server rejection) is back unless BURST 1's
+        // typing is suppressed. The Fix 1 gate does that — and now that
+        // Combo G is reliable, the gate is finally correct.
+        //
+        // BURST 1 still fires Activate + Enter (submit) when this flag is
+        // true — Enter is what EQ treats as "click Connect" with the
+        // password field focused. Only the primer Backspace + retype is
+        // skipped.
         bool comboGWritePassword = false;
         if (loginShm != null && warmupRan)
         {
@@ -639,7 +664,7 @@ public class AutoLoginManager
             if (comboGWritePassword)
             {
                 FileLogger.Info($"AutoLogin: Combo G success signal observed for PID {pid} " +
-                    "— skipping BURST 1 primer + password retype (avoiding double-write)");
+                    "— skipping BURST 1 primer + password retype (proximity-heuristic widget, v3.20.3)");
             }
         }
 
@@ -947,11 +972,17 @@ public class AutoLoginManager
                 Report("Confirming server...");
                 writer.Activate(pid, suppress: true);
                 // v3.15.2: tunable via Launch.Burst2ActivationSettleMs (default 300).
-                Thread.Sleep(_config.Launch.Burst2ActivationSettleMs);
+                // v3.20.0 R2 (verifier-driven Sonnet T2/T3 convergent 2026-05-15):
+                // use snapshotted `burst2ActivationSettleMs` (line ~758) instead
+                // of live `_config` read. Retry path already does this correctly
+                // (line ~1273); primary path was the surviving v3.17.0 R3 race
+                // — Settings → Apply during a live login swapped values mid-flow.
+                Thread.Sleep(burst2ActivationSettleMs);
                 FileLogger.Info($"AutoLogin: BURST 2 activated for PID {pid}");
                 CombinedPressKey(writer, pid, hwnd, 0x0D); // Enter = confirm
                 // v3.15.2: post-keystroke dwell tunable via Launch.Burst2PostKeystrokeMs (default 500).
-                Thread.Sleep(_config.Launch.Burst2PostKeystrokeMs);
+                // v3.20.0 R2: snapshotted value (matches activation-settle fix above).
+                Thread.Sleep(burst2PostKeystrokeMs);
                 writer.Deactivate(pid); // ← OFF
                 FileLogger.Info($"AutoLogin: BURST 2 deactivated for PID {pid}");
             }
@@ -2106,6 +2137,45 @@ public class AutoLoginManager
         }
 
         string label = isRetry ? "Retry: " : "";
+
+        // ── Fix 2 (v6 SHM, 2026-05-15) — LoginServerAPI-ready gate ─────
+        //
+        // BEFORE dispatching JoinServerDirect, wait for native to observe
+        // pinstLoginServerAPI populated + vtable matching eqmain+0x1002D0
+        // for >= 3 consecutive Ticks (stability counter inside native).
+        //
+        // The 2026-05-15 PM smoke showed JoinServerDirect dispatched on a
+        // fixed PostBurst1WaitMs=3000ms timer returned fnResult=0x00000003
+        // ("no auth session"). The auth handshake hadn't completed when
+        // the dispatch fired — racing wall-clock against EQ's network
+        // round-trip. This gate replaces wall-clock with auth-state.
+        //
+        // Timeout: 5000ms covers the typical handshake (network RT + EQ
+        // LoginServerAPI construction, observed ~1-3s on Dalaya) with
+        // generous slack. If we exceed it, skip the dispatch entirely
+        // and fall through to BURST 2 — preserving the pre-Fix-2 safety
+        // net behavior on the slow-auth path.
+        //
+        // Backward-compatible: if native is still v5 (no field publish),
+        // ReadLoginServerAPIReady always returns false, this gate times
+        // out at 5s, and we fall through to BURST 2 — matching pre-v6
+        // behavior. Cost on the deployed v6 path: ~50-500ms typically
+        // (auth completes well before timeout).
+        const int loginServerAPIReadyTimeoutMs = 5000;
+        Report($"{label}Waiting for auth (LoginServerAPI ready)...");
+        var readySw = System.Diagnostics.Stopwatch.StartNew();
+        bool authReady = loginShm.WaitForLoginServerAPIReady(pid, loginServerAPIReadyTimeoutMs);
+        readySw.Stop();
+        if (!authReady)
+        {
+            FileLogger.Warn($"AutoLogin: {account.Name} LoginServerAPI not ready after " +
+                $"{readySw.ElapsedMilliseconds}ms (timeout {loginServerAPIReadyTimeoutMs}ms) — " +
+                $"skipping JoinServerDirect, falling back to BURST 2 (retry={isRetry})");
+            return false;
+        }
+        FileLogger.Info($"AutoLogin: {account.Name} LoginServerAPI ready after " +
+            $"{readySw.ElapsedMilliseconds}ms — dispatching JoinServerDirect");
+
         Report($"{label}Joining server (direct call)...");
         var (outcome, fnResult) = loginShm.TryJoinServerDirect(pid, (uint)joinServerId);
 

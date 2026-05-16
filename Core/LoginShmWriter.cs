@@ -53,14 +53,39 @@ public sealed class LoginShmWriter : IDisposable
     // Single uint32 `comboGWriteOk` appended at offset 1624 (size 1628).
     // Native sets to 1 inside PHASE_TYPING_CREDENTIALS after Combo G's
     // WriteEditTextDirect read-back confirms the password landed at
-    // InputText+0x1A8. Cleared to 0 on every LOGIN_CMD_LOGIN. C# reads
-    // post-warmup; if set AND warmup advanced, BURST 1 SKIPS primer +
-    // retype (Backspace + 7-char re-type) and only fires Activate + Enter
-    // (submit). Eliminates the double-write that corrupted the field to
-    // ~13 chars on 2026-05-15 smoke. Backward-compatible append — v4
-    // native readers see the first 1624 bytes unchanged and never set
-    // the flag, so C# never observes 1 and always runs full BURST 1.
-    private const uint Version = 5;
+    // InputText+0x1A8. Cleared to 0 on every LOGIN_CMD_LOGIN.
+    //
+    // v3.20.0 (2026-05-15) REVERTED the C#-side gate that consumed this
+    // flag — the 2026-05-15 PM smoke proved the visible password field
+    // stayed empty when BURST 1 skipped typing (Combo G's CXStr write
+    // at +0x1A8 doesn't reach EQ's submit pipeline on current Dalaya,
+    // exactly as the v3.15.13 commit message warned: "Combo G doesn't
+    // reach EQ submit buffer"). The flag is still set by native; C# just
+    // doesn't act on it — BURST 1 always types keystrokes as the safety
+    // net. The flag remains in the SHM for future use if a working
+    // structural write path is found.
+    //
+    // v6 (2026-05-15): Fix 2 — LoginServerAPI-ready gate.
+    // Single uint32 `loginServerAPIReady` appended at offset 1628
+    // (size 1632). Native Tick() polls *(eqmain+0x150164) every tick:
+    // when populated AND vtable matches eqmain+0x1002D0 for ≥3 consecutive
+    // ticks, publishes 1; any bad tick resets to 0. C#
+    // TryJoinServerDirectOrFallback polls this for up to 5000ms before
+    // dispatching JoinServerDirect — if still 0 at timeout, dispatch is
+    // skipped and the caller falls through to BURST 2 (preserves
+    // pre-Fix-2 behavior on the slow-auth path).
+    //
+    // Addresses the 2026-05-15 PM smoke fnResult=3 ("no auth session")
+    // failure: previous PostBurst1WaitMs=3000ms timer fired
+    // JoinServerDirect before the LoginServerAPI handshake completed.
+    // The ready-flag replaces wall-clock timing with auth-state
+    // observation.
+    //
+    // Backward-compatible append: v5 native readers see the first 1628
+    // bytes unchanged and never publish the field, so C# v6 readers
+    // always observe 0 → 5s timeout → BURST 2 fallback (graceful
+    // degradation matching pre-v6 behavior).
+    private const uint Version = 6;
     private const int MaxChars = 10;         // LOGIN_MAX_CHARS
     private const int NameLen = 64;          // LOGIN_NAME_LEN
     private const int PassLen = 128;         // LOGIN_PASS_LEN
@@ -68,13 +93,14 @@ public sealed class LoginShmWriter : IDisposable
     private const int CharLen = 64;          // LOGIN_CHAR_LEN
     private const int ErrorLen = 256;        // LOGIN_ERROR_LEN
 
-    // Total struct size: 1628 bytes (verified against login_shm.h v5)
+    // Total struct size: 1632 bytes (verified against login_shm.h v6)
     // v1 was 1340; v2 appended a 4-byte autoLoginActive field at offset 1340
     // (size 1344); v3 appended okDisplayText[256] at offset 1344 + a 4-byte
     // okDisplayClass at offset 1600 (size 1604); v4 appends 5×uint32
     // JoinServer RPC fields at offset 1604 (size 1624); v5 appends 1×uint32
-    // comboGWriteOk at offset 1624 (size 1628).
-    private const int ShmSize = 1628;
+    // comboGWriteOk at offset 1624 (size 1628); v6 appends 1×uint32
+    // loginServerAPIReady at offset 1628 (size 1632).
+    private const int ShmSize = 1632;
 
     // ── Commands (C# → DLL) ──────────────────────────────────────
     private const uint CMD_NONE = 0;
@@ -122,7 +148,8 @@ public sealed class LoginShmWriter : IDisposable
     private const int OFF_JS_OUTCOME      = 1616;    // uint32  (4)  — v4 append (out)
     private const int OFF_JS_FN_RESULT    = 1620;    // uint32  (4)  — v4 append (out)
     private const int OFF_COMBOG_OK       = 1624;    // uint32  (4)  — v5 append (out)
-    // Total: 1628 ✓
+    private const int OFF_LOGIN_SERVER_API_READY = 1628; // uint32 (4)  — v6 append (out)
+    // Total: 1632 ✓
 
     private sealed class MappingEntry : IDisposable
     {
@@ -265,6 +292,14 @@ public sealed class LoginShmWriter : IDisposable
         // also clears this on every LOGIN_CMD_LOGIN, but the early Open()
         // path may run before native has processed any command.
         accessor.Write(OFF_COMBOG_OK, (uint)0);
+        // v6 (2026-05-15) Fix 2: zero loginServerAPIReady so a stale "1"
+        // from a prior session's post-auth state can't trick C# into
+        // firing JoinServerDirect before the new session's auth handshake
+        // completes. Native also clears this on every LOGIN_CMD_LOGIN
+        // (and re-zeroes the stability counter), but Open() may run
+        // before native has processed any command on the C#-keeps-mapping-
+        // open path.
+        accessor.Write(OFF_LOGIN_SERVER_API_READY, (uint)0);
     }
 
     // ─── Commands (C# → DLL) ─────────────────────────────────────
@@ -526,6 +561,56 @@ public sealed class LoginShmWriter : IDisposable
         if (!_mappings.TryGetValue(pid, out var entry)) return false;
         try { return entry.Accessor.ReadUInt32(OFF_COMBOG_OK) != 0; }
         catch { return false; }
+    }
+
+    /// <summary>
+    /// Fix 2 (v6 SHM, 2026-05-15): true when native has observed
+    /// `pinstLoginServerAPI` at eqmain+0x150164 populated AND its vtable
+    /// matching eqmain+0x1002D0 for ≥3 CONSECUTIVE Ticks. The stability
+    /// counter defends against transient construction state at very-early
+    /// launch / EULA→login screen transitions.
+    ///
+    /// Caller (AutoLoginManager.TryJoinServerDirectOrFallback) polls this
+    /// for up to 5000ms BEFORE dispatching JoinServerDirect. If still
+    /// false at timeout, dispatch is skipped — caller falls through to
+    /// BURST 2 (server-select Enter PostMessage) preserving the pre-Fix-2
+    /// behavior on the slow-auth path.
+    ///
+    /// Returns false on any of:
+    ///   - mapping not found (PID unknown)
+    ///   - native v5 reader still attached (won't observe the field, never sets 1)
+    ///   - native v6+ but auth handshake hasn't completed yet
+    ///   - any read fault (defensive default — caller fall-through to BURST 2)
+    /// </summary>
+    public bool ReadLoginServerAPIReady(int pid)
+    {
+        if (!_mappings.TryGetValue(pid, out var entry)) return false;
+        try { return entry.Accessor.ReadUInt32(OFF_LOGIN_SERVER_API_READY) != 0; }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// Fix 2 (v6 SHM, 2026-05-15): poll <see cref="ReadLoginServerAPIReady"/>
+    /// up to <paramref name="timeoutMs"/>. Returns true as soon as the
+    /// flag is observed = 1; returns false after timeout. Polling interval
+    /// is 50ms — fast enough to feel responsive, slow enough not to
+    /// hammer the cross-process mapping.
+    ///
+    /// Intended call site: immediately before
+    /// <see cref="TryJoinServerDirect"/>. The 5000ms default budget covers
+    /// the typical login server handshake (network round-trip + EQ's
+    /// LoginServerAPI construction) observed at ~1-3s on Dalaya.
+    /// </summary>
+    public bool WaitForLoginServerAPIReady(int pid, int timeoutMs = 5000)
+    {
+        if (!_mappings.TryGetValue(pid, out _)) return false;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < timeoutMs)
+        {
+            if (ReadLoginServerAPIReady(pid)) return true;
+            Thread.Sleep(50);
+        }
+        return false;
     }
 
     /// <summary>

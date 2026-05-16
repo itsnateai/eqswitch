@@ -166,6 +166,87 @@ void *RecurseAndFindName(void *pWnd, const char *name);
 // Returns nullptr on either step's failure.
 void *FindChildByName(const char *screenName, const char *childName);
 
+// FindEmptyEditInScreen — STRUCTURAL password lookup that bypasses the
+// CXMLDataManager-name-resolution problem on Dalaya (FindChildByName for
+// 'LOGIN_PasswordEdit' returns NULL because the SIDL name heuristic doesn't
+// recover the right widget name).
+//
+// Walks the named screen's subtree and returns the FIRST widget that:
+//   1. Has vtable matching CEditWnd or CEditBaseWnd (validated via
+//      EQMainOffsets::IsEQMainEditWidget)
+//   2. Has a valid CXStr_Dalaya at +0x1A8 (the InputText field — every real
+//      CEditWnd has this; the false-positive vtable-but-no-InputText widget
+//      that the hardcoded XMLIndex=0x00220001 fallback was returning fails
+//      this gate)
+//   3. The CXStr's length == 0 (the password field starts empty — the
+//      username field is ini-prefilled by EQ before the login UI is shown)
+//
+// Returns nullptr if no qualifying widget found. On re-login when the
+// password field has leftover asterisks (length > 0), this returns nullptr
+// — callers fall through to the legacy XMLIndex path.
+//
+// 2026-05-15 ground-truth from PID 10012 smoke (eqswitch-dinput8-10012.log
+// lines 145-184): the connect screen has 3 CEditWnd-shape widgets at
+// 115040F0 (empty CXStr@+0x1A8, password edit), 115046C0 ('gotquiz' at
+// +0x1A8, username), and 11504A08 (NO valid CXStr at +0x1A8 — the hardcoded
+// XMLIndex=0x00220001 fallback picks this one, then Combo G writes the
+// password to memory that isn't the visible InputText, leaving the
+// rendered password field empty and EQ login server rejecting the
+// 1-char fragment that BURST 1 keystrokes managed to land in the
+// visible field).
+void *FindEmptyEditInScreen(const char *screenName);
+
+// FindEmptyEditGlobal — like FindEmptyEditInScreen but walks the ENTIRE
+// pinstCXWndManager widget collection via MQ2Bridge::IterateAllWindowsPublic
+// rather than just the named screen's subtree. Necessary because the
+// password CEditWnd on Dalaya may not be a child of the "connect" screen
+// widget — the 2026-05-15 17:05 smoke showed FindEmptyEditInScreen reached
+// only 2 CEditWnd-shape widgets in the connect subtree (vs 4+ globally).
+//
+// Per-widget filter: vt = CEditWnd|CEditBaseWnd, valid CXStr at +0x1A8
+// (refCount/length/alloc sanity per CStrRep_Dalaya layout).
+//
+// v3.20.3 (2026-05-15) — PROXIMITY heuristic replaces the broken visibility
+// filter. Smoke at 17:20 (PID 16120) showed the visibility filter picked
+// a widget (1153BA30, visible=1, empty) that turned out NOT to be the
+// password edit — Combo G wrote to it and user reported empty password
+// fields. The actual password edit (115040F0) had visible=0 because
+// password fields use asterisk-masking rendering with the dShow flag
+// unset. Address-distance to the username-bearing widget is a much
+// stronger signal — EQ allocates SIDL-screen widgets in a tight cluster
+// (the prior smoke had password 0x5D0 below username, while the decoy
+// was 0x37370 away).
+//
+// Algorithm: walk globally → collect every CEditWnd-shape widget with
+// valid CXStr at +0x1A8 → identify the anchor (CEditWnd with non-empty
+// CXStr — the ini-prefilled username) → among empties, return the one
+// whose address is closest to the anchor. Falls back to first empty
+// found if no anchor (no widget with non-empty CXStr in the walk).
+//
+// DIAGNOSTIC LOGGING: logs every CEditWnd-shape widget visited with
+// vtable, +0x1A8 CXStr status, distance-to-anchor when applicable.
+void *FindEmptyEditGlobal();
+
+// FindButtonNearWidget — walk all CButtonWnd-shape widgets globally, pick the
+// one whose address is closest to `anchor`. Used to find LOGIN_ConnectButton
+// after FindEmptyEditGlobal identifies the password edit — the connect button
+// is allocated in the same SIDL-screen cluster (close in heap address).
+//
+// v3.20.5 (2026-05-15) — MQ2's autologin calls `WndNotification(connectButton,
+// XWM_LCLICK, 0)` to submit, NOT a VK_RETURN keystroke. The button's onClick
+// reads the password's InputText and submits to the login server. Our prior
+// VK_RETURN approach went through EQ's keyboard pump which doesn't fire the
+// same submit path on the password edit, so auth never started despite the
+// password being in BOTH +0x1A8 and +0x1EC CXStrs (v3.20.4 dual-write).
+//
+// The legacy ConnectButton finder via FindWindowByName returned CXMLDataPtr
+// definitions (not live CButtonWnd instances) — IsEQMainButtonWidget rejected
+// them. The proximity heuristic bypasses that by addressing live widgets
+// directly from their heap allocation cluster.
+//
+// Returns nullptr if no CButtonWnd-shape widget found.
+void *FindButtonNearWidget(void *anchor);
+
 // ─── Lower-level helpers (testable, exposed for diagnostics) ──
 typedef bool (*MQ2VisitCallback)(void *pWnd, void *ctx);
 

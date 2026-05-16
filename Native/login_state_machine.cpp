@@ -30,6 +30,96 @@ void DI8Log(const char *fmt, ...);
 // the SHM mapping that's still around if C# kept the mapping open).
 static uint32_t g_lastJoinServerReqSeq = 0;
 
+// ─── v6 SHM (2026-05-15) — LoginServerAPI-ready stability counter ────
+// Counts CONSECUTIVE Ticks where pinstLoginServerAPI is populated AND its
+// vtable matches eqmain+0x1002D0 (RVA_VTABLE_LoginServerAPI_Secondary).
+// Published as `loginServerAPIReady` = 1 to SHM only when:
+//   (a) counter >= LOGIN_SERVER_API_READY_STABILITY_THRESHOLD (3 ticks),
+//   AND
+//   (b) g_sawNonReadyAfterLogin == true (we've observed at least one
+//       non-ready tick since the last LOGIN_CMD_LOGIN reset).
+//
+// Condition (b) is critical — without it, the verifier sweep flagged
+// (Sonnet+Opus T2 convergent 2026-05-15) that the poll-block runs in
+// the SAME Tick as LOGIN_CMD_LOGIN's reset. If pinstLoginServerAPI is
+// still populated from a prior session (e.g., C# kept the SHM mapping
+// open across logins, or the previous session ended at char-select
+// where LoginServerAPI is still constructed), the counter climbs
+// 0→1→2→3 in ~48ms and republishes ready=1 BEFORE BURST 1 has even
+// typed credentials. C# `WaitForLoginServerAPIReady` returns true
+// near-instantly → JoinServerDirect dispatches pre-auth → fnResult=3
+// reproduces (the exact bug Fix 2 was supposed to close).
+//
+// The "saw non-ready" gate forces an actual transition through
+// pinstLoginServerAPI=NULL (or vtable mismatch) before publishing — at
+// EQ's login screen, pinstLoginServerAPI IS NULL per 2026-05-14 probe
+// history ("vtable=eqmain+0x1002D0 at EULA, NULL at login screen,
+// populates after Connect click"). So the gate naturally clears during
+// the BURST 1 / Connect window and only republishes once the new
+// auth handshake completes.
+//
+// Reset on every LOGIN_CMD_LOGIN so a stale stability signal from
+// the prior session can't bleed into the new one.
+static uint32_t g_loginServerAPIReadyTicks = 0;
+static bool     g_sawNonReadyAfterLogin = false;
+#define LOGIN_SERVER_API_READY_STABILITY_THRESHOLD 3
+
+// Distinguishing-failure logging cadence: rate-limit log spam by only
+// emitting the diagnostic when the failure mode changes or when the
+// stability counter was previously stable. Avoids tick-rate spam.
+static int      g_lastReadyFailureMode = 0;  // 0=none, 1=pAPI NULL, 2=vtable mismatch
+static uintptr_t g_lastReadyVtableRva  = 0;
+
+// PollLoginServerAPIReady — single-Tick probe of pinstLoginServerAPI.
+// Returns 1 when ready (pAPI populated AND vtable matches). Returns
+// 0 when not ready, with the FAILURE-MODE distinguished via out-param:
+//   *outFailMode = 0 — eqmain not loaded OR SEH faulted (rare)
+//   *outFailMode = 1 — pAPI was NULL (normal at login screen pre-Connect)
+//   *outFailMode = 2 — pAPI populated but vtable mismatch (Dalaya patch
+//                     shifted RVA, mid-construction, or unrelated global)
+// *outVtableRva is populated only when failMode==2 (the observed vtable
+// minus eqmainBase, useful for Dalaya-patch RVA hunting).
+//
+// SEH-wrapped for the cross-module reads (eqmain could theoretically
+// unload, though we're inside its process so this is defense-in-depth).
+//
+// Uses GetModuleHandleA rather than LoadLibraryA because we're called
+// every Tick (~16ms): the LoadLibraryA refcount-bump that JoinServerDirect
+// does is appropriate for a single-shot call across module boundaries,
+// but here we just need the current base address. eqmain is loaded by
+// eqgame.exe's own statically-linked init; no risk of it not being present
+// during the autologin window.
+static bool PollLoginServerAPIReady(int *outFailMode, uintptr_t *outVtableRva) {
+    *outFailMode = 0;
+    *outVtableRva = 0;
+
+    HMODULE hEqmain = GetModuleHandleA("eqmain.dll");
+    if (!hEqmain) return false;
+
+    uintptr_t eqmainBase = (uintptr_t)hEqmain;
+    void *pAPI = nullptr;
+    void *vtable = nullptr;
+
+    __try {
+        pAPI = *(void **)(eqmainBase + EQMainOffsets::RVA_PINST_LoginServerAPI);
+        if (!pAPI) {
+            *outFailMode = 1;  // pAPI is NULL — normal at login screen
+            return false;
+        }
+        vtable = *(void **)pAPI;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+
+    uintptr_t expectedVtable = eqmainBase + EQMainOffsets::RVA_VTABLE_LoginServerAPI_Secondary;
+    if ((uintptr_t)vtable != expectedVtable) {
+        *outFailMode = 2;  // vtable mismatch — Dalaya patch / mid-construction
+        *outVtableRva = (uintptr_t)vtable - eqmainBase;
+        return false;
+    }
+    return true;
+}
+
 // ─── XWM constants (from MQ2 EQClasses.h) ─────────────────────
 #define XWM_LCLICK          1
 #define XWM_LMOUSEUP        2
@@ -396,6 +486,26 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
             // Combo G success is not confused with a prior session's. C# only
             // honors the gate when the flag is set DURING the current session.
             loginShm->comboGWriteOk = 0;
+            // Fix 2 (v6 SHM, 2026-05-15): reset the LoginServerAPI-ready
+            // stability counter + SHM flag. pinstLoginServerAPI may already
+            // be populated from a prior session's auth (especially if the
+            // mapping was kept open across logins), but the 3-tick stability
+            // count must be re-earned in the current session before C# is
+            // allowed to fire JoinServerDirect on it.
+            //
+            // R2 (verifier-driven 2026-05-15, Sonnet+Opus T2 convergent):
+            // ALSO reset g_sawNonReadyAfterLogin to false. This forces
+            // the poll-block to observe at least one not-ready tick
+            // BEFORE it's allowed to publish ready=1 — defeats the
+            // "stale pAPI from prior session republishes in the same
+            // Tick as the reset" race. At EQ's login screen,
+            // pinstLoginServerAPI IS NULL per probe history, so the
+            // gate naturally clears within ~1 tick on the happy path.
+            g_loginServerAPIReadyTicks = 0;
+            g_sawNonReadyAfterLogin = false;
+            g_lastReadyFailureMode = 0;
+            g_lastReadyVtableRva = 0;
+            loginShm->loginServerAPIReady = 0;
             InvalidateWidgets();
             SetPhase(loginShm, PHASE_WAIT_LOGIN_SCREEN);
             // Username is a credential half on Dalaya — redacted for parity with
@@ -420,6 +530,103 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         }
 
         loginShm->command = LOGIN_CMD_NONE;
+    }
+
+    // ─── Fix 2 (v6 SHM, 2026-05-15) — LoginServerAPI-ready poll ───
+    //
+    // Poll pinstLoginServerAPI + vtable every Tick. When populated AND
+    // vtable matches for >= 3 CONSECUTIVE Ticks, publish ready=1 to SHM.
+    // Any bad tick (NULL or vtable mismatch) resets the counter AND flag
+    // immediately — defends against transient construction states.
+    //
+    // Cost: ~3 memory reads + SEH frame per Tick (Tick runs every ~16ms
+    // on the EQ game thread cadence). Negligible compared to the existing
+    // FindWindowByName heap walks already gated by autoLoginActive.
+    //
+    // The poll is unconditional (NOT gated on autoLoginActive) because:
+    //   (a) GetModuleHandleA is free (no DLL search-order walk)
+    //   (b) Cross-process SHM writes are publication-only; the C# side
+    //       only reads the field during its active autologin window
+    //   (c) Unconditional polling means transitions during the small
+    //       window between SetAutoLoginActive(true) and the JoinServerDirect
+    //       dispatch are captured without race
+    //
+    // The C# side (AutoLoginManager.TryJoinServerDirectOrFallback) polls
+    // this field with a 5000ms timeout before firing JoinServerDirect. If
+    // the flag never reaches 1, dispatch is skipped — caller falls through
+    // to BURST 2 (server-select Enter PostMessage), preserving the
+    // pre-Fix-2 behavior on the slow-auth path.
+    {
+        int failMode = 0;
+        uintptr_t vtableRva = 0;
+        bool readyNow = PollLoginServerAPIReady(&failMode, &vtableRva);
+
+        if (readyNow) {
+            if (g_loginServerAPIReadyTicks < UINT32_MAX) {
+                g_loginServerAPIReadyTicks++;
+            }
+            // R2 verifier-fix (2026-05-15): the publish-gate now requires
+            // BOTH the 3-tick stability AND g_sawNonReadyAfterLogin==true.
+            // The second condition forces an actual transition through
+            // pAPI=NULL (or vtable-mismatch) since the last LOGIN_CMD_LOGIN
+            // before allowing republish — defeats the "stale pAPI republishes
+            // in same Tick as reset" race that Sonnet+Opus T2 convergent
+            // flagged. C# WaitForLoginServerAPIReady is read-side; native
+            // is the publisher; the gate enforces session-fresh semantics.
+            if (g_loginServerAPIReadyTicks >= LOGIN_SERVER_API_READY_STABILITY_THRESHOLD &&
+                g_sawNonReadyAfterLogin) {
+                // Edge-log the transition 0→1 so the DLL log makes the
+                // auth-completion signal observable without spamming on
+                // every subsequent tick.
+                if (loginShm->loginServerAPIReady == 0) {
+                    DI8Log("login_sm: LoginServerAPI ready — pinstLoginServerAPI "
+                           "populated + vtable@eqmain+0x1002D0 stable for %u ticks "
+                           "(transition through not-ready observed since LOGIN)",
+                           (unsigned)g_loginServerAPIReadyTicks);
+                }
+                loginShm->loginServerAPIReady = 1;
+                // Reset failure-mode tracker once successfully published.
+                g_lastReadyFailureMode = 0;
+                g_lastReadyVtableRva = 0;
+            }
+        } else {
+            // R2 verifier-fix: mark that we've seen at least one
+            // not-ready tick in this session — required gate for the
+            // next ready=1 publish.
+            g_sawNonReadyAfterLogin = true;
+
+            // Edge-log the 1→0 transition with the SPECIFIC failure mode
+            // so a Dalaya-patch RVA shift surfaces in the DLL log without
+            // forcing a Ghidra dive. Rate-limited: only emit when the
+            // failure mode CHANGES or when we were previously publishing
+            // ready=1 (the "edge").
+            bool wasPublishing = (loginShm->loginServerAPIReady != 0);
+            bool modeChanged = (failMode != g_lastReadyFailureMode) ||
+                               (failMode == 2 && vtableRva != g_lastReadyVtableRva);
+
+            if (wasPublishing || modeChanged) {
+                if (failMode == 1) {
+                    DI8Log("login_sm: LoginServerAPI not-ready — pinstLoginServerAPI "
+                           "is NULL (normal pre-Connect at login screen, or "
+                           "post-error-disconnect)");
+                } else if (failMode == 2) {
+                    DI8Log("login_sm: LoginServerAPI not-ready — pAPI populated but "
+                           "vtable mismatch: observed eqmain+0x%06X, expected "
+                           "eqmain+0x%06X (Dalaya RVA shift? mid-construction? "
+                           "unrelated global at +0x150164?)",
+                           (unsigned)vtableRva,
+                           (unsigned)EQMainOffsets::RVA_VTABLE_LoginServerAPI_Secondary);
+                } else {
+                    DI8Log("login_sm: LoginServerAPI not-ready — eqmain not "
+                           "loaded or SEH faulted during pAPI/vtable read");
+                }
+                g_lastReadyFailureMode = failMode;
+                g_lastReadyVtableRva = vtableRva;
+            }
+
+            g_loginServerAPIReadyTicks = 0;
+            loginShm->loginServerAPIReady = 0;
+        }
     }
 
     // ─── Diff 4 (v4 SHM, 2026-05-15) — JoinServerDirect RPC ────────
@@ -654,22 +861,48 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
         // advancement and skipped its keystroke fallback. Verified via
         // eqswitch-dinput8-{pid}.log on 2026-04-25 dual-box test.
         if (!g_pConnectButton) {
-            // ITER 12 v2 (toggle re-enabled 2026-05-15): try MQ2-style structural
-            // traversal first (~few ms), fall back to legacy heap-cross-ref scan
-            // (~3.2s) on miss. The outer `!g_pConnectButton` check is the
-            // cache-first guard — MQ2-style only runs when cache cold. Toggle
-            // was false 2026-04-26 → 2026-05-15 due to game-thread starvation
-            // (see eqmain_widgets_mq2style.h:82-105 for re-enable rationale).
-            // 2026-05-15 dual-box smoke regression: legacy heap-cross-ref
-            // returned a CXMLDataPtr definition for LOGIN_ConnectButton (rejected
-            // by IsEQMainButtonWidget), retried 3× then C# fell back to BURST 1
-            // — re-enabling structural lookup pulls the LIVE widget instead.
+            // v3.20.5 (2026-05-15) — PROXIMITY-TO-PASSWORD heuristic for
+            // ConnectButton, matching the password-edit lookup pattern.
+            // Walks all CButtonWnd-vtable widgets globally, picks one closest
+            // to g_pPasswordEdit. The connect button is allocated in the same
+            // SIDL-screen cluster as the password edit. Prior legacy
+            // FindWindowByName returned CXMLDataPtr definitions (rejected by
+            // IsEQMainButtonWidget) so we never had a live button to click —
+            // C# fell back to a VK_RETURN keystroke which doesn't fire EQ's
+            // submit path the same way WndNotification(XWM_LCLICK) does.
             void *pCandidate = nullptr;
-            if (EQMainWidgetsMQ2::kMQ2StyleWidgetLookup) {
+            // v3.20.5 — re-resolve g_pPasswordEdit if InvalidateWidgets nulled
+            // it on a gameState transition between PHASE_TYPING and here.
+            // The proximity-to-password heuristic NEEDS the password anchor;
+            // if absent we silently skip to MQ2-style which is broken on Dalaya.
+            DI8Log("login_sm: PHASE_CLICKING_CONNECT entry — g_pPasswordEdit=%p "
+                   "(pre-resolve)", g_pPasswordEdit);
+            if (!g_pPasswordEdit) {
+                g_pPasswordEdit = EQMainWidgets::FindLivePasswordCEditWnd();
+                DI8Log("login_sm: re-resolved password edit at click phase — "
+                       "g_pPasswordEdit=%p", g_pPasswordEdit);
+            }
+            if (g_pPasswordEdit) {
+                pCandidate = EQMainWidgetsMQ2::FindButtonNearWidget(g_pPasswordEdit);
+                if (pCandidate && EQMainOffsets::IsEQMainButtonWidget(pCandidate)) {
+                    DI8Log("login_sm: LOGIN_ConnectButton resolved via PROXIMITY-TO-PASSWORD "
+                           "@ %p (anchor=%p)", pCandidate, g_pPasswordEdit);
+                } else {
+                    if (pCandidate) {
+                        DI8Log("login_sm: PROXIMITY-TO-PASSWORD returned %p but failed "
+                               "IsEQMainButtonWidget; falling back to MQ2-style + legacy",
+                               pCandidate);
+                    }
+                    pCandidate = nullptr;
+                }
+            }
+            // Fallback chain: MQ2-style FindChildByName (broken on Dalaya
+            // CXMLDataManager-heuristic), then legacy FindWindowByName
+            // (returns CXMLDataPtr defs).
+            if (!pCandidate && EQMainWidgetsMQ2::kMQ2StyleWidgetLookup) {
                 pCandidate = EQMainWidgetsMQ2::FindChildByName("connect", "LOGIN_ConnectButton");
                 if (pCandidate && EQMainOffsets::IsEQMainButtonWidget(pCandidate)) {
-                    DI8Log("login_sm: LOGIN_ConnectButton resolved via MQ2-style @ %p "
-                           "(skipping legacy heap-cross-ref scan)", pCandidate);
+                    DI8Log("login_sm: LOGIN_ConnectButton resolved via MQ2-style @ %p", pCandidate);
                 } else {
                     if (pCandidate) {
                         DI8Log("login_sm: MQ2-style returned %p but failed IsEQMainButtonWidget; "
@@ -677,7 +910,7 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
                     }
                     pCandidate = MQ2Bridge::FindWindowByName("LOGIN_ConnectButton");
                 }
-            } else {
+            } else if (!pCandidate) {
                 pCandidate = MQ2Bridge::FindWindowByName("LOGIN_ConnectButton");
             }
             if (pCandidate && EQMainOffsets::IsEQMainButtonWidget(pCandidate)) {
