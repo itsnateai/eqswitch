@@ -87,7 +87,40 @@
 // Backward-compatible append: v5 native readers see the first 1628
 // bytes unchanged and never publish the field, so C# v6 readers always
 // read 0 (timeout → BURST 2 fallback — graceful degradation).
-#define LOGIN_SHM_VERSION 6
+// Version 7 (2026-05-16): widget-presence probes appended for v3.21.0.
+// Native PollWidgetVisibilityToShm in login_state_machine.cpp polls 5
+// SIDL-screen widgets every Tick via EQMainWidgetsMQ2::FindLiveScreenByName
+// + IsCXWndVisible. Mirrors MQ2's OnPulse named-screen inspection across
+// the GAMESTATE_PRECHARSELECT block (MQ2AutoLogin.cpp:1195-1240, source
+// for "connect"/"serverselect"/"okdialog"/"yesnodialog") AND the
+// GAMESTATE_CHARSELECT block (MQ2AutoLogin.cpp:1156-1191, source for
+// "ConfirmationDialogBox"). Plus ConfirmationDialogBox text mirror (parallel to
+// v3's okDisplayText) so C# can detect the "Loading Characters" stuck-
+// state and the EULA/orderwindow prompt-windows variant without a second
+// SHM bump in v3.23.0.
+//
+// Field group:
+//   widgetConnectVisible        — connect screen (login UI)
+//   widgetServerSelectVisible   — serverselect screen
+//   widgetOkDialogVisible       — okdialog (parent of OK_Display)
+//   widgetYesNoDialogVisible    — yesnodialog (kick-session prompt)
+//   widgetConfirmDialogVisible  — ConfirmationDialogBox (Loading Characters etc.)
+//   widgetConfirmDialogText     — CD_TextOutput STML when ConfirmDialog visible,
+//                                 empty when not
+//   widgetTickSeq               — increments each probe pass; C# uses to
+//                                 detect probe staleness (no advance for N
+//                                 polls → DLL crashed or unloaded)
+//
+// Consumer in C# (v3.21.0): observability only. RunLoginSequence does NOT
+// branch on these bools yet — they are exposed via a new WidgetState reader
+// for logging + verification. v3.22.0 will rewrite RunLoginSequence as a
+// tick loop that reads these to choose dispatch action.
+//
+// Backward-compatible append: v6 native readers see the first 1632 bytes
+// unchanged and never publish these fields. C# v7 readers always observe
+// 0/empty (interpreted as "no probe data available" → fall through to
+// existing rect-stability heuristic — graceful degradation).
+#define LOGIN_SHM_VERSION 7
 
 // C# -> DLL: what to do
 enum LoginCommand : uint32_t {
@@ -299,5 +332,31 @@ struct LoginShm {
     // publish this field, so C# v6 readers always observe 0 → timeout →
     // BURST 2 fallback (graceful degradation matching pre-Fix-2 behavior).
     volatile uint32_t loginServerAPIReady;
+
+    // ── v7 (2026-05-16) — Widget-presence probes ─────────────────
+    //
+    // DLL → C#: per-tick visibility snapshot for 5 SIDL-screen widgets.
+    // Each field is 1 when EQMainWidgetsMQ2::FindLiveScreenByName resolved
+    // a non-null widget AND IsCXWndVisible returned true on the most
+    // recent tick. 0 otherwise (widget not found, not visible, or eqmain
+    // not loaded). All cleared to 0 when loginShm magic-gated probe exits
+    // early (e.g., bare-launch PIDs without an open mapping).
+    //
+    // widgetConfirmDialogText: when widgetConfirmDialogVisible == 1, the
+    // 256-byte UTF-8 STML body of ConfirmationDialogBox.CD_TextOutput.
+    // Empty when ConfirmDialog not visible. C# v3.23.0 will match against
+    // "Loading Characters" / "Do you accept these rules?" / "characters
+    // missing" to choose action; v3.21.0 just exposes it for logging.
+    //
+    // widgetTickSeq: monotonic increment per probe pass. C# can read this
+    // twice ~100ms apart to verify the DLL is alive and probing. Wraps at
+    // UINT32_MAX which gives ~32 years at 2Hz — non-issue.
+    volatile uint32_t widgetConnectVisible;
+    volatile uint32_t widgetServerSelectVisible;
+    volatile uint32_t widgetOkDialogVisible;
+    volatile uint32_t widgetYesNoDialogVisible;
+    volatile uint32_t widgetConfirmDialogVisible;
+    char              widgetConfirmDialogText[LOGIN_ERROR_LEN];
+    volatile uint32_t widgetTickSeq;
 };
 #pragma pack(pop)
