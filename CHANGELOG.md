@@ -1,6 +1,108 @@
 # Changelog
 
-## v3.22.7 — Settings UI Flag glyph: SM-path LastLoginResult writes (2026-05-17)
+## v3.22.8 — Regression fix: defer SaveImmediate out of SM tick path (2026-05-17)
+
+C#-only behavioral patch. Closes a v3.22.7 regression caught at first team4
+smoke (post-deploy): both clients reached char-select and STOPPED there
+instead of advancing to in-game. v3.22.5 + v3.22.6 smoke on the identical
+team4 scenario both reached in-game cleanly.
+
+### The regression
+
+v3.22.7 introduced `ConfigManager.SaveImmediate` calls inside the
+`RunLoginStateMachine` dispatch tick — specifically at the CharSelect
+transition where the "ok" indicator was written. On a paired (multi-client)
+smoke, both SMs hit that exact line within seconds of each other and
+contended on the shared `ConfigManager._saveLock` (plus backup rotation
+into `backups/`). Tick-time disk I/O + lock contention stalled the SM
+long enough that `StepCharSelect` either failed to fire selection-by-slot
+or fired it after the bridge state had shifted, leaving both clients
+visible at the EQ char-select screen.
+
+Single-client autologin probably would have worked because there was no
+cross-SM contention. The bug surfaced only because the smoke methodology
+fires two clients simultaneously.
+
+### Why v3.22.5/v3.22.6 didn't show it
+
+Neither release called SaveImmediate from the SM dispatch. v3.22.6 was a
+pure Native code-motion reorder (no SaveImmediate anywhere new). v3.22.5
+added the anchor-zero loop in Native only (no C# disk I/O). v3.22.7 was
+the first release to introduce mid-tick disk I/O from the SM path.
+
+The legacy `RunLoginSequence` calls SaveImmediate too (at line 2704) but
+fires it AFTER the long blocking `WaitForScreenTransition` call — so two
+clients' saves were naturally desynchronized by ~variable EQ render times.
+v3.22.7's placement at the exact transition moment removed that desync.
+
+### The fix
+
+Move SaveImmediate OUT of the dispatch tick into the `RunLoginStateMachine`
+`finally` block. Mark `pendingResult = "ok"` (or `"fail"`) in-memory only
+during the tick, defer the disk write to SM exit.
+
+Why this works:
+- **Desynchronizes saves**: each SM exits at its own time (driven by
+  per-client EQ render timing, network latency, etc.), not at the
+  synchronized CharSelect transition moment. Lock contention spreads
+  naturally.
+- **Removes tick-time disk I/O**: SM dispatch ticks return to being pure
+  in-memory state transitions. StepCharSelect's char-list polling +
+  selection-ack waits aren't preceded by disk I/O latency.
+- **Try/catch wraps the deferred save**: a SaveImmediate failure can't
+  break the rest of the finally chain (loginShm Dispose, FireLoginComplete,
+  writer Deactivate, charSelect Close). The save failure is logged but
+  non-fatal — same posture as the legacy "fail" branch which doesn't gate
+  on SaveImmediate success either.
+- **okWritten latch semantics preserved**: still set true at CharSelect
+  transition, still prevents downgrade if later phases fail. The change
+  is purely WHERE the disk write happens, not WHAT gets written.
+
+### Edit footprint
+
+`Core/AutoLoginManager.cs`:
+- New local `string? pendingResult = null;` alongside `okWritten` at SM init.
+- "ok" mark block (CharSelect transition): `pendingResult = "ok"; okWritten = true;`
+  + log. NO disk write here.
+- "fail" mark block (terminal Error + EQ-alive): `pendingResult = "fail";`
+  + log. NO disk write here.
+- New deferred save in finally block (FIRST thing in finally, before
+  the existing SendCancelCommand / Dispose / FireLoginComplete chain):
+  if pendingResult non-null, do `account.LastLoginAt = DateTime.UtcNow;
+  account.LastLoginResult = pendingResult; ConfigManager.SaveImmediate(_config);`
+  wrapped in try/catch.
+
+~25 net LOC delta vs v3.22.7 (mostly comment rewrites + the new finally
+block). csproj `<Version>` bump 3.22.7 → 3.22.8.
+
+### Verification
+
+- Smoke gate: re-fire team4. Expected: both clients reach in-game like
+  v3.22.5/v3.22.6 (functional path restored). Settings UI Flag column
+  should still flip to ✓ for both gotquiz + gotquiz1 after autologin
+  completes (the v3.22.7 indicator-fix intent is preserved, just with
+  the disk write moved to SM exit instead of CharSelect transition).
+- DebugView / `eqswitch.log` expected lines (per client):
+  - `AutoLogin-SM: marked LastLoginResult=ok pending SM-exit save for <name> (charselect reached at t=...ms)` — fires at CharSelect transition
+  - `AutoLogin-SM: deferred SaveImmediate(ok) for <name> at SM-exit` — fires when SM finally block runs
+
+### Honesty disclosure
+
+The root cause (lock contention vs tick-time disk I/O vs something else
+entirely) is a hypothesis. Without `eqswitch.log` from the v3.22.7 failed
+smoke I can't pin it definitively. The fix shape is robust either way:
+even if SaveImmediate-in-tick wasn't the proximate cause, moving disk I/O
+out of the dispatch tick is the architecturally correct choice. If
+v3.22.8 smoke also fails, drop to log analysis.
+
+## v3.22.7 — Settings UI Flag glyph: SM-path LastLoginResult writes (2026-05-17) — REGRESSION, superseded by v3.22.8
+
+⚠ **v3.22.7 binary regressed multi-client autologin** — both clients
+stopped at char-select on team4 smoke. See v3.22.8 entry above for root
+cause + fix. Source + tag remain on origin; binary was superseded by
+v3.22.8 before any persistence beyond proggy/mirror snapshots. The
+intended v3.22.7 fix (SM-path LastLoginResult writes) is preserved in
+v3.22.8 with the SaveImmediate moved to SM-exit.
 
 C#-only behavioral patch. Closes `bug_eqswitch_login_complete_flag_stays_x` —
 the Settings UI "Flag" column glyph never updated after a successful autologin

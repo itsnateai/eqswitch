@@ -867,14 +867,26 @@ public class AutoLoginManager
         KeyInputWriter? writer = null;
         IntPtr hwnd = IntPtr.Zero;
         bool sentCancelOnExit = false;
-        // v3.22.7: LastLoginResult bookkeeping for the SM path. Mirrors the
-        // legacy RunLoginSequence writes at lines 2685/2704. Pre-v3.22.7 the
-        // SM path never wrote LastLoginResult, so the Settings UI Flag glyph
-        // stayed at whatever the prior session's value was (empty → "—",
-        // "fail" → "✗") regardless of actual outcome. v3.22.0+ flipped Nate's
-        // UseStateMachine to true, which bypassed the legacy writes. See
-        // bug_eqswitch_login_complete_flag_stays_x.md for full investigation.
+        // v3.22.7/v3.22.8: LastLoginResult bookkeeping for the SM path.
+        // Mirrors the legacy RunLoginSequence writes at lines 2685/2704.
+        // Pre-v3.22.7 the SM path never wrote LastLoginResult, so the
+        // Settings UI Flag glyph stayed at whatever the prior session's
+        // value was. v3.22.0+ flipped UseStateMachine to true, which
+        // bypassed the legacy writes. See bug_eqswitch_login_complete_flag_stays_x.md.
+        //
+        // v3.22.8: regression-fix on v3.22.7's tick-time SaveImmediate.
+        // v3.22.7 called ConfigManager.SaveImmediate from inside the
+        // dispatch tick at the CharSelect transition — on multi-client
+        // smoke, BOTH SMs hit that line within seconds of each other and
+        // contended on _saveLock + backup rotation, stalling the tick
+        // long enough that StepCharSelect failed to fire char-selection
+        // → both clients stopped at char-select visible in EQ. The fix:
+        // mark `pendingResult` in-memory only during the tick loop, and
+        // defer the actual SaveImmediate to the SM's finally block where
+        // each client's save is naturally desynchronized by its own
+        // exit timing rather than the synchronized transition moment.
         bool okWritten = false;
+        string? pendingResult = null;
         var current = LoginPhase.WaitLoginScreen;
         // tickSeq staleness gate uses an "observed at least once" sentinel rather than
         // gating on nonzero — the DLL can legitimately publish 0 indefinitely if its
@@ -1119,24 +1131,19 @@ public class AutoLoginManager
                     string aheadTag = nativeAhead ? $" [native-ahead: nativePhase={nativePhase}, C# stalling at {next} until Iter-2]" : string.Empty;
                     FileLogger.Info($"AutoLogin-SM: {current} → {next} (tick={tickCount}, t={sw.ElapsedMilliseconds}ms, " +
                         $"{widgets.DiagSummary()}, gameState={gameState}, nativePhase={nativePhase}){aheadTag}");
-                    // v3.22.7: SM-path mirror of RunLoginSequence:2697-2705 — first
-                    // transition into CharSelect is the "password accepted by login
-                    // server AND char-select rendered" boundary. Mark "ok" now so a
-                    // downstream Enter-World failure doesn't downgrade a successful
-                    // login to ✗. Write order: LastLoginAt FIRST, LastLoginResult
-                    // LAST — Nullable<DateTime> is 16 bytes (non-atomic) on x64;
-                    // writing it before the atomic string-reference assignment means
-                    // a UI-thread reader observing a non-default LastLoginResult is
-                    // guaranteed (under x64 memory ordering) to see the matching
-                    // LastLoginAt. SaveImmediate bypasses ConfigManager.Save's
-                    // Windows.Forms.Timer which can't tick on this background thread.
+                    // v3.22.8: mark pendingResult in-memory only — actual write
+                    // + SaveImmediate happens in the finally block at SM exit
+                    // (avoids tick-time disk I/O + lock contention with sibling
+                    // SMs hitting this same line at the synchronized CharSelect
+                    // transition moment). The "first transition into CharSelect
+                    // is the password-accepted boundary" semantic is preserved
+                    // — okWritten latches once and prevents downgrade. See SM-
+                    // entry comment for the v3.22.7→v3.22.8 regression history.
                     if (next == LoginPhase.CharSelect && !okWritten)
                     {
-                        account.LastLoginAt = DateTime.UtcNow;
-                        account.LastLoginResult = "ok";
-                        ConfigManager.SaveImmediate(_config);
+                        pendingResult = "ok";
                         okWritten = true;
-                        FileLogger.Info($"AutoLogin-SM: LastLoginResult=ok for {account.Name} (charselect reached at t={sw.ElapsedMilliseconds}ms)");
+                        FileLogger.Info($"AutoLogin-SM: marked LastLoginResult=ok pending SM-exit save for {account.Name} (charselect reached at t={sw.ElapsedMilliseconds}ms)");
                     }
                     current = next;
                 }
@@ -1176,14 +1183,12 @@ public class AutoLoginManager
                 {
                     FileLogger.Warn($"AutoLogin-SM: SendCancelCommand on Error exit failed: {ex.Message}");
                 }
-                // v3.22.7: SM-path mirror of RunLoginSequence:2668-2692 — terminal
-                // Error without a prior "ok" means we never reached charselect.
-                // Mark "fail" so the Settings UI Flag column shows ✗. Skip if the
-                // EQ process is gone (crashed / user-killed) per the risk register
-                // at line 2673-2676 — process death is not the password's fault.
-                // Also skip if okWritten is already true (we DID reach charselect
-                // and the SM failed later in EnteringWorld plumbing — that's not
-                // a login failure per the legacy comment at line 2697-2702).
+                // v3.22.8: mark pendingResult in-memory only — actual write
+                // happens in finally block. See SM-entry comment for v3.22.7→
+                // v3.22.8 rationale. Skip if okWritten (downgrade-protect:
+                // post-charselect failure is plumbing, not login). Skip if EQ
+                // process is gone (crash / kill not the password's fault, per
+                // RunLoginSequence:2673-2676 risk register).
                 if (!okWritten)
                 {
                     bool eqAlive = false;
@@ -1196,11 +1201,8 @@ public class AutoLoginManager
                     catch (InvalidOperationException) { /* race between GetProcessById and HasExited */ }
                     if (eqAlive)
                     {
-                        // Same write-order + SaveImmediate rationale as the "ok" site above.
-                        account.LastLoginAt = DateTime.UtcNow;
-                        account.LastLoginResult = "fail";
-                        ConfigManager.SaveImmediate(_config);
-                        FileLogger.Info($"AutoLogin-SM: LastLoginResult=fail for {account.Name} (terminal Error, PID alive)");
+                        pendingResult = "fail";
+                        FileLogger.Info($"AutoLogin-SM: marked LastLoginResult=fail pending SM-exit save for {account.Name} (terminal Error, PID alive)");
                     }
                     else
                     {
@@ -1229,6 +1231,37 @@ public class AutoLoginManager
         }
         finally
         {
+            // v3.22.8: deferred LastLoginResult SaveImmediate. v3.22.7 fired this
+            // INSIDE the dispatch tick at the CharSelect transition, which on
+            // multi-client smoke contended on _saveLock + backup rotation
+            // simultaneously across both SMs and stalled StepCharSelect →
+            // regression where both clients stopped at char-select. Moving the
+            // disk write here naturally desynchronizes the saves (each SM exits
+            // at its own time, not its own CharSelect-transition time) AND
+            // removes disk I/O from the tick path entirely. Try/catch so a save
+            // failure can't break the rest of the finally chain (loginShm
+            // Dispose, FireLoginComplete, etc.).
+            if (pendingResult != null)
+            {
+                try
+                {
+                    // Write order: LastLoginAt FIRST, LastLoginResult LAST.
+                    // Nullable<DateTime> is 16 bytes (non-atomic) on x64; writing
+                    // it before the atomic string-reference assignment means a
+                    // UI-thread reader observing a non-default LastLoginResult is
+                    // guaranteed (under x64 memory ordering) to see the matching
+                    // LastLoginAt. SaveImmediate bypasses ConfigManager.Save's
+                    // Windows.Forms.Timer which can't tick on background threads.
+                    account.LastLoginAt = DateTime.UtcNow;
+                    account.LastLoginResult = pendingResult;
+                    ConfigManager.SaveImmediate(_config);
+                    FileLogger.Info($"AutoLogin-SM: deferred SaveImmediate({pendingResult}) for {account.Name} at SM-exit");
+                }
+                catch (Exception saveEx)
+                {
+                    FileLogger.Warn($"AutoLogin-SM: deferred SaveImmediate failed for {account.Name}: {saveEx.Message}");
+                }
+            }
             // Iter-3 fix-round-2 (verifier T3-Opus HIGH-5): SendCancelCommand-on-Error
             // moved into finally so it fires for ALL Error exit paths — including the
             // early-return paths in entry initialization (loginShm.Open / charSelect.Open
