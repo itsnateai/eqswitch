@@ -832,6 +832,14 @@ public class AutoLoginManager
         uint lastTickSeq = 0;
         long lastTickSeqAdvanceMs = 0;
         int tickCount = 0;
+        // Path A diagnostic (Iter-1.5, 2026-05-16) — sentinels force a first-tick observation
+        // log entry. The OBS log fires on ANY change to nativePhase / gameState / widget
+        // visibility regardless of C# state transition, so during Iter-1's TypingCredentials
+        // stub-stall it traces what Native does on its own. Gates Iter-2 thin-orchestrator
+        // vs C#-driver decision. See plan-doc § "Iter-1 Smoke Results".
+        LoginPhase lastObservedPhase = (LoginPhase)uint.MaxValue;  // sentinel: real phases are 0..99
+        int lastObservedGameState = int.MinValue;
+        string lastObservedWidgetSig = "__init__";
 
         try
         {
@@ -910,6 +918,19 @@ public class AutoLoginManager
                     FileLogger.Error($"AutoLogin-SM: widgetTickSeq stalled at {widgets.TickSeq} for >{TickSeqStaleThresholdMs}ms after arming — DLL probe died (PID {pid})");
                     current = LoginPhase.Error;
                     break;
+                }
+
+                // Path A observability — emit an OBS entry on any change to nativePhase,
+                // gameState, or widget visibility (DiagSummary covers connect/ss/ok/yn/cd + TickSeq).
+                // Independent of the state-transition log below, so the Iter-1 stub-stall trace
+                // captures Native's autonomous progression instead of just C# decisions.
+                string widgetSig = widgets.DiagSummary();
+                if (nativePhase != lastObservedPhase || gameState != lastObservedGameState || widgetSig != lastObservedWidgetSig)
+                {
+                    FileLogger.Info($"AutoLogin-SM-OBS: tick={tickCount} t={sw.ElapsedMilliseconds}ms cstate={current} nativePhase={nativePhase} gameState={gameState} {widgetSig} (PID {pid})");
+                    lastObservedPhase = nativePhase;
+                    lastObservedGameState = gameState;
+                    lastObservedWidgetSig = widgetSig;
                 }
 
                 // Per-tick dispatch — Iter-1 implements WaitLoginScreen + (implicit) Error only.
