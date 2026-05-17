@@ -2789,6 +2789,47 @@ int MQ2Bridge::ReadGameState() {
     }
 }
 
+// ─── MQ2Bridge::IsCharSelectAvailable ──────────────────────────
+//
+// v3.22.0 Iter-2A (2026-05-16) — Dalaya-reliable char-select detection.
+//
+// gGameState on Dalaya never advances past 0 even when EQ has created
+// the CCharacterSelect window (Path A smoke confirmed). pinstCCharacterSelect
+// DOES update reliably — the existing transition-tracking block in
+// EQMainWidgetsMQ2::FindLiveScreenByName already double-derefs it at
+// mq2_bridge.cpp:3047-3051 for heap-scan cache invalidation. This function
+// exposes the same safe double-deref as a boolean for the v8 SHM publish.
+//
+// Returns true iff:
+//   - g_pinstCharSelect symbol was resolved at DLL load (non-null)
+//   - *g_pinstCharSelect (the storage address) is non-null AND readable
+//   - *(void**)storage (the actual CCharacterSelect window pointer) is non-null
+//
+// Returns false on any SEH fault at either deref level. The IsReadablePtr
+// guard prevents AVs on the storage→*storage step during teardown windows
+// (storage address briefly points at unmapped memory during MQ2 Shutdown()
+// re-init cycles).
+bool MQ2Bridge::IsCharSelectAvailable() {
+    if (!g_pinstCharSelect) return false;
+    __try {
+        uintptr_t storageAddr = *g_pinstCharSelect;
+        if (!storageAddr) return false;
+        if (!IsReadablePtr((void *)storageAddr, sizeof(void *))) return false;
+        void *pCharSelWnd = *(void **)storageAddr;
+        if (!pCharSelWnd) return false;
+        // Defensive: confirm the inner pointer is mapped before C# acts on it.
+        // Match the IsReadablePtr guard the transition-tracker uses (mq2_bridge.cpp ~3086).
+        // T2-Opus + T3-Opus + T3-Sonnet convergent finding 2026-05-16: without this,
+        // a stale dangling pCharSelWnd from MQ2-Shutdown-in-progress would return true
+        // even though the underlying CCharacterSelect object has been freed.
+        if (!IsReadablePtr(pCharSelWnd, sizeof(void *))) return false;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 // ─── MQ2Bridge::FindWindowByName ───────────────────────────────
 
 static int g_findLogCount = 0;

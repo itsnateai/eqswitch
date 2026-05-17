@@ -892,6 +892,30 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
     if (loginShm->autoLoginActive) {
         PollOkDisplayToShm(loginShm);
         PollWidgetVisibilityToShm(loginShm);   // v3.21.0
+
+        // v8 (2026-05-16, v3.22.0 Iter-2A) — publish pinstCCharacterSelect availability
+        // as a Dalaya-reliable alternative to gGameState. Path A smoke confirmed
+        // gGameState never advances past 0 on Dalaya even at char-select; the
+        // pinstCCharacterSelect transition is the reliable signal. C# state machine
+        // (Iter-2B) consumes this for transitions from PHASE_WAIT_CONNECT_RESP onward.
+        //
+        // Gated on autoLoginActive (sibling pattern with PollWidget/OkDisplay) per
+        // T3-Opus principle 2026-05-16: cross-process SHM writes outside the autologin
+        // window were load-bearing for the 2026-05-15 Windows hung-app balloon root
+        // cause. Bare launches keep charSelectAvailable=0 (Open()-time zero) until
+        // C# sets autoLoginActive=1.
+        //
+        // Edge-detection log per T3-Sonnet/T3-Opus: production debug visibility on the
+        // 0→1 flip (the load-bearing Iter-2B transition trigger).
+        static uint32_t lastCsPublished = UINT32_MAX;  // sentinel: forces first-tick log
+        uint32_t csNew = MQ2Bridge::IsCharSelectAvailable() ? 1u : 0u;
+        if (csNew != lastCsPublished) {
+            DI8Log("login_sm: charSelectAvailable %u -> %u (gameState=%d, phase=%u)",
+                   lastCsPublished == UINT32_MAX ? 0u : lastCsPublished, csNew,
+                   gameState, (uint32_t)g_phase);
+            lastCsPublished = csNew;
+        }
+        loginShm->charSelectAvailable = csNew;
     }
 
     // Nothing to do if idle or terminal state
