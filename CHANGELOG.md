@@ -78,9 +78,11 @@ v3.22.2's CHANGELOG enumerated three deferred items:
 poll → zero). #3 prophylactically throttles a flicker that has not been
 observed. P8 closes a real, smoke-captured failure mode: today's
 gotquiz "Slot 1..Slot 10" lie. Shipping #1 alone keeps the patch
-surgical (~14 LOC across two sites, no new helpers, no new globals).
-#2 and #3 stay bundled with the v3.22.0 Iter-5 architectural-cleanup
-backlog.
+surgical (~14 LOC of behavior change across two sites, plus the
+in-flight diagnostic addition described below — one new `static volatile
+bool g_p8GateLogged` global mirroring the existing `g_uiFallbackLogged`
+pattern). #2 and #3 stay bundled with the v3.22.0 Iter-5
+architectural-cleanup backlog.
 
 ### Verification
 
@@ -151,6 +153,24 @@ backlog.
   but a defensive consumer reading `charNames[0]` regardless would see
   the prior tick's name. Pre-existing across all early-returns; bundle
   to v3.22.x with the per-entry tightening above.
+- **`g_p8GateLogged` reset gaps on uncommon transitions** (R2
+  verifiers — T2-Sonnet, T2-Opus, T3-Sonnet). The three reset sites
+  cover the standard charselect → in-world flow but NOT:
+  (a) charselect → login back-out (Dalaya holds `gameState==0`,
+  `pinstCCharacterSelect` goes non-null → null with no reset);
+  (b) same-address charselect-reuse after a back-out
+  (`lastObserved == pCharSelWnd` skips the transition block);
+  (c) `pinstCCharacterSelect` mid-cycle null flicker. Same pattern
+  shared with `g_uiFallbackLogged` — diagnostic-only impact (operator
+  may see one log line per full session instead of per cycle), no
+  runtime behavior bug.
+- **`g_p8GateLogged` is `static volatile bool`, not atomic** (T2-Opus
+  R2). Two-thread races (`PopulateCharacterData` from `ActivateThread`
+  vs Path A from `Poll`) can in principle produce ≤2 duplicate log
+  lines per cycle under contention. Effect is mild — log clutter, not
+  a runtime defect. The "one-shot" framing is best-effort, not strictly
+  serialized. Documented honestly rather than upgraded to
+  `InterlockedExchange8` since the impact is cosmetic.
 
 ### Verifier discipline
 
