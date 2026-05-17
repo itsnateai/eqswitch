@@ -120,7 +120,16 @@
 // unchanged and never publish these fields. C# v7 readers always observe
 // 0/empty (interpreted as "no probe data available" → fall through to
 // existing rect-stability heuristic — graceful degradation).
-#define LOGIN_SHM_VERSION 7
+// Version 8 (2026-05-16): charSelectAvailable bool appended for v3.22.0 Iter-2A.
+// Path A smoke (2026-05-16) confirmed gGameState on Dalaya never advances past
+// 0 even at char-select, breaking Native's PHASE_WAIT_CONNECT_RESP →
+// PHASE_SERVER_SELECT gating. pinstCCharacterSelect DOES update on Dalaya
+// (mq2_bridge tracks the transition for heap-scan cache invalidation), so v8
+// exposes it as a separate SHM signal C# can drive transitions from.
+// Backward-compatible append: v7 native readers stop reading at byte 1912 and
+// never publish this field. C# v8 readers always observe 0 when talking to a
+// v7 DLL — graceful degradation (state machine falls through to widget probes).
+#define LOGIN_SHM_VERSION 8
 
 // C# -> DLL: what to do
 enum LoginCommand : uint32_t {
@@ -358,5 +367,35 @@ struct LoginShm {
     volatile uint32_t widgetConfirmDialogVisible;
     char              widgetConfirmDialogText[LOGIN_ERROR_LEN];
     volatile uint32_t widgetTickSeq;
+
+    // ── v8 (2026-05-16) — pinstCCharacterSelect availability gate ───
+    //
+    // DLL → C#: 1 when MQ2's exported pinstCCharacterSelect points to a
+    // valid CCharacterSelect window (Dalaya-reliable char-select signal),
+    // 0 otherwise. Set per-Tick after the gameState read (Tick body in
+    // login_state_machine.cpp), so the value reflects the same poll-tick
+    // as gameState + widget probes — atomic from C#'s perspective at
+    // typical C# tick interval (250ms).
+    //
+    // Why a separate field instead of routing through gameState: gGameState
+    // on Dalaya stays at 0 throughout the entire login pipeline (Path A
+    // smoke 2026-05-16 18:02 confirmed via per-tick observation logging;
+    // DLL log shows zero `gameState X -> Y` transitions across 6+ min
+    // post-cancel even with both clients sitting at char-select). Root
+    // cause requires Ghidra/RE on Dalaya's patched dinput8.dll — either
+    // EQ stops writing gGameState post-login, or Native reads a stale
+    // offset. Out of scope for v3.22.0; we route around it.
+    //
+    // Consumer: AutoLoginManager.RunLoginStateMachine (v3.22.0 Iter-2B)
+    // uses this as the primary trigger for PHASE_WAIT_CONNECT_RESP →
+    // CharSelect transition. Widget probes (ConnectVisible / ServerSelect
+    // / OkDialog / YesNoDialog / ConfirmDialog) cover the rest of the
+    // pipeline; charSelectAvailable covers the gap where EQ has dismissed
+    // the login screen but server-select probes never light up (Dalaya's
+    // QUICK-CONNECT button slot=+0x34 skips server-select).
+    //
+    // volatile because cross-process shared mapping; volatile prevents the
+    // compiler from caching the read across the per-Tick poll loop.
+    volatile uint32_t charSelectAvailable;
 };
 #pragma pack(pop)

@@ -85,7 +85,7 @@ public sealed class LoginShmWriter : IDisposable
     // bytes unchanged and never publish the field, so C# v6 readers
     // always observe 0 → 5s timeout → BURST 2 fallback (graceful
     // degradation matching pre-v6 behavior).
-    private const uint Version = 7;
+    private const uint Version = 8;  // v3.22.0 Iter-2A — charSelectAvailable appended
     private const int MaxChars = 10;         // LOGIN_MAX_CHARS
     private const int NameLen = 64;          // LOGIN_NAME_LEN
     private const int PassLen = 128;         // LOGIN_PASS_LEN
@@ -93,7 +93,7 @@ public sealed class LoginShmWriter : IDisposable
     private const int CharLen = 64;          // LOGIN_CHAR_LEN
     private const int ErrorLen = 256;        // LOGIN_ERROR_LEN
 
-    // Total struct size: 1912 bytes (verified against login_shm.h v7)
+    // Total struct size: 1916 bytes (verified against login_shm.h v8)
     // v1 was 1340; v2 appended a 4-byte autoLoginActive field at offset 1340
     // (size 1344); v3 appended okDisplayText[256] at offset 1344 + a 4-byte
     // okDisplayClass at offset 1600 (size 1604); v4 appends 5×uint32
@@ -101,8 +101,9 @@ public sealed class LoginShmWriter : IDisposable
     // comboGWriteOk at offset 1624 (size 1628); v6 appends 1×uint32
     // loginServerAPIReady at offset 1628 (size 1632); v7 appends 5×uint32
     // widget-visibility flags + char[256] widgetConfirmDialogText +
-    // 1×uint32 widgetTickSeq starting at offset 1632 (size 1912).
-    private const int ShmSize = 1912;  // v7 layout — widget probes appended
+    // 1×uint32 widgetTickSeq starting at offset 1632 (size 1912); v8
+    // appends 1×uint32 charSelectAvailable at offset 1912 (size 1916).
+    private const int ShmSize = 1916;  // v8 layout — charSelectAvailable appended
 
     // ── Commands (C# → DLL) ──────────────────────────────────────
     private const uint CMD_NONE = 0;
@@ -158,8 +159,9 @@ public sealed class LoginShmWriter : IDisposable
     private const int OFF_WIDGET_CONFIRMDIALOG = 1648; // uint32 (4) — v7 append (out)
     private const int OFF_WIDGET_CONFIRMTEXT   = 1652; // char[256]  — v7 append (out)
     private const int OFF_WIDGET_TICKSEQ       = 1908; // uint32 (4) — v7 append (out)
+    private const int OFF_CHAR_SELECT_AVAILABLE = 1912; // uint32 (4) — v8 append (out)
+    // Total: 1916 ✓ (v8 = v7's 1912 + charSelectAvailable uint32)
     private const int ConfirmTextLen           = 256;  // paired with OFF_WIDGET_CONFIRMTEXT — named to match ErrorLen/ServerLen sibling convention
-    // Total: 1912 ✓ (was 1632 in v6)
 
     private sealed class MappingEntry : IDisposable
     {
@@ -330,6 +332,13 @@ public sealed class LoginShmWriter : IDisposable
         accessor.Write(OFF_WIDGET_CONFIRMDIALOG, (uint)0);
         accessor.WriteArray(OFF_WIDGET_CONFIRMTEXT, s_zeroBuffer, 0, ConfirmTextLen);
         accessor.Write(OFF_WIDGET_TICKSEQ,        (uint)0);
+        // v8 (2026-05-16) — zero charSelectAvailable so a stale "1" from the
+        // prior session (e.g., kill-tray-while-at-charselect, re-launch into
+        // login flow) can't trick the v3.22.0 state machine into transitioning
+        // to CharSelect before native re-publishes a fresh value. Same hazard
+        // pattern as the v6→v7 widget-probe zero block above (verifier-flagged
+        // convergent finding 2026-05-16).
+        accessor.Write(OFF_CHAR_SELECT_AVAILABLE, (uint)0);
     }
 
     // ─── Commands (C# → DLL) ─────────────────────────────────────
@@ -594,8 +603,8 @@ public sealed class LoginShmWriter : IDisposable
     }
 
     /// <summary>
-    /// Read widget-presence snapshot (v7). Returns false if mapping not open
-    /// for this PID or read failed.
+    /// Read widget-presence snapshot (v7) + charSelectAvailable (v8). Returns
+    /// false if mapping not open for this PID or read failed.
     /// </summary>
     public bool TryReadWidgetState(int pid, out WidgetState state)
     {
@@ -610,12 +619,13 @@ public sealed class LoginShmWriter : IDisposable
             uint yn  = entry.Accessor.ReadUInt32(OFF_WIDGET_YESNODIALOG);
             uint cd  = entry.Accessor.ReadUInt32(OFF_WIDGET_CONFIRMDIALOG);
             uint seq = entry.Accessor.ReadUInt32(OFF_WIDGET_TICKSEQ);
+            uint cs  = entry.Accessor.ReadUInt32(OFF_CHAR_SELECT_AVAILABLE);  // v8
 
             // Reuse existing ReadString helper used by ReadError (matches the
             // null-terminated char[N] pattern in the rest of this class).
             string text = ReadString(entry.Accessor, OFF_WIDGET_CONFIRMTEXT, ConfirmTextLen);
 
-            state = new WidgetState(cn != 0, ss != 0, ok != 0, yn != 0, cd != 0, text, seq);
+            state = new WidgetState(cn != 0, ss != 0, ok != 0, yn != 0, cd != 0, text, seq, cs != 0);
             return true;
         }
         catch (Exception ex)

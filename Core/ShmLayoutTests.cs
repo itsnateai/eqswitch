@@ -26,13 +26,14 @@ public static class ShmLayoutTests
         public uint Seq;
     }
 
-    // Mirrors Native/login_shm.h LoginShm v7. Field order, types, and Pack=1
+    // Mirrors Native/login_shm.h LoginShm v8. Field order, types, and Pack=1
     // must match the C++ struct exactly. Added v3.21.1 — the v3→v7 cascade
     // of 5 SHM bumps (autoLoginActive / okDisplayText+Class / JoinServer RPC /
     // comboGWriteOk / loginServerAPIReady / widget probes) shipped without
     // layout assertions; each bump compounded the silent-corruption surface
-    // on the next change. C#'s `volatile` keyword on the C++ side doesn't
-    // affect struct layout; only field offsets and sizes matter here.
+    // on the next change. v8 (2026-05-16, Iter-2A) adds charSelectAvailable.
+    // C#'s `volatile` keyword on the C++ side doesn't affect struct layout;
+    // only field offsets and sizes matter here.
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
     private struct LoginShm
     {
@@ -74,6 +75,7 @@ public static class ShmLayoutTests
         public uint WidgetConfirmDialogVisible;
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]  public byte[] WidgetConfirmDialogText;
         public uint WidgetTickSeq;
+        public uint CharSelectAvailable;                        // v8
     }
 
     // Mirrors Native/mq2_bridge.h CharSelectShm. Field order, types, and
@@ -165,12 +167,13 @@ public static class ShmLayoutTests
         const uint ExpectedCharSelMagic = 0x45534353; // "ESCS"
         failures += Assert("CharSelectShm.Magic value", 0x45534353u, ExpectedCharSelMagic);
 
-        // ── LoginShm layout — must match Native/login_shm.h v7 ───────
-        // Locks the 1912-byte ABI so a field add/reorder on either side
-        // surfaces as a test failure, not silent runtime SHM corruption.
-        // v3.21.1 addition — closes the test-coverage gap that compounded
-        // silently across v2 → v3 → v4 → v5 → v6 → v7 SHM bumps.
-        failures += Assert("LoginShm.Size", Marshal.SizeOf<LoginShm>(), 1912);
+        // ── LoginShm layout — must match Native/login_shm.h v8 ───────
+        // Locks the 1916-byte ABI (v7 was 1912; v8 adds charSelectAvailable
+        // uint32 at offset 1912 for v3.22.0 Iter-2A) so a field add/reorder
+        // on either side surfaces as a test failure, not silent runtime SHM
+        // corruption. v3.21.1 addition — closes the test-coverage gap that
+        // compounded silently across v2 → v3 → v4 → v5 → v6 → v7 → v8.
+        failures += Assert("LoginShm.Size", Marshal.SizeOf<LoginShm>(), 1916);
         failures += Assert("LoginShm.Magic offset",
             (int)Marshal.OffsetOf<LoginShm>(nameof(LoginShm.Magic)), 0);
         failures += Assert("LoginShm.Version offset",
@@ -249,6 +252,9 @@ public static class ShmLayoutTests
             (int)Marshal.OffsetOf<LoginShm>(nameof(LoginShm.WidgetConfirmDialogText)), 1652);
         failures += Assert("LoginShm.WidgetTickSeq offset",
             (int)Marshal.OffsetOf<LoginShm>(nameof(LoginShm.WidgetTickSeq)), 1908);
+        // v8 append (Iter-2A, 2026-05-16) — Dalaya-reliable char-select signal
+        failures += Assert("LoginShm.CharSelectAvailable offset",
+            (int)Marshal.OffsetOf<LoginShm>(nameof(LoginShm.CharSelectAvailable)), 1912);
 
         // Note: no LoginShm.Magic/Version value assertion. The existing
         // SharedKeyState.Magic and CharSelectShm.Magic asserts compare a
