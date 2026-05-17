@@ -88,42 +88,65 @@ publish path was relaxed.
 ### Verification
 
 - Native build clean: `Native/build-di8-inject.sh` exit 0,
-  `eqswitch-di8.dll` size ~243KB (small growth from new diagnostic strings,
-  new latch, P9 SEH branch, zero loop).
-- Edit footprint: +61 / -16 across `Native/mq2_bridge.cpp` and
-  `EQSwitch.csproj`. ~45 net LOC.
-- Empirical smoke: re-fire team4 hotkey on fresh `eqgame.exe` pair (10-slot
-  `gotquiz` + single-char `gotquiz1`). Expected: both clients reach
-  `EnteringWorld → Complete` as in v3.22.4, no `MQ2 heap in slot-mode`
-  lines, and DebugView (`mq2_bridge:` filter) shows zero
-  `P9 gate SEH in IsPlausibleName predicate` lines (proves the new SEH
-  branch is not pathologically firing).
+  `eqswitch-di8.dll` 242,688 bytes (+512 from v3.22.4's 242,176).
+- Edit footprint: +61 / -16 across `Native/mq2_bridge.cpp` and the
+  `<Version>` bump in `EQSwitch.csproj`.
+- **Empirical smoke: ✓ PASSED 2026-05-17.** Team4 fired on fresh
+  `eqgame.exe` pair (10-slot `gotquiz` + single-char `gotquiz1`).
+  Both clients reached in-game.
 - DebugView observability: a steady-state smoke should show at most one
   `reset heap-scan + slot-mode caches on charselect transition` per
-  charselect activation (the new line reads the same as before; the
-  internal `g_consecutiveNullPolls = 0` reset is intentionally not log-
-  visible to avoid `DI8Log` churn).
+  charselect activation. The internal `g_consecutiveNullPolls = 0`
+  reset is intentionally not log-visible to avoid `DI8Log` churn.
 
 ### Known Limits inherited (still open)
 
-- `kBadNames` blocks `"Bard"` / `"Cleric"` / `"Bold"` as character names
-  (inherited from v3.22.3 P8 predicate). Pathological player names; no
-  fix planned.
+- `kBadNames` blocklist blocks several legitimate-sounding strings as
+  character names: class names (`Bard`, `Cleric`, `Druid`,
+  `Enchanter`, `Magician`, `Monk`, `Necromancer`, `Paladin`, `Ranger`,
+  `Rogue`, `Shaman`, `Warrior`, `Wizard`, `Beastlord`, `Berserker`,
+  `Shadowknight`); player race names (`Human`, `Barbarian`, etc.); and
+  EQ-flavor short title-case strings present in zone/server/chat tables
+  (`Storm`, `Swift`, `Brave`, `Bold`, `Hunter`, `Shadow`, `Rider`,
+  `Scout`, `Valor`, `Pride`). v3.22.5's Path B column-discovery
+  promotion (item 3) extends this blocklist's reach to the column
+  discovery path — a character literally named one of these strings
+  would now fail Path B as well as P8/P9/heap-scan. Predicates were
+  already aligned in 5 of 6 charselect sites; v3.22.5 made the 6th
+  consistent. Net effect: zero new player loss (any character blocked
+  here would also have been blocked at P8/P9/heap-scan, so autologin
+  was already broken for them in v3.22.4). Inherited from v3.22.3 P8
+  predicate. Pathological player names; no fix planned.
 - P9 / P8 / uiFallback latch back-out gaps (per Known Limits #2 from
   v3.22.4 ship doc, deliberately not in v3.22.5 scope — see above).
-- Empirical smoke pending. v3.22.5 has not been measured against the
-  v3.22.4 regression scenario yet. Re-fire team4 is the ground truth.
+- **Anchor-zero partial-SEH window (new in v3.22.5, deferred to v3.22.6):**
+  The anchor-scan zero loop in Path C sits inside the same `__try` as
+  the `names[0]` write. If SEH fires partway through the zero loop
+  (catastrophic DLL-detach race during SHM access), `names[0]` holds
+  the target name (already written) and `names[1..k]` are zeroed while
+  `names[k+1..N-1]` still hold Path B2's `"Slot N"` placeholders — the
+  exact mixed state the loop was added to prevent. v3.22.6 fix: move
+  the zero loop to BEFORE the `names[0]` write so partial-SEH yields
+  clean-empty state (which the v3.22.4 P9 gate then defers correctly)
+  rather than mixed state. Realistic failure mode is dominated by the
+  catastrophic SEH itself (DLL is detaching); the verifier finding is
+  real but the risk window requires three coincident rare events. T2
+  Sonnet R1 callout.
 
 ### Behavior contract
 
 All four items are additive checks or zeros. None of them change the
-publisher's success-path semantics: when `entry0Real` is true at line
-~4212, the publish still fires identically to v3.22.4. The Path B
+publisher's success-path semantics: when `entry0Real` is true at the
+P9 gate, the publish still fires identically to v3.22.4. The Path B
 column-discovery change (item 3) tightens the validator but the rejected
 strings (`"Name"`, `"Race"`, etc.) are not valid character names in any
-EQ deployment — no real player loss. The anchor-scan zero (item 1)
-changes observable SHM state but C#'s functional name-match against
-`shm->names[0]` is identical pre- and post-fix.
+EQ deployment — no real player loss versus the inherited kBadNames
+caveat above. The anchor-scan zero (item 1) changes observable SHM
+state but **`shm->charCount` is deliberately left at Path B2's count
+of 10**, not reset to 1 — C#'s functional name-match against
+`shm->names[0]` is identical pre- and post-fix because C# match-by-name
+ignores empty slots; resetting `charCount` to 1 would be a behavioral
+change to the publisher invariant that v3.22.5 intentionally avoids.
 
 ## v3.22.4 — P9 publisher plausibility gate (2026-05-17)
 
