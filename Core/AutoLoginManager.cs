@@ -867,6 +867,14 @@ public class AutoLoginManager
         KeyInputWriter? writer = null;
         IntPtr hwnd = IntPtr.Zero;
         bool sentCancelOnExit = false;
+        // v3.22.7: LastLoginResult bookkeeping for the SM path. Mirrors the
+        // legacy RunLoginSequence writes at lines 2685/2704. Pre-v3.22.7 the
+        // SM path never wrote LastLoginResult, so the Settings UI Flag glyph
+        // stayed at whatever the prior session's value was (empty → "—",
+        // "fail" → "✗") regardless of actual outcome. v3.22.0+ flipped Nate's
+        // UseStateMachine to true, which bypassed the legacy writes. See
+        // bug_eqswitch_login_complete_flag_stays_x.md for full investigation.
+        bool okWritten = false;
         var current = LoginPhase.WaitLoginScreen;
         // tickSeq staleness gate uses an "observed at least once" sentinel rather than
         // gating on nonzero — the DLL can legitimately publish 0 indefinitely if its
@@ -1111,6 +1119,25 @@ public class AutoLoginManager
                     string aheadTag = nativeAhead ? $" [native-ahead: nativePhase={nativePhase}, C# stalling at {next} until Iter-2]" : string.Empty;
                     FileLogger.Info($"AutoLogin-SM: {current} → {next} (tick={tickCount}, t={sw.ElapsedMilliseconds}ms, " +
                         $"{widgets.DiagSummary()}, gameState={gameState}, nativePhase={nativePhase}){aheadTag}");
+                    // v3.22.7: SM-path mirror of RunLoginSequence:2697-2705 — first
+                    // transition into CharSelect is the "password accepted by login
+                    // server AND char-select rendered" boundary. Mark "ok" now so a
+                    // downstream Enter-World failure doesn't downgrade a successful
+                    // login to ✗. Write order: LastLoginAt FIRST, LastLoginResult
+                    // LAST — Nullable<DateTime> is 16 bytes (non-atomic) on x64;
+                    // writing it before the atomic string-reference assignment means
+                    // a UI-thread reader observing a non-default LastLoginResult is
+                    // guaranteed (under x64 memory ordering) to see the matching
+                    // LastLoginAt. SaveImmediate bypasses ConfigManager.Save's
+                    // Windows.Forms.Timer which can't tick on this background thread.
+                    if (next == LoginPhase.CharSelect && !okWritten)
+                    {
+                        account.LastLoginAt = DateTime.UtcNow;
+                        account.LastLoginResult = "ok";
+                        ConfigManager.SaveImmediate(_config);
+                        okWritten = true;
+                        FileLogger.Info($"AutoLogin-SM: LastLoginResult=ok for {account.Name} (charselect reached at t={sw.ElapsedMilliseconds}ms)");
+                    }
                     current = next;
                 }
 
@@ -1148,6 +1175,37 @@ public class AutoLoginManager
                 catch (Exception ex)
                 {
                     FileLogger.Warn($"AutoLogin-SM: SendCancelCommand on Error exit failed: {ex.Message}");
+                }
+                // v3.22.7: SM-path mirror of RunLoginSequence:2668-2692 — terminal
+                // Error without a prior "ok" means we never reached charselect.
+                // Mark "fail" so the Settings UI Flag column shows ✗. Skip if the
+                // EQ process is gone (crashed / user-killed) per the risk register
+                // at line 2673-2676 — process death is not the password's fault.
+                // Also skip if okWritten is already true (we DID reach charselect
+                // and the SM failed later in EnteringWorld plumbing — that's not
+                // a login failure per the legacy comment at line 2697-2702).
+                if (!okWritten)
+                {
+                    bool eqAlive = false;
+                    try
+                    {
+                        using var proc = System.Diagnostics.Process.GetProcessById(pid);
+                        eqAlive = !proc.HasExited;
+                    }
+                    catch (ArgumentException) { /* process already gone */ }
+                    catch (InvalidOperationException) { /* race between GetProcessById and HasExited */ }
+                    if (eqAlive)
+                    {
+                        // Same write-order + SaveImmediate rationale as the "ok" site above.
+                        account.LastLoginAt = DateTime.UtcNow;
+                        account.LastLoginResult = "fail";
+                        ConfigManager.SaveImmediate(_config);
+                        FileLogger.Info($"AutoLogin-SM: LastLoginResult=fail for {account.Name} (terminal Error, PID alive)");
+                    }
+                    else
+                    {
+                        FileLogger.Info($"AutoLogin-SM: skipped LastLoginResult=fail for {account.Name} — EQ process gone (not the password's fault)");
+                    }
                 }
                 Report($"{account.Name}: state machine failed (terminal Error)");
             }

@@ -1,5 +1,105 @@
 # Changelog
 
+## v3.22.7 — Settings UI Flag glyph: SM-path LastLoginResult writes (2026-05-17)
+
+C#-only behavioral patch. Closes `bug_eqswitch_login_complete_flag_stays_x` —
+the Settings UI "Flag" column glyph never updated after a successful autologin
+under v3.22.0+'s state-machine path. Both gotquiz + gotquiz1 stuck on prior-
+session values (empty → "—" / "fail" → "✗") despite both passing Connect and
+reaching in-game.
+
+### Root cause
+
+`Core/AutoLoginManager.cs` has two dispatch paths:
+
+- **Legacy** `RunLoginSequence` — writes `account.LastLoginResult = "ok"` at
+  `WaitForScreenTransition` success (~line 2704) and `= "fail"` at timeout
+  (~line 2685), with `ConfigManager.SaveImmediate` to bypass the Windows-Forms-
+  timer-backed `Save()` that can't tick on a background thread.
+- **State machine** `RunLoginStateMachine` (v3.22.0+, dispatched when
+  `LaunchConfig.UseStateMachine = true`) — **zero** writes to `LastLoginResult`.
+
+v3.22.0 added the SM path as opt-in (default false) and shipped without porting
+the indicator writes. Subsequent v3.22.x ships flipped Nate's config to opt-in.
+The functional path always worked end-to-end (login completes, gameplay works),
+so verifier rounds focused on the smoke critical path didn't surface the
+indicator gap. Took until v3.22.5 smoke for the discrepancy to be visible
+("both passed Connect, both flagged X").
+
+Read site is `UI/SettingsForm.cs:2126` `RefreshAccountsGrid`, which maps the
+string to a glyph via the switch at line 2143:
+- `"ok"` → ✓ (green)
+- `"fail"` → ✗ (red)
+- _ → "—" (dim gray)
+
+### The fix
+
+`Core/AutoLoginManager.cs` `RunLoginStateMachine`:
+
+- **New local** `bool okWritten = false;` initialized alongside `current` near
+  line 870.
+- **"ok" write** inside the phase-transition block (~line 1104): when the SM
+  transitions into `LoginPhase.CharSelect` for the first time (`!okWritten`),
+  set `account.LastLoginAt = DateTime.UtcNow; account.LastLoginResult = "ok";
+  ConfigManager.SaveImmediate(_config); okWritten = true;` with the same
+  write-order rationale as the legacy site (16-byte non-atomic
+  `Nullable<DateTime>` ordering vs the atomic string-reference assignment).
+  Logs the write for DebugView/file-log traceability.
+- **"fail" write** inside the terminal Error block (~line 1138): only when
+  `!okWritten` (we never reached charselect — login proper failed, not the
+  post-login EnterWorld plumbing). Liveness-checks the EQ process via
+  `Process.GetProcessById(pid)` + `.HasExited` before writing; skips with a
+  log line if the process is gone (EQ crashed or user-killed → not the
+  password's fault, per the risk register at `RunLoginSequence:2673-2676`).
+
+### Behavior contract
+
+- `okWritten = true` is the latch — once written, never downgrade. Matches the
+  legacy comment at line 2697-2702: *"Everything past this point is character-
+  selection / enter-world plumbing, not login. Mark ok now so a downstream
+  MQ2-bridge timeout doesn't downgrade a successful login to ✗."*
+- "fail" gate is "AutoLoginManager-owned timeout AND EQ still alive." Process-
+  death (hwnd-zero / crashed) is silent — matches legacy `if (hwnd == IntPtr.Zero)
+  { Report(...); return; }` at line 2694.
+- Race-safe with `SettingsForm.cs:1729-1734` staging snapshot. When the user
+  edits Settings during an autologin and the SM writes `LastLoginResult`, the
+  staged snapshot still holds the form-open value; the existing
+  `passwordUnchanged ? live!.LastLoginResult : a.LastLoginResult` apply logic
+  (line 1749) reads the LIVE config back, so the SM write isn't clobbered by
+  unrelated edits.
+
+### What's NOT in v3.22.7 (deferred to v3.22.8 candidate)
+
+- **Live grid refresh while Settings is open.** `RefreshAccountsGrid` reads from
+  `_pendingAccounts` (deep-copied at form-open in `SettingsForm.cs:228`). There's
+  no event subscription to `AutoLoginManager.LoginComplete`. A user who fires
+  autologin while Settings is open won't see the flag flip until they close +
+  reopen. v3.22.7 fixes the underlying state; the UI refresh-on-event hook is
+  separate polish (~10 LOC: hook `LoginComplete`, invoke-marshal, per-account
+  snapshot field copy, re-call `RefreshAccountsGrid`). Deferred to keep this
+  release single-concern.
+- The legacy `RunLoginSequence` path is unchanged. v3.22.0+ smoke uses the SM
+  path exclusively; the legacy path is a fallback that already had correct
+  writes. No reason to touch it.
+
+### Verification
+
+- Build clean (managed-only change, no Native rebuild needed but the cycle
+  rebuilds both for consistency).
+- Edit footprint: +~45 LOC across `Core/AutoLoginManager.cs` (one new local +
+  two new write sites) + `<Version>` bump in `EQSwitch.csproj`.
+- Smoke gate: re-fire team4. Watch Settings UI Flag column after autologin
+  completes. Expected: both gotquiz + gotquiz1 show ✓ (green check) within
+  seconds of charselect-reached. Re-open Settings if needed (the v3.22.8 live-
+  refresh hook isn't in this release). DebugView / `eqswitch.log` should show
+  one `AutoLogin-SM: LastLoginResult=ok for <name>` line per successful login.
+
+### Inherited Known Limits (unchanged)
+
+- `kBadNames` over-blocks (class/race/EQ-flavor short names). Pre-existing.
+- P9/P8/uiFallback latch back-out gaps. Per v3.22.4 ship doc Known Limit #2.
+- Settings UI grid doesn't live-refresh while open. Deferred to v3.22.8.
+
 ## v3.22.6 — Anchor-zero loop reorder (R1 verifier CRITICAL fix) (2026-05-17)
 
 Native-only behavioral patch. Single-item ship addressing the only
