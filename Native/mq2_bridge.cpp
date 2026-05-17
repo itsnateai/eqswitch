@@ -149,6 +149,12 @@ static volatile bool     g_p8GateLogged      = false;
 // (10-slot gotquiz account stuck at char-select while single-char gotquiz1
 // succeeded — wider settle window let Path B2 win the publisher race).
 static volatile bool     g_p9GateLogged      = false;
+// v3.22.5: distinguishes "SEH inside P9 IsPlausibleName predicate" from the
+// non-SEH "placeholder or empty" path. Without this latch the empty __except
+// fell through to the else-if log below describing the wrong condition, which
+// misled DebugView readers any time the SHM access itself faulted (DLL detach
+// race, MMF unmapped). One-shot per cycle, mirrors g_p9GateLogged lifecycle.
+static volatile bool     g_p9SehLogged       = false;
 static volatile int      g_cachedNameCol     = -1;
 static volatile int      g_cachedSlotCount   = -1;  // slot probe result cache (-1 = not probed)
 static volatile bool     g_verificationDone  = false;
@@ -3019,6 +3025,7 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                         g_uiFallbackLogged = false;
                         g_p8GateLogged = false;
                         g_p9GateLogged = false;
+                        g_p9SehLogged = false;
                         g_cachedSlotCount = -1;
                         g_cachedNameCol = -1;
                         // v3.15.2: clear chunked-resume cursors so a fresh charselect
@@ -3026,6 +3033,13 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                         g_lastHeapScanAddr = 0;
                         g_lastAnchorScanAddr = 0;
                         g_lastAnchorScanName[0] = '\0';
+                        // v3.22.5: clear consecutive-null-poll counter on charselect
+                        // transition. Dalaya holds gameState=0 across login + charselect,
+                        // so the gameState=5 reset path at line ~3820 never fires here —
+                        // a session that left this counter mid-count was carrying it
+                        // across charselect cycles and could spuriously trip the
+                        // 30-poll latch-clear threshold in the next cycle.
+                        g_consecutiveNullPolls = 0;
                         DI8Log("mq2_bridge: reset heap-scan + slot-mode caches on charselect transition");
                     }
                     lastObserved = pCharSelWnd;
@@ -3802,6 +3816,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         g_uiFallbackLogged = false;
         g_p8GateLogged = false;
         g_p9GateLogged = false;
+        g_p9SehLogged = false;
         g_cachedNameCol = -1;
         g_cachedSlotCount = -1;
         g_heapScanDone = false;
@@ -3922,20 +3937,20 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 for (int tryCol = 0; tryCol <= 9 && nameCol < 0; tryCol++) {
                     char test[CHARSEL_NAME_LEN] = {};
                     if (ReadListItemText(pCharList, 0, tryCol, test, CHARSEL_NAME_LEN) && test[0]) {
-                        // EQ names: uppercase start, >= 4 chars, all alpha
-                        bool looksLikeName = (test[0] >= 'A' && test[0] <= 'Z') && strlen(test) >= 4;
-                        if (looksLikeName) {
-                            bool allAlpha = true;
-                            for (int k = 0; test[k]; k++) {
-                                if (!((test[k] >= 'A' && test[k] <= 'Z') || (test[k] >= 'a' && test[k] <= 'z'))) {
-                                    allAlpha = false; break;
-                                }
-                            }
-                            if (allAlpha) {
-                                nameCol = tryCol;
-                                g_cachedNameCol = nameCol;
-                                DI8Log("mq2_bridge: UI fallback: name column = %d (first name: '%s')", tryCol, test);
-                            }
+                        // v3.22.5: promote to IsPlausibleName for parity with Path A
+                        // P8 gate, Path C anchor, heap scans, and the P9 publisher
+                        // gate. The prior inline validator (uppercase first + >=4
+                        // chars + all-alpha-either-case) accepted column headers
+                        // like "Name"/"Race"/"Class"/"Level" and would permanently
+                        // lock g_cachedNameCol to the wrong column for the rest of
+                        // the session if the slot-0 row's header text appeared
+                        // before any real name. kBadNames inside IsPlausibleName
+                        // already blocks those headers; the predicate now agrees
+                        // across all six charselect sites.
+                        if (IsPlausibleName((const uint8_t *)test)) {
+                            nameCol = tryCol;
+                            g_cachedNameCol = nameCol;
+                            DI8Log("mq2_bridge: UI fallback: name column = %d (first name: '%s')", tryCol, test);
                         }
                     }
                 }
@@ -4118,6 +4133,23 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                                     nameLen++;
                                 memcpy((void *)shm->names[0], targetName, nameLen);
                                 ((char *)shm->names[0])[nameLen] = '\0';
+                                shm->levels[0] = 0;
+                                shm->classes[0] = 0;
+                                // v3.22.5: zero leftover slots so Path B2's "Slot N"
+                                // synthesis from earlier in this same poll doesn't
+                                // ride into the combined publisher at line ~4193.
+                                // Without this, the v3.22.4 P9 gate passes (names[0]
+                                // is real) and publishes mixed state: ["target",
+                                // "Slot 2", ..., "Slot 10"] for a 10-slot account.
+                                // C# functional match by name against names[0] still
+                                // selects correctly, but observable SHM is misleading
+                                // for DebugView, log analysis, and future readers.
+                                // Mirrors the standalone-anchor path at line ~4337-4341.
+                                for (int i = 1; i < CHARSEL_MAX_CHARS; i++) {
+                                    ((char *)shm->names[i])[0] = '\0';
+                                    shm->levels[i] = 0;
+                                    shm->classes[i] = 0;
+                                }
                                 // Track B v3 fix (2026-05-05, red-team Sonnet+Opus
                                 // dual callout): force selectedIndex=0 so C# Enter
                                 // World fires against slot 0 (where we just wrote
@@ -4208,7 +4240,19 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 bool entry0Real = false;
                 __try {
                     entry0Real = IsPlausibleName((const uint8_t *)shm->names[0]);
-                } __except(EXCEPTION_EXECUTE_HANDLER) {}
+                } __except(EXCEPTION_EXECUTE_HANDLER) {
+                    // v3.22.5: distinguish SEH from the non-SEH "placeholder or
+                    // empty" path. Pre-v3.22.5 the empty __except fell through to
+                    // the else-if below which logs "entry[0] is placeholder or
+                    // empty" — wrong description if shm->names[0] itself faulted
+                    // (DLL detach race, MMF unmapped). One-shot per cycle alongside
+                    // g_p9GateLogged so DebugView signal stays high without flooding.
+                    if (!g_p9SehLogged) {
+                        g_p9SehLogged = true;
+                        DI8Log("mq2_bridge: P9 gate SEH in IsPlausibleName predicate (shm->names[0]=%p) — treating as not plausible, deferring publish; check for DLL detach race or stale SHM mapping",
+                               (const void *)shm->names[0]);
+                    }
+                }
                 if (entry0Real) {
                     MemoryBarrier();
                     shm->charCount = count;
@@ -4472,6 +4516,7 @@ void MQ2Bridge::Shutdown() {
     g_uiFallbackLogged = false;
     g_p8GateLogged     = false;
     g_p9GateLogged     = false;
+    g_p9SehLogged      = false;
     g_cachedNameCol    = -1;
     g_verificationDone = false;
     g_findLogCount     = 0;
