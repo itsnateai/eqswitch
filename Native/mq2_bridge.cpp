@@ -3345,18 +3345,24 @@ void MQ2Bridge::PopulateCharacterData(volatile LoginShm *shm) {
 
     const uint8_t *pEQ = (const uint8_t *)pEverQuest;
 
-    if (!ValidateCharArrayOffset(pEQ)) {
-        shm->charCount = 0;
-        shm->selectedIndex = -1;
-        return;
-    }
-
+    // MQ2-canonical "trust the offset" — read pEverQuest->charSelectPlayerArray
+    // directly each poll. Per MQ2 RoF2-emu (x86) source EverQuest.h:963 the
+    // array sits at offset 0x18EC0; confirmed plug-and-play on Dalaya by Nate
+    // 2026-05-17 + live empirical probe. The pre-2026-05-17 ValidateCharArrayOffset
+    // / IsValidCharArray approach gave up permanently after one failed validation
+    // (g_charArrayNotFoundLogged latched true), which broke the dominant failure
+    // mode where EQ has not populated Count yet at the moment of the first poll
+    // after pinstCCharacterSelect transitions. Trust + defensive Count/Data
+    // sanity is the same shape MQ2 uses, and a Count==0 poll just retries next
+    // tick instead of blocking the cycle for 30s.
     __try {
-        const ArrayClassHeader *arr = (const ArrayClassHeader *)(pEQ + g_validatedOffset);
+        const ArrayClassHeader *arr = (const ArrayClassHeader *)(pEQ + OFFSET_CHARSELECT_ARRAY);
         int count = arr->Count;
         const uint8_t *data = arr->Data;
 
-        if (count < 0 || count > LOGIN_MAX_CHARS || !data) {
+        // Sanity gates: Count in [1, LOGIN_MAX_CHARS] AND Data is heap-readable.
+        // Count==0 is "EQ hasn't populated yet" — return zero and retry next poll.
+        if (count < 1 || count > LOGIN_MAX_CHARS || !data || !IsReadablePtr(data, CSI_SIZE)) {
             shm->charCount = 0;
             shm->selectedIndex = -1;
             return;
@@ -3472,13 +3478,18 @@ static void EmitVerificationReport(volatile CharSelectShm *shm) {
     }
 
     // 3. ppEverQuest + charSelectPlayerArray
+    // v3.22.1 (2026-05-17): removed `g_offsetValidated` gate — production paths
+    // now trust OFFSET_CHARSELECT_ARRAY directly without ValidateCharArrayOffset,
+    // so g_offsetValidated would always be false here and the report would
+    // silently skip the most informative line. Use OFFSET_CHARSELECT_ARRAY
+    // directly (same source of truth as Path A + PopulateCharacterData).
     if (g_ppEverQuest) {
         __try {
             void *pEQ = *g_ppEverQuest;
             DI8Log("  ppEverQuest: export=%p -> CEverQuest*=%p", g_ppEverQuest, pEQ);
-            if (pEQ && g_offsetValidated) {
-                const ArrayClassHeader *arr = (const ArrayClassHeader *)((uint8_t *)pEQ + g_validatedOffset);
-                DI8Log("    charSelectPlayerArray at offset 0x%X: Count=%d", g_validatedOffset, arr->Count);
+            if (pEQ) {
+                const ArrayClassHeader *arr = (const ArrayClassHeader *)((uint8_t *)pEQ + OFFSET_CHARSELECT_ARRAY);
+                DI8Log("    charSelectPlayerArray at offset 0x%X: Count=%d", OFFSET_CHARSELECT_ARRAY, arr->Count);
                 if (arr->Count > 0 && arr->Data) {
                     // Track B v2 (2026-05-05, T3 Sonnet callout): use IsPlausibleName
                     // for the verification log too, so the diagnostic matches the
@@ -3903,13 +3914,17 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
 
     if (pEverQuest) {
         const uint8_t *pEQ = (const uint8_t *)pEverQuest;
-        if (ValidateCharArrayOffset(pEQ)) {
-            __try {
-                const ArrayClassHeader *arr = (const ArrayClassHeader *)(pEQ + g_validatedOffset);
-                int count = arr->Count;
-                const uint8_t *data = arr->Data;
+        // MQ2-canonical "trust the offset" — same rationale as
+        // PopulateCharacterData above. Skip ValidateCharArrayOffset's
+        // one-shot give-up gate; trust OFFSET_CHARSELECT_ARRAY = 0x18EC0 per
+        // MQ2 RoF2-emu (x86) EverQuest.h:963 and let Count==0 polls retry
+        // next tick.
+        __try {
+            const ArrayClassHeader *arr = (const ArrayClassHeader *)(pEQ + OFFSET_CHARSELECT_ARRAY);
+            int count = arr->Count;
+            const uint8_t *data = arr->Data;
 
-                if (count >= 1 && count <= CHARSEL_MAX_CHARS && data) {
+            if (count >= 1 && count <= CHARSEL_MAX_CHARS && data && IsReadablePtr(data, CSI_SIZE)) {
                     for (int i = 0; i < count; i++) {
                         const uint8_t *entry = data + (i * CSI_SIZE);
                         const char *name = (const char *)(entry + CSI_NAME_OFF);
@@ -3944,9 +3959,8 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 }
             }
             __except (EXCEPTION_EXECUTE_HANDLER) {
-                DI8Log("mq2_bridge: SEH reading charSelectPlayerArray");
+                DI8Log("mq2_bridge: SEH reading charSelectPlayerArray (Path A trust-offset path)");
             }
-        }
     }
 
     // Path B: UI-based fallback — read from Character_List CListWnd via GetItemText.
@@ -4049,39 +4063,49 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                         }
                     }
                 } else if (g_fnSetCurSel) {
-                    // First probe — SetCurSel/GetCurSel on each slot to find actual count
+                    // First probe — SetCurSel/GetCurSel on each slot to find actual count.
+                    // 2026-05-17: removed `if (curSel >= 0)` gate. On Dalaya the char-select
+                    // screen loads with NO selection (curSel == -1 is the legit "no selection
+                    // yet" state, not an error). The probe itself works regardless: SetCurSel(i)
+                    // + GetCurSel() returns i iff the slot exists, agnostic to prior selection.
+                    // The pre-fix gate dead-locked Path B2 every time Path A hadn't yet
+                    // populated AND the user hadn't manually clicked a char.
                     __try {
                         int curSel = g_fnGetCurSel(pCharList);
-                        if (curSel >= 0) {
-                            int probeCount = 0;
-                            int origSel = curSel;
-                            for (int i = 0; i < CHARSEL_MAX_CHARS; i++) {
-                                g_fnSetCurSel(pCharList, i);
-                                int readBack = g_fnGetCurSel(pCharList);
-                                if (readBack == i) {
-                                    probeCount = i + 1;
-                                } else {
-                                    break;
-                                }
-                            }
-                            g_fnSetCurSel(pCharList, origSel);
-
-                            if (probeCount == 0) {
-                                DI8Log("mq2_bridge: UI fallback: slot probe inconclusive (curSel=%d), skipping", origSel);
+                        int probeCount = 0;
+                        int origSel = curSel;  // -1 is fine; we'll skip restore if so
+                        for (int i = 0; i < CHARSEL_MAX_CHARS; i++) {
+                            g_fnSetCurSel(pCharList, i);
+                            int readBack = g_fnGetCurSel(pCharList);
+                            if (readBack == i) {
+                                probeCount = i + 1;
                             } else {
-                                count = probeCount;
-                                g_cachedSlotCount = probeCount;
-                                for (int i = 0; i < count; i++) {
-                                    char slotName[CHARSEL_NAME_LEN] = {};
-                                    wsprintfA(slotName, "Slot %d", i + 1);
-                                    memcpy((void *)shm->names[i], slotName, CHARSEL_NAME_LEN);
-                                    shm->levels[i] = 0;
-                                    shm->classes[i] = 0;
-                                }
-                                shm->selectedIndex = origSel;
-                                DI8Log("mq2_bridge: UI fallback: slot-based mode — probed %d slots (curSel=%d)",
-                                       count, origSel);
+                                break;
                             }
+                        }
+                        // Restore only if origSel was a legit selection (>=0). If it was -1
+                        // (no selection at probe entry), restoring would be a no-op anyway,
+                        // but skipping makes the intent obvious + avoids any side effect of
+                        // SetCurSel(-1) in EQ's CListWnd implementation.
+                        if (origSel >= 0) {
+                            g_fnSetCurSel(pCharList, origSel);
+                        }
+
+                        if (probeCount == 0) {
+                            DI8Log("mq2_bridge: UI fallback: slot probe inconclusive (curSel=%d), skipping", origSel);
+                        } else {
+                            count = probeCount;
+                            g_cachedSlotCount = probeCount;
+                            for (int i = 0; i < count; i++) {
+                                char slotName[CHARSEL_NAME_LEN] = {};
+                                wsprintfA(slotName, "Slot %d", i + 1);
+                                memcpy((void *)shm->names[i], slotName, CHARSEL_NAME_LEN);
+                                shm->levels[i] = 0;
+                                shm->classes[i] = 0;
+                            }
+                            shm->selectedIndex = (origSel >= 0) ? origSel : 0;
+                            DI8Log("mq2_bridge: UI fallback: slot-based mode — probed %d slots (curSel=%d)",
+                                   count, origSel);
                         }
                     } __except(EXCEPTION_EXECUTE_HANDLER) {
                         DI8Log("mq2_bridge: SEH in GetCurSel fallback");

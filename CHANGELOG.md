@@ -1,5 +1,176 @@
 # Changelog
 
+## v3.22.1 — Native MQ2 bridge trust-the-offset fix (2026-05-17)
+
+Patch release fixing a latent intermittent bug in the MQ2 bridge's
+character-list extraction that the v3.22.0 SM path surfaced reliably.
+Native-only behavioral change; C# version bump only.
+
+### The bug
+
+`Native/mq2_bridge.cpp` had a two-tier validate-then-give-up
+character-array-offset discovery:
+
+1. Try `charSelectPlayerArray` at hardcoded `OFFSET_CHARSELECT_ARRAY = 0x18EC0`
+   (per MQ2 RoF2-emu `EverQuest.h:963` — the canonical x86 emu offset).
+2. If `IsValidCharArray` rejects (Count not in [1,10], or Data not in
+   heap range, or first-name not plausible title-case, or level garbage)
+   → fall through to wide scan `0..0x20000`.
+3. If wide scan also fails → set `g_charArrayNotFoundLogged = true` →
+   permanently skip the array path until the next
+   `pinstCCharacterSelect` transition (i.e. user leaves char-select and
+   returns — never happens during an auto-login session).
+
+The dominant failure mode was **timing, not the offset**: when Path A
+runs on the FIRST poll after `pinstCCharacterSelect` transitions
+non-null, EQ has not yet populated the array (`Count == 0`). The
+strict validator rejects, the wide scan also rejects (nothing valid
+yet), and the give-up latch trips. Subsequent polls — when EQ HAS
+populated the array — never re-try. The SM then sits in the 30-second
+`kMaxCharListWaitMs` wait + aborts. The Iter-3 2026-05-16 22:05 smoke
+worked by luck of timing (EQ happened to populate before first poll);
+the 2026-05-17 00:00 smoke failed because the timing was off.
+
+### The fix (MQ2-canonical "trust the offset")
+
+`Native/mq2_bridge.cpp`:
+
+- **PopulateCharacterData (line ~3335)** and **Path A inside the bigger
+  poll handler (line ~3899)**: skip the validate-then-give-up dance.
+  Trust `OFFSET_CHARSELECT_ARRAY` directly each poll, with defensive
+  `count ∈ [1, LOGIN_MAX_CHARS]` + `IsReadablePtr(data, CSI_SIZE)`
+  sanity gates. A `Count == 0` poll just returns zero and the next
+  tick retries — same shape MQ2's `MQ2CharSelectListType.cpp` uses
+  (`pEverQuest->charSelectPlayerArray.GetCount()` direct access, no
+  validation overhead).
+- **Path B2 UI-fallback slot-probe (line ~4054)**: removed the
+  `if (curSel >= 0)` gate. On Dalaya the char-select screen loads
+  with no selection (`curSel == -1` is the legit initial state).
+  The SetCurSel/GetCurSel probe itself is agnostic to prior selection;
+  the gate was dead-locking the fallback whenever Path A hadn't yet
+  populated AND the user hadn't manually clicked a character. Origin
+  selection is now restored only if `>= 0` (no-op for the `-1` case
+  with the side benefit of explicit intent).
+
+### Empirical verification
+
+Live smoke 2026-05-17 — dual-box Dalaya, two runs both end-to-end:
+
+**Run 1 (00:30:38) — Team1 (Backup gotquiz + Natedogg gotquiz1):**
+
+```
+Backup (10-char account, configured slot 2):
+  char-list ready: 10 characters — Acpots, Backup, Healpots, Jonopua,
+    Nate, Potiongirl, Potionguy, Staxue, Thazguard, Zfree (PID 35512)
+  selector → explicit slot 2 (PID 35512)         [Path A success]
+  CharSelect → EnteringWorld (t=51s)
+  EnteringWorld → Complete (t=63s)
+
+Natedogg (1-char account, configured slot 0):
+  char-list ready: 1 characters — Slot 1 (PID 37836)
+  selector → single-char structural fallback → slot 1 = 'Natedogg'
+  CharSelect → EnteringWorld (t=58s)
+  EnteringWorld → Complete (t=71s)
+```
+
+Run 1 mixes paths: Backup landed via Path A (trust-the-offset extracted
+all 10 real names); Natedogg landed via Path B2 slot-mode fallback
+(Path A returned `Count=1, Data=slot-placeholder` for the single-char
+account — this is a separate Native quirk for 1-char accounts where
+the heap-allocated CharSelectInfo array contains a placeholder rather
+than the real name; v3.22.0 Iter-3 single-char structural fallback
+covers this case and remains load-bearing).
+
+**Run 2 (00:38:01) — Team4 (Natedogg gotquiz1 + Nate gotquiz, both
+configured slot 0 to force name-match path):**
+
+```
+Natedogg (1-char account):
+  char-list ready: 1 characters — Natedogg (PID 21568)   [REAL NAME via Path A]
+  selector → name match 'Natedogg' at slot 1 (PID 21568)
+  CharSelect → EnteringWorld (t=55s)
+  [Enter World stage: lost EQ window during PulseKey3D fallback —
+   separate EQ-client-crash issue, NOT a bridge regression]
+
+Nate (10-char gotquiz):
+  char-list ready: 10 characters — Acpots, Backup, Healpots, Jonopua,
+    Nate, Potiongirl, Potionguy, Staxue, Thazguard, Zfree (PID 22572)
+  selector → name match 'Nate' at slot 5 (PID 22572)     [Path A success]
+  CharSelect → EnteringWorld (t=53s)
+  EnteringWorld → Complete (t=67s)
+```
+
+Run 2 confirms Path A trust-the-offset extracts REAL names for both
+multi-char AND single-char accounts when timing allows — and that the
+C# `CharacterSelector.Decide` name-match path resolves "Nate" against
+the 5th slot correctly. The Natedogg `lost EQ window` in Run 2 happened
+at the PulseKey3D Enter-World stage (post-charselect), not at the
+bridge; tracked separately for v3.22.x.
+
+20+ real character names extracted across both runs = strongest
+possible offset verification (matches MQ2 RoF2-emu `EverQuest.h:963`
+exactly). Timing matches Iter-3 baseline (60-70s).
+
+### Known follow-ups (v3.22.2 / v3.22.x)
+
+Verifier rounds (2 × 6 agents) on v3.22.1 surfaced these deferred items:
+
+- `ValidateCharArrayOffset`, `IsValidCharArray`, `g_charArrayNotFoundLogged`,
+  `g_validatedOffset` machinery is now fully orphaned (no production
+  caller after this fix; `EmitVerificationReport` now reads
+  `OFFSET_CHARSELECT_ARRAY` directly). Cleanup-to-zero deferred.
+- `IsReadablePtr(data, CSI_SIZE)` only validates the first CSI_SIZE
+  bytes. Loop reads entries 1..(count-1) without per-entry validation.
+  SEH wraps the loop so the worst case is one bad poll + return zero,
+  but `IsReadablePtr(data, count * CSI_SIZE)` would tighten the gate.
+- Path B2 slot-probe (`SetCurSel(0..N)`) now runs on every poll while
+  Path A returns zero. On Dalaya CListWnd mid-populate this could
+  cause visible UI flicker. Throttling or caching probeCount==0 result
+  would prevent the storm.
+- Single-char Path A asymmetry: the 1-char account sometimes returns
+  a "Slot 1" placeholder via `charSelectPlayerArray` (Run 1) and
+  sometimes returns the real name (Run 2). Root cause: bridge's
+  single-char heap-allocation pattern. Worth a focused investigation.
+- `probe_charselect_offset.ps1` name-filter is weaker than production's
+  `IsPlausibleName` (length >= 3 vs >= 4, no blocklist) — false
+  positives possible on UI labels like "Class"/"Race"/"Bard".
+- Iter-3-deferred items from v3.22.0 still open: magic timeouts,
+  `WaitForEnterWorldTransition` ct overload, Stopwatch reuse, legacy
+  `goto` cleanup, `charCount==2` fallback policy, PII redaction.
+
+### Bonus diagnostics
+
+- New `Native/probe_charselect_offset.ps1` — empirical offset probe.
+  Opens a live `eqgame.exe`, walks `dinput8.dll` PE exports for
+  `ppEverQuest`, dereferences, then scans `0..0x20000` for plausible
+  `ArrayClass<CharSelectInfo>` patterns. Future offset shifts (Dalaya
+  client update, eqgame.exe patch) can be verified without rebuilding.
+
+### Wrong-comment cleanup (included)
+
+The pre-fix comment at `mq2_bridge.cpp:596-598` claimed
+"OFFSET_CHARSELECT_ARRAY = 0x18EC0 is the MQ2 x64-RoF2 value; on
+Dalaya x86 every pointer-sized member halves so the array sits at
+a different (currently unknown) offset." This is wrong — MQ2 RoF2-emu
+IS x86 (the emu branch targets emu servers like Dalaya), and `0x18EC0`
+IS the x86 offset per `EverQuest.h:963`. The diff replaces the trust
+path's comment block with the MQ2-canonical rationale; the
+`ValidateCharArrayOffset` function and the misleading line 596-598
+block are LEFT IN PLACE as dead code (no production caller after this
+fix) so a future refactor that re-introduces a wrapper won't silently
+inherit a still-wrong rationale comment. Cleanup-to-zero is filed for
+v3.22.2 (see "Known follow-ups" below).
+
+### Verification
+
+- Native build clean: `Native/build-di8-inject.sh` exit 0,
+  `eqswitch-di8.dll` 242,688 → 241,152 bytes (slightly smaller from
+  removed validation paths).
+- C# Debug + Release builds clean: 0 warnings, 0 errors (version
+  bump only on C# side).
+- Empirical smoke: 2026-05-17 00:30 — both PIDs in-world, real names
+  extracted (10 + 1 via single-char fallback). See trace above.
+
 ## v3.22.0 — state-driven auto-login dispatch (2026-05-16)
 
 First end-to-end ship of the C# state machine that drives the Dalaya auto-login
