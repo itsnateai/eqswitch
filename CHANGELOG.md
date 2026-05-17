@@ -1,5 +1,138 @@
 # Changelog
 
+## v3.22.4 — P9 publisher plausibility gate (2026-05-17)
+
+Native-only behavioral patch. Closes the multi-character-account regression
+the v3.22.3 11:14 smoke captured: 10-slot `gotquiz` account stuck at
+char-select with `MQ2 heap in slot-mode (10 placeholder slot(s))`, while
+the single-character `gotquiz1` account on the same team4 fire succeeded
+end-to-end (Backup+Natedogg sister-smoke also clean prior session). v3.22.3
+gated Path A's two publish sites but left a third combined publisher
+unguarded.
+
+### The gap v3.22.4 closes
+
+`Native/mq2_bridge.cpp` has three writers of `shm->charCount` for the
+char-select pipeline:
+
+1. **PopulateCharacterData** (LoginShm path, ~line 3313) — gated by v3.22.3
+   P8 at the function head.
+2. **Path A in-Poll** (CharSelectShm trust-offset path, ~line 3881) — gated
+   by v3.22.3 P8 immediately before the per-entry name read.
+3. **Path B+B2+C combined publisher** (~line 4193) — the SINGLE writer for
+   everything the UI-derived and heap-scan paths populate. Pre-v3.22.4 this
+   was `if (count > 0) { shm->charCount = count; ... }` with **no
+   plausibility check**.
+
+Path B2 (CListWnd slot probe, ~line 3968) synthesizes `"Slot %d"`
+placeholder names into `shm->names[i]` via `wsprintfA` when GetItemText
+returns empty columns — the legitimate slot-based-mode display fallback
+for Dalaya's char-select widget. Path C (heap scan + anchor scan,
+~line 4047) runs immediately after Path B2 and overwrites those
+placeholders with real names IF the heap is populated. During the transient
+window when Path A has bailed (P8 fired correctly) AND Path C's heap is
+not yet populated, the combined publisher fired anyway:
+
+- `shm->charCount = 10` published with `shm->names = ["Slot 1", "Slot 2",
+  ..., "Slot 10"]`.
+- C# `AutoLoginManager.cs:1460` char-list wait loop short-circuits on
+  `ReadCharCount(pid) > 0` (alongside `IsCharSelectReady`), consumes the
+  placeholder names, name-match fails, falls into the slot-mode-detection
+  branch at line 1535, and bails to `LoginPhase.Error` with the
+  user-visible `"MQ2 heap in slot-mode (10 placeholder slot(s)) —
+  character names unavailable"` message.
+
+The regression was **single-account-size-dependent**: single-character
+accounts have a narrow settle window that Path A consistently wins.
+Multi-character accounts (≥ ~5) widen the window enough for Path B2's
+synthesis to win the publisher race. The v3.22.3 verifier rounds and the
+v3.22.3 09:48 single-box smoke could not surface this — the 11:14 dual-box
+team4 smoke with the 10-slot account did. Verifier R1 T2-Opus and R2 T3
+both noted the unguarded publisher path in their "deferred items" sections;
+v3.22.4 elevates that to a P0 fix.
+
+### The fix
+
+`Native/mq2_bridge.cpp`:
+
+- **Publisher gate** (~line 4193) — after the existing `count > 0`
+  precondition, read `shm->names[0]` and require it pass `IsPlausibleName`.
+  Failure logs once-per-cycle via `g_p9GateLogged` then leaves
+  `shm->charCount` unchanged and `charDataRead = false` so the next poll
+  retries. Identical defer-and-retry semantics to v3.22.3's P8 sites. SEH
+  wrap around the predicate read for defense — the SHM is local memory but
+  the pattern matches the surrounding sites.
+- **`g_p9GateLogged` diagnostic latch** (line 151, alongside
+  `g_p8GateLogged`) — one-shot per charselect cycle. Resets at the three
+  existing cycle-reset sites: `pCharSelWnd` non-null transition (line
+  3021), gameState=5 in-world transition (line 3804), and `Shutdown`
+  (line 4474). Operational signal: one log line per cycle = transient
+  population window (expected, harmless). Multiple lines = signal Path
+  B2 is the only path producing data AND name slots are not converging
+  to real names (likely Dalaya client patch shifted
+  `OFFSET_CHARSELECT_ARRAY` or the heap-scan stride / blocklist).
+
+`IsPlausibleName` (line 190, pre-existing) enforces strict title-case
+(uppercase first, lowercase rest), 4–15 chars, and the `kBadNames`
+UI-label blocklist. Critically rejects `"Slot 1"` (space at position 4
+fails lowercase-rest predicate AND digit at position 5 also fails) and
+empty strings (length 0 fails 4-char minimum). Same predicate used by
+Path A's P8 gate, Path B's per-entry filter, Path C's heap-scan readers,
+and the anchor-scan validation — all five charselect paths now agree on
+"looks like a real name."
+
+### What it does NOT fix (Known Limits)
+
+- **Anchor-scan-into-Path-B2-leftovers** (deferred to v3.22.5+). When
+  Path A bails, Path B2 synthesizes `["Slot 1", ..., "Slot 10"]`, then
+  anchor-scan succeeds and writes the target name into `shm->names[0]`
+  only — `shm->names[1..9]` retain Path B2's `"Slot 2".."Slot 10"`
+  placeholders. The v3.22.4 P9 gate passes (entry[0] is real), publish
+  goes through, C# matches by name against `["Nate", "Slot 2", ...]`
+  → finds "Nate" at index 0 → selects slot 1 → enters world correctly.
+  The wrong-slot placeholders are cosmetically wrong but functionally
+  inert. Fix would be: anchor-scan zeros names[1..N-1] before publishing.
+  Bundle with the v3.22.0 Iter-5 architectural cleanup.
+- **P9 diagnostic latch reset gaps** (T2 R2 verifier flag, inherited
+  from P8). Misses charselect→login back-out, same-address charselect
+  re-use, `pinstCCharacterSelect` mid-cycle flicker. Diagnostic-only
+  impact. Same pattern as `g_uiFallbackLogged` / `g_p8GateLogged` —
+  fix all three together or skip all three.
+
+### Verification
+
+- Native build clean: `Native/build-di8-inject.sh` exit 0,
+  `eqswitch-di8.dll` size ~241KB (small growth from new diagnostic
+  string + branch).
+- `IsPlausibleName` already linked into the DLL (used by P8 gate and
+  every heap-scan reader); the P9 call site is a folded-instruction
+  add. `g_p9GateLogged` adds 1 byte (volatile bool) to BSS.
+- Empirical smoke: deferred to next-launch cycle. Re-run team4
+  hotkey on fresh `eqgame.exe` pair. Expected: `gotquiz` account
+  publishes `char-list ready: 10 characters — Nate, <slot2>, ...,
+  <slot10>` with real names, advances through char-select to
+  `EnteringWorld → Complete`. No `"MQ2 heap in slot-mode"` line for
+  either client.
+- P9 gate fires logged via `DI8Log` → `OutputDebugString`, NOT
+  `eqswitch.log`. To observe gate firing, run DebugView with filter
+  `mq2_bridge:` during the smoke. Steady-state success without the
+  slot-mode error is the proxy in `eqswitch.log`.
+
+### Behavior contract
+
+- Gate checks ONLY `shm->names[0]`. Subsequent slots continue to rely on
+  the existing per-entry filters in Path A (line ~3855), Path B (column
+  reader at ~3949), Path C heap scan (line ~4056), and anchor scan
+  (validation in callers). The intent is "did real names land in slot 0"
+  — a first-byte proxy for "the publish has real data." Strengthening
+  to all-slots-pass would re-introduce the validate-then-latch
+  antipattern v3.22.1 deleted and v3.22.2 buried.
+- Gate has no success latching — `charCount` is republished each poll
+  while entry[0] stays real. `g_p9GateLogged` IS latched but only on
+  the diagnostic side (one log line per cycle to keep DebugView signal
+  high without flooding). Cleared on cycle transitions alongside
+  `g_p8GateLogged` and `g_uiFallbackLogged`.
+
 ## v3.22.3 — P8 first-entry plausibility gate (2026-05-17)
 
 Native-only behavioral patch. Adds a single `IsPlausibleName(entry[0])`

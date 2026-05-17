@@ -136,6 +136,19 @@ static volatile bool     g_uiFallbackLogged  = false;
 // after the one-shot = OFFSET_CHARSELECT_ARRAY is wrong (e.g., EQ patch moved
 // the array) and Path A is permanently bailing out.
 static volatile bool     g_p8GateLogged      = false;
+// v3.22.4: P9 publisher plausibility gate diagnostic. Mirror of P8 for the
+// Path B+B2+C combined publisher (single `if (count > 0) { shm->charCount =
+// count; ... }` at end of Poll's charselect block — the only writer of
+// shm->charCount for the UI-derived paths). Catches the case where Path A
+// bailed (P8 fired), Path B's GetItemText returned empty, Path B2 synthesized
+// "Slot %d" placeholder names into shm->names[], and Path C/anchor scans
+// haven't populated real names yet. Pre-v3.22.4 the publisher fired anyway,
+// surfacing placeholders to C# (charCount > 0 short-circuits the char-list
+// wait loop in AutoLoginManager.cs:1460), which then bailed to Error with
+// "MQ2 heap in slot-mode". Closes the 2026-05-17 multi-char-account regression
+// (10-slot gotquiz account stuck at char-select while single-char gotquiz1
+// succeeded — wider settle window let Path B2 win the publisher race).
+static volatile bool     g_p9GateLogged      = false;
 static volatile int      g_cachedNameCol     = -1;
 static volatile int      g_cachedSlotCount   = -1;  // slot probe result cache (-1 = not probed)
 static volatile bool     g_verificationDone  = false;
@@ -3005,6 +3018,7 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                         g_standaloneDelay = 0;
                         g_uiFallbackLogged = false;
                         g_p8GateLogged = false;
+                        g_p9GateLogged = false;
                         g_cachedSlotCount = -1;
                         g_cachedNameCol = -1;
                         // v3.15.2: clear chunked-resume cursors so a fresh charselect
@@ -3787,6 +3801,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         shm->enterWorldResult = 0;
         g_uiFallbackLogged = false;
         g_p8GateLogged = false;
+        g_p9GateLogged = false;
         g_cachedNameCol = -1;
         g_cachedSlotCount = -1;
         g_heapScanDone = false;
@@ -4176,14 +4191,38 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
             }
 
             if (count > 0) {
-                MemoryBarrier();
-                shm->charCount = count;
-                for (int i = count; i < CHARSEL_MAX_CHARS; i++) {
-                    ((char *)shm->names[i])[0] = '\0';
-                    shm->levels[i] = 0;
-                    shm->classes[i] = 0;
+                // v3.22.4 P9 first-entry plausibility gate: do not publish
+                // placeholder names. Path B2's slot-mode synthesis (~lines
+                // 3988, 4030) writes "Slot %d" into shm->names[i] when
+                // GetItemText returns empty AND no heap-scan path has
+                // populated real names yet. Without this gate the publish
+                // below surfaces those placeholders to C# (charCount > 0
+                // short-circuits AutoLoginManager.cs:1460's char-list wait),
+                // and C# bails to Error with "MQ2 heap in slot-mode (N
+                // placeholder slot(s))". Mirror of v3.22.3's Path A P8 gate:
+                // same IsPlausibleName predicate, same defer-and-retry
+                // semantics, same one-shot DI8Log latch reset at the three
+                // cycle-reset sites. Multi-character accounts hit this case
+                // more often because their settle window is wider than
+                // single-char accounts (10-slot gotquiz 2026-05-17 smoke).
+                bool entry0Real = false;
+                __try {
+                    entry0Real = IsPlausibleName((const uint8_t *)shm->names[0]);
+                } __except(EXCEPTION_EXECUTE_HANDLER) {}
+                if (entry0Real) {
+                    MemoryBarrier();
+                    shm->charCount = count;
+                    for (int i = count; i < CHARSEL_MAX_CHARS; i++) {
+                        ((char *)shm->names[i])[0] = '\0';
+                        shm->levels[i] = 0;
+                        shm->classes[i] = 0;
+                    }
+                    charDataRead = true;
+                } else if (!g_p9GateLogged) {
+                    g_p9GateLogged = true;
+                    DI8Log("mq2_bridge: P9 gate fired (Poll publisher) — entry[0] is placeholder or empty (\"%.10s\"); deferring publish until Path A/C/anchor populates real names. Repeated polls without recovery = both heap scans + Path A all stuck.",
+                           (const char *)shm->names[0]);
                 }
-                charDataRead = true;
             }
         }
     }
@@ -4432,6 +4471,7 @@ void MQ2Bridge::Shutdown() {
     g_eqmainWndMgrOffset = 0;
     g_uiFallbackLogged = false;
     g_p8GateLogged     = false;
+    g_p9GateLogged     = false;
     g_cachedNameCol    = -1;
     g_verificationDone = false;
     g_findLogCount     = 0;
