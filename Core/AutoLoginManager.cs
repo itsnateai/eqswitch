@@ -67,6 +67,20 @@ public class AutoLoginManager
     // single dead PID. TryAdd makes the warn fire once per (PID, lifetime).
     private static readonly ConcurrentDictionary<int, byte> _loggedExitPids = new();
 
+    // Iter-3 fix-round-2 (2026-05-17 verifier T2-Opus C3 + T2-Sonnet C2):
+    // Cross-PID arbitration for the PulseKey3D writer.Activate sequence in
+    // StepEnteringWorld. KeyInputWriter mappings are per-PID, but the focus-
+    // faking IAT hooks in eqswitch-di8.cpp are process-global per-EQ-process.
+    // If two state-machine tasks reach PulseKey3D simultaneously (both PIDs
+    // on Dalaya skip path) their Activate→Sleep→PulseKey3D→Sleep→Deactivate
+    // sequences interleave — one PID's Deactivate clears the focus-fake hook
+    // while the other is mid-keystroke, landing keystrokes in the wrong
+    // window. Gate the whole 1.5s sequence with this static SemaphoreSlim so
+    // only ONE PID owns focus-faking at a time. Legacy RunLoginSequence
+    // (line 2477+) has the same race; this lands first in SM path —
+    // candidate to backport in Iter-4 cleanup.
+    private static readonly System.Threading.SemaphoreSlim _focusFakeMutex = new(1, 1);
+
     // Logins run concurrently (one Task per BeginLogin call, no global gate).
     // Focus-faking is kept to brief windows (activate → type → deactivate) so
     // overlapping logins on different PIDs don't fight over foreground state.
@@ -91,12 +105,25 @@ public class AutoLoginManager
     /// <summary>Fires just before the login sequence starts (use to pause guard timers).</summary>
     public event EventHandler<int>? LoginStarting;
 
-    /// <summary>Fires after BURST 1 keystrokes finished and Enter was submitted —
-    /// roughly T+~7s after EQ window appears (vs T+~30s for LoginComplete).
-    /// Subscribers can resume cosmetic work that was deferred during login
-    /// (slim-titlebar guard, hook config refresh, window title) without
-    /// waiting for the full charselect-ready signal. Cosmetic ONLY — never
-    /// generate input or steal focus from this handler.</summary>
+    /// <summary>Fires after credential submission is dispatched to EQ. Timing
+    /// depends on path:
+    /// <list type="bullet">
+    /// <item>Legacy <see cref="RunLoginSequence"/>: after BURST 1 keystrokes
+    /// finished and Enter was submitted (~T+7s).</item>
+    /// <item>State-machine (v3.22.0+, <c>useStateMachine=true</c>): right after
+    /// SHM <c>SendLoginCommand</c> returns success (~T+0s — Native commits
+    /// credentials via Combo G + ClickButton asynchronously after this).</item>
+    /// </list>
+    /// Both paths fire BEFORE the login server response is observed — auth may
+    /// still fail downstream. Earlier than <see cref="LoginComplete"/>
+    /// (~T+30-60s) so subscribers can resume cosmetic work that was deferred
+    /// during login (slim-titlebar guard, hook config refresh) without waiting
+    /// for the full charselect-ready signal. Cosmetic ONLY — never generate
+    /// input or steal focus from this handler, and the work must be
+    /// no-op-safe against a subsequently-failed login. Current subscriber
+    /// (<c>TrayManager.ApplyDeferredCosmetics</c>) applies slim-titlebar +
+    /// hook-config refresh only; window-title is wired on <c>ClientDiscovered</c>,
+    /// not on this event.</summary>
     public event EventHandler<int>? LoginCredentialsSent;
 
     /// <summary>Fires when a login sequence completes (success or failure) with the PID.</summary>
@@ -445,11 +472,20 @@ public class AutoLoginManager
         var capturedCharacter = character;
         var capturedOverride = enterWorldOverride;
         var capturedPassword = password;
+        // v3.22.0 Iter-1: opt-in routing to the new state machine. Default is false
+        // (LaunchConfig.UseStateMachine), so v3.21.1 behavior is preserved on the
+        // feature branch until Iter-4 flips the default. Snapshot the flag here so
+        // a mid-iteration Settings change (ReloadConfig) can't bait one PID into
+        // the new path and another into the legacy path within the same team launch.
+        bool useStateMachine = _config.Launch.UseStateMachine;
         return Task.Run(() =>
         {
             try
             {
-                RunLoginSequence(pid, capturedAccount, capturedCharacter, capturedPassword, capturedOverride);
+                if (useStateMachine)
+                    RunLoginStateMachine(pid, capturedAccount, capturedCharacter, capturedPassword, capturedOverride);
+                else
+                    RunLoginSequence(pid, capturedAccount, capturedCharacter, capturedPassword, capturedOverride);
             }
             finally
             {
@@ -762,6 +798,1093 @@ public class AutoLoginManager
         Thread.Sleep(burst1PostSubmitMs);
         writer.Deactivate(pid);
         FileLogger.Info($"AutoLogin: BURST 1 deactivated for PID {pid}");
+    }
+
+    /// <summary>
+    /// v3.22.0 Iter-1 — tick-driven state machine dispatch. Opt-in via
+    /// <see cref="LaunchConfig.UseStateMachine"/> (default false). Replaces
+    /// the linear time-budgeted <see cref="RunLoginSequence"/> with a
+    /// ~250ms-tick observer that reads the v3.21.0 widget probes + Native
+    /// phase + gameState and transitions states on signal rather than sleep.
+    ///
+    /// Iter-1 SCOPE: skeleton dispatch loop + <c>WaitLoginScreen</c> →
+    /// <c>TypingCredentials</c> transition + <c>Error</c> terminal state.
+    /// All other states are pass-through (returning <c>current</c>). Smoke
+    /// target: with the flag enabled, reach <c>TypingCredentials</c> and
+    /// stall there until <c>overallTimeoutMs</c> fires Error. Verifies
+    /// state-machine plumbing without driving actual keystrokes. Iter-2
+    /// fills in TypingCredentials → WaitConnectResponse → ServerSelect;
+    /// Iter-3 adds CharSelect + EnteringWorld + Complete. Iter-4 ship gate
+    /// flips <see cref="LaunchConfig.UseStateMachine"/> default to true.
+    ///
+    /// Plan-doc: <c>X:/_Projects/_.claude/_comms/plan-eqswitch-v3.22.0.md</c>
+    /// </summary>
+    private void RunLoginStateMachine(int pid, Account account, Character? character, string password, bool? enterWorldOverride)
+    {
+        // Locked decisions (plan-doc § Decisions, 2026-05-16):
+        //   #1 Tick interval — 250ms (~15 Native probe ticks per C# tick).
+        //   #2 gameState source — SHM exclusive via LoginShmWriter.ReadGameState.
+        //   #3 Cancellation — three layers (top-of-tick check + token-aware delay +
+        //      SendCancelCommand on Error/cancel exit so Native stops mid-command).
+        //   #5 Internal rename — this replaces RunLoginSequence's body in Iter-4.
+        // Add-on A: read nativePhase via SHM every tick (gates state transitions).
+        // Add-on B: log widgetTickSeq deltas (Iter-2/3 ratchets the 5s threshold).
+        const int TickIntervalMs = 250;
+        // Iter-3 (2026-05-17): bumped 90_000 → 180_000 to cover login pipeline
+        // (~48s typical on Dalaya — Combo G + LOGIN_ConnectButton click + connect
+        // response) + char-list warmup (~5-15s — bridge heap-scan after pinst
+        // transition) + selection ack (~1-3s) + zone-load (5-90s — Dalaya 3D
+        // scene hangs IsHungAppWindow during render) + safety margin. Pre-bump
+        // 90s killed the smoke at WaitConnectResponse before CharSelect even
+        // transitioned in. If empirical smoke shows <150s typical, ratchet down
+        // in Iter-4 — never let it grow unbounded.
+        const int OverallTimeoutMs = 180_000;
+        const int TickSeqStaleThresholdMs = 5_000;
+
+        // Interaction warning: if Launch.SkipNativeWarmup=true (default), the DLL bypasses
+        // its widget-discovery warmup loop after SendLoginCommand and may not advance
+        // nativePhase past WaitLoginScreen on its own — RunCredentialEntry's BURST 1 in
+        // the legacy path is what drives Native forward. The state machine doesn't fire
+        // BURST 1 yet (Iter-2 territory), so with both flags on, the Iter-1 smoke is
+        // expected to stall at WaitLoginScreen rather than reaching TypingCredentials.
+        // For a meaningful Iter-1 smoke target, set SkipNativeWarmup=false in config so
+        // Native's own warmup-completion advances nativePhase.
+        FileLogger.Info($"AutoLogin-SM: starting state-machine dispatch for PID {pid} ({account.Name}, char='{character?.Name ?? string.Empty}', " +
+            $"enterWorldOverride={enterWorldOverride?.ToString() ?? "null"}, SkipNativeWarmup={_config.Launch.SkipNativeWarmup})");
+
+        using var cts = new CancellationTokenSource(OverallTimeoutMs);
+        var sw = Stopwatch.StartNew();
+
+        LoginShmWriter? loginShm = null;
+        // Iter-3 (2026-05-17): CharSelectReader for character selection + Enter
+        // World RPC (the production-working path per EQSwitch CLAUDE.md AUTOLOGIN
+        // SPEC). KeyInputWriter for the PulseKey3D fallback used on Dalaya where
+        // CLW_EnterWorldButton isn't in the CXWnd tree at charselect-ready.
+        // hwnd is the per-tick-refreshed EQ window handle — EQ recreates its
+        // window on login→server→char-select transitions, so RefreshHandle is
+        // called at the top of each StepCharSelect/StepEnteringWorld tick.
+        CharSelectReader? charSelect = null;
+        KeyInputWriter? writer = null;
+        IntPtr hwnd = IntPtr.Zero;
+        bool sentCancelOnExit = false;
+        var current = LoginPhase.WaitLoginScreen;
+        // tickSeq staleness gate uses an "observed at least once" sentinel rather than
+        // gating on nonzero — the DLL can legitimately publish 0 indefinitely if its
+        // probe loop never starts, and `lastTickSeq != 0` would skip the staleness
+        // branch forever in that case (180s overall-timeout fallback instead of 5s
+        // staleness catch). Verifier-flagged convergent fix 2026-05-16 (T2-S/T2-O/T3-O).
+        bool tickSeqObserved = false;
+        uint lastTickSeq = 0;
+        long lastTickSeqAdvanceMs = 0;
+        int tickCount = 0;
+        // Path A diagnostic (Iter-1.5, 2026-05-16) — sentinels force a first-tick observation
+        // log entry. The OBS log fires on ANY change to nativePhase / gameState / widget
+        // visibility regardless of C# state transition, so during Iter-1's TypingCredentials
+        // stub-stall it traces what Native does on its own. Gates Iter-2 thin-orchestrator
+        // vs C#-driver decision. See plan-doc § "Iter-1 Smoke Results".
+        LoginPhase lastObservedPhase = (LoginPhase)uint.MaxValue;  // sentinel: real phases are 0..99
+        int lastObservedGameState = int.MinValue;
+        string lastObservedWidgetSig = "__init__";
+
+        try
+        {
+            loginShm = new LoginShmWriter();
+            if (!loginShm.Open(pid))
+            {
+                FileLogger.Error($"AutoLogin-SM: LoginShmWriter.Open failed for PID {pid}");
+                Report($"{account.Name}: SHM open failed");
+                current = LoginPhase.Error;
+                return;
+            }
+
+            // SetAutoLoginActive(true) prevents eqswitch-di8.cpp's pre-login kPromptWindows
+            // dismiss machinery from concurrent widget-clicks while the state machine drives
+            // the flow. Same pattern as RunLoginSequence (see SetAutoLoginActive XML doc).
+            if (!loginShm.SetAutoLoginActive(pid, true))
+                FileLogger.Warn($"AutoLogin-SM: SetAutoLoginActive(true) failed for PID {pid} — continuing");
+
+            // Iter-3 (2026-05-17): open CharSelectReader + KeyInputWriter for the
+            // Iter-3 StepCharSelect / StepEnteringWorld dispatch. Both must be open
+            // before the dispatch loop reaches CharSelect; opened here at entry so
+            // the lifecycle parallels loginShm (single try/finally pair). Matches
+            // legacy RunLoginSequence lines 1274-1303 ordering.
+            charSelect = new CharSelectReader();
+            if (!charSelect.Open(pid))
+            {
+                FileLogger.Error($"AutoLogin-SM: CharSelectReader.Open failed for PID {pid}");
+                Report($"{account.Name}: char-select SHM open failed");
+                current = LoginPhase.Error;
+                return;
+            }
+
+            writer = new KeyInputWriter();
+            if (!writer.Open(pid))
+            {
+                FileLogger.Error($"AutoLogin-SM: KeyInputWriter.Open failed for PID {pid}");
+                Report($"{account.Name}: key-input SHM open failed");
+                current = LoginPhase.Error;
+                return;
+            }
+
+            // Iter-3 fix-round-2 (verifier T3-Sonnet HIGH-3 + T3-Opus HIGH-2):
+            // initialize hwnd at entry instead of leaving IntPtr.Zero until the
+            // first RefreshHandle inside a Step method. RefreshHandle on Zero
+            // works by-incident (IsWindow(Zero)==false → Process lookup) but is
+            // fragile if the process died before our first Step tick. Look up
+            // once at entry so subsequent ticks see a known-good handle.
+            try
+            {
+                using var entryProc = System.Diagnostics.Process.GetProcessById(pid);
+                hwnd = entryProc.MainWindowHandle;
+                if (hwnd == IntPtr.Zero)
+                    FileLogger.Warn($"AutoLogin-SM: entry hwnd lookup returned 0 for PID {pid} (window not created yet; RefreshHandle will retry per-tick)");
+            }
+            catch (ArgumentException)
+            {
+                FileLogger.Error($"AutoLogin-SM: PID {pid} not found at entry — process never started or exited before SM dispatch");
+                Report($"{account.Name}: PID {pid} not found at entry");
+                current = LoginPhase.Error;
+                return;
+            }
+
+            // Iter-3 fix-round-2 (verifier T2-Opus REJECT C1 + T2-Sonnet C3 +
+            // T3-Opus LOW-4 convergent): honor enterWorldOverride parameter.
+            // Pre-fix the SM path ignored it — caller-supplied "stop at char
+            // select" intent was silently overridden. Matches legacy
+            // RunLoginSequence:2496 semantics.
+            bool shouldEnterWorld = enterWorldOverride ?? (character != null);
+            if (shouldEnterWorld && character == null)
+            {
+                FileLogger.Warn($"AutoLogin-SM: enterWorldOverride=true but character=null — downgrading to char-select-only (PID {pid})");
+                shouldEnterWorld = false;
+            }
+            FileLogger.Info($"AutoLogin-SM: shouldEnterWorld={shouldEnterWorld} (enterWorldOverride={enterWorldOverride?.ToString() ?? "null"}, char={(character != null ? "set" : "null")}, PID {pid})");
+
+            // Issue SendLoginCommand ONCE on entry. The state machine observes Native's
+            // resulting phase progression rather than driving it tick-by-tick.
+            if (!loginShm.SendLoginCommand(pid, account.Username, password, account.Server, character?.Name ?? string.Empty))
+            {
+                FileLogger.Error($"AutoLogin-SM: SendLoginCommand failed for PID {pid}");
+                Report($"{account.Name}: SendLoginCommand failed");
+                current = LoginPhase.Error;
+                return;
+            }
+
+            // Iter-4 (v3.22.0): fire LoginCredentialsSent so TrayManager subscribers
+            // (slim-titlebar / hook-config / window-title) can apply at T+~0s on the
+            // SM path — SendLoginCommand here is the SM-path equivalent of legacy's
+            // post-BURST-1 credential commit (~T+7s; see fire site at line ~2014).
+            // LoginComplete remains the idempotent end-of-sequence; both call into
+            // TrayManager.ApplyDeferredCosmetics(pid).
+            try
+            {
+                if (_syncContext != null)
+                    _syncContext.Post(_ => LoginCredentialsSent?.Invoke(this, pid), null);
+                else
+                    LoginCredentialsSent?.Invoke(this, pid);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Warn($"AutoLogin-SM: LoginCredentialsSent handler threw for PID {pid}: {ex.Message}");
+            }
+
+            Report($"{account.Name}: state machine — waiting for login screen...");
+
+            while (current != LoginPhase.Complete && current != LoginPhase.Error)
+            {
+                // Cancellation Layer 1 — explicit check at top of tick.
+                if (cts.IsCancellationRequested)
+                {
+                    FileLogger.Warn($"AutoLogin-SM: cancellation/timeout at state {current} after {sw.ElapsedMilliseconds}ms (PID {pid})");
+                    current = LoginPhase.Error;
+                    break;
+                }
+
+                tickCount++;
+
+                // SHM snapshot — read widgets + gameState + nativePhase per-tick (single source of truth).
+                // Decision #2: gameState comes from SHM exclusively. tickSeq staleness (>5s) is the
+                // dead-DLL safety net (Add-on B).
+                if (!loginShm.TryReadWidgetState(pid, out var widgets))
+                {
+                    FileLogger.Warn($"AutoLogin-SM: TryReadWidgetState failed at state {current} after {sw.ElapsedMilliseconds}ms (PID {pid})");
+                    current = LoginPhase.Error;
+                    break;
+                }
+                int gameState = loginShm.ReadGameState(pid);
+                LoginPhase nativePhase = loginShm.ReadPhase(pid);
+                // v3.22.0 Iter-2B (2026-05-16): read OkDisplay snapshot per-tick so
+                // StepWaitConnectResponse can detect Fatal classification (e.g.
+                // "Invalid Password") and bail to Error rather than spin-wait until
+                // the 180s overall timeout. Snapshot pattern (class+text torn-read
+                // guarded) is cheaper than separate calls — see LoginShmWriter.cs.
+                var (okClass, okText) = loginShm.ReadOkDisplaySnapshot(pid);
+
+                // Staleness defense — only ARMS after the first NONZERO TickSeq observation.
+                // Real-world DLL boot timing (Iter-1 round-2 smoke 2026-05-16): eqmain.dll
+                // load + DLL game-thread tick + first PollWidgetVisibilityToShm runs takes
+                // ~20s post-eqgame-launch. Until then, TickSeq=0 is "probe not started yet",
+                // NOT "probe dead" — the overall 180s CTS timeout (OverallTimeoutMs) covers
+                // the never-starts case. Staleness defense is specifically for the "probe
+                // was alive, then died mid-flight" case, which it still catches because
+                // lastTickSeqAdvanceMs gets updated on every TickSeq change after arming.
+                if (widgets.TickSeq != 0 && !tickSeqObserved)
+                {
+                    tickSeqObserved = true;
+                    lastTickSeq = widgets.TickSeq;
+                    lastTickSeqAdvanceMs = sw.ElapsedMilliseconds;
+                    FileLogger.Info($"AutoLogin-SM: first nonzero widgetTickSeq={widgets.TickSeq} observed at t={sw.ElapsedMilliseconds}ms — staleness defense armed (PID {pid})");
+                }
+                else if (tickSeqObserved && widgets.TickSeq != lastTickSeq)
+                {
+                    lastTickSeq = widgets.TickSeq;
+                    lastTickSeqAdvanceMs = sw.ElapsedMilliseconds;
+                }
+                else if (tickSeqObserved && sw.ElapsedMilliseconds - lastTickSeqAdvanceMs > TickSeqStaleThresholdMs)
+                {
+                    FileLogger.Error($"AutoLogin-SM: widgetTickSeq stalled at {widgets.TickSeq} for >{TickSeqStaleThresholdMs}ms after arming — DLL probe died (PID {pid})");
+                    current = LoginPhase.Error;
+                    break;
+                }
+
+                // Path A observability — emit an OBS entry on any change to nativePhase,
+                // gameState, or widget visibility (DiagSummary covers connect/ss/ok/yn/cd + TickSeq).
+                // Independent of the state-transition log below, so the Iter-1 stub-stall trace
+                // captures Native's autonomous progression instead of just C# decisions.
+                string widgetSig = widgets.DiagSummary();
+                if (nativePhase != lastObservedPhase || gameState != lastObservedGameState || widgetSig != lastObservedWidgetSig)
+                {
+                    FileLogger.Info($"AutoLogin-SM-OBS: tick={tickCount} t={sw.ElapsedMilliseconds}ms cstate={current} nativePhase={nativePhase} gameState={gameState} {widgetSig} (PID {pid})");
+                    lastObservedPhase = nativePhase;
+                    lastObservedGameState = gameState;
+                    lastObservedWidgetSig = widgetSig;
+                }
+
+                // Per-tick dispatch — Iter-2B implements phases 1-7 (WaitLoginScreen
+                // through CharSelect); Iter-3 will add EnteringWorld + Complete + the
+                // CharSelect → EnteringWorld transition (character selection + Enter
+                // World click). StepCharSelect for Iter-2B is the minimal-escalation
+                // stub (Native Error propagation only) per verifier-round convergent
+                // finding (T2-Sonnet + T2-Opus 2026-05-16): the original `current`
+                // self-loop made CharSelect an absorbing state with no Error escape.
+                // Iter-3 (2026-05-17): CharSelect + EnteringWorld dispatched outside the
+                // switch — they need `ref IntPtr hwnd` (RefreshHandle rewrites it on
+                // login→server→char-select window-recreation transitions), and switch
+                // expressions don't pass ref. Both methods are INSTANCE (not static) since
+                // they call ShouldSkipShmEnterWorld which uses _config, and they marshal
+                // the per-PID context (charSelect/writer/account/character/hwnd) that the
+                // observation-only Iter-2B Step methods don't need.
+                // Iter-3 fix-round-2 (verifier T2-Opus REJECT C2): cts.Token threaded
+                // into both Steps so their inner Thread.Sleep loops can break out on
+                // cancellation/timeout instead of running their full ~30s+90s budgets
+                // after the OverallTimeoutMs fires.
+                LoginPhase next;
+                if (current == LoginPhase.CharSelect)
+                {
+                    next = StepCharSelect(charSelect!, account, character, ref hwnd, pid, nativePhase, shouldEnterWorld, cts.Token);
+                }
+                else if (current == LoginPhase.EnteringWorld)
+                {
+                    next = StepEnteringWorld(charSelect!, writer!, account, ref hwnd, pid, cts.Token);
+                }
+                else
+                {
+                    next = current switch
+                    {
+                        LoginPhase.WaitLoginScreen     => StepWaitLoginScreen(widgets, gameState, nativePhase),
+                        LoginPhase.TypingCredentials   => StepTypingCredentials(widgets, gameState, nativePhase),
+                        LoginPhase.ClickingConnect     => StepClickingConnect(widgets, gameState, nativePhase),
+                        LoginPhase.WaitConnectResponse => StepWaitConnectResponse(widgets, gameState, nativePhase, okClass, okText),
+                        LoginPhase.ServerSelect        => StepServerSelect(widgets, gameState, nativePhase),
+                        LoginPhase.WaitServerLoad      => StepWaitServerLoad(widgets, gameState, nativePhase),
+                        _                              => current
+                    };
+                }
+
+                if (next != current)
+                {
+                    // Phase-skip detection — StepWaitLoginScreen uses `nativePhase >= TypingCredentials`
+                    // which silently swallows ServerSelect/WaitConnectResponse/etc into the
+                    // TypingCredentials Iter-1 stub-stall. Log when Native is already ahead of where
+                    // the C# transition lands; smoke output makes the desync loudly visible.
+                    bool nativeAhead = next == LoginPhase.TypingCredentials && nativePhase > LoginPhase.TypingCredentials;
+                    string aheadTag = nativeAhead ? $" [native-ahead: nativePhase={nativePhase}, C# stalling at {next} until Iter-2]" : string.Empty;
+                    FileLogger.Info($"AutoLogin-SM: {current} → {next} (tick={tickCount}, t={sw.ElapsedMilliseconds}ms, " +
+                        $"{widgets.DiagSummary()}, gameState={gameState}, nativePhase={nativePhase}){aheadTag}");
+                    current = next;
+                }
+
+                // Cancellation Layer 2 — token-aware delay so the inter-tick gap honors cancellation.
+                try
+                {
+                    Task.Delay(TickIntervalMs, cts.Token).Wait(cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    FileLogger.Warn($"AutoLogin-SM: cancelled during tick delay at state {current} (PID {pid})");
+                    current = LoginPhase.Error;
+                    break;
+                }
+                catch (AggregateException aex) when (aex.InnerException is OperationCanceledException)
+                {
+                    FileLogger.Warn($"AutoLogin-SM: cancelled (Aggregate) during tick delay at state {current} (PID {pid})");
+                    current = LoginPhase.Error;
+                    break;
+                }
+            }
+
+            FileLogger.Info($"AutoLogin-SM: terminal state {current} after {sw.ElapsedMilliseconds}ms, {tickCount} ticks (PID {pid})");
+
+            if (current == LoginPhase.Error)
+            {
+                // Cancellation Layer 3 — tell Native to stop in case it's mid-command.
+                // Defense against the "ghost typing" failure mode where C# bails but
+                // Native's keystroke queue keeps firing into a focused field.
+                try
+                {
+                    loginShm.SendCancelCommand(pid);
+                    sentCancelOnExit = true;
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Warn($"AutoLogin-SM: SendCancelCommand on Error exit failed: {ex.Message}");
+                }
+                Report($"{account.Name}: state machine failed (terminal Error)");
+            }
+            else
+            {
+                Report($"{account.Name}: state machine completed");
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Error($"AutoLogin-SM: unhandled exception at state {current} after {sw.ElapsedMilliseconds}ms (PID {pid})", ex);
+            Report($"{account.Name}: state machine crashed: {ex.Message}");
+            if (loginShm != null && !sentCancelOnExit)
+            {
+                // Parity with the Error-exit-path catch (line ~970) — log so a double-failure
+                // is visible in the log rather than silently swallowed. T3-S/T3-O flagged the
+                // inconsistency.
+                try { loginShm.SendCancelCommand(pid); }
+                catch (Exception cex) { FileLogger.Warn($"AutoLogin-SM: SendCancelCommand on exception-path exit failed: {cex.Message}"); }
+            }
+        }
+        finally
+        {
+            // Iter-3 fix-round-2 (verifier T3-Opus HIGH-5): SendCancelCommand-on-Error
+            // moved into finally so it fires for ALL Error exit paths — including the
+            // early-return paths in entry initialization (loginShm.Open / charSelect.Open
+            // / writer.Open / Process.GetProcessById failures). Pre-fix these paths set
+            // `current = LoginPhase.Error; return;` and bypassed the post-loop Cancel
+            // block, leaving Native running with a stale LoginCommand that would keep
+            // trying to type credentials into a window we just abandoned. Catch handler
+            // already has a similar guard for the exception path (sentCancelOnExit flag).
+            if (loginShm != null && current == LoginPhase.Error && !sentCancelOnExit)
+            {
+                try { loginShm.SendCancelCommand(pid); sentCancelOnExit = true; }
+                catch (Exception cex) { FileLogger.Warn($"AutoLogin-SM: SendCancelCommand on Error-from-finally failed: {cex.Message}"); }
+            }
+            // Iter-3 (2026-05-17): deactivate writer BEFORE closing SHMs — ensure
+            // focus-faking stops while key-input SHM is still alive (writer.Deactivate
+            // reads the SHM to clear active-flag). Mirrors legacy RunLoginSequence
+            // finally ordering (line 2516-2521).
+            if (writer != null)
+            {
+                try { writer.Deactivate(pid); }
+                catch (Exception ex) { FileLogger.Warn($"AutoLogin-SM: writer.Deactivate failed: {ex.Message}"); }
+                try { writer.Dispose(); }
+                catch (Exception ex) { FileLogger.Warn($"AutoLogin-SM: writer.Dispose failed: {ex.Message}"); }
+            }
+            if (charSelect != null)
+            {
+                try { charSelect.Close(pid); }
+                catch (Exception ex) { FileLogger.Warn($"AutoLogin-SM: charSelect.Close failed: {ex.Message}"); }
+                try { charSelect.Dispose(); }
+                catch (Exception ex) { FileLogger.Warn($"AutoLogin-SM: charSelect.Dispose failed: {ex.Message}"); }
+            }
+            if (loginShm != null)
+            {
+                // Nested try so Dispose ALWAYS runs even if SetAutoLoginActive (or its
+                // catch handler — e.g. FileLogger during disk-full) throws. T2-O flagged
+                // the prior ordering as a Dispose-skip risk.
+                try
+                {
+                    try { loginShm.SetAutoLoginActive(pid, false); }
+                    catch (Exception ex) { FileLogger.Warn($"AutoLogin-SM: SetAutoLoginActive(false) failed: {ex.Message}"); }
+                }
+                finally
+                {
+                    loginShm.Dispose();
+                }
+            }
+            // Iter-3 fix-round-2 (verifier T3-Sonnet HIGH-2): TryRemove is now INSIDE
+            // FireLoginComplete's Post lambda (atomic with LoginComplete invocation),
+            // matching legacy RunLoginSequence:2963-2975. Don't call TryRemove here —
+            // would re-introduce the race window where IsLoginActive=false but
+            // LoginComplete hasn't fired yet.
+            try { FireLoginComplete(pid); } catch (Exception ex) { FileLogger.Warn($"AutoLogin-SM: LoginComplete handler threw: {ex.Message}"); }
+        }
+    }
+
+    /// <summary>
+    /// Iter-1 transition: WaitLoginScreen → TypingCredentials once Native publishes
+    /// PHASE_TYPING_CREDENTIALS (or later) AND the connect widget is visible. The
+    /// double-gate prevents premature transition when Native phase advances ahead
+    /// of the visible login screen (e.g. transient phase ticks during DLL init).
+    /// Plan-doc table row: <c>LoginScreen → TypingCredentials on warmup-complete + cmd issued</c>.
+    /// </summary>
+    private static LoginPhase StepWaitLoginScreen(WidgetState widgets, int gameState, LoginPhase nativePhase)
+    {
+        // Native phase advanced past WaitLoginScreen means SendLoginCommand has been
+        // observed and Combo G warmup has started. Error phase is a terminal Native
+        // failure — propagate to C# Error so the outer loop's cleanup runs.
+        if (nativePhase == LoginPhase.Error)
+            return LoginPhase.Error;
+
+        if (nativePhase >= LoginPhase.TypingCredentials && widgets.ConnectVisible)
+            return LoginPhase.TypingCredentials;
+
+        return LoginPhase.WaitLoginScreen;
+    }
+
+    /// <summary>
+    /// Iter-2B (2026-05-16): TypingCredentials → ClickingConnect on Native phase
+    /// advance. Native autonomously handles the Combo G password write
+    /// (`SetEditWndText` to LOGIN_PasswordEdit at +0x1A8 with the v3.16.0
+    /// ScreenMode-swap wrapper); C# observes the resulting Native phase progression
+    /// rather than driving keystrokes itself.
+    ///
+    /// **No skip-ahead to CharSelect** here even though `CharSelectAvailable`
+    /// could flip during a single C# tick — Iter-2B verifier-round (T2-Opus +
+    /// T2-Sonnet + T3-Sonnet 2026-05-16) converged on a real Fatal-bypass risk:
+    /// if EQ briefly creates CharSelect window then tears it down + raises a
+    /// Fatal OkDialog (kick-session race), skipping ahead from here bypasses
+    /// StepWaitConnectResponse's Fatal-classification check. Natural progression
+    /// through ClickingConnect → WaitConnectResponse keeps the Fatal-detection
+    /// path live for every transition. Native phases 1-4 are reliable on Dalaya
+    /// (Path A 2026-05-16 confirmed) — the 250ms tick interval comfortably
+    /// catches each intermediate phase.
+    /// </summary>
+    private static LoginPhase StepTypingCredentials(WidgetState widgets, int gameState, LoginPhase nativePhase)
+    {
+        if (nativePhase == LoginPhase.Error)
+            return LoginPhase.Error;
+
+        if (nativePhase >= LoginPhase.ClickingConnect)
+            return LoginPhase.ClickingConnect;
+
+        return LoginPhase.TypingCredentials;
+    }
+
+    /// <summary>
+    /// Iter-2B: ClickingConnect → WaitConnectResponse on Native phase advance.
+    /// Native handles the LOGIN_ConnectButton click via the structural ConnectWnd-
+    /// rooted resolution (`eqmain_widgets_mq2style::FindConnectButtonStructural`).
+    /// Skip-aheads removed per Iter-2B verifier-round (see StepTypingCredentials).
+    /// </summary>
+    private static LoginPhase StepClickingConnect(WidgetState widgets, int gameState, LoginPhase nativePhase)
+    {
+        if (nativePhase == LoginPhase.Error)
+            return LoginPhase.Error;
+
+        if (nativePhase >= LoginPhase.WaitConnectResponse)
+            return LoginPhase.WaitConnectResponse;
+
+        return LoginPhase.ClickingConnect;
+    }
+
+    /// <summary>
+    /// Iter-2B: WaitConnectResponse → {Error | ServerSelect | CharSelect}. This is
+    /// the load-bearing transition for v3.22.0 — Native stalls at PHASE_WAIT_CONNECT_RESP
+    /// on Dalaya because its gameState-gated PHASE_SERVER_SELECT transition never
+    /// fires (gGameState never advances past 0; Path A finding 2026-05-16). C# routes
+    /// around this via:
+    ///   - CharSelectAvailable (v8 SHM, Dalaya PRIMARY path — Native publishes 1
+    ///     when pinstCCharacterSelect → non-null, ~t=48s)
+    ///   - ServerSelectVisible (non-Dalaya defensive path — server-select widget
+    ///     becomes visible)
+    ///   - OkDialog Fatal (Invalid Password / etc. — bail to Error rather than
+    ///     spin-wait the 180s overall timeout)
+    ///
+    /// Recoverable dialog handling deferred to Iter-3 (the legacy RunLoginSequence
+    /// has retry-budget tuning via okClass.Recoverable that we'll port).
+    /// </summary>
+    private static LoginPhase StepWaitConnectResponse(WidgetState widgets, int gameState, LoginPhase nativePhase,
+        OkDisplayClass okClass, string okText)
+    {
+        if (nativePhase == LoginPhase.Error)
+            return LoginPhase.Error;
+
+        // Fatal classification = unrecoverable login error (Invalid Password,
+        // banned account, etc.). Bail fast — retries don't help.
+        if (widgets.OkDialogVisible && okClass == OkDisplayClass.Fatal)
+        {
+            FileLogger.Warn($"AutoLogin-SM: Fatal OkDisplay at WaitConnectResponse: \"{okText}\"");
+            return LoginPhase.Error;
+        }
+
+        // T3-Sonnet/Opus 2026-05-16 verifier finding: ReadOkDisplaySnapshot can
+        // return (None, "") on a torn read between its two class reads, even
+        // when the dialog widget is visible. Surface this rare-but-possible
+        // false-negative-on-Fatal case in the smoke trace so it is diagnosable.
+        // Next tick (250ms later) recovers with a coherent read; the overall
+        // 180s timeout catches the worst case anyway.
+        if (widgets.OkDialogVisible && okClass == OkDisplayClass.None)
+            FileLogger.Warn($"AutoLogin-SM: OkDialog visible but okClass=None — torn read or unclassified (text=\"{okText}\")");
+
+        // Dalaya PRIMARY path: Native published charSelectAvailable=1 (EQ created
+        // the CCharacterSelect window). Skip server-select entirely.
+        if (widgets.CharSelectAvailable)
+            return LoginPhase.CharSelect;
+
+        // Non-Dalaya defensive: server-select widget appeared.
+        if (widgets.ServerSelectVisible)
+            return LoginPhase.ServerSelect;
+
+        return LoginPhase.WaitConnectResponse;
+    }
+
+    /// <summary>
+    /// Iter-2B: ServerSelect → {Error | WaitServerLoad | CharSelect}. **DEAD-ON-DALAYA
+    /// — defensive non-Dalaya scaffolding only.** Dalaya's QUICK-CONNECT button
+    /// (`eqmain_widgets_mq2style:FindConnectButtonStructural slot=+0x34`) skips
+    /// server-select entirely; ServerSelectVisible never flips true. T2-Opus +
+    /// T3-Sonnet 2026-05-16 verifier round confirmed this state is unreachable on
+    /// the live target. For Iter-2B the state is observe-only; Iter-3 will add
+    /// server-select click via PostMessage Enter or JoinServerDirect RPC (v4 SHM).
+    /// YESNO kick-session and OK_Display Recoverable handling are also Iter-3 —
+    /// for now the state stays put until either Native advances or
+    /// CharSelectAvailable lights up.
+    /// </summary>
+    private static LoginPhase StepServerSelect(WidgetState widgets, int gameState, LoginPhase nativePhase)
+    {
+        if (nativePhase == LoginPhase.Error)
+            return LoginPhase.Error;
+
+        if (widgets.CharSelectAvailable)
+            return LoginPhase.CharSelect;
+
+        if (nativePhase >= LoginPhase.WaitServerLoad)
+            return LoginPhase.WaitServerLoad;
+
+        return LoginPhase.ServerSelect;
+    }
+
+    /// <summary>
+    /// Iter-2B: WaitServerLoad → CharSelect. **DEAD-ON-DALAYA — defensive non-Dalaya
+    /// scaffolding only** (entered only from StepServerSelect's `nativePhase >=
+    /// WaitServerLoad` branch which can't fire on Dalaya because Native is stuck
+    /// at PHASE_WAIT_CONNECT_RESP). CharSelect signal works regardless of how we
+    /// got here.
+    /// </summary>
+    private static LoginPhase StepWaitServerLoad(WidgetState widgets, int gameState, LoginPhase nativePhase)
+    {
+        if (nativePhase == LoginPhase.Error)
+            return LoginPhase.Error;
+
+        if (widgets.CharSelectAvailable)
+            return LoginPhase.CharSelect;
+
+        return LoginPhase.WaitServerLoad;
+    }
+
+    /// <summary>
+    /// Iter-3 (2026-05-17) — character selection dispatch.
+    ///
+    /// Direct port of the legacy <see cref="RunLoginSequence"/> char-select block
+    /// (AutoLoginManager.cs:2150-2326 pre-Iter-3): wait for char list ready, run
+    /// <see cref="CharacterSelector.Decide"/>, request selection via
+    /// <see cref="CharSelectReader.RequestSelectionBySlot"/>, wait for ack.
+    /// Safety aborts on resolvedSlot=0 (no name match / malformed), slot
+    /// out-of-range, or ack-timeout (matches legacy hotfix v6b — without DLL ack,
+    /// SetCurSel's TIMERPROC never ran and EQ stays on default slot 0; Enter
+    /// World then logs in the WRONG character).
+    ///
+    /// **Blocking** (~5-30s typical, up to ~40s with bridge warmup retries). This
+    /// VIOLATES plan-doc § "Per-state action mapping" Rule 4 ("States ONLY decide
+    /// transitions") in favor of EQSwitch CLAUDE.md "if it's already working,
+    /// don't fix it" — verbatim port of safety semantics that prevent
+    /// wrong-character logins. The 250ms dispatch-tick cadence is suspended
+    /// during this Step; the OverallTimeoutMs (180s) and explicit RefreshHandle
+    /// checks are the safety nets. Refactor to non-blocking sub-states in Iter-4
+    /// cleanup if verifier objects.
+    ///
+    /// Returns <see cref="LoginPhase.EnteringWorld"/> on selection ack confirmed,
+    /// <see cref="LoginPhase.Error"/> on any abort condition,
+    /// <see cref="LoginPhase.Complete"/> if char-select-only intent (character==null)
+    /// or already-in-game observed during char-list wait.
+    /// </summary>
+    private LoginPhase StepCharSelect(
+        CharSelectReader charSelect,
+        Account account,
+        Character? character,
+        ref IntPtr hwnd,
+        int pid,
+        LoginPhase nativePhase,
+        bool shouldEnterWorld,
+        System.Threading.CancellationToken ct)
+    {
+        if (nativePhase == LoginPhase.Error)
+            return LoginPhase.Error;
+        if (ct.IsCancellationRequested)
+            return LoginPhase.Error;
+
+        // LoginToCharselect path — no character target. Reaching CharSelect IS success.
+        if (character == null)
+        {
+            FileLogger.Info($"AutoLogin-SM: char-select-only path, no character target (PID {pid}) — Complete");
+            Report($"{account.Name} reached char select.");
+            return LoginPhase.Complete;
+        }
+
+        // Wait for char list to be populated. CharSelectAvailable (the SHM signal
+        // that brought us to this state) fires when pinstCCharacterSelect != NULL,
+        // but the bridge's heap scan for character names takes ~5-15s after that.
+        // Match legacy timing — up to ~30s with 500ms polls. Within-loop:
+        // RefreshHandle on every iter (EQ recreates window at this transition),
+        // already-in-game short-circuit (user could beat us if they manually
+        // clicked Enter World during the wait).
+        const int kMaxCharListWaitMs = 30_000;
+        var listSw = Stopwatch.StartNew();
+        bool charListReady = false;
+        while (listSw.ElapsedMilliseconds < kMaxCharListWaitMs)
+        {
+            // Iter-3 fix-round-2 (verifier T2-Opus REJECT C2): cancellation check.
+            // Without this, an OverallTimeoutMs fire at t=180s while we're 5s into
+            // a 30s char-list wait would block for 25s past the intended cutoff.
+            if (ct.IsCancellationRequested)
+            {
+                FileLogger.Warn($"AutoLogin-SM: cancellation during char-list wait at t={listSw.ElapsedMilliseconds}ms (PID {pid})");
+                return LoginPhase.Error;
+            }
+            if (charSelect.ReadCharCount(pid) > 0 || charSelect.IsCharSelectReady(pid))
+            {
+                charListReady = true;
+                break;
+            }
+            hwnd = RefreshHandle(pid, hwnd);
+            if (hwnd == IntPtr.Zero)
+            {
+                FileLogger.Warn($"AutoLogin-SM: lost EQ window during char-list wait (PID {pid})");
+                Report($"{account.Name}: lost EQ window during char-list wait (crashed or closed)");
+                return LoginPhase.Error;
+            }
+            if (IsInGame(charSelect, pid, hwnd))
+            {
+                FileLogger.Info($"AutoLogin-SM: already in-game during char-list wait — treating as success (PID {pid})");
+                Report($"{account.Name} already in-game.");
+                return LoginPhase.Complete;
+            }
+            Thread.Sleep(500);
+        }
+
+        if (!charListReady)
+        {
+            // Hotfix v4 (HIGH-A) parity: MQ2 bridge never came up. Pre-fix fallthrough
+            // would pulse Enter on EQ's DEFAULT-selected character — abort instead.
+            FileLogger.Error($"AutoLogin-SM: MQ2 bridge didn't populate char list after {kMaxCharListWaitMs}ms (PID {pid}) — stopping at char select to avoid wrong-character enter-world");
+            Report($"{account.Name}: MQ2 bridge didn't initialize — stopped at char select");
+            return LoginPhase.Error;
+        }
+
+        // Mirror legacy lines 2175-2178: if latch tripped but charCount=0 (cache-
+        // invalidation between bridge anchor scans), give bridge ~2s to republish.
+        // Iter-3 fix-round-2 (T2-Opus C2): per-iter cancellation check.
+        for (int retry = 0; retry < 4 && charSelect.ReadCharCount(pid) == 0; retry++)
+        {
+            if (ct.IsCancellationRequested) return LoginPhase.Error;
+            Thread.Sleep(500);
+        }
+
+        // Snapshot character list ONCE — bounds checks below MUST use this snapshot
+        // (re-reading SHM via ReadCharCount can diverge if the DLL refreshes
+        // between reads; feature-dev review finding M1a on legacy). Use
+        // charNames.Length as authoritative.
+        var charNames = charSelect.ReadAllCharNames(pid);
+        int charCount = charNames.Length;
+        FileLogger.Info($"AutoLogin-SM: char-list ready: {charCount} characters — {string.Join(", ", charNames)} (PID {pid})");
+
+        // Iter-3 fix-round-2 (smoke 1 surfaced this — natedogg account at 21:37:31
+        // hit "MQ2 heap in slot-mode (1 placeholder slot(s))"). Port legacy
+        // single-char structural fallback (RunLoginSequence:2192-2203): if the
+        // bridge published exactly 1 character AND it's a "Slot N" placeholder
+        // (heap-read couldn't pull the real name string), slot 1 is the target by
+        // elimination — there's literally no other slot to be wrong about.
+        // Bypass Decide for this case; Decide would return 0 because the
+        // placeholder won't match character.Name.
+        int resolvedSlot;
+        bool resolvedByName;
+        string decisionLog;
+        if (charCount == 1 && charNames[0].StartsWith("Slot ", StringComparison.Ordinal))
+        {
+            resolvedSlot = 1;
+            resolvedByName = false;
+            decisionLog = $"single-char structural fallback → slot 1 = '{character.Name}' (bridge in slot-mode)";
+        }
+        else
+        {
+            (resolvedSlot, resolvedByName, decisionLog) = CharacterSelector.Decide(
+                character.CharacterSlot, character.Name, charNames);
+        }
+        FileLogger.Info($"AutoLogin-SM: selector → {decisionLog} (PID {pid})");
+
+        // Safety abort #1: resolvedSlot=0 — no name match, or malformed request.
+        // Entering world on EQ's default selection is a regression (Phase 5b's
+        // unified abort, promoted from feature-dev finding I2). Slot-mode
+        // detection mirrors legacy lines 2224-2228.
+        if (resolvedSlot == 0)
+        {
+            bool isSlotMode = charNames.Length > 0
+                && charNames[0].StartsWith("Slot ", StringComparison.Ordinal);
+            string cause = isSlotMode
+                ? $"MQ2 heap in slot-mode ({charNames.Length} placeholder slot(s)) — character names unavailable"
+                : $"character '{character.Name}' not found in account '{account.Name}'";
+            FileLogger.Error($"AutoLogin-SM: {cause} — stopping at char select to avoid wrong-character enter-world (PID {pid})");
+            Report($"{account.Name}: {cause} — stopped at char select");
+            return LoginPhase.Error;
+        }
+
+        // Safety abort #2: slot out of range — same guard as legacy lines 2233-2238.
+        if (resolvedSlot > charCount)
+        {
+            FileLogger.Error($"AutoLogin-SM: slot {resolvedSlot} exceeds char count {charCount} — stopping at char select to avoid wrong-character enter-world (PID {pid})");
+            Report($"{account.Name}: slot {resolvedSlot} out of range (only {charCount} characters) — stopped at char select");
+            return LoginPhase.Error;
+        }
+
+        // Fire selection — DLL's MQ2Bridge::SelectCharacter handles the actual
+        // pCharCharacterListWnd->SetCurSel call on the game thread via TIMERPROC.
+        charSelect.RequestSelectionBySlot(pid, resolvedSlot);
+        FileLogger.Info($"AutoLogin-SM: requested slot {resolvedSlot} (byName={resolvedByName}, PID {pid})");
+
+        // Wait for DLL ack — up to 10s at 50ms granularity (matches legacy
+        // v3.15.9 tuning: 200 iter × 50ms = 10s cap). Hard abort on timeout —
+        // see legacy hotfix v6b reasoning at lines 2298-2308. Cheap first-read
+        // bypass mirrors legacy lines 2267-2280: the native two-tier throttle
+        // often acks before C# even starts the Sleep loop.
+        var ackSw = Stopwatch.StartNew();
+        bool acked = charSelect.IsSelectionAcknowledged(pid);
+        long firstReadUs = ackSw.ElapsedTicks * 1_000_000L / Stopwatch.Frequency;
+        int totalIters = 1;
+        if (!acked)
+        {
+            for (int ack = 0; ack < 200; ack++)
+            {
+                // Iter-3 fix-round-2 (T2-Opus C2): cancellation check at every ack-poll iter.
+                if (ct.IsCancellationRequested)
+                {
+                    FileLogger.Warn($"AutoLogin-SM: cancellation during selection-ack wait after {ack * 50}ms (PID {pid})");
+                    return LoginPhase.Error;
+                }
+                Thread.Sleep(50);
+                totalIters = ack + 2;
+                if (charSelect.IsSelectionAcknowledged(pid)) { acked = true; break; }
+            }
+        }
+        ackSw.Stop();
+
+        if (!acked)
+        {
+            FileLogger.Error($"AutoLogin-SM: DLL did not ack selection for slot {resolvedSlot} in 10s — stopping at char select to avoid wrong-character enter-world (PID {pid})");
+            Report($"{account.Name}: character selection not confirmed — stopped at char select");
+            return LoginPhase.Error;
+        }
+
+        FileLogger.Info($"AutoLogin-SM: selection ack observed after {totalIters} iter(s) / {ackSw.ElapsedMilliseconds}ms (firstRead={(totalIters == 1)}, firstReadUs={firstReadUs}, PID {pid})");
+
+        // 100ms post-ack settle for downstream UI bookkeeping (legacy line 2310-2313).
+        // The DLL's SetCurSel ran synchronously via TIMERPROC; this is buffer for
+        // any UI-thread follow-up (selection-changed event handlers, etc).
+        Thread.Sleep(100);
+
+        // Iter-3 fix-round-2 (verifier T2-Opus REJECT C1 + T2-Sonnet C3 +
+        // T3-Opus LOW-4 convergent): honor enterWorldOverride. If the caller
+        // requested char-select-only (shouldEnterWorld=false), report the
+        // selection completion and exit Complete — don't fall through to
+        // StepEnteringWorld. Matches legacy RunLoginSequence:2502-2509 semantics.
+        if (!shouldEnterWorld)
+        {
+            FileLogger.Info($"AutoLogin-SM: char-select-only intent honored — slot {resolvedSlot} selected, stopping before Enter World (PID {pid})");
+            Report($"{account.Name} reached char select (slot {resolvedSlot}).");
+            return LoginPhase.Complete;
+        }
+
+        return LoginPhase.EnteringWorld;
+    }
+
+    /// <summary>
+    /// Iter-3 (2026-05-17) — Enter World dispatch.
+    ///
+    /// Direct port of legacy <see cref="RunLoginSequence"/> enter-world block
+    /// (AutoLoginManager.cs:2329-2492 pre-Iter-3). Branches on
+    /// <see cref="ShouldSkipShmEnterWorld"/>:
+    ///
+    /// <list type="bullet">
+    /// <item>Dalaya (default skip=true): goes directly to PulseKey3D fallback —
+    /// CLW_EnterWorldButton isn't in the CXWnd tree by the time charselect-
+    /// ready is signaled, so all SHM attempts would return -1 and waste
+    /// ~2-2.5s before fallback (v3.15.11 Target 2 Option A short-circuit).</item>
+    /// <item>Non-Dalaya: up to 4× SHM <see cref="CharSelectReader.RequestEnterWorld"/>
+    /// with result-code handling (-2 already-in-game, -4 SEH abort, !=1 retry,
+    /// =1 success). PulseKey3D fallback if all SHM attempts fail.</item>
+    /// </list>
+    ///
+    /// Either path waits for <see cref="WaitForEnterWorldTransition"/> to confirm
+    /// zone-load. On Dalaya the detection signal is IsHungAppWindow hung→responsive
+    /// transition (3D scene-load briefly hangs render thread); on non-Dalaya the
+    /// signal is window title containing " - ". gameState gate is broken on Dalaya
+    /// so cannot be used here.
+    ///
+    /// **Blocking** (5-90s SHM path / 5-60s × 3 PulseKey3D fallback). Same
+    /// architectural caveat as <see cref="StepCharSelect"/> — port verbatim,
+    /// refactor in Iter-4 if needed.
+    ///
+    /// Returns <see cref="LoginPhase.Complete"/> on zone-load confirmed,
+    /// <see cref="LoginPhase.Error"/> on all-attempts-failed or window lost.
+    /// </summary>
+    private LoginPhase StepEnteringWorld(
+        CharSelectReader charSelect,
+        KeyInputWriter writer,
+        Account account,
+        ref IntPtr hwnd,
+        int pid,
+        System.Threading.CancellationToken ct)
+    {
+        if (ct.IsCancellationRequested) return LoginPhase.Error;
+        Report("Entering world...");
+        bool entered = false;
+        bool skipShmEnterWorld = ShouldSkipShmEnterWorld(account);
+
+        // Only log the skip when MQ2 was actually available — otherwise we'd be
+        // using PulseKey3D regardless and the "skipping" log line would be
+        // misleading. Mirrors legacy line 2345-2349.
+        if (skipShmEnterWorld && charSelect.IsMQ2Available(pid))
+            FileLogger.Info($"AutoLogin-SM: skipping SHM Enter World on Dalaya (PID {pid}, account {account.Name}) — using PulseKey3D directly");
+
+        // ── Primary path: SHM RequestEnterWorld (non-Dalaya) ────────────
+        // v3.15.9 tuning: 4 attempts × 500ms inter-retry. Mirrors legacy
+        // lines 2351-2443. Per-attempt: ack wait (5s × 50ms = 100 polls),
+        // result-code handling, zone-load verification.
+        if (charSelect.IsMQ2Available(pid) && !skipShmEnterWorld)
+        {
+            const int kMaxEnterWorldAttempts = 4;
+            for (int attempt = 0; attempt < kMaxEnterWorldAttempts; attempt++)
+            {
+                // Iter-3 fix-round-2 (T2-Opus C2): cancellation per attempt.
+                if (ct.IsCancellationRequested) return LoginPhase.Error;
+                hwnd = RefreshHandle(pid, hwnd);
+                if (hwnd == IntPtr.Zero)
+                {
+                    Report($"{account.Name}: lost EQ window during enter-world (crashed or closed)");
+                    return LoginPhase.Error;
+                }
+                if (IsInGame(charSelect, pid, hwnd))
+                {
+                    entered = true;
+                    FileLogger.Info($"AutoLogin-SM: already in-game before SHM attempt {attempt + 1} (gameState=5 or title)");
+                    break;
+                }
+
+                charSelect.RequestEnterWorld(pid);
+
+                bool acked = false;
+                for (int w = 0; w < 100; w++)
+                {
+                    if (ct.IsCancellationRequested) return LoginPhase.Error;
+                    if (charSelect.IsEnterWorldAcknowledged(pid)) { acked = true; break; }
+                    Thread.Sleep(50);
+                }
+
+                if (!acked)
+                {
+                    FileLogger.Warn($"AutoLogin-SM: DLL did not ack enter-world request (attempt {attempt + 1})");
+                    continue;
+                }
+
+                int result = charSelect.ReadEnterWorldResult(pid);
+                if (result == -2)
+                {
+                    // Already in-game (user beat us, or prior request landed). Do NOT
+                    // retry or fall back — would phantom-click in-game UI. Legacy lines
+                    // 2394-2403.
+                    entered = true;
+                    FileLogger.Info($"AutoLogin-SM: enter-world request dropped by DLL (already in-game, attempt {attempt + 1})");
+                    break;
+                }
+                if (result == -4)
+                {
+                    // Hotfix v6c (Agent 2 F2.5): SEH fault during CLW_EnterWorldButton
+                    // click. Client UI stack is in unknown state — retrying or PulseKey3D
+                    // could deepen the fault. Abort cleanly. Legacy lines 2404-2414.
+                    FileLogger.Error($"AutoLogin-SM: EQ client faulted during Enter World click (SEH in game, attempt {attempt + 1}) — stopping to avoid further damage");
+                    Report($"{account.Name}: EQ client faulted during Enter World — please restart the client");
+                    return LoginPhase.Error;
+                }
+                if (result != 1)
+                {
+                    FileLogger.Warn($"AutoLogin-SM: enter-world result={result} (attempt {attempt + 1}), button may not exist yet");
+                    if (attempt < kMaxEnterWorldAttempts - 1)
+                        Thread.Sleep(500);
+                    continue;
+                }
+
+                FileLogger.Info($"AutoLogin-SM: CLW_EnterWorldButton clicked via SHM (attempt {attempt + 1})");
+
+                // Wait for zone-load. Primary: IsHungAppWindow hung→responsive
+                // (authoritative on Dalaya where gameState stays 0 and title stays
+                // custom across char-select→in-world). Fallback: native " - " title
+                // flip. 90s cap per legacy.
+                if (WaitForEnterWorldTransition(pid, ref hwnd, 90))
+                    entered = true;
+                break; // button confirmed clicked — never re-click (could cause disconnect)
+            }
+        }
+
+        // ── Fallback: PulseKey3D keyboard Enter ──────────────────────
+        // Re-check in-game first — if user manually entered world while SHM was
+        // retrying, the keyboard Enter would land in-game and trigger UI actions
+        // (phantom click). Legacy lines 2446-2456.
+        if (!entered)
+        {
+            hwnd = RefreshHandle(pid, hwnd);
+            if (hwnd != IntPtr.Zero && IsInGame(charSelect, pid, hwnd))
+            {
+                entered = true;
+                FileLogger.Info("AutoLogin-SM: in-game detected before PulseKey3D fallback — skipping (gameState=5 or title)");
+            }
+        }
+        if (!entered)
+        {
+            if (charSelect.IsMQ2Available(pid) && skipShmEnterWorld)
+                FileLogger.Info("AutoLogin-SM: PulseKey3D enter-world (SHM skipped per Launch.SkipShmEnterWorldOnDalaya)");
+            else if (charSelect.IsMQ2Available(pid))
+                FileLogger.Warn("AutoLogin-SM: SHM enter-world failed, falling back to PulseKey3D");
+            else
+                FileLogger.Info("AutoLogin-SM: MQ2 not available, using PulseKey3D for enter-world");
+
+            for (int attempt = 0; attempt < 3 && !entered; attempt++)
+            {
+                // Iter-3 fix-round-2 (T2-Opus C2): cancellation per attempt.
+                if (ct.IsCancellationRequested) return LoginPhase.Error;
+                hwnd = RefreshHandle(pid, hwnd);
+                if (hwnd == IntPtr.Zero)
+                {
+                    Report($"{account.Name}: lost EQ window during PulseKey3D enter-world fallback (crashed or closed)");
+                    return LoginPhase.Error;
+                }
+                if (IsInGame(charSelect, pid, hwnd))
+                {
+                    entered = true;
+                    FileLogger.Info($"AutoLogin-SM: already in-game before PulseKey3D attempt {attempt + 1}");
+                    break;
+                }
+
+                // Iter-3 fix-round-2 (verifier T2-Opus REJECT C3 + T2-Sonnet C2):
+                // SemaphoreSlim arbitration around the focus-faking sequence. Only
+                // one PID can own focus-faking at a time — without this gate, a
+                // dual-box Dalaya smoke (both PIDs reach PulseKey3D fallback in
+                // the same ~1s window) would interleave Activate→Sleep→Pulse→
+                // Sleep→Deactivate calls, and one PID's Deactivate would clear
+                // the IAT-hook spoofing in the other PID's mid-keystroke window.
+                // Acquire honors cancellation — if cts fires while we're waiting
+                // for the other PID's Deactivate, we bail cleanly.
+                //
+                // Iter-3 fix-round-3 (verifier T3-Opus HIGH): acquire-once pattern.
+                // Wait outside the held-block's try; if Wait succeeds (return
+                // value, not exception), we OWN the mutex unconditionally and the
+                // held-block's try/finally guarantees Release. No `gotMutex` flag
+                // needed — eliminates the theoretical "exception between Wait
+                // and flag assignment leaks the mutex" gap, AND removes a future-
+                // maintenance trap if anyone adds code between the two statements.
+                //
+                // Iter-3 fix-round-3 (verifier T2-Opus MINOR-2): inner try/finally
+                // around writer.Activate→Deactivate. If PulseKey3D throws (SHM
+                // torn-write etc.), writer.Deactivate runs in the inner finally
+                // BEFORE the mutex is released, ensuring focus-faking is cleared
+                // for the next PID. Pre-fix an exception orphaned the Activate
+                // state, leaving the IAT-hook spoofing on for whichever PID won
+                // the mutex next.
+                try { _focusFakeMutex.Wait(ct); }
+                catch (OperationCanceledException) { return LoginPhase.Error; }
+
+                try
+                {
+                    writer.Activate(pid, suppress: true);
+                    try
+                    {
+                        Thread.Sleep(500);
+                        PulseKey3D(writer, pid, hwnd, 0x0D);
+                        Thread.Sleep(500);
+                    }
+                    finally
+                    {
+                        // Iter-3 fix-round-3 (verifier T2-Opus MINOR-2): guaranteed
+                        // Deactivate even if PulseKey3D or a Sleep throws — focus-
+                        // faking state CANNOT leak across the mutex boundary.
+                        try { writer.Deactivate(pid); }
+                        catch (Exception dex) { FileLogger.Warn($"AutoLogin-SM: writer.Deactivate in PulseKey3D-finally threw: {dex.Message}"); }
+                    }
+                }
+                finally
+                {
+                    // Iter-3 fix-round-3 (verifier T2-Sonnet MINOR-2): guard
+                    // SemaphoreFullException — theoretically only possible via a
+                    // double-release bug in a future edit, but defensive log is
+                    // cheap and makes the assert visible without crashing.
+                    try { _focusFakeMutex.Release(); }
+                    catch (SemaphoreFullException) { FileLogger.Error($"AutoLogin-SM: _focusFakeMutex.Release double-fired — possible double-release bug (PID {pid})"); }
+                }
+
+                // 60s cap per legacy line 2487 — PulseKey3D is the fallback, if the
+                // first attempt's keystroke didn't land we still have 2 more attempts.
+                if (WaitForEnterWorldTransition(pid, ref hwnd, 60))
+                    entered = true;
+            }
+        }
+
+        if (entered)
+        {
+            Report($"{account.Name} logged in!");
+            FileLogger.Info($"AutoLogin-SM: {account.Name} login complete (PID {pid})");
+            return LoginPhase.Complete;
+        }
+
+        Report($"{account.Name}: reached char select but Enter World didn't register");
+        FileLogger.Warn($"AutoLogin-SM: {account.Name} enter-world failed after all attempts (PID {pid})");
+        return LoginPhase.Error;
+    }
+
+    /// <summary>
+    /// Marshals the LoginComplete event to the captured UI sync context (when available),
+    /// matching the dispatch pattern RunLoginSequence uses for its terminal event firing.
+    /// Falls back to synchronous invoke when no sync context is captured.
+    ///
+    /// Iter-3 fix-round-2 (verifier T3-Sonnet HIGH-2): does the
+    /// <see cref="_activeLoginPids"/> TryRemove ATOMICALLY with the
+    /// LoginComplete invocation — when the sync context is available, both
+    /// happen inside the same Post lambda. Pre-fix, the SM path did TryRemove
+    /// on the background thread BEFORE FireLoginComplete posted, creating a
+    /// race window where a ClientDiscovered handler firing between the two
+    /// would see IsLoginActive=false and resume window manipulation on a PID
+    /// that hadn't fired its LoginComplete yet. Matches the legacy
+    /// RunLoginSequence pattern at line 2963-2975.
+    /// </summary>
+    private void FireLoginComplete(int pid)
+    {
+        var ctx = _syncContext;
+        if (ctx != null)
+        {
+            ctx.Post(_ =>
+            {
+                _activeLoginPids.TryRemove(pid, out byte _);
+                LoginComplete?.Invoke(this, pid);
+            }, null);
+        }
+        else
+        {
+            _activeLoginPids.TryRemove(pid, out byte _);
+            LoginComplete?.Invoke(this, pid);
+        }
     }
 
     private void RunLoginSequence(int pid, Account account, Character? character, string password, bool? enterWorldOverride)
