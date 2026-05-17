@@ -892,6 +892,12 @@ public class AutoLoginManager
                 }
                 int gameState = loginShm.ReadGameState(pid);
                 LoginPhase nativePhase = loginShm.ReadPhase(pid);
+                // v3.22.0 Iter-2B (2026-05-16): read OkDisplay snapshot per-tick so
+                // StepWaitConnectResponse can detect Fatal classification (e.g.
+                // "Invalid Password") and bail to Error rather than spin-wait until
+                // the 90s overall timeout. Snapshot pattern (class+text torn-read
+                // guarded) is cheaper than separate calls — see LoginShmWriter.cs.
+                var (okClass, okText) = loginShm.ReadOkDisplaySnapshot(pid);
 
                 // Staleness defense — only ARMS after the first NONZERO TickSeq observation.
                 // Real-world DLL boot timing (Iter-1 round-2 smoke 2026-05-16): eqmain.dll
@@ -933,19 +939,24 @@ public class AutoLoginManager
                     lastObservedWidgetSig = widgetSig;
                 }
 
-                // Per-tick dispatch — Iter-1 implements WaitLoginScreen + (implicit) Error only.
-                // All other states pass through unchanged; they fill in across Iter-2/3.
+                // Per-tick dispatch — Iter-2B implements phases 1-7 (WaitLoginScreen
+                // through CharSelect); Iter-3 will add EnteringWorld + Complete + the
+                // CharSelect → EnteringWorld transition (character selection + Enter
+                // World click). StepCharSelect for Iter-2B is the minimal-escalation
+                // stub (Native Error propagation only) per verifier-round convergent
+                // finding (T2-Sonnet + T2-Opus 2026-05-16): the original `current`
+                // self-loop made CharSelect an absorbing state with no Error escape.
                 LoginPhase next = current switch
                 {
-                    LoginPhase.WaitLoginScreen   => StepWaitLoginScreen(widgets, gameState, nativePhase),
-                    LoginPhase.TypingCredentials => current,    // Iter-2
-                    LoginPhase.ClickingConnect   => current,    // Iter-2
-                    LoginPhase.WaitConnectResponse => current,  // Iter-2
-                    LoginPhase.ServerSelect      => current,    // Iter-2
-                    LoginPhase.WaitServerLoad    => current,    // Iter-3
-                    LoginPhase.CharSelect        => current,    // Iter-3
-                    LoginPhase.EnteringWorld     => current,    // Iter-3
-                    _                            => current
+                    LoginPhase.WaitLoginScreen     => StepWaitLoginScreen(widgets, gameState, nativePhase),
+                    LoginPhase.TypingCredentials   => StepTypingCredentials(widgets, gameState, nativePhase),
+                    LoginPhase.ClickingConnect     => StepClickingConnect(widgets, gameState, nativePhase),
+                    LoginPhase.WaitConnectResponse => StepWaitConnectResponse(widgets, gameState, nativePhase, okClass, okText),
+                    LoginPhase.ServerSelect        => StepServerSelect(widgets, gameState, nativePhase),
+                    LoginPhase.WaitServerLoad      => StepWaitServerLoad(widgets, gameState, nativePhase),
+                    LoginPhase.CharSelect          => StepCharSelect(widgets, gameState, nativePhase),
+                    LoginPhase.EnteringWorld       => current,    // Iter-3
+                    _                              => current
                 };
 
                 if (next != current)
@@ -1060,6 +1071,166 @@ public class AutoLoginManager
             return LoginPhase.TypingCredentials;
 
         return LoginPhase.WaitLoginScreen;
+    }
+
+    /// <summary>
+    /// Iter-2B (2026-05-16): TypingCredentials → ClickingConnect on Native phase
+    /// advance. Native autonomously handles the Combo G password write
+    /// (`SetEditWndText` to LOGIN_PasswordEdit at +0x1A8 with the v3.16.0
+    /// ScreenMode-swap wrapper); C# observes the resulting Native phase progression
+    /// rather than driving keystrokes itself.
+    ///
+    /// **No skip-ahead to CharSelect** here even though `CharSelectAvailable`
+    /// could flip during a single C# tick — Iter-2B verifier-round (T2-Opus +
+    /// T2-Sonnet + T3-Sonnet 2026-05-16) converged on a real Fatal-bypass risk:
+    /// if EQ briefly creates CharSelect window then tears it down + raises a
+    /// Fatal OkDialog (kick-session race), skipping ahead from here bypasses
+    /// StepWaitConnectResponse's Fatal-classification check. Natural progression
+    /// through ClickingConnect → WaitConnectResponse keeps the Fatal-detection
+    /// path live for every transition. Native phases 1-4 are reliable on Dalaya
+    /// (Path A 2026-05-16 confirmed) — the 250ms tick interval comfortably
+    /// catches each intermediate phase.
+    /// </summary>
+    private static LoginPhase StepTypingCredentials(WidgetState widgets, int gameState, LoginPhase nativePhase)
+    {
+        if (nativePhase == LoginPhase.Error)
+            return LoginPhase.Error;
+
+        if (nativePhase >= LoginPhase.ClickingConnect)
+            return LoginPhase.ClickingConnect;
+
+        return LoginPhase.TypingCredentials;
+    }
+
+    /// <summary>
+    /// Iter-2B: ClickingConnect → WaitConnectResponse on Native phase advance.
+    /// Native handles the LOGIN_ConnectButton click via the structural ConnectWnd-
+    /// rooted resolution (`eqmain_widgets_mq2style::FindConnectButtonStructural`).
+    /// Skip-aheads removed per Iter-2B verifier-round (see StepTypingCredentials).
+    /// </summary>
+    private static LoginPhase StepClickingConnect(WidgetState widgets, int gameState, LoginPhase nativePhase)
+    {
+        if (nativePhase == LoginPhase.Error)
+            return LoginPhase.Error;
+
+        if (nativePhase >= LoginPhase.WaitConnectResponse)
+            return LoginPhase.WaitConnectResponse;
+
+        return LoginPhase.ClickingConnect;
+    }
+
+    /// <summary>
+    /// Iter-2B: WaitConnectResponse → {Error | ServerSelect | CharSelect}. This is
+    /// the load-bearing transition for v3.22.0 — Native stalls at PHASE_WAIT_CONNECT_RESP
+    /// on Dalaya because its gameState-gated PHASE_SERVER_SELECT transition never
+    /// fires (gGameState never advances past 0; Path A finding 2026-05-16). C# routes
+    /// around this via:
+    ///   - CharSelectAvailable (v8 SHM, Dalaya PRIMARY path — Native publishes 1
+    ///     when pinstCCharacterSelect → non-null, ~t=48s)
+    ///   - ServerSelectVisible (non-Dalaya defensive path — server-select widget
+    ///     becomes visible)
+    ///   - OkDialog Fatal (Invalid Password / etc. — bail to Error rather than
+    ///     spin-wait the 90s overall timeout)
+    ///
+    /// Recoverable dialog handling deferred to Iter-3 (the legacy RunLoginSequence
+    /// has retry-budget tuning via okClass.Recoverable that we'll port).
+    /// </summary>
+    private static LoginPhase StepWaitConnectResponse(WidgetState widgets, int gameState, LoginPhase nativePhase,
+        OkDisplayClass okClass, string okText)
+    {
+        if (nativePhase == LoginPhase.Error)
+            return LoginPhase.Error;
+
+        // Fatal classification = unrecoverable login error (Invalid Password,
+        // banned account, etc.). Bail fast — retries don't help.
+        if (widgets.OkDialogVisible && okClass == OkDisplayClass.Fatal)
+        {
+            FileLogger.Warn($"AutoLogin-SM: Fatal OkDisplay at WaitConnectResponse: \"{okText}\"");
+            return LoginPhase.Error;
+        }
+
+        // T3-Sonnet/Opus 2026-05-16 verifier finding: ReadOkDisplaySnapshot can
+        // return (None, "") on a torn read between its two class reads, even
+        // when the dialog widget is visible. Surface this rare-but-possible
+        // false-negative-on-Fatal case in the smoke trace so it is diagnosable.
+        // Next tick (250ms later) recovers with a coherent read; the overall
+        // 90s timeout catches the worst case anyway.
+        if (widgets.OkDialogVisible && okClass == OkDisplayClass.None)
+            FileLogger.Warn($"AutoLogin-SM: OkDialog visible but okClass=None — torn read or unclassified (text=\"{okText}\")");
+
+        // Dalaya PRIMARY path: Native published charSelectAvailable=1 (EQ created
+        // the CCharacterSelect window). Skip server-select entirely.
+        if (widgets.CharSelectAvailable)
+            return LoginPhase.CharSelect;
+
+        // Non-Dalaya defensive: server-select widget appeared.
+        if (widgets.ServerSelectVisible)
+            return LoginPhase.ServerSelect;
+
+        return LoginPhase.WaitConnectResponse;
+    }
+
+    /// <summary>
+    /// Iter-2B: ServerSelect → {Error | WaitServerLoad | CharSelect}. **DEAD-ON-DALAYA
+    /// — defensive non-Dalaya scaffolding only.** Dalaya's QUICK-CONNECT button
+    /// (`eqmain_widgets_mq2style:FindConnectButtonStructural slot=+0x34`) skips
+    /// server-select entirely; ServerSelectVisible never flips true. T2-Opus +
+    /// T3-Sonnet 2026-05-16 verifier round confirmed this state is unreachable on
+    /// the live target. For Iter-2B the state is observe-only; Iter-3 will add
+    /// server-select click via PostMessage Enter or JoinServerDirect RPC (v4 SHM).
+    /// YESNO kick-session and OK_Display Recoverable handling are also Iter-3 —
+    /// for now the state stays put until either Native advances or
+    /// CharSelectAvailable lights up.
+    /// </summary>
+    private static LoginPhase StepServerSelect(WidgetState widgets, int gameState, LoginPhase nativePhase)
+    {
+        if (nativePhase == LoginPhase.Error)
+            return LoginPhase.Error;
+
+        if (widgets.CharSelectAvailable)
+            return LoginPhase.CharSelect;
+
+        if (nativePhase >= LoginPhase.WaitServerLoad)
+            return LoginPhase.WaitServerLoad;
+
+        return LoginPhase.ServerSelect;
+    }
+
+    /// <summary>
+    /// Iter-2B: WaitServerLoad → CharSelect. **DEAD-ON-DALAYA — defensive non-Dalaya
+    /// scaffolding only** (entered only from StepServerSelect's `nativePhase >=
+    /// WaitServerLoad` branch which can't fire on Dalaya because Native is stuck
+    /// at PHASE_WAIT_CONNECT_RESP). CharSelect signal works regardless of how we
+    /// got here.
+    /// </summary>
+    private static LoginPhase StepWaitServerLoad(WidgetState widgets, int gameState, LoginPhase nativePhase)
+    {
+        if (nativePhase == LoginPhase.Error)
+            return LoginPhase.Error;
+
+        if (widgets.CharSelectAvailable)
+            return LoginPhase.CharSelect;
+
+        return LoginPhase.WaitServerLoad;
+    }
+
+    /// <summary>
+    /// Iter-2B stub for CharSelect — Iter-3 will implement character selection
+    /// + EnterWorld dispatch (`CCharacterListWnd::SelectCharacter` + Enter PostMessage
+    /// per autologin spec). For Iter-2B the only transition is Native Error escalation,
+    /// preventing the original `current => current` absorbing-state lockout that the
+    /// verifier round (T2-Sonnet + T2-Opus convergent CRITICAL 2026-05-16) called out:
+    /// without this defensive Error check, a transition into CharSelect on cs=1 would
+    /// pin the state machine until the 90s overall timeout even if Native crashed,
+    /// session was kicked, or eqgame.exe lost its DLL.
+    /// </summary>
+    private static LoginPhase StepCharSelect(WidgetState widgets, int gameState, LoginPhase nativePhase)
+    {
+        if (nativePhase == LoginPhase.Error)
+            return LoginPhase.Error;
+
+        // Iter-3 will add: character selection logic + EnterWorld dispatch + Complete.
+        return LoginPhase.CharSelect;
     }
 
     /// <summary>
