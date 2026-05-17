@@ -105,12 +105,22 @@ public class AutoLoginManager
     /// <summary>Fires just before the login sequence starts (use to pause guard timers).</summary>
     public event EventHandler<int>? LoginStarting;
 
-    /// <summary>Fires after BURST 1 keystrokes finished and Enter was submitted —
-    /// roughly T+~7s after EQ window appears (vs T+~30s for LoginComplete).
-    /// Subscribers can resume cosmetic work that was deferred during login
-    /// (slim-titlebar guard, hook config refresh, window title) without
-    /// waiting for the full charselect-ready signal. Cosmetic ONLY — never
-    /// generate input or steal focus from this handler.</summary>
+    /// <summary>Fires after credential submission is dispatched to EQ. Timing
+    /// depends on path:
+    /// <list type="bullet">
+    /// <item>Legacy <see cref="RunLoginSequence"/>: after BURST 1 keystrokes
+    /// finished and Enter was submitted (~T+7s).</item>
+    /// <item>State-machine (v3.22.0+, <c>useStateMachine=true</c>): right after
+    /// SHM <c>SendLoginCommand</c> returns success (~T+0s — Native commits
+    /// credentials via Combo G + ClickButton asynchronously after this).</item>
+    /// </list>
+    /// Both paths fire BEFORE the login server response is observed — auth may
+    /// still fail downstream. Earlier than <see cref="LoginComplete"/>
+    /// (~T+30-60s) so subscribers can resume cosmetic work that was deferred
+    /// during login (slim-titlebar guard, hook config refresh, window title)
+    /// without waiting for the full charselect-ready signal. Cosmetic ONLY —
+    /// never generate input or steal focus from this handler, and the work
+    /// must be no-op-safe against a subsequently-failed login.</summary>
     public event EventHandler<int>? LoginCredentialsSent;
 
     /// <summary>Fires when a login sequence completes (success or failure) with the PID.</summary>
@@ -1068,7 +1078,7 @@ public class AutoLoginManager
                 LoginPhase next;
                 if (current == LoginPhase.CharSelect)
                 {
-                    next = StepCharSelect(charSelect!, writer!, account, character, ref hwnd, pid, nativePhase, shouldEnterWorld, cts.Token);
+                    next = StepCharSelect(charSelect!, account, character, ref hwnd, pid, nativePhase, shouldEnterWorld, cts.Token);
                 }
                 else if (current == LoginPhase.EnteringWorld)
                 {
@@ -1403,7 +1413,6 @@ public class AutoLoginManager
     /// </summary>
     private LoginPhase StepCharSelect(
         CharSelectReader charSelect,
-        KeyInputWriter writer,
         Account account,
         Character? character,
         ref IntPtr hwnd,

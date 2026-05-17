@@ -4,9 +4,12 @@
 
 First end-to-end ship of the C# state machine that drives the Dalaya auto-login
 pipeline against Native's SHM observability layer (v7+ widget probes + v8
-`charSelectAvailable`). Opt-in via `LaunchConfig.useStateMachine` (default
-`true` shipped, legacy `RunLoginSequence` retained behind the flag for fallback).
-Iter-1 through Iter-4 all consolidate here — branch
+`charSelectAvailable`). **Opt-in via `LaunchConfig.useStateMachine`** —
+**defaults to `false` in code** (`Config/AppConfig.cs`) so a fresh install
+preserves v3.21.x behavior. Set `"useStateMachine": true` in
+`eqswitch-config.json` to enable the SM path; the legacy `RunLoginSequence` is
+retained as the default until the SM path has accumulated more
+multi-environment smoke. Iter-1 through Iter-4 all consolidate here — branch
 `feat/v3.22.0-state-machine` → `main`.
 
 ### Highlights
@@ -49,9 +52,14 @@ Iter-1 through Iter-4 all consolidate here — branch
   placeholder against `character.Name`. Load-bearing for single-character
   accounts where the bridge runs in slot-mode.
 - **Iter-4 polish:** `LoginCredentialsSent` SM-path fire (see above); dead
-  `widgets` + `gameState` params removed from `StepCharSelect` signature
-  (Iter-3 left them after the Step's logic shifted to native-phase /
-  charSelect-reader probes during fix-rounds).
+  `WidgetState widgets` + `int gameState` + `KeyInputWriter writer` params
+  removed from `StepCharSelect` signature (Iter-3 left them after the Step's
+  logic shifted to native-phase / charSelect-reader probes during fix-rounds;
+  Round-1 verifiers caught `writer` as a third dead param that the initial
+  Iter-4 trim missed). Event XML doc on `LoginCredentialsSent` reworked to
+  document both legacy (~T+7s post-BURST-1) and SM (~T+0s post-`SendLoginCommand`)
+  fire-timing semantics, with explicit "cosmetic only / no-op-safe against
+  failed-login" caveat.
 
 ### Native side (already shipped in v3.21.1; recapped here for the v3.22.0 contract)
 
