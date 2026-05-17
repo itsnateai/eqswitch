@@ -1,5 +1,78 @@
 # Changelog
 
+## v3.22.2 — Bridge dead-code cleanup (2026-05-17)
+
+Native-only patch. Burying the corpse left over from the v3.22.1
+trust-the-offset fix. No runtime behavior change — pure deletion plus
+a handful of comment edits that referenced the deleted symbols by name.
+
+### What's gone
+
+`Native/mq2_bridge.cpp`:
+
+- **Functions deleted**: `IsValidCharArray` (multi-layer name-pattern
+  validator that gated the offset discovery) and `ValidateCharArrayOffset`
+  (the validate-then-permanently-latch wrapper around it, including its
+  32k-iteration wide-scan fallback). Both had zero production callers
+  after v3.22.1.
+- **Globals deleted**: `g_offsetValidated`, `g_validatedOffset`,
+  `g_charArrayNotFoundLogged` — the latching flags that broke the SM path
+  whenever EQ had not populated `charSelectPlayerArray` at the moment of
+  the first poll after `pinstCCharacterSelect` transitioned non-null.
+- **Reset blocks pruned**: the `pinstCCharacterSelect` transition block,
+  the in-game transition block, and `MQ2Bridge::Shutdown()` no longer
+  reset the three removed globals (3 reset sites touched).
+- **Wrong-comment buried**: the pre-v3.22.1 block at the old
+  `ValidateCharArrayOffset` site that claimed "MQ2 RoF2-emu IS x64 and
+  the x86 offset is currently unknown" went with the function. That
+  comment was load-bearing for the 5-hour misdiagnosis chain that
+  preceded v3.22.1; deleting it prevents pattern resurrection in a
+  future refactor.
+- **Comment edits**: the rationale comments in `PopulateCharacterData`,
+  the Path A site in `Poll`, and `EmitVerificationReport` no longer
+  reference the deleted symbols by name. v3.22.1's CHANGELOG entry
+  remains the historical record.
+
+### Why now
+
+`bury-the-corpse` pattern: dead code that contains a load-bearing
+anti-pattern is more dangerous than dead code with no semantic content.
+Leaving `IsValidCharArray` + `ValidateCharArrayOffset` in place tempted
+a future refactor to "restore" the validator under a different name and
+silently re-introduce the give-up latch.
+
+### Why nothing else
+
+#2 (`IsReadablePtr(data, count * CSI_SIZE)` per-entry tightening) and
+#3 (Path B2 `SetCurSel` storm throttle) from v3.22.1's "Known follow-ups"
+are deferred to a coherent v3.22.x / Iter-5 architectural-cleanup bundle.
+Both are behavior changes without an observed failure mode; v3.22.1 just
+shipped 5 hours ago and is empirically validated (20+ real char names
+across dual-box smokes), so adding prophylactic gates on top would
+dilute that baseline. SEH already catches the per-entry failure mode #2
+addresses; #3's "could cause flicker on slow populates" has no repro.
+
+### Verification
+
+- Native build clean: `Native/build-di8-inject.sh` exit 0,
+  `eqswitch-di8.dll` 241,152 bytes — **same size** as v3.22.1 (the
+  deleted statics were already DCE'd by MSVC's `/OPT:REF` at v3.22.1
+  link time, so removing the source contributes zero linkable bytes).
+  The DLL's actual SHA256 differs from v3.22.1's (PE `TimeDateStamp` +
+  read-only section layout shift from the removed `kBadNames` string
+  pool that lived in `.rdata`); zero behavioral diff in the .text
+  section. v3.22.1's `cmp -l` against this build shows differences in
+  header + .rdata only, not .text.
+- C# Debug + Release builds clean (version-bump-only on C# side).
+- No empirical smoke required — v3.22.1's empirical baseline still
+  applies because no runtime behavior changed.
+
+### Verifier discipline
+
+1 round × 6 agents (normal stakes — `Native/` path forces normal-tier
+per `completion-checkpoint.sh` v4.1 even though the change is
+pure-deletion + comment edits).
+
 ## v3.22.1 — Native MQ2 bridge trust-the-offset fix (2026-05-17)
 
 Patch release fixing a latent intermittent bug in the MQ2 bridge's

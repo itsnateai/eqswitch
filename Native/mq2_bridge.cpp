@@ -125,11 +125,12 @@ static const uint32_t CSI_LEVEL_OFF  = 0x48;    // UNRELIABLE — see note above
 // ─── Offset validation state ───────────────────────────────────
 
 // volatile: accessed from ActivateThread + TIMERPROC (game thread)
-static volatile bool     g_offsetValidated   = false;
-static volatile uint32_t g_validatedOffset   = 0;
+// v3.22.2: g_offsetValidated / g_validatedOffset / g_charArrayNotFoundLogged
+// removed along with the orphaned ValidateCharArrayOffset / IsValidCharArray
+// machinery — production paths trust OFFSET_CHARSELECT_ARRAY directly per
+// MQ2 RoF2-emu (x86) EverQuest.h:963.
 static volatile bool     g_uiFallbackLogged  = false;
 static volatile int      g_cachedNameCol     = -1;
-static volatile bool     g_charArrayNotFoundLogged = false;
 static volatile int      g_cachedSlotCount   = -1;  // slot probe result cache (-1 = not probed)
 static volatile bool     g_verificationDone  = false;
 static volatile uintptr_t g_heapScanArrayBase = 0;   // heap scan result (0 = not found/not scanned)
@@ -500,137 +501,17 @@ struct ArrayClassHeader {
     int      Alloc;
 };
 
-// ─── ValidateCharArrayOffset ───────────────────────────────────
-
-static bool IsValidCharArray(const uint8_t *pEverQuest, uint32_t offset) {
-    __try {
-        const ArrayClassHeader *arr = (const ArrayClassHeader *)(pEverQuest + offset);
-
-        if (arr->Count < 1 || arr->Count > CHARSEL_MAX_CHARS)
-            return false;
-        if (!arr->Data)
-            return false;
-
-        const char *name = (const char *)(arr->Data + CSI_NAME_OFF);
-        // Character name MUST start with uppercase A-Z per EQ naming rules.
-        // Field-label strings like "Height" also start uppercase, so this alone
-        // isn't enough — tighten further below with length + reject known-label list.
-        if (name[0] < 'A' || name[0] > 'Z')
-            return false;
-
-        int len = 0;
-        for (int i = 0; i < 64; i++) {
-            if (name[i] == '\0') { len = i; break; }
-            // Name chars are A-Z lowercase/uppercase only (no spaces, digits, punctuation).
-            char c = name[i];
-            if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')))
-                return false;
-        }
-        // EQ names: min 4 chars, max 15 chars. Reject anything outside.
-        if (len < 4 || len > 15) return false;
-
-        // Hotfix v6f: reject known eqmain UI field-label strings that passed the
-        // old "printable ASCII" validator. "Height" was the actual symptom —
-        // heap-scan hit returned eqmain's character-info panel label block
-        // instead of the charselect array. If one of these strings appears as
-        // "name", we're reading from the wrong base.
-        // Track B v2/v3 (2026-05-05): harmonized with IsPlausibleName's blocklist
-        // (line ~156) so Path A and Path C reject the same UI labels + class
-        // names + race names.
-        static const char *const kBadNames[] = {
-            "Height", "Heading", "Class", "Level", "Name", "Race", "Deity",
-            "Gender", "Strength", "Stamina", "Charisma", "Dexterity",
-            "Agility", "Intelligence", "Wisdom", "Account", "Character",
-            "Login", "Server", "World", "Select", "Options", "Default",
-            "Username", "Password", "Settings", "Network", "Inventory",
-            "Public", "Console", "Argument", "Target", "Inspect", "Trading",
-            "Bard", "Cleric", "Druid", "Enchanter", "Magician", "Monk",
-            "Necromancer", "Paladin", "Ranger", "Rogue", "Shaman", "Warrior",
-            "Wizard", "Beastlord", "Berserker", "Shadowknight",
-            "Human", "Barbarian", "Erudite", "Woodelf", "Highelf", "Darkelf",
-            "Halfelf", "Dwarf", "Troll", "Ogre", "Halfling", "Gnome",
-            "Iksar", "Vahshir", "Froglok", "Drakkin",
-            // EQ-flavor short title-case strings (parity with IsPlausibleName).
-            // T2 verifier callout: previously this list was 13 entries shorter
-            // than the IsPlausibleName list, which created Path A vs Path C
-            // predicate drift.
-            "Zone", "Camp", "Raid", "Brave", "Bold", "Storm", "Swift",
-            "Hunter", "Shadow", "Rider", "Scout", "Valor", "Pride",
-            nullptr
-        };
-        for (int k = 0; kBadNames[k]; k++) {
-            const char *bad = kBadNames[k];
-            int bi = 0;
-            while (bad[bi] && name[bi] == bad[bi]) bi++;
-            if (!bad[bi] && name[bi] == '\0') {
-                // Exact match to a UI label — not a character name.
-                return false;
-            }
-        }
-
-        // Additional sanity: entry[0].level field (even though unreliable as-displayed)
-        // should be in a plausible character-level range 1..250 OR zero (stale slot).
-        // Reject if it's obviously garbage (negative, > 10000).
-        int32_t lvl = *(const int32_t *)(arr->Data + CSI_LEVEL_OFF);
-        if (lvl < 0 || lvl > 10000) return false;
-
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-static bool ValidateCharArrayOffset(const uint8_t *pEverQuest) {
-    if (g_offsetValidated) return true;
-
-    if (IsValidCharArray(pEverQuest, OFFSET_CHARSELECT_ARRAY)) {
-        g_validatedOffset = OFFSET_CHARSELECT_ARRAY;
-        g_offsetValidated = true;
-        g_charArrayNotFoundLogged = false;
-        DI8Log("mq2_bridge: charSelectPlayerArray validated at expected offset 0x%X", g_validatedOffset);
-        return true;
-    }
-
-    // Track B fix (2026-05-05): widened scan from ±0x200 to full CEverQuest range
-    // (0..0x20000). The hardcoded OFFSET_CHARSELECT_ARRAY=0x18EC0 is the MQ2
-    // x64-RoF2 value; on Dalaya x86 every pointer-sized member halves so the
-    // array sits at a different (currently unknown) offset. IsValidCharArray's
-    // multi-layer validation (count∈[1,10], heap-range data ptr, A-Z+a-z name
-    // pattern, length [4,15], UI-label blocklist, level∈[0,10000]) keeps false-
-    // positive rate effectively zero across this widened scan.
-    //
-    // PERF GATE (2026-05-05, post Opus T2 verifier): if the scan failed once
-    // already this charselect cycle (g_charArrayNotFoundLogged), don't re-run
-    // the 32k-iteration scan every poll. Wait for the next charselect transition
-    // to clear the gate (see line ~2754 reset block). Previously the wide scan
-    // re-fired every Poll() call (~500ms cadence) for the entire charselect
-    // duration on Dalaya where this offset is genuinely unfindable.
-    if (g_charArrayNotFoundLogged) return false;
-
-    DI8Log("mq2_bridge: expected offset 0x%X failed -- scanning 0..0x20000 (Track B widened)",
-           OFFSET_CHARSELECT_ARRAY);
-
-    uint32_t baseOffset = OFFSET_CHARSELECT_ARRAY;
-    uint32_t startOffset = 0;
-    uint32_t endOffset = 0x20000;
-
-    for (uint32_t off = startOffset; off <= endOffset; off += 4) {
-        if (off == baseOffset) continue;
-        if (IsValidCharArray(pEverQuest, off)) {
-            g_validatedOffset = off;
-            g_offsetValidated = true;
-            g_charArrayNotFoundLogged = false;
-            DI8Log("mq2_bridge: charSelectPlayerArray FOUND at scanned offset 0x%X (delta=%+d)",
-                   off, (int)off - (int)baseOffset);
-            return true;
-        }
-    }
-
-    DI8Log("mq2_bridge: charSelectPlayerArray NOT FOUND in 0..0x20000 (skipping rescan until next charselect transition)");
-    g_charArrayNotFoundLogged = true;
-    return false;
-}
+// ─── (removed v3.22.2) ─────────────────────────────────────────
+// IsValidCharArray + ValidateCharArrayOffset deleted. The functions
+// implemented a validate-then-permanently-latch pattern that broke the
+// SM path's char-list extraction when EQ had not yet populated
+// charSelectPlayerArray at the moment of the first poll after
+// pinstCCharacterSelect transitioned non-null. Production paths
+// (PopulateCharacterData + Path A in Poll) now trust
+// OFFSET_CHARSELECT_ARRAY directly per MQ2 RoF2-emu (x86)
+// EverQuest.h:963 — the same shape MQ2's MQ2CharSelectListType.cpp
+// uses (pEverQuest->charSelectPlayerArray.GetCount() direct access).
+// See CHANGELOG.md v3.22.1 + v3.22.2 entries for the full history.
 
 // ─── Pointer validation ───────────────────────────────────────
 
@@ -3119,8 +3000,6 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                         g_uiFallbackLogged = false;
                         g_cachedSlotCount = -1;
                         g_cachedNameCol = -1;
-                        g_charArrayNotFoundLogged = false;
-                        g_offsetValidated = false;  // re-validate Path A under live char-select
                         // v3.15.2: clear chunked-resume cursors so a fresh charselect
                         // cycle starts at 0x01000000 instead of mid-walk from prior cycle.
                         g_lastHeapScanAddr = 0;
@@ -3348,13 +3227,12 @@ void MQ2Bridge::PopulateCharacterData(volatile LoginShm *shm) {
     // MQ2-canonical "trust the offset" — read pEverQuest->charSelectPlayerArray
     // directly each poll. Per MQ2 RoF2-emu (x86) source EverQuest.h:963 the
     // array sits at offset 0x18EC0; confirmed plug-and-play on Dalaya by Nate
-    // 2026-05-17 + live empirical probe. The pre-2026-05-17 ValidateCharArrayOffset
-    // / IsValidCharArray approach gave up permanently after one failed validation
-    // (g_charArrayNotFoundLogged latched true), which broke the dominant failure
-    // mode where EQ has not populated Count yet at the moment of the first poll
-    // after pinstCCharacterSelect transitions. Trust + defensive Count/Data
-    // sanity is the same shape MQ2 uses, and a Count==0 poll just retries next
-    // tick instead of blocking the cycle for 30s.
+    // 2026-05-17 + live empirical probe. Count==0 means EQ has not populated
+    // yet (dominant first-poll state after pinstCCharacterSelect transitions);
+    // we return zero and the next tick retries — same shape as MQ2's
+    // MQ2CharSelectListType.cpp. See CHANGELOG.md v3.22.1 entry for the
+    // detailed history of the validate-then-permanently-latch antipattern
+    // that v3.22.1 removed and v3.22.2 buried.
     __try {
         const ArrayClassHeader *arr = (const ArrayClassHeader *)(pEQ + OFFSET_CHARSELECT_ARRAY);
         int count = arr->Count;
@@ -3478,11 +3356,10 @@ static void EmitVerificationReport(volatile CharSelectShm *shm) {
     }
 
     // 3. ppEverQuest + charSelectPlayerArray
-    // v3.22.1 (2026-05-17): removed `g_offsetValidated` gate — production paths
-    // now trust OFFSET_CHARSELECT_ARRAY directly without ValidateCharArrayOffset,
-    // so g_offsetValidated would always be false here and the report would
-    // silently skip the most informative line. Use OFFSET_CHARSELECT_ARRAY
-    // directly (same source of truth as Path A + PopulateCharacterData).
+    // Read OFFSET_CHARSELECT_ARRAY directly — same source of truth as
+    // Path A + PopulateCharacterData. (Pre-v3.22.1 this was gated on a
+    // g_offsetValidated flag; that flag and its validator were removed
+    // in v3.22.1 / v3.22.2 — see CHANGELOG.)
     if (g_ppEverQuest) {
         __try {
             void *pEQ = *g_ppEverQuest;
@@ -3880,7 +3757,6 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         shm->enterWorldReq = 0;
         shm->enterWorldAck = 0;
         shm->enterWorldResult = 0;
-        g_offsetValidated = false;
         g_uiFallbackLogged = false;
         g_cachedNameCol = -1;
         g_cachedSlotCount = -1;
@@ -3889,7 +3765,6 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         g_anchorScanCached = false;
         g_standaloneDelay = 0;  // reset for next charselect cycle
         g_verificationDone = false;
-        g_charArrayNotFoundLogged = false;
         // v3.15.2: clear chunked-resume cursors on in-game transition.
         g_lastHeapScanAddr = 0;
         g_lastAnchorScanAddr = 0;
@@ -3915,9 +3790,8 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     if (pEverQuest) {
         const uint8_t *pEQ = (const uint8_t *)pEverQuest;
         // MQ2-canonical "trust the offset" — same rationale as
-        // PopulateCharacterData above. Skip ValidateCharArrayOffset's
-        // one-shot give-up gate; trust OFFSET_CHARSELECT_ARRAY = 0x18EC0 per
-        // MQ2 RoF2-emu (x86) EverQuest.h:963 and let Count==0 polls retry
+        // PopulateCharacterData above. Trust OFFSET_CHARSELECT_ARRAY = 0x18EC0
+        // per MQ2 RoF2-emu (x86) EverQuest.h:963 and let Count==0 polls retry
         // next tick.
         __try {
             const ArrayClassHeader *arr = (const ArrayClassHeader *)(pEQ + OFFSET_CHARSELECT_ARRAY);
@@ -4511,8 +4385,6 @@ void MQ2Bridge::Shutdown() {
     g_fnCXStrDtor      = nullptr;
     g_hMQ2             = nullptr;
 
-    g_offsetValidated  = false;
-    g_validatedOffset  = 0;
     g_wndMgrOffsetFound = false;
     g_wndMgrValidOffset = 0;
     g_eqmainWndMgrOffset = 0;
@@ -4526,14 +4398,14 @@ void MQ2Bridge::Shutdown() {
     g_cachedSlotCount = -1;
     g_heapScanArrayBase = 0;
 
-    // Track B fix (2026-05-05, T2 Opus verifier callout): reset the perf-gate
-    // and heap-scan-done flags too. Otherwise a mid-process MQ2 re-init lands
-    // in an Init() with g_charArrayNotFoundLogged=true (or g_heapScanDone=true)
-    // from the previous cycle, and Path A's wide scan + Path C heap scan are
-    // permanently locked off until the next pinstCCharacterSelect transition
-    // — which may not fire promptly if the new char-select instance is
-    // resolved at the same heap address as the previous one (heap reuse).
-    g_charArrayNotFoundLogged = false;
+    // Track B fix (2026-05-05, T2 Opus verifier callout): reset the heap-scan-done
+    // flag so a mid-process MQ2 re-init doesn't land in an Init() with
+    // g_heapScanDone=true from the previous cycle, which would permanently
+    // lock off Path C's heap scan until the next pinstCCharacterSelect
+    // transition — which may not fire promptly if the new char-select
+    // instance is resolved at the same heap address as the previous one
+    // (heap reuse). v3.22.2: the sibling g_charArrayNotFoundLogged reset
+    // was removed with the dead validator machinery.
     g_heapScanDone = false;
     g_anchorScanCached = false;
     g_standaloneDelay = 0;
