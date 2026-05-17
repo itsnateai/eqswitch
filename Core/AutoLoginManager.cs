@@ -956,6 +956,25 @@ public class AutoLoginManager
                 current = LoginPhase.Error;
                 return;
             }
+
+            // Iter-4 (v3.22.0): fire LoginCredentialsSent so TrayManager subscribers
+            // (slim-titlebar / hook-config / window-title) can apply at T+~0s on the
+            // SM path — SendLoginCommand here is the SM-path equivalent of legacy's
+            // post-BURST-1 credential commit (~T+7s; see fire site at line ~2014).
+            // LoginComplete remains the idempotent end-of-sequence; both call into
+            // TrayManager.ApplyDeferredCosmetics(pid).
+            try
+            {
+                if (_syncContext != null)
+                    _syncContext.Post(_ => LoginCredentialsSent?.Invoke(this, pid), null);
+                else
+                    LoginCredentialsSent?.Invoke(this, pid);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Warn($"AutoLogin-SM: LoginCredentialsSent handler threw for PID {pid}: {ex.Message}");
+            }
+
             Report($"{account.Name}: state machine — waiting for login screen...");
 
             while (current != LoginPhase.Complete && current != LoginPhase.Error)
@@ -1049,7 +1068,7 @@ public class AutoLoginManager
                 LoginPhase next;
                 if (current == LoginPhase.CharSelect)
                 {
-                    next = StepCharSelect(charSelect!, writer!, account, character, ref hwnd, pid, widgets, gameState, nativePhase, shouldEnterWorld, cts.Token);
+                    next = StepCharSelect(charSelect!, writer!, account, character, ref hwnd, pid, nativePhase, shouldEnterWorld, cts.Token);
                 }
                 else if (current == LoginPhase.EnteringWorld)
                 {
@@ -1389,8 +1408,6 @@ public class AutoLoginManager
         Character? character,
         ref IntPtr hwnd,
         int pid,
-        WidgetState widgets,
-        int gameState,
         LoginPhase nativePhase,
         bool shouldEnterWorld,
         System.Threading.CancellationToken ct)

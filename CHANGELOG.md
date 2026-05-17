@@ -1,5 +1,129 @@
 # Changelog
 
+## v3.22.0 — state-driven auto-login dispatch (2026-05-16)
+
+First end-to-end ship of the C# state machine that drives the Dalaya auto-login
+pipeline against Native's SHM observability layer (v7+ widget probes + v8
+`charSelectAvailable`). Opt-in via `LaunchConfig.useStateMachine` (default
+`true` shipped, legacy `RunLoginSequence` retained behind the flag for fallback).
+Iter-1 through Iter-4 all consolidate here — branch
+`feat/v3.22.0-state-machine` → `main`.
+
+### Highlights
+
+- **`RunLoginStateMachine` drives the full pipeline to in-world on Dalaya**
+  (`Core/AutoLoginManager.cs`) — `StepWaitLoginScreen` → `StepTypingCredentials`
+  → `StepClickingConnect` → `StepWaitConnectResponse` → `StepServerSelect` →
+  `StepWaitServerLoad` → `StepCharSelect` → `StepEnteringWorld` → `Complete`.
+  Each Step is a pure function of `(WidgetState, gameState, nativePhase, …)`
+  on the lightweight phases; the two long-running blocking Steps
+  (`StepCharSelect` and `StepEnteringWorld`) are INSTANCE methods that own
+  the per-PID context (CharSelectReader / KeyInputWriter / hwnd) and accept a
+  `CancellationToken` so the outer `OverallTimeoutMs` cuts in at ~500ms
+  granularity. Dispatcher tick is 250ms; overall budget is 180s.
+- **Issues `SendLoginCommand` ONCE on dispatch entry** and lets Native drive
+  credential commit / Connect click / server-select progression autonomously.
+  C# observes the SHM-published `nativePhase` / `gameState` / widget visibility
+  + `widgetTickSeq` and only intervenes at the structural decision points
+  (char-select character resolution + Enter World retry/fallback).
+- **`LoginCredentialsSent` event fires on the SM path** at SHM
+  `SendLoginCommand` success — TrayManager subscribers (slim-titlebar +
+  hook-config + window-title) now apply at T+~0s on the SM path instead of
+  waiting on the legacy post-BURST-1 hook (~T+7s) that never runs.
+  `LoginComplete` remains the idempotent end-of-sequence; both call
+  `TrayManager.ApplyDeferredCosmetics(pid)`.
+- **Cross-PID `_focusFakeMutex` (static `SemaphoreSlim`) serializes
+  PulseKey3D Enter World** across dual-box. The native focus-fake path
+  spoofs `GetForegroundWindow` and per-PID handles are correct in theory,
+  but the underlying IAT-hook substrate shares process-wide state — without
+  the mutex, the second PID could observe the first PID's Activate state.
+  Cost: ~1.5–3s latency on the second PID. Benefit: deterministic dual-box
+  completion. Acquire-once pattern (no `gotMutex` flag, separate try/finally
+  for the held-block, `SemaphoreFullException` guard on Release) —
+  see [[reference_semaphoreslim_acquire_once_pattern]] in memory.
+- **Single-character structural fallback ported from legacy
+  `RunLoginSequence:2192-2203`** — when the MQ2 bridge publishes exactly 1
+  character AND the name slot is a `"Slot N"` placeholder (heap-read couldn't
+  pull the real name string), slot 1 is the target by elimination. Bypasses
+  `CharacterSelector.Decide` which would otherwise refuse to match the
+  placeholder against `character.Name`. Load-bearing for single-character
+  accounts where the bridge runs in slot-mode.
+- **Iter-4 polish:** `LoginCredentialsSent` SM-path fire (see above); dead
+  `widgets` + `gameState` params removed from `StepCharSelect` signature
+  (Iter-3 left them after the Step's logic shifted to native-phase /
+  charSelect-reader probes during fix-rounds).
+
+### Native side (already shipped in v3.21.1; recapped here for the v3.22.0 contract)
+
+- `Native/login_state_machine.cpp` — `PollWidgetVisibilityToShm` publishes
+  5 widget visibilities (`ConnectVisible`, `OkDialogVisible`,
+  `YesNoDialogVisible`, `CharSelectAvailable`, `ServerSelectVisible`) +
+  `widgetTickSeq` heartbeat + `nativePhase` + `gameState` snapshot to SHM
+  v8. Gated to `gameState < CHARSELECT` post-init so the probe doesn't
+  contend with zone-load handshakes.
+- `LOGIN_CMD_LOGIN` resets `g_lastEqmainBase` + invalidates widget cache
+  on every send so eqmain reloads at the same ASLR base don't slip past
+  the layer-2 base-snapshot defense.
+
+### Architectural caveats (documented, not blockers)
+
+- **Blocking Step methods + 180s `OverallTimeoutMs`** is the v3.22.0 contract.
+  `StepCharSelect` blocks 5–30s waiting for the MQ2 heap-scan to populate the
+  char list; `StepEnteringWorld` blocks up to 60–90s waiting for zone-load.
+  Refactor to non-blocking sub-states is Iter-5 cleanup if needed.
+- **`gGameState` on Dalaya never advances past 0** through login → char-select.
+  The state machine routes around this via `widgets.CharSelectAvailable` (the
+  v8 SHM signal published when `pinstCCharacterSelect != NULL`). MQ2's
+  `GAMESTATE_CHARSELECT` gate in `login_state_machine.cpp:1153` is silently
+  dead on Dalaya — confirmed via live external probe (Iter-1.5).
+- **Hardcoded timeouts** (`kMaxCharListWaitMs=30_000`, ack-wait
+  `200 × 50ms = 10s`, settle `100ms`, EW attempts `4/3`, EW caps `90/60s`) —
+  legacy snapshots tunables at method head; SM path inherits the legacy
+  values inline. Promotion to `LaunchConfig` is an Iter-5 quality-of-life
+  item.
+- **PII redaction stance is unchanged.** v3.15.5 + v3.15.6 + v3.18.0 R3 set
+  the posture: credential halves (`account.Username`, password, `okText`)
+  are redacted; `account.Name`, `account.Server`, `character.Name`, and
+  `charNames[]` log unredacted as diagnostic aids. Iter-3 verifier round-3
+  flagged the SM path for verbatim character-name logging (T3-Sonnet MED-4,
+  T3-Opus LOW); tightening that stance would be a posture-wide change
+  affecting both legacy and SM paths plus the v3.18.0 verbatim okText log
+  decision — out of scope for this ship gate. Filed for v3.22.1 if the
+  conflict gets re-raised.
+
+### Deferred to Iter-5 / v3.22.x (not blockers)
+
+- `WaitForEnterWorldTransition` `ct` overload — the 60–90s blocking call
+  currently ignores `ct`; worst-case cancellation latency is bounded by
+  the helper's internal `Sleep(1000)` (~1s past cancel).
+- Per-tick `Stopwatch` allocation reuse in `StepCharSelect` (2 allocs/entry).
+- `goto` cleanup in legacy `RunLoginSequence` (cosmetic — legacy path only).
+- `charCount==2` multi-slot-mode fallback policy (currently aborts safely;
+  extending elimination logic to 2 slots has higher risk than reward).
+
+### Verification
+
+- Build: Debug + Release both clean (0 warnings, 0 errors). Single-file
+  publish artifact unchanged in shape.
+- Native: unchanged from v3.21.1 (no rebuild required for v3.22.0 ship).
+- Smoke: dual-box Dalaya end-to-end to in-world validated 2026-05-16 22:05
+  — backup account `gotquiz` (slot 2 via name match) Complete at t=60.0s;
+  Natedogg account `gotquiz1` (slot 1 via single-char structural fallback)
+  Complete at t=69.2s. The ~9s offset is the cross-PID
+  `_focusFakeMutex` serialization — correct latency-over-corruption
+  tradeoff for the IAT-hook substrate.
+- Verifier discipline: Iter-3 dispatched 3 rounds × 12 agents (high stakes
+  for the new SM path). Iter-4 ship-gate is normal stakes (C# only, no
+  Native edits) → 2 rounds × 6 agents per `completion-checkpoint.sh` v4.1.
+
+### Reference
+
+- v3.21.1 (predecessor) — v7 widget-probe substrate + cache defense.
+- v3.21.0 (substrate ship) — original SHM v7 widget probes + observability
+  ground truth that the SM path consumes.
+- v3.16.0 — `ScreenMode=3` swap in Native (the credential-write substrate
+  the SM path depends on for `SendLoginCommand` to land on Dalaya).
+
 ## v3.21.1 — verifier-flagged cleanup (2026-05-16)
 
 Closes two of the three v3.21.0 known-follow-ups plus one verifier finding
