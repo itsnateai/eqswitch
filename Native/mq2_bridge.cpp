@@ -130,6 +130,12 @@ static const uint32_t CSI_LEVEL_OFF  = 0x48;    // UNRELIABLE — see note above
 // machinery — production paths trust OFFSET_CHARSELECT_ARRAY directly per
 // MQ2 RoF2-emu (x86) EverQuest.h:963.
 static volatile bool     g_uiFallbackLogged  = false;
+// v3.22.3: P8 first-entry plausibility gate diagnostic. One-shot per charselect
+// cycle (reset alongside g_uiFallbackLogged) so logs show "gate fired during
+// the population window" once instead of every poll. Fires-forever in logs
+// after the one-shot = OFFSET_CHARSELECT_ARRAY is wrong (e.g., EQ patch moved
+// the array) and Path A is permanently bailing out.
+static volatile bool     g_p8GateLogged      = false;
 static volatile int      g_cachedNameCol     = -1;
 static volatile int      g_cachedSlotCount   = -1;  // slot probe result cache (-1 = not probed)
 static volatile bool     g_verificationDone  = false;
@@ -2998,6 +3004,7 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                         g_anchorScanCached = false;
                         g_standaloneDelay = 0;
                         g_uiFallbackLogged = false;
+                        g_p8GateLogged = false;
                         g_cachedSlotCount = -1;
                         g_cachedNameCol = -1;
                         // v3.15.2: clear chunked-resume cursors so a fresh charselect
@@ -3241,6 +3248,27 @@ void MQ2Bridge::PopulateCharacterData(volatile LoginShm *shm) {
         // Sanity gates: Count in [1, LOGIN_MAX_CHARS] AND Data is heap-readable.
         // Count==0 is "EQ hasn't populated yet" — return zero and retry next poll.
         if (count < 1 || count > LOGIN_MAX_CHARS || !data || !IsReadablePtr(data, CSI_SIZE)) {
+            shm->charCount = 0;
+            shm->selectedIndex = -1;
+            return;
+        }
+
+        // P8 first-entry plausibility gate (v3.22.3): the structural sanity
+        // gates above pass once `pinstCCharacterSelect` transitions non-null
+        // but BEFORE EQ has populated the name strings in the array entries —
+        // the array's Count and Data pointer settle first, then names are
+        // filled byte-by-byte. Publishing during that window writes N empty
+        // names to SHM (the per-entry charset filter below collapses garbage
+        // bytes to nameLen=0). The C# consumer then displays slot-mode
+        // placeholders instead of real names. Reading entry[0]'s name and
+        // requiring it pass IsPlausibleName (strict title-case, 4-15 chars,
+        // UI-label blocklist) catches the not-yet-populated window WITHOUT
+        // reintroducing a latch — Count==0 is published, next tick retries.
+        if (!IsPlausibleName(data + CSI_NAME_OFF)) {
+            if (!g_p8GateLogged) {
+                g_p8GateLogged = true;
+                DI8Log("mq2_bridge: P8 gate fired (PopulateCharacterData) — entry[0] not yet plausible; deferring to next poll. Repeated polls without subsequent success = OFFSET_CHARSELECT_ARRAY likely wrong.");
+            }
             shm->charCount = 0;
             shm->selectedIndex = -1;
             return;
@@ -3758,6 +3786,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         shm->enterWorldAck = 0;
         shm->enterWorldResult = 0;
         g_uiFallbackLogged = false;
+        g_p8GateLogged = false;
         g_cachedNameCol = -1;
         g_cachedSlotCount = -1;
         g_heapScanDone = false;
@@ -3798,7 +3827,19 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
             int count = arr->Count;
             const uint8_t *data = arr->Data;
 
+            // P8 first-entry plausibility gate (v3.22.3): same rationale as
+            // PopulateCharacterData above — the structural gates pass before EQ
+            // has populated entry name bytes, so without this Path A would
+            // write empty names AND latch `charSelectReady = 1`, telling C# the
+            // array is ready when it isn't. Failure leaves `charDataRead = false`,
+            // letting Path B's UI fallback run this tick + next-tick Path A retry.
             if (count >= 1 && count <= CHARSEL_MAX_CHARS && data && IsReadablePtr(data, CSI_SIZE)) {
+                if (!IsPlausibleName(data + CSI_NAME_OFF)) {
+                    if (!g_p8GateLogged) {
+                        g_p8GateLogged = true;
+                        DI8Log("mq2_bridge: P8 gate fired (Poll Path A) — entry[0] not yet plausible; deferring to next poll. Repeated polls without subsequent success = OFFSET_CHARSELECT_ARRAY likely wrong.");
+                    }
+                } else {
                     for (int i = 0; i < count; i++) {
                         const uint8_t *entry = data + (i * CSI_SIZE);
                         const char *name = (const char *)(entry + CSI_NAME_OFF);
@@ -3832,9 +3873,10 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                     charDataRead = true;
                 }
             }
-            __except (EXCEPTION_EXECUTE_HANDLER) {
-                DI8Log("mq2_bridge: SEH reading charSelectPlayerArray (Path A trust-offset path)");
-            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            DI8Log("mq2_bridge: SEH reading charSelectPlayerArray (Path A trust-offset path)");
+        }
     }
 
     // Path B: UI-based fallback — read from Character_List CListWnd via GetItemText.
@@ -4389,6 +4431,7 @@ void MQ2Bridge::Shutdown() {
     g_wndMgrValidOffset = 0;
     g_eqmainWndMgrOffset = 0;
     g_uiFallbackLogged = false;
+    g_p8GateLogged     = false;
     g_cachedNameCol    = -1;
     g_verificationDone = false;
     g_findLogCount     = 0;
