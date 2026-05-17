@@ -117,10 +117,13 @@ public class AutoLoginManager
     /// Both paths fire BEFORE the login server response is observed — auth may
     /// still fail downstream. Earlier than <see cref="LoginComplete"/>
     /// (~T+30-60s) so subscribers can resume cosmetic work that was deferred
-    /// during login (slim-titlebar guard, hook config refresh, window title)
-    /// without waiting for the full charselect-ready signal. Cosmetic ONLY —
-    /// never generate input or steal focus from this handler, and the work
-    /// must be no-op-safe against a subsequently-failed login.</summary>
+    /// during login (slim-titlebar guard, hook config refresh) without waiting
+    /// for the full charselect-ready signal. Cosmetic ONLY — never generate
+    /// input or steal focus from this handler, and the work must be
+    /// no-op-safe against a subsequently-failed login. Current subscriber
+    /// (<c>TrayManager.ApplyDeferredCosmetics</c>) applies slim-titlebar +
+    /// hook-config refresh only; window-title is wired on <c>ClientDiscovered</c>,
+    /// not on this event.</summary>
     public event EventHandler<int>? LoginCredentialsSent;
 
     /// <summary>Fires when a login sequence completes (success or failure) with the PID.</summary>
