@@ -1,5 +1,83 @@
 # Changelog
 
+## v3.22.6 — Anchor-zero loop reorder (R1 verifier CRITICAL fix) (2026-05-17)
+
+Native-only behavioral patch. Single-item ship addressing the only
+CRITICAL flag from v3.22.5's R1 8-verifier sweep (T2 Sonnet callout).
+
+### The gap
+
+v3.22.5 added a zero loop in the Path C anchor-scan path so Path B2's
+synthesized `"Slot N"` placeholders wouldn't ride the v3.22.4 P9
+publisher gate into a published mixed state. The loop ran AFTER the
+`names[0]` write, both inside the same `__try` as the existing anchor-
+write block. Partial-failure semantics on SEH mid-zero-loop:
+
+- `names[0]` already wrote successfully (target name in slot 0)
+- `names[1..k]` zeroed before the SEH fired
+- `names[k+1..N-1]` retain Path B2's `"Slot k+2".."Slot N"` placeholders
+
+The combined publisher's P9 gate (v3.22.4) reads only `names[0]` — sees
+plausible name → publishes — and surfaces the mixed state to C# and to
+any DebugView / SHM-snoop reader. Exactly the cosmetic state the zero
+loop was added to close, now reachable via partial-SEH.
+
+Realistic SEH trigger is catastrophic DLL-detach during SHM write
+(three coincident rare events: DLL detach + mid-loop timing + a
+consumer reading SHM in the partial-state window). Verifier finding is
+real but the consequence requires a scenario where everything else is
+already broken. Documented as Known Limit in v3.22.5 ship doc; this
+release closes it for posture cleanliness.
+
+### The fix
+
+Move the zero loop to BEFORE the `names[0]` write inside the same
+`__try`. New partial-failure semantics:
+
+- **SEH mid-zero-loop**: `names[0]` still holds whatever Path B2 wrote
+  (likely `"Slot 1"`); `names[1..k]` zeroed; `names[k+1..N-1]` still
+  hold Path B2 placeholders. P9 gate reads `names[0] = "Slot 1"` →
+  `IsPlausibleName` rejects → publisher defers. **Safe.**
+- **SEH during `names[0]` write (post-loop)**: `names[1..N-1]` all
+  cleanly zeroed; `names[0]` partial/empty. P9 gate reads → rejects
+  → publisher defers. **Safe.**
+- **No SEH (success path)**: identical to v3.22.5 — `names[0]` = target,
+  `names[1..N-1]` empty, P9 gate passes, publisher writes `charCount`.
+
+Strictly safer partial-failure; identical success path.
+
+### What's NOT in v3.22.6
+
+- The "split the zero loop into its own `__try`" approach (also mentioned
+  by T2 Sonnet) — declined. The reorder achieves the same partial-failure
+  safety with no SEH-scope complexity increase. Two-`__try` would
+  duplicate the `__except` log discrimination but the surrounding code
+  doesn't need that distinction (it's all in the same anchor-scan logic).
+- Bumping the `__except` log to distinguish "SEH during zero-loop" vs
+  "SEH during names[0] write" — possible follow-up but the existing
+  `"mq2_bridge: SEH writing anchor-scan name to SHM"` line already covers
+  both cases coherently.
+- The v3.22.5 Known Limits #2 (P9/P8/uiFallback back-out gaps) and #3
+  (kBadNames over-blocks) — both unchanged. Still deferred per their
+  respective rationales.
+
+### Verification
+
+- Native build clean: `Native/build-di8-inject.sh` exit 0.
+- Edit footprint: ~5 LOC moved within the same `__try` block; +1 reorder
+  comment block. No new latches, no new branches, no new globals.
+- Empirical smoke: re-fire team4 on fresh `eqgame.exe` pair, same gate
+  as v3.22.5 (gotquiz 10-char + gotquiz1 1-char both reach in-game,
+  zero `MQ2 heap in slot-mode` lines). Regression surface is minimal
+  because the success path is byte-identical to v3.22.5.
+
+### Inherited Known Limits (unchanged)
+
+- `kBadNames` over-blocks (class/race/EQ-flavor short names) — per
+  v3.22.5 CHANGELOG. Zero new player loss vs v3.22.4.
+- P9/P8/uiFallback back-out latch gaps — per v3.22.4 ship doc Known
+  Limit #2. Deferred pending broader cycle-reset audit.
+
 ## v3.22.5 — Known Limits bundle: anchor zero / P9 SEH log / Path B predicate parity / null-poll reset (2026-05-17)
 
 Native-only behavioral patch. Four convergent verifier-flagged Known Limits from

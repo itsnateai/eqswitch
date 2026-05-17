@@ -4128,6 +4128,27 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                             // targetName to slot 0 (the highlighted slot per
                             // GetCurSel) so name-match succeeds.
                             __try {
+                                // v3.22.6 (T2 Sonnet R1 verifier callout): zero loop
+                                // FIRST, then write names[0]. v3.22.5 placed the zero
+                                // loop AFTER the names[0] write, which meant a SEH
+                                // mid-zero-loop left mixed state: names[0] = target
+                                // (already written), names[1..k] zeroed, names[k+1..N-1]
+                                // still holding Path B2's "Slot N" synthesis. The
+                                // combined publisher's P9 gate then passes (names[0]
+                                // is plausible) and publishes the mixed state — exactly
+                                // the cosmetic surface area the zero loop was added to
+                                // close. Reordering yields strictly safer partial-
+                                // failure semantics: if SEH fires mid-zero-loop,
+                                // names[0] retains Path B2's "Slot 1" (or whatever was
+                                // there), P9 gate rejects it, publisher defers. If SEH
+                                // fires after the zero loop completes but during the
+                                // names[0] write, names[0] is partial/empty and P9
+                                // still rejects. Success path is identical to v3.22.5.
+                                for (int i = 1; i < CHARSEL_MAX_CHARS; i++) {
+                                    ((char *)shm->names[i])[0] = '\0';
+                                    shm->levels[i] = 0;
+                                    shm->classes[i] = 0;
+                                }
                                 int nameLen = 0;
                                 while (nameLen < CHARSEL_NAME_LEN - 1 && targetName[nameLen] != '\0')
                                     nameLen++;
@@ -4135,21 +4156,6 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                                 ((char *)shm->names[0])[nameLen] = '\0';
                                 shm->levels[0] = 0;
                                 shm->classes[0] = 0;
-                                // v3.22.5: zero leftover slots so Path B2's "Slot N"
-                                // synthesis from earlier in this same poll doesn't
-                                // ride into the combined publisher at line ~4193.
-                                // Without this, the v3.22.4 P9 gate passes (names[0]
-                                // is real) and publishes mixed state: ["target",
-                                // "Slot 2", ..., "Slot 10"] for a 10-slot account.
-                                // C# functional match by name against names[0] still
-                                // selects correctly, but observable SHM is misleading
-                                // for DebugView, log analysis, and future readers.
-                                // Mirrors the standalone-anchor path at line ~4337-4341.
-                                for (int i = 1; i < CHARSEL_MAX_CHARS; i++) {
-                                    ((char *)shm->names[i])[0] = '\0';
-                                    shm->levels[i] = 0;
-                                    shm->classes[i] = 0;
-                                }
                                 // Track B v3 fix (2026-05-05, red-team Sonnet+Opus
                                 // dual callout): force selectedIndex=0 so C# Enter
                                 // World fires against slot 0 (where we just wrote
