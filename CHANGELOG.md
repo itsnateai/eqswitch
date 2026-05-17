@@ -1,5 +1,130 @@
 # Changelog
 
+## v3.22.5 — Known Limits bundle: anchor zero / P9 SEH log / Path B predicate parity / null-poll reset (2026-05-17)
+
+Native-only behavioral patch. Four convergent verifier-flagged Known Limits from
+the v3.22.4 R1 8-agent sweep, bundled because all four touch
+`Native/mq2_bridge.cpp` charselect path within ~45 LOC and share the
+"defensive convergence around the existing P9 gate" theme. No new bugs caught
+in v3.22.4's empirical smoke — this is hardening, not regression-fix.
+
+### The four items
+
+**1. Anchor-scan zeros `names[1..N-1]` before publishing** (T3 Sonnet R1).
+`Native/mq2_bridge.cpp` Path C anchor-scan (~line 4115). When Path A bails
+(P8 fires correctly), Path B's `ReadListItemText` returns empty, Path B2
+synthesizes `["Slot 1".."Slot 10"]` into `shm->names[]`, then anchor-scan
+succeeds and writes the target into `shm->names[0]` only — `shm->names[1..N-1]`
+retain Path B2's placeholders. The v3.22.4 P9 gate (line ~4193) passes
+because `names[0]` is plausible, publish goes through with mixed state:
+`["target", "Slot 2", ..., "Slot 10"]` for a 10-slot account. C# functional
+match against `names[0]` selects correctly and enters world on the right
+character — but observable SHM is misleading for DebugView, log analysis,
+and future SHM consumers. v3.22.5 adds a zero loop after the anchor write,
+mirroring the standalone-anchor path's existing `for (int i = 1; i < N; i++)`
+at line ~4337-4341. `shm->charCount` is left untouched — Path B2's count of
+10 still publishes, but `names[1..9]` are now empty rather than `"Slot N"`
+placeholders.
+
+**2. P9 SEH-distinguishing log inside `__except`** (T3 Opus R1).
+`Native/mq2_bridge.cpp` line ~4209. v3.22.4's P9 gate wrapped the
+`IsPlausibleName(shm->names[0])` predicate in SEH but the `__except` was
+empty. Any SEH from the SHM access (DLL detach race, MMF unmapped) silently
+fell through to the gate's `else if (!g_p9GateLogged)` branch, which logs
+`"entry[0] is placeholder or empty"` — wrong description for an SEH path.
+v3.22.5 adds a new `g_p9SehLogged` static volatile latch (declared at line
+~152 alongside `g_p9GateLogged`) and a one-shot `DI8Log` inside the
+`__except` that explicitly names the SEH cause. Reset alongside
+`g_p9GateLogged` at all three existing cycle-reset sites:
+`pCharSelWnd` non-null transition (line ~3022), gameState=5 in-world
+transition (line ~3805), and `Shutdown` / `Init` (line ~4475).
+
+**3. Path B name-column discovery → `IsPlausibleName` parity** (T3 Sonnet R1).
+`Native/mq2_bridge.cpp` line ~3920. Pre-v3.22.5, Path B's column-discovery
+loop used an inline validator (uppercase first + length >= 4 + all-alpha-
+either-case) to decide which column held character names. That validator
+accepted column-header strings like `"Name"`, `"Race"`, `"Class"`, `"Level"`
+— all of which `IsPlausibleName` already rejects via its `kBadNames`
+blocklist. If the slot-0 row in `pCharList` exposed the header text before
+any real character name (early-cycle race or non-standard Dalaya column
+ordering), `g_cachedNameCol` would lock to the wrong column for the rest
+of the session, silently feeding garbage to the per-entry filter at line
+~3949. v3.22.5 replaces the inline validator with a single
+`IsPlausibleName((const uint8_t *)test)` call. All six charselect sites
+(Path A P8 gate, Path B column discovery, Path B per-entry filter, Path C
+anchor, heap scan, P9 publisher gate) now agree on "looks like a real
+character name."
+
+**4. `g_consecutiveNullPolls` reset on `pCharSelWnd` transition** (T3 Sonnet R1).
+`Native/mq2_bridge.cpp` line ~3014. The latch-clear counter resets at two
+sites pre-v3.22.5: in-game gameState=5 transition (line ~3820) and
+`Shutdown` / `Init` (line ~4495). But the existing comment at line
+~3010-3013 notes that *"Dalaya keeps gameState=0 across BOTH login and
+char-select, so the older gameState=5 reset path doesn't fire on Dalaya at
+all."* The gameState=5 reset path is dead code for Dalaya — a session that
+left the counter mid-count would carry it across charselect cycles and
+could spuriously trip the 30-poll latch-clear threshold in the next cycle.
+v3.22.5 adds `g_consecutiveNullPolls = 0;` to the `pCharSelWnd != nullptr`
+reset block alongside the other latches (`g_p8GateLogged`,
+`g_p9GateLogged`, `g_p9SehLogged`, etc.). The two existing reset sites are
+preserved as defense-in-depth.
+
+### Explicitly NOT in v3.22.5
+
+- **P9 / P8 / uiFallback latch-reset gaps on charselect→login back-out,
+  same-address re-use, mid-cycle flicker** (Known Limit #2 from v3.22.4 ship doc).
+  Per the v3.22.4 guidance: *"fix all three together with broader cycle-reset
+  audit, or skip all three."* Skipping for v3.22.5 — too speculative without
+  a captured failure scenario, and per-latch divergent fixes would create the
+  asymmetry the comment warns against. Holds for a future cycle-reset audit pass.
+
+### What carries forward unchanged from v3.22.4
+
+The P9 gate itself, all P8 gate sites, the `IsPlausibleName` predicate
+(including the `kBadNames` blocklist), and the SHM contract are all
+unchanged byte-for-byte. v3.22.5 only adds checks and zeros; no existing
+publish path was relaxed.
+
+### Verification
+
+- Native build clean: `Native/build-di8-inject.sh` exit 0,
+  `eqswitch-di8.dll` size ~243KB (small growth from new diagnostic strings,
+  new latch, P9 SEH branch, zero loop).
+- Edit footprint: +61 / -16 across `Native/mq2_bridge.cpp` and
+  `EQSwitch.csproj`. ~45 net LOC.
+- Empirical smoke: re-fire team4 hotkey on fresh `eqgame.exe` pair (10-slot
+  `gotquiz` + single-char `gotquiz1`). Expected: both clients reach
+  `EnteringWorld → Complete` as in v3.22.4, no `MQ2 heap in slot-mode`
+  lines, and DebugView (`mq2_bridge:` filter) shows zero
+  `P9 gate SEH in IsPlausibleName predicate` lines (proves the new SEH
+  branch is not pathologically firing).
+- DebugView observability: a steady-state smoke should show at most one
+  `reset heap-scan + slot-mode caches on charselect transition` per
+  charselect activation (the new line reads the same as before; the
+  internal `g_consecutiveNullPolls = 0` reset is intentionally not log-
+  visible to avoid `DI8Log` churn).
+
+### Known Limits inherited (still open)
+
+- `kBadNames` blocks `"Bard"` / `"Cleric"` / `"Bold"` as character names
+  (inherited from v3.22.3 P8 predicate). Pathological player names; no
+  fix planned.
+- P9 / P8 / uiFallback latch back-out gaps (per Known Limits #2 from
+  v3.22.4 ship doc, deliberately not in v3.22.5 scope — see above).
+- Empirical smoke pending. v3.22.5 has not been measured against the
+  v3.22.4 regression scenario yet. Re-fire team4 is the ground truth.
+
+### Behavior contract
+
+All four items are additive checks or zeros. None of them change the
+publisher's success-path semantics: when `entry0Real` is true at line
+~4212, the publish still fires identically to v3.22.4. The Path B
+column-discovery change (item 3) tightens the validator but the rejected
+strings (`"Name"`, `"Race"`, etc.) are not valid character names in any
+EQ deployment — no real player loss. The anchor-scan zero (item 1)
+changes observable SHM state but C#'s functional name-match against
+`shm->names[0]` is identical pre- and post-fix.
+
 ## v3.22.4 — P9 publisher plausibility gate (2026-05-17)
 
 Native-only behavioral patch. Closes the multi-character-account regression
