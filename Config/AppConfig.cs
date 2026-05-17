@@ -852,6 +852,20 @@ public class LaunchConfig
     /// UI — power-user opt-out via direct eqswitch-config.json edit.
     /// </summary>
     public bool SkipNativeWarmup { get; set; } = true;
+
+    /// <summary>
+    /// v3.22.0 opt-in: route BeginLogin through the new tick-driven state machine
+    /// (<c>AutoLoginManager.RunLoginStateMachine</c>) instead of the linear
+    /// <c>RunLoginSequence</c>. The state machine reads the v3.21.0 widget probes +
+    /// Native phase + gameState every 250ms and dispatches via state transitions
+    /// rather than time-budgeted sleeps. Default <c>false</c> through Iter-1/2/3 of
+    /// v3.22.0 development so v3.21.1 behavior is preserved on the feature branch;
+    /// Iter-4 ship flips this to <c>true</c> and v3.23.0+ removes the legacy path.
+    ///
+    /// Not exposed in Settings UI during iteration development — power-user opt-in
+    /// via direct eqswitch-config.json edit for smoke gating.
+    /// </summary>
+    public bool UseStateMachine { get; set; } = false;
 }
 
 public class PipConfig

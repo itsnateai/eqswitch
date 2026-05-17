@@ -76,6 +76,15 @@ namespace MQ2Bridge {
     // Read gGameState safely (SEH-wrapped). Returns -99 if unavailable.
     int ReadGameState();
 
+    // Returns true when pinstCCharacterSelect double-deref yields a non-null
+    // CCharacterSelect* (i.e., EQ has created the char-select window).
+    // SEH-wrapped, returns false on any read fault or null pointer at either
+    // deref level. v3.22.0 Iter-2A — Dalaya-reliable signal published per-tick
+    // to LoginShm.charSelectAvailable, used by C# state machine to drive
+    // PHASE_WAIT_CONNECT_RESP → CharSelect transitions where gGameState is
+    // broken on Dalaya. See feedback_observe_dont_drive_when_lower_layer_is_capable.
+    bool IsCharSelectAvailable();
+
     // ─── Window finding ────────────────────────────────────────
     // Find a top-level EQ window or child widget by name.
     // Iterates ppWndMgr's window array, calls GetChildItem on each.
