@@ -1,5 +1,168 @@
 # Changelog
 
+## v3.22.3 — P8 first-entry plausibility gate (2026-05-17)
+
+Native-only behavioral patch. Adds a single `IsPlausibleName(entry[0])`
+check at the top of each Path A SHM-publish site so the bridge does not
+publish a structurally-valid-but-empty character list when EQ has settled
+the array's `Count` + `Data` pointer but not yet filled in the per-entry
+name strings.
+
+### The gap v3.22.3 closes
+
+`Native/mq2_bridge.cpp` has two Path A "trust the offset" SHM-publish
+sites: `PopulateCharacterData` (LoginShm) and the in-Poll Path A handler
+(CharSelectShm). Each previously gated on `count ∈ [1, LOGIN_MAX_CHARS]`
+and `IsReadablePtr(data, CSI_SIZE)`, then ran a per-entry name-byte
+filter and wrote whatever passed. The in-Poll site also runs a per-entry
+`IsPlausibleName` check (line ~3814 of the post-v3.22.2 source). All
+sanity gates pass during the small window after `pinstCCharacterSelect`
+transitions non-null but BEFORE EQ has settled the heap-allocated entry
+data — `Count` and `Data` settle first, name bytes are filled later.
+During that window:
+
+- PopulateCharacterData writes N empty name strings (per-entry filter
+  collapses unsettled bytes to `nameLen = 0`) and publishes
+  `shm->charCount = N`.
+- In-Poll Path A writes N empty name strings AND latches
+  `shm->charSelectReady = 1` with a comment claiming "Path A wrote real
+  names" that does not actually hold in this window.
+
+The 2026-05-17 09:48 v3.22.2 empirical smoke captured this directly:
+the 10-character `gotquiz` account's char-list came back as `Slot 1,
+Slot 2, ..., Slot 10` — bridge published `count = 10` with 10 empty
+`names[i]` strings, then the C# consumer fell back to slot-mode
+placeholder display. Login still completed (slot-mode fallback), but
+the published SHM lied about readiness for the duration of the window.
+
+### The fix
+
+`Native/mq2_bridge.cpp`:
+
+- **PopulateCharacterData (~line 3260)** — after the existing
+  count/pointer sanity gates, read entry 0's name bytes and require
+  they pass `IsPlausibleName`. The first plausibility-fail returns
+  zero (`charCount = 0`, `selectedIndex = -1`) and the next poll
+  retries — identical bail-out semantics to the existing `Count == 0`
+  / `IsReadablePtr` fail paths.
+- **In-Poll Path A (~line 3836)** — restructure the existing structural
+  guard to nest an inner `if (!IsPlausibleName(data + CSI_NAME_OFF))`
+  check. Failure leaves `charDataRead = false` so Path B (UI fallback)
+  runs this tick and the next-tick Path A retries.
+- **Diagnostic log** (`g_p8GateLogged`, line 137) — one-shot per
+  charselect cycle. First gate-fire emits a `DI8Log` line naming the
+  call site; subsequent fires within the same cycle stay silent. Resets
+  alongside `g_uiFallbackLogged` at the three existing cycle-reset
+  sites (post-charselect transition, post-in-world transition,
+  `Shutdown`). Operational signal: one log line per cycle = expected
+  transient population window; log fires once but bridge never publishes
+  charCount > 0 = `OFFSET_CHARSELECT_ARRAY` is likely wrong (e.g., a
+  Dalaya client patch moved the array). Convergent recommendation from
+  the verifier round — T2-Opus, T3-Sonnet, T3-Opus all flagged the
+  missing breadcrumb.
+
+`IsPlausibleName` (line 171, pre-existing) enforces strict title-case
+(uppercase first, lowercase rest), 4–15 chars, and the kBadNames UI-label
+blocklist. Same predicate used by Path B and Path C heap-scan readers,
+so the publish path now agrees with the scanners on what "looks like a
+real name."
+
+### Why P8 only
+
+v3.22.2's CHANGELOG enumerated three deferred items:
+1. P8 first-entry plausibility gate (shipped here).
+2. Per-entry `IsReadablePtr(data, count * CSI_SIZE)` tightening.
+3. Path B2 `SetCurSel(0..N)` storm throttle.
+
+#2 tightens a defense SEH already catches (worst case today is one bad
+poll → zero). #3 prophylactically throttles a flicker that has not been
+observed. P8 closes a real, smoke-captured failure mode: today's
+gotquiz "Slot 1..Slot 10" lie. Shipping #1 alone keeps the patch
+surgical (~14 LOC across two sites, no new helpers, no new globals).
+#2 and #3 stay bundled with the v3.22.0 Iter-5 architectural-cleanup
+backlog.
+
+### Verification
+
+- Native build clean: `Native/build-di8-inject.sh` exit 0,
+  `eqswitch-di8.dll` 241,152 bytes — **same size** as v3.22.2 and
+  v3.22.1. `IsPlausibleName` already linked into the DLL (used by Paths
+  B2, C, and the existing per-entry check at the Path A site), so the
+  new call is a pure folded-instruction add with no string-pool growth.
+  SHA256 differs from v3.22.2 (PE `TimeDateStamp` + the new call-site
+  bytes), confirming the gate is in the binary.
+- C# Debug + Release builds clean (version-bump only on C# side).
+- Empirical smoke: deferred to next-launch cycle. The 2026-05-17 09:48
+  v3.22.2 smoke validated the SM end-to-end with the failure mode P8
+  closes still latent; running clients still have the v3.22.2 DLL
+  injected and were left alone. The v3.22.3 DLL takes effect on the
+  next fresh `eqgame.exe` launch via the deployed tray. A re-run of
+  the team1 hotkey on a fresh client pair will exercise the gate.
+
+### Behavior contract
+
+- The gate checks ONLY entry 0. Subsequent entries continue to rely on
+  the existing per-entry `IsPlausibleName` (in-Poll site, ~line 3855)
+  and the existing per-entry charset filter (`PopulateCharacterData`,
+  ~line 3289). The intent is "did EQ settle the data yet" — a first-byte
+  proxy — not "is every entry valid". Strengthening to all-entries-pass
+  would re-introduce the validate-then-latch antipattern v3.22.1 deleted.
+- The gate has no latching on success (`charCount = 0` is published on
+  each failed poll, retried next tick). `g_p8GateLogged` IS a latch but
+  only on the diagnostic side — one log line per cycle to keep ops
+  signal high without flooding. Cleared on cycle transitions.
+- The misleading `// v3 latch: Path A wrote real names` comment at the
+  in-Poll site is now structurally accurate for entry 0 (we only reach
+  the latch when entry 0 passed IsPlausibleName), but remains imprecise
+  for entries 1..N-1 (which may still fail per-entry IsPlausibleName
+  and be written as empty strings). This is intentional — slot-mode
+  fallback handles those — and noted here so future readers know not
+  to "fix" the comment by tightening the gate.
+
+### Known limits surfaced by the verifier round
+
+- **`IsPlausibleName` requires `len >= 4`** (existing predicate, line 182).
+  If Dalaya ever permits 3-char character names, Path A would
+  permanently reject them and the C# selector would fall back to
+  slot-mode. The same constraint already applies to the per-entry
+  filter at the in-Poll site (line ~3855) and to Path C heap-scan, so
+  this is not a new regression — but P8 makes the limit load-bearing
+  on the LoginShm publish path for the first time.
+- **`kBadNames` blocklist gaps** (T2-Sonnet, T2-Opus). Common eqmain
+  button labels — "Press", "Enter", "World", "Loading", "Connect",
+  "Cancel", "Quit", "Delete", "Create" — are NOT in the blocklist and
+  would pass `IsPlausibleName` if a wrong-offset bug landed `data` on
+  the button-label string table. Pre-existing weakness; the diagnostic
+  log added here makes such a regression visible (gate would NOT fire
+  but published names would be button labels). Bundle to v3.22.x.
+- **Entries 1..N-1 partial-fill window** (T3-Sonnet, T3-Opus). If
+  entry[0] settles before entries 1..N-1, Path A publishes a mix of
+  real + empty names with `charSelectReady = 1`. C# slot-mode fallback
+  handles the empties, but the SHM lies for the duration of the window.
+  P8 only narrows this window — it doesn't close it. Closing requires
+  the deferred per-entry `IsReadablePtr(data, count * CSI_SIZE)`
+  tightening (#2 from v3.22.1's backlog), bundle to v3.22.x.
+- **PopulateCharacterData early-return doesn't zero
+  `charNames[]`/`charLevels[]`/`charClasses[]`** (T3-Opus). The mirror
+  branch at the post-loop tail zero-pads those arrays; the new
+  early-return at ~3260 and the pre-existing `Count == 0` /
+  `IsReadablePtr` early-return at ~3245 do NOT. `charCount = 0` makes
+  conforming consumers ignore stale entries, so impact is bounded —
+  but a defensive consumer reading `charNames[0]` regardless would see
+  the prior tick's name. Pre-existing across all early-returns; bundle
+  to v3.22.x with the per-entry tightening above.
+
+### Verifier discipline
+
+1 round × 6 agents (3 topics × Sonnet+Opus, normal stakes per
+`completion-checkpoint.sh` v4.1 — Native edit forces normal-tier).
+Verdict: 2 APPROVE, 4 CONCERNS, 0 REJECT. The convergent fix
+(diagnostic log on gate fire, flagged by T2-Opus + T3-Sonnet + T3-Opus)
+was applied in-flight. The pre-existing weaknesses surfaced by the
+gap-audit pair (kBadNames blocklist gaps, entries 1..N-1 partial-fill,
+PopulateCharacterData early-return zero-pad gap, per-entry IsReadablePtr
+tightening) are documented under "Known limits" and bundled to v3.22.x.
+
 ## v3.22.2 — Bridge dead-code cleanup (2026-05-17)
 
 Native-only patch. Burying the corpse left over from the v3.22.1
