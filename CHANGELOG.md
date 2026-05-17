@@ -30,11 +30,14 @@ multi-environment smoke. Iter-1 through Iter-4 all consolidate here — branch
   + `widgetTickSeq` and only intervenes at the structural decision points
   (char-select character resolution + Enter World retry/fallback).
 - **`LoginCredentialsSent` event fires on the SM path** at SHM
-  `SendLoginCommand` success — TrayManager subscribers (slim-titlebar +
-  hook-config + window-title) now apply at T+~0s on the SM path instead of
-  waiting on the legacy post-BURST-1 hook (~T+7s) that never runs.
-  `LoginComplete` remains the idempotent end-of-sequence; both call
-  `TrayManager.ApplyDeferredCosmetics(pid)`.
+  `SendLoginCommand` success — `TrayManager.ApplyDeferredCosmetics(pid)`
+  (slim-titlebar + hook-config refresh) now runs at T+~0s on the SM path
+  instead of waiting on the legacy post-BURST-1 fire site (~T+7s) that
+  never executes when `useStateMachine=true`. `LoginComplete` remains the
+  idempotent end-of-sequence and re-invokes `ApplyDeferredCosmetics` so
+  any EQ-side drift during the charselect-load transition is corrected.
+  (Window-title is NOT applied here — that's wired on `ClientDiscovered`
+  and lives outside the auto-login event chain.)
 - **Cross-PID `_focusFakeMutex` (static `SemaphoreSlim`) serializes
   PulseKey3D Enter World** across dual-box. The native focus-fake path
   spoofs `GetForegroundWindow` and per-PID handles are correct in theory,
@@ -42,8 +45,7 @@ multi-environment smoke. Iter-1 through Iter-4 all consolidate here — branch
   the mutex, the second PID could observe the first PID's Activate state.
   Cost: ~1.5–3s latency on the second PID. Benefit: deterministic dual-box
   completion. Acquire-once pattern (no `gotMutex` flag, separate try/finally
-  for the held-block, `SemaphoreFullException` guard on Release) —
-  see [[reference_semaphoreslim_acquire_once_pattern]] in memory.
+  for the held-block, `SemaphoreFullException` guard on Release).
 - **Single-character structural fallback ported from legacy
   `RunLoginSequence:2192-2203`** — when the MQ2 bridge publishes exactly 1
   character AND the name slot is a `"Slot N"` placeholder (heap-read couldn't
@@ -61,17 +63,32 @@ multi-environment smoke. Iter-1 through Iter-4 all consolidate here — branch
   fire-timing semantics, with explicit "cosmetic only / no-op-safe against
   failed-login" caveat.
 
-### Native side (already shipped in v3.21.1; recapped here for the v3.22.0 contract)
+### Native side substrate (composed across v3.21.0 → v3.21.1 → v3.22.0)
 
-- `Native/login_state_machine.cpp` — `PollWidgetVisibilityToShm` publishes
-  5 widget visibilities (`ConnectVisible`, `OkDialogVisible`,
-  `YesNoDialogVisible`, `CharSelectAvailable`, `ServerSelectVisible`) +
-  `widgetTickSeq` heartbeat + `nativePhase` + `gameState` snapshot to SHM
-  v8. Gated to `gameState < CHARSELECT` post-init so the probe doesn't
-  contend with zone-load handshakes.
-- `LOGIN_CMD_LOGIN` resets `g_lastEqmainBase` + invalidates widget cache
-  on every send so eqmain reloads at the same ASLR base don't slip past
-  the layer-2 base-snapshot defense.
+The state machine consumes a Native substrate built across the prior two
+releases plus one v3.22.0-branch bump. Recapped here so the v3.22.0
+contract is reviewable end-to-end:
+
+- `Native/login_state_machine.cpp` — `PollWidgetVisibilityToShm`
+  (**introduced in v3.21.0**) publishes 5 widget visibilities
+  (`ConnectVisible`, `OkDialogVisible`, `YesNoDialogVisible`,
+  `ServerSelectVisible`, plus `CharSelectAvailable` added in this branch)
+  + `widgetTickSeq` heartbeat + `nativePhase` + `gameState` snapshot.
+- **v3.21.1 hardening:** gate reordered so `shm->gameState >= GAMESTATE_CHARSELECT`
+  early-exit fires BEFORE the `eqmainBase`-snapshot check (cheaper
+  short-circuit through the entire char-select-and-beyond window); plus
+  `LOGIN_CMD_LOGIN` now resets `g_lastEqmainBase` and invalidates the
+  widget cache on every send so eqmain reloads at the SAME ASLR base
+  don't slip past the layer-2 base-snapshot defense.
+- **v3.22.0 SHM bump v7 → v8 (Iter-2A on this branch):** new
+  `charSelectAvailable` bool published when `pinstCCharacterSelect != NULL`.
+  This is the load-bearing signal that lets the C# state machine route
+  around Dalaya's broken `gGameState` (stuck at 0 through login → char-select,
+  per Iter-1.5 empirical investigation).
+
+No Native rebuild is required for the v3.22.0 ship-gate commit itself —
+the v8 SHM was shipped in Iter-2A (`c29cbec` on this branch), and the
+v3.21.1 hardening already in `main`. The v3.22.0 tag aggregates them.
 
 ### Architectural caveats (documented, not blockers)
 
