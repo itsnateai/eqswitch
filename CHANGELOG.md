@@ -1,5 +1,77 @@
 # Changelog
 
+## v3.22.13 — Final-audit cleanup: retire stale forward-ship comments + amend AUTOLOGIN SPEC (2026-05-18)
+
+Doc/comment-only release. Zero code-path change. Project remains FINAL
+RELEASE READY (the v3.22.10 closeout state). This ship closes the final-
+audit pass that walked the six DONE-gate criteria (scratchpad, AUDIT_TASKS,
+deferred trackers, source-comment TODOs, memory backlog, open architectural
+decisions). No SHIP items emerged from the audit — every open item resolved
+to KILL (stale forward-ship comment) or AMEND (spec wording lagged reality).
+With v3.22.13 the source-of-truth comments and the AUTOLOGIN SPEC both
+match what's actually deployed and operational.
+
+### Retired (KILL items)
+
+| # | Location | What got retired | Why |
+|---|---|---|---|
+| 1 | `Config/AppConfig.cs:861-867` | "Iter-4 ship flips this to `true` and v3.23.0+ removes the legacy path" on `UseStateMachine` | The Iter-4 staging plan from v3.22.0 era never executed as a code-default flip. Operational reality: per-install `eqswitch-config.json` sets the flag; AppConfig default stays `false` as a safety baseline. No v3.23.0 plan exists. |
+| 2 | `Core/AutoLoginManager.cs:803-821` | "Iter-4 ship gate flips `LaunchConfig.UseStateMachine` default to true" in `RunLoginStateMachine` XML doc | Same — staging plan never executed; SM is the deployed path via config. |
+| 3 | `Core/AutoLoginManager.cs:874` | Stale assertion "v3.22.0+ flipped `UseStateMachine` to true" | Factually wrong as a source-of-truth claim (the AppConfig default at line 868 is `false`). Reconciled by restating the operational reality. Rule 7 "surface conflicts, don't blend". |
+| 4 | `Core/AutoLoginManager.cs:80-81` | "candidate to backport in Iter-4 cleanup" on `_focusFakeMutex` | The legacy `RunLoginSequence` has the same focus-fake race but is not the active deployed path; Iter-4 cleanup is permanently dead. The mutex on the SM path is the load-bearing fix. |
+| 5 | `Native/login_shm.h:354-358` | "C# v3.23.0 will match against ..." forward-claim on `widgetConfirmDialogText` consumer | The v3.21.0 SHM field is exposed for native-side logging and C# observability; consumer-side matching is permanently deferred per project-final-release closeout. |
+| 6 | `Native/login_shm.h:97-100` | "without a second SHM bump in v3.23.0" forward-version reference | The design intent (pack widget-text in here to avoid a future bump) is correct; the explicit "v3.23.0" forward-version is retired. |
+| 7 | `Core/AutoLoginManager.cs:1473-1497` (`StepServerSelect`) | "Iter-3 will add server-select click via PostMessage Enter or JoinServerDirect RPC (v4 SHM)" forward-plan | Iter-3 plan extinct. **DEAD-ON-DALAYA retention rationale preserved** — the state stays as defensive non-Dalaya scaffolding (cheap insurance against a non-Dalaya retarget). |
+| 8 | `Core/AutoLoginManager.cs:1499-1515` (`StepWaitServerLoad`) | Iter-2B/Iter-3 forward-plan language | Same treatment as #7 — retention rationale preserved, forward-plan retired. |
+| 9 | `Core/AutoLoginManager.cs:1083-1089` (dispatch comment) | "Iter-2B implements phases 1-7 ... Iter-3 will add EnteringWorld + Complete" past-future tense conflict | Rule 7 "surface conflicts" — Iter-3 already happened (line 1090 says so); rewrote to describe current coverage of all phases without iteration framing. |
+| 9b | `Core/AutoLoginManager.cs:1516-1517` (`StepCharSelect`/`StepEnteringWorld` XML doc headlines) | "Iter-3 (2026-05-17) — XYZ dispatch." date-stamped task-tracker headline | Replaced with plain dispatch-purpose headline. Body retained legacy code-block provenance ("AutoLoginManager.cs:2150-2326 in the legacy path"). Inline `// Iter-3 ...` attribution comments throughout the file are kept as historical anchors per Rule 11 codebase-convention matching — they describe code provenance, not aspiration. |
+| 11 | (consequence of #1-#3) | `UseStateMachine` source-of-truth divergence | Resolved by the line-874 fix + the Config/AppConfig.cs:861-867 reframing. |
+
+### Amended (spec edits to `eqswitch/CLAUDE.md` AUTOLOGIN SPEC)
+
+| # | What was amended | Rationale |
+|---|---|---|
+| 8 | Wall-clock target widened from "35–50s" to "35–70s success-path; 120s native phase-4 budget enforced" | The 50s upper bound was a v3.16-era aspiration before the SM landed. Autonomous smokes consistently run 59-68s (per `memory/reference_eqswitch_native_phase_error_triggers.md` line 42 + the v3.22.12 ship doc's smoke note). Phase-4 dwell (`WaitConnectResponse`) is dominated by Dalaya login-server response latency, which is upstream and unimprovable client-side. |
+| 9 | Added "Slow-server tolerance" paragraph: Native `login_state_machine.cpp:925-927` enforces a 120s per-phase budget; exceeding it calls `SetError`. Observed once (2026-05-17 17:39:48 gotquiz1 138s WaitConnectResponse event), classified upstream (login-server delay), no enhancement planned per `memory/reference_eqswitch_native_phase_error_triggers.md`. | The 138s event was the trigger that motivated v3.22.11's `okDisplay`-at-Error instrumentation. With v3.22.11+v3.22.12 armed, a next-occurrence is now diagnosable from the C# log alone. |
+| 10 | Added "okDisplay torn-read defense" paragraph: detection is read-side only (`LoginShmWriter.cs:730` reads class → text → re-reads class, returns `(None, "")` on mismatch). Write-side `_ReadWriteBarrier()` flagged in the v3.18.1 verifier round is intentionally **not** shipped because read-side fail-closed handling is the load-bearing defense and no torn read has caused an autologin failure across all v3.22.x smokes. | `reference_loud_runtime_silent_rest` principle: loud surface (read-side detect → Warn log → bail to None) over silent hardening (write-side barrier). |
+
+### Files
+
+| File | Nature |
+|---|---|
+| `EQSwitch.csproj` | Version 3.22.12 → 3.22.13 |
+| `Config/AppConfig.cs` | XML doc on `UseStateMachine` retired Iter-4/v3.23.0 forward-ship language; describes current state |
+| `Core/AutoLoginManager.cs` | 5 comment edits: lines ~80, ~817, ~874, ~1474, ~1500 — all forward-ship language retired, DEAD-ON-DALAYA retention rationale preserved |
+| `Native/login_shm.h` | 2 comment edits: lines ~98, ~356 — v3.23.0 forward-version refs retired |
+| `CHANGELOG.md` | This entry |
+| `CLAUDE.md` (eqswitch repo) | AUTOLOGIN SPEC amended for items 8, 9, 10 above |
+
+### Risk
+
+Zero. No code paths touched. No autologin-path keystroke, timing, SHM
+contract, or state-machine transition logic is edited. Build expected to
+remain 0 errors / 0 warnings. The C# default behavior for a fresh install
+(legacy path) is unchanged from v3.22.12 — Nate's deployed config has
+`UseStateMachine: true` and that is unchanged.
+
+### No smoke required
+
+Per the task brief's smoke trigger rule ("smoke any autologin-path code
+change"), pure doc/comment edits don't qualify. The deployed binary's
+runtime behavior is byte-equivalent to v3.22.12 modulo string-table
+churn from edited comment blobs.
+
+### Out of scope
+
+- Any of the four PERMANENTLY REJECTED items (per-client tray "Enter
+  World" submenu, Phase 4 tab split, selective hotkey re-register,
+  defensive `eqmain_cxstr.h` AOB rescan). Nate's 2026-05-17 directive
+  stands.
+- Any of the eight accepted-as-known-limit items from the v3.22.10
+  closeout (kBadNames over/under-block, P9/P8/uiFallback latch back-out,
+  Path B2 SetCurSel storm throttle, etc.). Same triggers documented;
+  same no-ship rationale.
+
 ## v3.22.12 — Defensive null-conditional on SendCancelCommand (2026-05-17)
 
 Verifier-driven follow-up to v3.22.11. T3 Sonnet flagged

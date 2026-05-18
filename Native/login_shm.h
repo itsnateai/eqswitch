@@ -96,8 +96,8 @@
 // GAMESTATE_CHARSELECT block (MQ2AutoLogin.cpp:1156-1191, source for
 // "ConfirmationDialogBox"). Plus ConfirmationDialogBox text mirror (parallel to
 // v3's okDisplayText) so C# can detect the "Loading Characters" stuck-
-// state and the EULA/orderwindow prompt-windows variant without a second
-// SHM bump in v3.23.0.
+// state and the EULA/orderwindow prompt-windows variant without needing
+// a future SHM bump.
 //
 // Field group:
 //   widgetConnectVisible        — connect screen (login UI)
@@ -353,9 +353,11 @@ struct LoginShm {
     //
     // widgetConfirmDialogText: when widgetConfirmDialogVisible == 1, the
     // 256-byte UTF-8 STML body of ConfirmationDialogBox.CD_TextOutput.
-    // Empty when ConfirmDialog not visible. C# v3.23.0 will match against
-    // "Loading Characters" / "Do you accept these rules?" / "characters
-    // missing" to choose action; v3.21.0 just exposes it for logging.
+    // Empty when ConfirmDialog not visible. The field is exposed for native
+    // diagnostic logging and C#-side observability; consumer-side matching
+    // ("Loading Characters" / "Do you accept these rules?" / "characters
+    // missing") is permanently deferred per the project-final-release
+    // closeout — no current trigger justifies the action-routing surface.
     //
     // widgetTickSeq: monotonic increment per probe pass. C# can read this
     // twice ~100ms apart to verify the DLL is alive and probing. Wraps at
