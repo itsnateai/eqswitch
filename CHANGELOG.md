@@ -46,9 +46,13 @@ indeterminate. With v3.22.11, the same smoke now logs:
     AutoLogin-SM: okDisplay at terminal Error: class=<None|Recoverable|Fatal|Truncated>
                   text="<EQ's actual error string>" (PID <n>)
 
-Paired with the local-only Python tool that captures the native-side
-DI8Log stream via `DBWIN_BUFFER`. Two independent diagnostic streams
-that previously both went to the void.
+Paired with the local-only Python tool that tails the per-PID native
+log files (`eqswitch-dinput8-{pid}.log` next to eqgame.exe) into a
+merged timestamped stream. Two independent diagnostic streams that
+previously both went to the void. (An earlier draft of the Python
+tool subscribed to `DBWIN_BUFFER` — that was wrong because `DI8Log`
+uses `fopen`+`fprintf`, not `OutputDebugString`. The T2 Opus verifier
+caught it; the tool was rewritten as a file tailer same session.)
 
 ### Files
 
