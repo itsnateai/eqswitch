@@ -1,5 +1,39 @@
 # Changelog
 
+## v3.22.18 — Rename failure-path balloons to drop "state machine" jargon (2026-05-18)
+
+Follow-up to v3.22.17 per user confirm of the carved-out failure surface.
+v3.22.17's CHANGELOG explicitly flagged that the failure balloons at
+`Core/AutoLoginManager.cs:1243` (`"state machine failed (terminal Error)"`)
+and `:1253` (`"state machine crashed: {ex.Message}"`) still leaked "state
+machine" jargon to users. Round-1 verifier T4 Opus + T3 Opus + T4 Sonnet
+flagged these as inconsistent with the spirit of the v3.22.17 ask.
+
+### Renamed
+
+| Site | Old balloon text | New balloon text |
+|---|---|---|
+| `Core/AutoLoginManager.cs:1243` (terminal Error) | `"{account}: state machine failed (terminal Error)"` | `"{account}: autologin failed"` |
+| `Core/AutoLoginManager.cs:1253` (unhandled exception) | `"{account}: state machine crashed: {ex.Message}"` | `"{account}: autologin error: {ex.Message}"` |
+
+With this ship, no user-facing balloon contains "state machine" anywhere.
+The internal `FileLogger.Info`/`Error` calls still use the technical term
+(SM-OBS, AutoLogin-SM:, terminal state Error) for developer diagnostics —
+that's the right surface for jargon.
+
+### Files
+
+| File | Nature |
+|---|---|
+| `Core/AutoLoginManager.cs` | 2 string-literal renames (failure-path Report calls) |
+| `EQSwitch.csproj` | Version 3.22.17 → 3.22.18 |
+| `CHANGELOG.md` (+ `_.releases` mirror) | This entry |
+
+### Risk
+
+Zero. String-literal-only change. `Report()` is pure UI notification.
+Build expected to remain Debug+Release 0/0.
+
 ## v3.22.17 — Drop "state machine" jargon from user-facing tray balloons (2026-05-18)
 
 User feedback after v3.22.16 smoke confirmation: *"can we get rid of the

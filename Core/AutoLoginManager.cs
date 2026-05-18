@@ -1242,7 +1242,7 @@ public class AutoLoginManager
                         FileLogger.Info($"AutoLogin-SM: skipped LastLoginResult=fail for {account.Name} — EQ process gone (not the password's fault)");
                     }
                 }
-                Report($"{account.Name}: state machine failed (terminal Error)");
+                Report($"{account.Name}: autologin failed");
             }
             // v3.22.17: complete balloon removed per user feedback — the "logged
             // in!" balloon at the Enter-World success site (line ~1972) already
@@ -1252,7 +1252,7 @@ public class AutoLoginManager
         catch (Exception ex)
         {
             FileLogger.Error($"AutoLogin-SM: unhandled exception at state {current} after {sw.ElapsedMilliseconds}ms (PID {pid})", ex);
-            Report($"{account.Name}: state machine crashed: {ex.Message}");
+            Report($"{account.Name}: autologin error: {ex.Message}");
             if (loginShm != null && !sentCancelOnExit)
             {
                 // Parity with the Error-exit-path catch (line ~970) — log so a double-failure
