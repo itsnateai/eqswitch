@@ -96,8 +96,8 @@
 // GAMESTATE_CHARSELECT block (MQ2AutoLogin.cpp:1156-1191, source for
 // "ConfirmationDialogBox"). Plus ConfirmationDialogBox text mirror (parallel to
 // v3's okDisplayText) so C# can detect the "Loading Characters" stuck-
-// state and the EULA/orderwindow prompt-windows variant without needing
-// a future SHM bump.
+// state and the EULA/orderwindow prompt-windows variant without a second
+// SHM bump.
 //
 // Field group:
 //   widgetConnectVisible        — connect screen (login UI)
