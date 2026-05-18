@@ -473,11 +473,10 @@ public class AutoLoginManager
         var capturedCharacter = character;
         var capturedOverride = enterWorldOverride;
         var capturedPassword = password;
-        // v3.22.0 Iter-1: opt-in routing to the new state machine. Default is false
-        // (LaunchConfig.UseStateMachine), so v3.21.1 behavior is preserved on the
-        // feature branch until Iter-4 flips the default. Snapshot the flag here so
-        // a mid-iteration Settings change (ReloadConfig) can't bait one PID into
-        // the new path and another into the legacy path within the same team launch.
+        // Opt-in routing to the state machine. AppConfig default is false; deployed
+        // installs flip via per-install eqswitch-config.json. Snapshot the flag here
+        // so a mid-flight Settings change (ReloadConfig) can't bait one PID into the
+        // new path and another into the legacy path within the same team launch.
         bool useStateMachine = _config.Launch.UseStateMachine;
         return Task.Run(() =>
         {
@@ -824,18 +823,17 @@ public class AutoLoginManager
         //   #2 gameState source — SHM exclusive via LoginShmWriter.ReadGameState.
         //   #3 Cancellation — three layers (top-of-tick check + token-aware delay +
         //      SendCancelCommand on Error/cancel exit so Native stops mid-command).
-        //   #5 Internal rename — this replaces RunLoginSequence's body in Iter-4.
         // Add-on A: read nativePhase via SHM every tick (gates state transitions).
-        // Add-on B: log widgetTickSeq deltas (Iter-2/3 ratchets the 5s threshold).
+        // Add-on B: log widgetTickSeq deltas (5s threshold tuned through smoke).
         const int TickIntervalMs = 250;
-        // Iter-3 (2026-05-17): bumped 90_000 → 180_000 to cover login pipeline
-        // (~48s typical on Dalaya — Combo G + LOGIN_ConnectButton click + connect
-        // response) + char-list warmup (~5-15s — bridge heap-scan after pinst
-        // transition) + selection ack (~1-3s) + zone-load (5-90s — Dalaya 3D
-        // scene hangs IsHungAppWindow during render) + safety margin. Pre-bump
-        // 90s killed the smoke at WaitConnectResponse before CharSelect even
-        // transitioned in. If empirical smoke shows <150s typical, ratchet down
-        // in Iter-4 — never let it grow unbounded.
+        // 180_000ms overall budget covers login pipeline (~48s typical on Dalaya —
+        // Combo G + LOGIN_ConnectButton click + connect response) + char-list warmup
+        // (~5-15s — bridge heap-scan after pinst transition) + selection ack (~1-3s)
+        // + zone-load (5-90s — Dalaya 3D scene hangs IsHungAppWindow during render)
+        // + safety margin. An earlier 90s budget killed the smoke at WaitConnectResponse
+        // before CharSelect transitioned in; 180s is the tuned ceiling. Don't grow
+        // unbounded — promote-to-config rejected per the v3.22.10 final closeout
+        // (more knobs Nate has to know exist + risk of misconfig breaking autologin).
         const int OverallTimeoutMs = 180_000;
         const int TickSeqStaleThresholdMs = 5_000;
 
@@ -1430,8 +1428,11 @@ public class AutoLoginManager
     ///   - OkDialog Fatal (Invalid Password / etc. — bail to Error rather than
     ///     spin-wait the 180s overall timeout)
     ///
-    /// Recoverable dialog handling deferred to Iter-3 (the legacy RunLoginSequence
-    /// has retry-budget tuning via okClass.Recoverable that we'll port).
+    /// Recoverable dialog handling is delegated to the SM dispatch dwell on
+    /// WaitConnectResponse — the okText/okClass snapshot is inspected on every
+    /// tick by the caller, and Fatal classifications bail to Error immediately.
+    /// Non-Fatal Recoverable dialogs (rare on Dalaya) effectively retry by
+    /// staying in this phase until the 180s OverallTimeoutMs fires Error.
     /// </summary>
     private static LoginPhase StepWaitConnectResponse(WidgetState widgets, int gameState, LoginPhase nativePhase,
         OkDisplayClass okClass, string okText)
@@ -1529,8 +1530,8 @@ public class AutoLoginManager
     /// don't fix it" — verbatim port of safety semantics that prevent
     /// wrong-character logins. The 250ms dispatch-tick cadence is suspended
     /// during this Step; the OverallTimeoutMs (180s) and explicit RefreshHandle
-    /// checks are the safety nets. Refactor to non-blocking sub-states in Iter-4
-    /// cleanup if verifier objects.
+    /// checks are the safety nets. Non-blocking sub-state refactor: not planned
+    /// — current shape is feature-complete and stable across all v3.22.x smokes.
     ///
     /// Returns <see cref="LoginPhase.EnteringWorld"/> on selection ack confirmed,
     /// <see cref="LoginPhase.Error"/> on any abort condition,
@@ -1759,8 +1760,8 @@ public class AutoLoginManager
     /// so cannot be used here.
     ///
     /// **Blocking** (5-90s SHM path / 5-60s × 3 PulseKey3D fallback). Same
-    /// architectural caveat as <see cref="StepCharSelect"/> — port verbatim,
-    /// refactor in Iter-4 if needed.
+    /// architectural caveat as <see cref="StepCharSelect"/> — verbatim port of
+    /// the legacy semantics; non-blocking sub-state refactor not planned.
     ///
     /// Returns <see cref="LoginPhase.Complete"/> on zone-load confirmed,
     /// <see cref="LoginPhase.Error"/> on all-attempts-failed or window lost.
