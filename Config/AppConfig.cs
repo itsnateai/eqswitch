@@ -417,7 +417,7 @@ public class AppConfig
 
         // LoginAccount field validation (legacy — operates on v3 LegacyAccounts list).
         // v4 Account type has no CharacterSlot field; per-character slot moves to
-        // Character.CharacterSlot, validated wherever Characters lives by Phase 4 UI.
+        // Character.CharacterSlot, validated wherever Characters lives.
         foreach (var a in LegacyAccounts)
             a.CharacterSlot = Math.Clamp(a.CharacterSlot, 0, 10); // 0 = auto (by name)
 

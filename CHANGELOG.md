@@ -1,5 +1,84 @@
 # Changelog
 
+## v3.22.14 — Verifier-driven follow-up to v3.22.13 (2026-05-18)
+
+Doc/comment-only release follow-up. v3.22.13 retired the high-visibility
+forward-ship comments (XML docs + AppConfig + login_shm.h header area) but
+the 8-agent verifier-round-1 surfaced a convergent gap: my Rule-11 carve-out
+in v3.22.13's CHANGELOG row 9b ("keep all inline `// Iter-N` comments as
+historical anchors") was too broad. Several inline references were
+**forward-ship aspiration**, not provenance attribution — those needed to
+be retired too. Plus: `_.releases/eqswitch/eqswitch-hook.dll` was stale
+vs the `Native/` source (different SHA256), and `SHA256SUMS` was missing
+`eqswitch-hook.dll` entirely.
+
+### Verifier-round-1 findings addressed
+
+| # | Source | Verifier | Action |
+|---|---|---|---|
+| 1 | `Core/AutoLoginManager.cs:478` "until Iter-4 flips the default" | T2 Opus M1, T4 Opus CRITICAL #1 | Inline comment retired — describes current operational reality (per-install config sets the flag) |
+| 2 | `Core/AutoLoginManager.cs:827` "Internal rename — this replaces RunLoginSequence's body in Iter-4" | T2 Opus C2 | Comment retired; the Iter-4 rename plan is permanently cancelled |
+| 3 | `Core/AutoLoginManager.cs:838` "ratchet down in Iter-4 — never let it grow unbounded" | T2 Opus M2 | Replaced with the v3.22.10 closeout rationale (promote-to-config rejected) |
+| 4 | `Core/AutoLoginManager.cs:1433-1434` "Recoverable dialog handling deferred to Iter-3" | T2 Opus C3 | Replaced with description of the current per-tick okClass inspection + 180s timeout fallback behavior |
+| 5 | `Core/AutoLoginManager.cs:1532-1533` "Refactor to non-blocking sub-states in Iter-4 cleanup if verifier objects" | T2 Opus C3, T4 Opus CRITICAL #3 | Retired; the StepCharSelect blocking semantics are intentional and stable per v3.22.x smokes |
+| 6 | `Core/AutoLoginManager.cs:1763` "refactor in Iter-4 if needed" (StepEnteringWorld) | T2 Opus M2, T3 Opus LOW | Same treatment as #5 |
+| 7 | `Config/AppConfig.cs:420` "validated wherever Characters lives by Phase 4 UI" | T2 Opus M3, T4 Opus MINOR #5 | "by Phase 4 UI" removed — Phase 4 tab-split is PERMANENTLY REJECTED per Nate's 2026-05-17 directive |
+| 8 | `Native/login_shm.h:114-117` "v3.22.0 will rewrite RunLoginSequence as a tick loop" | T2 Opus C1, T3 Opus LOW | Rewritten in past tense; describes the deployed v3.22.0+ RunLoginStateMachine consumer state |
+| 9 | `_.releases/eqswitch/eqswitch-hook.dll` stale vs source (SHA256 mismatch: mirror `5db69b79…` vs source/proggy `ba50e5a5…`) | T4 Opus (deeper than what verifier surfaced — caught during fix-pass cross-check) | Mirror re-synced from `Native/eqswitch-hook.dll` (the ground truth); SHA256 now matches proggy |
+| 10 | `_.releases/eqswitch/SHA256SUMS` missing `eqswitch-hook.dll` entry | T2 Opus C4, T3 Opus MEDIUM | Added — manifest now covers all three first-party deployable binaries |
+
+### Retention rationale refined
+
+The v3.22.13 row 9b said "inline `// Iter-N …` comments are historical
+anchors per Rule 11." That's still true, but the refined rule is: **only
+verifier-round attribution lines** count as historical anchors (e.g.,
+`// Iter-3 fix-round-2 (verifier T2-Opus C3 + T2-Sonnet C2): ...` —
+attribution to a specific verifier round is permanent provenance).
+Aspirational forward-ship references (`will flip default`, `cleanup if
+verifier objects`, `refactor in Iter-4 if needed`) are not provenance —
+they're stale plan-fragments and should be retired. v3.22.14 applies this
+refined rule. The ~25 verifier-round-attribution inline comments scattered
+through `AutoLoginManager.cs` are intentionally kept.
+
+### Verifier-round-1 findings deliberately NOT addressed
+
+| Finding | Verifier | Rationale |
+|---|---|---|
+| `AutoLoginManager.cs:993` "Iter-4 (v3.22.0): fire LoginCredentialsSent" | T2 Opus | Provenance, not aspiration — describes that this code shipped during v3.22.0 Iter-4 development. Kept per the refined Rule-11 retention. |
+| `OverallTimeoutMs = 180_000` hardcoded should be config | T3 Sonnet #2 | Promote-to-config was explicitly NO-SHIP in the v3.22.10 closeout; comment now references that decision. |
+| `SkipNativeWarmup` + `UseStateMachine` default interaction warning | T3 Sonnet #1 | Documented pre-existing concern; Nate runs both flags = true via config, so the bad-combo (only-UseStateMachine flipped) doesn't exist in practice. v3.22.10 closeout policy: no enhancement without trigger. |
+| `Native/login_shm.h:212` `autoLoginActive` clearing trace | T3 Sonnet #5 | Verified during fix-pass: `RunLoginStateMachine` DOES clear via `SetAutoLoginActive(pid, false)` at `AutoLoginManager.cs:1336` (inside the SM finally block). The cross-verification proved the concern unfounded. |
+| Memory files referencing old 35-50s wall-clock | T4 Sonnet #2, T4 Opus | Historical records of past ship states — intentionally frozen per `feedback_save_useful_memories_without_asking`. |
+| `_comms/plan-eqswitch-*.md` historical plan docs referencing v3.23.0 / Iter-4 | T4 Sonnet #3, T4 Opus | Archival plan docs are intentionally frozen as snapshots of decision-time context. |
+| `UpdateDialog.cs` parses different SHA256SUMS schema than `_.releases/eqswitch/SHA256SUMS` | T4 Opus #2 | Two different SHA256SUMS serve different purposes — GitHub release-asset (single ZIP hash) for auto-update vs local release-mirror (per-binary manifest) for distribution integrity. Both are correct in their context. |
+
+### Files
+
+| File | Nature |
+|---|---|
+| `EQSwitch.csproj` | Version 3.22.13 → 3.22.14 |
+| `Config/AppConfig.cs` | Line 420 Phase 4 UI reference retired |
+| `Core/AutoLoginManager.cs` | 6 inline comment edits (lines ~476-480, ~826-839, ~1432-1437, ~1531-1533, ~1761-1763) |
+| `Native/login_shm.h` | Lines 114-117 rewritten in past tense |
+| `_.releases/eqswitch/eqswitch-hook.dll` | Re-synced from `Native/` (was stale) |
+| `_.releases/eqswitch/SHA256SUMS` | Now covers all 3 binaries (was missing hook.dll) |
+| `_.releases/eqswitch/VERSION` | v3.22.13 → v3.22.14 |
+| `CHANGELOG.md` | This entry |
+
+### Risk
+
+Zero. No code paths touched. No autologin-path keystroke, timing, SHM
+contract, or state-machine transition logic is edited. Build expected to
+remain 0 errors / 0 warnings. Native `eqswitch-hook.dll` was already-built
+ahead of this release — the mirror just gets re-synced from the canonical
+source; the deployed proggy DLL was never stale. No smoke required.
+
+### Verifier discipline
+
+After v3.22.14 ships, re-dispatch 8 fresh verifier agents (4 topic pairs)
+per the high-stakes spec. Convergence on APPROVE across all 4 topics is
+the gate to claim DONE.
+
 ## v3.22.13 — Final-audit cleanup: retire stale forward-ship comments + amend AUTOLOGIN SPEC (2026-05-18)
 
 Doc/comment-only release. Zero code-path change. Project remains FINAL

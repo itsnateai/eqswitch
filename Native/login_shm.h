@@ -111,10 +111,12 @@
 //                                 detect probe staleness (no advance for N
 //                                 polls → DLL crashed or unloaded)
 //
-// Consumer in C# (v3.21.0): observability only. RunLoginSequence does NOT
-// branch on these bools yet — they are exposed via a new WidgetState reader
-// for logging + verification. v3.22.0 will rewrite RunLoginSequence as a
-// tick loop that reads these to choose dispatch action.
+// Consumer in C# (v3.21.0+): the WidgetState reader exposes these probes for
+// logging, verification, and (since v3.22.0) state-machine dispatch in
+// RunLoginStateMachine — a tick-loop observer that branches on the widget
+// snapshot rather than wall-clock budgets. The legacy RunLoginSequence
+// remains in the codebase as an escape hatch; it does not branch on these
+// probes (preserved as the pre-state-machine baseline).
 //
 // Backward-compatible append: v6 native readers see the first 1632 bytes
 // unchanged and never publish these fields. C# v7 readers always observe
