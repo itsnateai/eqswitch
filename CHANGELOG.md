@@ -63,7 +63,8 @@ through `AutoLoginManager.cs` are intentionally kept.
 | `_.releases/eqswitch/eqswitch-hook.dll` | Re-synced from `Native/` (was stale) |
 | `_.releases/eqswitch/SHA256SUMS` | Now covers all 3 binaries (was missing hook.dll) |
 | `_.releases/eqswitch/VERSION` | v3.22.13 → v3.22.14 |
-| `CHANGELOG.md` | This entry |
+| `CHANGELOG.md` (eqswitch repo) | This entry |
+| `_.releases/eqswitch/CHANGELOG.md` | Mirror — synced byte-identical from eqswitch repo |
 
 ### Risk
 
