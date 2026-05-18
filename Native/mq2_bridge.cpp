@@ -157,6 +157,12 @@ static volatile bool     g_p9GateLogged      = false;
 static volatile bool     g_p9SehLogged       = false;
 static volatile int      g_cachedNameCol     = -1;
 static volatile int      g_cachedSlotCount   = -1;  // slot probe result cache (-1 = not probed)
+// v3.22.16: rate-limit timestamp for column-discovery failure logging.
+// The v3.22.10 closeout's "P9/P8/uiFallback latch back-out gap" was exactly the
+// silent retry-every-poll-no-log pattern. Now logs once per 5s per charselect
+// cycle when column discovery fails so we get visibility instead of silence
+// until the 30s SM abort fires. Reset at charselect transitions.
+static volatile DWORD    g_lastColDiscoveryFailMs = 0;
 static volatile bool     g_verificationDone  = false;
 static volatile uintptr_t g_heapScanArrayBase = 0;   // heap scan result (0 = not found/not scanned)
 static volatile bool     g_heapScanDone      = false; // one-shot per charselect session
@@ -3931,27 +3937,60 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
             }
 
             // Discover name column — retry every poll until found (don't cache failure)
-            // Dalaya ROF2 may use non-standard columns, scan wider range (0-9)
+            // Dalaya ROF2 may use non-standard columns, scan wider range (0-9).
+            // v3.22.16: scan rows 0-3 instead of just row 0. The single-row scan
+            // silently failed every poll on the 2026-05-18 02:31 smoke when the
+            // CListWnd had row 0 unpopulated (user's characters in slots 1+).
+            // Closes the v3.22.10 closeout's "P9/P8/uiFallback latch back-out"
+            // gap for the row-0-empty case. Fix-all-three together per v3.22.4
+            // rule: row-0-empty handling (this), failure-log re-arm (below),
+            // and Path B2 fallback timing (unchanged — still fires when
+            // count==0 && nameCol<0 after the loop, which is now correct).
             int nameCol = g_cachedNameCol;
             if (nameCol < 0) {
                 for (int tryCol = 0; tryCol <= 9 && nameCol < 0; tryCol++) {
-                    char test[CHARSEL_NAME_LEN] = {};
-                    if (ReadListItemText(pCharList, 0, tryCol, test, CHARSEL_NAME_LEN) && test[0]) {
-                        // v3.22.5: promote to IsPlausibleName for parity with Path A
-                        // P8 gate, Path C anchor, heap scans, and the P9 publisher
-                        // gate. The prior inline validator (uppercase first + >=4
-                        // chars + all-alpha-either-case) accepted column headers
-                        // like "Name"/"Race"/"Class"/"Level" and would permanently
-                        // lock g_cachedNameCol to the wrong column for the rest of
-                        // the session if the slot-0 row's header text appeared
-                        // before any real name. kBadNames inside IsPlausibleName
-                        // already blocks those headers; the predicate now agrees
-                        // across all six charselect sites.
-                        if (IsPlausibleName((const uint8_t *)test)) {
-                            nameCol = tryCol;
-                            g_cachedNameCol = nameCol;
-                            DI8Log("mq2_bridge: UI fallback: name column = %d (first name: '%s')", tryCol, test);
+                    for (int tryRow = 0; tryRow < 4 && nameCol < 0; tryRow++) {
+                        char test[CHARSEL_NAME_LEN] = {};
+                        if (ReadListItemText(pCharList, tryRow, tryCol, test, CHARSEL_NAME_LEN) && test[0]) {
+                            // v3.22.5: promote to IsPlausibleName for parity with Path A
+                            // P8 gate, Path C anchor, heap scans, and the P9 publisher
+                            // gate. The prior inline validator (uppercase first + >=4
+                            // chars + all-alpha-either-case) accepted column headers
+                            // like "Name"/"Race"/"Class"/"Level" and would permanently
+                            // lock g_cachedNameCol to the wrong column for the rest of
+                            // the session if the slot-0 row's header text appeared
+                            // before any real name. kBadNames inside IsPlausibleName
+                            // already blocks those headers; the predicate now agrees
+                            // across all six charselect sites.
+                            if (IsPlausibleName((const uint8_t *)test)) {
+                                nameCol = tryCol;
+                                g_cachedNameCol = nameCol;
+                                DI8Log("mq2_bridge: UI fallback: name column = %d (first plausible name at row %d: '%s')", tryCol, tryRow, test);
+                            }
                         }
+                    }
+                }
+                // v3.22.16: Make column-discovery failure LOUD instead of silent.
+                // The v3.22.10 closeout's "P9/P8/uiFallback latch back-out" gap was
+                // this exact silent-every-poll pattern. Rate-limit to once per 5s
+                // per charselect cycle so we get diagnostic visibility without spam.
+                // reference_loud_runtime_silent_rest.md: loud signal at the failing
+                // surface, not silent fallthrough to a 30s SM timeout.
+                if (nameCol < 0) {
+                    DWORD now = GetTickCount();
+                    if (now - g_lastColDiscoveryFailMs > 5000) {
+                        g_lastColDiscoveryFailMs = now;
+                        // Sample row 0 across cols 0-3 to diagnose what's actually there
+                        char probes[4][CHARSEL_NAME_LEN] = {};
+                        bool gotAny[4] = {};
+                        for (int c = 0; c < 4; c++) {
+                            gotAny[c] = ReadListItemText(pCharList, 0, c, probes[c], CHARSEL_NAME_LEN) && probes[c][0];
+                        }
+                        DI8Log("mq2_bridge: UI fallback: column discovery FAILED (rows 0-3 x cols 0-9) — row 0 cols [0]='%s' [1]='%s' [2]='%s' [3]='%s' (all fail IsPlausibleName)",
+                               gotAny[0] ? probes[0] : "(empty)",
+                               gotAny[1] ? probes[1] : "(empty)",
+                               gotAny[2] ? probes[2] : "(empty)",
+                               gotAny[3] ? probes[3] : "(empty)");
                     }
                 }
             }

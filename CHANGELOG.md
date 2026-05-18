@@ -1,5 +1,90 @@
 # Changelog
 
+## v3.22.16 — Fix bridge UI fallback silent-failure when char-list row 0 is empty (2026-05-18)
+
+**Real bug fix.** First native-code change in the v3.22.13+ chain — the prior
+three releases were doc/comment-only. This one fixes a documented intermittent
+failure mode that finally tripped a reproducible smoke at 2026-05-18 02:31:23.
+
+### What broke
+
+User fires team1 → both clients reach CharSelect at t≈45s (normal v3.22.x timing)
+→ MQ2 bridge attempts to publish character list via SHM `charCount` →
+**fails silently for 30s** → C# `StepCharSelect` defensive abort fires
+"MQ2 bridge didn't populate char list ... stopping at char select to avoid
+wrong-character enter-world."
+
+The SM's defensive abort was working correctly. The bug was in the bridge.
+
+### Root cause (ground-truth from `eqswitch-dinput8-{pid}.log`)
+
+`MQ2Bridge::Poll`'s UI fallback path at `Native/mq2_bridge.cpp:3933-3957`
+discovered the name column by reading **only row 0** of each CListWnd column
+(0-9), validating with `IsPlausibleName`. If row 0 was empty (user's characters
+in slots 1+, slot 0 unpopulated), every column's row-0 read returned empty,
+`IsPlausibleName` rejected all, `g_cachedNameCol` stayed `-1`, and the name-
+extraction loop never ran. `count` stayed 0, SHM `charCount` stayed 0, C# SM
+timed out.
+
+The silent failure mode is exactly the v3.22.10 closeout's accepted-known-limit:
+
+> **P9/P8/uiFallback latch back-out gaps** — ACCEPTED as known limit. Trigger:
+> if DebugView shows a stuck one-shot log across multiple cycles, ship a
+> coordinated fix per v3.22.4 "fix-all-three-together-or-skip-all-three" rule.
+
+**Trigger fired today.** First reproduction since the closeout was written.
+
+### What did NOT cause it (proved by parity check)
+
+| Component | Hash | Touched by v3.22.13-15? |
+|---|---|---|
+| `eqswitch-di8.dll` (the bridge — runs INSIDE eqgame.exe) | `6da1c923…` → `3331468b…` (NEW in v3.22.16) | NO until this release |
+| `eqswitch-hook.dll` (slim-titlebar hook) | `ba50e5a5…` | No |
+| `EQSwitch.exe` (the C# host) | Replaced 3× in v3.22.13/14/15 | Yes — but comment/log-string edits only, no code path affecting SHM contract |
+
+v3.22.13/14/15 were doc/comment + 1 log-string ships; the bridge that ran the
+2026-05-18 02:31 failure was byte-identical to the bridge that ran 11+ successful
+smokes earlier today on the same eqgame.exe. The trigger fired by chance after
+my deploys — user's suspicion was reasonable, the analysis ruled it out.
+
+### Fix — coordinated per "fix-all-three-together"
+
+`Native/mq2_bridge.cpp`:
+
+| # | Change | Lines | Purpose |
+|---|---|---|---|
+| 1 | New global `g_lastColDiscoveryFailMs` | 165 | Rate-limit timestamp for the diagnostic log |
+| 2 | Multi-row scan in column discovery: rows 0-3 × cols 0-9 | ~3950-3967 | Handle the row-0-empty case (user's chars in slots 1+) |
+| 3 | LOUD failure log when column discovery fails, rate-limited 5s | ~3974-3997 | Convert the silent latch-back-out gap into a visible diagnostic. Logs the actual row-0 content across cols 0-3 so we know WHY column discovery failed (empty list / column headers / unloaded UI). Per `reference_loud_runtime_silent_rest.md` — loud signal at the failing surface, not silent timeout. |
+
+### Files
+
+| File | Nature |
+|---|---|
+| `Native/mq2_bridge.cpp` | +25 LOC bug fix (multi-row scan + loud failure log + new rate-limit global) |
+| `Native/eqswitch-di8.dll` | Rebuilt — new SHA256 `3331468bf9be8010…`, 243,200 B (vs prior `6da1c923…` 242,688 B = +512 B for the new code) |
+| `EQSwitch.csproj` | Version 3.22.15 → 3.22.16 |
+| `_.releases/eqswitch/eqswitch-di8.dll` | Mirror — re-synced |
+| `_.releases/eqswitch/SHA256SUMS` | New EXE + new di8.dll hashes |
+| `_.releases/eqswitch/VERSION` | v3.22.16 |
+| `CHANGELOG.md` (eqswitch + mirror) | This entry |
+
+### Risk
+
+Low — focused 3-change patch in one code section. Multi-row scan can only succeed
+in MORE cases than the old single-row scan (rows 0-3 ⊃ row 0). The loud failure
+log is rate-limited so can't spam. The new global initializes to 0 (correctly).
+
+### Verification plan
+
+1. Build Debug + Release 0/0 ✓ (already verified)
+2. Native eqswitch-di8.dll rebuild 0/0 ✓ (already verified — only pre-existing
+   warning in unrelated file)
+3. Deploy to proggy + mirror
+4. **Autonomous smoke** — fire team1, verify both clients reach in-world. Per the
+   task brief's smoke rule, this IS an autologin-path change.
+5. If pass → tag + push
+
 ## v3.22.15 — Verifier-round-2 + ultrathink ground-truth pass (2026-05-18)
 
 Doc/comment + 1 runtime log string follow-up to v3.22.14. Round-2 verifiers
