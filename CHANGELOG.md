@@ -1,5 +1,64 @@
 # Changelog
 
+## v3.22.17 — Drop "state machine" jargon from user-facing tray balloons (2026-05-18)
+
+User feedback after v3.22.16 smoke confirmation: *"can we get rid of the
+state machine init and complete tooltips, the users wont know what those
+mean."* The two SM-bookkeeping balloons were implementation jargon —
+users seeing "state machine — waiting for login screen..." or "state
+machine completed" had no context for what a "state machine" was.
+
+### Removed
+
+| Site | Old balloon text | Why removed |
+|---|---|---|
+| `Core/AutoLoginManager.cs:1009` | `"{account.Name}: state machine — waiting for login screen..."` (init) | Redundant with the EQ process launch the user already sees on screen + the legacy path's "Waiting for login screen..." which is in plain language. SM-init balloon was the only SM-jargon-flavored entry surface. |
+| `Core/AutoLoginManager.cs:1247` | `"{account.Name}: state machine completed"` (complete) | Redundant with the "{account.Name} logged in!" balloon at the Enter-World success site (line ~1972) which already fires in plain language right before this jargon balloon did. |
+
+### Kept
+
+The plain-language progress balloons that already existed are
+unchanged — these are the user-facing autologin surface:
+
+- `"Warmup done — settling..."` (warmup completion)
+- `"Waiting for login screen..."` (login screen detection)
+- `"Typing credentials..."` (password entry)
+- `"Submitting login..."` (connect submission)
+- `"{account.Name} reached char select."` (char-select)
+- `"{account.Name} reached char select (slot N)."` (with character match)
+- `"Entering world..."` (Enter World fire)
+- `"{account.Name} logged in!"` (terminal success)
+
+### Not addressed (flag if you want these too)
+
+`AutoLoginManager.cs:1243` still says `"state machine failed (terminal
+Error)"` and `:1253` says `"state machine crashed: {ex.Message}"`. Both
+fire only on failure paths. The conservative read of the user's
+feedback was init+complete specifically, but the same "state machine"
+jargon survives in the failure surface. Renaming to "Login failed" /
+"Login error" would be consistent — say the word and it ships.
+
+### Files
+
+| File | Nature |
+|---|---|
+| `Core/AutoLoginManager.cs` | 2 `Report()` calls deleted + comments explaining the removal |
+| `EQSwitch.csproj` | Version 3.22.16 → 3.22.17 |
+| `CHANGELOG.md` | This entry |
+
+### Risk
+
+Zero. `Report()` is a pure UI notification path (StatusUpdate event →
+`ShowBalloon` in TrayManager). No control-flow change. No autologin-path
+code modified — the SM still runs identically, just doesn't fire two of
+the balloons on the way through. C#-only ship; native `eqswitch-di8.dll`
+unchanged.
+
+### No smoke required
+
+UI-text removal in a doc/comment-class change. Build expected to remain
+Debug+Release 0/0.
+
 ## v3.22.16 — Fix bridge UI fallback silent-failure when char-list row 0 is empty (2026-05-18)
 
 **Real bug fix.** First native-code change in the v3.22.13+ chain — the prior

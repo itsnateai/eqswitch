@@ -1006,8 +1006,10 @@ public class AutoLoginManager
                 FileLogger.Warn($"AutoLogin-SM: LoginCredentialsSent handler threw for PID {pid}: {ex.Message}");
             }
 
-            Report($"{account.Name}: state machine — waiting for login screen...");
-
+            // v3.22.17: init balloon removed per user feedback — "state machine" was
+            // implementation jargon that users wouldn't understand. The subsequent
+            // "reached char select" / "Entering world..." / "logged in!" balloons
+            // already provide user-facing progress milestones with plain language.
             while (current != LoginPhase.Complete && current != LoginPhase.Error)
             {
                 // Cancellation Layer 1 — explicit check at top of tick.
@@ -1242,10 +1244,10 @@ public class AutoLoginManager
                 }
                 Report($"{account.Name}: state machine failed (terminal Error)");
             }
-            else
-            {
-                Report($"{account.Name}: state machine completed");
-            }
+            // v3.22.17: complete balloon removed per user feedback — the "logged
+            // in!" balloon at the Enter-World success site (line ~1972) already
+            // marks completion in plain language. Saying "state machine completed"
+            // immediately after was redundant + implementation jargon.
         }
         catch (Exception ex)
         {
