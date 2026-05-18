@@ -1,5 +1,31 @@
 # Changelog
 
+## v3.22.12 — Defensive null-conditional on SendCancelCommand (2026-05-17)
+
+Verifier-driven follow-up to v3.22.11. T3 Sonnet flagged
+`AutoLoginManager.cs:1196 loginShm.SendCancelCommand(pid)` as fragile —
+the v3.22.11 okDisplay read three lines above used `loginShm?.`, the
+adjacent SendCancelCommand did not. The current code is safe by
+control-flow invariant (line 911-918 early-returns on `writer.Open`
+failure, bypassing the loop entirely), but explicit `?.` removes the
+fragility-by-future-change concern. One-line hardening, no behavioral
+change.
+
+### Files
+
+| File | Nature |
+|---|---|
+| `Core/AutoLoginManager.cs` | `loginShm.SendCancelCommand(pid)` → `loginShm?.SendCancelCommand(pid)` at line 1196 + comment explaining the change |
+| `EQSwitch.csproj` | Version 3.22.11 → 3.22.12 |
+| `CHANGELOG.md` | This entry |
+
+### Risk
+
+Negligible. The null-conditional is a no-op when `loginShm` is non-null
+(the success path). The catch block at line 1199 already handles any
+exception SendCancelCommand could throw. CS8602 warning at line 1196
+no longer fires.
+
 ## v3.22.11 — Instrumentation: dump okDisplay at terminal Error (2026-05-17)
 
 C#-only instrumentation ship. Zero behavioral change to the autologin

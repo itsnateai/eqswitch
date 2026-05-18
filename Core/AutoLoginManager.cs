@@ -1193,7 +1193,12 @@ public class AutoLoginManager
                 // Native's keystroke queue keeps firing into a focused field.
                 try
                 {
-                    loginShm.SendCancelCommand(pid);
+                    // v3.22.11: null-conditional mirrors the v3.22.11 okDisplay
+                    // read three lines up. Safe by control-flow invariant
+                    // (line 911-918 early-returns on writer.Open failure
+                    // bypassing the loop), but explicit ?. removes the
+                    // fragility-by-future-change concern T3 Sonnet flagged.
+                    loginShm?.SendCancelCommand(pid);
                     sentCancelOnExit = true;
                 }
                 catch (Exception ex)
