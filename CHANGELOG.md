@@ -1,5 +1,90 @@
 # Changelog
 
+## v3.22.10 — Tray "Manage Teams..." deep-links to Configure Teams (2026-05-17)
+
+C#-only polish. The tray submenu's "Manage Teams..." item now opens Settings
+AND the Configure Teams subwindow in one click, instead of opening Settings
+and leaving the user to find + click the "Configure Teams..." button on the
+Accounts tab. "Manage Accounts..." and "Manage Characters..." continue to
+open Settings to the Accounts tab — per Nate, the Accounts and Characters
+sections are visually close enough that a tab split isn't worth shipping.
+
+### What changes
+- `UI/TrayManager.cs` — `ShowSettings` gains a `bool openTeamsDialog = false`
+  optional parameter, threaded through to the `SettingsForm` ctor. The
+  `Manage Teams...` tray item now passes `openTeamsDialog: true`. The other
+  two submenu footers (`Manage Accounts...`, `Manage Characters...`) keep
+  the previous `ShowSettings(2)` call shape. The re-entry path (Settings
+  already open → `BringToFront` early-return) also honors `openTeamsDialog`
+  via the new public `SettingsForm.OpenTeamsDialogNow()` — previously the
+  flag was silently dropped on re-entry.
+- `UI/SettingsForm.cs` — ctor gains `bool openTeamsDialog = false`. When
+  true, subscribes once to `this.Shown` and, on fire, executes a two-stage
+  defer: (1) `BeginInvoke` drains the paint cycle queued by `Show`; (2) a
+  700ms `Timer` adds a human-perceptible "Settings is loaded, ready" beat;
+  (3) the shared `OpenTeamsWithVisibleBusy()` helper flips `UseWaitCursor`
+  to true immediately before `ShowTeamsDialog()` and restores it in
+  `finally`. The wait cursor is the standard Windows "busy" signal and
+  renders independently of the form's paint cycle, so it stays visible
+  during the single-UI-thread freeze caused by `AutoLoginTeamsDialog`'s
+  ctor. Earlier rounds layered a title-bar label (rejected by Nate) and a
+  default-style `ToolTip` (rendered with bad opacity due to compositor
+  races against the freeze) — both dropped. The pattern evolved across
+  smoke rounds: round 1 synchronous → ~4s Settings flashes white; round 2
+  `BeginInvoke` only → still ~3s of white-paint; round 3 → wait cursor +
+  700ms beat, freeze legible. `IsDisposed` guards at both subscription and
+  callback time prevent a fast close-before-paint crash. New public
+  `OpenTeamsDialogNow()` method handles the re-entry path: same helper but
+  skips the 700ms beat because Settings is already painted on re-entry.
+
+  Companion speed-up: `UI/AutoLoginTeamsDialog.cs` ctor now uses
+  `SuspendLayout` + `ResumeLayout(true)`, hoists the per-ComboBox
+  `SlotOption` list out of `MakeCombo` (was rebuilt 12×) into a single
+  `BuildComboItems()` call cached in `_comboItems`, and uses
+  `Items.AddRange` instead of N×`Items.Add`. Cuts the freeze duration
+  meaningfully on configs with non-trivial Accounts/Characters counts.
+
+### What gets removed
+- Three `TODO(Phase 4): route to section-specific tab` comments in
+  `TrayManager.cs` (above each `Manage Accounts/Characters/Teams...` line).
+  Phase 4 — the proposed Accounts/Characters/Teams tab split — is cancelled.
+  The Accounts/Characters TrayManager TODOs were placeholders for that
+  Phase-4 routing; with Phase 4 dead, they're stale aspiration. The Teams
+  TODO is superseded by the actual deep-link this version ships.
+
+### What does NOT change
+- The autologin critical path. Zero edits to `AutoLoginManager`, native
+  bridge, SHM contract, or any of the timing-critical state machines.
+- Existing `ShowTeamsDialog()` semantics: still non-modal (per Nate's
+  preference at SettingsForm.cs:121-122), still closes-on-OK, still
+  rebuilds `_lblTeamSummary` from the staged team slots.
+- Hotkey behavior while Settings is open — all hotkeys remain unregistered
+  per `TrayManager.cs:1494`. The "open Settings → fire team4" workflow
+  still needs the v3.22.9 workaround (fire team4 first, then open Settings
+  during the autologin window). Selective hotkey re-register is a separate
+  v3.23.0-scoped architectural change.
+
+### Also fixed in this ship
+- `Native/eqmain_cxstr.h` threat-model block — corrected stale "On every
+  Dalaya patch the eqmain.dll RVAs and prologue bytes can drift" claim.
+  Dalaya is a Rain-of-Fear-2 emulator running a fixed client; the server
+  doesn't patch eqgame.exe or eqmain.dll, so the RVAs are frozen at the
+  RoF2 May 10 2013 client level. ResolveCXStrFunctions() prologue check
+  remains load-bearing as a defense against a wrong-RVA constant in our
+  own code, not against a never-shipping client patch. Removed the
+  fail-mode hierarchy item #3 ("AOB rescan on prologue signature (TODO
+  Phase 4b)") — moot for the same reason. No code change, comment only.
+
+### Smoke gate
+1. Deploy `EQSwitch.exe` to `C:/Users/nate/proggy/Everquest/EQSwitch/`.
+2. Right-click tray icon → Teams submenu → "Manage Teams...".
+3. Expect: Settings window opens to the Accounts tab AND the Configure
+   Teams subwindow pops on top.
+4. Confirm "Manage Accounts..." (from Accounts submenu) still opens
+   Settings to Accounts tab with no Configure Teams dialog.
+5. Confirm "Manage Characters..." (from Characters submenu) same: Settings
+   to Accounts tab, no Configure Teams dialog.
+
 ## v3.22.9 — Settings UI live-refresh on autologin completion (2026-05-17)
 
 C#-only polish patch. Closes the last UI-side limitation called out in the

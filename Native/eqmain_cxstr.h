@@ -40,18 +40,22 @@
 // semantics (cross-confirmed via MQ2HUD.cpp:617 + MQ2FrameLimiter.cpp:271).
 //
 // ─── Threat model ───────────────────────────────────────────
-// On every Dalaya patch the eqmain.dll RVAs and prologue bytes can drift.
-// The runtime prologue check in ResolveCXStrFunctions() catches this on
-// startup; a mismatch means the Combo G path is unsafe and must NOT be
-// used for the active autologin attempt. Per
+// Shards of Dalaya is a Rain-of-Fear-2 emulator running a fixed client —
+// the server doesn't patch eqgame.exe or eqmain.dll, so the RVAs and
+// prologue bytes here are frozen at the RoF2 May 10 2013 client level.
+// The runtime prologue check in ResolveCXStrFunctions() is still load-
+// bearing as a defense against an accidentally-wrong RVA constant in
+// our own code (or, theoretically, a future Dalaya-admin decision to
+// roll the client baseline — which has never happened). A mismatch
+// means the Combo G path is unsafe and must NOT be used for the active
+// autologin attempt. Per
 // memory/feedback_eqswitch_no_regression_to_dinput8.md, fail-mode
 // hierarchy is:
 //   1. Prologue check on ctor / FreeRep at resolve time — false from
 //      ResolveCXStrFunctions if either prologue mismatched
 //   2. SEH on the field touch at +0x1A8 inside WriteEditTextDirect —
 //      false if pEditWnd isn't a real live CEditBaseWnd / CEditWnd
-//   3. AOB rescan on prologue signature (TODO Phase 4b)
-//   4. Hard-fail loud — log + abort the autologin attempt
+//   3. Hard-fail loud — log + abort the autologin attempt
 // **Never silently regress to dinput8 or keyboard injection.**
 //
 // Iter 11 (2026-04-25): replaced vtable-slot SetWindowText path with

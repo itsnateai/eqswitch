@@ -66,6 +66,12 @@ internal sealed class AutoLoginTeamsDialog : Form
     public string Team5Account2 => GetValue(_cboTeam5B);
     public string Team6Account1 => GetValue(_cboTeam6A);
     public string Team6Account2 => GetValue(_cboTeam6B);
+    // v3.22.10: hoisted from MakeCombo (which rebuilt them 12× per ctor).
+    // Built once in ctor, used by every MakeCombo call. Saves 11 × (list build
+    // + 5-6 TextRenderer.MeasureText calls) on a typical config.
+    private List<SlotOption> _comboItems = null!;
+    private int _comboMaxW;
+
     public AutoLoginTeamsDialog(
         IReadOnlyList<Account> accounts,
         IReadOnlyList<Character> characters,
@@ -78,6 +84,13 @@ internal sealed class AutoLoginTeamsDialog : Form
     {
         _accounts = accounts;
         _characters = characters;
+
+        // v3.22.10: SuspendLayout for the whole ctor. WinForms invalidates the
+        // form on every control Add; without suspension the layout engine
+        // re-runs 38+ times (12 combos + 12 pills + 6 row labels + legend +
+        // hint + warn + 2 buttons). Combined with the items-list hoist below,
+        // this cuts the perceived "loading Teams" freeze meaningfully.
+        SuspendLayout();
 
         // Restore last-open position if available; otherwise center on parent.
         if (_lastLocation.HasValue)
@@ -95,6 +108,17 @@ internal sealed class AutoLoginTeamsDialog : Form
         // rows + legend + behavior-hint row + warn row + button row.
         DarkTheme.StyleForm(this, "Autologin Teams", new Size(480, 332));
         MinimizeBox = false;
+
+        // v3.22.10: build the combo items list ONCE here. Every ComboBox in
+        // this dialog displays the same options (12 of them); rebuilding the
+        // list per MakeCombo call was pure waste. MeasureText runs once over
+        // the unified list and the result is reused for every combo's
+        // DropDownWidth.
+        _comboItems = BuildComboItems();
+        using (var probeFont = new Font(Font.FontFamily, Font.Size))
+        {
+            _comboMaxW = _comboItems.Max(i => TextRenderer.MeasureText(i.Display, probeFont).Width) + 16;
+        }
 
         const int L = 15, I = 80, CW = 150, gap = 8, PILLW = 24;
         int y = 18;
@@ -221,6 +245,38 @@ internal sealed class AutoLoginTeamsDialog : Form
         SelectByValue(_cboTeam4A, team4A);  SelectByValue(_cboTeam4B, team4B);
         SelectByValue(_cboTeam5A, team5A);  SelectByValue(_cboTeam5B, team5B);
         SelectByValue(_cboTeam6A, team6A);  SelectByValue(_cboTeam6B, team6B);
+
+        // v3.22.10: pair with SuspendLayout at top of ctor. performLayout: true
+        // forces a single layout pass at the end rather than 38+ incremental
+        // ones across the ctor body.
+        ResumeLayout(performLayout: true);
+    }
+
+    /// <summary>
+    /// v3.22.10: builds the SlotOption list used by every ComboBox in this dialog.
+    /// Hoisted out of MakeCombo so the (none) + Characters + Accounts iteration
+    /// runs once per ctor instead of 12× (one per combo).
+    /// </summary>
+    private List<SlotOption> BuildComboItems()
+    {
+        var items = new List<SlotOption>
+        {
+            new("", "(none)", SlotKind.None),
+        };
+        foreach (var c in _characters)
+            items.Add(new SlotOption(c.Name, $"🧙  {c.Name}", SlotKind.Character));
+        foreach (var a in _accounts)
+        {
+            // Don't duplicate: if Account.Name matches a Character.Name we've listed, skip.
+            if (_characters.Any(c => c.Name.Equals(a.Name, StringComparison.OrdinalIgnoreCase))) continue;
+            // Display the Username (the login identity Nate recognizes); persist
+            // the FK identity (Account.Name) as the SlotOption value so existing
+            // saved team slots keep resolving via ResolveAccountForSlot. New
+            // accounts have Name == Username (auto-shadowed in AccountEditDialog),
+            // so display and persistence agree for fresh data.
+            items.Add(new SlotOption(a.Name, $"🔑  {a.Username}", SlotKind.Account));
+        }
+        return items;
     }
 
     private (ComboBox a, Label pa, ComboBox b, Label pb) AddTeamRow(
@@ -254,24 +310,6 @@ internal sealed class AutoLoginTeamsDialog : Form
 
     private ComboBox MakeCombo(int x, int y, int width)
     {
-        var items = new List<SlotOption>
-        {
-            new("", "(none)", SlotKind.None),
-        };
-        foreach (var c in _characters)
-            items.Add(new SlotOption(c.Name, $"\uD83E\uDDD9  {c.Name}", SlotKind.Character));
-        foreach (var a in _accounts)
-        {
-            // Don't duplicate: if Account.Name matches a Character.Name we've listed, skip.
-            if (_characters.Any(c => c.Name.Equals(a.Name, StringComparison.OrdinalIgnoreCase))) continue;
-            // Display the Username (the login identity Nate recognizes); persist
-            // the FK identity (Account.Name) as the SlotOption value so existing
-            // saved team slots keep resolving via ResolveAccountForSlot. New
-            // accounts have Name == Username (auto-shadowed in AccountEditDialog),
-            // so display and persistence agree for fresh data.
-            items.Add(new SlotOption(a.Name, $"\uD83D\uDD11  {a.Username}", SlotKind.Account));
-        }
-
         var cb = new ComboBox
         {
             Location = new Point(x, y),
@@ -281,12 +319,13 @@ internal sealed class AutoLoginTeamsDialog : Form
             DropDownStyle = ComboBoxStyle.DropDownList,
             FlatStyle = FlatStyle.Flat,
         };
-        foreach (var it in items)
-            cb.Items.Add(it);
+        // v3.22.10: use AddRange (single layout invalidation) instead of N\u00D7Add
+        // (one per item). Items themselves are hoisted to _comboItems built
+        // once per ctor.
+        cb.Items.AddRange(_comboItems.Cast<object>().ToArray());
         cb.SelectedIndex = 0;
 
-        int maxW = items.Max(i => TextRenderer.MeasureText(i.Display, cb.Font).Width) + 16;
-        if (maxW > width) cb.DropDownWidth = maxW;
+        if (_comboMaxW > width) cb.DropDownWidth = _comboMaxW;
 
         cb.MouseWheel += (_, e) => ((HandledMouseEventArgs)e).Handled = true;
         Controls.Add(cb);
