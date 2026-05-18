@@ -1171,6 +1171,23 @@ public class AutoLoginManager
 
             if (current == LoginPhase.Error)
             {
+                // v3.22.11: dump okDisplay snapshot at terminal-Error entry. Closes
+                // the diagnostic gap surfaced by the 2026-05-17 17:39:48 smoke event
+                // (gotquiz1 stuck 138s in WaitConnectResponse → terminal Error with
+                // no native log capture). Without this read, the cause class
+                // (bad-password / server-queue / login-token-stale / SM bug) is
+                // unknowable from the C# log alone. Snapshot may be empty if EQ
+                // never published an OK dialog (pure connect timeout / link drop).
+                try
+                {
+                    var okAtError = loginShm?.ReadOkDisplaySnapshot(pid) ?? (OkDisplayClass.None, "");
+                    FileLogger.Info($"AutoLogin-SM: okDisplay at terminal Error: class={okAtError.Class} text=\"{okAtError.Text}\" (PID {pid})");
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Warn($"AutoLogin-SM: failed to read okDisplay at terminal Error (PID {pid}): {ex.Message}");
+                }
+
                 // Cancellation Layer 3 — tell Native to stop in case it's mid-command.
                 // Defense against the "ghost typing" failure mode where C# bails but
                 // Native's keystroke queue keeps firing into a focused field.

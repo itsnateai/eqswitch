@@ -94,3 +94,6 @@ CLAUDE.md
 
 # Internal — session-local handoffs, not for public repo
 _comms/
+
+# Internal — local debugging tools, not for public repo
+tools/
