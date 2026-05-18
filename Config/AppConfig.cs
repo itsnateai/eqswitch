@@ -854,16 +854,17 @@ public class LaunchConfig
     public bool SkipNativeWarmup { get; set; } = true;
 
     /// <summary>
-    /// v3.22.0 opt-in: route BeginLogin through the new tick-driven state machine
+    /// Route BeginLogin through the tick-driven state machine
     /// (<c>AutoLoginManager.RunLoginStateMachine</c>) instead of the linear
     /// <c>RunLoginSequence</c>. The state machine reads the v3.21.0 widget probes +
     /// Native phase + gameState every 250ms and dispatches via state transitions
-    /// rather than time-budgeted sleeps. Default <c>false</c> through Iter-1/2/3 of
-    /// v3.22.0 development so v3.21.1 behavior is preserved on the feature branch;
-    /// Iter-4 ship flips this to <c>true</c> and v3.23.0+ removes the legacy path.
+    /// rather than time-budgeted sleeps.
     ///
-    /// Not exposed in Settings UI during iteration development — power-user opt-in
-    /// via direct eqswitch-config.json edit for smoke gating.
+    /// AppConfig default is <c>false</c>; deployed installs flip it to <c>true</c>
+    /// via per-install <c>eqswitch-config.json</c>. The legacy <c>RunLoginSequence</c>
+    /// remains as a runtime escape hatch for environments where the SM path's
+    /// SHM/widget dependencies aren't satisfied. Not exposed in the Settings UI:
+    /// it's a power-user diagnostic flag, not a feature.
     /// </summary>
     public bool UseStateMachine { get; set; } = false;
 }

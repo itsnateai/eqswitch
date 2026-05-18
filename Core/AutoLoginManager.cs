@@ -77,8 +77,9 @@ public class AutoLoginManager
     // while the other is mid-keystroke, landing keystrokes in the wrong
     // window. Gate the whole 1.5s sequence with this static SemaphoreSlim so
     // only ONE PID owns focus-faking at a time. Legacy RunLoginSequence
-    // (line 2477+) has the same race; this lands first in SM path —
-    // candidate to backport in Iter-4 cleanup.
+    // (line 2477+) has the same race; the SM path is the deployed surface
+    // so the legacy race is unmitigated by design (Iter-4 backport plan
+    // is permanently retired per the project-final-release closeout).
     private static readonly System.Threading.SemaphoreSlim _focusFakeMutex = new(1, 1);
 
     // Logins run concurrently (one Task per BeginLogin call, no global gate).
@@ -801,23 +802,20 @@ public class AutoLoginManager
     }
 
     /// <summary>
-    /// v3.22.0 Iter-1 — tick-driven state machine dispatch. Opt-in via
-    /// <see cref="LaunchConfig.UseStateMachine"/> (default false). Replaces
-    /// the linear time-budgeted <see cref="RunLoginSequence"/> with a
-    /// ~250ms-tick observer that reads the v3.21.0 widget probes + Native
-    /// phase + gameState and transitions states on signal rather than sleep.
+    /// Tick-driven state machine dispatch (v3.22.0 design). Opt-in via
+    /// <see cref="LaunchConfig.UseStateMachine"/>; deployed installs enable it
+    /// via per-install <c>eqswitch-config.json</c>. Replaces the linear
+    /// time-budgeted <see cref="RunLoginSequence"/> with a ~250ms-tick observer
+    /// that reads the v3.21.0 widget probes + Native phase + gameState and
+    /// transitions states on signal rather than sleep.
     ///
-    /// Iter-1 SCOPE: skeleton dispatch loop + <c>WaitLoginScreen</c> →
-    /// <c>TypingCredentials</c> transition + <c>Error</c> terminal state.
-    /// All other states are pass-through (returning <c>current</c>). Smoke
-    /// target: with the flag enabled, reach <c>TypingCredentials</c> and
-    /// stall there until <c>overallTimeoutMs</c> fires Error. Verifies
-    /// state-machine plumbing without driving actual keystrokes. Iter-2
-    /// fills in TypingCredentials → WaitConnectResponse → ServerSelect;
-    /// Iter-3 adds CharSelect + EnteringWorld + Complete. Iter-4 ship gate
-    /// flips <see cref="LaunchConfig.UseStateMachine"/> default to true.
+    /// Full state coverage as of v3.22.x: <c>WaitLoginScreen</c> →
+    /// <c>TypingCredentials</c> → <c>WaitConnectResponse</c> →
+    /// <c>ServerSelect</c> → <c>WaitServerLoad</c> → <c>CharSelect</c> →
+    /// <c>EnteringWorld</c> → <c>Complete</c>. <c>StepServerSelect</c> and
+    /// <c>StepWaitServerLoad</c> are DEAD-ON-DALAYA — see their summaries.
     ///
-    /// Plan-doc: <c>X:/_Projects/_.claude/_comms/plan-eqswitch-v3.22.0.md</c>
+    /// Plan-doc archive: <c>X:/_Projects/_.claude/_comms/plan-eqswitch-v3.22.0.md</c>.
     /// </summary>
     private void RunLoginStateMachine(int pid, Account account, Character? character, string password, bool? enterWorldOverride)
     {
@@ -869,10 +867,12 @@ public class AutoLoginManager
         bool sentCancelOnExit = false;
         // v3.22.7/v3.22.8: LastLoginResult bookkeeping for the SM path.
         // Mirrors the legacy RunLoginSequence writes at lines 2685/2704.
-        // Pre-v3.22.7 the SM path never wrote LastLoginResult, so the
-        // Settings UI Flag glyph stayed at whatever the prior session's
-        // value was. v3.22.0+ flipped UseStateMachine to true, which
-        // bypassed the legacy writes. See bug_eqswitch_login_complete_flag_stays_x.md.
+        // Pre-v3.22.7 the SM path never wrote LastLoginResult, so on
+        // deployments running UseStateMachine=true (the operationally-active
+        // path — set via per-install eqswitch-config.json; the AppConfig
+        // default remains false as a safety baseline) the Settings UI Flag
+        // glyph stayed at whatever the prior session's value was. See
+        // bug_eqswitch_login_complete_flag_stays_x.md.
         //
         // v3.22.8: regression-fix on v3.22.7's tick-time SaveImmediate.
         // v3.22.7 called ConfigManager.SaveImmediate from inside the
@@ -1080,13 +1080,11 @@ public class AutoLoginManager
                     lastObservedWidgetSig = widgetSig;
                 }
 
-                // Per-tick dispatch — Iter-2B implements phases 1-7 (WaitLoginScreen
-                // through CharSelect); Iter-3 will add EnteringWorld + Complete + the
-                // CharSelect → EnteringWorld transition (character selection + Enter
-                // World click). StepCharSelect for Iter-2B is the minimal-escalation
-                // stub (Native Error propagation only) per verifier-round convergent
-                // finding (T2-Sonnet + T2-Opus 2026-05-16): the original `current`
-                // self-loop made CharSelect an absorbing state with no Error escape.
+                // Per-tick dispatch covers all phases (WaitLoginScreen through Complete).
+                // StepCharSelect is the minimal-escalation stub (Native Error propagation
+                // only) per verifier-round convergent finding (T2-Sonnet + T2-Opus
+                // 2026-05-16): an earlier `current` self-loop made CharSelect an absorbing
+                // state with no Error escape — fixed in the same round.
                 // Iter-3 (2026-05-17): CharSelect + EnteringWorld dispatched outside the
                 // switch — they need `ref IntPtr hwnd` (RefreshHandle rewrites it on
                 // login→server→char-select window-recreation transitions), and switch
@@ -1471,15 +1469,13 @@ public class AutoLoginManager
     }
 
     /// <summary>
-    /// Iter-2B: ServerSelect → {Error | WaitServerLoad | CharSelect}. **DEAD-ON-DALAYA
+    /// ServerSelect → {Error | WaitServerLoad | CharSelect}. **DEAD-ON-DALAYA
     /// — defensive non-Dalaya scaffolding only.** Dalaya's QUICK-CONNECT button
     /// (`eqmain_widgets_mq2style:FindConnectButtonStructural slot=+0x34`) skips
     /// server-select entirely; ServerSelectVisible never flips true. T2-Opus +
     /// T3-Sonnet 2026-05-16 verifier round confirmed this state is unreachable on
-    /// the live target. For Iter-2B the state is observe-only; Iter-3 will add
-    /// server-select click via PostMessage Enter or JoinServerDirect RPC (v4 SHM).
-    /// YESNO kick-session and OK_Display Recoverable handling are also Iter-3 —
-    /// for now the state stays put until either Native advances or
+    /// the live target. Retained as cheap insurance against a non-Dalaya retarget;
+    /// the state observes Native + widgets and forwards to CharSelect as soon as
     /// CharSelectAvailable lights up.
     /// </summary>
     private static LoginPhase StepServerSelect(WidgetState widgets, int gameState, LoginPhase nativePhase)
@@ -1497,10 +1493,11 @@ public class AutoLoginManager
     }
 
     /// <summary>
-    /// Iter-2B: WaitServerLoad → CharSelect. **DEAD-ON-DALAYA — defensive non-Dalaya
+    /// WaitServerLoad → CharSelect. **DEAD-ON-DALAYA — defensive non-Dalaya
     /// scaffolding only** (entered only from StepServerSelect's `nativePhase >=
     /// WaitServerLoad` branch which can't fire on Dalaya because Native is stuck
-    /// at PHASE_WAIT_CONNECT_RESP). CharSelect signal works regardless of how we
+    /// at PHASE_WAIT_CONNECT_RESP). Retained as cheap insurance against a
+    /// non-Dalaya retarget; the CharSelect signal works regardless of how we
     /// got here.
     /// </summary>
     private static LoginPhase StepWaitServerLoad(WidgetState widgets, int gameState, LoginPhase nativePhase)
@@ -1515,11 +1512,11 @@ public class AutoLoginManager
     }
 
     /// <summary>
-    /// Iter-3 (2026-05-17) — character selection dispatch.
+    /// Character selection dispatch.
     ///
     /// Direct port of the legacy <see cref="RunLoginSequence"/> char-select block
-    /// (AutoLoginManager.cs:2150-2326 pre-Iter-3): wait for char list ready, run
-    /// <see cref="CharacterSelector.Decide"/>, request selection via
+    /// (AutoLoginManager.cs:2150-2326 in the legacy path): wait for char list ready,
+    /// run <see cref="CharacterSelector.Decide"/>, request selection via
     /// <see cref="CharSelectReader.RequestSelectionBySlot"/>, wait for ack.
     /// Safety aborts on resolvedSlot=0 (no name match / malformed), slot
     /// out-of-range, or ack-timeout (matches legacy hotfix v6b — without DLL ack,
@@ -1739,10 +1736,10 @@ public class AutoLoginManager
     }
 
     /// <summary>
-    /// Iter-3 (2026-05-17) — Enter World dispatch.
+    /// Enter World dispatch.
     ///
     /// Direct port of legacy <see cref="RunLoginSequence"/> enter-world block
-    /// (AutoLoginManager.cs:2329-2492 pre-Iter-3). Branches on
+    /// (AutoLoginManager.cs:2329-2492 in the legacy path). Branches on
     /// <see cref="ShouldSkipShmEnterWorld"/>:
     ///
     /// <list type="bullet">
