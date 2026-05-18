@@ -1,5 +1,49 @@
 # Changelog
 
+## v3.22.11 — Instrumentation: dump okDisplay at terminal Error (2026-05-17)
+
+C#-only instrumentation ship. Zero behavioral change to the autologin
+critical path. Adds a single `FileLogger.Info` call at the
+`AutoLogin-SM: terminal state Error` entry point that captures the
+`okDisplay` (class + text) snapshot from `LoginShm` via the existing
+`ReadOkDisplaySnapshot` helper, so future failures expose what EQ
+actually showed instead of only logging "terminal Error" with no
+EQ-side diagnostic.
+
+Motivated by the 2026-05-17 17:39:48 smoke event: gotquiz1 (PID 16136)
+sat in `WaitConnectResponse` for 138.3s with `connect=1` oscillating,
+then `nativePhase` flipped to `Error`. The C# log captured the
+transition but not the okDisplay state — so root cause class
+(bad-password / login-server queue / login-token-stale / SM bug) was
+indeterminate. With v3.22.11, the same smoke now logs:
+
+    AutoLogin-SM: okDisplay at terminal Error: class=<None|Recoverable|Fatal|Truncated>
+                  text="<EQ's actual error string>" (PID <n>)
+
+Paired with the local-only Python tool that captures the native-side
+DI8Log stream via `DBWIN_BUFFER`. Two independent diagnostic streams
+that previously both went to the void.
+
+### Files
+
+| File | Nature |
+|---|---|
+| `Core/AutoLoginManager.cs` | +13 LOC: try/catch wrapper around `ReadOkDisplaySnapshot(pid)` at the top of the `if (current == LoginPhase.Error)` block; logs class + text via `FileLogger.Info` |
+| `EQSwitch.csproj` | Version 3.22.10 → 3.22.11 |
+| `CHANGELOG.md` | This entry |
+
+### Risk
+
+Minimal. The new code path runs only at terminal-state-Error (rare).
+`loginShm?` null-conditional and try/catch around the read mean any
+SHM tear-down race surfaces as a `FileLogger.Warn` instead of throwing.
+Success path of the state machine is byte-identical to v3.22.10.
+
+### Not in scope
+
+- The actual gotquiz1 138s bug — diagnosis only; fix waits for next-occurrence
+  evidence captured by this instrumentation.
+
 ## v3.22.10 — Tray "Manage Teams..." deep-links to Configure Teams (2026-05-17)
 
 C#-only polish. The tray submenu's "Manage Teams..." item now opens Settings
