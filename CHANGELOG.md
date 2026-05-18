@@ -1,5 +1,72 @@
 # Changelog
 
+## v3.22.9 — Settings UI live-refresh on autologin completion (2026-05-17)
+
+C#-only polish patch. Closes the last UI-side limitation called out in the
+v3.22.8 ship doc: with Settings open during an autologin, the Accounts grid's
+Flag column stayed on the prior session's glyph until the user closed +
+reopened Settings. Now it updates within ms of `AutoLoginManager.LoginComplete`.
+
+### What changes
+- `UI/SettingsForm.cs` — adds optional `AutoLoginManager? autoLogin` ctor
+  param. When non-null, subscribes to `LoginComplete` and re-syncs the
+  AutoLoginManager-owned fields (`LastLoginAt` + `LastLoginResult`) from the
+  live `_config.Accounts` into the staged `_pendingAccounts` snapshot, then
+  re-renders the grid. `InvokeRequired`/`BeginInvoke` marshal to the UI
+  thread defensively (FireLoginComplete already marshals via the captured
+  sync context — the defensive check covers the synchronous-fallback path).
+  `FormClosed` unsubscribes. `IsDisposed`/`Disposing` and the inner try/catch
+  ensure a sync failure can't crash the form — live-refresh is polish, not
+  on the critical path.
+- `UI/TrayManager.cs:1497` — passes `_autoLoginManager` to `new SettingsForm`.
+
+### What does NOT change
+- Autologin flow itself — zero edits to `AutoLoginManager.RunLoginStateMachine`,
+  the SM dispatch, the legacy `RunLoginSequence`, or any of the Combo G /
+  P8/P9 publisher / SHM bridge code. The change consumes a post-hoc event
+  and never touches the timing-critical path.
+- The deep-copy form-open snapshot pattern (`_pendingAccounts =
+  _config.Accounts.Select(...).ToList()`) — staged user edits are still the
+  source of truth for everything except the two autologin-owned fields.
+- `RefreshAccountsGrid` itself — same renderer, just called from a new
+  event source.
+
+### Why match by (Username, Server) and not by index
+- User can re-order, add, or remove pending accounts in Settings while a
+  background autologin is running. Index-based mapping would drift; the
+  (Username, Server) tuple is the existing dedupe key elsewhere in the form
+  (e.g. `ApplySettings` collision check) and is stable across in-memory
+  edits.
+- If the user has renamed a pending account before the autologin fires, the
+  match returns null and the staged entry is left untouched — the user's
+  rename takes precedence over the live glyph until ApplySettings saves the
+  new name back to `_config.Accounts`.
+
+### Why PID payload is unused
+- `AutoLoginManager.LoginComplete` carries the EQ process PID but doesn't
+  expose which Account that PID was for. Mapping PID→Account post-hoc would
+  require either a parallel TrayManager-owned dictionary (PID→Account
+  populated on BeginLogin, cleared on LoginComplete) or threading the
+  Account through the event signature.
+- Re-syncing every staged Account costs O(N×M) field-comparisons where N+M
+  are both very small (Nate's config has <20 accounts total). The lookup
+  machinery is not worth the savings — chose the simpler approach.
+
+### Smoke gate
+- Open Settings → fire team4 hotkey → without closing Settings, watch the
+  Flag column for both accounts flip from prior-state to ✓ green (or ✗ red
+  on bad password) within a few seconds of charselect-reached.
+- Re-fire with a deliberately-bad-password account and confirm ✗ glyph
+  appears live. New untried account stays at "—".
+
+### Cross-cutting lesson (kept for future ports)
+This is the second half of the `opt-in-dispatch-divergence` fix from
+v3.22.8. The state-mutation parity was restored in v3.22.8 (SM path now
+writes `LastLoginResult`); v3.22.9 restores the **UI-feedback parity** for
+the open-Settings-during-autologin workflow. Both halves needed to land
+for the indicator semantics to feel right — same code path, two visible
+surfaces.
+
 ## v3.22.8 — Regression fix: defer SaveImmediate out of SM tick path (2026-05-17)
 
 C#-only behavioral patch. Closes a v3.22.7 regression caught at first team4

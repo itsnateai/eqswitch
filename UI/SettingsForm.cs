@@ -17,6 +17,7 @@ public class SettingsForm : Form
     private readonly Action<AppConfig> _onApply;
     private readonly Action? _onVideoSaved;
     private readonly Action? _openProcessManager;
+    private readonly AutoLoginManager? _autoLogin;
     private EQClientSettingsForm? _eqClientSettingsForm;
 
     /// <summary>When true, TrayManager should reopen Settings after this form closes (used by Reset).</summary>
@@ -189,14 +190,28 @@ public class SettingsForm : Form
 
     private int _initialTab;
 
-    public SettingsForm(AppConfig config, Action<AppConfig> onApply, int initialTab = 0, Action? openProcessManager = null, Action? onVideoSaved = null)
+    public SettingsForm(AppConfig config, Action<AppConfig> onApply, int initialTab = 0, Action? openProcessManager = null, Action? onVideoSaved = null, AutoLoginManager? autoLogin = null)
     {
         _config = config;
         _onApply = onApply;
         _onVideoSaved = onVideoSaved;
         _openProcessManager = openProcessManager;
         _initialTab = initialTab;
+        _autoLogin = autoLogin;
         InitializeForm();
+
+        // v3.22.9: live-refresh the Accounts grid's Flag glyph + Last-Login tooltip
+        // when AutoLoginManager finishes a login while Settings is open. Pre-v3.22.9
+        // the user had to close+reopen Settings to pick up the result — the Accounts
+        // grid renders from the _pendingAccounts deep-copy snapshot taken at form-
+        // open (line ~228). FireLoginComplete already marshals to the UI sync
+        // context, but OnLoginComplete re-checks InvokeRequired defensively in case
+        // the synchronous-fallback path fires on a background thread.
+        if (_autoLogin is { } al)
+        {
+            al.LoginComplete += OnLoginComplete;
+            FormClosed += (_, _) => al.LoginComplete -= OnLoginComplete;
+        }
     }
 
     private void InitializeForm()
@@ -2121,6 +2136,50 @@ public class SettingsForm : Form
             },
             EnableHeadersVisualStyles = false
         };
+    }
+
+    /// <summary>
+    /// v3.22.9: live-refresh handler for <see cref="AutoLoginManager.LoginComplete"/>.
+    /// Syncs the AutoLoginManager-owned fields (<c>LastLoginAt</c> + <c>LastLoginResult</c>)
+    /// from the LIVE <c>_config.Accounts</c> into the staged <c>_pendingAccounts</c>
+    /// snapshot — leaves every other staged field alone so unsaved user edits in
+    /// Settings are not clobbered. Match key is (Username, Server) case-insensitive.
+    /// PID payload is unused: AutoLoginManager fires LoginComplete per-PID but doesn't
+    /// expose which Account that PID was for, and the cost of re-syncing every staged
+    /// Account from live config is trivial vs. the lookup machinery to map PID→Account
+    /// post-hoc. Try/catch the body so a sync failure never crashes the form — the
+    /// live-refresh is polish, not on the critical path.
+    /// </summary>
+    private void OnLoginComplete(object? sender, int pid)
+    {
+        if (IsDisposed || Disposing) return;
+        if (InvokeRequired)
+        {
+            try { BeginInvoke(new Action(() => OnLoginComplete(sender, pid))); }
+            catch (ObjectDisposedException) { /* form closed mid-fire — no-op */ }
+            catch (InvalidOperationException) { /* handle not yet created — no-op */ }
+            return;
+        }
+
+        try
+        {
+            foreach (var staged in _pendingAccounts)
+            {
+                var live = _config.Accounts.FirstOrDefault(a =>
+                    string.Equals(a.Username, staged.Username, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(a.Server, staged.Server, StringComparison.OrdinalIgnoreCase));
+                if (live != null)
+                {
+                    staged.LastLoginAt = live.LastLoginAt;
+                    staged.LastLoginResult = live.LastLoginResult;
+                }
+            }
+            RefreshAccountsGrid();
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Warn($"SettingsForm: OnLoginComplete (pid={pid}) sync failed: {ex.Message}");
+        }
     }
 
     private void RefreshAccountsGrid()

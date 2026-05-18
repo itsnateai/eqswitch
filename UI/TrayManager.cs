@@ -1494,7 +1494,7 @@ public class TrayManager : IDisposable
         _hotkeyManager.UnregisterAll();
         _keyboardHook.Reset();
 
-        _settingsForm = new SettingsForm(_config, ReloadConfig, tabIndex, ShowProcessManager, UpdateHookConfig);
+        _settingsForm = new SettingsForm(_config, ReloadConfig, tabIndex, ShowProcessManager, UpdateHookConfig, _autoLoginManager);
         _settingsForm.OnSameNameCollision += names =>
         {
             ShowBalloon(
