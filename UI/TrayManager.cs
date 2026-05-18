@@ -949,7 +949,6 @@ public class TrayManager : IDisposable
             }
         }
         menu.DropDownItems.Add(new ToolStripSeparator());
-        // TODO(Phase 4): route to section-specific tab once Characters/Teams split from Accounts tab
         menu.DropDownItems.Add("\u2699  Manage Accounts...", null, (_, _) => ShowSettings(2));
         return menu;
     }
@@ -1011,7 +1010,6 @@ public class TrayManager : IDisposable
             }
         }
         menu.DropDownItems.Add(new ToolStripSeparator());
-        // TODO(Phase 4): route to section-specific tab once Characters/Teams split from Accounts tab
         menu.DropDownItems.Add("\u2699  Manage Characters...", null, (_, _) => ShowSettings(2));
         return menu;
     }
@@ -1078,8 +1076,7 @@ public class TrayManager : IDisposable
             }
         }
         menu.DropDownItems.Add(new ToolStripSeparator());
-        // TODO(Phase 4): route to section-specific tab once Characters/Teams split from Accounts tab
-        menu.DropDownItems.Add("\u2699  Manage Teams...", null, (_, _) => ShowSettings(2));
+        menu.DropDownItems.Add("\u2699  Manage Teams...", null, (_, _) => ShowSettings(2, openTeamsDialog: true));
         return menu;
     }
 
@@ -1481,12 +1478,20 @@ public class TrayManager : IDisposable
 
     private SettingsForm? _settingsForm;
 
-    private void ShowSettings(int tabIndex = 0)
+    private void ShowSettings(int tabIndex = 0, bool openTeamsDialog = false)
     {
         // Prevent multiple settings windows
         if (_settingsForm != null && !_settingsForm.IsDisposed)
         {
             _settingsForm.BringToFront();
+            // v3.22.10: if the user reaches us via "Manage Teams..." while Settings
+            // was already open, honor the deep-link by surfacing the Configure Teams
+            // subwindow too. Previously the openTeamsDialog flag was silently dropped
+            // on the BringToFront path.
+            if (openTeamsDialog)
+            {
+                _settingsForm.OpenTeamsDialogNow();
+            }
             return;
         }
 
@@ -1494,7 +1499,7 @@ public class TrayManager : IDisposable
         _hotkeyManager.UnregisterAll();
         _keyboardHook.Reset();
 
-        _settingsForm = new SettingsForm(_config, ReloadConfig, tabIndex, ShowProcessManager, UpdateHookConfig, _autoLoginManager);
+        _settingsForm = new SettingsForm(_config, ReloadConfig, tabIndex, ShowProcessManager, UpdateHookConfig, _autoLoginManager, openTeamsDialog);
         _settingsForm.OnSameNameCollision += names =>
         {
             ShowBalloon(

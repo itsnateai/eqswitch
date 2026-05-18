@@ -189,8 +189,9 @@ public class SettingsForm : Form
 
 
     private int _initialTab;
+    private readonly bool _openTeamsOnShown;
 
-    public SettingsForm(AppConfig config, Action<AppConfig> onApply, int initialTab = 0, Action? openProcessManager = null, Action? onVideoSaved = null, AutoLoginManager? autoLogin = null)
+    public SettingsForm(AppConfig config, Action<AppConfig> onApply, int initialTab = 0, Action? openProcessManager = null, Action? onVideoSaved = null, AutoLoginManager? autoLogin = null, bool openTeamsDialog = false)
     {
         _config = config;
         _onApply = onApply;
@@ -198,6 +199,7 @@ public class SettingsForm : Form
         _openProcessManager = openProcessManager;
         _initialTab = initialTab;
         _autoLogin = autoLogin;
+        _openTeamsOnShown = openTeamsDialog;
         InitializeForm();
 
         // v3.22.9: live-refresh the Accounts grid's Flag glyph + Last-Login tooltip
@@ -211,6 +213,48 @@ public class SettingsForm : Form
         {
             al.LoginComplete += OnLoginComplete;
             FormClosed += (_, _) => al.LoginComplete -= OnLoginComplete;
+        }
+
+        // v3.22.10: deep-link from tray "Manage Teams..." opens the Configure Teams
+        // subwindow right after the form is shown. Fired once via Shown, then
+        // unsubscribed so a later focus/visibility change can't double-open.
+        //
+        // Two-stage defer so Settings can fully paint AND be interactive for a
+        // human-perceptible beat BEFORE the AutoLoginTeamsDialog ctor work runs.
+        // The ctor builds 12 ComboBoxes with per-item TextRenderer.MeasureText
+        // calls + DarkTheme layout-invalidation cascades — that block the UI
+        // thread for ~3s on a real config. Single-UI-thread WinForms can't
+        // truly parallelize the ctor work with Settings paint, so the choice
+        // is: (a) freeze immediately and let Settings flash white (smoke
+        // caught at v3.22.10 round 1), or (b) yield to Settings paint, give
+        // the user a clear "Settings loaded, ready" beat, THEN start the
+        // unavoidable freeze with a visible wait cursor so it reads as a
+        // deliberate phase 2 rather than a glitch.
+        //
+        // BeginInvoke → drains the paint cycle queued by Show.
+        // Timer 700ms → human-perceptible "loaded and interactive" beat.
+        // UseWaitCursor=true → visible busy signal during Teams ctor freeze.
+        if (_openTeamsOnShown)
+        {
+            void shownHandler(object? s, EventArgs e)
+            {
+                Shown -= shownHandler;
+                if (IsDisposed) return;
+                BeginInvoke(new Action(() =>
+                {
+                    if (IsDisposed) return;
+                    var timer = new System.Windows.Forms.Timer { Interval = 700 };
+                    timer.Tick += (_, _) =>
+                    {
+                        timer.Stop();
+                        timer.Dispose();
+                        if (IsDisposed) return;
+                        OpenTeamsWithVisibleBusy();
+                    };
+                    timer.Start();
+                }));
+            }
+            Shown += shownHandler;
         }
     }
 
@@ -2545,6 +2589,62 @@ public class SettingsForm : Form
         var t5 = $"T5: {Fmt(_pendingTeam5A, _pendingTeam5B)}";
         var t6 = $"T6: {Fmt(_pendingTeam6A, _pendingTeam6B)}";
         return $"{t1}  |  {t2}\n{t3}  |  {t4}\n{t5}  |  {t6}";
+    }
+
+    /// <summary>
+    /// v3.22.10: public entry point so TrayManager can deep-link into Configure Teams
+    /// even when Settings is already open (ShowSettings re-entry path takes BringToFront
+    /// and silently returned before this; now it can fire the teams dialog too).
+    /// BeginInvoke defers past the tray-click event handler return. Then routes to
+    /// the shared OpenTeamsWithVisibleBusy() helper which handles the busy cursor +
+    /// title bar feedback during the unavoidable ctor freeze. No 700ms beat here
+    /// because Settings is already fully painted on the re-entry path.
+    /// </summary>
+    public void OpenTeamsDialogNow()
+    {
+        if (IsDisposed) return;
+        BeginInvoke(new Action(() =>
+        {
+            if (IsDisposed) return;
+            OpenTeamsWithVisibleBusy();
+        }));
+    }
+
+    /// <summary>
+    /// v3.22.10: shared "open Teams with visible busy state" helper used by both the
+    /// initial Shown handler (after the 700ms beat) and the re-entry path. The
+    /// Windows wait cursor (the rotating spinner) is the standard "busy" signal
+    /// and renders independently of the form's paint cycle.
+    ///
+    /// `UseWaitCursor` alone is unreliable when triggered from a tray click —
+    /// it only applies when the pointer is over the form, but after a tray menu
+    /// click the cursor is still hovering the tray. `Cursor.Current` changes
+    /// the cursor at its CURRENT screen position regardless of which window
+    /// it's over, so we set both: Cursor.Current for the immediate visible
+    /// change, UseWaitCursor for the after-freeze case where the user moves
+    /// over Settings before Teams appears. During the single-UI-thread freeze
+    /// caused by AutoLoginTeamsDialog's ctor the OS can't dispatch
+    /// WM_SETCURSOR (message pump locked), so whatever Cursor.Current is set
+    /// to immediately before the freeze persists for its full duration.
+    ///
+    /// Earlier rounds layered a title-bar label (rejected) and a default-style
+    /// tooltip (rendered with bad opacity) — both dropped. Wait cursor alone
+    /// is sufficient signal that "click registered, loading."
+    /// </summary>
+    private void OpenTeamsWithVisibleBusy()
+    {
+        if (IsDisposed) return;
+        try
+        {
+            Cursor.Current = Cursors.WaitCursor;
+            UseWaitCursor = true;
+            ShowTeamsDialog();
+        }
+        finally
+        {
+            UseWaitCursor = false;
+            Cursor.Current = Cursors.Default;
+        }
     }
 
     private void ShowTeamsDialog()
