@@ -1193,11 +1193,24 @@ public class AutoLoginManager
                 // Native's keystroke queue keeps firing into a focused field.
                 try
                 {
-                    // v3.22.11: null-conditional mirrors the v3.22.11 okDisplay
+                    // v3.22.12: null-conditional mirrors the v3.22.11 okDisplay
                     // read three lines up. Safe by control-flow invariant
-                    // (line 911-918 early-returns on writer.Open failure
-                    // bypassing the loop), but explicit ?. removes the
-                    // fragility-by-future-change concern T3 Sonnet flagged.
+                    // (line 911-918 early-returns on writer.Open failure,
+                    // bypassing the loop entirely — by the time we reach this
+                    // terminal-Error block, loginShm cannot be null), but
+                    // explicit ?. removes the fragility-by-future-change concern
+                    // T3 Sonnet flagged.
+                    //
+                    // INVARIANT (T3 Sonnet+Opus re-verify 2026-05-17): if
+                    // loginShm is somehow null here, the ?. silently no-ops
+                    // and sentCancelOnExit still flips true — finally block
+                    // will then skip the redundant cancel attempt. This is
+                    // intentional: sentCancelOnExit tracks "we attempted
+                    // cancel on this exit path", not "cancel was received by
+                    // Native." Per reference_loud_runtime_silent_rest, if
+                    // loginShm being null violates the control-flow
+                    // invariant, the LOUD signal is the lack of any prior
+                    // log lines for this PID — not this specific call site.
                     loginShm?.SendCancelCommand(pid);
                     sentCancelOnExit = true;
                 }
