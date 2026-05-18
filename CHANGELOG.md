@@ -1,5 +1,72 @@
 # Changelog
 
+## v3.22.15 — Verifier-round-2 + ultrathink ground-truth pass (2026-05-18)
+
+Doc/comment + 1 runtime log string follow-up to v3.22.14. Round-2 verifiers
+returned 5 × APPROVE / 3 × CONCERNS-MINOR / 0 × REJECT — all CRITICAL
+findings ground-truth-resolved as false-positives (T3 Opus's "proggy
+missing" was a cache hallucination; the agent ran `ls X:/_Projects/proggy/`
+when the actual deployment path is `C:/Users/nate/proggy/`). User then
+asked for an explicit "ultrathink fix all if they are real" pass over
+every surfaced MINOR; the deeper scan surfaced 4 additional XML doc
+Iter-1/Iter-2B headers in `AutoLoginManager.cs` matching the same shape
+v3.22.13 retired at lines 1518/1742, and one runtime log string at line
+1127 with a stale `until Iter-2` forward-reference baked into the message
+body (Iter-2 already shipped in v3.22.x; the log message was factually
+wrong as live output).
+
+### Real findings closed
+
+| # | Source | Verifier | Action |
+|---|---|---|---|
+| 1 | `Native/login_shm.h:100` "without needing a future SHM bump" | T2 Opus CONCERN #1 | "needing a future" dropped — text now "without a second SHM bump." Same meaning, no forward-tense |
+| 2 | `Core/AutoLoginManager.cs:991` "Iter-4 (v3.22.0):" version-attribution prefix | T3 Opus MINOR #4 | "Iter-4 (v3.22.0):" → "v3.22.0:" — cleaner version provenance without the iteration-tag ambiguity |
+| 3 | `Core/AutoLoginManager.cs:1034` "v3.22.0 Iter-2B (2026-05-16):" | (consistent treatment with #2) | "v3.22.0 Iter-2B (2026-05-16):" → "v3.22.0 (2026-05-16):" |
+| 4 | `Core/AutoLoginManager.cs:1127` runtime log string `" [native-ahead: ... until Iter-2]"` | ground-truth pass NEW finding | `" until Iter-2"` removed from the log string. Iter-2 has shipped (we're at v3.22.x); the log line was advertising a state-machine evolution that already happened. Now reads `"]"` — same diagnostic intent, no stale forward-ref |
+| 5 | `Core/AutoLoginManager.cs:1352` `/// Iter-1 transition: WaitLoginScreen → TypingCredentials` XML doc header | ground-truth pass NEW finding (same shape as v3.22.13 row 9b kills at 1518/1742) | "Iter-1 transition: " dropped from XML doc — body retained |
+| 6 | `Core/AutoLoginManager.cs:1373` `/// Iter-2B (2026-05-16): TypingCredentials → ClickingConnect...` | ground-truth pass NEW finding | "Iter-2B (2026-05-16): " dropped; remainder retained |
+| 7 | `Core/AutoLoginManager.cs:1402` `/// Iter-2B: ClickingConnect → WaitConnectResponse...` | ground-truth pass NEW finding | "Iter-2B: " dropped; "Skip-aheads removed per the 2026-05-16 verifier round" preserved as provenance with the verifier-round attribution that v3.22.14 refined Rule 11 keeps |
+| 8 | `Core/AutoLoginManager.cs:1419` `/// Iter-2B: WaitConnectResponse → ...` | ground-truth pass NEW finding | "Iter-2B: " dropped; "load-bearing transition for v3.22.0" version provenance preserved |
+| 9 | v3.22.14 CHANGELOG row 49 cited `AutoLoginManager.cs:1336` for `SetAutoLoginActive(pid, false)` | T3 Opus | Symbol-anchored reference adopted in this entry — the SM finally clears `autoLoginActive` via `SetAutoLoginActive(pid, false)` inside the nested-try cleanup block (line numbers drift across edits; symbol stays) |
+| 10 | v3.22.14 CHANGELOG "~25 verifier-round-attribution inline comments" count | T2 Opus CONCERN #2 | Tightened: 25 verifier-round-attribution `// Iter-N fix-round-N (verifier T2-Opus / T3-Sonnet / …)` lines plus 4 version-iteration prefix stamps. v3.22.15 retires the 4 version-iteration prefixes (#2, #3, #5-#8); only the 25 verifier-round-attribution lines now survive as historical anchors. The refined Rule 11 in v3.22.14 CHANGELOG row 9b now precisely describes what's left |
+| 11 | `X:/_Projects/eqswitch/bin/Publish/eqswitch-hook.dll` stale (April 9 2026 build, hash `73e7921f…`) | T2 Opus CONCERN #3 | Overwritten with current `Native/eqswitch-hook.dll` (hash `ba50e5a5…`). `bin/` is gitignored so this is a local-machine cleanup; canonical deploy path is `bin/Release/net8.0-windows/win-x64/publish/` which builds fresh each ship. `rm -rf` not used (per `feedback_no_rm_rf`) — overwrite-in-place keeps the latent-hazard from manual confusion at zero |
+
+### Findings deliberately NOT addressed
+
+| Finding | Verifier | Rationale |
+|---|---|---|
+| Inline `// Iter-1` / `// Iter-2` dev-stage stage markers at lines 844, 846, 898, 900-902, 925, 1042, 1070, 1092, 1124 in `AutoLoginManager.cs` | (would be next layer of cleanup) | These are NON-XML-doc inline comments describing development-stage logic / WHY code exists / smoke-target configurations. They're descriptive historical context, not forward-ship aspiration. Per the task brief's strict scope (criterion 6 explicitly called out only XML doc Iter-3/Iter-4 notes) + Rule 11 codebase-convention matching, these stay. |
+| `_.claude/_comms/plan-eqswitch-v3.22.0.md` historical Iter-4 / v3.23.0 refs | T4 Sonnet | Intentionally frozen archival plan-doc per v3.22.14 CHANGELOG carve-out. Modifying = rewriting decision-time history. |
+| Memory files referencing old 35-50s wall-clock | T4 Sonnet | Historical ship-state records — intentionally frozen. |
+
+### Files
+
+| File | Nature |
+|---|---|
+| `EQSwitch.csproj` | Version 3.22.14 → 3.22.15 |
+| `Config/AppConfig.cs` | unchanged from v3.22.14 |
+| `Core/AutoLoginManager.cs` | 7 comment + 1 log-string edits at lines ~991, ~1034, ~1127, ~1352, ~1373, ~1402, ~1419 |
+| `Native/login_shm.h` | Line ~100 "needing a future" dropped |
+| `bin/Publish/eqswitch-hook.dll` | Stale DLL overwritten with current `Native/` source (gitignored, local-only) |
+| `CHANGELOG.md` (eqswitch repo + _.releases mirror) | This entry |
+
+### Risk
+
+The 7 comment edits are zero-risk. The 1 runtime log string edit (line
+1127) changes what gets printed when `nativeAhead` triggers (C# stalling
+on TypingCredentials while Native is ahead) — the log no longer says
+"until Iter-2". Same diagnostic intent, ~10 fewer bytes per fire. No
+control-flow change. Build expected to remain Debug+Release 0/0.
+
+### Verifier discipline
+
+Re-dispatch 8 fresh verifier agents (4 topic pairs) for round 3. The
+ultrathink ground-truth pass dispatched the high-stakes additional
+scope (XML doc Iter-1/Iter-2B headers + runtime log string + version-
+iteration prefix stamps) that round-2 didn't surface because round-2
+focused on what v3.22.14 claimed to fix, not on what was structurally
+similar.
+
 ## v3.22.14 — Verifier-driven follow-up to v3.22.13 (2026-05-18)
 
 Doc/comment-only release follow-up. v3.22.13 retired the high-visibility

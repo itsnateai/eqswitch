@@ -988,7 +988,7 @@ public class AutoLoginManager
                 return;
             }
 
-            // Iter-4 (v3.22.0): fire LoginCredentialsSent so TrayManager subscribers
+            // v3.22.0: fire LoginCredentialsSent so TrayManager subscribers
             // (slim-titlebar / hook-config / window-title) can apply at T+~0s on the
             // SM path — SendLoginCommand here is the SM-path equivalent of legacy's
             // post-BURST-1 credential commit (~T+7s; see fire site at line ~2014).
@@ -1031,7 +1031,7 @@ public class AutoLoginManager
                 }
                 int gameState = loginShm.ReadGameState(pid);
                 LoginPhase nativePhase = loginShm.ReadPhase(pid);
-                // v3.22.0 Iter-2B (2026-05-16): read OkDisplay snapshot per-tick so
+                // v3.22.0 (2026-05-16): read OkDisplay snapshot per-tick so
                 // StepWaitConnectResponse can detect Fatal classification (e.g.
                 // "Invalid Password") and bail to Error rather than spin-wait until
                 // the 180s overall timeout. Snapshot pattern (class+text torn-read
@@ -1124,7 +1124,7 @@ public class AutoLoginManager
                     // TypingCredentials Iter-1 stub-stall. Log when Native is already ahead of where
                     // the C# transition lands; smoke output makes the desync loudly visible.
                     bool nativeAhead = next == LoginPhase.TypingCredentials && nativePhase > LoginPhase.TypingCredentials;
-                    string aheadTag = nativeAhead ? $" [native-ahead: nativePhase={nativePhase}, C# stalling at {next} until Iter-2]" : string.Empty;
+                    string aheadTag = nativeAhead ? $" [native-ahead: nativePhase={nativePhase}, C# stalling at {next}]" : string.Empty;
                     FileLogger.Info($"AutoLogin-SM: {current} → {next} (tick={tickCount}, t={sw.ElapsedMilliseconds}ms, " +
                         $"{widgets.DiagSummary()}, gameState={gameState}, nativePhase={nativePhase}){aheadTag}");
                     // v3.22.8: mark pendingResult in-memory only — actual write
@@ -1349,7 +1349,7 @@ public class AutoLoginManager
     }
 
     /// <summary>
-    /// Iter-1 transition: WaitLoginScreen → TypingCredentials once Native publishes
+    /// WaitLoginScreen → TypingCredentials transition: fires once Native publishes
     /// PHASE_TYPING_CREDENTIALS (or later) AND the connect widget is visible. The
     /// double-gate prevents premature transition when Native phase advances ahead
     /// of the visible login screen (e.g. transient phase ticks during DLL init).
@@ -1370,11 +1370,11 @@ public class AutoLoginManager
     }
 
     /// <summary>
-    /// Iter-2B (2026-05-16): TypingCredentials → ClickingConnect on Native phase
-    /// advance. Native autonomously handles the Combo G password write
-    /// (`SetEditWndText` to LOGIN_PasswordEdit at +0x1A8 with the v3.16.0
-    /// ScreenMode-swap wrapper); C# observes the resulting Native phase progression
-    /// rather than driving keystrokes itself.
+    /// TypingCredentials → ClickingConnect on Native phase advance. Native
+    /// autonomously handles the Combo G password write (`SetEditWndText` to
+    /// LOGIN_PasswordEdit at +0x1A8 with the v3.16.0 ScreenMode-swap wrapper);
+    /// C# observes the resulting Native phase progression rather than driving
+    /// keystrokes itself.
     ///
     /// **No skip-ahead to CharSelect** here even though `CharSelectAvailable`
     /// could flip during a single C# tick — Iter-2B verifier-round (T2-Opus +
@@ -1399,10 +1399,11 @@ public class AutoLoginManager
     }
 
     /// <summary>
-    /// Iter-2B: ClickingConnect → WaitConnectResponse on Native phase advance.
-    /// Native handles the LOGIN_ConnectButton click via the structural ConnectWnd-
-    /// rooted resolution (`eqmain_widgets_mq2style::FindConnectButtonStructural`).
-    /// Skip-aheads removed per Iter-2B verifier-round (see StepTypingCredentials).
+    /// ClickingConnect → WaitConnectResponse on Native phase advance. Native
+    /// handles the LOGIN_ConnectButton click via the structural ConnectWnd-rooted
+    /// resolution (`eqmain_widgets_mq2style::FindConnectButtonStructural`).
+    /// Skip-aheads removed per the 2026-05-16 verifier round (see
+    /// StepTypingCredentials).
     /// </summary>
     private static LoginPhase StepClickingConnect(WidgetState widgets, int gameState, LoginPhase nativePhase)
     {
@@ -1416,10 +1417,10 @@ public class AutoLoginManager
     }
 
     /// <summary>
-    /// Iter-2B: WaitConnectResponse → {Error | ServerSelect | CharSelect}. This is
-    /// the load-bearing transition for v3.22.0 — Native stalls at PHASE_WAIT_CONNECT_RESP
-    /// on Dalaya because its gameState-gated PHASE_SERVER_SELECT transition never
-    /// fires (gGameState never advances past 0; Path A finding 2026-05-16). C# routes
+    /// WaitConnectResponse → {Error | ServerSelect | CharSelect}. The load-bearing
+    /// transition for v3.22.0 — Native stalls at PHASE_WAIT_CONNECT_RESP on Dalaya
+    /// because its gameState-gated PHASE_SERVER_SELECT transition never fires
+    /// (gGameState never advances past 0; Path A finding 2026-05-16). C# routes
     /// around this via:
     ///   - CharSelectAvailable (v8 SHM, Dalaya PRIMARY path — Native publishes 1
     ///     when pinstCCharacterSelect → non-null, ~t=48s)
