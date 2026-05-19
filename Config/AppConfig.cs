@@ -480,6 +480,28 @@ public class WindowLayout
     public bool SlimTitlebar { get; set; } = true;
 
     /// <summary>
+    /// v3.22.19 (2026-05-18): per-monitor slim override for multi-monitor mode.
+    /// When <c>Mode == "multimonitor"</c> the SECONDARY monitor's client uses
+    /// this flag instead of <see cref="SlimTitlebar"/>. Single-screen mode is
+    /// unaffected — only the primary flag applies there.
+    ///
+    /// **DEFAULT CHANGED 2026-05-19** to <c>true</c> per Nate's directive:
+    /// "main monitor always needs to be our same window frame as we used
+    /// yesterday for team" + "if trying to match other monitor DPI is bugging
+    /// us then just goal on making the multimonitor constant and working
+    /// flawless and dont worry about extending the 2nd monitor to cover it".
+    /// With default <c>true</c>, BOTH monitors use the same slim treatment so
+    /// the primary's frame is identical to single-screen mode AND identical
+    /// to the secondary's frame — visually consistent. This matches v3.22.18
+    /// behavior (when multi-monitor was first attempted in the C# port).
+    ///
+    /// Set <c>false</c> to opt into the "secondary keeps normal frame + work-
+    /// area sized" experimental shape from earlier v3.22.19 (still has known
+    /// rough edges around cross-DPI positioning).
+    /// </summary>
+    public bool SlimTitlebarSecondary { get; set; } = true;
+
+    /// <summary>
     /// How many pixels of the titlebar to hide above the monitor edge (default 18).
     /// A standard Windows titlebar is ~30px. Hiding 18px leaves ~12px visible.
     /// Set to 0 for full titlebar, or up to 30 to hide it completely.

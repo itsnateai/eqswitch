@@ -165,21 +165,39 @@ public class WindowManager
     /// </summary>
     private void ArrangeMultiMonitor(IReadOnlyList<EQClient> clients)
     {
-        bool slimTitlebar = _config.Layout.SlimTitlebar;
-        var monitors = slimTitlebar ? _api.GetAllMonitorBounds() : _api.GetAllMonitorWorkAreas();
-        if (monitors.Count == 0) return;
+        // v3.22.19: per-monitor slim override. Primary uses SlimTitlebar,
+        // secondary uses SlimTitlebarSecondary. Need BOTH full-bounds and
+        // work-area lists so each client can pick the right one without a
+        // second EnumDisplayMonitors round-trip.
+        bool primarySlim = _config.Layout.SlimTitlebar;
+        bool secondarySlim = _config.Layout.SlimTitlebarSecondary;
+        var fullBounds = _api.GetAllMonitorBounds();
+        var workAreas = _api.GetAllMonitorWorkAreas();
+        if (fullBounds.Count == 0 || workAreas.Count == 0) return;
+        // Defensive: both enumerations should return the same count in the
+        // same order (both walk EnumDisplayMonitors). If they ever diverge,
+        // log loud and bail rather than picking wrong-monitor bounds.
+        if (fullBounds.Count != workAreas.Count)
+        {
+            FileLogger.Error($"ArrangeMultiMonitor: monitor enumeration count mismatch — fullBounds={fullBounds.Count} workAreas={workAreas.Count}, aborting arrange");
+            return;
+        }
 
-        // Build ordered monitor list: primary first, then secondary
-        var primaryIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, monitors.Count - 1);
-        int secondaryIdx;
-        if (_config.Layout.SecondaryMonitor >= 0 && _config.Layout.SecondaryMonitor < monitors.Count)
-            secondaryIdx = _config.Layout.SecondaryMonitor;
-        else
-            secondaryIdx = primaryIdx == 0 && monitors.Count > 1 ? 1 : 0;
+        // Build ordered monitor list: primary first, then secondary.
+        // v3.22.19: secondary resolution now uses ResolveSecondaryMonitorIdx
+        // which skips tiny / portrait monitors (default min width 1000px).
+        var primaryIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, fullBounds.Count - 1);
+        int secondaryIdx = ResolveSecondaryMonitorIdx(_config.Layout.SecondaryMonitor, primaryIdx, fullBounds);
 
-        var monitorOrder = new List<WinRect> { monitors[primaryIdx] };
-        if (monitors.Count > 1)
-            monitorOrder.Add(monitors[secondaryIdx]);
+        // (chosen bounds, useSlim) per monitor slot. Bounds choice depends on
+        // useSlim: slim → full monitor (covers taskbar); not slim → work area
+        // (taskbar visible, normal frame).
+        var monitorOrder = new List<(WinRect bounds, bool useSlim)>
+        {
+            (primarySlim ? fullBounds[primaryIdx] : workAreas[primaryIdx], primarySlim)
+        };
+        if (fullBounds.Count > 1)
+            monitorOrder.Add((secondarySlim ? fullBounds[secondaryIdx] : workAreas[secondaryIdx], secondarySlim));
 
         for (int i = 0; i < clients.Count; i++)
         {
@@ -191,32 +209,61 @@ public class WindowManager
                 continue;
             }
 
-            var mon = monitorOrder[i % monitorOrder.Count];
+            var (mon, useSlim) = monitorOrder[i % monitorOrder.Count];
 
             if (_api.IsIconic(client.WindowHandle))
                 _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
             SetWindowTitle(client, i);
 
-            if (slimTitlebar)
+            if (useSlim)
             {
                 ApplySlimTitlebar(client.WindowHandle, mon, _config.Layout.TitlebarOffset);
             }
             else
             {
+                // v3.22.19: non-slim multi-monitor branch now sizes to work-area
+                // (was SWP_NOSIZE — kept eqclient.ini size, often smaller than
+                // monitor). New shape gives the secondary a "normal full-monitor
+                // window with taskbar visible" feel. Falls back to no-resize if
+                // the work-area dims look broken (zero/negative — defense
+                // against torn WinRect from a disconnected monitor mid-enum).
+
+                // Restore WS_THICKFRAME (resize border) if a prior slim arrangement
+                // stripped it. eqswitch-hook.cpp's HookedSetWindowPos / HookedMoveWindow
+                // only ever STRIP WS_THICKFRAME (see lines 159-163, 183-187 — one-way
+                // operation), so when a window transitions from slim → non-slim the
+                // bit stays cleared unless C# adds it back here. Without this,
+                // Nate's secondary window in v3.22.19 would render at work-area
+                // position+size but with no resize border, defeating the "normal
+                // frame on secondary" north star.
+                long style = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64();
+                if ((style & NativeMethods.WS_THICKFRAME) == 0)
+                {
+                    style |= NativeMethods.WS_THICKFRAME;
+                    _api.SetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE, (IntPtr)style);
+                    // SWP_FRAMECHANGED below picks up the style change.
+                }
+
+                bool sizeToFit = mon.Width > 0 && mon.Height > _config.Layout.TopOffset;
+                int w = sizeToFit ? mon.Width : 0;
+                int h = sizeToFit ? mon.Height - _config.Layout.TopOffset : 0;
+                uint flags = sizeToFit
+                    ? NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_FRAMECHANGED
+                    : NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_FRAMECHANGED;
                 _api.SetWindowPos(
                     client.WindowHandle,
                     IntPtr.Zero,
-                    mon.Left, mon.Top + _config.Layout.TopOffset, 0, 0,
-                    NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+                    mon.Left, mon.Top + _config.Layout.TopOffset, w, h,
+                    flags);
             }
 
             string monLabel = i % monitorOrder.Count == 0 ? "primary" : "secondary";
-            FileLogger.Info($"ArrangeMultiMonitor: {client} → {monLabel} monitor ({mon.Left},{mon.Top}) {mon.Width}x{mon.Height}" +
-                (slimTitlebar ? " (slim titlebar)" : ""));
+            string slimLabel = useSlim ? " (slim titlebar)" : " (normal frame, work-area)";
+            FileLogger.Info($"ArrangeMultiMonitor: {client} → {monLabel} monitor ({mon.Left},{mon.Top}) {mon.Width}x{mon.Height}{slimLabel}");
         }
 
-        string modeLabel = slimTitlebar ? " (slim titlebar)" : "";
+        string modeLabel = $" (primary={(primarySlim ? "slim" : "normal")}, secondary={(secondarySlim ? "slim" : "normal")})";
         FileLogger.Info($"ArrangeMultiMonitor: {clients.Count} window(s), primary={primaryIdx} secondary={secondaryIdx}{modeLabel}");
     }
 
@@ -554,4 +601,79 @@ public class WindowManager
     /// per-process hook config positions in multimonitor mode.
     /// </summary>
     public IReadOnlyList<WinRect> GetAllMonitorFullBounds() => _api.GetAllMonitorBounds();
+
+    /// <summary>
+    /// v3.22.19: resolve the secondary monitor index for multi-monitor mode.
+    /// Smart-pick logic for the auto case (configIdx == -1): walks all monitors
+    /// in enumeration order and picks the first non-primary whose width meets
+    /// <paramref name="minWidthPx"/>. This skips tiny / portrait monitors that
+    /// the user wouldn't want EQ on (e.g. a 1280×1920 portrait at the top of
+    /// the desktop layout would otherwise be picked by the legacy "first
+    /// non-primary" heuristic). Falls back to legacy behavior if no monitor
+    /// meets the threshold. If the user has explicitly configured a too-narrow
+    /// secondary, falls through to auto-pick with a loud log so accidental
+    /// misconfiguration self-heals.
+    /// </summary>
+    public static int ResolveSecondaryMonitorIdx(int configIdx, int primaryIdx, IReadOnlyList<WinRect> monitors, int minWidthPx = 1000)
+    {
+        if (monitors.Count == 0) return 0;
+        // v3.22.19 round-2 verifier (T2 Opus): guard against an explicit user
+        // choice (or fallback) that resolves to the SAME monitor as primary —
+        // would stack both EQ clients on primary with the secondary's INI
+        // bounds, defeating multi-monitor mode entirely. Silently coerce to
+        // legacy fallback below if this happens.
+        // "Suitable for EQ secondary" = wide enough AND landscape-oriented.
+        // Skips both tiny monitors AND portrait/rotated monitors (which would
+        // letterbox EQ to a sliver or render at the wrong aspect). Nate's
+        // 1280×1920 portrait at index 2 is wider than 1000 but its 1.5 H/W
+        // ratio makes it landscape-hostile for full-screen EQ.
+        static bool IsSuitable(WinRect m, int minWidth)
+        {
+            int w = m.Width, h = m.Height;
+            if (w < minWidth) return false;
+            if (h <= 0) return false;
+            // Reject portrait orientation (height > 1.3 × width)
+            if ((double)h / w > 1.3) return false;
+            return true;
+        }
+        // Explicit user choice — but only if the target is actually viable
+        // AND distinct from primary (v3.22.19 round-2 secondaryIdx==primaryIdx guard).
+        if (configIdx >= 0 && configIdx < monitors.Count)
+        {
+            if (configIdx == primaryIdx)
+            {
+                FileLogger.Warn($"ResolveSecondaryMonitorIdx: configured SecondaryMonitor={configIdx} equals primary — falling back to smart auto-pick to avoid stacking both clients on one monitor");
+            }
+            else if (IsSuitable(monitors[configIdx], minWidthPx))
+            {
+                return configIdx;
+            }
+            else
+            {
+                FileLogger.Warn($"ResolveSecondaryMonitorIdx: configured SecondaryMonitor={configIdx} is not suitable ({monitors[configIdx].Width}x{monitors[configIdx].Height} — needs width≥{minWidthPx}px and landscape orientation) — falling back to smart auto-pick");
+            }
+        }
+        // Auto-pick: first non-primary monitor that's wide enough and landscape
+        for (int i = 0; i < monitors.Count; i++)
+        {
+            if (i == primaryIdx) continue;
+            if (IsSuitable(monitors[i], minWidthPx))
+            {
+                FileLogger.Info($"ResolveSecondaryMonitorIdx: auto-picked monitor {i} ({monitors[i].Width}x{monitors[i].Height}) — first suitable non-primary");
+                return i;
+            }
+        }
+        // Last resort: legacy fallback (first non-primary, regardless of suitability)
+        int fallback = primaryIdx == 0 && monitors.Count > 1 ? 1 : 0;
+        FileLogger.Warn($"ResolveSecondaryMonitorIdx: no suitable secondary found (all candidates too narrow or portrait); using legacy fallback index {fallback}");
+        return fallback;
+    }
+
+    /// <summary>
+    /// v3.22.19: get work-area bounds (excludes taskbar) for all monitors. Used by
+    /// TrayManager to compute per-PID hook config when a secondary monitor's client
+    /// is in non-slim mode (taskbar should remain visible). Index order matches
+    /// <see cref="GetAllMonitorFullBounds"/>.
+    /// </summary>
+    public IReadOnlyList<WinRect> GetAllMonitorWorkAreas() => _api.GetAllMonitorWorkAreas();
 }
