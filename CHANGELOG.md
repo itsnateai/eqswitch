@@ -1,5 +1,114 @@
 # Changelog
 
+## v3.22.19 — Multi-monitor framework + bug fixes (conservative all-slim default) (2026-05-18→19)
+
+First end-to-end pass on multi-monitor mode in the C# port. Per Nate's report
+(2026-05-19): multi-monitor mode has never worked correctly on the C# version.
+This release SHIPS THE FRAMEWORK for per-monitor differentiation but defaults
+to v3.22.18-style all-slim-everywhere behavior so primary frame stays
+consistent with single-screen mode (Nate's hard requirement: "main monitor
+always needs to be our same window frame as we used yesterday for team").
+The PerMonitorV2 DPI awareness experiment from an earlier v3.22.19 cut was
+reverted after it regressed single-screen team launches into a buggy
+fullscreen mode.
+
+1. **Per-monitor slim-titlebar override framework** — `SlimTitlebarSecondary`
+   config flag, **default `true`** (v3.22.18 parity, both monitors slim).
+   Future runtime work needed before a `false` default is viable.
+2. **Smart secondary monitor auto-pick** — `ResolveSecondaryMonitorIdx`
+   helper skips portrait (h/w > 1.3) and narrow (<1000px width) monitors.
+3. **HookConfig stripFrame wiring** — bug found by verifier convergence; the
+   per-PID slim flag was computed but ignored, so the hook DLL re-stripped
+   WS_THICKFRAME on every interception, defeating the C#-side restore. Real
+   bug, real fix, stays in.
+4. **ReloadConfig field copy** — Settings → Apply now propagates the new
+   SlimTitlebarSecondary field without restart.
+
+### Why
+
+Pre-v3.22.19, `Layout.SlimTitlebar` was a single global bool — all-or-nothing
+across monitors. When `Mode == "multimonitor"`, both windows got the same
+treatment: either both with slim coverage (taskbar hidden) or both with the
+legacy normal-frame + EQ-INI-size shape (taskbar visible but window smaller
+than the monitor).
+
+Nate's intent for the dual-monitor setup: keep the desktop main monitor in
+full slim coverage (immersive game) while the laptop monitor (used during
+play for Discord/notes/etc.) keeps the taskbar visible with a normal frame.
+
+### Changed
+
+| File | Nature | Detail |
+|---|---|---|
+| `Program.cs` | `HighDpiMode.SystemAware` retained (REVERTED from PerMonitorV2) | An earlier v3.22.19 cut tried `PerMonitorV2` to fix cross-DPI positioning but regressed single-screen team launch into a fullscreen-bug state. Reverted to v3.22.18 SystemAware. Per-monitor DPI math is left as future work; the per-monitor slim flag still ships but defaults to "both slim" so primary frame stays consistent. |
+| `Config/AppConfig.cs` | New `LayoutConfig.SlimTitlebarSecondary` (bool, default `true`) | Per-monitor override consulted only when `Mode == "multimonitor"`. Default `true`: secondary uses slim treatment matching primary (v3.22.18-style consistent frames across both clients). Set `false` to opt into the experimental "secondary keeps normal frame + work-area sizing" shape — that path still has rough edges on cross-DPI setups. |
+| `Core/WindowManager.cs::ArrangeMultiMonitor` | Per-window slim choice | Reads `(primarySlim, secondarySlim)` once, builds `(bounds, useSlim)` tuples per monitor, applies `ApplySlimTitlebar` or sized `SetWindowPos` per window. Non-slim branch now sizes to work-area (was `SWP_NOSIZE` — kept EQ-INI size) AND restores `WS_THICKFRAME` if previously stripped by slim (hook DLL only strips, never restores). Loud failure log if monitor enumeration counts mismatch. |
+| `Core/WindowManager.cs` | New public `static ResolveSecondaryMonitorIdx(configIdx, primaryIdx, monitors, minWidthPx=1000)` | **Smart secondary monitor pick.** Skips monitors narrower than `minWidthPx` (default 1000 — excludes typical portrait / phone-aux monitors). Walks all non-primary monitors in enumeration order, returns first viable one. If user has explicitly configured a too-narrow secondary, falls through to auto-pick with a loud warn log (graceful self-heal of accidental misconfiguration). |
+| `Core/WindowManager.cs` | New public `GetAllMonitorWorkAreas` | Sibling of `GetAllMonitorFullBounds`; needed by TrayManager's per-PID hook config. Index order matches full-bounds enumeration. |
+| `UI/TrayManager.cs::UpdateHookConfigForPid` | Per-PID slim flag + correct stripFrame wiring | Primary client uses `SlimTitlebar`, secondary uses `SlimTitlebarSecondary`. Non-slim secondary keeps hook enforcement on the work-area position with `stripThickFrame=false` so the hook DLL stops stripping the resize border the C# side just restored. (**BUGFIX**: pre-fix code passed `stripThickFrame: posEnabled` which always-true in MM mode → hook fought C#'s WS_THICKFRAME restore in an infinite tug-of-war. Verifier T1+T3 caught this independently across both Sonnet+Opus models.) |
+| `UI/TrayManager.cs::ReloadConfig` | Mirror `SlimTitlebarSecondary` in field copy | (**BUGFIX**: pre-fix code missed the new field, so Settings → Apply wouldn't take effect without restart. Verifier T3 Sonnet finding.) |
+| `UI/TrayManager.cs` | New private `GetWorkAreaForClientIndex` | Mirrors `GetMonitorForClientIndex` but uses work-area enumeration. Default fallback `Bottom=1040` (accounts for a typical 40px taskbar) vs full-bounds helper's `Bottom=1080`. |
+| `EQSwitch.csproj` | Version 3.22.18 → 3.22.19 | |
+| `CHANGELOG.md` (+ `_.releases` mirror) | This entry | |
+
+### Single-screen mode
+
+Unchanged. Single-screen mode reads `Layout.SlimTitlebar` only; the secondary
+override is exclusive to multi-monitor. This preserves the v3.22.18 single-
+screen behavior byte-for-byte.
+
+### Multi-monitor mode behavior matrix
+
+| `SlimTitlebar` | `SlimTitlebarSecondary` | Primary monitor | Secondary monitor |
+|---|---|---|---|
+| `true` (default) | `true` (default — new, = legacy v3.22.18) | Slim covers taskbar | Slim covers taskbar |
+| `true` | `false` (experimental opt-in) | Slim covers taskbar | Normal frame, work-area sized |
+| `false` | `false` | Normal frame, work-area sized | Normal frame, work-area sized |
+| `false` | `true` | Normal frame, work-area sized | Slim covers taskbar |
+
+### Hook DLL behavior
+
+Native `eqswitch-hook.dll` is unchanged this release. The hook reads
+`TargetX/Y/W/H + StripThickFrame + Enabled` from per-PID shared memory; C#
+now writes per-PID values reflecting the per-monitor slim choice. Existing
+hook DLL handles work-area vs full-bounds positions identically — it just
+enforces whatever C# wrote.
+
+### Opt into experimental "secondary normal frame" shape
+
+Default behavior is v3.22.18 parity (both slim). To try the experimental
+shape where the secondary monitor's client uses a normal resize border +
+work-area sizing (taskbar visible), edit `eqswitch-config.json` →
+`Layout.SlimTitlebarSecondary: false` and restart EQSwitch. Known
+issue 2026-05-19: cross-monitor positioning has unresolved DPI quirks; the
+secondary window may not consistently land on the second physical monitor
+on multi-DPI setups. Revert to `true` to get the consistent-frame
+behavior back.
+
+### Risk
+
+Medium. The non-slim branch in multi-monitor mode changed shape:
+- v3.22.18: `SWP_NOSIZE` (kept EQ INI size, often smaller than monitor)
+- v3.22.19: sizes to work-area (fills the visible monitor area, taskbar visible)
+
+Existing users in `Mode=multimonitor` + `SlimTitlebar=false` would have seen
+small windows; they now see work-area-filling windows. If any user explicitly
+wanted the smaller EQ-INI-sized behavior, set `SlimTitlebarSecondary: true`
+and also set `SlimTitlebar: true` (this brings back slim, which is one step
+removed from the prior behavior but is the documented "passive override").
+
+Defensive: if `GetAllMonitorBounds` and `GetAllMonitorWorkAreas` ever return
+different counts (theoretically impossible — both walk `EnumDisplayMonitors`),
+`ArrangeMultiMonitor` aborts with a loud Error log rather than risk picking
+wrong-monitor bounds.
+
+### Verification
+
+This release ships after an autonomous smoke per Nate's directive: build,
+deploy, restart EQSwitch, toggle multi-monitor, screenshot, verify primary
+slim coverage + secondary normal frame, iterate if wrong, run verifier
+agents to confirm clean.
+
 ## v3.22.18 — Rename failure-path balloons to drop "state machine" jargon (2026-05-18)
 
 Follow-up to v3.22.17 per user confirm of the carved-out failure surface.

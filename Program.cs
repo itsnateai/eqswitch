@@ -257,6 +257,16 @@ static class Program
         FileLogger.Initialize();
         CleanupUpdateArtifacts();
 
+        // SystemAware DPI mode — restored 2026-05-19 after v3.22.19's
+        // PerMonitorV2 experiment introduced regressions in single-screen
+        // mode (windows bugged into Fullscreen mode on team launch) and
+        // didn't fix the multi-monitor cross-DPI positioning anyway.
+        // Per Nate's directive: "if trying to match other monitor DPI is
+        // bugging us then just goal on making the multimonitor constant
+        // and working flawless and dont worry about extending the 2nd
+        // monitor to cover it". The per-monitor slim flag still ships as
+        // an architectural framework for future revisits, but the runtime
+        // behavior is now back to v3.22.18 baseline.
         Application.SetHighDpiMode(HighDpiMode.SystemAware);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);

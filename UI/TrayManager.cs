@@ -2130,6 +2130,10 @@ public class TrayManager : IDisposable
         _config.Layout.SecondaryMonitor = newConfig.Layout.SecondaryMonitor;
         _config.Layout.TopOffset = newConfig.Layout.TopOffset;
         _config.Layout.SlimTitlebar = newConfig.Layout.SlimTitlebar;
+        // v3.22.19 BUGFIX (verifier T3 Sonnet): without this, changes to
+        // the per-monitor secondary override via Settings → Apply would not
+        // take effect until restart. Mirror the SlimTitlebar copy.
+        _config.Layout.SlimTitlebarSecondary = newConfig.Layout.SlimTitlebarSecondary;
         _config.Layout.TitlebarOffset = newConfig.Layout.TitlebarOffset;
         _config.Layout.BottomOffset = newConfig.Layout.BottomOffset;
         _config.Layout.WindowTitleTemplate = newConfig.Layout.WindowTitleTemplate;
@@ -2505,19 +2509,72 @@ public class TrayManager : IDisposable
             return;
         }
 
-        // ─── Position enforcement (slim titlebar) ───
-        bool posEnabled = _config.Layout.SlimTitlebar;
-        int x = 0, y = 0, w = 0, h = 0;
-        if (posEnabled)
+        // ─── Position enforcement ───
+        // v3.22.19: per-PID slim flag in multi-monitor mode.
+        //   Primary monitor (clientIndex % 2 == 0)    → Layout.SlimTitlebar
+        //   Secondary monitor                         → Layout.SlimTitlebarSecondary
+        // Single-screen mode always uses Layout.SlimTitlebar (legacy semantics).
+        // When the chosen slim flag is FALSE, hook STILL enforces a position —
+        // but using work-area bounds (taskbar visible) instead of full monitor.
+        // This keeps the secondary window stable against EQ's self-positioning
+        // without stripping the frame, matching the v3.22.19 north-star
+        // "laptop = normal frame + taskbar visible, main = slim coverage".
+        bool isMM = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+        bool slimForThisPid;
+        if (isMM)
         {
-            WinRect monBounds;
-            bool isMM = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
-            monBounds = isMM ? GetMonitorForClientIndex(clientIndex) : _windowManager.GetTargetMonitorBounds();
+            bool isPrimaryMonitor = (clientIndex % 2 == 0);
+            slimForThisPid = isPrimaryMonitor ? _config.Layout.SlimTitlebar : _config.Layout.SlimTitlebarSecondary;
+        }
+        else
+        {
+            slimForThisPid = _config.Layout.SlimTitlebar;
+        }
 
-            x = monBounds.Left;
-            y = monBounds.Top - _config.Layout.TitlebarOffset;
-            w = monBounds.Right - monBounds.Left;
-            h = (monBounds.Bottom - monBounds.Top) + _config.Layout.TitlebarOffset;
+        bool posEnabled;
+        bool stripFrame;
+        int x = 0, y = 0, w = 0, h = 0;
+
+        if (isMM)
+        {
+            // Multi-monitor: hook enforces position for BOTH clients regardless
+            // of slim flag — slim uses full bounds + frame strip, non-slim uses
+            // work-area + frame retained.
+            if (slimForThisPid)
+            {
+                var monBounds = GetMonitorForClientIndex(clientIndex);
+                x = monBounds.Left;
+                y = monBounds.Top - _config.Layout.TitlebarOffset;
+                w = monBounds.Right - monBounds.Left;
+                h = (monBounds.Bottom - monBounds.Top) + _config.Layout.TitlebarOffset;
+                posEnabled = true;
+                stripFrame = true;
+            }
+            else
+            {
+                var workArea = GetWorkAreaForClientIndex(clientIndex);
+                x = workArea.Left;
+                y = workArea.Top + _config.Layout.TopOffset;
+                w = workArea.Right - workArea.Left;
+                h = (workArea.Bottom - workArea.Top) - _config.Layout.TopOffset;
+                posEnabled = true;
+                stripFrame = false;
+            }
+        }
+        else
+        {
+            // Single-screen: unchanged from v3.22.18 — hook only enforces
+            // position when slim is on; non-slim leaves EQ to its own INI size.
+            posEnabled = slimForThisPid;
+            stripFrame = slimForThisPid;
+            if (posEnabled)
+            {
+                var monBounds = _windowManager.GetTargetMonitorBounds();
+                x = monBounds.Left;
+                y = monBounds.Top - _config.Layout.TitlebarOffset;
+                w = monBounds.Right - monBounds.Left;
+                h = (monBounds.Bottom - monBounds.Top) + _config.Layout.TitlebarOffset;
+            }
         }
 
         // ─── Window title ───
@@ -2555,12 +2612,26 @@ public class TrayManager : IDisposable
         // ─── Minimize blocking ───
         bool blockMin = _config.EQClientIni.MaximizeWindow;
 
+        // v3.22.19 BUGFIX (verifier T1+T3 Opus + T3 Sonnet convergence):
+        // pre-this-fix the call was `stripThickFrame: posEnabled` which
+        // always set the hook's strip-flag true in multi-monitor mode,
+        // because posEnabled is true for both slim AND non-slim secondary.
+        // Result: WindowManager.ArrangeMultiMonitor would restore
+        // WS_THICKFRAME via SetWindowLongPtr, then the hook DLL's next
+        // SetWindowPos/MoveWindow interception would re-strip it (per
+        // eqswitch-hook.cpp:159-163, 183-187 one-way strip). The local
+        // `stripFrame` (set false for non-slim secondary) was computed but
+        // never reached the hook. Net effect on secondary: no resize border
+        // even though C# tried to restore it — directly defeating the
+        // v3.22.19 north star. Fix: pass `stripFrame` (which respects the
+        // per-monitor slim flag) instead of `posEnabled`.
         _hookConfig.WriteConfig(pid, x, y, w, h,
-            enabled: posEnabled, stripThickFrame: posEnabled,
+            enabled: posEnabled, stripThickFrame: stripFrame,
             blockMinimize: blockMin, windowTitle: title);
 
         var features = new System.Collections.Generic.List<string>();
         if (posEnabled) features.Add($"pos=({x},{y}) {w}x{h}");
+        features.Add(stripFrame ? "stripFrame=1" : "stripFrame=0");
         if (!string.IsNullOrEmpty(title)) features.Add($"title=\"{title}\"");
         if (blockMin) features.Add("blockMin");
         FileLogger.Info($"UpdateHookConfig: PID {pid} → {string.Join(", ", features)}");
@@ -2577,15 +2648,56 @@ public class TrayManager : IDisposable
             return new WinRect { Right = 1920, Bottom = 1080 };
 
         var primaryIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, monitors.Count - 1);
-        int secondaryIdx;
-        if (_config.Layout.SecondaryMonitor >= 0 && _config.Layout.SecondaryMonitor < monitors.Count)
-            secondaryIdx = _config.Layout.SecondaryMonitor;
-        else
-            secondaryIdx = primaryIdx == 0 && monitors.Count > 1 ? 1 : 0;
+        // v3.22.19: shared smart-pick — matches ArrangeMultiMonitor's choice.
+        int secondaryIdx = WindowManager.ResolveSecondaryMonitorIdx(_config.Layout.SecondaryMonitor, primaryIdx, monitors);
 
         var monitorOrder = new List<WinRect> { monitors[primaryIdx] };
         if (monitors.Count > 1)
             monitorOrder.Add(monitors[secondaryIdx]);
+
+        return monitorOrder[clientIndex % monitorOrder.Count];
+    }
+
+    /// <summary>
+    /// v3.22.19: get work-area bounds (excludes taskbar) for a client based
+    /// on its index. Mirrors <see cref="GetMonitorForClientIndex"/>'s
+    /// monitor-index selection logic but uses the work-area enumeration.
+    /// Used to compute hook config for non-slim secondary clients.
+    /// </summary>
+    private WinRect GetWorkAreaForClientIndex(int clientIndex)
+    {
+        // v3.22.19 round-2 verifier (T3 Sonnet + T2 Opus convergence):
+        // Resolve secondaryIdx against FULL bounds (canonical for ArrangeMultiMonitor
+        // + GetMonitorForClientIndex) — then look up the work-area rect at the
+        // SAME index. Previously passed workAreas to the resolver, which could
+        // yield a different secondaryIdx on vertical-taskbar monitors (rcWork
+        // width ≠ rcMonitor width), silently misaligning hook config against
+        // arrange. With this fix, the per-PID hook config and the arrange
+        // position both target the same physical monitor.
+        var fullBounds = _windowManager.GetAllMonitorFullBounds();
+        var workAreas = _windowManager.GetAllMonitorWorkAreas();
+        if (workAreas.Count == 0)
+            return new WinRect { Right = 1920, Bottom = 1040 };
+        // Defense in depth — if enumerations diverge (theoretically impossible,
+        // both walk EnumDisplayMonitors), fall back to legacy single-list logic
+        // rather than picking wrong-monitor coords.
+        if (fullBounds.Count != workAreas.Count)
+        {
+            FileLogger.Error($"GetWorkAreaForClientIndex: monitor enumeration count mismatch — fullBounds={fullBounds.Count} workAreas={workAreas.Count}, falling back to work-area-only resolution");
+            var primaryIdxFallback = Math.Clamp(_config.Layout.TargetMonitor, 0, workAreas.Count - 1);
+            int secondaryIdxFallback = WindowManager.ResolveSecondaryMonitorIdx(_config.Layout.SecondaryMonitor, primaryIdxFallback, workAreas);
+            var orderFallback = new List<WinRect> { workAreas[primaryIdxFallback] };
+            if (workAreas.Count > 1) orderFallback.Add(workAreas[secondaryIdxFallback]);
+            return orderFallback[clientIndex % orderFallback.Count];
+        }
+
+        var primaryIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, fullBounds.Count - 1);
+        // Resolve against fullBounds for index consistency with the arrange path
+        int secondaryIdx = WindowManager.ResolveSecondaryMonitorIdx(_config.Layout.SecondaryMonitor, primaryIdx, fullBounds);
+
+        var monitorOrder = new List<WinRect> { workAreas[primaryIdx] };
+        if (workAreas.Count > 1)
+            monitorOrder.Add(workAreas[secondaryIdx]);
 
         return monitorOrder[clientIndex % monitorOrder.Count];
     }
