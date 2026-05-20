@@ -794,7 +794,7 @@ public class TrayManager : IDisposable
         if (clientsToArrange.Count == 0)
         {
             FileLogger.Info($"ArrangeWindows: all {allClients.Count} client(s) mid-autologin, nothing to arrange");
-            ShowBalloon($"Skipped — all {allClients.Count} client(s) mid-autologin");
+            ShowBalloon($"Fix Windows skipped — autologin still in progress. Retry once login completes.");
             return;
         }
 
@@ -872,7 +872,10 @@ public class TrayManager : IDisposable
         // that prerequisite — they'll crash the client.
         if (NativeMethods.IsIconic(hwnd))
         {
-            FileLogger.Info($"ForceDxReinit: PID {pid} is minimized, skipping. WARNING: restoring a minimized EQ window may crash the DX device unless Settings → Video → \"Maximize on launch\" is enabled first.");
+            // v3.22.21 round-3 (T3-Sonnet): WARNING-level message belongs at
+            // Warn, not Info — log filters at Warn threshold would otherwise
+            // drop the most actionable safety advice in the method.
+            FileLogger.Warn($"ForceDxReinit: PID {pid} is minimized, skipping. Restoring a minimized EQ window may crash the DX device unless Settings → Video → \"Maximize on launch\" is enabled first.");
             return;
         }
 
@@ -897,7 +900,7 @@ public class TrayManager : IDisposable
         // no UI freeze, no race against other input handlers).
         //
         // v3.22.21 round-2 (T2-Opus CRITICAL + T3-Sonnet MEDIUM convergence):
-        // Re-check ALL three gates (IsWindow + IsHungAppWindow + IsIconic +
+        // Re-check ALL FOUR gates (IsWindow + IsHungAppWindow + IsIconic +
         // IsLoginActive) before click 2. The pre-click-1 path checked all
         // four; the second click MUST mirror them or state changes during
         // the 250ms window (autologin start, window minimize, app shutdown)
@@ -1819,8 +1822,11 @@ public class TrayManager : IDisposable
         switch (action)
         {
             case "FixWindows":
+                // v3.22.21 round-3 (T3-Sonnet): OnArrangeWindows now emits its
+                // own terminal balloon on every exit path ("No EQ clients",
+                // "Skipped — all mid-autologin", "Fixed N (mode)(skipped)").
+                // Don't double-balloon.
                 OnArrangeWindows();
-                ShowBalloon("Fix Windows");
                 break;
             case "TogglePiP":
                 TogglePip();
@@ -2728,13 +2734,35 @@ public class TrayManager : IDisposable
     /// <summary>
     /// Write slim titlebar positions to shared memory for all injected processes.
     /// In multimonitor mode, each process gets a different position based on its monitor.
+    /// <para>
+    /// v3.22.21 round-3 (T2-Opus convergence): skip autologin-active PIDs.
+    /// `_injectedPids` is populated pre-resume (CREATE_SUSPENDED architecture)
+    /// before autologin even starts, so it includes mid-credential-write
+    /// clients. Rewriting their hook-config shared memory could push them
+    /// onto a different monitor on the next intercepted `SetWindowPos`/
+    /// `MoveWindow` — disruptive during DirectInput credential typing. The
+    /// gate is symmetrical with `OnArrangeWindows`'s per-client filter.
+    /// </para>
+    /// <para>
+    /// Note: callers of `UpdateHookConfigForPid(pid)` directly (e.g. the
+    /// `LoginCredentialsSent` handler in `ApplyDeferredCosmetics`) bypass
+    /// this gate intentionally — they fire AFTER credentials are sent
+    /// (T+~7s) when a hook config refresh is the explicit goal.
+    /// </para>
     /// </summary>
     private void UpdateHookConfig()
     {
         if (_hookConfig == null || !_hookConfig.HasMappings) return;
 
         foreach (var pid in _injectedPids)
+        {
+            if (_autoLoginManager.IsLoginActive(pid))
+            {
+                FileLogger.Info($"UpdateHookConfig: skipping PID {pid} — autologin in progress");
+                continue;
+            }
             UpdateHookConfigForPid(pid);
+        }
     }
 
     /// <summary>
