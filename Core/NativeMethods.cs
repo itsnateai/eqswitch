@@ -121,6 +121,21 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern bool IsHungAppWindow(IntPtr hWnd);
 
+    // v3.22.22 round-4: responsiveness pre-flight for cross-process arrange.
+    // IsHungAppWindow has a 5s kernel-threshold latency — it returns false
+    // during the first 5s of a non-pumping pump. SendMessageTimeout with
+    // SMTO_ABORTIFHUNG + a small timeout (100ms) is a tighter probe: if the
+    // window's pump isn't actively pumping THIS instant, we get a fast fail
+    // instead of blocking pass-1 of ArrangeMultiMonitor for 14.5s (observed
+    // 2026-05-20 PID 24672 crash: zone-load DX device reset blocked
+    // SetWindowLongPtr for 14471ms, EQ then crashed).
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+
+    public const uint WM_NULL = 0x0000;
+    public const uint SMTO_ABORTIFHUNG = 0x0002;
+    public const uint SMTO_BLOCK = 0x0001;
+
     // ─── DWM Thumbnail (PiP) ────────────────────────────────────────
 
     [DllImport("dwmapi.dll")]

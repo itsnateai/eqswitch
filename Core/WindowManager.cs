@@ -290,6 +290,26 @@ public class WindowManager
                 FileLogger.Info($"ArrangeMultiMonitor: skipping hung window {client}");
                 continue;
             }
+            // v3.22.22 round-4: SendMessageTimeout pre-flight probe. IsHungAppWindow
+            // has a 5s kernel-threshold latency — it returns false during the first
+            // 5s of a non-pumping pump. The 2026-05-20 PID 24672 smoke crash hit
+            // this gap: client just sent Enter World, was mid-zone-load (DX device
+            // reset, message pump blocked), IsHungAppWindow returned false because
+            // the 5s window hadn't elapsed yet, pass-1's SetWindowLongPtr blocked
+            // for 14,471ms, EQ crashed. WM_NULL + SMTO_ABORTIFHUNG + 100ms = fast
+            // fail if the pump isn't actively pumping RIGHT NOW. Tighter probe than
+            // IsHungAppWindow. Combined: IsHungAppWindow catches the steady-state
+            // hung case (fast); SendMessageTimeout catches the transient
+            // mid-zone-load case (fast fail at 100ms instead of blocking pass-1).
+            UIntPtr probeResult;
+            IntPtr probeOk = NativeMethods.SendMessageTimeout(
+                client.WindowHandle, NativeMethods.WM_NULL, IntPtr.Zero, IntPtr.Zero,
+                NativeMethods.SMTO_ABORTIFHUNG, 100, out probeResult);
+            if (probeOk == IntPtr.Zero)
+            {
+                FileLogger.Warn($"ArrangeMultiMonitor: skipping non-responsive window {client} (SendMessageTimeout WM_NULL > 100ms with SMTO_ABORTIFHUNG — likely mid-zone-load DX reset or transient pump block; pre-empts the v3.22.21 14.5s pass-1 block that crashed PID 24672)");
+                continue;
+            }
 
             // v3.22.20: per-PID slot lookup. If the caller (TrayManager)
             // supplied a slot map, this PID's assigned slot drives monitor
