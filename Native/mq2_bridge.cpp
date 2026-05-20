@@ -155,6 +155,18 @@ static volatile bool     g_p9GateLogged      = false;
 // misled DebugView readers any time the SHM access itself faulted (DLL detach
 // race, MMF unmapped). One-shot per cycle, mirrors g_p9GateLogged lifecycle.
 static volatile bool     g_p9SehLogged       = false;
+// v3.22.22: partial-population gate diagnostic. The P8 gate validates only
+// entry[0]; observed 2026-05-20 PID 30192 smoke that EQ can set
+// charSelectPlayerArray.Count to its final value (10) BEFORE writing all
+// per-entry name bytes — at 262ms post-CharSelect entries[0..4] held real
+// names, entries[5..9] were zero. Pre-v3.22.22 the loop wrote 5 real names +
+// 5 empty strings and still published charCount=10, leaving C# autologin to
+// fail "character not found" on a missing slot. The gate now checks every
+// entry before publishing; partial pops bail to next-poll retry. Logged
+// once per charselect cycle so a slow-populating account is diagnosable
+// without log spam. Mirrors g_p8GateLogged lifecycle (reset at charselect
+// transition + gameState=5 + Shutdown).
+static volatile bool     g_partialPopLogged  = false;
 static volatile int      g_cachedNameCol     = -1;
 static volatile int      g_cachedSlotCount   = -1;  // slot probe result cache (-1 = not probed)
 // v3.22.16: rate-limit timestamp for column-discovery failure logging.
@@ -3032,6 +3044,7 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                         g_p8GateLogged = false;
                         g_p9GateLogged = false;
                         g_p9SehLogged = false;
+                        g_partialPopLogged = false;
                         g_cachedSlotCount = -1;
                         g_cachedNameCol = -1;
                         // v3.15.2: clear chunked-resume cursors so a fresh charselect
@@ -3308,14 +3321,39 @@ void MQ2Bridge::PopulateCharacterData(volatile LoginShm *shm) {
             return;
         }
 
+        // v3.22.22: validate ALL entries plausible before publishing. The P8
+        // gate above only checks entry[0]; observed 2026-05-20 PID 30192 smoke
+        // that EQ can set arr->Count = N before all per-entry name bytes are
+        // written. Pre-v3.22.22 the per-entry letter filter below would emit
+        // an empty string for any not-yet-written slot AND publish charCount=N
+        // anyway. Now bail to next poll if any entry [0..count-1] fails
+        // IsPlausibleName — same retry semantics as the P8 entry[0] gate.
+        // Mirrors the equivalent gate in Poll() Path A.
+        for (int i = 0; i < count; i++) {
+            const uint8_t *entry = data + (i * CSI_SIZE);
+            const uint8_t *name = (const uint8_t *)(entry + CSI_NAME_OFF);
+            if (!IsPlausibleName(name)) {
+                if (!g_partialPopLogged) {
+                    g_partialPopLogged = true;
+                    DI8Log("mq2_bridge: PopulateCharacterData partial population — arr->Count=%d but entry[%d] not yet plausible (entry[0] gate passed); deferring to next poll",
+                           count, i);
+                }
+                shm->charCount = 0;
+                shm->selectedIndex = -1;
+                return;
+            }
+        }
+
         for (int i = 0; i < count; i++) {
             const uint8_t *entry = data + (i * CSI_SIZE);
             const char *name = (const char *)(entry + CSI_NAME_OFF);
 
             // Hotfix v6f: tighten name charset to letters only (EQ naming rule) so
             // a field-label string or garbage bytes from a mis-aligned entry can't
-            // be emitted as "name" to the user. Also enforces min length 1; empty
-            // names are written as empty strings (consumer handles the skip).
+            // be emitted as "name" to the user. v3.22.22 partial-pop gate above
+            // already rejected any non-plausible entry, so this letter filter is
+            // now redundant for the populated case but kept for defense in depth
+            // (predicate parity with Poll() Path A's straight-memcpy after gate).
             int nameLen = 0;
             while (nameLen < LOGIN_NAME_LEN - 1 && name[nameLen] != '\0') {
                 char c = name[nameLen];
@@ -3823,6 +3861,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         g_p8GateLogged = false;
         g_p9GateLogged = false;
         g_p9SehLogged = false;
+        g_partialPopLogged = false;
         g_cachedNameCol = -1;
         g_cachedSlotCount = -1;
         g_heapScanDone = false;
@@ -3876,37 +3915,71 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                         DI8Log("mq2_bridge: P8 gate fired (Poll Path A) — entry[0] not yet plausible; deferring to next poll. Repeated polls without subsequent success = OFFSET_CHARSELECT_ARRAY likely wrong.");
                     }
                 } else {
+                    // v3.22.22: validate ALL entries plausible before publishing.
+                    // The P8 gate above only checks entry[0]; observed 2026-05-20
+                    // PID 30192 smoke that EQ can set arr->Count to its final
+                    // value (10) BEFORE all per-entry name bytes are written —
+                    // at 262ms post-CharSelect, entries[0..4] held real names,
+                    // entries[5..9] were zero. Pre-v3.22.22 the write loop below
+                    // emitted 5 real names + 5 empty strings into shm->names[]
+                    // and still published charCount=10 + latched charSelectReady=1.
+                    // C# autologin then read 10 names with empty slots between
+                    // populated ones, couldn't find the target character, and
+                    // aborted. The all-entries pre-gate bails to next-poll retry
+                    // on partial pop — same semantics as the P8 gate failure
+                    // path (charDataRead stays false, Path B's UI fallback runs
+                    // this tick, next 500ms poll retries Path A). See
+                    // reference_eqswitch_v3_22_22_backlog.md.
+                    bool allPlausible = true;
+                    int firstBadIdx = -1;
                     for (int i = 0; i < count; i++) {
                         const uint8_t *entry = data + (i * CSI_SIZE);
-                        const char *name = (const char *)(entry + CSI_NAME_OFF);
-                        // Track B v3 (2026-05-05, T3 Opus v3 callout): use the
-                        // SAME IsPlausibleName predicate as Path C heap-scan readers
-                        // (lines 3512+, 3604+) so Path A and Path C agree on what
-                        // counts as a valid name byte. Previous A-Z/a-z loop accepted
-                        // "NATEDOGG"/"natedogg"/"NatEdogG" while IsPlausibleName
-                        // rejects all three (strict title-case: uppercase-first then
-                        // lowercase-only). On a divergence the SHM could be written
-                        // with mismatched name strings on the same tick.
-                        int nameLen = 0;
-                        if (IsPlausibleName((const uint8_t *)name)) {
+                        const uint8_t *name = (const uint8_t *)(entry + CSI_NAME_OFF);
+                        if (!IsPlausibleName(name)) {
+                            allPlausible = false;
+                            firstBadIdx = i;
+                            break;
+                        }
+                    }
+                    if (!allPlausible) {
+                        if (!g_partialPopLogged) {
+                            g_partialPopLogged = true;
+                            DI8Log("mq2_bridge: Path A partial population — arr->Count=%d but entry[%d] not yet plausible (entry[0] gate passed); deferring to next poll",
+                                   count, firstBadIdx);
+                        }
+                        // Leave charDataRead=false; Path B and the next 500ms Path A
+                        // poll will retry. Do NOT publish charCount or latch
+                        // charSelectReady — that's what caused the 2026-05-20 bug.
+                    } else {
+                        for (int i = 0; i < count; i++) {
+                            const uint8_t *entry = data + (i * CSI_SIZE);
+                            const char *name = (const char *)(entry + CSI_NAME_OFF);
+                            // All entries pre-validated as plausible by the gate
+                            // above (Track B v3 / 2026-05-05 / T3 Opus v3 callout:
+                            // IsPlausibleName parity with Path C heap-scan readers,
+                            // strict title-case uppercase-first then lowercase-only).
+                            // Loop is now a straight name-copy without per-entry
+                            // predicate — the gate moved the predicate up so a
+                            // partial pop fails before any SHM write.
+                            int nameLen = 0;
                             while (nameLen < CHARSEL_NAME_LEN - 1 && name[nameLen] != '\0') {
                                 nameLen++;
                             }
+                            memcpy((void *)shm->names[i], name, nameLen);
+                            ((char *)shm->names[i])[nameLen] = '\0';
+                            shm->levels[i] = *(const int32_t *)(entry + CSI_LEVEL_OFF);
+                            shm->classes[i] = *(const int32_t *)(entry + CSI_CLASS_OFF);
                         }
-                        memcpy((void *)shm->names[i], name, nameLen);
-                        ((char *)shm->names[i])[nameLen] = '\0';
-                        shm->levels[i] = *(const int32_t *)(entry + CSI_LEVEL_OFF);
-                        shm->classes[i] = *(const int32_t *)(entry + CSI_CLASS_OFF);
+                        MemoryBarrier();
+                        shm->charCount = count;
+                        shm->charSelectReady = 1;  // v3 latch: Path A wrote real names
+                        for (int i = count; i < CHARSEL_MAX_CHARS; i++) {
+                            ((char *)shm->names[i])[0] = '\0';
+                            shm->levels[i] = 0;
+                            shm->classes[i] = 0;
+                        }
+                        charDataRead = true;
                     }
-                    MemoryBarrier();
-                    shm->charCount = count;
-                    shm->charSelectReady = 1;  // v3 latch: Path A wrote real names
-                    for (int i = count; i < CHARSEL_MAX_CHARS; i++) {
-                        ((char *)shm->names[i])[0] = '\0';
-                        shm->levels[i] = 0;
-                        shm->classes[i] = 0;
-                    }
-                    charDataRead = true;
                 }
             }
         }
@@ -4562,6 +4635,7 @@ void MQ2Bridge::Shutdown() {
     g_p8GateLogged     = false;
     g_p9GateLogged     = false;
     g_p9SehLogged      = false;
+    g_partialPopLogged = false;
     g_cachedNameCol    = -1;
     g_verificationDone = false;
     g_findLogCount     = 0;
