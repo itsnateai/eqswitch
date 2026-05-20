@@ -180,10 +180,46 @@ lParam encoding for negative slim-mode y coords was deep-analyzed by
 T3-Opus round-2 and verified correct (`GET_Y_LPARAM` reads back via short
 cast — even for x=Left+10 / y=Top+5 on slim windows with Top=-13).
 
-Final state: 1× APPROVE + 5× CONCERNS-MINOR after round-2 fixes. No
-CRITICAL or HIGH findings remain. MINOR items (MEMORY.md tier-1 drift,
-hardcoded 250ms inter-click, `_overflowCountsLogged` never cleared) are
-documented but not ship-blocking.
+Round-2 surfaced 3 more convergent findings → fixed in-tree → triggered
+**round-3** re-verification sweep, which found:
+
+- **HIGH — T2-O3:** the round-2 autologin gate was still incomplete.
+  `UpdateHookConfig` (called from `OnArrangeWindows` at L806) iterates
+  `_injectedPids` and writes per-PID hook-config shared memory. That set
+  is populated pre-resume (CREATE_SUSPENDED architecture) BEFORE autologin
+  starts, so it INCLUDES autologin-active PIDs. Rewriting their hook
+  config during credential-write could push them onto a different monitor
+  on the next intercepted `SetWindowPos`/`MoveWindow`. Round-3 fix: gate
+  `UpdateHookConfig`'s loop on `!IsLoginActive(pid)` to match
+  `OnArrangeWindows`'s per-client filter.
+- **MEDIUM — T3-S3:** double-balloon on the tray-menu Fix Windows path.
+  `ExecuteTrayAction.FixWindows` called `OnArrangeWindows()` then
+  `ShowBalloon("Fix Windows")`, but `OnArrangeWindows` now emits its own
+  terminal balloon on every exit path. Removed the redundant balloon.
+- **MEDIUM — T3-S3:** the IsIconic safety message starts with "WARNING:"
+  but was logged at Info level. Promoted to `FileLogger.Warn` so log
+  filters at Warn threshold don't drop the actionable advice.
+- **MINOR — T3-S3:** "Skipped — all N client(s) mid-autologin" balloon
+  was internal jargon without remediation. Rephrased to "Fix Windows
+  skipped — autologin still in progress. Retry once login completes."
+- **MINOR — T1-S3 + T1-O3:** inline comment said "Re-check ALL three
+  gates" but listed four. Corrected to "four".
+- **MINOR — T3-O3:** project memory file frontmatter claimed SHIPPED
+  while body said NOT YET SMOKED. Renamed to BUILT + AWAITING SMOKE.
+
+Round-3 verdicts: 2× APPROVE + 4× CONCERNS. All HIGH and MEDIUM findings
+addressed in-tree. Remaining LOWs (Timer Tick `_disposed` guard for
+shutdown race, MEMORY.md tier-1 drift at 202 lines, hardcoded 250ms
+inter-click interval, `_overflowCountsLogged` never cleared on
+ClientLost, ApplyDeferredCosmetics no-op in single-screen non-slim mode)
+are documented but not ship-blocking — folded into v3.22.22 backlog.
+
+**Declined round-4 verifier sweep** per
+`memory/reference_verifier_round_diminishing_returns_signal` — round 5
+historically introduces hallucinations; round 3 already produced
+multiple MINOR cosmetic findings. The substantive convergent issues
+(round-1 PID-recycle, round-2 Timer Tick gaps, round-3 UpdateHookConfig
+gap) are all closed. Further rounds would yield diminishing real signal.
 
 ### Out of scope (kept for forward reference)
 
