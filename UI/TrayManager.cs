@@ -656,22 +656,34 @@ public class TrayManager : IDisposable
                 // back to their original monitors — visible as the
                 // bouncing-stacked pattern in the 2026-05-19 smoke log.
                 //
-                // v3.22.21 smoke-2 (Nate 2026-05-20): added phase timing for
-                // taskbar-flicker diagnosis. Captures wall-clock between
-                // rotate / arrange / hook-config so v3.22.22 can isolate
-                // which phase loses primary-monitor coverage during the
-                // cross-process cross-monitor swap. AHK reference at
-                // _.src/.oursrcarchive/eqswitch_ahk/EQSwitch.ahk:414-441
-                // uses sequential WinMove (no DeferWindowPos batching);
-                // worth A/B testing in v3.22.22.
+                // v3.22.21 smoke-3 (Nate 2026-05-20): UpdateHookConfig now
+                // runs BEFORE ArrangeWindows. The diagnostic logs from
+                // smoke-2 (pass2-stages [0,0,0,46-62]ms across 6 swaps)
+                // proved all the swap latency is inside EndDeferWindowPos's
+                // cross-process DWM coordination. During that ~50ms window,
+                // the hook DLL's per-PID shared memory held STALE positions
+                // (UpdateHookConfig hadn't fired yet). If EQ's process
+                // internally called SetWindowPos in response to the move
+                // (WM_WINDOWPOSCHANGED-driven focus/child-window repositioning
+                // are common), the hook routed to the OLD position from
+                // stale config — fighting our move and exposing the primary
+                // monitor's taskbar in the gap. AHK version didn't have this
+                // problem because it didn't inject a hook DLL.
+                //
+                // Fix: write the hook config FIRST so any in-process
+                // SetWindowPos during the move uses the NEW position. The
+                // hook now cooperates with the move instead of dragging
+                // back. RotateMonitorSlots stays first so the slot map
+                // feeds both UpdateHookConfig and ArrangeWindows with the
+                // same NEW assignment.
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 RotateMonitorSlots();
                 long tRotate = sw.ElapsedMilliseconds;
-                _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
-                long tArrange = sw.ElapsedMilliseconds;
                 UpdateHookConfig();
                 long tHook = sw.ElapsedMilliseconds;
-                FileLogger.Info($"SwitchKey-swap-timing: rotate={tRotate}ms, arrange={tArrange - tRotate}ms, hookConfig={tHook - tArrange}ms, total={tHook}ms");
+                _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
+                long tArrange = sw.ElapsedMilliseconds;
+                FileLogger.Info($"SwitchKey-swap-timing: rotate={tRotate}ms, hookConfig={tHook - tArrange}ms, arrange={tArrange - tHook}ms, total={tArrange}ms");
             }
             catch (Exception ex)
             {
@@ -732,17 +744,16 @@ public class TrayManager : IDisposable
         {
             try
             {
-                // v3.22.20: see OnSwitchKey comment — real slot rotation
-                // instead of physical-swap-then-clientIndex-revert.
-                // v3.22.21 smoke-2: phase timing (mirrors OnSwitchKey).
+                // v3.22.21 smoke-3: UpdateHookConfig BEFORE ArrangeWindows
+                // (see OnSwitchKey comment — same reorder rationale).
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 RotateMonitorSlots();
                 long tRotate = sw.ElapsedMilliseconds;
-                _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
-                long tArrange = sw.ElapsedMilliseconds;
                 UpdateHookConfig();
                 long tHook = sw.ElapsedMilliseconds;
-                FileLogger.Info($"GlobalSwitchKey-swap-timing: rotate={tRotate}ms, arrange={tArrange - tRotate}ms, hookConfig={tHook - tArrange}ms, total={tHook}ms");
+                _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
+                long tArrange = sw.ElapsedMilliseconds;
+                FileLogger.Info($"GlobalSwitchKey-swap-timing: rotate={tRotate}ms, hookConfig={tHook - tArrange}ms, arrange={tArrange - tHook}ms, total={tArrange}ms");
             }
             catch (Exception ex)
             {
@@ -1883,21 +1894,16 @@ public class TrayManager : IDisposable
                     bool swapMM = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
                     if (swapMM)
                     {
-                        // v3.22.20: tray-menu "Swap Windows" honors the same
-                        // slot-rotation path as the SwitchKey hotkey in
-                        // multi-monitor mode.
-                        // v3.22.21 round-5 (T3-S5 catch): mirror the phase
-                        // timing instrumentation from OnSwitchKey / OnGlobalSwitchKey
-                        // so the tray-menu path captures the same diagnostic
-                        // data when exercised. v3.22.22 reads these logs.
+                        // v3.22.21 smoke-3: UpdateHookConfig BEFORE ArrangeWindows
+                        // (see OnSwitchKey comment — same reorder rationale).
                         var sw = System.Diagnostics.Stopwatch.StartNew();
                         RotateMonitorSlots();
                         long tRotate = sw.ElapsedMilliseconds;
-                        _windowManager.ArrangeWindows(swapClients, _monitorSlotByPid);
-                        long tArrange = sw.ElapsedMilliseconds;
                         UpdateHookConfig();
                         long tHook = sw.ElapsedMilliseconds;
-                        FileLogger.Info($"TraySwap-swap-timing: rotate={tRotate}ms, arrange={tArrange - tRotate}ms, hookConfig={tHook - tArrange}ms, total={tHook}ms");
+                        _windowManager.ArrangeWindows(swapClients, _monitorSlotByPid);
+                        long tArrange = sw.ElapsedMilliseconds;
+                        FileLogger.Info($"TraySwap-swap-timing: rotate={tRotate}ms, hookConfig={tHook - tArrange}ms, arrange={tArrange - tHook}ms, total={tArrange}ms");
                     }
                     else
                     {
