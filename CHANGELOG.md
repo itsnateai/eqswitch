@@ -70,7 +70,18 @@ Round-3 also addresses R2 T3-Sonnet SEV-1: the widened-fire branch
 so Path C re-runs `HeapScanForCharArray` on the next 500 ms poll.
 Without this, Path C would only fall through to the re-read at L4295
 using the same stale base — which would keep hitting the same hole.
-Matches the existing heap-cache-stale invalidation at L4329-4330.
+Matches the existing heap-cache-stale invalidation pattern in the
+`validated < count` block (`Native/mq2_bridge.cpp` heap-scan re-read).
+
+R3 verifier-flagged follow-ups deferred to v3.22.23:
+(a) extend the cache-invalidate to the P9 SEH `__except` path (R3
+T2-Opus Q5) — defense in depth for the rare DLL-detach race; current
+behavior is loud-log without invalidate, low-impact;
+(b) split `g_partialPopLogged` into per-path flags so Path A bail and
+P9 widened-fire don't cross-suppress diagnostics within the same
+charselect cycle (telemetry-only, both paths bail correctly regardless);
+(c) hoist `int i` outside the P9 `__try` so the SEH log can report the
+last-safe index instead of `shm->names[0]` (R2/R3 T3 minor).
 
 ### Round 2 — P9 gate widened to all entries (verifier T2 Sonnet+Opus convergence)
 
