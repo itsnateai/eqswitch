@@ -1,5 +1,66 @@
 # Changelog
 
+## v3.22.22 — Path A partial-population gate (autologin reliability) (2026-05-20)
+
+Closes the Thread 1 bug surfaced by the 2026-05-20 v3.22.21 smoke. Native-only
+change in `mq2_bridge.cpp` — no C# orchestration, no hook-DLL churn, no
+windowing changes.
+
+### Bug fixed
+
+1. **CharSelectShm partial publish on fast CharSelect transitions** —
+   `MQ2Bridge::Poll`'s Path A and `MQ2Bridge::PopulateCharacterData` both
+   gated only `entry[0]` plausibility (the P8 gate, v3.22.3). They then
+   trusted `arr->Count` and looped through all `count` entries; any entry
+   that failed `IsPlausibleName` was silently emitted as `""` to the SHM
+   while `charCount` was published as `count` and `charSelectReady` was
+   latched to 1.
+
+   On the 2026-05-20 PID 30192 smoke, `CharSelect` transitioned 262 ms
+   after burst start (vs the 1,783 ms observed on the simultaneous
+   successful PID 13308). At that moment EQ had populated entries[0..4]
+   of `charSelectPlayerArray` with the first five received characters
+   but had not yet written entries[5..9]. Path A's per-entry letter
+   filter collapsed those five zero-name entries to empty strings, the
+   final `shm->charCount = count` published 10, and the C# autologin
+   state machine read 10 names with the target slot ("Backup") missing.
+   Decide returned slot 0, the safety abort #1 (`resolvedSlot == 0`)
+   fired, and the SM correctly halted at char select. Result: account
+   stuck at char select, no enter-world. Other accounts on the same
+   burst succeeded because their `CharSelect` transition was slow
+   enough that EQ had finished writing the trailing entries by the
+   first poll.
+
+   Both publish sites now pre-validate every entry [0..count-1] with
+   `IsPlausibleName` before any SHM write. A partial population (any
+   entry beyond [0] failing the predicate) bails to next-poll retry —
+   same semantics as the existing P8 gate failure on entry[0]
+   (`charDataRead` stays false, Path B's UI fallback runs this tick,
+   the next 500 ms Path A poll retries). The bail is logged once per
+   charselect cycle via the new `g_partialPopLogged` flag (reset
+   alongside `g_p8GateLogged` at charselect transition / gameState=5 /
+   `Shutdown()`) so a slow-populating account is diagnosable without
+   spam.
+
+### Notes
+
+- Path B (`Poll()` UI fallback, line ~3921+) already had correct
+  break-on-empty behavior at its write loop — it only publishes the
+  contiguous-populated-rows count, so it does not need the gate.
+- The per-entry letter filter inside `PopulateCharacterData`'s write
+  loop is now redundant for the populated case (the pre-gate already
+  rejected anything non-plausible) but is left in place as defense in
+  depth for predicate parity with `Poll()` Path A's post-gate
+  straight-memcpy.
+- Native DLL only: `eqswitch-di8.dll` rebuilt. C# binary changes only
+  to reflect the bumped `<Version>3.22.22</Version>` in `EQSwitch.csproj`.
+- v3.22.21 deferred items (taskbar flicker, ApplyDeferredCosmetics
+  2308 ms pass2, direct `CResolutionHandler::ToggleScreenMode` Ghidra
+  hunt) remain open and tracked in
+  `reference_eqswitch_v3_22_22_backlog.md`. Isolating Thread 1 here
+  keeps autologin reliability bisectable from any subsequent windowing
+  change.
+
 ## v3.22.21 — PID-recycle dupe-slot fix + swap-flicker batch + lock-to-primary-dims + Fix-Windows DX reinit (2026-05-19)
 
 Hardens the v3.22.20 multi-monitor system against the three convergent verifier
