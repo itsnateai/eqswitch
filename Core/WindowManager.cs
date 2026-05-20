@@ -331,19 +331,34 @@ public class WindowManager
             {
                 // Step 1 of the original 2-step ApplySlimTitlebar: strip
                 // WS_THICKFRAME so the window has a thin border.
-                long style = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64();
-                style &= ~NativeMethods.WS_THICKFRAME;
-                _api.SetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE, (IntPtr)style);
+                //
+                // v3.22.21 smoke patch (Nate 2026-05-20): gate the style
+                // change AND the SWP_FRAMECHANGED notify on "actually
+                // needed". Steady-state SwitchKey rotation has windows
+                // already in slim-style — pre-fix this unconditionally
+                // fired SetWindowLongPtr (a no-op) + SetWindowPos with
+                // SWP_FRAMECHANGED, which forces a non-client recompute
+                // and briefly exposes the taskbar area that the slim
+                // window normally covers. Visible as a primary-monitor
+                // taskbar flicker on every SwitchKey swap. The non-slim
+                // branch below already had this conditional guard; the
+                // slim branch was missing it.
+                long currentStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64();
+                long desiredStyle = currentStyle & ~NativeMethods.WS_THICKFRAME;
+                if (currentStyle != desiredStyle)
+                {
+                    _api.SetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE, (IntPtr)desiredStyle);
 
-                // Step 2 of the original 2-step: frame-change notify with
-                // SWP_NOMOVE|SWP_NOSIZE. This stays separate from the move
-                // (per project memory: focus-loss-prevention reason — don't
-                // collapse to one SetWindowPos). Visually non-disruptive
-                // (no motion), just refreshes the non-client area.
-                _api.SetWindowPos(
-                    client.WindowHandle, IntPtr.Zero, 0, 0, 0, 0,
-                    NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER |
-                    NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_FRAMECHANGED);
+                    // Step 2 of the original 2-step: frame-change notify with
+                    // SWP_NOMOVE|SWP_NOSIZE. Stays separate from the move
+                    // (per project memory: focus-loss-prevention reason —
+                    // don't collapse to one SetWindowPos). Now ONLY fires
+                    // when the style actually changed.
+                    _api.SetWindowPos(
+                        client.WindowHandle, IntPtr.Zero, 0, 0, 0, 0,
+                        NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER |
+                        NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_FRAMECHANGED);
+                }
 
                 // Step 3 (the move) is queued for pass-2 batch.
                 x = effectiveBounds.Left;
