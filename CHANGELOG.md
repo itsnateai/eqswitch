@@ -51,15 +51,19 @@ churn — pure C# orchestration changes.
 ### New features
 
 4. **`Fix Windows` (hotkey + tray menu) now forces DX reinit** on every
-   client, all client counts, all modes (single-screen + multi-monitor).
-   Mechanism: `PostMessage(WM_NCLBUTTONDBLCLK, HTCAPTION, lParam=titlebar-coords)`
+   non-autologin, non-iconic client, all client counts, all modes
+   (single-screen + multi-monitor). Mechanism:
+   `PostMessage(WM_NCLBUTTONDBLCLK, HTCAPTION, lParam=titlebar-coords)`
    twice per client with ~250ms between via `System.Windows.Forms.Timer`
    (no UI-thread `Thread.Sleep`). Same code path as the user manually
    double-clicking the titlebar — EQ's WndProc routes the message to
    `CResolutionHandler::ToggleScreenMode`, which calls DX device reset.
-   Hung windows skipped via `IsHungAppWindow`; second click re-checks
-   `IsWindow` + `IsHungAppWindow` to avoid posting to a window that died
-   between the two messages. Budget: ~500ms × N clients.
+   **Both clicks** re-check four gates: `IsWindow + IsHungAppWindow +
+   IsIconic + IsLoginActive`. If any of those flip between clicks (250ms
+   window), the second click is skipped — defense in depth against the
+   user starting an autologin between the two clicks, or the client
+   minimizing into the deferred minimize-crash workaround state.
+   Budget: ~500ms × N clients.
 
 5. **Overflow warn-log** — `AssignNextFreeSlot` logs one-shot per new
    overflow level when client count exceeds monitor slots (3+ clients on
@@ -120,22 +124,31 @@ churn — pure C# orchestration changes.
 
 Three medium-severity findings addressed before tag:
 
-1. **`ForceDxReinit` gated on autologin-inactive** (T3-Opus, MEDIUM).
-   `OnArrangeWindows` previously called `ForceDxReinit` unconditionally,
-   which would post `WM_NCLBUTTONDBLCLK` and trigger `ToggleScreenMode`
-   mid-autologin. MQ2's state machine wraps each `SetEditWndText` call in
-   a `ScreenMode=3` swap for input enablement (see CLAUDE.md v3.16.0
-   notes) — a spurious external ScreenMode swap during the autologin's
-   own swap window could corrupt the SM. Per-client gate added on
-   `_autoLoginManager.IsLoginActive(c.ProcessId)`, matching the existing
-   ClientDiscovered pattern.
+1. **Autologin gate broadened to cover the entire arrange path** (T3-Opus
+   HIGH-severity; original T3-Opus MEDIUM, then T3-Opus round-2 HIGH).
+   Round-1 fix added an autologin gate to `ForceDxReinit` only — but
+   `ArrangeWindows` (`SetWindowPos` per-client) and `UpdateHookConfig`
+   (per-PID shared-memory writes) still ran on autologin-active clients.
+   Per the `ClientDiscovered` precedent at TrayManager.cs:L346 —
+   *"SetWindowPos/SetWindowLongPtr/CreateRemoteThread can interfere with
+   the DirectInput login sequence"* — the round-2 fix filters
+   autologin-active clients out of the entire OnArrangeWindows path.
+   Window arrangement for autologin clients still happens automatically
+   via `ApplyDeferredCosmetics` on `LoginCredentialsSent` (T+~7s), so no
+   functionality is lost. The Fix Windows balloon shows "Skipped N —
+   autologin active" when applicable.
 
-2. **`ForceDxReinit` skips iconic windows** (T2-Opus, MINOR).
+2. **`ForceDxReinit` skips iconic windows with crash-safe guidance log**
+   (T2-Opus + T2-Sonnet + T3-Opus round-2 convergence on MEDIUM).
    `PostMessage(WM_NCLBUTTONDBLCLK, HTCAPTION)` is a no-op on a minimized
    window — EQ's WndProc won't route to `ToggleScreenMode` because there's
    no NC area to double-click. Silent failure. Added an `IsIconic` check
-   with an Info log so the user knows the recovery hatch didn't reach the
-   client. We don't auto-restore (the minimize-crash issue is deferred).
+   with a log that explains the WORKAROUND PATH (enable Settings → Video →
+   "Maximize on launch" first to block future minimize), not a naive
+   "restore window first" footgun — restoring a minimized EQ window in
+   windowed-fullscreen state directly triggers the deferred minimize-crash.
+   Plus an `IsIconic` re-check in the 250ms Timer Tick for symmetry with
+   the pre-click-1 gate (T3-Sonnet MEDIUM).
 
 3. **Arrange-time overflow log removed** (T2-Sonnet + T3-Sonnet, MINOR).
    `ArrangeMultiMonitor` previously emitted a per-arrange Info log when
@@ -144,11 +157,33 @@ Three medium-severity findings addressed before tag:
    in `AssignNextFreeSlot` already covers the diagnosability case at
    PID-discovery time.
 
-T1 (Diff-clean) and T1-Opus reported APPROVE. T2-Sonnet, T2-Opus, T3-Sonnet,
-T3-Opus reported CONCERNS-MINOR — all minor concerns addressed in this
-section or documented as deferred. lParam encoding for negative slim-mode
-y coords was deep-analyzed by T3-Opus and verified correct
-(`GET_Y_LPARAM` reads back via short cast).
+**Two verifier rounds were run.** Round 1 (6-agent Sonnet+Opus × Diff-clean /
+Gap-audit / Code-review) surfaced the 3 medium-severity findings above.
+Round 2 (re-verified the round-1 fixes with another 6-agent pair) surfaced
+3 more convergent findings that round 1 missed:
+
+- **CRITICAL — 3-way convergence (T2-S2, T2-O2, T3-S2):** the 250ms Timer
+  Tick re-check was incomplete. Pre-fix it re-checked only `IsWindow +
+  IsHungAppWindow`; missing `IsIconic` AND `IsLoginActive`. Same race
+  windows the pre-click-1 gates protect against — state changes during
+  the 250ms delay (autologin start, window minimize) could leak click 2
+  into a wrong-state window. Now re-checks all four gates.
+- **HIGH — T3-O2:** round-1's autologin gate covered ForceDxReinit only;
+  ArrangeWindows + UpdateHookConfig still ran on autologin-active clients.
+  Now filters them out of the entire OnArrangeWindows path.
+- **MEDIUM — 3-way (T2-S2 GAP-3, T2-O2 MED-4, T3-O2 MED-5):** the IsIconic
+  log told the user "restore window first" — a footgun against the
+  deferred minimize-crash bug. Now explains the safe workaround path
+  (enable Maximize on launch first).
+
+lParam encoding for negative slim-mode y coords was deep-analyzed by
+T3-Opus round-2 and verified correct (`GET_Y_LPARAM` reads back via short
+cast — even for x=Left+10 / y=Top+5 on slim windows with Top=-13).
+
+Final state: 1× APPROVE + 5× CONCERNS-MINOR after round-2 fixes. No
+CRITICAL or HIGH findings remain. MINOR items (MEMORY.md tier-1 drift,
+hardcoded 250ms inter-click, `_overflowCountsLogged` never cleared) are
+documented but not ship-blocking.
 
 ### Out of scope (kept for forward reference)
 

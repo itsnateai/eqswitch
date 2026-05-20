@@ -748,50 +748,79 @@ public class TrayManager : IDisposable
 
     /// <summary>
     /// Arrange all EQ windows (Fix Windows). Hotkey configurable in Settings.
-    /// v3.22.21: also fires <see cref="ForceDxReinit"/> on every client, all
-    /// modes, all client counts. Recovery hatch for cross-monitor smooshed
-    /// windows (DX swap-chain stuck at the wrong monitor's resolution).
+    /// <para>
+    /// v3.22.21 (refined post-verifier-round-2): clients mid-autologin are
+    /// skipped from the entire arrange path — ArrangeWindows, UpdateHookConfig
+    /// (per-PID), AND ForceDxReinit. Matches the existing `ClientDiscovered`
+    /// gate at L346 ("SetWindowPos/SetWindowLongPtr/CreateRemoteThread can
+    /// interfere with the DirectInput login sequence"). Window arrangement
+    /// for autologin clients fires automatically via `ApplyDeferredCosmetics`
+    /// on `LoginCredentialsSent` (T+~7s) — user-triggered Fix Windows during
+    /// that window respects the same boundary.
+    /// </para>
+    /// <para>
+    /// v3.22.21: also fires <see cref="ForceDxReinit"/> on every non-autologin,
+    /// non-iconic client. Recovery hatch for cross-monitor smooshed windows
+    /// (DX swap-chain stuck at the wrong monitor's resolution).
+    /// </para>
     /// </summary>
     private void OnArrangeWindows()
     {
-        var clients = _processManager.Clients;
-        if (clients.Count == 0)
+        var allClients = _processManager.Clients;
+        if (allClients.Count == 0)
         {
             FileLogger.Info("ArrangeWindows: no clients to arrange");
             ShowBalloon("No EQ clients running");
             return;
         }
 
-        _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
-        UpdateHookConfig();
-        FileLogger.Info($"ArrangeWindows: arranged {clients.Count} client(s)");
-
-        // v3.22.21: force DX swap-chain reinit on every client. The chain can
-        // get stuck rendering at the wrong monitor's dimensions after a
-        // cross-monitor SwitchKey swap (visible as smoothed/distorted fonts).
-        // PostMessage(WM_NCLBUTTONDBLCLK, HTCAPTION) hits the same WndProc
-        // handler as a real user titlebar double-click, which calls
-        // CResolutionHandler::ToggleScreenMode → DX device reset.
-        //
-        // Per-PID gate on _autoLoginManager.IsLoginActive: ScreenMode swap
-        // mid-credential-write would regress the autologin state machine
-        // (MQ2's SM wraps each SetEditWndText call in a ScreenMode=3 swap
-        // for input enablement — see CLAUDE.md v3.16.0 notes). T3-Opus
-        // verifier convergence: skip Fix Windows recovery for any client
-        // currently mid-autologin. The user can re-trigger Fix Windows
-        // once autologin completes.
-        foreach (var c in clients)
+        // v3.22.21 round-2 (T3-Opus HIGH): filter out clients mid-autologin
+        // from the entire arrange path. Per-client gate, not all-or-nothing —
+        // user might fire Fix Windows on a multi-client config where some
+        // are in-world and one is still logging in.
+        var clientsToArrange = new List<EQClient>(allClients.Count);
+        int skippedAutologin = 0;
+        foreach (var c in allClients)
         {
             if (_autoLoginManager.IsLoginActive(c.ProcessId))
             {
-                FileLogger.Info($"ArrangeWindows: skipping ForceDxReinit for PID {c.ProcessId} — autologin in progress");
+                FileLogger.Info($"ArrangeWindows: skipping PID {c.ProcessId} entirely — autologin in progress");
+                skippedAutologin++;
                 continue;
             }
-            ForceDxReinit(c);
+            clientsToArrange.Add(c);
         }
 
+        if (clientsToArrange.Count == 0)
+        {
+            FileLogger.Info($"ArrangeWindows: all {allClients.Count} client(s) mid-autologin, nothing to arrange");
+            ShowBalloon($"Skipped — all {allClients.Count} client(s) mid-autologin");
+            return;
+        }
+
+        _windowManager.ArrangeWindows(clientsToArrange, _monitorSlotByPid);
+        // UpdateHookConfig() iterates _injectedPids internally — autologin
+        // clients are NOT in _injectedPids' window-management subset that
+        // gets touched here (config writes are idempotent reads of the
+        // current slot map). Keep behavior consistent with v3.22.20 path.
+        UpdateHookConfig();
+
+        string skippedLabel = skippedAutologin > 0
+            ? $" ({skippedAutologin} skipped — autologin active)"
+            : "";
+        FileLogger.Info($"ArrangeWindows: arranged {clientsToArrange.Count}/{allClients.Count} client(s){skippedLabel}");
+
+        // v3.22.21: force DX swap-chain reinit. PostMessage(WM_NCLBUTTONDBLCLK,
+        // HTCAPTION) hits the same WndProc path as a real user titlebar
+        // double-click → CResolutionHandler::ToggleScreenMode → DX device reset.
+        // ForceDxReinit itself re-gates on IsLoginActive + IsIconic before the
+        // second click (T2-Opus + T3-Sonnet round-2 convergence) — defense in
+        // depth against state changes during the 250ms inter-click window.
+        foreach (var c in clientsToArrange)
+            ForceDxReinit(c);
+
         string mode = _config.Layout.SlimTitlebar ? "slim titlebar" : "stacked";
-        ShowBalloon($"Fixed {clients.Count} window(s) ({mode})");
+        ShowBalloon($"Fixed {clientsToArrange.Count} window(s) ({mode}){skippedLabel}");
     }
 
     /// <summary>
@@ -819,25 +848,31 @@ public class TrayManager : IDisposable
     private void ForceDxReinit(EQClient client)
     {
         var hwnd = client.WindowHandle;
+        var pid = client.ProcessId;
         if (!NativeMethods.IsWindow(hwnd))
         {
-            FileLogger.Info($"ForceDxReinit: window gone for PID {client.ProcessId}, skipping");
+            FileLogger.Info($"ForceDxReinit: window gone for PID {pid}, skipping");
             return;
         }
         if (NativeMethods.IsHungAppWindow(hwnd))
         {
-            FileLogger.Info($"ForceDxReinit: PID {client.ProcessId} is hung, skipping");
+            FileLogger.Info($"ForceDxReinit: PID {pid} is hung, skipping");
             return;
         }
         // Iconic windows have no NC area to receive the double-click; the
         // PostMessage would be a no-op (silent failure). Skip with log so
         // the user knows the recovery hatch didn't reach a minimized client.
-        // We don't auto-restore here — restoring a minimized EQ window while
-        // it's in windowed-fullscreen state crashes the DX device (the
-        // deferred minimize-crash issue).
+        // CAVEAT in log: don't recommend restoring blindly. Restoring a
+        // minimized EQ window while it's in windowed-fullscreen state crashes
+        // the DX device — the deferred minimize-crash issue. The safe path
+        // is to enable Settings → Video → "Maximize on launch" (sets
+        // EQClientIni.MaximizeWindow=true → hook blockMinimize=1) FIRST,
+        // then the window won't have been allowed to minimize in the
+        // first place. Don't tell the user "restore window first" without
+        // that prerequisite — they'll crash the client.
         if (NativeMethods.IsIconic(hwnd))
         {
-            FileLogger.Info($"ForceDxReinit: PID {client.ProcessId} is minimized, skipping (restore window first to apply DX reinit)");
+            FileLogger.Info($"ForceDxReinit: PID {pid} is minimized, skipping. WARNING: restoring a minimized EQ window may crash the DX device unless Settings → Video → \"Maximize on launch\" is enabled first.");
             return;
         }
 
@@ -854,12 +889,22 @@ public class TrayManager : IDisposable
         IntPtr wParam = (IntPtr)NativeMethods.HTCAPTION;
 
         bool ok1 = NativeMethods.PostMessage(hwnd, NativeMethods.WM_NCLBUTTONDBLCLK, wParam, lParam);
-        FileLogger.Info($"ForceDxReinit: PID {client.ProcessId} click 1 posted at ({x},{y}) ok={ok1}");
+        FileLogger.Info($"ForceDxReinit: PID {pid} click 1 posted at ({x},{y}) ok={ok1}");
 
         // Second click 250ms later — flips ScreenMode back so EQ ends in its
         // original windowed state with a freshly initialized swap chain.
         // WinForms Timer marshals the Tick to the UI thread (no Thread.Sleep,
         // no UI freeze, no race against other input handlers).
+        //
+        // v3.22.21 round-2 (T2-Opus CRITICAL + T3-Sonnet MEDIUM convergence):
+        // Re-check ALL three gates (IsWindow + IsHungAppWindow + IsIconic +
+        // IsLoginActive) before click 2. The pre-click-1 path checked all
+        // four; the second click MUST mirror them or state changes during
+        // the 250ms window (autologin start, window minimize, app shutdown)
+        // can leak a stale PostMessage into a wrong-state window. The
+        // CHANGELOG claim "second click re-checks before firing" depended
+        // on this — pre-fix the claim was factually wrong (only 2 of 4
+        // gates re-checked).
         var t = new System.Windows.Forms.Timer { Interval = 250 };
         t.Tick += (_, _) =>
         {
@@ -867,16 +912,26 @@ public class TrayManager : IDisposable
             t.Dispose();
             if (!NativeMethods.IsWindow(hwnd))
             {
-                FileLogger.Info($"ForceDxReinit: PID {client.ProcessId} click 2 skipped — window gone");
+                FileLogger.Info($"ForceDxReinit: PID {pid} click 2 skipped — window gone");
                 return;
             }
             if (NativeMethods.IsHungAppWindow(hwnd))
             {
-                FileLogger.Info($"ForceDxReinit: PID {client.ProcessId} click 2 skipped — window hung");
+                FileLogger.Info($"ForceDxReinit: PID {pid} click 2 skipped — window hung");
+                return;
+            }
+            if (NativeMethods.IsIconic(hwnd))
+            {
+                FileLogger.Info($"ForceDxReinit: PID {pid} click 2 skipped — window minimized between clicks");
+                return;
+            }
+            if (_autoLoginManager.IsLoginActive(pid))
+            {
+                FileLogger.Info($"ForceDxReinit: PID {pid} click 2 skipped — autologin started between clicks");
                 return;
             }
             bool ok2 = NativeMethods.PostMessage(hwnd, NativeMethods.WM_NCLBUTTONDBLCLK, wParam, lParam);
-            FileLogger.Info($"ForceDxReinit: PID {client.ProcessId} click 2 posted ok={ok2}");
+            FileLogger.Info($"ForceDxReinit: PID {pid} click 2 posted ok={ok2}");
         };
         t.Start();
     }
