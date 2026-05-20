@@ -1,5 +1,170 @@
 # Changelog
 
+## v3.22.21 — PID-recycle dupe-slot fix + swap-flicker batch + lock-to-primary-dims + Fix-Windows DX reinit (2026-05-19)
+
+Hardens the v3.22.20 multi-monitor system against the three convergent verifier
+findings from the 6-agent sweep, plus the two visible symptoms Nate caught in
+smoke (swap flicker + cross-monitor font smoosh). No autologin or hook-DLL
+churn — pure C# orchestration changes.
+
+### Bugs fixed
+
+1. **PID-recycle duplicate-slot** (CRITICAL — 4-way verifier convergence:
+   T2-Sonnet, T2-Opus, T3-Sonnet, T3-Opus). The v3.22.20 assignment
+   `int slot = _monitorSlotByPid.Count` collided whenever a client died and a
+   new one launched. Example: PIDs A→0, B→1, Count=2. PID A dies →
+   map={B→1}, Count=1. New PID C → gets slot=1 → collides with PID B. Both
+   end up on the same monitor with one window stacked atop the other. Fixed
+   by `AssignNextFreeSlot(pid, source)` which scans `[0, monitorCount)` for
+   the first slot not in `_monitorSlotByPid.Values`. Three call sites
+   updated: `ClientDiscovered`, `OnToggleMultiMonitor` backfill,
+   `ReloadConfig` backfill.
+
+2. **SwitchKey swap flicker** — `ApplySlimTitlebar` + the non-slim
+   `SetWindowPos` ran sequentially per client, so DWM composited each
+   transition individually. Taskbar peek-through was briefly visible between
+   moves. Fixed by splitting `ArrangeMultiMonitor` into two passes:
+   **pass 1** (sequential) does style work — `WS_THICKFRAME` strip/restore
+   plus the `SWP_FRAMECHANGED` notify (visually non-disruptive — no move);
+   **pass 2** (batched via `BeginDeferWindowPos` / `DeferWindowPos` × N /
+   `EndDeferWindowPos`) emits the actual position+size commands in a single
+   DWM composite. Same pattern `SwapWindows` already used at
+   `WindowManager.cs` L308-333. `ApplySlimTitlebar`'s 2-step
+   focus-loss-prevention stays intact — step 2 fires in pass 1 sequentially,
+   step 3 (the move) fires in pass 2 batched. Sequential `SetWindowPos`
+   fallback kept for the rare case `BeginDeferWindowPos` or
+   `DeferWindowPos` fails mid-batch.
+
+3. **Cross-monitor font/UI smoosh** — when a client initialized its DX
+   device at monitor A's dimensions then SwitchKey-moved to monitor B's
+   (different) dimensions, the DX swap-chain didn't re-init and textures
+   stretched at the new aspect ratio. Manual fix was double-clicking the
+   titlebar 2× (cycles windowed-fullscreen ↔ windowed, forces DX reinit).
+   Fixed structurally by **lock-to-primary-dims**: both windows sized to
+   primary's `Width × Height` with each monitor's own origin. DX backbuffer
+   stays at one constant size across SwitchKey swaps → no reinit, no
+   smoosh. Auto-degrades to per-monitor-fit when monitors differ too much
+   (|Δ| > 200px on either axis) OR primary doesn't fit within secondary
+   OR slim flags differ — power users with 4K + 1080p configs get
+   per-monitor-fit + the new `Fix Windows` recovery hatch (#4).
+
+### New features
+
+4. **`Fix Windows` (hotkey + tray menu) now forces DX reinit** on every
+   client, all client counts, all modes (single-screen + multi-monitor).
+   Mechanism: `PostMessage(WM_NCLBUTTONDBLCLK, HTCAPTION, lParam=titlebar-coords)`
+   twice per client with ~250ms between via `System.Windows.Forms.Timer`
+   (no UI-thread `Thread.Sleep`). Same code path as the user manually
+   double-clicking the titlebar — EQ's WndProc routes the message to
+   `CResolutionHandler::ToggleScreenMode`, which calls DX device reset.
+   Hung windows skipped via `IsHungAppWindow`; second click re-checks
+   `IsWindow` + `IsHungAppWindow` to avoid posting to a window that died
+   between the two messages. Budget: ~500ms × N clients.
+
+5. **Overflow warn-log** — `AssignNextFreeSlot` logs one-shot per new
+   overflow level when client count exceeds monitor slots (3+ clients on
+   2 monitors — the v3.22.20-documented modulo-stacking behavior). Helps
+   diagnose the "why are clients on the same monitor" question. Tracked
+   via `_overflowCountsLogged: HashSet<int>` for per-session dedup.
+   `ArrangeMultiMonitor` also surfaces an Info log on every overflow
+   arrange.
+
+### Mechanism notes
+
+- **Free-slot scan is O(N²)** where N is current client count. Acceptable
+  because N ≤ ~6 in practice. Builds a `HashSet<int>` from
+  `_monitorSlotByPid.Values` each call rather than maintaining a derived
+  "occupied slots" set — keeps the only source of truth in one place.
+
+- **Lock-to-primary-dims gating** requires four conditions: 2+ monitors,
+  matching slim flags, |Δ| ≤ 200 on both axes, primary fits within
+  secondary on both axes. The "primary fits" check prevents the
+  pathological case where locking would extend a window past secondary's
+  edges (primary larger than secondary). Same-slim-flag requirement
+  preserves the user's intent when they explicitly set different slim
+  modes per monitor.
+
+- **PostMessage-based DX reinit** is functionally equivalent to a direct
+  call into `CResolutionHandler::ToggleScreenMode()` (planned for v3.22.22
+  via Ghidra-verified RVA + Native detour). The PostMessage variant routes
+  through WndProc indirection — small latency cost, but works today
+  without rebuilding `eqswitch-hook.dll`.
+
+### Not addressed (deferred)
+
+- **Direct DX-reinit call** — v3.22.22 will replace the PostMessage approach
+  with a direct `CResolutionHandler::ToggleScreenMode()` call from
+  `eqswitch-hook.dll`. Requires host-Ghidra RVA verification against Dalaya's
+  `eqgame.exe`. Candidate symbols + x86 RVAs are in
+  `mq2emu-rof2-x86/MQ2Main/eqgame(Test).h`.
+
+- **Minimize-while-windowed-fullscreen crash** — needs default-on
+  `blockMinimize` in the hook DLL regardless of `EQClientIni.MaximizeWindow`.
+  Workaround today: toggle Settings → Video → "Maximize on launch".
+
+### Changed
+
+- `TrayManager.cs` — `AssignNextFreeSlot` + `GetMonitorOrderCount` helpers
+  (free-slot scan + overflow warn). Three call sites switched from
+  `Count`-based to scan-based. New `ForceDxReinit(EQClient)` method called
+  from `OnArrangeWindows` for every non-autologin, non-iconic client.
+  `_overflowCountsLogged` field added for one-shot overflow warn dedup.
+- `Core/WindowManager.cs` — `ArrangeMultiMonitor` refactored: two-pass
+  design (style sequential, position batched via `DeferWindowPos`),
+  lock-to-primary-dims policy with Δ-threshold auto-degrade, sequential
+  fallback on hdwp failure.
+- `Core/NativeMethods.cs` — added `WM_NCLBUTTONDBLCLK` and `HTCAPTION`
+  constants for `ForceDxReinit`.
+
+### Verifier-round refinements (6-agent sweep — Sonnet + Opus × 3 topics)
+
+Three medium-severity findings addressed before tag:
+
+1. **`ForceDxReinit` gated on autologin-inactive** (T3-Opus, MEDIUM).
+   `OnArrangeWindows` previously called `ForceDxReinit` unconditionally,
+   which would post `WM_NCLBUTTONDBLCLK` and trigger `ToggleScreenMode`
+   mid-autologin. MQ2's state machine wraps each `SetEditWndText` call in
+   a `ScreenMode=3` swap for input enablement (see CLAUDE.md v3.16.0
+   notes) — a spurious external ScreenMode swap during the autologin's
+   own swap window could corrupt the SM. Per-client gate added on
+   `_autoLoginManager.IsLoginActive(c.ProcessId)`, matching the existing
+   ClientDiscovered pattern.
+
+2. **`ForceDxReinit` skips iconic windows** (T2-Opus, MINOR).
+   `PostMessage(WM_NCLBUTTONDBLCLK, HTCAPTION)` is a no-op on a minimized
+   window — EQ's WndProc won't route to `ToggleScreenMode` because there's
+   no NC area to double-click. Silent failure. Added an `IsIconic` check
+   with an Info log so the user knows the recovery hatch didn't reach the
+   client. We don't auto-restore (the minimize-crash issue is deferred).
+
+3. **Arrange-time overflow log removed** (T2-Sonnet + T3-Sonnet, MINOR).
+   `ArrangeMultiMonitor` previously emitted a per-arrange Info log when
+   client count exceeded monitor slots. In steady-state 3+ client mode
+   every SwitchKey swap fired it. Removed — TrayManager's one-shot Warn
+   in `AssignNextFreeSlot` already covers the diagnosability case at
+   PID-discovery time.
+
+T1 (Diff-clean) and T1-Opus reported APPROVE. T2-Sonnet, T2-Opus, T3-Sonnet,
+T3-Opus reported CONCERNS-MINOR — all minor concerns addressed in this
+section or documented as deferred. lParam encoding for negative slim-mode
+y coords was deep-analyzed by T3-Opus and verified correct
+(`GET_Y_LPARAM` reads back via short cast).
+
+### Out of scope (kept for forward reference)
+
+- `_legacySlotDeprecationLogged` (TrayManager.cs) — flagged by both
+  Code-review verifiers as "dead field" in the v3.22.20 sweep. **Kept** —
+  the field IS used inside `LogFirstFire`, which is called from 6 sites
+  in `FireLegacyQuickLoginSlot` for the legacy QuickLogin{N} routing
+  dedup (`grep -n 'LogFirstFire' UI/TrayManager.cs` lists callsites + the
+  definition). Slated for Phase-6 removal alongside the broader QuickLogin
+  scheme, NOT today. This is a verifier-cache-hallucination pattern
+  documented in `feedback_verifier_subagent_cache_hallucination` +
+  `feedback_grep_callers_before_removing_function` (v1.0.6 → v1.0.7
+  RefError precedent). 4-way convergence is a strong signal but not
+  infallible — `LogFirstFire` is not in the v3.22.20 diff so verifiers
+  reading only the diff may have missed the callers.
+
 ## v3.22.20 — Multi-monitor world-entry stacking fix + real SwitchKey slot rotation (2026-05-19)
 
 Closes two smoke-test regressions surfaced by the v3.22.19 multi-monitor pass.

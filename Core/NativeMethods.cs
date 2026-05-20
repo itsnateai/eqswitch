@@ -275,6 +275,14 @@ internal static class NativeMethods
     public const int HTTRANSPARENT = -1;
     public const int HTCLIENT = 1;
 
+    // v3.22.21: NC button messages + caption hit-test code, used by
+    // TrayManager.ForceDxReinit to remote-control EQ's titlebar double-click
+    // (forces DirectX swap-chain re-init on cross-monitor resize). Same
+    // code path as a real user double-click → EQ WndProc handler →
+    // CResolutionHandler::ToggleScreenMode.
+    public const uint WM_NCLBUTTONDBLCLK = 0x00A3;
+    public const int HTCAPTION = 2;
+
     [DllImport("user32.dll")]
     public static extern short GetAsyncKeyState(int vKey);
 
