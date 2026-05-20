@@ -42,6 +42,48 @@ windowing changes.
    `Shutdown()`) so a slow-populating account is diagnosable without
    spam.
 
+### Round 5 — Extend Thread 3 probe to ArrangeSingleScreen + SwapWindows + add SMTO_BLOCK (R4 verifier convergence)
+
+The R4 8-agent sweep flagged that the round-4 probe was scoped only to
+`ArrangeMultiMonitor`. Two convergent CRITICAL gaps (R4 T2 Sonnet+Opus):
+
+- **G1** — `ArrangeSingleScreen` (`WindowManager.cs:122-165`) had only the
+  `IsHungAppWindow` check. Single-monitor users hit the same 14.5 s
+  pass-1 stall when `LoginComplete` fires with a client mid-zone-load.
+- **G3** — `SwapWindows` (`WindowManager.cs:540`) had only
+  `IsHungAppWindow`. Any user-triggered `SwitchKey` rotation during a
+  teammate's zone-load could stall `GetWindowRect` /
+  `BeginDeferWindowPos` for the same 14.5 s window and crash EQ.
+
+Plus one R4 T3-Opus MEDIUM (preferred over T3-Sonnet who disagreed —
+per verifier-spec "trust the flagger"):
+
+- `SMTO_ABORTIFHUNG` without `SMTO_BLOCK` allows the calling UI thread
+  to accept reentrant sent-messages during the 100 ms probe wait. The
+  `SMTO_BLOCK` constant was already imported in round-4 but unused.
+
+Plus one R4 T3-Sonnet SEV-1:
+
+- LoginComplete handler's deferred-timer `Stop()/Dispose()` were inside
+  the `try` block. If `Stop()` somehow threw (defensive — never observed),
+  `Dispose()` would be skipped and the timer would refire forever. Moved
+  before the `try`.
+
+Round-5 changes:
+
+1. Extracted the probe into a shared `IsClientResponsive(IntPtr hwnd)`
+   private static helper in `WindowManager` so all per-client iteration
+   sites share the same predicate.
+2. Added the probe to `ArrangeSingleScreen` (after `IsHungAppWindow`)
+   and `SwapWindows` (alongside its existing per-client hung check).
+3. Added `SMTO_BLOCK` to the probe flags in the shared helper.
+4. Moved `deferTimer.Stop()/Dispose()` before the `try` in the
+   LoginComplete handler.
+
+The R4 T4 documentation drift (MEMORY.md / backlog memo still describing
+Thread 3 as "deferred to v3.22.23") is addressed in the same commit.
+C#-only — no native DLL change.
+
 ### Round 4 — Thread 3: ApplyDeferredCosmetics zone-load crash (production smoke 2026-05-20 15:12)
 
 The v3.22.22 round-3 build smoke confirmed Thread 1 fix in production
