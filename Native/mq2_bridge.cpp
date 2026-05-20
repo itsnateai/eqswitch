@@ -4355,9 +4355,26 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 // cycle-reset sites. Multi-character accounts hit this case
                 // more often because their settle window is wider than
                 // single-char accounts (10-slot gotquiz 2026-05-17 smoke).
-                bool entry0Real = false;
+                //
+                // v3.22.22 widening (T2 Sonnet+Opus gap-audit convergence):
+                // also validate entries [1..count-1]. The original entry[0]
+                // check caught Path B2's "Slot %d" placeholder case (every
+                // slot fails so entry[0] fails) but missed Path C heap-scan's
+                // per-entry `continue` pattern at line 4185 (zeros the slot
+                // and keeps iterating). Path C can publish entry[0]=real +
+                // entry[5]="" when heap-scan finds a partially-populated
+                // array — same observed failure shape as Path A's
+                // partial-pop bug. Full-entries validation closes that gap.
+                bool allPlausible = true;
+                int firstBadIdx = -1;
                 __try {
-                    entry0Real = IsPlausibleName((const uint8_t *)shm->names[0]);
+                    for (int i = 0; i < count && i < CHARSEL_MAX_CHARS; i++) {
+                        if (!IsPlausibleName((const uint8_t *)shm->names[i])) {
+                            allPlausible = false;
+                            firstBadIdx = i;
+                            break;
+                        }
+                    }
                 } __except(EXCEPTION_EXECUTE_HANDLER) {
                     // v3.22.5: distinguish SEH from the non-SEH "placeholder or
                     // empty" path. Pre-v3.22.5 the empty __except fell through to
@@ -4370,8 +4387,9 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                         DI8Log("mq2_bridge: P9 gate SEH in IsPlausibleName predicate (shm->names[0]=%p) — treating as not plausible, deferring publish; check for DLL detach race or stale SHM mapping",
                                (const void *)shm->names[0]);
                     }
+                    allPlausible = false;
                 }
-                if (entry0Real) {
+                if (allPlausible) {
                     MemoryBarrier();
                     shm->charCount = count;
                     for (int i = count; i < CHARSEL_MAX_CHARS; i++) {
@@ -4380,10 +4398,21 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                         shm->classes[i] = 0;
                     }
                     charDataRead = true;
-                } else if (!g_p9GateLogged) {
+                } else if (firstBadIdx == 0 && !g_p9GateLogged) {
+                    // Classic v3.22.4 P9 case: entry[0] itself is bad
+                    // (slot-mode placeholder or empty). Use the original
+                    // log message for diagnostic continuity.
                     g_p9GateLogged = true;
                     DI8Log("mq2_bridge: P9 gate fired (Poll publisher) — entry[0] is placeholder or empty (\"%.10s\"); deferring publish until Path A/C/anchor populates real names. Repeated polls without recovery = both heap scans + Path A all stuck.",
                            (const char *)shm->names[0]);
+                } else if (firstBadIdx > 0 && !g_partialPopLogged) {
+                    // v3.22.22 new case: entry[0] real but a later entry
+                    // failed — Path C heap-scan partial-pop hole, or Path
+                    // B row-loop missed a row. Reuse the partial-pop one-shot
+                    // flag (same lifecycle as the Path A pre-gate).
+                    g_partialPopLogged = true;
+                    DI8Log("mq2_bridge: P9 gate widened-fire (Poll publisher) — entry[0] real (\"%.10s\") but entry[%d] not plausible (\"%.10s\"); deferring publish (likely Path C heap-scan partial-pop or Path B partial row write). Next poll's Path A/B/C will retry.",
+                           (const char *)shm->names[0], firstBadIdx, (const char *)shm->names[firstBadIdx]);
                 }
             }
         }

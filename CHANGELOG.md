@@ -42,11 +42,36 @@ windowing changes.
    `Shutdown()`) so a slow-populating account is diagnosable without
    spam.
 
+### Round 2 — P9 gate widened to all entries (verifier T2 Sonnet+Opus convergence)
+
+The round-1 fix above closed Path A and `PopulateCharacterData`. The 8-agent
+verifier sweep flagged a structurally identical bug in Path C's heap-scan
+write loop (`Native/mq2_bridge.cpp:4185`): when a per-entry `IsPlausibleName`
+check fails, the loop zero-fills `shm->names[i]` and **continues iterating**,
+which can leave interior holes (entry[0]=real, entry[5]=""). The v3.22.4 P9
+publisher gate (line ~4358) only validated `shm->names[0]`, so it passed any
+hole that wasn't at index 0 and published `charCount=count` with the gap.
+
+Round-2 widens the P9 gate to validate every entry in `[0..count-1]`.
+Same predicate (`IsPlausibleName`), same one-shot diagnostic (logged via
+the new `g_partialPopLogged` flag when `firstBadIdx > 0`, or the original
+`g_p9GateLogged` flag when `firstBadIdx == 0` to preserve diagnostic
+continuity with v3.22.4's "entry[0] is placeholder or empty" telemetry).
+No changes to Path C's internals — keeping the fix localized to the
+publisher gate avoids touching the heap-scan/anchor-scan interactions
+with Path B2's slot-mode synthesis.
+
 ### Notes
 
 - Path B (`Poll()` UI fallback, line ~3921+) already had correct
   break-on-empty behavior at its write loop — it only publishes the
-  contiguous-populated-rows count, so it does not need the gate.
+  contiguous-populated-rows count, so it does not need the gate. A
+  theoretical interior-hole scenario (UI rows [0,1,2,_,4,5]) is not
+  observed empirically; the round-2 P9 widening would catch it
+  defensively anyway.
+- The standalone heap-scan write loop (line ~4438) already uses
+  `break`-on-empty correctly — same pattern as Path B, only writes
+  contiguous validated entries.
 - The per-entry letter filter inside `PopulateCharacterData`'s write
   loop is now redundant for the populated case (the pre-gate already
   rejected anything non-plausible) but is left in place as defense in
@@ -60,6 +85,14 @@ windowing changes.
   `reference_eqswitch_v3_22_22_backlog.md`. Isolating Thread 1 here
   keeps autologin reliability bisectable from any subsequent windowing
   change.
+- Deferred to a future patch (verifier-surfaced, not blocking v3.22.22):
+  (a) audit `kBadNames` blocklist (line ~224+) for legitimate-name
+  collisions — entries like `"Hunter"`, `"Shadow"`, `"Storm"`, `"Swift"`,
+  `"Scout"` could permanently bail Path A for accounts that include a
+  character with one of these names; (b) consider a 5 s rate-limit on
+  `g_partialPopLogged` similar to v3.22.16's column-discovery failure
+  log so slow-populating accounts emit ~6 lines over 30 s rather than
+  one-and-done.
 
 ## v3.22.21 — PID-recycle dupe-slot fix + swap-flicker batch + lock-to-primary-dims + Fix-Windows DX reinit (2026-05-19)
 
