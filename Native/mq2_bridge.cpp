@@ -4198,7 +4198,16 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                             DI8Log("mq2_bridge: heap scan: slot %d = \"%s\" race=%d (cls/lvl unknown)",
                                    i, (const char *)shm->names[i], race);
                         }
-                        shm->charSelectReady = 1;  // v3 latch: Path C heap scan wrote real names
+                        // v3.22.22 round-3: charSelectReady=1 latch deferred to
+                        // P9's allPlausible block at ~line 4392. Path C's
+                        // `continue`-on-failure pattern above (line 4185) can
+                        // write `""` to shm->names[i] when heap-scan finds a
+                        // partially-populated array; latching here before P9
+                        // validates would leave C# seeing charSelectReady=1
+                        // paired with stale charCount=0 (R2 T2-Sonnet/T3-Sonnet
+                        // CRITICAL convergence). Latch now fires only inside the
+                        // P9 success path — atomic with the charCount publish,
+                        // mirroring Path A's own atomic publish at L3974-3975.
                     } __except(EXCEPTION_EXECUTE_HANDLER) {
                         DI8Log("mq2_bridge: SEH reading heap-scanned char array");
                         g_heapScanArrayBase = 0;
@@ -4276,7 +4285,10 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                                 // non-zero on EQ pre-cursor or stale state).
                                 // Mirrors the standalone path's explicit assignment.
                                 shm->selectedIndex = 0;
-                                shm->charSelectReady = 1;  // v3 latch: anchor scan wrote real name
+                                // v3.22.22 round-3: charSelectReady=1 latch
+                                // deferred to P9 (same rationale as the
+                                // heap-scan site above — single atomic
+                                // publisher for the Path B+C combined chain).
                                 int32_t race = *(const int32_t *)(entry + 0x44);
                                 DI8Log("mq2_bridge: anchor populated slot 0 = \"%s\" race=%d (single-char fallback)",
                                        targetName, race);
@@ -4392,6 +4404,14 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 if (allPlausible) {
                     MemoryBarrier();
                     shm->charCount = count;
+                    // v3.22.22 round-3: own the charSelectReady latch for the
+                    // Path B+C combined publisher. Previously Path C latched
+                    // unconditionally at L4201/L4279 before this gate ran —
+                    // R2 T2-Sonnet CRITICAL: a Path C `continue`-hole would
+                    // set charSelectReady=1 paired with this gate's bail
+                    // (no charCount publish). Latching here makes the publish
+                    // atomic: ready⇔count, mirroring Path A at L3974-3975.
+                    shm->charSelectReady = 1;
                     for (int i = count; i < CHARSEL_MAX_CHARS; i++) {
                         ((char *)shm->names[i])[0] = '\0';
                         shm->levels[i] = 0;
@@ -4405,14 +4425,27 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                     g_p9GateLogged = true;
                     DI8Log("mq2_bridge: P9 gate fired (Poll publisher) — entry[0] is placeholder or empty (\"%.10s\"); deferring publish until Path A/C/anchor populates real names. Repeated polls without recovery = both heap scans + Path A all stuck.",
                            (const char *)shm->names[0]);
-                } else if (firstBadIdx > 0 && !g_partialPopLogged) {
+                } else if (firstBadIdx > 0) {
                     // v3.22.22 new case: entry[0] real but a later entry
                     // failed — Path C heap-scan partial-pop hole, or Path
                     // B row-loop missed a row. Reuse the partial-pop one-shot
                     // flag (same lifecycle as the Path A pre-gate).
-                    g_partialPopLogged = true;
-                    DI8Log("mq2_bridge: P9 gate widened-fire (Poll publisher) — entry[0] real (\"%.10s\") but entry[%d] not plausible (\"%.10s\"); deferring publish (likely Path C heap-scan partial-pop or Path B partial row write). Next poll's Path A/B/C will retry.",
-                           (const char *)shm->names[0], firstBadIdx, (const char *)shm->names[firstBadIdx]);
+                    if (!g_partialPopLogged) {
+                        g_partialPopLogged = true;
+                        DI8Log("mq2_bridge: P9 gate widened-fire (Poll publisher) — entry[0] real (\"%.10s\") but entry[%d] not plausible (\"%.10s\"); deferring publish + invalidating heap-scan cache so next poll's Path C re-scans from scratch.",
+                               (const char *)shm->names[0], firstBadIdx, (const char *)shm->names[firstBadIdx]);
+                    }
+                    // v3.22.22 round-3 (R2 T3-Sonnet SEV-1): invalidate the
+                    // heap-scan cache so Path C re-runs HeapScanForCharArray
+                    // on the next 500ms poll. Without this, g_heapScanDone
+                    // stays true and Path C only ever falls through to the
+                    // re-read path at L4295 — which uses the same array
+                    // base and would keep hitting the same hole. Resetting
+                    // matches the heap-cache-stale path at L4329-4330 which
+                    // already does this for the validated<count case.
+                    g_heapScanArrayBase = 0;
+                    g_heapScanDone = false;
+                    g_lastHeapScanAddr = 0;
                 }
             }
         }
