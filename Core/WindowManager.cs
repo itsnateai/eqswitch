@@ -97,13 +97,19 @@ public class WindowManager
     /// Arrange all EQ client windows based on the current layout mode.
     /// In "multimonitor" mode: one window per physical monitor, full-screen.
     /// In "single" mode: grid layout on the target monitor.
+    ///
+    /// v3.22.20: optional <paramref name="monitorSlotByPid"/> overrides the
+    /// legacy clientIndex-based monitor assignment in multi-monitor mode.
+    /// When provided, each client's monitor slot is read from the map (by
+    /// ProcessId), enabling SwitchKey-driven slot rotation. Null falls back
+    /// to clientIndex (matches v3.22.19 behavior).
     /// </summary>
-    public void ArrangeWindows(IReadOnlyList<EQClient> clients)
+    public void ArrangeWindows(IReadOnlyList<EQClient> clients, IReadOnlyDictionary<int, int>? monitorSlotByPid = null)
     {
         if (clients.Count == 0) return;
 
         if (_config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase))
-            ArrangeMultiMonitor(clients);
+            ArrangeMultiMonitor(clients, monitorSlotByPid);
         else
             ArrangeSingleScreen(clients);
     }
@@ -162,8 +168,11 @@ public class WindowManager
     /// Multi-monitor mode: distribute windows across physical monitors.
     /// Each window fills its assigned monitor. Cycles through monitors if
     /// there are more windows than screens.
+    /// v3.22.20: <paramref name="monitorSlotByPid"/> (when non-null) maps
+    /// each ProcessId to its assigned monitor slot. Enables true rotation
+    /// via SwitchKey instead of the legacy clientIndex-positional assignment.
     /// </summary>
-    private void ArrangeMultiMonitor(IReadOnlyList<EQClient> clients)
+    private void ArrangeMultiMonitor(IReadOnlyList<EQClient> clients, IReadOnlyDictionary<int, int>? monitorSlotByPid = null)
     {
         // v3.22.19: per-monitor slim override. Primary uses SlimTitlebar,
         // secondary uses SlimTitlebarSecondary. Need BOTH full-bounds and
@@ -209,7 +218,17 @@ public class WindowManager
                 continue;
             }
 
-            var (mon, useSlim) = monitorOrder[i % monitorOrder.Count];
+            // v3.22.20: per-PID slot lookup. If the caller (TrayManager)
+            // supplied a slot map, this PID's assigned slot drives monitor
+            // choice — otherwise fall back to clientIndex (legacy positional).
+            // Lets SwitchKey rotate slot values and have ArrangeMultiMonitor
+            // physically move each client without the hook DLL dragging back.
+            int slot;
+            if (monitorSlotByPid != null && monitorSlotByPid.TryGetValue(client.ProcessId, out int mappedSlot))
+                slot = mappedSlot;
+            else
+                slot = i;
+            var (mon, useSlim) = monitorOrder[slot % monitorOrder.Count];
 
             if (_api.IsIconic(client.WindowHandle))
                 _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
@@ -258,9 +277,9 @@ public class WindowManager
                     flags);
             }
 
-            string monLabel = i % monitorOrder.Count == 0 ? "primary" : "secondary";
+            string monLabel = slot % monitorOrder.Count == 0 ? "primary" : "secondary";
             string slimLabel = useSlim ? " (slim titlebar)" : " (normal frame, work-area)";
-            FileLogger.Info($"ArrangeMultiMonitor: {client} → {monLabel} monitor ({mon.Left},{mon.Top}) {mon.Width}x{mon.Height}{slimLabel}");
+            FileLogger.Info($"ArrangeMultiMonitor: {client} → {monLabel} monitor ({mon.Left},{mon.Top}) {mon.Width}x{mon.Height}{slimLabel} [slot={slot}]");
         }
 
         string modeLabel = $" (primary={(primarySlim ? "slim" : "normal")}, secondary={(secondarySlim ? "slim" : "normal")})";
