@@ -42,6 +42,36 @@ windowing changes.
    `Shutdown()`) so a slow-populating account is diagnosable without
    spam.
 
+### Round 3 — Path C charSelectReady latch deferred to P9 (verifier R2 T2 Sonnet+Opus + T3-Sonnet SEV-1 convergence)
+
+The round-2 re-verifier sweep converged on a load-bearing follow-up. Path C
+latched `shm->charSelectReady = 1` at line ~4201 (heap-scan) and ~4279
+(anchor-scan) **inside its own `__try`, before the widened P9 publisher
+gate ran**. If Path C's `continue`-on-failure loop (line 4185) wrote
+interior holes (entry[0]=real, entry[5]=""), P9 correctly bailed on the
+`charCount` publish — but `charSelectReady` was already latched. C#
+`AutoLoginManager.cs:1587` reads `ReadCharCount(pid) > 0 ||
+IsCharSelectReady(pid)` with OR semantics, so a stale latch was enough
+to push the SM out of its wait loop with `charCount=0`. The 4-retry
+republish wait at line ~1620 mostly hides this (2 seconds for Path A to
+self-heal), but in the pathological case the SM would advance with an
+empty `charNames[]`.
+
+Round-3 makes the publish atomic: `shm->charSelectReady = 1` moves from
+Path C's two latch sites into P9's `if (allPlausible)` success block,
+mirroring Path A's already-atomic latch+publish at L3974-3975. Single
+source of truth for the Path B+C combined publisher chain. Standalone
+heap-scan / standalone anchor / Path A keep their own atomic latches
+(those publish independently, never go through P9).
+
+Round-3 also addresses R2 T3-Sonnet SEV-1: the widened-fire branch
+(`firstBadIdx > 0`) now invalidates the heap-scan cache
+(`g_heapScanArrayBase = 0; g_heapScanDone = false; g_lastHeapScanAddr = 0`)
+so Path C re-runs `HeapScanForCharArray` on the next 500 ms poll.
+Without this, Path C would only fall through to the re-read at L4295
+using the same stale base — which would keep hitting the same hole.
+Matches the existing heap-cache-stale invalidation at L4329-4330.
+
 ### Round 2 — P9 gate widened to all entries (verifier T2 Sonnet+Opus convergence)
 
 The round-1 fix above closed Path A and `PopulateCharacterData`. The 8-agent
