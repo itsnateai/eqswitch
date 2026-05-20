@@ -1886,9 +1886,18 @@ public class TrayManager : IDisposable
                         // v3.22.20: tray-menu "Swap Windows" honors the same
                         // slot-rotation path as the SwitchKey hotkey in
                         // multi-monitor mode.
+                        // v3.22.21 round-5 (T3-S5 catch): mirror the phase
+                        // timing instrumentation from OnSwitchKey / OnGlobalSwitchKey
+                        // so the tray-menu path captures the same diagnostic
+                        // data when exercised. v3.22.22 reads these logs.
+                        var sw = System.Diagnostics.Stopwatch.StartNew();
                         RotateMonitorSlots();
+                        long tRotate = sw.ElapsedMilliseconds;
                         _windowManager.ArrangeWindows(swapClients, _monitorSlotByPid);
+                        long tArrange = sw.ElapsedMilliseconds;
                         UpdateHookConfig();
+                        long tHook = sw.ElapsedMilliseconds;
+                        FileLogger.Info($"TraySwap-swap-timing: rotate={tRotate}ms, arrange={tArrange - tRotate}ms, hookConfig={tHook - tArrange}ms, total={tHook}ms");
                     }
                     else
                     {

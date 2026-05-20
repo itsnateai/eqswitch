@@ -341,11 +341,14 @@ public class WindowManager
                 // already in slim-style — pre-fix this unconditionally
                 // fired SetWindowLongPtr (a no-op) + SetWindowPos with
                 // SWP_FRAMECHANGED, which forces a non-client recompute
-                // and briefly exposes the taskbar area that the slim
-                // window normally covers. Visible as a primary-monitor
-                // taskbar flicker on every SwitchKey swap. The non-slim
-                // branch below already had this conditional guard; the
-                // slim branch was missing it.
+                // on every swap. Originally hypothesized as a SUSPECTED
+                // contributor to the taskbar-flicker symptom; post-smoke
+                // verification confirmed the flicker persists, so this
+                // patch is NOT the root cause. Kept anyway: matches the
+                // non-slim branch's pre-existing conditional guard
+                // (symmetry), eliminates real WM_NCCALCSIZE traffic on a
+                // cross-process window (non-free even when invisible).
+                // Round-5 T3-Opus verdict: defensible standalone.
                 long currentStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64();
                 long desiredStyle = currentStyle & ~NativeMethods.WS_THICKFRAME;
                 if (currentStyle != desiredStyle)
@@ -416,10 +419,23 @@ public class WindowManager
         //
         // v3.22.22 hypothesis (post-v3.22.21 smoke): DeferWindowPos may not
         // be fully atomic across processes + monitors. AHK reference at
-        // _.src/.oursrcarchive/eqswitch_ahk/EQSwitch.ahk:414-441 uses
-        // sequential WinMove and reportedly does NOT flicker. A/B test
-        // sequential vs batched in v3.22.22 with these timing logs.
+        // X:/_Projects/_.src/.oursrcarchive/eqswitch_ahk/EQSwitch.ahk:414-441
+        // uses sequential WinMove and reportedly does NOT flicker (caveat:
+        // the AHK build did NOT inject eqswitch-hook.dll, so its swap
+        // didn't fight any in-process hook-driven SetWindowPos replays —
+        // this is a co-factor when comparing AHK-vs-C#). A/B test
+        // sequential vs batched in v3.22.22 with the per-stage timing
+        // logs added below (T2-Opus round-5 catch — aggregate pass2 timing
+        // couldn't distinguish atomic-batch from sequential-within-batch).
+        //
+        // pass2Stages captures monotonic ms-since-arrange-start at each
+        // DeferWindowPos boundary. For an N-client swap: [tBeforeBegin,
+        // tAfterDefer_0, tAfterDefer_1, ..., tAfterEnd]. v3.22.22 reads
+        // this to determine whether windows ARE batched atomically or
+        // sequentially-within-the-batch.
+        var pass2Stages = new List<long>(targets.Count + 2);
         bool batchOk = false;
+        pass2Stages.Add(swArrange.ElapsedMilliseconds); // tBeforeBegin
         var hdwp = _api.BeginDeferWindowPos(targets.Count);
         if (hdwp != IntPtr.Zero)
         {
@@ -427,6 +443,7 @@ public class WindowManager
             foreach (var t in targets)
             {
                 hdwp = _api.DeferWindowPos(hdwp, t.hwnd, IntPtr.Zero, t.x, t.y, t.w, t.h, t.flags);
+                pass2Stages.Add(swArrange.ElapsedMilliseconds); // tAfterDefer_i
                 if (hdwp == IntPtr.Zero)
                 {
                     FileLogger.Warn("ArrangeMultiMonitor: DeferWindowPos failed mid-batch — falling back to sequential SetWindowPos");
@@ -435,7 +452,10 @@ public class WindowManager
                 }
             }
             if (batchOk)
+            {
                 _api.EndDeferWindowPos(hdwp);
+                pass2Stages.Add(swArrange.ElapsedMilliseconds); // tAfterEnd
+            }
         }
         else
         {
@@ -445,7 +465,10 @@ public class WindowManager
         if (!batchOk)
         {
             foreach (var t in targets)
+            {
                 _api.SetWindowPos(t.hwnd, IntPtr.Zero, t.x, t.y, t.w, t.h, t.flags);
+                pass2Stages.Add(swArrange.ElapsedMilliseconds); // sequential fallback timings
+            }
         }
         long tPass2 = swArrange.ElapsedMilliseconds;
 
@@ -456,6 +479,12 @@ public class WindowManager
         string batchLabel = batchOk ? "atomic batch" : "sequential fallback";
         string lockSummary = lockToPrimaryDims ? ", lock-to-primary" : "";
         FileLogger.Info($"ArrangeMultiMonitor: {targets.Count}/{clients.Count} window(s), primary={primaryIdx} secondary={secondaryIdx}{modeLabel}, positioned via {batchLabel}{lockSummary} — pass1={tPass1}ms pass2={tPass2 - tPass1}ms");
+        // Per-stage pass-2 timing (v3.22.22 diagnostic — round-5 T2-Opus catch):
+        // For N clients: [tBeforeBegin, tAfterDefer_0, ..., tAfterDefer_{N-1}, tAfterEnd].
+        // Deltas between adjacent values reveal whether the DeferWindowPos
+        // batch is truly atomic (all timestamps cluster) or sequential-within-
+        // the-batch (timestamps spread across the swap latency).
+        FileLogger.Info($"ArrangeMultiMonitor: pass2-stages [{string.Join(",", pass2Stages)}]ms");
     }
 
     /// <summary>
