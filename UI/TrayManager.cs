@@ -144,7 +144,38 @@ public class TrayManager : IDisposable
             // Re-apply (idempotent) — covers the case where LoginCredentialsSent
             // didn't fire (early abort) or EQ fought back during the charselect-
             // load transition and drifted off slim-titlebar.
-            ApplyDeferredCosmetics(pid);
+            //
+            // v3.22.22 round-4 (2026-05-20 smoke crash diagnosis): defer the
+            // re-arrange by 15s instead of firing immediately. The Enter World
+            // event triggers EQ's zone-load DX device reset which blocks the
+            // window's message pump for 5-15s. If we fire ArrangeWindows during
+            // that window — and ArrangeWindows necessarily touches this very
+            // client's HWND (it's in `_processManager.Clients`) — pass-1's
+            // SetWindowLongPtr blocks until the pump unsticks (14,471 ms
+            // observed 2026-05-20 PID 24672 → crash). BURST 1 has already
+            // applied the slim-titlebar at T+~7s before any Enter World fires,
+            // so this safety-net re-apply only matters if EQ fought back
+            // during the charselect-load transition; an extra 15s wait is
+            // imperceptible and gives the DX swap-chain reconfig room to
+            // finish before we touch the window again. WindowManager also has
+            // a SendMessageTimeout probe (defense in depth) but the deferral
+            // eliminates the race entirely instead of merely fast-failing it.
+            int capturedPid = pid;
+            var deferTimer = new System.Windows.Forms.Timer { Interval = 15000 };
+            deferTimer.Tick += (s, e) =>
+            {
+                try
+                {
+                    deferTimer.Stop();
+                    deferTimer.Dispose();
+                    ApplyDeferredCosmetics(capturedPid);
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Error($"AutoLogin: deferred LoginComplete cosmetic re-apply failed (PID {capturedPid})", ex);
+                }
+            };
+            deferTimer.Start();
         };
     }
 

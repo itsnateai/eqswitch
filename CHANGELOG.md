@@ -42,6 +42,53 @@ windowing changes.
    `Shutdown()`) so a slow-populating account is diagnosable without
    spam.
 
+### Round 4 — Thread 3: ApplyDeferredCosmetics zone-load crash (production smoke 2026-05-20 15:12)
+
+The v3.22.22 round-3 build smoke confirmed Thread 1 fix in production
+(PID 25376 partial-pop → P9 widened-fire → cache invalidate → next-poll
+clean publish → 'Backup' resolved → in-game), but surfaced Thread 3
+as a hard crash:
+
+```
+[15:12:21.684] [WARN] ArrangeMultiMonitor: DeferWindowPos failed mid-batch — sequential fallback
+[15:12:21.746] [INFO] ArrangeMultiMonitor: pass1=14471ms pass2=65ms     ← 14.5s freeze
+[15:12:21.747] [INFO] ArrangeMultiMonitor: pass2-stages [14472,14474,14474,14536]ms
+[15:12:21.827] [INFO] HookConfigWriter: closed mapping for PID 24672    ← Natedogg crashed
+```
+
+PID 24672 (Natedogg, main-monitor) hit LoginComplete at 15:12:06.864,
+which triggered `ApplyDeferredCosmetics(24672)` → `ArrangeWindows` over
+all clients. EQ's Enter World event simultaneously kicked off the
+zone-load DX device reset, which blocks the message pump for 5–15 s.
+Pass-1's `SetWindowLongPtr(client.WindowHandle, ...)` on PID 24672
+blocked 14,471 ms because PID 24672's own pump was the one stalled.
+`IsHungAppWindow` returned false (its 5 s kernel threshold hadn't
+elapsed when the loop entered) so the existing hung-skip filter didn't
+catch it. The 14.5 s stall corrupted PID 24672's DX reconfig and EQ
+crashed.
+
+Two-layer defense:
+
+1. **`WindowManager.ArrangeMultiMonitor`** — added a
+   `SendMessageTimeout(WM_NULL, SMTO_ABORTIFHUNG, 100 ms)` probe after
+   the existing `IsHungAppWindow` check. Tighter than `IsHungAppWindow`
+   (100 ms timeout vs 5 s kernel threshold) so transient mid-zone-load
+   pump blocks fast-fail instead of stalling pass-1. Skipped clients
+   are logged loudly.
+2. **`TrayManager.LoginComplete` handler** — defer the safety-net
+   re-arrange by 15 s via `System.Windows.Forms.Timer`. Enter World
+   triggers a 5–15 s DX swap-chain reconfig where the window's pump is
+   blocked; firing `ApplyDeferredCosmetics` immediately puts us inside
+   that window. BURST 1's arrange already happened at T+7 s on login
+   screen (before Enter World), so this LoginComplete safety net only
+   matters if EQ fought back during the charselect-load transition. A
+   15 s wait is imperceptible and gives the zone-load reconfig room
+   to finish before we touch the window again.
+
+Together (1) eliminates the race and (2) defense-in-depth catches any
+remaining unresponsive-pump case (multi-client overlap, manual hotkey
+arrange, etc.). C#-only change — no native DLL rebuild required.
+
 ### Round 3 — Path C charSelectReady latch deferred to P9 (verifier R2 T2 Sonnet+Opus + T3-Sonnet SEV-1 convergence)
 
 The round-2 re-verifier sweep converged on a load-bearing follow-up. Path C
