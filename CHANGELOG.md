@@ -42,6 +42,47 @@ windowing changes.
    `Shutdown()`) so a slow-populating account is diagnosable without
    spam.
 
+### Round 6 — Probe at the leaf `ApplySlimTitlebar` + `ResizeToCurrentMonitors` (R5 T2 Sonnet+Opus CRITICAL convergence)
+
+The R5 8-agent sweep found that round-5's probe coverage was still
+incomplete — Sonnet and Opus T2 verifiers converged on three CRITICAL
+gaps that all share the same shape: a cross-process
+`SetWindowLongPtr` / `SetWindowPos` reachable without a probe.
+
+- **R5 T2 C1 / G2** — `ResizeToCurrentMonitors` (`WindowManager.cs`
+  L636-677) iterates clients and calls `SetWindowPos` with
+  `SWP_FRAMECHANGED`. Called immediately after `SwapWindows` from
+  `TrayManager.cs:1940`. A client could enter zone-load DX reset in
+  the millisecond gap between `SwapWindows`' probe and the
+  `ResizeToCurrentMonitors` SetWindowPos.
+- **R5 T2 C2 / G1** — `ApplySlimTitlebarToAll` (`WindowManager.cs`
+  L685-711) is the slim-titlebar guard-timer callback (fires every
+  500 ms-5 s). It calls `ApplySlimTitlebar` directly, which does
+  `SetWindowLongPtr` + two `SetWindowPos` calls — the exact stall
+  primitive that crashed PID 24672.
+- **R5 T2 C3 / G3** — `TrayManager.cs:404` (`ClientDiscovered`
+  single-screen branch) and `TrayManager.cs:209`
+  (`ApplyDeferredCosmetics` single-screen BURST 1 branch) both call
+  `ApplySlimTitlebar` directly, bypassing `ArrangeSingleScreen`'s
+  probe. The round-5 CHANGELOG claim that "single-monitor BURST 1 is
+  also covered" was therefore false for these two paths.
+
+Round-6 fix: add the `IsClientResponsive` probe at the leaf method —
+`ApplySlimTitlebar(IntPtr hwnd, ...)` (line 719). This single addition
+covers all callers in one place: direct `ApplySlimTitlebar` calls from
+TrayManager (2 sites), the guard-timer loop in
+`ApplySlimTitlebarToAll`, `ArrangeSingleScreen`, and indirectly
+`ArrangeMultiMonitor`'s per-client work (already probed at the loop
+entry — leaf probe is belt-and-suspenders). Plus the equivalent probe
+inside the `ResizeToCurrentMonitors` per-client loop. Skipping a non-
+responsive HWND means a brief miss of the slim-titlebar style — the
+guard timer re-fires every 500 ms and will re-apply once the pump
+recovers.
+
+R5 T3 Sonnet+Opus convergent MEDIUM (helper bypasses `IWindowsApi`
+testability abstraction) is documented in the v3.22.23 backlog —
+correctness is unaffected, only unit-test mockability.
+
 ### Round 5 — Extend Thread 3 probe to ArrangeSingleScreen + SwapWindows + add SMTO_BLOCK (R4 verifier convergence)
 
 The R4 8-agent sweep flagged that the round-4 probe was scoped only to

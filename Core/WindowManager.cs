@@ -666,6 +666,16 @@ public class WindowManager
             if (_api.IsIconic(client.WindowHandle))
                 _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
+            // v3.22.22 round-6 (R5 T2 CRITICAL): pump-responsiveness probe before
+            // the cross-process SetWindowPos. Called immediately after SwapWindows
+            // from TrayManager.cs:1940 — a client could enter zone-load DX reset
+            // in the millisecond gap between SwapWindows' probe and this call.
+            if (!IsClientResponsive(client.WindowHandle))
+            {
+                FileLogger.Warn($"ResizeToCurrentMonitors: skipping non-responsive window {client} (SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset; SetWindowPos would stall)");
+                continue;
+            }
+
             _api.SetWindowPos(
                 client.WindowHandle, IntPtr.Zero,
                 m.Left, m.Top + yOffset, m.Width, m.Height,
@@ -718,6 +728,24 @@ public class WindowManager
     /// </summary>
     public void ApplySlimTitlebar(IntPtr hwnd, WinRect monitor, int titlebarOffset)
     {
+        // v3.22.22 round-6 (R5 T2 Sonnet+Opus CRITICAL convergence): leaf-level
+        // pump-responsiveness probe so EVERY caller of this method benefits —
+        // direct calls (TrayManager.cs:404 ClientDiscovered single-screen,
+        // TrayManager.cs:209 ApplyDeferredCosmetics BURST 1 single-screen),
+        // ApplySlimTitlebarToAll guard-timer loop (fires every 500ms-5s),
+        // ArrangeSingleScreen, and indirectly ArrangeMultiMonitor's own
+        // per-client pass-1 work. SetWindowLongPtr below is the exact cross-
+        // process primitive that stalled 14.5s in the 2026-05-20 PID 24672
+        // smoke crash. Skipping a non-responsive HWND here means a brief miss
+        // of the slim-titlebar style — the slim-titlebar guard timer
+        // (TrayManager._slimTitlebarGuard) re-fires every 500ms and will
+        // re-apply once the pump recovers.
+        if (!IsClientResponsive(hwnd))
+        {
+            FileLogger.Warn($"ApplySlimTitlebar: skipping non-responsive window (hwnd=0x{hwnd.ToInt64():X} SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset; guard timer will retry)");
+            return;
+        }
+
         // Strip WS_THICKFRAME for thin border, KEEP WS_CAPTION for draggable titlebar
         long style = _api.GetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE).ToInt64();
         style &= ~NativeMethods.WS_THICKFRAME;
