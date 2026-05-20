@@ -799,10 +799,14 @@ public class TrayManager : IDisposable
         }
 
         _windowManager.ArrangeWindows(clientsToArrange, _monitorSlotByPid);
-        // UpdateHookConfig() iterates _injectedPids internally — autologin
-        // clients are NOT in _injectedPids' window-management subset that
-        // gets touched here (config writes are idempotent reads of the
-        // current slot map). Keep behavior consistent with v3.22.20 path.
+        // UpdateHookConfig() iterates _injectedPids. Autologin clients ARE
+        // in that set (added during CREATE_SUSPENDED PreResume, before
+        // autologin starts) — the round-3 gate inside UpdateHookConfig
+        // (TrayManager.cs:UpdateHookConfig) filters them via IsLoginActive
+        // so we don't rewrite their hook-config shared memory while
+        // credentials are being typed. We still call UpdateHookConfig
+        // unconditionally here: the in-world clients still need their
+        // configs refreshed to reflect the new slot map.
         UpdateHookConfig();
 
         string skippedLabel = skippedAutologin > 0
@@ -2754,7 +2758,16 @@ public class TrayManager : IDisposable
     {
         if (_hookConfig == null || !_hookConfig.HasMappings) return;
 
-        foreach (var pid in _injectedPids)
+        // v3.22.21 round-4 (T3-O4 HIGH): snapshot _injectedPids before
+        // iterating. _injectedPids is a HashSet<int>; ClientLost (UI thread)
+        // mutates it. Today both this loop and ClientLost run on the UI
+        // thread so a mid-iteration mutation can't happen — BUT if
+        // _autoLoginManager.IsLoginActive ever pumps messages (e.g. via a
+        // balloon, dialog, or future Forms.Idle dispatch) the loop could
+        // re-enter and observe a mutated collection. Defensive .ToArray()
+        // snapshot makes this safe by construction; cost is one O(N) copy
+        // per Fix Windows / ReloadConfig (N ≤ ~6 in practice).
+        foreach (var pid in _injectedPids.ToArray())
         {
             if (_autoLoginManager.IsLoginActive(pid))
             {

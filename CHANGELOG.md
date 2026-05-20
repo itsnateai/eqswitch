@@ -214,12 +214,33 @@ inter-click interval, `_overflowCountsLogged` never cleared on
 ClientLost, ApplyDeferredCosmetics no-op in single-screen non-slim mode)
 are documented but not ship-blocking — folded into v3.22.22 backlog.
 
-**Declined round-4 verifier sweep** per
+A **round-4** sweep ran (the completion-checkpoint hook enforced
+verification on the round-3 commit itself). 2× APPROVE + 4× CONCERNS.
+Two convergent items addressed in a follow-up commit:
+
+- **HIGH (T3-O4):** `UpdateHookConfig`'s `foreach (var pid in _injectedPids)`
+  is a HashSet enumeration that could throw `InvalidOperationException`
+  if `IsLoginActive` ever pumped messages and `ClientLost` mutated the
+  set mid-iteration. Snapshot via `.ToArray()` before iterating — cheap
+  defensive change, no behavior delta.
+- **MEDIUM 3-way (T2-S4 + T3-S4 + T3-O4):** the `OnArrangeWindows`
+  comment near `UpdateHookConfig()` falsely claimed autologin clients
+  were NOT in `_injectedPids`. Round-3's whole rationale was the
+  opposite: autologin PIDs ARE in the set (added pre-resume), the gate
+  inside `UpdateHookConfig` is what filters them. Rewrote the comment
+  to match reality.
+- **MEDIUM 2-way (T2-O4 + T3-O4):** the prior CHANGELOG narrative said
+  "Declined round-4 sweep" — but the completion-checkpoint hook enforced
+  round-4 anyway. Updated this section to reflect what actually
+  happened.
+
+**Declined round-5 verifier sweep** per
 `memory/reference_verifier_round_diminishing_returns_signal` — round 5
-historically introduces hallucinations; round 3 already produced
-multiple MINOR cosmetic findings. The substantive convergent issues
-(round-1 PID-recycle, round-2 Timer Tick gaps, round-3 UpdateHookConfig
-gap) are all closed. Further rounds would yield diminishing real signal.
+historically introduces hallucinations; rounds 3 and 4 already produced
+mostly cosmetic findings. The substantive convergent issues across all
+4 rounds (round-1 PID-recycle, round-2 Timer Tick gaps, round-3
+UpdateHookConfig gap, round-4 HashSet snapshot + comment accuracy) are
+all closed. Remaining LOWs documented in v3.22.22 backlog.
 
 ### Out of scope (kept for forward reference)
 
