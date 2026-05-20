@@ -1,5 +1,106 @@
 # Changelog
 
+## v3.22.20 — Multi-monitor world-entry stacking fix + real SwitchKey slot rotation (2026-05-19)
+
+Closes two smoke-test regressions surfaced by the v3.22.19 multi-monitor pass.
+First-ever working SwitchKey-driven monitor swap in the C# port.
+
+### Bugs fixed
+
+1. **World-entry stacking** — `ApplyDeferredCosmetics` (called from both
+   `LoginCredentialsSent` at T+~7s and `LoginComplete` at T+~30s) hard-coded
+   `ApplySlimTitlebar(GetTargetMonitorBounds())`, which targets the *primary*
+   monitor only. In multi-monitor mode the second client got slammed back to
+   primary right at world-entry, stacking on top of the first client. Hook
+   config was correct (`pos=(1920,-13)` secondary) but the hook DLL only
+   intercepts in-process `SetWindowPos` calls — external `ApplySlimTitlebar`
+   from `EQSwitch.exe` bypasses the hook. Fix: in multi-monitor mode, route
+   through `ArrangeWindows(clients, _monitorSlotByPid)` so each PID lands on
+   its assigned monitor. Idempotent for clients already in place.
+
+2. **SwitchKey "bouncing-between-monitors-stacked"** — multi-monitor path
+   ran `SwapWindows + ResizeToCurrentMonitors + UpdateHookConfig`, but
+   `UpdateHookConfig` re-targeted PIDs by their unchanged `clientIndex` (list
+   position), so the hook DLL dragged windows back to original monitors.
+   `SwapWindows` was visible chaos with no lasting effect. Replaced with a
+   real per-PID slot rotation: `RotateMonitorSlots()` cycles the per-PID
+   slot values, then `ArrangeWindows` + `UpdateHookConfig` apply the new
+   assignment. Hook DLL holds windows in their new monitors.
+
+3. **`ClientDiscovered` initial-position stacking** — same bug as #1 in the
+   pre-login window-discovery path. Now multi-mon-aware.
+
+### Mechanism
+
+New `Dictionary<int, int> _monitorSlotByPid` in `TrayManager`. Each PID is
+assigned the next sequential slot on `ClientDiscovered` (matches v3.22.19's
+PID1→primary, PID2→secondary semantics on first launch). `SwitchKey` /
+`GlobalSwitchKey` / tray-menu "Swap Windows" in multi-mon mode call
+`RotateMonitorSlots()` to cycle slot values across PIDs (ordered by PID
+ascending for stability), then re-run `ArrangeWindows` with the updated
+slot map and rewrite hook configs. `UpdateHookConfigForPid` reads slot
+from the map (was `clientIndex % 2`) so the hook DLL follows. `ClientLost`
+removes the PID's slot entry.
+
+`WindowManager.ArrangeWindows` and `ArrangeMultiMonitor` take an optional
+`IReadOnlyDictionary<int, int>? monitorSlotByPid`. Null → legacy
+clientIndex-positional (preserves the v3.22.19 first-launch behavior for any
+call site that doesn't yet pass the slot map). All five `TrayManager`
+invocations (LaunchSequenceComplete, OnArrangeWindows, OnToggleMultiMonitor,
+ReloadConfig auto-arrange, ApplyDeferredCosmetics) now pass the slot map.
+`OnToggleMultiMonitor` + `ReloadConfig` backfill the slot map for PIDs that
+existed before multi-mon got enabled.
+
+`GetMonitorForClientIndex` / `GetWorkAreaForClientIndex` → renamed
+`GetMonitorForPid(pid, clientIndexFallback)` / `GetWorkAreaForPid(...)`.
+PID lookup wins; clientIndex is the fallback for the transient
+discovery-race window where a PID exists in `clients` but not yet in
+the slot map.
+
+### Changed
+
+- `Core/WindowManager.cs:101-109` — `ArrangeWindows` signature accepts
+  optional slot map.
+- `Core/WindowManager.cs:166-221` — `ArrangeMultiMonitor` consults slot map
+  per client when supplied; log line includes `[slot=N]`.
+- `UI/TrayManager.cs` — `_monitorSlotByPid` field, ClientDiscovered slot
+  assignment, ClientLost slot removal, `RotateMonitorSlots()`, slot-aware
+  `GetMonitorForPid` / `GetWorkAreaForPid`, slot lookup in
+  `UpdateHookConfigForPid`, multi-mon-aware `ApplyDeferredCosmetics`,
+  slot-rotation in `OnSwitchKey` / `OnGlobalSwitchKey` / tray "Swap Windows",
+  backfill in `OnToggleMultiMonitor` and `ReloadConfig`.
+- `EQSwitch.csproj` — `<Version>` 3.22.19 → 3.22.20.
+
+### Backward compatibility
+
+Legacy behavior is preserved by the null-slot-map path. Anyone calling
+`ArrangeWindows(clients)` without the map still gets `clientIndex %
+monitorOrder.Count` assignment — v3.22.19 semantics. No config schema
+change, no migration needed.
+
+### Smoke evidence (pre-fix, 2026-05-19 20:25)
+
+```
+20:25:10.349 ApplySlimTitlebar: hwnd=723512 → (0,-13) 1920x1093   ← PID 25312 primary
+20:25:13.443 ApplySlimTitlebar: hwnd=395378 → (0,-13) 1920x1093   ← PID 24876 ALSO primary (STACK)
+20:25:13.444 UpdateHookConfig: PID 24876 → pos=(1920,-13) 1920x1213, stripFrame=1   ← hook config says secondary
+```
+
+Hook config was correct; external ApplySlimTitlebar call from `EQSwitch.exe`
+stacked the window on primary. Hook DLL never got a chance to drag it back
+because EQ-in-world stops calling SetWindowPos once windowed-fullscreen settles.
+
+### Open items
+
+- DPI "smooshed" symptom is a side-effect of the stacking; should self-resolve
+  once windows land on their assigned monitor at world-entry (EQ detects the
+  correct monitor's dimensions for its windowed-fullscreen rect). If still
+  visible after this fix, the next pass would revisit PerMonitorV2 with the
+  single-screen-team fullscreen-bug fixed separately.
+- The tray menu "Swap Windows" entry name still says "swap" — semantically it
+  now means "rotate monitor assignment" in multi-mon mode. Label revisit
+  deferred.
+
 ## v3.22.19 — Multi-monitor framework + bug fixes (conservative all-slim default) (2026-05-18→19)
 
 First end-to-end pass on multi-monitor mode in the C# port. Per Nate's report

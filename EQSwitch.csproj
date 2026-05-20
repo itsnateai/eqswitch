@@ -7,7 +7,7 @@
     <ApplicationIcon>eqswitch.ico</ApplicationIcon>
     <AssemblyName>EQSwitch</AssemblyName>
     <RootNamespace>EQSwitch</RootNamespace>
-    <Version>3.22.19</Version>
+    <Version>3.22.20</Version>
     <Description>EverQuest Multiboxing Window Manager for Shards of Dalaya</Description>
     <Authors>itsnateai</Authors>
     <Copyright>© itsnateai</Copyright>

@@ -83,6 +83,14 @@ public class TrayManager : IDisposable
     private readonly HashSet<int> _injectedPids = new();
     private readonly HashSet<int> _di8InjectedPids = new();
 
+    // v3.22.20: per-PID monitor slot (0=primary, 1=secondary, ...). Replaces
+    // the legacy clientIndex-positional assignment so SwitchKey can actually
+    // rotate which client owns which monitor — UpdateHookConfigForPid and
+    // ArrangeMultiMonitor both consult this map, so the hook DLL and the
+    // C# arrange path move in lockstep. Lifecycle: assigned on ClientDiscovered
+    // (next free slot, sequential), removed on ClientLost.
+    private readonly Dictionary<int, int> _monitorSlotByPid = new();
+
     // Per-session dedup for the one-shot legacy-routing log line (plan nuance #12).
     private readonly HashSet<int> _legacySlotDeprecationLogged = new();
 
@@ -133,13 +141,25 @@ public class TrayManager : IDisposable
     /// <summary>Apply the cosmetic work that was deferred during the auto-login
     /// sequence — slim-titlebar + hook config refresh. Idempotent: safe to call
     /// from both LoginCredentialsSent (early, T+~7s) and LoginComplete (late,
-    /// T+~30s). Caller controls the slim-titlebar guard lifecycle separately.</summary>
+    /// T+~30s). Caller controls the slim-titlebar guard lifecycle separately.
+    ///
+    /// v3.22.20: in multi-monitor mode, runs the full ArrangeWindows so each
+    /// client lands on its assigned monitor (slot map). The previous single-
+    /// monitor `ApplySlimTitlebar(GetTargetMonitorBounds())` slammed the
+    /// second client onto primary right at world-entry — visible as stacked
+    /// windows in the 2026-05-19 smoke log. ArrangeWindows is idempotent so
+    /// per-PID invocation doesn't churn correctly-placed clients.</summary>
     private void ApplyDeferredCosmetics(int pid)
     {
         var client = _processManager.Clients.FirstOrDefault(c => c.ProcessId == pid);
         if (client == null) return;
 
-        if (_config.Layout.SlimTitlebar)
+        bool isMM = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+        if (isMM)
+        {
+            _windowManager.ArrangeWindows(_processManager.Clients, _monitorSlotByPid);
+        }
+        else if (_config.Layout.SlimTitlebar)
         {
             _windowManager.ApplySlimTitlebar(
                 client.WindowHandle,
@@ -305,6 +325,17 @@ public class TrayManager : IDisposable
             if (AutoLoginManager.TryGetBoundName(c.ProcessId, out var bound))
                 c.BoundCharacterName = bound;
 
+            // v3.22.20: assign initial monitor slot if unmapped. Sequential
+            // (count-of-existing-entries) preserves v3.22.19's PID1→primary,
+            // PID2→secondary semantics; SwitchKey rotation modifies the values
+            // in place later. Lifecycle removal happens in ClientLost.
+            if (!_monitorSlotByPid.ContainsKey(c.ProcessId))
+            {
+                int slot = _monitorSlotByPid.Count;
+                _monitorSlotByPid[c.ProcessId] = slot;
+                FileLogger.Info($"MonitorSlot: PID {c.ProcessId} → slot {slot} (initial assignment)");
+            }
+
             // NO tooltip here — creating TopMost windows during EQ's DirectX init
             // causes the game to lose foreground and minimize itself
             _affinityManager.ScheduleRetry(c);
@@ -316,13 +347,24 @@ public class TrayManager : IDisposable
                 return;
 
             // Apply slim titlebar immediately so the window covers the taskbar
-            // from the moment it's discovered — don't wait for the guard timer
+            // from the moment it's discovered — don't wait for the guard timer.
+            // v3.22.20 fix: in multi-monitor mode, run the full arrange so the
+            // second client lands on the secondary monitor right away instead
+            // of being slammed onto primary by GetTargetMonitorBounds().
             if (_config.Layout.SlimTitlebar)
             {
-                _windowManager.ApplySlimTitlebar(
-                    c.WindowHandle,
-                    _windowManager.GetTargetMonitorBounds(),
-                    _config.Layout.TitlebarOffset);
+                bool isMM = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+                if (isMM)
+                {
+                    _windowManager.ArrangeWindows(_processManager.Clients, _monitorSlotByPid);
+                }
+                else
+                {
+                    _windowManager.ApplySlimTitlebar(
+                        c.WindowHandle,
+                        _windowManager.GetTargetMonitorBounds(),
+                        _config.Layout.TitlebarOffset);
+                }
             }
 
             // For EQSwitch-launched clients, both DLLs are already injected pre-resume.
@@ -355,6 +397,11 @@ public class TrayManager : IDisposable
             _injectedPids.Remove(c.ProcessId);
             _di8InjectedPids.Remove(c.ProcessId);
             _hookConfig?.Close(c.ProcessId);
+
+            // v3.22.20: drop monitor-slot binding so a recycled PID doesn't
+            // inherit a stale slot. New PIDs re-enter via ClientDiscovered's
+            // sequential assignment.
+            _monitorSlotByPid.Remove(c.ProcessId);
 
             // Drop the PID→name binding so a recycled PID doesn't inherit a stale name.
             AutoLoginManager.ClearBoundName(c.ProcessId);
@@ -398,7 +445,7 @@ public class TrayManager : IDisposable
                     arrangeTimer.Dispose();
                     var clients = _processManager.Clients;
                     if (clients.Count > 0)
-                        _windowManager.ArrangeWindows(clients);
+                        _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
                 };
                 arrangeTimer.Start();
             }
@@ -595,13 +642,20 @@ public class TrayManager : IDisposable
         {
             try
             {
-                _windowManager.SwapWindows(clients);
-                _windowManager.ResizeToCurrentMonitors(clients);
-                UpdateHookConfig(); // Hook configs must follow swapped positions
+                // v3.22.20: rotate per-PID monitor slot assignments, then
+                // re-arrange + refresh hook config. Previously called
+                // SwapWindows + ResizeToCurrentMonitors + UpdateHookConfig,
+                // which fought itself: UpdateHookConfig re-targeted PIDs by
+                // unchanged clientIndex, so the hook DLL dragged windows
+                // back to their original monitors — visible as the
+                // bouncing-stacked pattern in the 2026-05-19 smoke log.
+                RotateMonitorSlots();
+                _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
+                UpdateHookConfig();
             }
             catch (Exception ex)
             {
-                FileLogger.Error("SwitchKey: multimonitor swap+resize failed", ex);
+                FileLogger.Error("SwitchKey: multimonitor slot rotation failed", ex);
             }
         }
 
@@ -658,13 +712,15 @@ public class TrayManager : IDisposable
         {
             try
             {
-                _windowManager.SwapWindows(clients);
-                _windowManager.ResizeToCurrentMonitors(clients);
-                UpdateHookConfig(); // Hook configs must follow swapped positions
+                // v3.22.20: see OnSwitchKey comment — real slot rotation
+                // instead of physical-swap-then-clientIndex-revert.
+                RotateMonitorSlots();
+                _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
+                UpdateHookConfig();
             }
             catch (Exception ex)
             {
-                FileLogger.Error("GlobalSwitchKey: multimonitor swap+resize failed", ex);
+                FileLogger.Error("GlobalSwitchKey: multimonitor slot rotation failed", ex);
             }
         }
 
@@ -697,7 +753,7 @@ public class TrayManager : IDisposable
             return;
         }
 
-        _windowManager.ArrangeWindows(clients);
+        _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
         UpdateHookConfig();
         FileLogger.Info($"ArrangeWindows: arranged {clients.Count} client(s)");
         string mode = _config.Layout.SlimTitlebar ? "slim titlebar" : "stacked";
@@ -736,7 +792,19 @@ public class TrayManager : IDisposable
         var clients = _processManager.Clients;
         if (clients.Count > 0)
         {
-            _windowManager.ArrangeWindows(clients);
+            // v3.22.20: backfill slot map for any PIDs that exist but were
+            // never assigned (e.g. PIDs discovered before this method first
+            // fired). Sequential assignment matches ClientDiscovered's logic.
+            foreach (var c in clients)
+            {
+                if (!_monitorSlotByPid.ContainsKey(c.ProcessId))
+                {
+                    int slot = _monitorSlotByPid.Count;
+                    _monitorSlotByPid[c.ProcessId] = slot;
+                    FileLogger.Info($"MonitorSlot: PID {c.ProcessId} → slot {slot} (backfill on toggle)");
+                }
+            }
+            _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
             UpdateHookConfig();
         }
     }
@@ -1610,9 +1678,22 @@ public class TrayManager : IDisposable
                 var swapClients = _processManager.Clients;
                 if (swapClients.Count >= 2)
                 {
-                    _windowManager.SwapWindows(swapClients);
-                    _windowManager.ResizeToCurrentMonitors(swapClients);
-                    UpdateHookConfig();
+                    bool swapMM = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+                    if (swapMM)
+                    {
+                        // v3.22.20: tray-menu "Swap Windows" honors the same
+                        // slot-rotation path as the SwitchKey hotkey in
+                        // multi-monitor mode.
+                        RotateMonitorSlots();
+                        _windowManager.ArrangeWindows(swapClients, _monitorSlotByPid);
+                        UpdateHookConfig();
+                    }
+                    else
+                    {
+                        _windowManager.SwapWindows(swapClients);
+                        _windowManager.ResizeToCurrentMonitors(swapClients);
+                        UpdateHookConfig();
+                    }
                 }
                 break;
             case "RefreshClients":
@@ -2317,7 +2398,17 @@ public class TrayManager : IDisposable
         bool isMultiMon = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
         if (isMultiMon && _processManager.Clients.Count > 0)
         {
-            _windowManager.ArrangeWindows(_processManager.Clients);
+            // v3.22.20: backfill slot map (same as OnToggleMultiMonitor).
+            foreach (var c in _processManager.Clients)
+            {
+                if (!_monitorSlotByPid.ContainsKey(c.ProcessId))
+                {
+                    int slot = _monitorSlotByPid.Count;
+                    _monitorSlotByPid[c.ProcessId] = slot;
+                    FileLogger.Info($"MonitorSlot: PID {c.ProcessId} → slot {slot} (backfill on ReloadConfig)");
+                }
+            }
+            _windowManager.ArrangeWindows(_processManager.Clients, _monitorSlotByPid);
             FileLogger.Info("ReloadConfig: auto-arranged for multimonitor mode");
         }
 
@@ -2523,7 +2614,13 @@ public class TrayManager : IDisposable
         bool slimForThisPid;
         if (isMM)
         {
-            bool isPrimaryMonitor = (clientIndex % 2 == 0);
+            // v3.22.20: read slot from _monitorSlotByPid (PID-keyed) instead
+            // of clientIndex (list-position). Otherwise SwitchKey-driven
+            // rotation would re-flip slim assignments per-press as PIDs
+            // rotated through slot positions — leaking back to the v3.22.19
+            // bouncing pattern.
+            int slot = _monitorSlotByPid.TryGetValue(pid, out int s) ? s : (clientIndex % 2);
+            bool isPrimaryMonitor = (slot == 0);
             slimForThisPid = isPrimaryMonitor ? _config.Layout.SlimTitlebar : _config.Layout.SlimTitlebarSecondary;
         }
         else
@@ -2540,9 +2637,12 @@ public class TrayManager : IDisposable
             // Multi-monitor: hook enforces position for BOTH clients regardless
             // of slim flag — slim uses full bounds + frame strip, non-slim uses
             // work-area + frame retained.
+            // v3.22.20: bounds lookup now goes through GetMonitorForPid /
+            // GetWorkAreaForPid (slot-map-aware) so the hook config follows
+            // the rotated slot assignment instead of the fixed clientIndex.
             if (slimForThisPid)
             {
-                var monBounds = GetMonitorForClientIndex(clientIndex);
+                var monBounds = GetMonitorForPid(pid, clientIndex);
                 x = monBounds.Left;
                 y = monBounds.Top - _config.Layout.TitlebarOffset;
                 w = monBounds.Right - monBounds.Left;
@@ -2552,7 +2652,7 @@ public class TrayManager : IDisposable
             }
             else
             {
-                var workArea = GetWorkAreaForClientIndex(clientIndex);
+                var workArea = GetWorkAreaForPid(pid, clientIndex);
                 x = workArea.Left;
                 y = workArea.Top + _config.Layout.TopOffset;
                 w = workArea.Right - workArea.Left;
@@ -2638,10 +2738,45 @@ public class TrayManager : IDisposable
     }
 
     /// <summary>
-    /// Get the monitor bounds for a client based on its index in the client list.
-    /// Mirrors the assignment logic in WindowManager.ArrangeMultiMonitor.
+    /// v3.22.20: rotate per-PID monitor-slot assignments by one. With N PIDs
+    /// ordered by ProcessId ascending, PID[i] receives the slot that PID[i+1]
+    /// previously held, with PID[N-1] receiving PID[0]'s old slot. Used by
+    /// SwitchKey in multi-monitor mode to truly rotate which client owns
+    /// which monitor — the next ArrangeWindows + UpdateHookConfig pass then
+    /// moves each window to its new slot's monitor, and the hook DLL holds
+    /// it there. Stable ordering (by PID) ensures repeated calls follow a
+    /// predictable cycle.
     /// </summary>
-    private WinRect GetMonitorForClientIndex(int clientIndex)
+    private void RotateMonitorSlots()
+    {
+        if (_monitorSlotByPid.Count < 2) return;
+        var pids = _monitorSlotByPid.Keys.OrderBy(p => p).ToList();
+        var oldSlots = pids.Select(p => _monitorSlotByPid[p]).ToList();
+        for (int i = 0; i < pids.Count; i++)
+            _monitorSlotByPid[pids[i]] = oldSlots[(i + 1) % oldSlots.Count];
+        FileLogger.Info($"RotateMonitorSlots: {string.Join(", ", pids.Select(p => $"PID {p}→slot {_monitorSlotByPid[p]}"))}");
+    }
+
+    /// <summary>
+    /// v3.22.20: look up this PID's assigned monitor slot from the slot map.
+    /// Falls back to <paramref name="clientIndexFallback"/> if the PID isn't
+    /// in the map yet (transient client-discovery race). Returns a slot index
+    /// in [0, monitorOrder.Count). Pure helper — no side effects.
+    /// </summary>
+    private int ResolveSlotForPid(int pid, int clientIndexFallback)
+    {
+        if (_monitorSlotByPid.TryGetValue(pid, out int s))
+            return s;
+        return clientIndexFallback;
+    }
+
+    /// <summary>
+    /// Get the monitor (full) bounds for a PID based on its assigned monitor
+    /// slot. v3.22.20: PID-keyed (was clientIndex-keyed) so SwitchKey-driven
+    /// slot rotation flows through to hook config without index mismatch.
+    /// Falls back to <paramref name="clientIndexFallback"/> if slot not mapped.
+    /// </summary>
+    private WinRect GetMonitorForPid(int pid, int clientIndexFallback)
     {
         var monitors = _windowManager.GetAllMonitorFullBounds();
         if (monitors.Count == 0)
@@ -2655,20 +2790,20 @@ public class TrayManager : IDisposable
         if (monitors.Count > 1)
             monitorOrder.Add(monitors[secondaryIdx]);
 
-        return monitorOrder[clientIndex % monitorOrder.Count];
+        int slot = ResolveSlotForPid(pid, clientIndexFallback);
+        return monitorOrder[slot % monitorOrder.Count];
     }
 
     /// <summary>
-    /// v3.22.19: get work-area bounds (excludes taskbar) for a client based
-    /// on its index. Mirrors <see cref="GetMonitorForClientIndex"/>'s
-    /// monitor-index selection logic but uses the work-area enumeration.
-    /// Used to compute hook config for non-slim secondary clients.
+    /// v3.22.19/20: work-area bounds (excludes taskbar) for a PID, slot-aware.
+    /// Resolves secondaryIdx against full-bounds (canonical for arrange path)
+    /// to keep hook config and arrange targeting the same physical monitor.
     /// </summary>
-    private WinRect GetWorkAreaForClientIndex(int clientIndex)
+    private WinRect GetWorkAreaForPid(int pid, int clientIndexFallback)
     {
         // v3.22.19 round-2 verifier (T3 Sonnet + T2 Opus convergence):
         // Resolve secondaryIdx against FULL bounds (canonical for ArrangeMultiMonitor
-        // + GetMonitorForClientIndex) — then look up the work-area rect at the
+        // + GetMonitorForPid) — then look up the work-area rect at the
         // SAME index. Previously passed workAreas to the resolver, which could
         // yield a different secondaryIdx on vertical-taskbar monitors (rcWork
         // width ≠ rcMonitor width), silently misaligning hook config against
@@ -2683,12 +2818,13 @@ public class TrayManager : IDisposable
         // rather than picking wrong-monitor coords.
         if (fullBounds.Count != workAreas.Count)
         {
-            FileLogger.Error($"GetWorkAreaForClientIndex: monitor enumeration count mismatch — fullBounds={fullBounds.Count} workAreas={workAreas.Count}, falling back to work-area-only resolution");
+            FileLogger.Error($"GetWorkAreaForPid: monitor enumeration count mismatch — fullBounds={fullBounds.Count} workAreas={workAreas.Count}, falling back to work-area-only resolution");
             var primaryIdxFallback = Math.Clamp(_config.Layout.TargetMonitor, 0, workAreas.Count - 1);
             int secondaryIdxFallback = WindowManager.ResolveSecondaryMonitorIdx(_config.Layout.SecondaryMonitor, primaryIdxFallback, workAreas);
             var orderFallback = new List<WinRect> { workAreas[primaryIdxFallback] };
             if (workAreas.Count > 1) orderFallback.Add(workAreas[secondaryIdxFallback]);
-            return orderFallback[clientIndex % orderFallback.Count];
+            int slotFb = ResolveSlotForPid(pid, clientIndexFallback);
+            return orderFallback[slotFb % orderFallback.Count];
         }
 
         var primaryIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, fullBounds.Count - 1);
@@ -2699,7 +2835,8 @@ public class TrayManager : IDisposable
         if (workAreas.Count > 1)
             monitorOrder.Add(workAreas[secondaryIdx]);
 
-        return monitorOrder[clientIndex % monitorOrder.Count];
+        int slot = ResolveSlotForPid(pid, clientIndexFallback);
+        return monitorOrder[slot % monitorOrder.Count];
     }
 
     private void CleanupHookInjection()
