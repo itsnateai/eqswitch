@@ -88,8 +88,18 @@ public class TrayManager : IDisposable
     // rotate which client owns which monitor — UpdateHookConfigForPid and
     // ArrangeMultiMonitor both consult this map, so the hook DLL and the
     // C# arrange path move in lockstep. Lifecycle: assigned on ClientDiscovered
-    // (next free slot, sequential), removed on ClientLost.
+    // (next free slot, scan-based), removed on ClientLost.
+    // v3.22.21: assignment switched from `Count`-based (PID-recycle dupe-slot
+    // bug — 4-way verifier convergence) to free-slot scan via AssignNextFreeSlot.
     private readonly Dictionary<int, int> _monitorSlotByPid = new();
+
+    // v3.22.21: dedup overflow warn-log so 3+ clients on 2 monitors logs once
+    // per new overflow level instead of per-arrange. Keys: overflow count
+    // (post-add clients minus monitorCount). Never cleared — re-logging the
+    // same overflow level on the second occurrence within a session adds
+    // noise without information (overflow is a steady-state config issue,
+    // not an urgent one).
+    private readonly HashSet<int> _overflowCountsLogged = new();
 
     // Per-session dedup for the one-shot legacy-routing log line (plan nuance #12).
     private readonly HashSet<int> _legacySlotDeprecationLogged = new();
@@ -325,16 +335,12 @@ public class TrayManager : IDisposable
             if (AutoLoginManager.TryGetBoundName(c.ProcessId, out var bound))
                 c.BoundCharacterName = bound;
 
-            // v3.22.20: assign initial monitor slot if unmapped. Sequential
-            // (count-of-existing-entries) preserves v3.22.19's PID1→primary,
-            // PID2→secondary semantics; SwitchKey rotation modifies the values
-            // in place later. Lifecycle removal happens in ClientLost.
+            // v3.22.20: assign initial monitor slot if unmapped. v3.22.21:
+            // free-slot scan (was `_monitorSlotByPid.Count`) — fixes the
+            // PID-recycle dupe-slot bug. AssignNextFreeSlot handles the
+            // overflow case + warn-log. Lifecycle removal happens in ClientLost.
             if (!_monitorSlotByPid.ContainsKey(c.ProcessId))
-            {
-                int slot = _monitorSlotByPid.Count;
-                _monitorSlotByPid[c.ProcessId] = slot;
-                FileLogger.Info($"MonitorSlot: PID {c.ProcessId} → slot {slot} (initial assignment)");
-            }
+                AssignNextFreeSlot(c.ProcessId, "initial assignment");
 
             // NO tooltip here — creating TopMost windows during EQ's DirectX init
             // causes the game to lose foreground and minimize itself
@@ -742,6 +748,9 @@ public class TrayManager : IDisposable
 
     /// <summary>
     /// Arrange all EQ windows (Fix Windows). Hotkey configurable in Settings.
+    /// v3.22.21: also fires <see cref="ForceDxReinit"/> on every client, all
+    /// modes, all client counts. Recovery hatch for cross-monitor smooshed
+    /// windows (DX swap-chain stuck at the wrong monitor's resolution).
     /// </summary>
     private void OnArrangeWindows()
     {
@@ -756,8 +765,120 @@ public class TrayManager : IDisposable
         _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
         UpdateHookConfig();
         FileLogger.Info($"ArrangeWindows: arranged {clients.Count} client(s)");
+
+        // v3.22.21: force DX swap-chain reinit on every client. The chain can
+        // get stuck rendering at the wrong monitor's dimensions after a
+        // cross-monitor SwitchKey swap (visible as smoothed/distorted fonts).
+        // PostMessage(WM_NCLBUTTONDBLCLK, HTCAPTION) hits the same WndProc
+        // handler as a real user titlebar double-click, which calls
+        // CResolutionHandler::ToggleScreenMode → DX device reset.
+        //
+        // Per-PID gate on _autoLoginManager.IsLoginActive: ScreenMode swap
+        // mid-credential-write would regress the autologin state machine
+        // (MQ2's SM wraps each SetEditWndText call in a ScreenMode=3 swap
+        // for input enablement — see CLAUDE.md v3.16.0 notes). T3-Opus
+        // verifier convergence: skip Fix Windows recovery for any client
+        // currently mid-autologin. The user can re-trigger Fix Windows
+        // once autologin completes.
+        foreach (var c in clients)
+        {
+            if (_autoLoginManager.IsLoginActive(c.ProcessId))
+            {
+                FileLogger.Info($"ArrangeWindows: skipping ForceDxReinit for PID {c.ProcessId} — autologin in progress");
+                continue;
+            }
+            ForceDxReinit(c);
+        }
+
         string mode = _config.Layout.SlimTitlebar ? "slim titlebar" : "stacked";
         ShowBalloon($"Fixed {clients.Count} window(s) ({mode})");
+    }
+
+    /// <summary>
+    /// v3.22.21: force a DirectX swap-chain re-init on <paramref name="client"/>
+    /// by posting WM_NCLBUTTONDBLCLK(HTCAPTION) twice with ~250ms between.
+    /// Same code path as the user manually double-clicking the titlebar →
+    /// EQ WndProc → CResolutionHandler::ToggleScreenMode (windowed-fullscreen
+    /// ↔ windowed). Fixes the cross-monitor smoosh symptom (font/UI distortion
+    /// when SwitchKey moves a client to a differently-sized monitor and the
+    /// DX backbuffer doesn't resize).
+    /// <para>
+    /// Skips hung windows (IsHungAppWindow). Uses WinForms Timer for the
+    /// inter-message delay so the UI thread never blocks. The second
+    /// post-message re-checks IsWindow/IsHungAppWindow before firing —
+    /// covers the case where the client crashes between posts.
+    /// </para>
+    /// <para>
+    /// Architectural note: PostMessage of the NC double-click is functionally
+    /// equivalent to a direct call into CResolutionHandler::ToggleScreenMode
+    /// (planned for v3.22.22 via Ghidra-confirmed RVA + Native detour). The
+    /// PostMessage variant routes through WndProc indirection which adds a
+    /// small amount of latency but is reliable today without Native-side work.
+    /// </para>
+    /// </summary>
+    private void ForceDxReinit(EQClient client)
+    {
+        var hwnd = client.WindowHandle;
+        if (!NativeMethods.IsWindow(hwnd))
+        {
+            FileLogger.Info($"ForceDxReinit: window gone for PID {client.ProcessId}, skipping");
+            return;
+        }
+        if (NativeMethods.IsHungAppWindow(hwnd))
+        {
+            FileLogger.Info($"ForceDxReinit: PID {client.ProcessId} is hung, skipping");
+            return;
+        }
+        // Iconic windows have no NC area to receive the double-click; the
+        // PostMessage would be a no-op (silent failure). Skip with log so
+        // the user knows the recovery hatch didn't reach a minimized client.
+        // We don't auto-restore here — restoring a minimized EQ window while
+        // it's in windowed-fullscreen state crashes the DX device (the
+        // deferred minimize-crash issue).
+        if (NativeMethods.IsIconic(hwnd))
+        {
+            FileLogger.Info($"ForceDxReinit: PID {client.ProcessId} is minimized, skipping (restore window first to apply DX reinit)");
+            return;
+        }
+
+        // Compose lParam from screen coords inside the window's titlebar area.
+        // WM_NCLBUTTONDBLCLK's documented lParam encoding: low word = X, high
+        // word = Y (both screen coordinates). EQ's WndProc doesn't actually
+        // gate on the coords (HTCAPTION via wParam is the routing signal)
+        // but we pass a coherent value so anything downstream that does check
+        // sees a plausible titlebar click.
+        NativeMethods.GetWindowRect(hwnd, out var rect);
+        int x = rect.Left + 10;       // a few px inside the left edge
+        int y = rect.Top + 5;          // a few px below the window's top edge
+        IntPtr lParam = (IntPtr)(((y & 0xFFFF) << 16) | (x & 0xFFFF));
+        IntPtr wParam = (IntPtr)NativeMethods.HTCAPTION;
+
+        bool ok1 = NativeMethods.PostMessage(hwnd, NativeMethods.WM_NCLBUTTONDBLCLK, wParam, lParam);
+        FileLogger.Info($"ForceDxReinit: PID {client.ProcessId} click 1 posted at ({x},{y}) ok={ok1}");
+
+        // Second click 250ms later — flips ScreenMode back so EQ ends in its
+        // original windowed state with a freshly initialized swap chain.
+        // WinForms Timer marshals the Tick to the UI thread (no Thread.Sleep,
+        // no UI freeze, no race against other input handlers).
+        var t = new System.Windows.Forms.Timer { Interval = 250 };
+        t.Tick += (_, _) =>
+        {
+            t.Stop();
+            t.Dispose();
+            if (!NativeMethods.IsWindow(hwnd))
+            {
+                FileLogger.Info($"ForceDxReinit: PID {client.ProcessId} click 2 skipped — window gone");
+                return;
+            }
+            if (NativeMethods.IsHungAppWindow(hwnd))
+            {
+                FileLogger.Info($"ForceDxReinit: PID {client.ProcessId} click 2 skipped — window hung");
+                return;
+            }
+            bool ok2 = NativeMethods.PostMessage(hwnd, NativeMethods.WM_NCLBUTTONDBLCLK, wParam, lParam);
+            FileLogger.Info($"ForceDxReinit: PID {client.ProcessId} click 2 posted ok={ok2}");
+        };
+        t.Start();
     }
 
     /// <summary>
@@ -794,15 +915,11 @@ public class TrayManager : IDisposable
         {
             // v3.22.20: backfill slot map for any PIDs that exist but were
             // never assigned (e.g. PIDs discovered before this method first
-            // fired). Sequential assignment matches ClientDiscovered's logic.
+            // fired). v3.22.21: free-slot scan via AssignNextFreeSlot.
             foreach (var c in clients)
             {
                 if (!_monitorSlotByPid.ContainsKey(c.ProcessId))
-                {
-                    int slot = _monitorSlotByPid.Count;
-                    _monitorSlotByPid[c.ProcessId] = slot;
-                    FileLogger.Info($"MonitorSlot: PID {c.ProcessId} → slot {slot} (backfill on toggle)");
-                }
+                    AssignNextFreeSlot(c.ProcessId, "backfill on toggle");
             }
             _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
             UpdateHookConfig();
@@ -2399,14 +2516,11 @@ public class TrayManager : IDisposable
         if (isMultiMon && _processManager.Clients.Count > 0)
         {
             // v3.22.20: backfill slot map (same as OnToggleMultiMonitor).
+            // v3.22.21: free-slot scan via AssignNextFreeSlot.
             foreach (var c in _processManager.Clients)
             {
                 if (!_monitorSlotByPid.ContainsKey(c.ProcessId))
-                {
-                    int slot = _monitorSlotByPid.Count;
-                    _monitorSlotByPid[c.ProcessId] = slot;
-                    FileLogger.Info($"MonitorSlot: PID {c.ProcessId} → slot {slot} (backfill on ReloadConfig)");
-                }
+                    AssignNextFreeSlot(c.ProcessId, "backfill on ReloadConfig");
             }
             _windowManager.ArrangeWindows(_processManager.Clients, _monitorSlotByPid);
             FileLogger.Info("ReloadConfig: auto-arranged for multimonitor mode");
@@ -2755,6 +2869,72 @@ public class TrayManager : IDisposable
         for (int i = 0; i < pids.Count; i++)
             _monitorSlotByPid[pids[i]] = oldSlots[(i + 1) % oldSlots.Count];
         FileLogger.Info($"RotateMonitorSlots: {string.Join(", ", pids.Select(p => $"PID {p}→slot {_monitorSlotByPid[p]}"))}");
+    }
+
+    /// <summary>
+    /// v3.22.21: count of monitor slots the arrange path actually uses
+    /// (primary + optional secondary). Mirrors the monitorOrder construction
+    /// in WindowManager.ArrangeMultiMonitor — 1 if only one monitor exists,
+    /// 2 if 2+ monitors exist. The slot range for a multi-monitor config
+    /// is always [0, GetMonitorOrderCount()).
+    /// </summary>
+    private int GetMonitorOrderCount()
+    {
+        int count = _windowManager.GetAllMonitorFullBounds().Count;
+        if (count <= 0) return 1;
+        return count >= 2 ? 2 : 1;
+    }
+
+    /// <summary>
+    /// v3.22.21: assign the next free monitor slot to <paramref name="pid"/>.
+    /// Scans [0, monitorCount) for the first slot not present in
+    /// <c>_monitorSlotByPid.Values</c>. Replaces the v3.22.20 <c>Count</c>-based
+    /// assignment which collided on PID-recycle (PID A→slot 0, PID B→slot 1;
+    /// PID A dies, Count=1; new PID C → slot 1 → duplicate with B). 4-way
+    /// verifier convergence flagged this as the critical v3.22.21 fix.
+    /// Overflow (3+ clients on 2 monitors): all slots taken → fall back to
+    /// <c>Count % monitorCount</c> for modulo distribution + one-shot warn
+    /// per new overflow level. <paramref name="source"/> is the call-site
+    /// label used in the log line.
+    /// </summary>
+    private int AssignNextFreeSlot(int pid, string source)
+    {
+        int monitorCount = GetMonitorOrderCount();
+        // Build the set of currently-occupied slots in [0, monitorCount).
+        // O(N) where N = current client count — small in practice (≤6).
+        var used = new HashSet<int>();
+        foreach (var s in _monitorSlotByPid.Values)
+            used.Add(s);
+
+        int slot = -1;
+        for (int s = 0; s < monitorCount; s++)
+        {
+            if (!used.Contains(s)) { slot = s; break; }
+        }
+
+        if (slot < 0)
+        {
+            // Overflow: more clients than monitors — preserve the v3.22.20
+            // modulo-stacking-by-design behavior. Slot picks based on map
+            // size keeps the distribution balanced across monitors.
+            slot = _monitorSlotByPid.Count % monitorCount;
+            int newOverflow = (_monitorSlotByPid.Count + 1) - monitorCount;
+            if (_overflowCountsLogged.Add(newOverflow))
+            {
+                FileLogger.Warn($"MonitorSlot: PID {pid} → slot {slot} ({source}) — overflow: {_monitorSlotByPid.Count + 1} clients on {monitorCount} monitor(s), stacking by design (modulo distribution). This is the v3.22.20 documented 3+ client behavior.");
+            }
+            else
+            {
+                FileLogger.Info($"MonitorSlot: PID {pid} → slot {slot} ({source}) — overflow, modulo distribution");
+            }
+        }
+        else
+        {
+            FileLogger.Info($"MonitorSlot: PID {pid} → slot {slot} ({source})");
+        }
+
+        _monitorSlotByPid[pid] = slot;
+        return slot;
     }
 
     /// <summary>

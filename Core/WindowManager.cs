@@ -168,9 +168,32 @@ public class WindowManager
     /// Multi-monitor mode: distribute windows across physical monitors.
     /// Each window fills its assigned monitor. Cycles through monitors if
     /// there are more windows than screens.
+    /// <para>
     /// v3.22.20: <paramref name="monitorSlotByPid"/> (when non-null) maps
     /// each ProcessId to its assigned monitor slot. Enables true rotation
     /// via SwitchKey instead of the legacy clientIndex-positional assignment.
+    /// </para>
+    /// <para>
+    /// v3.22.21 refactor: two-pass design + lock-to-primary-dims policy.
+    /// <list type="bullet">
+    /// <item><b>Pass 1 (sequential, style)</b> — per-client WS_THICKFRAME
+    /// strip/restore + SWP_FRAMECHANGED notify. Can't be batched: each
+    /// style change needs its own non-client reflow.</item>
+    /// <item><b>Pass 2 (batched, position)</b> — BeginDeferWindowPos /
+    /// DeferWindowPos × N / EndDeferWindowPos. All windows reposition in a
+    /// single DWM composite — eliminates the cascade flicker that v3.22.20
+    /// showed during SwitchKey swap (windows visibly moved one-by-one).
+    /// Falls back to sequential SetWindowPos on hdwp failure.</item>
+    /// <item><b>Lock-to-primary-dims</b> — both windows sized to primary's
+    /// bounds with each monitor's own origin. Eliminates the cross-monitor
+    /// smoosh symptom: DX swap-chain stays at one constant size across
+    /// SwitchKey swaps, so font/UI textures don't get stretched. Auto-
+    /// degrades to per-monitor-fit when monitors differ too much
+    /// (|Δ| &gt; 200px on either axis) or have mixed slim/non-slim flags
+    /// — power users with 4K+1080p get per-monitor-fit and the v3.22.21
+    /// "Fix Windows" hotkey for manual DX reinit.</item>
+    /// </list>
+    /// </para>
     /// </summary>
     private void ArrangeMultiMonitor(IReadOnlyList<EQClient> clients, IReadOnlyDictionary<int, int>? monitorSlotByPid = null)
     {
@@ -208,6 +231,53 @@ public class WindowManager
         if (fullBounds.Count > 1)
             monitorOrder.Add((secondarySlim ? fullBounds[secondaryIdx] : workAreas[secondaryIdx], secondarySlim));
 
+        // v3.22.21: lock-to-primary-dims policy gate. Requires:
+        //   1. Two monitors (otherwise nothing to lock)
+        //   2. Both monitors share the same slim flag (mixed slim/non-slim
+        //      means user explicitly wants different rendering — respect it)
+        //   3. Δ ≤ 200px on each axis (degrade for 4K+1080p mismatched configs)
+        //   4. Primary fits within secondary on BOTH axes (otherwise locking
+        //      would extend the window past secondary's edges)
+        // When policy is ACTIVE, secondary client uses (secondary.origin) +
+        // (primary.W × primary.H) — secondary monitor renders a stable-size
+        // window, no DX swap-chain resize on SwitchKey swap.
+        bool lockToPrimaryDims = false;
+        WinRect primaryBounds = monitorOrder[0].bounds;
+        if (monitorOrder.Count > 1)
+        {
+            bool bothSameSlim = monitorOrder[0].useSlim == monitorOrder[1].useSlim;
+            var secBounds = monitorOrder[1].bounds;
+            int wDelta = Math.Abs(primaryBounds.Width - secBounds.Width);
+            int hDelta = Math.Abs(primaryBounds.Height - secBounds.Height);
+            bool primaryFits = primaryBounds.Width <= secBounds.Width && primaryBounds.Height <= secBounds.Height;
+
+            if (bothSameSlim && wDelta <= 200 && hDelta <= 200 && primaryFits)
+            {
+                lockToPrimaryDims = true;
+                int hBand = secBounds.Height - primaryBounds.Height;
+                int wBand = secBounds.Width - primaryBounds.Width;
+                FileLogger.Info($"ArrangeMultiMonitor: lock-to-primary-dims ACTIVE — both windows {primaryBounds.Width}x{primaryBounds.Height}; secondary monitor has {wBand}px horizontal + {hBand}px vertical empty band (eliminates cross-monitor smoosh on SwitchKey swap)");
+            }
+            else
+            {
+                FileLogger.Warn($"ArrangeMultiMonitor: lock-to-primary-dims OFF — bothSameSlim={bothSameSlim} primary={primaryBounds.Width}x{primaryBounds.Height} secondary={secBounds.Width}x{secBounds.Height} wDelta={wDelta} hDelta={hDelta} primaryFits={primaryFits}. Using per-monitor-fit; cross-monitor SwitchKey swap may smoosh — press Fix Windows to force DX reinit");
+            }
+        }
+
+        // Overflow logging (3+ clients on 2 monitors) is owned by
+        // TrayManager.AssignNextFreeSlot — one-shot per new overflow level.
+        // We deliberately do NOT mirror that log here: ArrangeMultiMonitor
+        // runs on every SwitchKey swap, so a per-arrange log would spam
+        // identical "client overflow" lines (T2-Sonnet + T3-Sonnet verifier
+        // convergence).
+
+        // Pass 1 — style work + compute target rects. Sequential because
+        // each WS_THICKFRAME strip/restore needs its own non-client reflow
+        // and can't share a DeferWindowPos batch with the move.
+        int titlebarOffset = _config.Layout.TitlebarOffset;
+        int topOffset = _config.Layout.TopOffset;
+        var targets = new List<(IntPtr hwnd, int x, int y, int w, int h, uint flags, string logLabel)>(clients.Count);
+
         for (int i = 0; i < clients.Count; i++)
         {
             var client = clients[i];
@@ -223,67 +293,143 @@ public class WindowManager
             // choice — otherwise fall back to clientIndex (legacy positional).
             // Lets SwitchKey rotate slot values and have ArrangeMultiMonitor
             // physically move each client without the hook DLL dragging back.
-            int slot;
-            if (monitorSlotByPid != null && monitorSlotByPid.TryGetValue(client.ProcessId, out int mappedSlot))
-                slot = mappedSlot;
+            int slot = (monitorSlotByPid != null && monitorSlotByPid.TryGetValue(client.ProcessId, out int mappedSlot))
+                ? mappedSlot
+                : i;
+            int slotIdx = slot % monitorOrder.Count;
+            var (mon, useSlim) = monitorOrder[slotIdx];
+
+            // v3.22.21: lock-to-primary-dims. Secondary slot keeps its own
+            // origin but inherits primary's W/H. Primary slot is unchanged
+            // (it IS the source of dimensions). Synthetic bounds feed into
+            // the same slim/non-slim formulae below.
+            WinRect effectiveBounds;
+            if (lockToPrimaryDims && slotIdx != 0)
+            {
+                effectiveBounds = new WinRect
+                {
+                    Left = mon.Left,
+                    Top = mon.Top,
+                    Right = mon.Left + primaryBounds.Width,
+                    Bottom = mon.Top + primaryBounds.Height
+                };
+            }
             else
-                slot = i;
-            var (mon, useSlim) = monitorOrder[slot % monitorOrder.Count];
+            {
+                effectiveBounds = mon;
+            }
 
             if (_api.IsIconic(client.WindowHandle))
                 _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
 
             SetWindowTitle(client, i);
 
+            int x, y, w, h;
+            uint swpFlags;
+
             if (useSlim)
             {
-                ApplySlimTitlebar(client.WindowHandle, mon, _config.Layout.TitlebarOffset);
+                // Step 1 of the original 2-step ApplySlimTitlebar: strip
+                // WS_THICKFRAME so the window has a thin border.
+                long style = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64();
+                style &= ~NativeMethods.WS_THICKFRAME;
+                _api.SetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE, (IntPtr)style);
+
+                // Step 2 of the original 2-step: frame-change notify with
+                // SWP_NOMOVE|SWP_NOSIZE. This stays separate from the move
+                // (per project memory: focus-loss-prevention reason — don't
+                // collapse to one SetWindowPos). Visually non-disruptive
+                // (no motion), just refreshes the non-client area.
+                _api.SetWindowPos(
+                    client.WindowHandle, IntPtr.Zero, 0, 0, 0, 0,
+                    NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER |
+                    NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_FRAMECHANGED);
+
+                // Step 3 (the move) is queued for pass-2 batch.
+                x = effectiveBounds.Left;
+                y = effectiveBounds.Top - titlebarOffset;
+                w = effectiveBounds.Right - effectiveBounds.Left;
+                h = (effectiveBounds.Bottom - effectiveBounds.Top) + titlebarOffset;
+                swpFlags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE;
             }
             else
             {
-                // v3.22.19: non-slim multi-monitor branch now sizes to work-area
-                // (was SWP_NOSIZE — kept eqclient.ini size, often smaller than
-                // monitor). New shape gives the secondary a "normal full-monitor
-                // window with taskbar visible" feel. Falls back to no-resize if
-                // the work-area dims look broken (zero/negative — defense
-                // against torn WinRect from a disconnected monitor mid-enum).
-
-                // Restore WS_THICKFRAME (resize border) if a prior slim arrangement
-                // stripped it. eqswitch-hook.cpp's HookedSetWindowPos / HookedMoveWindow
-                // only ever STRIP WS_THICKFRAME (see lines 159-163, 183-187 — one-way
-                // operation), so when a window transitions from slim → non-slim the
-                // bit stays cleared unless C# adds it back here. Without this,
-                // Nate's secondary window in v3.22.19 would render at work-area
-                // position+size but with no resize border, defeating the "normal
-                // frame on secondary" north star.
+                // v3.22.19: non-slim multi-monitor branch sizes to work-area.
+                // Restore WS_THICKFRAME (resize border) if a prior slim
+                // arrangement stripped it — eqswitch-hook.cpp only ever
+                // STRIPS the flag (one-way), so C# has to restore it here
+                // when transitioning slim → non-slim.
                 long style = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64();
                 if ((style & NativeMethods.WS_THICKFRAME) == 0)
                 {
                     style |= NativeMethods.WS_THICKFRAME;
                     _api.SetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE, (IntPtr)style);
-                    // SWP_FRAMECHANGED below picks up the style change.
+                    // SWP_FRAMECHANGED in the pass-2 batched move picks up
+                    // the style change.
                 }
 
-                bool sizeToFit = mon.Width > 0 && mon.Height > _config.Layout.TopOffset;
-                int w = sizeToFit ? mon.Width : 0;
-                int h = sizeToFit ? mon.Height - _config.Layout.TopOffset : 0;
-                uint flags = sizeToFit
+                bool sizeToFit = effectiveBounds.Width > 0 && effectiveBounds.Height > topOffset;
+                x = effectiveBounds.Left;
+                y = effectiveBounds.Top + topOffset;
+                w = sizeToFit ? effectiveBounds.Width : 0;
+                h = sizeToFit ? effectiveBounds.Height - topOffset : 0;
+                swpFlags = sizeToFit
                     ? NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_FRAMECHANGED
                     : NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_FRAMECHANGED;
-                _api.SetWindowPos(
-                    client.WindowHandle,
-                    IntPtr.Zero,
-                    mon.Left, mon.Top + _config.Layout.TopOffset, w, h,
-                    flags);
             }
 
-            string monLabel = slot % monitorOrder.Count == 0 ? "primary" : "secondary";
+            string monLabel = slotIdx == 0 ? "primary" : "secondary";
             string slimLabel = useSlim ? " (slim titlebar)" : " (normal frame, work-area)";
-            FileLogger.Info($"ArrangeMultiMonitor: {client} → {monLabel} monitor ({mon.Left},{mon.Top}) {mon.Width}x{mon.Height}{slimLabel} [slot={slot}]");
+            string lockLabel = lockToPrimaryDims ? " [locked-to-primary]" : "";
+            targets.Add((client.WindowHandle, x, y, w, h, swpFlags,
+                $"{client} → {monLabel} monitor ({mon.Left},{mon.Top}) {w}x{h}{slimLabel}{lockLabel} [slot={slot}]"));
         }
 
+        if (targets.Count == 0)
+        {
+            FileLogger.Info($"ArrangeMultiMonitor: no eligible clients to arrange (all hung/invalid)");
+            return;
+        }
+
+        // Pass 2 — atomic batched positioning. Replaces v3.22.20's per-client
+        // sequential SetWindowPos cascade (each composite visible, taskbar
+        // peek-through between moves). Pattern mirrors SwapWindows L308-333.
+        bool batchOk = false;
+        var hdwp = _api.BeginDeferWindowPos(targets.Count);
+        if (hdwp != IntPtr.Zero)
+        {
+            batchOk = true;
+            foreach (var t in targets)
+            {
+                hdwp = _api.DeferWindowPos(hdwp, t.hwnd, IntPtr.Zero, t.x, t.y, t.w, t.h, t.flags);
+                if (hdwp == IntPtr.Zero)
+                {
+                    FileLogger.Warn("ArrangeMultiMonitor: DeferWindowPos failed mid-batch — falling back to sequential SetWindowPos");
+                    batchOk = false;
+                    break;
+                }
+            }
+            if (batchOk)
+                _api.EndDeferWindowPos(hdwp);
+        }
+        else
+        {
+            FileLogger.Warn("ArrangeMultiMonitor: BeginDeferWindowPos failed — falling back to sequential SetWindowPos");
+        }
+
+        if (!batchOk)
+        {
+            foreach (var t in targets)
+                _api.SetWindowPos(t.hwnd, IntPtr.Zero, t.x, t.y, t.w, t.h, t.flags);
+        }
+
+        foreach (var t in targets)
+            FileLogger.Info($"ArrangeMultiMonitor: {t.logLabel}");
+
         string modeLabel = $" (primary={(primarySlim ? "slim" : "normal")}, secondary={(secondarySlim ? "slim" : "normal")})";
-        FileLogger.Info($"ArrangeMultiMonitor: {clients.Count} window(s), primary={primaryIdx} secondary={secondaryIdx}{modeLabel}");
+        string batchLabel = batchOk ? "atomic batch" : "sequential fallback";
+        string lockSummary = lockToPrimaryDims ? ", lock-to-primary" : "";
+        FileLogger.Info($"ArrangeMultiMonitor: {targets.Count}/{clients.Count} window(s), primary={primaryIdx} secondary={secondaryIdx}{modeLabel}, positioned via {batchLabel}{lockSummary}");
     }
 
     /// <summary>
