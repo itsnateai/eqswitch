@@ -164,10 +164,14 @@ public class TrayManager : IDisposable
             var deferTimer = new System.Windows.Forms.Timer { Interval = 15000 };
             deferTimer.Tick += (s, e) =>
             {
+                // v3.22.22 round-5 (R4 T3-Sonnet SEV-1): Stop+Dispose BEFORE
+                // the try so a throw inside ApplyDeferredCosmetics can't leave
+                // the timer running and re-fire forever. Stop() is idempotent
+                // and never throws under normal conditions; same for Dispose.
+                deferTimer.Stop();
+                deferTimer.Dispose();
                 try
                 {
-                    deferTimer.Stop();
-                    deferTimer.Dispose();
                     ApplyDeferredCosmetics(capturedPid);
                 }
                 catch (Exception ex)

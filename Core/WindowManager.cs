@@ -16,6 +16,31 @@ public class WindowManager
     private readonly IWindowsApi _api;
     [ThreadStatic] private static System.Text.StringBuilder? _titleSb;
 
+    /// <summary>
+    /// v3.22.22 round-5: pump-responsiveness probe shared across all
+    /// window-management entry points (ArrangeMultiMonitor, ArrangeSingleScreen,
+    /// SwapWindows). SendMessageTimeout(WM_NULL, SMTO_ABORTIFHUNG|SMTO_BLOCK,
+    /// 100ms) returns 0 when the target window's thread is either kernel-marked
+    /// hung OR not dispatching messages within 100ms. SMTO_BLOCK serializes the
+    /// calling UI thread for the probe duration so we don't accept reentrant
+    /// arrange calls during the 100ms wait (R4 T3-Opus MEDIUM finding).
+    /// Background: 2026-05-20 PID 24672 smoke crash — IsHungAppWindow returned
+    /// false because the kernel's 5s hung-threshold hadn't elapsed when pass-1
+    /// entered. SetWindowLongPtr on a pump that was blocked mid-zone-load
+    /// stalled for 14,471ms, EQ crashed mid-DX-reconfig. This 100ms probe is
+    /// much tighter than IsHungAppWindow's 5s and catches the transient
+    /// mid-zone-load case at the entry to every per-client style/move loop.
+    /// </summary>
+    private static bool IsClientResponsive(IntPtr hwnd)
+    {
+        UIntPtr result;
+        IntPtr ok = NativeMethods.SendMessageTimeout(
+            hwnd, NativeMethods.WM_NULL, IntPtr.Zero, IntPtr.Zero,
+            NativeMethods.SMTO_ABORTIFHUNG | NativeMethods.SMTO_BLOCK,
+            100, out result);
+        return ok != IntPtr.Zero;
+    }
+
     public WindowManager(AppConfig config, IWindowsApi? api = null)
     {
         _config = config;
@@ -134,6 +159,17 @@ public class WindowManager
             if (_api.IsHungAppWindow(client.WindowHandle))
             {
                 FileLogger.Info($"ArrangeWindows: skipping hung window {client}");
+                continue;
+            }
+            // v3.22.22 round-5 (R4 T2 verifier CRITICAL): same pump-responsiveness
+            // probe used by ArrangeMultiMonitor. ArrangeSingleScreen hits the same
+            // cross-process SetWindowLongPtr stall when LoginComplete fires with
+            // a client mid-zone-load (DX device reset blocks pump). Without the
+            // probe, single-screen mode would crash the same way as the
+            // 2026-05-20 PID 24672 multi-monitor incident.
+            if (!IsClientResponsive(client.WindowHandle))
+            {
+                FileLogger.Warn($"ArrangeSingleScreen: skipping non-responsive window {client} (SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset or transient pump block)");
                 continue;
             }
 
@@ -290,24 +326,14 @@ public class WindowManager
                 FileLogger.Info($"ArrangeMultiMonitor: skipping hung window {client}");
                 continue;
             }
-            // v3.22.22 round-4: SendMessageTimeout pre-flight probe. IsHungAppWindow
-            // has a 5s kernel-threshold latency — it returns false during the first
-            // 5s of a non-pumping pump. The 2026-05-20 PID 24672 smoke crash hit
-            // this gap: client just sent Enter World, was mid-zone-load (DX device
-            // reset, message pump blocked), IsHungAppWindow returned false because
-            // the 5s window hadn't elapsed yet, pass-1's SetWindowLongPtr blocked
-            // for 14,471ms, EQ crashed. WM_NULL + SMTO_ABORTIFHUNG + 100ms = fast
-            // fail if the pump isn't actively pumping RIGHT NOW. Tighter probe than
-            // IsHungAppWindow. Combined: IsHungAppWindow catches the steady-state
-            // hung case (fast); SendMessageTimeout catches the transient
-            // mid-zone-load case (fast fail at 100ms instead of blocking pass-1).
-            UIntPtr probeResult;
-            IntPtr probeOk = NativeMethods.SendMessageTimeout(
-                client.WindowHandle, NativeMethods.WM_NULL, IntPtr.Zero, IntPtr.Zero,
-                NativeMethods.SMTO_ABORTIFHUNG, 100, out probeResult);
-            if (probeOk == IntPtr.Zero)
+            // v3.22.22 round-4 / round-5 (R4 T3-Opus MEDIUM): use shared
+            // IsClientResponsive helper. Tighter than IsHungAppWindow's 5s
+            // kernel threshold — catches transient mid-zone-load pump blocks
+            // at 100ms. Round-5 adds SMTO_BLOCK to the probe to prevent
+            // reentrant arrange dispatch during the probe wait.
+            if (!IsClientResponsive(client.WindowHandle))
             {
-                FileLogger.Warn($"ArrangeMultiMonitor: skipping non-responsive window {client} (SendMessageTimeout WM_NULL > 100ms with SMTO_ABORTIFHUNG — likely mid-zone-load DX reset or transient pump block; pre-empts the v3.22.21 14.5s pass-1 block that crashed PID 24672)");
+                FileLogger.Warn($"ArrangeMultiMonitor: skipping non-responsive window {client} (SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset or transient pump block; pre-empts the v3.22.21 14.5s pass-1 block that crashed PID 24672)");
                 continue;
             }
 
@@ -515,12 +541,25 @@ public class WindowManager
     {
         if (clients.Count < 2) return;
 
-        // Check for hung windows — abort if any are unresponsive
+        // Check for hung windows — abort if any are unresponsive.
+        // v3.22.22 round-5 (R4 T2 verifier CRITICAL): IsHungAppWindow alone
+        // has a 5s kernel-threshold latency. SwapWindows runs on user
+        // SwitchKey hotkey — if a teammate is mid-zone-load (DX device reset,
+        // pump blocked), GetWindowRect/BeginDeferWindowPos below would stall
+        // for 14.5s and crash EQ (same class as the 2026-05-20 PID 24672
+        // ArrangeMultiMonitor incident). The shared IsClientResponsive probe
+        // (100ms SendMessageTimeout with SMTO_ABORTIFHUNG | SMTO_BLOCK) fast-
+        // fails inside the kernel's hung-threshold window.
         foreach (var client in clients)
         {
             if (_api.IsHungAppWindow(client.WindowHandle))
             {
                 FileLogger.Info($"SwapWindows: aborting — hung window {client}");
+                return;
+            }
+            if (!IsClientResponsive(client.WindowHandle))
+            {
+                FileLogger.Warn($"SwapWindows: aborting — non-responsive window {client} (SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset)");
                 return;
             }
         }
