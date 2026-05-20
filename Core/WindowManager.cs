@@ -274,6 +274,9 @@ public class WindowManager
         // Pass 1 — style work + compute target rects. Sequential because
         // each WS_THICKFRAME strip/restore needs its own non-client reflow
         // and can't share a DeferWindowPos batch with the move.
+        // v3.22.21 smoke-2 (Nate 2026-05-20): wall-clock timing for taskbar-
+        // flicker diagnosis (defer-and-log per Nate's choice).
+        var swArrange = System.Diagnostics.Stopwatch.StartNew();
         int titlebarOffset = _config.Layout.TitlebarOffset;
         int topOffset = _config.Layout.TopOffset;
         var targets = new List<(IntPtr hwnd, int x, int y, int w, int h, uint flags, string logLabel)>(clients.Count);
@@ -405,10 +408,17 @@ public class WindowManager
             FileLogger.Info($"ArrangeMultiMonitor: no eligible clients to arrange (all hung/invalid)");
             return;
         }
+        long tPass1 = swArrange.ElapsedMilliseconds;
 
         // Pass 2 — atomic batched positioning. Replaces v3.22.20's per-client
         // sequential SetWindowPos cascade (each composite visible, taskbar
         // peek-through between moves). Pattern mirrors SwapWindows L308-333.
+        //
+        // v3.22.22 hypothesis (post-v3.22.21 smoke): DeferWindowPos may not
+        // be fully atomic across processes + monitors. AHK reference at
+        // _.src/.oursrcarchive/eqswitch_ahk/EQSwitch.ahk:414-441 uses
+        // sequential WinMove and reportedly does NOT flicker. A/B test
+        // sequential vs batched in v3.22.22 with these timing logs.
         bool batchOk = false;
         var hdwp = _api.BeginDeferWindowPos(targets.Count);
         if (hdwp != IntPtr.Zero)
@@ -437,6 +447,7 @@ public class WindowManager
             foreach (var t in targets)
                 _api.SetWindowPos(t.hwnd, IntPtr.Zero, t.x, t.y, t.w, t.h, t.flags);
         }
+        long tPass2 = swArrange.ElapsedMilliseconds;
 
         foreach (var t in targets)
             FileLogger.Info($"ArrangeMultiMonitor: {t.logLabel}");
@@ -444,7 +455,7 @@ public class WindowManager
         string modeLabel = $" (primary={(primarySlim ? "slim" : "normal")}, secondary={(secondarySlim ? "slim" : "normal")})";
         string batchLabel = batchOk ? "atomic batch" : "sequential fallback";
         string lockSummary = lockToPrimaryDims ? ", lock-to-primary" : "";
-        FileLogger.Info($"ArrangeMultiMonitor: {targets.Count}/{clients.Count} window(s), primary={primaryIdx} secondary={secondaryIdx}{modeLabel}, positioned via {batchLabel}{lockSummary}");
+        FileLogger.Info($"ArrangeMultiMonitor: {targets.Count}/{clients.Count} window(s), primary={primaryIdx} secondary={secondaryIdx}{modeLabel}, positioned via {batchLabel}{lockSummary} — pass1={tPass1}ms pass2={tPass2 - tPass1}ms");
     }
 
     /// <summary>

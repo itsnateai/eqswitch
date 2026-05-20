@@ -655,9 +655,23 @@ public class TrayManager : IDisposable
                 // unchanged clientIndex, so the hook DLL dragged windows
                 // back to their original monitors — visible as the
                 // bouncing-stacked pattern in the 2026-05-19 smoke log.
+                //
+                // v3.22.21 smoke-2 (Nate 2026-05-20): added phase timing for
+                // taskbar-flicker diagnosis. Captures wall-clock between
+                // rotate / arrange / hook-config so v3.22.22 can isolate
+                // which phase loses primary-monitor coverage during the
+                // cross-process cross-monitor swap. AHK reference at
+                // _.src/.oursrcarchive/eqswitch_ahk/EQSwitch.ahk:414-441
+                // uses sequential WinMove (no DeferWindowPos batching);
+                // worth A/B testing in v3.22.22.
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 RotateMonitorSlots();
+                long tRotate = sw.ElapsedMilliseconds;
                 _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
+                long tArrange = sw.ElapsedMilliseconds;
                 UpdateHookConfig();
+                long tHook = sw.ElapsedMilliseconds;
+                FileLogger.Info($"SwitchKey-swap-timing: rotate={tRotate}ms, arrange={tArrange - tRotate}ms, hookConfig={tHook - tArrange}ms, total={tHook}ms");
             }
             catch (Exception ex)
             {
@@ -720,9 +734,15 @@ public class TrayManager : IDisposable
             {
                 // v3.22.20: see OnSwitchKey comment — real slot rotation
                 // instead of physical-swap-then-clientIndex-revert.
+                // v3.22.21 smoke-2: phase timing (mirrors OnSwitchKey).
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 RotateMonitorSlots();
+                long tRotate = sw.ElapsedMilliseconds;
                 _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
+                long tArrange = sw.ElapsedMilliseconds;
                 UpdateHookConfig();
+                long tHook = sw.ElapsedMilliseconds;
+                FileLogger.Info($"GlobalSwitchKey-swap-timing: rotate={tRotate}ms, arrange={tArrange - tRotate}ms, hookConfig={tHook - tArrange}ms, total={tHook}ms");
             }
             catch (Exception ex)
             {
