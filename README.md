@@ -36,41 +36,29 @@ All three files must be in the same folder.
 
 ## Screenshots
 
-<details>
-<summary><b>Click to expand</b> — 12 screenshots: tray menu, settings, PiP overlay, window styling</summary>
+<details open>
+<summary><b>Screenshots</b> — click to collapse · 12 images: tray, settings, PiP, window styling</summary>
 
 <table>
-<tr><th colspan="3">Tray menu</th></tr>
 <tr>
-<td align="center"><img src="docs/img/eqswitchtray1.png" alt="Tray menu — main" width="260"><br><sub>Main menu</sub></td>
-<td align="center"><img src="docs/img/eqswitchtray2.png" alt="Tray menu — accounts submenu" width="260"><br><sub>Accounts</sub></td>
-<td align="center"><img src="docs/img/eqswitchtray3.png" alt="Tray menu — teams submenu" width="260"><br><sub>Teams</sub></td>
-</tr>
-<tr><th colspan="3">Settings (dark, 6 tabs)</th></tr>
-<tr>
-<td align="center"><img src="docs/img/eqswitchsettings.png" alt="General settings" width="260"><br><sub>General</sub></td>
-<td align="center"><img src="docs/img/eqswitchhotkeys.png" alt="Hotkeys tab" width="260"><br><sub>Hotkeys</sub></td>
-<td align="center"><img src="docs/img/eqswitchaccounts.png" alt="Accounts tab — DPAPI auto-login" width="260"><br><sub>Accounts (DPAPI)</sub></td>
+<td align="center"><img src="docs/img/eqswitchtray1.png" alt="Tray menu — main" width="260"><br><sub>Tray — main</sub></td>
+<td align="center"><img src="docs/img/eqswitchtray2.png" alt="Tray menu — accounts submenu" width="260"><br><sub>Tray — accounts</sub></td>
+<td align="center"><img src="docs/img/eqswitchtray3.png" alt="Tray menu — teams submenu" width="260"><br><sub>Tray — teams</sub></td>
 </tr>
 <tr>
-<td align="center"><img src="docs/img/eqswitchpaths.png" alt="Paths tab" width="260"><br><sub>Paths</sub></td>
-<td></td>
-<td></td>
+<td align="center"><img src="docs/img/eqswitchsettings.png" alt="General settings" width="260"><br><sub>Settings — General</sub></td>
+<td align="center"><img src="docs/img/eqswitchhotkeys.png" alt="Hotkeys tab" width="260"><br><sub>Settings — Hotkeys</sub></td>
+<td align="center"><img src="docs/img/eqswitchaccounts.png" alt="Accounts tab — DPAPI auto-login" width="260"><br><sub>Settings — Accounts (DPAPI)</sub></td>
 </tr>
-<tr><th colspan="3">PiP overlay</th></tr>
 <tr>
-<td align="center" colspan="3"><img src="docs/img/eqswitchpip.png" alt="PiP DWM thumbnail overlay" width="640"><br><sub>Live DWM thumbnail PiP — GPU composited, zero CPU</sub></td>
+<td align="center"><img src="docs/img/eqswitchpaths.png" alt="Paths tab" width="260"><br><sub>Settings — Paths</sub></td>
+<td align="center"><img src="docs/img/eqswitchpip.png" alt="PiP DWM thumbnail overlay" width="260"><br><sub>PiP overlay (DWM)</sub></td>
+<td align="center"><img src="docs/img/eqswitchwindowssetting.png" alt="Window style + slim titlebar" width="260"><br><sub>Window style — slim titlebar</sub></td>
 </tr>
-<tr><th colspan="3">Window styling &amp; EQ client tweaks</th></tr>
 <tr>
-<td align="center"><img src="docs/img/eqswitchwindowssetting.png" alt="Window style + slim titlebar" width="260"><br><sub>Window style + slim titlebar</sub></td>
-<td align="center"><img src="docs/img/eqswitchvideo.png" alt="Video / eqclient.ini settings" width="260"><br><sub>Video</sub></td>
+<td align="center"><img src="docs/img/eqswitchvideo.png" alt="Video / eqclient.ini settings" width="260"><br><sub>Video / eqclient.ini</sub></td>
 <td align="center"><img src="docs/img/eqswitcheqclient.png" alt="eqclient.ini editor" width="260"><br><sub>eqclient.ini editor</sub></td>
-</tr>
-<tr>
 <td align="center"><img src="docs/img/eqswitchcpupriority.png" alt="CPU priority + affinity manager" width="260"><br><sub>CPU priority + affinity</sub></td>
-<td></td>
-<td></td>
 </tr>
 </table>
 
