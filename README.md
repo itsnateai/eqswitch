@@ -6,6 +6,7 @@
 
 <p align="center">
   <a href="https://github.com/itsnateai/eqswitch/releases/latest"><img src="https://img.shields.io/github/v/release/itsnateai/eqswitch?style=flat-square&color=34c060" alt="Release"></a>
+  <a href="https://github.com/itsnateai/eqswitch/releases"><img src="https://img.shields.io/github/downloads/itsnateai/eqswitch/total?style=flat-square&label=downloads&color=34c060" alt="Downloads"></a>
   <img src="https://img.shields.io/badge/.NET-8.0-512bd4?style=flat-square&logo=dotnet" alt=".NET 8">
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4?style=flat-square&logo=windows" alt="Windows">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/itsnateai/eqswitch?style=flat-square&color=34c060" alt="GPL-2.0-or-later License"></a>
