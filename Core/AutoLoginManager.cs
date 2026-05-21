@@ -1278,6 +1278,27 @@ public class AutoLoginManager
             {
                 try
                 {
+                    // Re-resolve to the live Account in _config.Accounts by
+                    // (Username, Server). SettingsForm.ApplySettings replaces
+                    // _config.Accounts with a list of new Account instances on
+                    // every save — if the user opened Settings and clicked
+                    // Apply/OK while this SM was running, our captured
+                    // `account` reference is now an orphan outside the
+                    // serialized list, and mutating it loses the flag.
+                    // Match key matches SettingsForm.OnLoginComplete's
+                    // reverse-sync (Username + Server, case-insensitive).
+                    // Fallback to `account` covers the rare case where the
+                    // account was renamed or removed in Settings during
+                    // autologin — at least the orphan still gets the value,
+                    // even if SaveImmediate then doesn't persist it.
+                    var live = _config.Accounts.FirstOrDefault(a =>
+                        string.Equals(a.Username, account.Username, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(a.Server, account.Server, StringComparison.OrdinalIgnoreCase))
+                        ?? account;
+                    if (!ReferenceEquals(live, account))
+                    {
+                        FileLogger.Info($"AutoLogin-SM: re-resolved orphan Account ref for {account.Name} (Settings likely saved mid-autologin)");
+                    }
                     // Write order: LastLoginAt FIRST, LastLoginResult LAST.
                     // Nullable<DateTime> is 16 bytes (non-atomic) on x64; writing
                     // it before the atomic string-reference assignment means a
@@ -1285,8 +1306,17 @@ public class AutoLoginManager
                     // guaranteed (under x64 memory ordering) to see the matching
                     // LastLoginAt. SaveImmediate bypasses ConfigManager.Save's
                     // Windows.Forms.Timer which can't tick on background threads.
-                    account.LastLoginAt = DateTime.UtcNow;
-                    account.LastLoginResult = pendingResult;
+                    live.LastLoginAt = DateTime.UtcNow;
+                    live.LastLoginResult = pendingResult;
+                    // Mirror onto the SM-held orphan so any LoginComplete
+                    // subscriber that holds the captured ref also sees the
+                    // outcome. UI subscribers re-resolve via OnLoginComplete
+                    // but defense-in-depth costs us two field writes.
+                    if (!ReferenceEquals(live, account))
+                    {
+                        account.LastLoginAt = live.LastLoginAt;
+                        account.LastLoginResult = live.LastLoginResult;
+                    }
                     ConfigManager.SaveImmediate(_config);
                     FileLogger.Info($"AutoLogin-SM: deferred SaveImmediate({pendingResult}) for {account.Name} at SM-exit");
                 }
