@@ -25,23 +25,43 @@ running. The bug:
    which still has `LastLoginResult = ""`. The log claims the save fired
    (because it did — just not against the right object).
 
-Reproducer: 2026-05-21 — bad-password smoke on account `raistlin`. C# log
-showed `deferred SaveImmediate(fail) for raistlin at SM-exit` at 10:08:56.
-On-disk `eqswitch-config.json` showed `accountsV4[raistlin].lastLoginResult: ""`.
-The intervening `Settings applied` line at 10:08:42 was the orphan trigger.
+Reproducer: 2026-05-21 — bad-password smoke on a test account. C# log
+showed `deferred SaveImmediate(fail) for <account> at SM-exit` at 10:08:56.
+On-disk `eqswitch-config.json` showed
+`accountsV4[<account>].lastLoginResult: ""`. The intervening
+`Settings applied` line at 10:08:42 was the orphan trigger.
 
 ### Fix
 
-`AutoLoginManager.cs:1277-1325` — before mutating the captured `account`
+`AutoLoginManager.cs:1277-1340` — before mutating the captured `account`
 reference, re-resolve to the live Account via the same `(Username, Server)`
 case-insensitive match that `SettingsForm.OnLoginComplete` uses for its
-reverse-direction sync. If the live Account is the same object as the
-captured one (the common case — no Settings save during autologin), the
-re-resolve is a no-op `FirstOrDefault` traversal. If the references differ,
-mutate the live AND mirror onto the orphan so any LoginComplete subscriber
-holding the captured ref still sees a coherent state. Log a one-line
-`re-resolved orphan Account ref` whenever the race actually triggers so the
-diagnostic surface is loud on the rare path.
+reverse-direction sync. Three observable outcomes:
+
+- **Common case** (no Settings save during autologin): `FirstOrDefault`
+  finds the same object as `account`. Re-resolve is a no-op. Save fires
+  against the live list. No new log line.
+- **Orphan-reference race** (Settings.Apply ran mid-autologin, list
+  replaced with new Account instances): `FirstOrDefault` finds a different
+  object with the same (Username, Server). Mutate the live AND mirror onto
+  the orphan so any LoginComplete subscriber holding the captured ref also
+  sees a coherent state. Log `re-resolved orphan Account ref` (Info).
+- **Null-fallback** (account renamed or removed in Settings mid-autologin):
+  `FirstOrDefault` returns null, `?? account` falls back to the orphan.
+  Mutation lands outside `_config.Accounts` and `SaveImmediate` won't
+  persist it. Log a `Warn` with the missing (Username, Server) — flag
+  loss is unavoidable without a lock around the (re-resolve +
+  ApplySettings list-replace) pair (backlogged for v3.22.24), but at
+  least the failure surface is loud.
+
+Snapshot `_config.Accounts` to a local before `FirstOrDefault` to force
+a single field read — guards against JIT register-caching a stale list
+reference across the call. `Thread.MemoryBarrier()` between the
+`LastLoginAt` and `LastLoginResult` writes enforces store-store order
+(plain C# field writes can be reordered by the JIT even on x64; the
+CLR memory model doesn't promise free ordering between two non-volatile
+writes), which keeps the UI-thread reader invariant: any reader seeing
+a non-default `LastLoginResult` also sees the matching `LastLoginAt`.
 
 ### Out of scope
 
