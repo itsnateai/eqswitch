@@ -37,28 +37,28 @@ All three files must be in the same folder.
 ## Screenshots
 
 <details open>
-<summary><b>Screenshots</b> — click to collapse · 12 images: tray, settings, PiP, window styling</summary>
+<summary><b>Screenshots</b> — click to collapse · 12 images: tray, settings, PiP, window styling · <i>click any thumbnail to open full-size in a new tab</i></summary>
 
 <table>
 <tr>
-<td align="center"><img src="docs/img/eqswitchtray1.png" alt="Tray menu — main" width="260"><br><sub>Tray — main</sub></td>
-<td align="center"><img src="docs/img/eqswitchtray2.png" alt="Tray menu — accounts submenu" width="260"><br><sub>Tray — accounts</sub></td>
-<td align="center"><img src="docs/img/eqswitchtray3.png" alt="Tray menu — teams submenu" width="260"><br><sub>Tray — teams</sub></td>
+<td align="center"><a href="docs/img/eqswitchtray1.png" target="_blank" rel="noopener"><img src="docs/img/eqswitchtray1.png" alt="Tray menu — main" width="260"></a><br><sub>Tray — main</sub></td>
+<td align="center"><a href="docs/img/eqswitchtray2.png" target="_blank" rel="noopener"><img src="docs/img/eqswitchtray2.png" alt="Tray menu — accounts submenu" width="260"></a><br><sub>Tray — accounts</sub></td>
+<td align="center"><a href="docs/img/eqswitchtray3.png" target="_blank" rel="noopener"><img src="docs/img/eqswitchtray3.png" alt="Tray menu — teams submenu" width="260"></a><br><sub>Tray — teams</sub></td>
 </tr>
 <tr>
-<td align="center"><img src="docs/img/eqswitchsettings.png" alt="General settings" width="260"><br><sub>Settings — General</sub></td>
-<td align="center"><img src="docs/img/eqswitchhotkeys.png" alt="Hotkeys tab" width="260"><br><sub>Settings — Hotkeys</sub></td>
-<td align="center"><img src="docs/img/eqswitchaccounts.png" alt="Accounts tab — DPAPI auto-login" width="260"><br><sub>Settings — Accounts (DPAPI)</sub></td>
+<td align="center"><a href="docs/img/eqswitchsettings.png" target="_blank" rel="noopener"><img src="docs/img/eqswitchsettings.png" alt="General settings" width="260"></a><br><sub>Settings — General</sub></td>
+<td align="center"><a href="docs/img/eqswitchhotkeys.png" target="_blank" rel="noopener"><img src="docs/img/eqswitchhotkeys.png" alt="Hotkeys tab" width="260"></a><br><sub>Settings — Hotkeys</sub></td>
+<td align="center"><a href="docs/img/eqswitchaccounts.png" target="_blank" rel="noopener"><img src="docs/img/eqswitchaccounts.png" alt="Accounts tab — DPAPI auto-login" width="260"></a><br><sub>Settings — Accounts (DPAPI)</sub></td>
 </tr>
 <tr>
-<td align="center"><img src="docs/img/eqswitchpaths.png" alt="Paths tab" width="260"><br><sub>Settings — Paths</sub></td>
-<td align="center"><img src="docs/img/eqswitchpip.png" alt="PiP DWM thumbnail overlay" width="260"><br><sub>PiP overlay (DWM)</sub></td>
-<td align="center"><img src="docs/img/eqswitchwindowssetting.png" alt="Window style + slim titlebar" width="260"><br><sub>Window style — slim titlebar</sub></td>
+<td align="center"><a href="docs/img/eqswitchpaths.png" target="_blank" rel="noopener"><img src="docs/img/eqswitchpaths.png" alt="Paths tab" width="260"></a><br><sub>Settings — Paths</sub></td>
+<td align="center"><a href="docs/img/eqswitchpip.png" target="_blank" rel="noopener"><img src="docs/img/eqswitchpip.png" alt="PiP DWM thumbnail overlay" width="260"></a><br><sub>PiP overlay (DWM)</sub></td>
+<td align="center"><a href="docs/img/eqswitchwindowssetting.png" target="_blank" rel="noopener"><img src="docs/img/eqswitchwindowssetting.png" alt="Window style + slim titlebar" width="260"></a><br><sub>Window style — slim titlebar</sub></td>
 </tr>
 <tr>
-<td align="center"><img src="docs/img/eqswitchvideo.png" alt="Video / eqclient.ini settings" width="260"><br><sub>Video / eqclient.ini</sub></td>
-<td align="center"><img src="docs/img/eqswitcheqclient.png" alt="eqclient.ini editor" width="260"><br><sub>eqclient.ini editor</sub></td>
-<td align="center"><img src="docs/img/eqswitchcpupriority.png" alt="CPU priority + affinity manager" width="260"><br><sub>CPU priority + affinity</sub></td>
+<td align="center"><a href="docs/img/eqswitchvideo.png" target="_blank" rel="noopener"><img src="docs/img/eqswitchvideo.png" alt="Video / eqclient.ini settings" width="260"></a><br><sub>Video / eqclient.ini</sub></td>
+<td align="center"><a href="docs/img/eqswitcheqclient.png" target="_blank" rel="noopener"><img src="docs/img/eqswitcheqclient.png" alt="eqclient.ini editor" width="260"></a><br><sub>eqclient.ini editor</sub></td>
+<td align="center"><a href="docs/img/eqswitchcpupriority.png" target="_blank" rel="noopener"><img src="docs/img/eqswitchcpupriority.png" alt="CPU priority + affinity manager" width="260"></a><br><sub>CPU priority + affinity</sub></td>
 </tr>
 </table>
 
