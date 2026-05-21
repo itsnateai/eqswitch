@@ -36,37 +36,45 @@ All three files must be in the same folder.
 
 ## Screenshots
 
-### Tray menu
-<p align="center">
-  <img src="docs/img/eqswitchtray1.png" alt="Tray menu" width="320">
-  <img src="docs/img/eqswitchtray2.png" alt="Tray menu — accounts submenu" width="320">
-  <img src="docs/img/eqswitchtray3.png" alt="Tray menu — teams submenu" width="320">
-</p>
+<details>
+<summary><b>Click to expand</b> — 12 screenshots: tray menu, settings, PiP overlay, window styling</summary>
 
-### Settings
-<p align="center">
-  <img src="docs/img/eqswitchsettings.png" alt="General settings" width="420">
-  <img src="docs/img/eqswitchhotkeys.png" alt="Hotkeys tab" width="420">
-</p>
-<p align="center">
-  <img src="docs/img/eqswitchaccounts.png" alt="Accounts tab — DPAPI auto-login" width="420">
-  <img src="docs/img/eqswitchpaths.png" alt="Paths tab" width="420">
-</p>
+<table>
+<tr><th colspan="3">Tray menu</th></tr>
+<tr>
+<td align="center"><img src="docs/img/eqswitchtray1.png" alt="Tray menu — main" width="260"><br><sub>Main menu</sub></td>
+<td align="center"><img src="docs/img/eqswitchtray2.png" alt="Tray menu — accounts submenu" width="260"><br><sub>Accounts</sub></td>
+<td align="center"><img src="docs/img/eqswitchtray3.png" alt="Tray menu — teams submenu" width="260"><br><sub>Teams</sub></td>
+</tr>
+<tr><th colspan="3">Settings (dark, 6 tabs)</th></tr>
+<tr>
+<td align="center"><img src="docs/img/eqswitchsettings.png" alt="General settings" width="260"><br><sub>General</sub></td>
+<td align="center"><img src="docs/img/eqswitchhotkeys.png" alt="Hotkeys tab" width="260"><br><sub>Hotkeys</sub></td>
+<td align="center"><img src="docs/img/eqswitchaccounts.png" alt="Accounts tab — DPAPI auto-login" width="260"><br><sub>Accounts (DPAPI)</sub></td>
+</tr>
+<tr>
+<td align="center"><img src="docs/img/eqswitchpaths.png" alt="Paths tab" width="260"><br><sub>Paths</sub></td>
+<td></td>
+<td></td>
+</tr>
+<tr><th colspan="3">PiP overlay</th></tr>
+<tr>
+<td align="center" colspan="3"><img src="docs/img/eqswitchpip.png" alt="PiP DWM thumbnail overlay" width="640"><br><sub>Live DWM thumbnail PiP — GPU composited, zero CPU</sub></td>
+</tr>
+<tr><th colspan="3">Window styling &amp; EQ client tweaks</th></tr>
+<tr>
+<td align="center"><img src="docs/img/eqswitchwindowssetting.png" alt="Window style + slim titlebar" width="260"><br><sub>Window style + slim titlebar</sub></td>
+<td align="center"><img src="docs/img/eqswitchvideo.png" alt="Video / eqclient.ini settings" width="260"><br><sub>Video</sub></td>
+<td align="center"><img src="docs/img/eqswitcheqclient.png" alt="eqclient.ini editor" width="260"><br><sub>eqclient.ini editor</sub></td>
+</tr>
+<tr>
+<td align="center"><img src="docs/img/eqswitchcpupriority.png" alt="CPU priority + affinity manager" width="260"><br><sub>CPU priority + affinity</sub></td>
+<td></td>
+<td></td>
+</tr>
+</table>
 
-### PiP overlay
-<p align="center">
-  <img src="docs/img/eqswitchpip.png" alt="PiP DWM thumbnail overlay" width="640">
-</p>
-
-### Window styling & EQ client tweaks
-<p align="center">
-  <img src="docs/img/eqswitchwindowssetting.png" alt="Window style + slim titlebar" width="420">
-  <img src="docs/img/eqswitchvideo.png" alt="Video / eqclient.ini settings" width="420">
-</p>
-<p align="center">
-  <img src="docs/img/eqswitcheqclient.png" alt="eqclient.ini editor" width="420">
-  <img src="docs/img/eqswitchcpupriority.png" alt="CPU priority + affinity manager" width="420">
-</p>
+</details>
 
 ## Features
 
