@@ -1297,30 +1297,47 @@ public class AutoLoginManager
                     // the JIT could observe a stale reference cached in a
                     // register across this call, defeating the re-resolve.
                     var accounts = _config.Accounts;
-                    var live = accounts.FirstOrDefault(a =>
+                    var match = accounts.FirstOrDefault(a =>
                         string.Equals(a.Username, account.Username, StringComparison.OrdinalIgnoreCase) &&
-                        string.Equals(a.Server, account.Server, StringComparison.OrdinalIgnoreCase))
-                        ?? account;
-                    if (!ReferenceEquals(live, account))
+                        string.Equals(a.Server, account.Server, StringComparison.OrdinalIgnoreCase));
+                    var live = match ?? account;
+                    if (match == null)
+                    {
+                        // Null fallback path — account was renamed (Username or
+                        // Server changed) or removed from Settings while this SM
+                        // was running. The orphan write below lands somewhere
+                        // outside _config.Accounts and SaveImmediate won't
+                        // persist it. Warn loudly so the silent-failure surface
+                        // is visible in logs even though we can't fix it
+                        // without a lock around the (re-resolve + ApplySettings
+                        // list-replace) pair (backlogged for v3.22.24).
+                        FileLogger.Warn($"AutoLogin-SM: live Account for {account.Name} (Username='{account.Username}', Server='{account.Server}') not found in _config.Accounts — likely renamed or removed mid-autologin. LastLoginResult={pendingResult} will not persist this run.");
+                    }
+                    else if (!ReferenceEquals(live, account))
                     {
                         FileLogger.Info($"AutoLogin-SM: re-resolved orphan Account ref for {account.Name} (Settings likely saved mid-autologin)");
                     }
                     // Write order: LastLoginAt FIRST, LastLoginResult LAST.
-                    // Nullable<DateTime> is 16 bytes (non-atomic) on x64; writing
-                    // it before the atomic string-reference assignment means a
-                    // UI-thread reader observing a non-default LastLoginResult is
-                    // guaranteed (under x64 memory ordering) to see the matching
-                    // LastLoginAt. SaveImmediate bypasses ConfigManager.Save's
-                    // Windows.Forms.Timer which can't tick on background threads.
+                    // The invariant we want: a UI-thread reader observing a
+                    // non-default LastLoginResult also sees the matching
+                    // LastLoginAt. Plain field writes in C# can be reordered
+                    // by the JIT (no language-level guarantee even on x64 with
+                    // CLR memory model), so a Thread.MemoryBarrier() between
+                    // the two writes is required to enforce store-store order.
+                    // SaveImmediate bypasses ConfigManager.Save's Windows.Forms.Timer
+                    // which can't tick on background threads.
                     live.LastLoginAt = DateTime.UtcNow;
+                    Thread.MemoryBarrier();
                     live.LastLoginResult = pendingResult;
                     // Mirror onto the SM-held orphan so any LoginComplete
                     // subscriber that holds the captured ref also sees the
                     // outcome. UI subscribers re-resolve via OnLoginComplete
-                    // but defense-in-depth costs us two field writes.
+                    // but defense-in-depth costs us two field writes. Same
+                    // store-store barrier discipline as the live writes above.
                     if (!ReferenceEquals(live, account))
                     {
                         account.LastLoginAt = live.LastLoginAt;
+                        Thread.MemoryBarrier();
                         account.LastLoginResult = live.LastLoginResult;
                     }
                     ConfigManager.SaveImmediate(_config);
