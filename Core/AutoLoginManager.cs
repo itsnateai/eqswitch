@@ -1291,7 +1291,13 @@ public class AutoLoginManager
                     // account was renamed or removed in Settings during
                     // autologin — at least the orphan still gets the value,
                     // even if SaveImmediate then doesn't persist it.
-                    var live = _config.Accounts.FirstOrDefault(a =>
+                    // Snapshot `_config.Accounts` to a local so the field is
+                    // read exactly once. TrayManager.ReloadConfig reassigns
+                    // _config.Accounts on the UI thread; without the snapshot
+                    // the JIT could observe a stale reference cached in a
+                    // register across this call, defeating the re-resolve.
+                    var accounts = _config.Accounts;
+                    var live = accounts.FirstOrDefault(a =>
                         string.Equals(a.Username, account.Username, StringComparison.OrdinalIgnoreCase) &&
                         string.Equals(a.Server, account.Server, StringComparison.OrdinalIgnoreCase))
                         ?? account;
