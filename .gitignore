@@ -79,10 +79,13 @@ PLAN_*.md
 TODO.md
 EQSwitch.Tests/
 
-## But: archived historical PLAN handoffs are tracked (scoped — not a blanket un-ignore)
-!docs/archive/handoffs/
-!docs/archive/handoffs/**
-!docs/archive/handoffs/**/*.md
+## Local dev / smoke scripts — never publish
+smoke-team1.sh
+smoke-*.sh
+
+## Internal handoff archive (local-only — not for public repo)
+docs/archive/handoffs/
+
 .code-graph/
 
 ## Local-only history-rewrite artifacts

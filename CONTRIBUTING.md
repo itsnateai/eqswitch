@@ -35,15 +35,24 @@ Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
 
 ## Code Style
 
-- All Win32 P/Invoke goes in `Core/NativeMethods.cs` — never scatter DllImport
-- Use `Debug.WriteLine` for diagnostic logging
-- Dispose Process objects with `using var`
+- All Win32 P/Invoke goes in `Core/NativeMethods.cs` — never scatter `DllImport`
+- Use `FileLogger.Info/Warn/Error()` for diagnostic logging (1 MB rotation, thread-safe). Reserve `Debug.WriteLine` for debugger-only spam
+- Dispose `Process` objects with `using var`
 - Graceful degradation: log and continue on Win32 failures, don't crash
+- All colors and control factories live in `UI/DarkTheme.cs` — never use `Color.FromArgb()` outside that file
 - Follow existing patterns in the codebase
 
 ## Architecture Notes
 
-See the project's `CLAUDE.md` for detailed architecture documentation, design decisions, and gotchas.
+The `## Project Structure` table in the [README](README.md#project-structure) is the entry point. From there, the most useful files to skim first:
+
+- `Program.cs` — entry point, single-instance mutex, first-run setup
+- `UI/TrayManager.cs` — orchestration hub that owns every manager
+- `Core/NativeMethods.cs` — single source for all P/Invoke
+- `Config/AppConfig.cs` — strongly-typed JSON config model
+- `Native/eqswitch-di8.cpp` — DirectInput proxy and background-input hooks
+
+`CHANGELOG.md` has per-version notes on design decisions and rationale.
 
 ## License
 
