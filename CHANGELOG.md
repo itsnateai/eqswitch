@@ -1,5 +1,58 @@
 # Changelog
 
+## v3.22.23 — X-flag orphan-reference race fix (2026-05-21)
+
+Single-file C# fix in `Core/AutoLoginManager.cs`. No native change, no behavior
+change for successful logins. Bumps reliability of the Settings → Accounts tab
+"Flag" column when the user opens Settings during a long-running autologin.
+
+### Bug fixed
+
+The autologin "Flag" column (✓ / ✗ / —) failed to persist a `✗` outcome when
+the user clicked Apply or OK in the Settings form while an autologin was still
+running. The bug:
+
+1. `SettingsForm.ApplySettings` rebuilds `_config.Accounts` from `_pendingAccounts`,
+   constructing **new** Account instances each time — by design, so unsaved
+   user edits never mutate the live config.
+2. `AutoLoginManager.RunLoginSequence` captures a reference to the live Account
+   at the start of the sequence (up to ~3 minutes for a fail-timeout path).
+3. If Apply/OK runs anywhere in that window, the SM's captured reference
+   becomes an orphan — the new list contains a fresh Account object with the
+   same fields, but our reference points outside the serialized graph.
+4. The SM's finally block runs `account.LastLoginResult = "fail"; SaveImmediate(_config)`.
+   The mutation lands on the orphan. `SaveImmediate` serializes the new list,
+   which still has `LastLoginResult = ""`. The log claims the save fired
+   (because it did — just not against the right object).
+
+Reproducer: 2026-05-21 — bad-password smoke on account `raistlin`. C# log
+showed `deferred SaveImmediate(fail) for raistlin at SM-exit` at 10:08:56.
+On-disk `eqswitch-config.json` showed `accountsV4[raistlin].lastLoginResult: ""`.
+The intervening `Settings applied` line at 10:08:42 was the orphan trigger.
+
+### Fix
+
+`AutoLoginManager.cs:1277-1325` — before mutating the captured `account`
+reference, re-resolve to the live Account via the same `(Username, Server)`
+case-insensitive match that `SettingsForm.OnLoginComplete` uses for its
+reverse-direction sync. If the live Account is the same object as the
+captured one (the common case — no Settings save during autologin), the
+re-resolve is a no-op `FirstOrDefault` traversal. If the references differ,
+mutate the live AND mirror onto the orphan so any LoginComplete subscriber
+holding the captured ref still sees a coherent state. Log a one-line
+`re-resolved orphan Account ref` whenever the race actually triggers so the
+diagnostic surface is loud on the rare path.
+
+### Out of scope
+
+- The deeper question of whether `SettingsForm.ApplySettings` should be
+  blocked during an in-flight autologin (cleaner architectural fix, larger
+  blast radius). Backlogged.
+- The 2026-05-21 Edge YES-redirect-to-login investigation — separate audit
+  at `X:/_Projects/_.eqswitch-re/audit-2026-05-21/dalaya-dinput8-audit.md`.
+  Tracking a "Force-Kill Stuck Client" tray menu for a future point release,
+  not in v3.22.23.
+
 ## v3.22.22 — Path A partial-population gate (autologin reliability) (2026-05-20)
 
 Closes the Thread 1 bug surfaced by the 2026-05-20 v3.22.21 smoke. Native-only
