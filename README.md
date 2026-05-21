@@ -1,16 +1,12 @@
-<h1 align="center">EQSwitch</h1>
+# EQSwitch
 
-<p align="center">
-  EverQuest multiboxing window manager for <a href="https://dalaya.org">Shards of Dalaya</a>
-</p>
+EverQuest multiboxing window manager for [Shards of Dalaya](https://dalaya.org)
 
-<p align="center">
-  <a href="https://github.com/itsnateai/eqswitch/releases/latest"><img src="https://img.shields.io/github/v/release/itsnateai/eqswitch?style=flat-square&color=34c060" alt="Release"></a>
-  <a href="https://github.com/itsnateai/eqswitch/releases"><img src="https://img.shields.io/github/downloads/itsnateai/eqswitch/total?style=flat-square&label=downloads&color=34c060" alt="Downloads"></a>
-  <img src="https://img.shields.io/badge/.NET-8.0-512bd4?style=flat-square&logo=dotnet" alt=".NET 8">
-  <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4?style=flat-square&logo=windows" alt="Windows">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/itsnateai/eqswitch?style=flat-square&color=34c060" alt="GPL-2.0-or-later License"></a>
-</p>
+[![GitHub Release](https://img.shields.io/github/v/release/itsnateai/eqswitch)](https://github.com/itsnateai/eqswitch/releases)
+[![License: GPL-2.0-or-later](https://img.shields.io/badge/License-GPL%20v2%2B-blue.svg)](LICENSE)
+[![.NET 8](https://img.shields.io/badge/.NET-8.0-purple)](https://dotnet.microsoft.com/)
+[![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6)](https://github.com/itsnateai/eqswitch)
+[![GitHub Downloads](https://img.shields.io/github/downloads/itsnateai/eqswitch/total)](https://github.com/itsnateai/eqswitch/releases)
 
 ---
 
