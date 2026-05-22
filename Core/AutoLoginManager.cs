@@ -851,6 +851,17 @@ public class AutoLoginManager
         using var cts = new CancellationTokenSource(OverallTimeoutMs);
         var sw = Stopwatch.StartNew();
 
+        // v3.22.24 fix7 fast-fail tracker — PER-SM local (one per Task).
+        // Earlier static-field design was REJECT'd by 4 of 8 verifier
+        // agents: team1 launches both clients concurrently, each runs its
+        // own RunLoginStateMachine Task; a shared static would (1) corrupt
+        // streak state across SMs and (2) produce nonsense ages by mixing
+        // different `sw` time origins. Passed by `ref` into
+        // StepWaitConnectResponse so the dispatcher closure mutates the
+        // same backing slot every tick. Dies with the SM — no cross-run
+        // pollution surface.
+        long okDialogFirstSeenMs = -1;
+
         LoginShmWriter? loginShm = null;
         // Iter-3 (2026-05-17): CharSelectReader for character selection + Enter
         // World RPC (the production-working path per EQSwitch CLAUDE.md AUTOLOGIN
@@ -1112,7 +1123,7 @@ public class AutoLoginManager
                         LoginPhase.WaitLoginScreen     => StepWaitLoginScreen(widgets, gameState, nativePhase),
                         LoginPhase.TypingCredentials   => StepTypingCredentials(widgets, gameState, nativePhase),
                         LoginPhase.ClickingConnect     => StepClickingConnect(widgets, gameState, nativePhase),
-                        LoginPhase.WaitConnectResponse => StepWaitConnectResponse(widgets, gameState, nativePhase, okClass, okText),
+                        LoginPhase.WaitConnectResponse => StepWaitConnectResponse(widgets, gameState, nativePhase, okClass, okText, sw.ElapsedMilliseconds, ref okDialogFirstSeenMs),
                         LoginPhase.ServerSelect        => StepServerSelect(widgets, gameState, nativePhase),
                         LoginPhase.WaitServerLoad      => StepWaitServerLoad(widgets, gameState, nativePhase),
                         _                              => current
@@ -1490,8 +1501,14 @@ public class AutoLoginManager
     /// Non-Fatal Recoverable dialogs (rare on Dalaya) effectively retry by
     /// staying in this phase until the 180s OverallTimeoutMs fires Error.
     /// </summary>
+    // v3.22.24 fix6 fast-fail constants. Extracted to named const per
+    // Code-Opus verifier convergent finding (drift trap if 12s tuning ever
+    // needed). Sibling of OverallTimeoutMs (180_000) and the native 120s
+    // per-phase budget — see CHANGELOG fix6 rationale for derivation.
+    private const long OkDialogVisibleBudgetMs = 12_000;
+
     private static LoginPhase StepWaitConnectResponse(WidgetState widgets, int gameState, LoginPhase nativePhase,
-        OkDisplayClass okClass, string okText)
+        OkDisplayClass okClass, string okText, long nowMs, ref long okDialogFirstSeenMs)
     {
         if (nativePhase == LoginPhase.Error)
             return LoginPhase.Error;
@@ -1502,6 +1519,65 @@ public class AutoLoginManager
         {
             FileLogger.Warn($"AutoLogin-SM: Fatal OkDisplay at WaitConnectResponse: \"{okText}\"");
             return LoginPhase.Error;
+        }
+
+        // v3.22.24 fast-fail-on-visible-only safety net (Nate, 2026-05-21):
+        //
+        // OkDialogVisible IS the "didn't reach serverselect" signal — the OK
+        // error dialog appears precisely when the login server rejected the
+        // credentials, and its presence blocks the connect→serverselect
+        // transition that defines a successful login. Same gate, just with
+        // a more reliable trigger than dialog-text classification.
+        //
+        // Why okClass classification can't always be trusted: native-side
+        // text extraction depends on a Dalaya-specific CXStr at a structural
+        // widget offset (main+0x25C → +0x30C, see Native/login_state_machine.cpp
+        // fix4 comment block). The +0x30C anchor was confirmed working on PID
+        // 33768 but null on PID 24400 — Dalaya stores dialog text in different
+        // widgets per-PID or per-dialog-instance. Without a stable text path
+        // every dialog instance, okClass falls back to None and the Fatal
+        // short-circuit above doesn't fire.
+        //
+        // 12-second visibility gate is safe against slow-server false-positives
+        // because the 138s slow-Dalaya case (per CLAUDE.md AUTOLOGIN SPEC →
+        // Slow-server tolerance) does NOT produce an OK dialog — connect is
+        // still pending upstream, no rejection has been signaled. OkDialog
+        // visible >= 12s = definitively a server-side rejection, never just
+        // server slowness.
+        //
+        // 12s budget rationale: dialog typically appears within ~500ms of
+        // entering WaitConnectResponse (observed on PID 24400: t=9779ms first
+        // ok=1, phase entered at t=9255ms). An extra 11s window allows for the
+        // C# observer tick cadence (~250ms), any one-tick SHM torn reads to
+        // recover, and a brief settling period in case the dialog auto-closes
+        // (e.g. transient server-busy that fixes itself). Replaces the prior
+        // 120s per-phase budget on bad-pass attempts.
+        // Gate only fires for okClass != Recoverable. Recoverable patterns
+        // (kPromptServer_Busy, kPromptTryAgain, queue-position) legitimately
+        // can take >12s on Dalaya peak-load; v3.22.23 behavior was to wait
+        // them out, and fix6 preserves that. None / Fatal (when text
+        // extraction failed) and unclassified all trip the visibility gate.
+        //
+        // No `else { reset }` branch: a single torn-read tick (ok=true→
+        // false→true between two SHM reads) would otherwise wipe an
+        // accumulated streak — Gap-Opus verifier flag. The local var is
+        // already per-SM (declared in RunLoginStateMachine scope) so it
+        // dies with the SM; no cross-run pollution to defend against. A
+        // dialog that genuinely disappears mid-WaitConnectResponse and is
+        // never followed by another visible-tick will simply not trip the
+        // gate this run, which is the desired behavior.
+        if (widgets.OkDialogVisible && okClass != OkDisplayClass.Recoverable)
+        {
+            if (okDialogFirstSeenMs < 0)
+                okDialogFirstSeenMs = nowMs;
+            long visibleAgeMs = nowMs - okDialogFirstSeenMs;
+            if (visibleAgeMs > OkDialogVisibleBudgetMs)
+            {
+                FileLogger.Warn(
+                    $"AutoLogin-SM: bail on long-visible OkDialog at WaitConnectResponse "
+                    + $"(visibleAge={visibleAgeMs}ms, okClass={okClass}, textLen={okText?.Length ?? 0})");
+                return LoginPhase.Error;
+            }
         }
 
         // T3-Sonnet/Opus 2026-05-16 verifier finding: ReadOkDisplaySnapshot can

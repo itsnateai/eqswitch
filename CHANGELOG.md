@@ -1,5 +1,364 @@
 # Changelog
 
+## v3.22.24 — Bad-password fail detection in ~5s instead of 120s (2026-05-21)
+
+Native-side fix to `eqmain_widgets_mq2style` / `login_state_machine`. The C# state
+machine and the `widgetOkDialogVisible` SHM signal were already plumbed end-to-end
+by v3.22.x — but the native widget probe never returned a non-null pointer for
+the `okdialog` SIDL screen, so C# couldn't short-circuit on a Fatal `okClass`
+and was stuck waiting out the 120s per-phase timeout on bad-password failures.
+
+### Root cause
+
+`FindLiveScreenByName` filters candidate top-level widgets by
+`childCount >= MIN_CHILDREN_SCREEN` (=3) to reject leaf widgets whose tooltips
+happen to mention a screen name. That's correct for full SIDL screens — the
+`connect` screen has 16+ children, `serverselect` 6+ — but it falsely rejects
+modal dialogs:
+
+- Live-process probe of PID 21864 (sitting on the OK error dialog after a
+  bad-pass `raistlin` smoke, 2026-05-21) walked CXWndManager.pWindows directly
+  and found the okdialog widget at slot **[176]** @ `0x13766080`,
+  `vt=eqmain+0x1052E4`, **dShow=1, children=1**, with the SIDL name `'okdialog'`
+  stored at body offsets `+0x1DC`, `+0x1FC`, `+0x228`, `+0x22C`.
+- `children=1` < `MIN_CHILDREN_SCREEN=3`, so the iteration's per-tick log showed
+  `tooFewChildren=187 noName=18 result=null` on every probe — for 111 consecutive
+  ticks per session.
+- The matching SHM field `widgetOkDialogVisible` therefore stayed at `0`
+  indefinitely, even with the dialog physically visible on Nate's screen.
+- `AutoLoginManager.cs:1501`'s short-circuit
+  `if (widgets.OkDialogVisible && okClass == OkDisplayClass.Fatal) → bail` was
+  unreachable.
+
+### Fix
+
+Parameterized the child-count gate so dialog lookups can opt out cleanly:
+
+- `Native/eqmain_widgets_mq2style.h`: `FindLiveScreenByName(name)` →
+  `FindLiveScreenByName(name, int minChildren = 3)`. Default keeps every
+  existing screen-finder call site bit-identical to v3.22.23 behavior.
+- `Native/eqmain_widgets_mq2style.cpp`: thread `minChildren` through
+  `FindScreenCtx` + `FindScreenIterCb` + the user-facing wrapper. DI8Log line
+  now includes the chosen `minChildren` so log archeology can distinguish
+  screen vs dialog walks.
+- `Native/login_state_machine.cpp`: `ResolveCachedScreen(slot, name)` →
+  `ResolveCachedScreen(slot, name, int minChildren = 3)`. The 3 dialog
+  lookups (`okdialog`, `yesnodialog`, `ConfirmationDialogBox`) now pass
+  `minChildren=0`; `connect` and `serverselect` keep the default.
+
+No SHM layout change, no C# change, no public API removed.
+
+### Verification
+
+Live-process probe `_.eqswitch-re/audit-2026-05-21/probe_okdialog_search.py`
+walked the manager's full pWindows array against PID 21864 and observed
+exactly one top-level widget contains `'okdialog'` at any of those body
+offsets in that PID snapshot. This is empirical evidence from a single
+process, NOT a structural uniqueness proof — a future Dalaya patch or a
+different process state could theoretically place the SIDL name CStrRep
+in another widget's body. The bool-flagged downstream consumer
+(`AutoLoginManager.cs:1501`) requires both `OkDialogVisible` AND a Fatal
+`okClass` classification, so a false-positive screen match would still
+need to also produce a CXMLDataPtr-style body that ReadWindowText can
+parse into Fatal-classified text — a multi-condition failure surface.
+`'yesnodialog'` matches similarly at slot [167] (hidden in that PID
+snapshot, but layout identical).
+
+Smoke contract for this release: native log `eqswitch-dinput8-{pid}.log`
+must show `FindLiveScreenByName('okdialog', minChildren=0)` return non-null
+within ~1 probe tick of the OK error dialog appearing; C# log must show
+transition to terminal `Error` within ~5-10s of credentials submit on a
+bad-pass smoke, replacing the prior 120s `PHASE_ERROR` budget exhaustion.
+
+### Files
+
+- `Native/eqmain_widgets_mq2style.h`
+- `Native/eqmain_widgets_mq2style.cpp`
+- `Native/login_state_machine.cpp`
+- `EQSwitch.csproj` (3.22.23 → 3.22.24)
+- `CHANGELOG.md`
+
+Investigation artifacts (LOCAL-ONLY — `_.eqswitch-re/` is `.no-local` /
+not checked in):
+- `_.eqswitch-re/audit-2026-05-21/probe_okdialog_search.py`
+- `_.eqswitch-re/audit-2026-05-21/okdialog-walk-PID21864.txt`
+- `_.eqswitch-re/audit-2026-05-21/NEXT-SESSION-PROMPT.md` (handoff context)
+
+### v3.22.24 fix2 — OK_Display text extraction via structural anchor (superseded by fix3)
+
+First post-deploy smoke (PID 18296, 2026-05-21 16:28-16:29) confirmed
+`widgetOkDialogVisible=1` reached the SHM and C# observer saw `ok=1` on
+every tick — but `okClass=None text=""` repeatedly logged. Root cause: the
+text-extraction probe (`PollOkDisplayToShm` → `DiscoverDialogWidgets`)
+resolved `OK_Display` via legacy `MQ2Bridge::FindWindowByName`, which
+returns CXMLDataPtr *definitions* on Dalaya (not live widgets — the same
+problem that motivated the v3.22.24 dialog-discoverability fix one layer
+up). So `g_pOkDisplay` was non-null but pointed at a def, `ReadWindowText`
+returned empty, and the C# short-circuit
+(`OkDialogVisible && okClass==Fatal`) never armed.
+
+Fix2: `DiscoverDialogWidgets` switched to `FindLiveScreenByName("okdialog", 0)`
+as the primary anchor with `RecurseAndFindName` for `OK_Display` +
+`OK_OKButton`. Kept legacy `FindWindowByName` as fallback. **Not smoke-tested
+before fix3 superseded it.**
+
+### v3.22.24 fix7 — fix6 verifier-convergent refactor (2026-05-21)
+
+8-agent verifier round on fix6 produced 4 convergent REJECT/CONCERNS findings.
+All addressed before re-deploy:
+
+1. **Static field → per-SM local (Gap-Opus + Code-Opus + Gap-Sonnet +
+   Blast-Opus = 4 agents, REJECT verdicts).** fix6's
+   `private static long s_okDialogFirstSeenMs` was shared across all
+   concurrent SMs — a team1 launch fires two `Task.Run(() => RunLoginStateMachine(...))`
+   per `BeginLogin`, so PID-B's SM-start reset (line 857) wiped PID-A's
+   accumulated streak. Worse, each SM has its own `sw = Stopwatch.StartNew()`
+   with its own time-origin — subtracting PID-B's `nowMs` from a
+   `firstSeenMs` written by PID-A produces nonsense ages
+   (potentially negative, potentially zero). Now: `long okDialogFirstSeenMs = -1`
+   is a local in `RunLoginStateMachine` scope, passed by `ref` into
+   `StepWaitConnectResponse`. Dies with the SM Task — no cross-SM sharing,
+   no time-origin mismatch.
+
+2. **Exclude Recoverable from the gate (Gap-Opus).** fix6's 12s gate fired
+   regardless of `okClass`, which would hard-fail Dalaya peak-load
+   recoverable dialogs (queue-position, server-busy, "please try again")
+   that legitimately can stay up >12s. v3.22.23 behavior was to wait them
+   out; fix7 preserves that — gate is now
+   `widgets.OkDialogVisible && okClass != OkDisplayClass.Recoverable`.
+
+3. **Remove torn-read reset (Gap-Opus).** fix6's `else { firstSeenMs = -1 }`
+   on `OkDialogVisible == false` would wipe an accumulated streak on a
+   single torn-read flicker (SHM is single-byte read; bool snapshot has
+   no double-read defense like `okDisplayClass` does). The local var dies
+   with the SM Task anyway so no cleanup is needed; dropping the reset
+   makes the gate tolerant of single-tick noise.
+
+4. **Extract 12000 to a named const (Code-Opus).** `OkDialogVisibleBudgetMs = 12_000`
+   sibling of `OverallTimeoutMs`. Drift-trap prevention if Nate ever tunes
+   the budget.
+
+Also fixed: stale XML-doc comment claiming "Cleared on every successful login
+(terminal CharSelect / InWorld resets it via SM teardown)" — neither was
+true in fix6 (the only reset was at SM dispatch entry). Comment removed
+along with the static field.
+
+Not addressed in v3.22.24 (post-ship cleanup):
+- `tools/capture-native-debug.py` / `TestAutoLoginRunner.cs` SehPatterns don't
+  grep for the new "bail on long-visible OkDialog" line — telemetry pickup
+  gap, not a behavior gap.
+- `memory/reference_eqswitch_native_phase_error_triggers.md` documents the
+  120s native phase budget; needs an amendment noting fix7's ~22s C#-side
+  fast-fail path. Will land in `/save` step 5.5 auto-update.
+
+### v3.22.24 fix6 — C# fast-fail-on-visible-only (Nate, 2026-05-21)
+
+Fix5's native side delivered reliable `widgetOkDialogVisible=1` on every PID
+but the +0x30C structural anchor for the dialog text is PID-unstable —
+worked on PID 33768, returned NULL on PID 24400 (Dalaya stores dialog text
+in different widgets per-PID or per-dialog-instance; heap scan finds 5
+heap copies of the live text but no walkable widget pointer at any of
+them). Without reliable text classification, the existing C#
+`okClass == Fatal` short-circuit at AutoLoginManager.cs:1501 stays
+unreachable and the SM waits the full 120s native phase timeout.
+
+Per Nate's framing: **OkDialogVisible IS the "didn't reach serverselect"
+signal** — the OK error dialog appears precisely when the login server
+rejected credentials, and its presence blocks the connect→serverselect
+transition that defines success. Same gate, just with a more reliable
+trigger than text classification.
+
+Fix: AutoLoginManager.cs adds a visibility-age tracker. Whenever
+`widgets.OkDialogVisible` is true, we record the SM elapsed-ms of first
+sighting in a static field. If the dialog stays visible for >12 seconds
+without okClass-based bail firing first, the SM transitions to terminal
+Error regardless of classification. The 12s budget is safe against the
+138s slow-Dalaya case (CLAUDE.md AUTOLOGIN SPEC) because slow-server
+delays do NOT produce an OK dialog — they're upstream connect-pending
+states with no rejection signaled.
+
+Net effect: bad-password autologin now reaches terminal Error at ~22s
+SM-total (12s after dialog appears at ~10s into WaitConnectResponse)
+instead of the prior 120s native phase-timeout. The v3.22.23 Settings
+→ Accounts Flag column (✗ on fail, ✓ on success, — when not fired)
+benefits directly — fail-marking now persists at ~22s vs ~130s.
+
+Changes:
+- `Core/AutoLoginManager.cs`: `StepWaitConnectResponse` takes new
+  `long nowMs` parameter; static `s_okDialogFirstSeenMs` tracks first
+  visible-tick timestamp (reset to -1 on `else` branch when dialog
+  becomes invisible, and explicitly at SM-start in RunLoginSequence
+  to prevent state bleed across multiple SM runs in the same process).
+- `Core/AutoLoginManager.cs`: tick-dispatch at line 1115 passes
+  `sw.ElapsedMilliseconds` to the new step signature.
+
+No native change. No SHM layout change. Doesn't touch the existing
+okClass=Fatal short-circuit — that still wins when text extraction
+succeeds (~1s detection on PIDs where +0x30C is populated). The
+visibility gate is a safety net for the text-extraction-fails case.
+
+### v3.22.24 fix5 — 8-agent verifier convergent cleanup (2026-05-21, pre-final-smoke)
+
+8 verifier agents (4 topics × Sonnet+Opus) on fix4 surfaced 5 convergent
+findings — all addressed before the next smoke:
+
+1. **Line 1322 stale `MQ2Bridge::ReadWindowText` (5 of 8 agents).** The
+   always-on `PollOkDisplayToShm` was migrated to `ReadDalayaDialogText` in
+   fix4 but the in-phase `PHASE_WAIT_CONNECT_RESP` handler at line 1322
+   still called the legacy reader on the same `g_pOkDisplay` pointer. The
+   legacy reader returns NULL on the Dalaya-repurposed text widget, so the
+   in-phase `SetError` + recoverable-retry branches were dead-pathed on
+   Dalaya. Currently dormant (PATH B uses PHASE_IDLE) but would silently
+   break if PATH A is reanimated. Now uses `ReadDalayaDialogText`.
+
+2. **g_cachedMain cache slot (Code-Sonnet + Code-Opus + Gap-Opus).**
+   Pre-fix5 `DiscoverDialogWidgets` called `FindLiveScreenByName("main", 3)`
+   every Tick — an uncached ~205-node `pWindows` walk. Same starvation
+   pattern v3.21.0-fix-1 was created to fix for the 5 already-cached
+   screens. Now uses `ResolveCachedScreen(&g_cachedMain, "main", 3)`,
+   sharing the existing cache infrastructure (including eqmain-reload
+   invalidation in `PollWidgetVisibilityToShm`).
+
+3. **okdialog visibility gate on g_pOkDisplay (Gap-Sonnet + Gap-Opus).**
+   The structural slot `main+0x25C` points at a Dalaya-repurposed HELP
+   button widget that ALSO exists during normal login (no dialog active).
+   Reading its `+0x30C` CXStr unconditionally could classify residual HELP
+   popup text as Fatal and abort a valid in-progress login. Fixed: gate
+   the entire `g_pOkDisplay` resolution on `ResolveCachedScreen("okdialog", 0)`
+   returning a visible widget (via `IsCXWndVisible`). Zero-cost on the
+   common path (cache hit).
+
+4. **Magic numbers → constexpr (Code-Opus).** `0x25C`, `0x30C`, `0x14`,
+   `0x08`, `4096` extracted to `DALAYA_MAIN_TEXT_WIDGET_SLOT_OFF`,
+   `DALAYA_OKDISPLAY_TEXT_CXSTR_OFF`, `DALAYA_CXSTR_BUFFER_OFF`,
+   `DALAYA_CXSTR_LENGTH_OFF`, `DALAYA_DIALOG_TEXT_MAX_LEN`. Same drift-trap
+   prevention that motivated removing `MIN_CHILDREN_SCREEN` in fix3.
+
+5. **Log structural-slot misses + soften "CSTML" speculation
+   (Code-Opus + Gap-Sonnet + Gap-Opus).** When `pTextWidget = *(main+0x25C)`
+   fails the `IsEQMainWidget` gate, log once so a future Dalaya layout
+   shift is diagnosable from logs alone. CHANGELOG + code comments no
+   longer claim the 4-byte buffer prefix is definitely CSTML markup —
+   only that it's an observed-as-NUL prefix that NUL-stripping handles
+   correctly.
+
+**Not addressed (advisory, lower priority):**
+- OK_OKButton recurse may miss (Code-Opus, single-agent): the OK button's
+  live CStrRep label is just "OK" not "OK_OKButton", so
+  `RecurseAndFindName(okdialog, "OK_OKButton")` may return null on Dalaya,
+  making the recoverable-dialog auto-click dormant. PATH A re-enablement
+  task — addressed in v3.22.25 alongside other PATH A reanimation.
+- TestAutoLoginRunner SehPatterns gap (Blast-Sonnet): smoke runner watches
+  `"SEH in ReadWindowText"` log line; ReadDalayaDialogText uses different
+  prefix. Update SehPatterns when convenient.
+- Probe `rc=0` rejection inconsistency (Gap-Sonnet + Gap-Opus): dev-tool
+  probes reject rc=0 CStrReps but the production code accepts them. Update
+  probe validators when next-iterating on those tools.
+- LoginShmWriter.cs stale "ReadWindowText returned empty" doc comments
+  (Blast-Opus): doc rot, no behavior change.
+- DALAYA_DIALOG_TEXT_MAX_LEN=4096 cap (Gap-Opus): currently fits the
+  observed 877-char message comfortably. If Dalaya ships longer error
+  messages they'll be truncated — log warning + bump cap when seen.
+
+### v3.22.24 fix4 — Dalaya-structural OK_Display anchor (2026-05-21, post-smoke)
+
+Fix3 (drop fallback + scanBytes=0x400) was based on a verifier hypothesis
+(OK_Display name CStrRep beyond +0x200) that turned out to be wrong. The
+fix3 smoke (PID 33768, 2026-05-21 16:50) confirmed `widgetOkDialogVisible=1`
+reached SHM as designed but the C# observer logged `okClass=None text=""`
+for the entire 128s window before the native phase-timeout fired at 128.7s.
+
+Root cause (confirmed via two new live-process probes,
+`_.eqswitch-re/audit-2026-05-21/probe_okbox_dump.py` and a follow-up heap
+scan for the literal "not valid" string):
+
+1. **OK_Display is NOT a child of okdialog on Dalaya.** The okdialog widget
+   @ slot [176] has exactly ONE child (OK_Box), whose children are an OK
+   button (label="OK" at +0x1A8) and a non-text widget (zero CXStr fields
+   in body). Neither contains the dialog message.
+2. **The actual displayed text lives in main screen's subtree.** The
+   `main` widget (pWindows[12] @ 0x116F17E0) has TWO structural pointer
+   slots at `+0x25C` and `+0x4E0`, both pointing to a child widget @
+   0x116F1F20. That widget is a Dalaya-repurposed CButtonWnd-class (label
+   "HELP" at +0x1A8) whose `+0x30C` field is a CXStr* holding the live
+   877-character dialog text ("Error - The username and/or password were
+   not valid... Please Note: Until now EverQuest passwords could differ...").
+3. **The CXStr uses a non-standard refCount=0 layout.** Dalaya's dialog
+   text is stored as a transient/ownerless CStrRep (rc=0, alloc=0x400,
+   length=877). The text buffer starts at the standard `+0x14` offset
+   but with a 4-byte CSTML markup prefix (`00 00 00 00`) before the
+   visible characters — the renderer skips it, we strip it.
+
+Match-MQ2 framing: MQ2's actual API on x86 RoF2 is
+`CXWnd::GetChildItem(PCHAR name)` which the open MQ2 source
+(`_.src/_srcexamples/mq2emu-rof2-x86/MQ2Main/EQClasses.cpp`) implements
+as literally `return RecurseAndFindName(this, Name)` — the SAME algorithm
+we already had in `eqmain_widgets_mq2style::RecurseAndFindName`. A strict
+RVA-pinned port would behave identically on Dalaya: return null, because
+OK_Display isn't in okdialog's runtime sibling chain. The Dalaya-structural
+anchor is the only path that actually delivers the text on this server,
+mirroring the precedent of v3.20.5 (ConnectButton via fixed ConnectWnd
+slot) and v3.22.x (password edit via ConnectWnd+0x44).
+
+Changes:
+- `Native/login_state_machine.cpp`: `DiscoverDialogWidgets` now anchors
+  `g_pOkDisplay` on `main+0x25C` (validated via `IsEQMainWidget`). OK button
+  discovery via `RecurseAndFindName(okdialog, "OK_OKButton", 0x400)` kept —
+  the OK button IS a child of okdialog (dialog frame owns its click target).
+- `Native/login_state_machine.cpp`: new `ReadDalayaDialogText` helper reads
+  the CXStr at `pTextWidget+0x30C`, handles rc=0 CStrRep layout, strips
+  leading NUL prefix. Replaces `MQ2Bridge::ReadWindowText` in
+  `PollOkDisplayToShm` for this widget class.
+- No SHM layout change; existing `okDisplayText` / `okDisplayClass` fields
+  and C# `OkClass::Fatal` short-circuit at `AutoLoginManager.cs:1501` are
+  the consumers.
+
+Verification contract: `eqswitch-dinput8-{pid}.log` should now show non-empty
+text written to SHM via `SetOkDisplay`. C# log should transition
+`WaitConnectResponse → Error` within ~5–10s of credentials submit (well
+before the 120s native phase-timeout), with `okDisplay at terminal Error:
+class=Fatal text="...password were not valid..."`.
+
+### v3.22.24 fix3 — verifier-convergent cleanup (2026-05-21, pre-smoke)
+
+8-agent pair-verifier round (Sonnet+Opus on 4 topics) on the fix2 state
+surfaced 4 convergent issues. Addressed before re-deploy:
+
+1. **`RecurseAndFindName` scan-window mismatch (Gap-Sonnet C2, Code-Sonnet
+   LOW).** The recurse used `SCAN_BYTES_WIDGET=0x200` for every node,
+   but the okdialog widget itself stores its name CStrRep at body offsets
+   up to `+0x22C` (per the PID 21864 probe). If `OK_Display` follows the
+   same layout pattern as its parent, `RecurseAndFindName` would silently
+   miss it under 0x200 — the most likely cause of fix2's predicted-but-
+   not-validated `text=""` symptom. Parameterized: `RecurseAndFindName`
+   and `FindChildByName` now take `uint32_t scanBytes = 0x200`. Dialog
+   callers in `DiscoverDialogWidgets` pass `0x400`.
+2. **Legacy `FindWindowByName` fallback poisons `g_pOkDisplay`
+   (Gap-Opus #3 + #5, Code-Opus #4, Gap-Sonnet M3, Code-Sonnet LOW (a)).**
+   On Dalaya `FindWindowByName` returns CXMLDataPtr *definitions* — passing
+   one to `ReadWindowText` either SEH-faults or returns garbage. Dropped
+   the fallback entirely. On structural miss `g_pOkDisplay` stays null and
+   `PollOkDisplayToShm` clears the SHM cleanly via `ClearOkDisplay`.
+3. **Dead `MIN_CHILDREN_SCREEN` constant (Code-Opus #9, Code-Sonnet LOW
+   (d)).** Removed from `eqmain_widgets_mq2style.cpp`. The header default
+   on `FindLiveScreenByName(name, int minChildren = 3)` is now the single
+   source of truth.
+4. **CHANGELOG overclaim on false-positive elimination (Gap-Opus #1,
+   Code-Opus #3, Gap-Sonnet M1, Code-Sonnet MED #2).** Softened from
+   "eliminating false-positive risk" to "empirical evidence from a single
+   process snapshot" with a note that the C#-side `OkClass==Fatal` gate
+   provides defense-in-depth even on a false-positive screen match.
+
+**Not addressed (advisory, low-impact):**
+- `ResolveCachedScreen` cache key doesn't include `minChildren` — in
+  practice each name has one minChildren value, so this is theoretical.
+- `DiscoverDialogWidgets` runs the structural walk every tick without
+  its own cache — perf nit only; tick is 500ms not the 16ms BURST hot
+  path that drove v3.21.0-fix-1. Will revisit if logs show starvation.
+- `probe_okdialog_search.py` hardcodes the CXWndManager VA (dev tool
+  only; not shipped; ASLR will require re-probing for a different PID).
+- `dist/SHA256SUMS` references the v3.22.23 zip (CI regenerates on tag).
+
 ## v3.22.23 — X-flag orphan-reference race fix (2026-05-21)
 
 Single-file C# fix in `Core/AutoLoginManager.cs`. No native change, no behavior
