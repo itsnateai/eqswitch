@@ -149,8 +149,13 @@ The 2026-05-22 memory-scan session closes the investigation: literal text
 heap allocation at `0x091A0000`) with 8-byte headers `?? BD B6 ?? ?? B6 03 0X`
 preceding each entry. **NOT a CXStr layout** — relaxed CXStrRep header checks
 at hit-0x10 / -0x14 / -0x18 / -0x1C all rejected. **Full-process xref scan
-found 0 pointers anywhere in user-mode memory pointing at either literal
-address.** The render path is by-ID lookup via a function not visible from
+found 0 pointers anywhere in the full WoW64 user-mode address space**
+pointing at either literal address. Verified twice: first pass capped at
+`0x80000000` (33.55 s, 0 hits), then re-verification after the T2-Opus
+verifier flagged that eqgame.exe is `/LARGEADDRESSAWARE` — the upper 2 GB
+was a legitimate search domain. Re-scan with ceiling at `0xFFFE0000` also
+returned 0 hits (10.57 s, `text-scan-PID39032-20260522_004805.inspect.json`).
+The render path is by-ID lookup via a function not visible from
 `pWindows` traversal, so no widget-anchor approach can structurally reach
 this text.
 
