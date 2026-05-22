@@ -570,12 +570,20 @@ public class SettingsForm : Form
     {
         _cardDirectBindings.Controls.Clear();
 
-        int liveA = HotkeyBindingUtil.CountLiveAccountBindings(_config);
-        int liveC = HotkeyBindingUtil.CountLiveCharacterBindings(_config);
-        int staleA = HotkeyBindingUtil.CountStaleAccountBindings(_config);
-        int staleC = HotkeyBindingUtil.CountStaleCharacterBindings(_config);
-        int totalA = _config.Accounts.Count;
-        int totalC = _config.Characters.Count;
+        // v3.22.27 Item 1: snapshot _config reads under ConfigMutationLock to
+        // protect against torn reads if SM ever gains Account/Character writes.
+        // HotkeyBindingUtil.Count* methods iterate _config.* internally, so they
+        // belong inside the lock too. Re-entrant on the ApplySettings call-path.
+        int liveA, liveC, staleA, staleC, totalA, totalC;
+        lock (ConfigManager.ConfigMutationLock)
+        {
+            liveA = HotkeyBindingUtil.CountLiveAccountBindings(_config);
+            liveC = HotkeyBindingUtil.CountLiveCharacterBindings(_config);
+            staleA = HotkeyBindingUtil.CountStaleAccountBindings(_config);
+            staleC = HotkeyBindingUtil.CountStaleCharacterBindings(_config);
+            totalA = _config.Accounts.Count;
+            totalC = _config.Characters.Count;
+        }
 
         // Header-less card — first row sits near the top of the panel.
         // Per-row +4/-1 offsets keep the label vertically centered with the
@@ -727,7 +735,17 @@ public class SettingsForm : Form
                 others.Add(($"Account '{b.TargetName}'", b.Combo));
 
         if (FocusExistingHotkeyDialog()) return;
-        var dlg = new CharacterHotkeysDialog(_config.Characters, _config.Hotkeys.CharacterHotkeys, others);
+        // v3.22.27 Item 1: lock around dialog construction so the dialog's
+        // initial iteration of Characters (CharacterHotkeysDialog ctor reads
+        // .Count + .Any) sees a consistent snapshot. Latent today (SM doesn't
+        // write Characters); if SM ever gains Character writes the dialog's
+        // stored _characters reference becomes the load-bearing concern and
+        // this site must switch to passing a defensive copy.
+        CharacterHotkeysDialog dlg;
+        lock (ConfigManager.ConfigMutationLock)
+        {
+            dlg = new CharacterHotkeysDialog(_config.Characters, _config.Hotkeys.CharacterHotkeys, others);
+        }
         dlg.FormClosed += (_, _) =>
         {
             if (dlg.DialogResult == DialogResult.OK && dlg.Result != null)

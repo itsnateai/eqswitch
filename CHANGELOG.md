@@ -1,5 +1,205 @@
 # Changelog
 
+## v3.22.27 — Backlog drain: _config.Characters lock symmetry, CDN allowlist hardening, ConfigManager hygiene, hung-PID log disambiguation (2026-05-22)
+
+Picks up the v3.22.26 backlog plus one cross-app finding from a sibling
+self-update CDN audit. Per Nate's clear-the-backlog directive 2026-05-22,
+leaned toward DO over DEFER on every borderline call. Every prescription
+was grep-audited against current code per
+`feedback_audit_before_handoff_prescribe` before implementation —
+notably Item 0's "CDN bug" turned out to be latent-not-active in
+EQSwitch's HttpClient-auto-redirect architecture, but the patch landed
+anyway as defense-in-depth against a future manual-redirect refactor.
+
+### Item 0: CDN dual-host allowlist hardening (cross-app convergent)
+
+8-agent T4 Sonnet+Opus convergent finding from a sibling self-update CDN
+audit. MicMute, SyncthingPause, MWBToggle, and CapsNumTray were hardened
+to accept BOTH `objects.githubusercontent.com` (legacy) and
+`release-assets.githubusercontent.com` (the new GitHub release-asset edge
+that GitHub rolled alongside the legacy). EQSwitch was missed.
+
+Pre-implementation audit (`UI/UpdateDialog.cs:127` and 466-467) revealed
+that EQSwitch's `_http` is a default `HttpClient` with
+`AllowAutoRedirect = true` (the .NET 8 default), so today the
+`url.StartsWith` check at line 466 only ever sees the pre-redirect
+`github.com/itsnateai/...` URL — the CDN clauses are unreachable code
+in current architecture. This differs from MWBToggle/MicMute, which
+have manual per-hop redirect validators where the CDN URL DOES surface.
+
+Patch landed anyway as defense-in-depth: keeps the allowlist
+comprehensive so a future refactor toward manual redirect validation
+(a hardening pass we may want — the current `StartsWith` allows
+subdomain-spoof attacks like `objects.githubusercontent.com.evil.example`)
+doesn't fall into a half-patched state.
+
+Files: `UI/UpdateDialog.cs:464-476`.
+
+### Item 1: `_config.Characters` lock symmetry at 4 sites
+
+T2 Opus CRITICAL + T2 Sonnet MINOR "latent" from the v3.22.26 R2
+verifier round. The v3.22.26 PopulateFromConfig lock-snapshot fix
+introduced a gap-asymmetry — four other UI-thread sites still read
+`_config.Characters` unlocked. Latent today (SM doesn't write
+Characters), but the gap would silently become a torn-read bug the
+moment SM gains a Character-write feature.
+
+Sites locked under `ConfigManager.ConfigMutationLock`:
+
+1. **`UI/SettingsForm.cs:RefreshDirectBindingsCard`** — wraps the
+   6-line snapshot block (`HotkeyBindingUtil.Count*` ×4 +
+   `_config.Accounts.Count` + `_config.Characters.Count`). The
+   utilities iterate `_config.*` internally so the lock has to
+   include them. Re-entrant on the ApplySettings call-path.
+2. **`UI/SettingsForm.cs:OpenCharacterHotkeysDialog`** — wraps the
+   `new CharacterHotkeysDialog(_config.Characters, ...)` ctor.
+   Dialog stores the live ref in `_characters` but only iterates
+   during construction (line 61 `.Any()` + line 72 `.Count`), so the
+   wrap covers the actual read surface. Comment flags the
+   stored-reference latent for a future SM-Character-write trigger.
+3. **`UI/TrayManager.cs:BuildContextMenu`** — wraps the whole `_config`
+   read surface (lines ~1402-1447): `_config.Hotkeys` ref-copy,
+   `LegacyHotkeyLookup(_config)` ctor, `foreach _config.Accounts`,
+   and the three `BuildAccountsSubmenu` / `BuildCharactersSubmenu` /
+   `BuildTeamsSubmenu` calls that iterate live refs internally.
+   Reentrant — the ReloadConfigCore caller already holds the outer
+   lock at line 2596-2600 (now 2606-2610 post-edit). Hold time:
+   ms-scale UI-thread menu construction, well under SM tick budget.
+4. **`UI/TrayManager.cs:FireLegacyQuickLoginSlot`** — three separate
+   tiny locks around the LegacyAccounts / Characters / Accounts
+   FirstOrDefault lookups. Each lock releases BEFORE the heavy
+   `FireCharacterLogin` / `FireAccountLogin` dispatch (which launches
+   an EQ client and must NOT hold the lock).
+
+Verified the single write site at `TrayManager.cs:2745`
+(`_config.Characters = newConfig.Characters` inside `ReloadConfigCore`)
+is already under the outer lock at line 2596-2600.
+
+### Item 2: `probe_okdialog_search.py` auto-derive CXWndManager VA
+
+T3 Sonnet CONCERN. The hardcoded `CXWND_MANAGER = 0x12702210` was the
+heap VA from PID 21864 — silently NULLs against any new PID and exits
+with "CXWndManager ... is NULL — manager moved". Lifted the auto-derive
+pattern from sister probe `probe_okbox_dump.py:187-204`: accept hex
+`sys.argv[2]` first, fall back to parsing
+`C:/Users/nate/proggy/Everquest/Eqfresh/eqswitch-dinput8-{pid}.log`
+for the "SELECTED eqmain CXWndManager at {hex}" line.
+
+Files: `_.eqswitch-re/audit-2026-05-21/probe_okdialog_search.py`
+(out-of-tree from eqswitch git — no commit needed).
+
+### Item 3: `probe_okbox_dump.py` bounds-check sweep
+
+T3 Sonnet CONCERN. `read_dword` / `read_bytes` lacked the
+`addr < 0x10000 or addr >= USER_SPACE_MAX` guard that sister
+`probe_okdisplay_tick.py:read_dword` includes. Defended at call sites
+by `visited` + caller pre-validation today, but asymmetric. Added the
+guard to both primitives for symmetric defense-in-depth.
+
+Files: `_.eqswitch-re/audit-2026-05-21/probe_okbox_dump.py`.
+
+### Item 4: `PopulateForceKillMenu` GetLastWin32Error disambiguation
+
+T2 Sonnet/T2 Opus convergent from v3.22.25 R4 (carried over). The hung
+detector at `UI/TrayManager.cs:1652-1666` (now ~1660-1700 post-edit)
+treats `SendMessageTimeout(WM_NULL, SMTO_ABORTIFHUNG, 100ms) ==
+IntPtr.Zero` as "hung" — but conflates two cases: pump timed out
+(slow but maybe alive, `ERROR_TIMEOUT` 1460) vs kernel-marked hung
+or hwnd died (other, e.g. `ERROR_INVALID_WINDOW_HANDLE` 1400).
+
+Added `Marshal.GetLastWin32Error()` capture and an Info-level log
+line that names the err class. User-facing tray label stays "⚠ HUNG"
+for both — same Force-Kill intent — but post-mortem now distinguishes
+slow-pump from kernel-hung.
+
+`SMTO_BLOCK` intentionally NOT added (T2 verifier had recommended it,
+T3 disagreed). The `WindowManager.IsClientResponsive` precedent uses
+BLOCK for synchronous arrange — but this is a `DropDownOpening` tray
+menu handler. BLOCK on N hung clients would freeze the menu open
+during the 100ms × N probe wait. The non-BLOCK semantic is the
+correct trade-off here.
+
+Files: `UI/TrayManager.cs:4-9` (added
+`using System.Runtime.InteropServices;`), 1660-1700.
+
+### Item 5: Typed catch in `WriteToDisk` orphan-tmp cleanup
+
+T3 Opus LOW. The orphan `.tmp` cleanup at `Config/ConfigManager.cs:402-406`
+used bare `catch { }` which swallows everything including
+`OutOfMemoryException` and `ThreadAbortException`. Mask-risk is zero
+because the outer `SaveFailed` event already fired — but tighter
+typed catches are best-practice.
+
+Replaced with `catch (IOException) { } catch (UnauthorizedAccessException) { }` —
+the only realistic delete-failure modes here (sharing violation, AV
+lock, ACL change). OOM / ThreadAbort propagate as expected.
+
+Files: `Config/ConfigManager.cs:402-413`.
+
+### Item 6a: Break-on-first-IOException in CreateBackup prune loop
+
+T2/T3 single-flagged. The pruning foreach at
+`Config/ConfigManager.cs:447-451` (now ~462-481) tried each
+`File.Delete` individually and logged Info per failure. On disk-full,
+all 10 deletes fail for the same root cause → 10 identical Info lines
+of log spam.
+
+Refactored to typed catches that break on first IOException or
+UnauthorizedAccessException, logging once with "remaining stale backups
+deferred to next save" guidance. CreateBackup itself re-enforces the
+retention cap on next call, so deferral is safe.
+
+Files: `Config/ConfigManager.cs:462-481`.
+
+### Item 6b: `_pendingSave` re-check under `_saveLock` re-grab in FlushSave
+
+Pre-existing race in `Config/ConfigManager.cs:FlushSave` — same fix-class
+as v3.15.10 closed for the staging-side write. After WriteToDisk
+released `_saveLock`, the code read `_pendingSave != null` unlocked at
+line 270 to decide whether to restart the coalesce timer. A
+background-thread `Save()` running between the unlocked check and the
+timer restart could publish a new `_pendingSave` that we'd see-or-miss
+depending on read ordering, worst-case losing a coalesced save.
+
+Read now inside a re-grab of `_saveLock`. Symmetric with the drain
+block at lines 257-261.
+
+Files: `Config/ConfigManager.cs:265-289`.
+
+### Item 6c: Magic-number consts at ConfigManager class top
+
+T2/T3 single-flagged. The 250ms coalesce timer interval (line 226)
+and the 10-backup retention cap (line 460) were inline literals.
+Extracted to `CoalesceSaveIntervalMs = 250` and `BackupRetentionCount = 10`
+at the class top so both tunables live in one place. Still hardcoded
+(not AppConfig-exposed) — user-configurability would invite policies
+we don't want to support (sub-50ms coalesce risks UI stall, zero
+retention defeats the recovery use case). Defer config exposure
+until concrete need.
+
+Files: `Config/ConfigManager.cs:20-29, 226, 460`.
+
+### Items deferred to v3.22.28
+
+- **Symmetric Account-side locking.** Item 1 only locked Characters
+  per the flagged-site enumeration. The same gap-by-omission exists
+  for `_config.Accounts` reads at SettingsForm.cs:703
+  (`new AccountHotkeysDialog`) and at TrayManager.cs:2338
+  (`_config.Accounts.FirstOrDefault` further down in
+  `FireLegacyQuickLoginSlot`). Surfaced here for v3.22.28 rather than
+  silent-fork the v3.22.27 prescription.
+- **Host-equality CDN allowlist.** EQSwitch's `StartsWith` allowlist
+  still allows subdomain spoofing (e.g.
+  `objects.githubusercontent.com.evil.example`) that the MicMute /
+  CapsNumTray host-equality pattern blocks. Hardening pass deferred
+  to v3.22.28 or v3.23.0.
+- **Item 6d:** `Monitor.TryEnter(0)` diagnostic branch in
+  `UI/SettingsForm.cs:1685` left intentionally — the contention log
+  is useful for debugging Apply-during-SM hangs. Pre-existing
+  not-a-bug.
+
+---
+
 ## v3.22.26 — ReloadConfigCore propagation gaps + JsonSerializer torn-write closure + handoff-audit corrections (2026-05-22)
 
 Picks up the v3.22.25 backlog items 1/2/3/6. Two of the four turned out

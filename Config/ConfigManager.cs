@@ -17,6 +17,15 @@ public static class ConfigManager
     private static readonly string ConfigPath = Path.Combine(ConfigDir, "eqswitch-config.json");
     private static readonly string BackupDir = Path.Combine(ConfigDir, "backups");
 
+    // v3.22.27 Item 6c: magic-number consts at class top so the coalesce
+    // window + retention cap are tunable in one place. Still hardcoded
+    // (not AppConfig-exposed) — user-configurability would invite policies
+    // we don't want to support (sub-50ms coalesce risks UI-stall, zero
+    // retention defeats the recovery use case). Defer config exposure
+    // until there's a concrete need.
+    private const int CoalesceSaveIntervalMs = 250;
+    private const int BackupRetentionCount = 10;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -223,7 +232,7 @@ public static class ConfigManager
 
         if (_saveTimer == null)
         {
-            _saveTimer = new System.Windows.Forms.Timer { Interval = 250 };
+            _saveTimer = new System.Windows.Forms.Timer { Interval = CoalesceSaveIntervalMs };
             _saveTimer.Tick += (_, _) => FlushSave();
         }
 
@@ -267,7 +276,22 @@ public static class ConfigManager
         // _saveTimer access is UI-thread-only by contract; FlushSave is invoked
         // from the timer Tick (UI thread) or from Shutdown (UI thread), so this
         // is safe.
-        if (_pendingSave != null)
+        //
+        // v3.22.27 Item 6b: read `_pendingSave` UNDER the `_saveLock` re-grab,
+        // not unlocked after release. Same fix-class as v3.15.10 closed for
+        // the staging-side write — symmetric with the drain block at lines
+        // 257-261. Without this, a background-thread Save() that runs between
+        // the unlocked check and the timer restart could publish a new
+        // _pendingSave that we'd see-or-miss depending on read ordering;
+        // worst case the timer doesn't restart and a coalesced save is lost
+        // until the next user-initiated Save. Inside the lock the read is
+        // race-free.
+        bool restartTimer;
+        lock (_saveLock)
+        {
+            restartTimer = _pendingSave != null;
+        }
+        if (restartTimer)
         {
             _saveTimer?.Stop();
             _saveTimer?.Start();
@@ -403,7 +427,13 @@ public static class ConfigManager
             {
                 if (File.Exists(tempPath)) File.Delete(tempPath);
             }
-            catch { /* best-effort cleanup */ }
+            // v3.22.27 Item 5: tighten bare catch to typed handlers. SaveFailed
+            // event already fired above so mask-risk is zero, but typed catches
+            // stop swallowing OutOfMemoryException / ThreadAbortException. The
+            // only realistic delete failures here are IO (sharing violation,
+            // disk gone) or UnauthorizedAccess (AV hold, ACL change).
+            catch (IOException) { /* best-effort cleanup — orphan stays for next save */ }
+            catch (UnauthorizedAccessException) { /* best-effort cleanup — AV lock, retry next save */ }
             return false;
         }
 
@@ -436,12 +466,27 @@ public static class ConfigManager
             // Prune old backups (keep last 10 by write time — robust against filename changes)
             var backups = Directory.GetFiles(BackupDir, "eqswitch-config_*.json")
                 .OrderByDescending(f => File.GetLastWriteTimeUtc(f))
-                .Skip(10);
+                .Skip(BackupRetentionCount);
 
+            // v3.22.27 Item 6a: break on first IO/ACL failure instead of
+            // per-file Info spam. When disk-full / dir-locked, every File.Delete
+            // hits the same root cause — logging 10x identical lines is noise.
+            // Remaining stale backups defer to next save; backup-dir growth
+            // is bounded because CreateBackup itself enforces the cap on next
+            // call. Keep typed catches narrow so OOM / ThreadAbort propagate.
             foreach (var old in backups)
             {
                 try { File.Delete(old); }
-                catch (Exception ex) { FileLogger.Info($"Backup prune skipped ({Path.GetFileName(old)}): {ex.Message}"); }
+                catch (IOException ex)
+                {
+                    FileLogger.Warn($"Backup prune aborted at '{Path.GetFileName(old)}': {ex.Message} — remaining stale backups deferred to next save (likely disk-full or sharing violation; per-file retry would spam the log)");
+                    break;
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    FileLogger.Warn($"Backup prune aborted at '{Path.GetFileName(old)}': {ex.Message} — remaining stale backups deferred to next save (ACL change or AV lock on backup dir)");
+                    break;
+                }
             }
         }
         catch (Exception ex)

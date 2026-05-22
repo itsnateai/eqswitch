@@ -462,9 +462,18 @@ public class UpdateDialog : Form
 
     private async Task<bool> DownloadFileAsync(string url, string destPath, string displayName)
     {
-        // Security: only allow downloads from expected GitHub origins
+        // Security: only allow downloads from expected GitHub origins.
+        // GitHub release-asset CDN: both `objects.githubusercontent.com` (legacy)
+        // and `release-assets.githubusercontent.com` (new edge, rolled alongside
+        // the legacy) appear in the wild as redirect targets for
+        // `github.com/.../releases/download/...`. Today _http uses default
+        // AllowAutoRedirect=true so only the pre-redirect github.com URL ever
+        // reaches this check — the CDN clauses are defense-in-depth against a
+        // future refactor toward manual per-hop redirect validation (the
+        // hardened pattern in MWBToggle / MicMute / CapsNumTray / SyncthingPause).
         if (!url.StartsWith("https://github.com/itsnateai/", StringComparison.OrdinalIgnoreCase) &&
-            !url.StartsWith("https://objects.githubusercontent.com/", StringComparison.OrdinalIgnoreCase))
+            !url.StartsWith("https://objects.githubusercontent.com/", StringComparison.OrdinalIgnoreCase) &&
+            !url.StartsWith("https://release-assets.githubusercontent.com/", StringComparison.OrdinalIgnoreCase))
         {
             FileLogger.Warn($"Update: rejected download URL from unexpected origin: {url}");
             ShowError("Update failed: download URL is not from the expected source.", url);
