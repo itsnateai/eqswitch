@@ -223,7 +223,34 @@ enter-world branch was missed — FindCharacterByName iterates
   (`_config.Accounts.FirstOrDefault(a => accountKey.Matches(a))`) —
   was the 4th flagged-but-deferred site from R0.
 
-### Items deferred to v3.22.28 (final after R1)
+### R2 follow-up — cross-thread exposure on team-fire path
+
+R2 6-agent verifier round on c5689d3 (T2-Sonnet + T2-Opus convergent
+HIGH) surfaced a **different fix-class** than R0/R1: cross-thread
+exposure on the team-fire path. R0/R1 covered UI-thread `_config.*`
+reads (latent today — SM doesn't write Accounts/Characters). R2
+finds that `FireTeam` runs on a `Task.Run` threadpool thread, and
+inside its loop calls `LoginAndEnterWorld` which reads
+`_config.Accounts.FirstOrDefault` at the entry point. Between the
+`await Task.Delay(delayMs)` iterations, a UI-thread ApplySettings
+can swap `_config.Characters` / `_config.Accounts` mid-loop, torn-
+reading the threadpool reader. Not latent — actively exposed today.
+
+Folded in (the 2 convergent-HIGH cross-thread sites):
+
+1. **`TrayManager.cs:FireTeam` Task.Run lambda** — wrap each per-slot
+   `_config.FindCharacterByName(user)` and `_config.FindAccountByName(user)`
+   in `lock (ConfigManager.ConfigMutationLock)`. Released before the
+   parallel `LoginAndEnterWorld` / `LoginToCharselect` dispatch.
+2. **`AutoLoginManager.LoginAndEnterWorld`** — wrap the entry-point
+   `_config.Accounts.FirstOrDefault(key.Matches)` lookup. The rest
+   of the method runs after lock release and does no `_config` list
+   iteration before its own SM-finally `_saveLock` write-back (which
+   has its own ordering invariant — ConfigMutationLock first, then
+   _saveLock — respected by acquiring CML BEFORE the SaveImmediate
+   write-back deeper in the method).
+
+### Items deferred to v3.22.28 (final after R2)
 
 - **Host-equality CDN allowlist.** EQSwitch's `StartsWith` allowlist
   still allows subdomain spoofing (e.g.
@@ -232,13 +259,25 @@ enter-world branch was missed — FindCharacterByName iterates
   to v3.22.28 or v3.23.0. Separate fix-class from Item 1 — needs
   decision on prefix-vs-host-equality semantics.
 - **`WindowManager.IsClientResponsive` symmetric Item-4 miss.**
-  T2-Sonnet flagged five callers of `IsClientResponsive` that log
+  R1-T2-Sonnet flagged five callers of `IsClientResponsive` that log
   "non-responsive window" on `SendMessageTimeout` zero return but
   don't capture `Marshal.GetLastWin32Error()` for the ERROR_TIMEOUT
   vs ERROR_INVALID_WINDOW_HANDLE distinction Item 4 added to
   `PopulateForceKillMenu`. Diagnostic-quality only (the helper's
   return type is `bool` — there's no user-facing label conflation),
   so applies to log forensics only.
+- **UI-thread-only hotkey-dispatch sites** (`FireAccountHotkeyByName`,
+  `FireCharacterHotkeyByName`, `WindowManager.SetWindowTitle`,
+  `Open*HotkeyDialog` `others` foreach). R2-T2 surfaced these as
+  same-fix-class continuations of R0/R1 — but all are UI-thread-only
+  paths (hotkey WM_HOTKEY messages marshal to UI thread; SetWindowTitle
+  fires from WinForms timer on UI thread). Same latent-only risk class
+  as the R0/R1 sites — SM doesn't write the affected lists today.
+  Diminishing-returns signal hit on R2 — each round surfaces 3-5 new
+  latent UI-thread sites in the same fix-class. v3.22.28 will do a
+  single sweeping audit-and-lock pass on all remaining UI-thread
+  `_config.*.FirstOrDefault` / `Find*ByName` sites in one batch
+  rather than another iterative round.
 - **Item 6d:** `Monitor.TryEnter(0)` diagnostic branch in
   `UI/SettingsForm.cs:1685` left intentionally — the contention log
   is useful for debugging Apply-during-SM hangs. Pre-existing

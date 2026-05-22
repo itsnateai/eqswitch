@@ -2619,7 +2619,17 @@ public class TrayManager : IDisposable
             first = false;
 
             // Character-first resolve (preferred team-slot content).
-            var character = _config.FindCharacterByName(user);
+            // v3.22.27 R2 (T2-Sonnet + T2-Opus convergent HIGH): this lambda
+            // runs on a Task.Run threadpool thread, NOT the UI thread.
+            // Between Task.Delay iterations, ApplySettings (UI thread) can
+            // swap _config.Characters / _config.Accounts via ReloadConfigCore
+            // assignments. Without this lock the threadpool reader sees a
+            // torn FirstOrDefault. Same ConfigMutationLock pattern.
+            Character? character;
+            lock (ConfigManager.ConfigMutationLock)
+            {
+                character = _config.FindCharacterByName(user);
+            }
             if (character != null)
             {
                 // Always null override -> Character's default behavior (enter world).
@@ -2631,7 +2641,13 @@ public class TrayManager : IDisposable
             }
 
             // Account-only slot. Always charselect — no character target to enter world with.
-            var account = _config.FindAccountByName(user);
+            // v3.22.27 R2: same threadpool-thread lock-protection as the
+            // Character branch above.
+            Account? account;
+            lock (ConfigManager.ConfigMutationLock)
+            {
+                account = _config.FindAccountByName(user);
+            }
             if (account != null)
             {
                     FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{user}' \u2192 Account '{account.EffectiveLabel}' \u2192 charselect");
