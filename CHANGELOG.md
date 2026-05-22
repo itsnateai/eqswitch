@@ -1,6 +1,6 @@
 # Changelog
 
-## v3.22.25 — ApplySettings + autologin SaveImmediate race fix (in-progress)
+## v3.22.25 — ApplySettings race fix + Force-Kill Stuck Client + +0x30C investigation closed (2026-05-22)
 
 ### Item 1: `ConfigManager.ConfigMutationLock`
 
@@ -134,6 +134,91 @@ reproduction).
 - `Core/AutoLoginManager.cs:~2140` — new `SaveLastLoginResultLocked`
   helper; legacy fail/ok save sites at lines 2940/2960 routed through
   it for symmetric lock coverage.
+
+### Item 2: +0x30C anchor stability research — CLOSED (won't fix at structural-anchor layer)
+
+Carryover from v3.22.24 fix4. The structural anchor at `pMain+0x25C → +0x30C →
+CXStr` (Dalaya repurpose) was reliable on PID 33768 (2026-05-21 afternoon) but
+null on 3 of 3 PIDs tested in follow-up sessions (34436, 24824, 39032) across
+~644 ticks of combined polling. Hypotheses A (timing) and B (different widget
+instance) were disproved by tick-by-tick probes in the 2026-05-21 evening
+session.
+
+The 2026-05-22 memory-scan session closes the investigation: literal text
+`"username and/or password"` lives in a packed string catalog (1 MB private
+heap allocation at `0x091A0000`) with 8-byte headers `?? BD B6 ?? ?? B6 03 0X`
+preceding each entry. **NOT a CXStr layout** — relaxed CXStrRep header checks
+at hit-0x10 / -0x14 / -0x18 / -0x1C all rejected. **Full-process xref scan
+found 0 pointers anywhere in user-mode memory pointing at either literal
+address.** The render path is by-ID lookup via a function not visible from
+`pWindows` traversal, so no widget-anchor approach can structurally reach
+this text.
+
+**Decision:** keep fix4 in place (no-op when null, correct when populated —
+zero downside) but lean on **fix7 visibility-age** as the canonical fail-
+detection mechanism. Memory note `reference_eqswitch_native_phase_error_triggers.md`
+amended to match.
+
+#### Tooling shipped (research artifacts, local-only)
+
+- `_.eqswitch-re/audit-2026-05-21/scan_eqgame_for_text.py` — VirtualQueryEx +
+  ReadProcessMemory user-mode scanner with NtSuspendProcess/NtResumeProcess
+  pair (always resumed in finally). Walks all readable regions, finds bytes,
+  classifies each hit (image vs mapped vs private), checks plausible
+  CXStrRep header at hit-0x14, optionally walks pWindows for back-references.
+- `_.eqswitch-re/audit-2026-05-21/wait_for_okdialog.py` — polls okdialog
+  +0x196 dShow byte until 1; gates the scan on actual dialog visibility.
+- `_.eqswitch-re/audit-2026-05-21/fire-raistlin-and-scan.sh` — orchestrator
+  (kill stale → fire hotkey → wait spawn → wait CXWndManager marker → wait
+  dShow=1 → scan).
+- `_.eqswitch-re/audit-2026-05-21/inspect_hits.py` — post-scan structure
+  dump + pWindows pointer-into-region walk + optional full-process xref.
+- `_.eqswitch-re/audit-2026-05-21/findings-memory-scan-2026-05-22.md` —
+  full write-up.
+
+### Item 3: Force-Kill Stuck Client tray menu
+
+Task Manager fallback for hung `eqgame.exe` (DX reset deadlock, WndProc
+loop, etc.). Right-click EQSwitch → 💀 Force-Kill Stuck Client → lazily-
+populated submenu lists each running PID with its window title → click to
+`Process.GetProcessById(pid).Kill()`.
+
+- `UI/TrayManager.cs` — submenu added in `BuildContextMenu` next to Process
+  Manager. DropDownOpening event handler `PopulateForceKillMenu` clears and
+  rebuilds on each open so the list is always current. ArgumentException on
+  Kill (PID already exited between menu-open and click) is the expected
+  benign race — logged at Info, surfaced to balloon.
+
+### Item 4: Smoke runner fast-fail pattern detection
+
+`Core/TestAutoLoginRunner.cs` previously only counted SEH faults from
+mq2_bridge.cpp. v3.22.24 fix6/fix7 introduced intentional fast-fail bail-
+outs (`"bail on long-visible OkDialog"`, `"fast-fail detected post-BURST-2"`,
+`"credentials likely rejected, fast-failing to retry"`) which the runner
+missed. Now counted via a new `FastFailPatterns` array, reported
+informationally (does not affect exit code — fast-fails are correct
+behavior on bad-pass smokes).
+
+- `Core/TestAutoLoginRunner.cs:50-72` — new `FastFailPatterns` array.
+- `Core/TestAutoLoginRunner.cs:~220-260` — `CountSehInLog` refactored into
+  thin wrapper over generic `CountPatternsInLog` helper; new
+  `CountFastFailInLog` calls the same helper with `printLogExcerpt: false`
+  so the log excerpt only prints once per run.
+- `Core/TestAutoLoginRunner.cs:~155` — caller prints fast-fail count after
+  SEH count.
+
+### Item 5: memory file amendment
+
+`memory/reference_eqswitch_native_phase_error_triggers.md` previously
+documented the 120 s native phase budget as the only fail-detection
+mechanism. Two new sections added:
+
+- "v3.22.24 update (2026-05-21) — C# fast-fail short-circuits native
+  timeout" documents fix7 as the load-bearing mechanism, fix4 as
+  best-effort.
+- "v3.22.25 item 2 (2026-05-22) — text-extraction fundamentally bounded"
+  records the memory-scan findings + closure of the structural-anchor
+  approach.
 
 ## v3.22.24 — Bad-password fail detection in ~5s instead of 120s (2026-05-21)
 

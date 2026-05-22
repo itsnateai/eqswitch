@@ -1456,6 +1456,19 @@ public class TrayManager : IDisposable
 
         _contextMenu.Items.Add("\u26A1  Process Manager", null, (_, _) => ShowProcessManager());
 
+        // Force-Kill Stuck Client \u2014 Task Manager fallback for hung eqgame.exe
+        // (DX reset deadlock, WndProc loop). Submenu lazily populates on open
+        // so it always reflects the current eqgame.exe set.
+        var forceKillMenu = new ToolStripMenuItem("\uD83D\uDC80  Force-Kill Stuck Client")
+        {
+            DropDownDirection = ToolStripDropDownDirection.Right
+        };
+        forceKillMenu.DropDownOpening += (_, _) => PopulateForceKillMenu(forceKillMenu);
+        // Seed with one item so the chevron renders; PopulateForceKillMenu
+        // replaces it the moment the submenu opens.
+        forceKillMenu.DropDownItems.Add("(scanning...)").Enabled = false;
+        _contextMenu.Items.Add(forceKillMenu);
+
         // Video Settings submenu
         var videoMenu = new ToolStripMenuItem("\uD83D\uDCFA  Video Settings") { DropDownDirection = ToolStripDropDownDirection.Right };
         videoMenu.DropDownItems.Add("\uD83D\uDCDD  Video Settings...", null, (_, _) =>
@@ -1585,6 +1598,75 @@ public class TrayManager : IDisposable
         if (_trayIcon == null) return;
         int count = _processManager.ClientCount;
         _trayIcon.Text = $"EQSwitch - {count} client{(count != 1 ? "s" : "")}";
+    }
+
+    /// <summary>
+    /// Lazily fills the Force-Kill submenu with the current eqgame.exe PIDs.
+    /// Called on DropDownOpening so the list is always current.
+    /// </summary>
+    private void PopulateForceKillMenu(ToolStripMenuItem menu)
+    {
+        // Dispose old items in reverse — same pattern as UpdateClientMenu
+        for (int i = menu.DropDownItems.Count - 1; i >= 0; i--)
+        {
+            var old = menu.DropDownItems[i];
+            menu.DropDownItems.RemoveAt(i);
+            old.Dispose();
+        }
+
+        var procs = Process.GetProcessesByName("eqgame");
+        try
+        {
+            if (procs.Length == 0)
+            {
+                var empty = new ToolStripMenuItem("(no eqgame.exe running)") { Enabled = false };
+                menu.DropDownItems.Add(empty);
+                return;
+            }
+
+            foreach (var p in procs)
+            {
+                int pid = p.Id; // capture by value before disposal
+                string title;
+                try { title = string.IsNullOrEmpty(p.MainWindowTitle) ? "(no window title)" : p.MainWindowTitle; }
+                catch { title = "(title unavailable)"; }
+
+                var item = new ToolStripMenuItem($"PID {pid} — {title}");
+                item.Click += (_, _) => ForceKillClient(pid, title);
+                menu.DropDownItems.Add(item);
+            }
+        }
+        finally
+        {
+            foreach (var p in procs) p.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Force-kill an eqgame.exe by PID. Tolerant of the process exiting
+    /// between the menu opening and the click — that's a normal race.
+    /// </summary>
+    private void ForceKillClient(int pid, string title)
+    {
+        try
+        {
+            using var p = Process.GetProcessById(pid);
+            p.Kill();
+            FileLogger.Info($"ForceKill: killed PID {pid} ({title})");
+            ShowBalloon($"Force-killed PID {pid}");
+        }
+        catch (ArgumentException)
+        {
+            // GetProcessById throws ArgumentException when PID no longer exists —
+            // benign race: the process exited between menu-open and click.
+            FileLogger.Info($"ForceKill: PID {pid} already exited");
+            ShowBalloon($"PID {pid} already exited");
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Warn($"ForceKill: failed to kill PID {pid} — {ex.Message}");
+            ShowBalloon($"⚠ Force-kill failed for PID {pid}: {ex.Message}");
+        }
     }
 
     private void TogglePip()
