@@ -1647,6 +1647,30 @@ public class SettingsForm : Form
         // for downgrade safety + AppConfig.Validate() defense-in-depth cooperation.
         var legacyAccountsForConfig = ReverseMapToLegacy(_pendingAccounts, _pendingCharacters);
 
+        // v3.22.25: take ConfigMutationLock across the BuildAppConfig + _onApply call.
+        // Two racy reads inside the initializer below (the "Race fix" Accounts.Select
+        // at line ~1797 reads live.LastLoginResult/LastLoginAt) are now serialized
+        // against any AutoLoginManager SaveImmediate writing those fields. The lock
+        // also covers _onApply(newConfig) which dispatches to TrayManager.ReloadConfig
+        // (also lock-guarded — C# lock is reentrant per thread, so the UI thread
+        // re-acquires harmlessly). Verifier-round-2 fix: canonical
+        // Monitor.Enter(lock, ref tookLock) pattern — if Enter throws, tookLock
+        // stays false and finally skips Exit on a never-acquired lock.
+        // See ConfigManager.ConfigMutationLock XML doc for full contract.
+        bool tookLock = false;
+        try
+        {
+            if (!System.Threading.Monitor.TryEnter(Config.ConfigManager.ConfigMutationLock, 0))
+            {
+                FileLogger.Info("ApplySettings: ConfigMutationLock contended — waiting for in-flight AutoLogin SaveImmediate to release");
+                System.Threading.Monitor.Enter(Config.ConfigManager.ConfigMutationLock, ref tookLock);
+            }
+            else
+            {
+                tookLock = true;
+            }
+            FileLogger.Info("ApplySettings: acquired ConfigMutationLock (blocking any AutoLogin SaveImmediate during build+apply)");
+
         // Build a new config from form values
         var newConfig = new AppConfig
         {
@@ -1862,6 +1886,11 @@ public class SettingsForm : Form
         newConfig.EQClientIni.ConfiguredKeys.Add("Maximized");
 
         _onApply(newConfig);
+        } // try (ConfigMutationLock)
+        finally
+        {
+            if (tookLock) System.Threading.Monitor.Exit(Config.ConfigManager.ConfigMutationLock);
+        }
         VideoSaveToIni();
         FileLogger.Info("Settings applied");
 
@@ -2207,15 +2236,34 @@ public class SettingsForm : Form
 
         try
         {
-            foreach (var staged in _pendingAccounts)
+            // v3.22.25 verifier-round-2 fix: lock around the read of
+            // _config.Accounts → live.LastLoginAt/Result. OnLoginComplete fires
+            // AFTER the SM that owns `pid` released the lock, but a PARALLEL
+            // SM (e.g. the other client of a team login) could be mid-write
+            // to a different Account at the same moment we iterate. Without
+            // this lock, the iterating reader could see _config.Accounts
+            // swapped mid-foreach (if ApplySettings is running in parallel
+            // on the same UI thread — impossible, but defense-in-depth) AND
+            // could read a torn Nullable<DateTime>. We snapshot to locals
+            // INSIDE the lock so the staged write outside the lock has no
+            // racy data. RefreshAccountsGrid stays outside the lock — it
+            // reads only _pendingAccounts (UI-thread-local).
+            lock (Config.ConfigManager.ConfigMutationLock)
             {
-                var live = _config.Accounts.FirstOrDefault(a =>
-                    string.Equals(a.Username, staged.Username, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(a.Server, staged.Server, StringComparison.OrdinalIgnoreCase));
-                if (live != null)
+                foreach (var staged in _pendingAccounts)
                 {
-                    staged.LastLoginAt = live.LastLoginAt;
-                    staged.LastLoginResult = live.LastLoginResult;
+                    var live = _config.Accounts.FirstOrDefault(a =>
+                        string.Equals(a.Username, staged.Username, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(a.Server, staged.Server, StringComparison.OrdinalIgnoreCase));
+                    if (live != null)
+                    {
+                        // Snapshot under the lock so a concurrent SM-finally
+                        // can't tear the 16-byte Nullable<DateTime> read.
+                        var snapAt = live.LastLoginAt;
+                        var snapResult = live.LastLoginResult;
+                        staged.LastLoginAt = snapAt;
+                        staged.LastLoginResult = snapResult;
+                    }
                 }
             }
             RefreshAccountsGrid();
