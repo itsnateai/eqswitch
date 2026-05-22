@@ -1627,12 +1627,30 @@ public class TrayManager : IDisposable
             foreach (var p in procs)
             {
                 int pid = p.Id; // capture by value before disposal
-                string title;
-                try { title = string.IsNullOrEmpty(p.MainWindowTitle) ? "(no window title)" : p.MainWindowTitle; }
-                catch { title = "(title unavailable)"; }
-
-                var item = new ToolStripMenuItem($"PID {pid} — {title}");
-                item.Click += (_, _) => ForceKillClient(pid, title);
+                string label;
+                try
+                {
+                    // Process.Responding uses SendMessageTimeout (~5s) — gate the
+                    // MainWindowTitle read on it, since a hung client (the primary
+                    // target of this menu) would also block on GetWindowTextW
+                    // doubling the worst-case UI freeze. Hung clients get a clear
+                    // "(HUNG)" label; the stale title is less useful anyway.
+                    if (!p.Responding)
+                    {
+                        label = $"⚠ HUNG — PID {pid}";
+                    }
+                    else
+                    {
+                        string title = string.IsNullOrEmpty(p.MainWindowTitle) ? "(no window title)" : p.MainWindowTitle;
+                        label = $"PID {pid} — {title}";
+                    }
+                }
+                catch
+                {
+                    label = $"PID {pid} — (info unavailable)";
+                }
+                var item = new ToolStripMenuItem(label);
+                item.Click += (_, _) => ForceKillClient(pid, label);
                 menu.DropDownItems.Add(item);
             }
         }
@@ -1643,16 +1661,28 @@ public class TrayManager : IDisposable
     }
 
     /// <summary>
-    /// Force-kill an eqgame.exe by PID. Tolerant of the process exiting
-    /// between the menu opening and the click — that's a normal race.
+    /// Force-kill an eqgame.exe by PID. Defends against two races:
+    /// (a) the process exiting between menu-open and click (ArgumentException)
+    /// (b) Windows reusing the PID for a different process between menu-open
+    ///     and click — checked via ProcessName before Kill() so we never
+    ///     accidentally terminate svchost / explorer / EQSwitch itself.
     /// </summary>
-    private void ForceKillClient(int pid, string title)
+    private void ForceKillClient(int pid, string label)
     {
         try
         {
             using var p = Process.GetProcessById(pid);
+            // PID-reuse defense (verifier-flagged 2026-05-22 by T2 + T3 pairs).
+            // Refuse to kill anything that isn't an eqgame.exe — Windows recycles
+            // PIDs aggressively and a slow menu-click can land on a reused PID.
+            if (!string.Equals(p.ProcessName, "eqgame", StringComparison.OrdinalIgnoreCase))
+            {
+                FileLogger.Warn($"ForceKill: PID {pid} was reused by '{p.ProcessName}' — refusing to kill ({label})");
+                ShowBalloon($"⚠ PID {pid} is now {p.ProcessName} (not eqgame). Refused — re-open menu.");
+                return;
+            }
             p.Kill();
-            FileLogger.Info($"ForceKill: killed PID {pid} ({title})");
+            FileLogger.Info($"ForceKill: killed PID {pid} ({label})");
             ShowBalloon($"Force-killed PID {pid}");
         }
         catch (ArgumentException)
