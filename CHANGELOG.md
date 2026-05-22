@@ -212,6 +212,30 @@ behavior on bad-pass smokes).
 - `Core/TestAutoLoginRunner.cs:~155` — caller prints fast-fail count after
   SEH count.
 
+### Fix-round-3 verifier-convergent fixes (2026-05-22)
+
+Round-2 6-agent verifier surfaced two CRITICAL new gaps introduced by
+fix-round-2:
+
+1. **PopulateForceKillMenu still blocks the UI thread on hung clients.**
+   Fix-round-2 swapped `MainWindowTitle` for `p.Responding` — but
+   `Process.Responding` internally calls `SendMessageTimeout` (~5 s) per
+   process. For N hung clients the menu opens after ~5N s. Fix-round-3
+   uses `NativeMethods.IsHungAppWindow` (non-blocking Win32; returns
+   instantly without any SendMessage roundtrip) gated on the cached
+   `MainWindowHandle`. The bare `catch` is also replaced with
+   `catch (Exception ex)` + `FileLogger.Warn` so any unexpected failure
+   surfaces in eqswitch.log (per `reference_loud_runtime_silent_rest`).
+
+2. **scan_eqgame_for_text.py `suspended` bool race.** Fix-round-2
+   introduced `suspended = False` outside `try`, `suspended = True` after
+   `suspend()`. A KeyboardInterrupt between `suspend()` returning and
+   the bool assignment would leave the process frozen with `finally`
+   skipping resume. Fix-round-3 makes `NtResumeProcess` UNCONDITIONAL —
+   `STATUS_PROCESS_NOT_SUSPENDED` (0xC0000300) is the documented benign
+   return when resuming an unsuspended target, so the race window
+   collapses. Same fix in `inspect_hits.py`.
+
 ### Item 5: memory file amendment
 
 `memory/reference_eqswitch_native_phase_error_triggers.md` previously

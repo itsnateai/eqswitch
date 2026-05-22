@@ -1630,12 +1630,17 @@ public class TrayManager : IDisposable
                 string label;
                 try
                 {
-                    // Process.Responding uses SendMessageTimeout (~5s) — gate the
-                    // MainWindowTitle read on it, since a hung client (the primary
-                    // target of this menu) would also block on GetWindowTextW
-                    // doubling the worst-case UI freeze. Hung clients get a clear
-                    // "(HUNG)" label; the stale title is less useful anyway.
-                    if (!p.Responding)
+                    // IsHungAppWindow is a non-blocking Win32 check (returns
+                    // instantly, no SendMessage roundtrip). Process.Responding
+                    // would block ~5s per hung process via SendMessageTimeout,
+                    // freezing the tray UI proportionally to the hung-client
+                    // count — exactly the wrong tradeoff for a "kill stuck
+                    // client" menu. Gate the MainWindowTitle read on the
+                    // non-blocking check; on hung, skip the title (would also
+                    // block on GetWindowTextW).
+                    IntPtr hwnd = p.MainWindowHandle; // cached, non-blocking
+                    bool hung = hwnd != IntPtr.Zero && NativeMethods.IsHungAppWindow(hwnd);
+                    if (hung)
                     {
                         label = $"⚠ HUNG — PID {pid}";
                     }
@@ -1645,8 +1650,13 @@ public class TrayManager : IDisposable
                         label = $"PID {pid} — {title}";
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    // Loud over silent: log so any unexpected failure mode
+                    // (Win32Exception from MainWindowHandle on protected
+                    // processes, etc.) surfaces in eqswitch.log instead of
+                    // silently mis-labeling.
+                    FileLogger.Warn($"PopulateForceKillMenu: PID {pid} info unavailable — {ex.Message}");
                     label = $"PID {pid} — (info unavailable)";
                 }
                 var item = new ToolStripMenuItem(label);
