@@ -154,7 +154,40 @@ public static class UninstallHelper
             FileLogger.Warn($"Uninstall: {msg}");
         }
 
-        // 4. Legacy dinput8.dll in EQSwitch's own app folder (no longer shipped).
+        // 4. Native DLL logs in EQ folder. eqswitch-di8.dll writes
+        //    eqswitch-dinput8-{pid}.log per-process (Native/eqswitch-di8.cpp), and
+        //    eqswitch-hook.dll writes eqswitch-hook.log. These accumulate one per
+        //    eqgame.exe PID until uninstall — current versions don't rotate them.
+        try
+        {
+            var logFiles = Directory.GetFiles(eqPath, "eqswitch-*.log");
+            int removed = 0;
+            foreach (var log in logFiles)
+            {
+                try
+                {
+                    File.Delete(log);
+                    removed++;
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Warn($"Uninstall: could not delete {log}: {ex.Message}");
+                }
+            }
+            if (removed > 0)
+            {
+                actions.Add($"Removed {removed} native log file(s) from EQ folder (eqswitch-*.log)");
+                FileLogger.Info($"Uninstall: deleted {removed} eqswitch-*.log files from {eqPath}");
+            }
+        }
+        catch (Exception ex)
+        {
+            var msg = $"Could not enumerate eqswitch-*.log in EQ folder: {ex.Message}";
+            actions.Add(msg);
+            FileLogger.Warn($"Uninstall: {msg}");
+        }
+
+        // 5. Legacy dinput8.dll in EQSwitch's own app folder (no longer shipped).
         actions.AddRange(RemoveAppFolderLegacyDinput8());
 
         return actions;

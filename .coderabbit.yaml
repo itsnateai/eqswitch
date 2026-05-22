@@ -31,7 +31,6 @@ reviews:
     - "!_comms/**"
     - "!dumps/**"
     - "!docs/**"
-    - "!third_party/**"
     - "!_tests/**"
     - "!.audit/**"
     - "!.code-graph/**"
