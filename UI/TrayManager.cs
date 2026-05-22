@@ -3,6 +3,7 @@
 
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.InteropServices; // Marshal.GetLastWin32Error in PopulateForceKillMenu (v3.22.27 Item 4)
 using EQSwitch.Config;
 using EQSwitch.Core;
 using EQSwitch.Models;
@@ -1399,6 +1400,16 @@ public class TrayManager : IDisposable
             if (_clientMenuDirty) UpdateClientMenu();
         };
 
+        // v3.22.27 Item 1: BuildContextMenu is reached from non-ReloadConfigCore
+        // paths (PiP toggle, multi-monitor toggle, account-hotkey-change Apply)
+        // where the outer ConfigMutationLock is NOT held. Submenu builders
+        // iterate the live _config.* refs internally (BuildAccountsSubmenu,
+        // BuildCharactersSubmenu, BuildTeamsSubmenu) so the lock must extend
+        // through their calls. Reentrant — the ReloadConfigCore call-path
+        // that already holds the outer lock won't deadlock. Hold time:
+        // ms-scale UI-thread menu construction. Symmetric with PopulateFromConfig.
+        lock (ConfigManager.ConfigMutationLock)
+        {
         var hk = _config.Hotkeys;
 
         _boldMenuFont?.Dispose();
@@ -1539,6 +1550,13 @@ public class TrayManager : IDisposable
         // ContextMenuStrip is toggled on/off in MouseDown to prevent left-click
         // from showing the menu (which steals focus and breaks double-click).
         _trayIcon!.ContextMenuStrip = null;
+        } // end v3.22.27 Item 1 ConfigMutationLock block — extends to method
+          // end so hk + _config.Pip + _config.Layout reads in the back half
+          // of menu construction are covered. Click-handler closures capture
+          // `hk` and fire later (after lock release), but the writes inside
+          // those closures (e.g. _config.Hotkeys.MultiMonitorEnabled = true)
+          // are latent-safe today: SM doesn't write Hotkeys. Same SM-write-
+          // trigger condition as Item 1's other latent sites.
     }
 
     private bool _clientMenuDirty;
@@ -1653,6 +1671,30 @@ public class TrayManager : IDisposable
                             hwnd, NativeMethods.WM_NULL, IntPtr.Zero, IntPtr.Zero,
                             NativeMethods.SMTO_ABORTIFHUNG, 100, out _);
                         hung = smRes == IntPtr.Zero;
+                        if (hung)
+                        {
+                            // v3.22.27 Item 4: disambiguate timed-out vs hung-aborted in
+                            // the log. ERROR_TIMEOUT (1460) = target's pump didn't respond
+                            // within 100ms (slow but maybe alive). Other (e.g.
+                            // ERROR_INVALID_WINDOW_HANDLE 1400) = SMTO_ABORTIFHUNG fired
+                            // because the kernel marked the target hung, OR the hwnd
+                            // died between MainWindowHandle and the call. User-facing
+                            // tray label stays "HUNG" for both — same Force-Kill intent —
+                            // but the log preserves the distinction for post-mortem.
+                            //
+                            // SMTO_BLOCK intentionally NOT added (WindowManager precedent
+                            // uses it for synchronous arrange; this is a tray-menu
+                            // DropDownOpening handler — blocking the UI thread on N hung
+                            // clients would freeze the menu open).
+                            int lastErr = Marshal.GetLastWin32Error();
+                            string errClass = lastErr switch
+                            {
+                                1460 => "ERROR_TIMEOUT",
+                                1400 => "ERROR_INVALID_WINDOW_HANDLE",
+                                _ => $"err{lastErr}"
+                            };
+                            FileLogger.Info($"PopulateForceKillMenu: PID {pid} flagged hung via SendMessageTimeout (lastErr={errClass})");
+                        }
                     }
                     if (hung)
                     {
@@ -2269,8 +2311,14 @@ public class TrayManager : IDisposable
 
         // Find the v3 LegacyAccount row so we can honor its AutoEnterWorld intent.
         // v3 matched CharacterName first, Username as fallback — preserve that order.
-        var legacyRow = _config.LegacyAccounts.FirstOrDefault(a => a.CharacterName == targetName)
+        // v3.22.27 Item 1: each LINQ query wrapped in ConfigMutationLock for
+        // torn-read protection. Lock released before heavy Fire*Login dispatch.
+        LoginAccount? legacyRow;
+        lock (ConfigManager.ConfigMutationLock)
+        {
+            legacyRow = _config.LegacyAccounts.FirstOrDefault(a => a.CharacterName == targetName)
                     ?? _config.LegacyAccounts.FirstOrDefault(a => a.Username == targetName);
+        }
         if (legacyRow == null)
         {
             // v4 fallback for non-empty v3 slot whose target doesn't match any
@@ -2280,16 +2328,24 @@ public class TrayManager : IDisposable
             // were entered freehand and can drift in case from the v4 entity Name.
             // (The v4 hotkey-list path stays ordinal — TargetName there is set
             // by dialogs using the entity's exact Name, so no drift to forgive.)
-            var v4Char = _config.Characters.FirstOrDefault(c =>
-                c.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
+            Character? v4Char;
+            lock (ConfigManager.ConfigMutationLock)
+            {
+                v4Char = _config.Characters.FirstOrDefault(c =>
+                    c.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
+            }
             if (v4Char != null)
             {
                 LogFirstFire(slot, "Character (v3-target / v4-resolved)", v4Char.EffectiveLabel);
                 FireCharacterLogin(v4Char);
                 return;
             }
-            var v4Account = _config.Accounts.FirstOrDefault(a =>
-                a.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
+            Account? v4Account;
+            lock (ConfigManager.ConfigMutationLock)
+            {
+                v4Account = _config.Accounts.FirstOrDefault(a =>
+                    a.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
+            }
             if (v4Account != null)
             {
                 LogFirstFire(slot, "Account (v3-target / v4-resolved)", v4Account.EffectiveLabel);
