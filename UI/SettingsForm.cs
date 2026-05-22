@@ -700,7 +700,15 @@ public class SettingsForm : Form
                 others.Add(($"Character '{b.TargetName}'", b.Combo));
 
         if (FocusExistingHotkeyDialog()) return;
-        var dlg = new AccountHotkeysDialog(_config.Accounts, _config.Hotkeys.AccountHotkeys, others);
+        // v3.22.27 R1 (originally deferred to v3.22.28 in CHANGELOG, folded
+        // back in per DO-over-DEFER directive): symmetric with the
+        // CharacterHotkeysDialog wrap below. Dialog ctor reads Accounts to
+        // build the initial row list. Same latent-only risk class.
+        AccountHotkeysDialog dlg;
+        lock (ConfigManager.ConfigMutationLock)
+        {
+            dlg = new AccountHotkeysDialog(_config.Accounts, _config.Hotkeys.AccountHotkeys, others);
+        }
         dlg.FormClosed += (_, _) =>
         {
             if (dlg.DialogResult == DialogResult.OK && dlg.Result != null)
@@ -1869,9 +1877,20 @@ public class SettingsForm : Form
                 // value is authoritative. When the password changed, the dialog
                 // already reset the staged value to "" per its own reset semantic
                 // (AccountEditDialog), so the staged value wins.
-                var live = _config.Accounts.FirstOrDefault(la =>
-                    la.Username.Equals(a.Username, StringComparison.OrdinalIgnoreCase) &&
-                    la.Server.Equals(a.Server, StringComparison.OrdinalIgnoreCase));
+                // v3.22.27 R1 (T2-Opus G1 convergent): wrap the live-Accounts
+                // lookup in ConfigMutationLock. SM AutoLoginManager.SaveImmediate
+                // mutates _config.Accounts[i].LastLoginResult / LastLoginAt from
+                // a background thread — the same race that drove the v3.22.26
+                // JsonSerializer closure. UI-thread re-entrant on outer Apply
+                // call-path (ApplySettings already holds the lock around its
+                // build-newConfig phase).
+                Account? live;
+                lock (ConfigManager.ConfigMutationLock)
+                {
+                    live = _config.Accounts.FirstOrDefault(la =>
+                        la.Username.Equals(a.Username, StringComparison.OrdinalIgnoreCase) &&
+                        la.Server.Equals(a.Server, StringComparison.OrdinalIgnoreCase));
+                }
                 bool passwordUnchanged = live != null && live.EncryptedPassword == a.EncryptedPassword;
                 return new Account
                 {

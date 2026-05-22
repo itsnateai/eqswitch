@@ -179,20 +179,66 @@ until concrete need.
 
 Files: `Config/ConfigManager.cs:20-29, 226, 460`.
 
-### Items deferred to v3.22.28
+### R1 follow-up — verifier-convergent gap-by-omission fixes
 
-- **Symmetric Account-side locking.** Item 1 only locked Characters
-  per the flagged-site enumeration. The same gap-by-omission exists
-  for `_config.Accounts` reads at SettingsForm.cs:703
-  (`new AccountHotkeysDialog`) and at TrayManager.cs:2338
-  (`_config.Accounts.FirstOrDefault` further down in
-  `FireLegacyQuickLoginSlot`). Surfaced here for v3.22.28 rather than
-  silent-fork the v3.22.27 prescription.
+The R1 6-agent verifier round (T1/T2/T3 × Sonnet+Opus) found three
+unflagged Account/Character lookup sites in the call graph the
+original CHANGELOG enumeration missed. Per Nate's DO-over-DEFER
+directive, all three were folded back in rather than deferred. Plus
+two originally-deferred sites of the same fix-class — same logic,
+same single-line `FirstOrDefault` wrap done eight times in this
+commit; deferral was no longer load-bearing.
+
+**Convergent (T2-Sonnet ∩ T2-Opus): TrayManager.cs:2423 →
+`TryFireV4QuickLoginFallback`** is a different method from
+`FireLegacyQuickLoginSlot` — it's called from the
+`legacyRow == null` early-exit path BEFORE the three-tiny-locks
+block ever runs. Has its own `_config.Hotkeys` ref-copy +
+CharacterHotkeys/AccountHotkeys iteration + `FindCharacterByName` /
+`_config.Accounts.FirstOrDefault` reads. Refactored to snapshot the
+combined binding list under one lock, then wrap each conditional
+lookup (Character vs Account) in its own short lock, dispatching
+Fire*Login outside.
+
+**T2-Opus only (G1 HIGH): SettingsForm.cs:1872 →
+`ApplySettings.Accounts.Select`** reads `_config.Accounts.First-
+OrDefault` while building the staged-vs-live merge for each account.
+SM's `AutoLoginManager.SaveImmediate` writes the same `LastLogin-
+Result` / `LastLoginAt` fields from a background thread — the EXACT
+race that drove the v3.22.26 JsonSerializer closure. Per "trust the
+flag" synthesis rule (Opus/Sonnet disagreement = trust the flag),
+this gets the same lock wrap.
+
+**T3-Opus only (LOW): TrayManager.cs:2367 →
+`_config.FindCharacterByName`** in `FireLegacyQuickLoginSlot`'s
+enter-world branch. Same method as the three-tiny-locks, but the
+enter-world branch was missed — FindCharacterByName iterates
+`_config.Characters` internally.
+
+**Originally deferred, folded back in (same fix-class):**
+- SettingsForm.cs:703 `new AccountHotkeysDialog(_config.Accounts,
+  ...)` — symmetric with the v3.22.27 ctor-block CharacterHotkeys-
+  Dialog lock.
+- TrayManager.cs FireLegacyQuickLoginSlot account-only fallback
+  (`_config.Accounts.FirstOrDefault(a => accountKey.Matches(a))`) —
+  was the 4th flagged-but-deferred site from R0.
+
+### Items deferred to v3.22.28 (final after R1)
+
 - **Host-equality CDN allowlist.** EQSwitch's `StartsWith` allowlist
   still allows subdomain spoofing (e.g.
   `objects.githubusercontent.com.evil.example`) that the MicMute /
   CapsNumTray host-equality pattern blocks. Hardening pass deferred
-  to v3.22.28 or v3.23.0.
+  to v3.22.28 or v3.23.0. Separate fix-class from Item 1 — needs
+  decision on prefix-vs-host-equality semantics.
+- **`WindowManager.IsClientResponsive` symmetric Item-4 miss.**
+  T2-Sonnet flagged five callers of `IsClientResponsive` that log
+  "non-responsive window" on `SendMessageTimeout` zero return but
+  don't capture `Marshal.GetLastWin32Error()` for the ERROR_TIMEOUT
+  vs ERROR_INVALID_WINDOW_HANDLE distinction Item 4 added to
+  `PopulateForceKillMenu`. Diagnostic-quality only (the helper's
+  return type is `bool` — there's no user-facing label conflation),
+  so applies to log forensics only.
 - **Item 6d:** `Monitor.TryEnter(0)` diagnostic branch in
   `UI/SettingsForm.cs:1685` left intentionally — the contention log
   is useful for debugging Apply-during-SM hangs. Pre-existing
