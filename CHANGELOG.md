@@ -236,6 +236,24 @@ fix-round-2:
    return when resuming an unsuspended target, so the race window
    collapses. Same fix in `inspect_hits.py`.
 
+### Fix-round-4 verifier-convergent finalization (2026-05-22)
+
+Round-3 6-agent verifier surfaced 1 REJECT (T2-Opus) + 1 CONCERN (T3-Opus)
+convergent on **IsHungAppWindow 5s kernel-threshold latency** (false
+negatives for hangs younger than 5 s — exactly the Force-Kill use case).
+NativeMethods.cs:131-138 already prescribed the tighter probe for the
+v3.22.22 ArrangeMultiMonitor work — Rule 7 said "match the existing
+pattern."
+
+Round-4 switches `PopulateForceKillMenu`'s hang detection from
+`IsHungAppWindow` to `SendMessageTimeout(WM_NULL, SMTO_ABORTIFHUNG, 100ms)`,
+matching the v3.22.22 convention. 100 ms × N hung clients vs the
+unbounded 5 s false-negative window of `IsHungAppWindow`, and far
+better than the original `p.Responding` 5 s × N. Also documents the
+NT-suspend-count edge case in `scan_eqgame_for_text.py` docstring (do
+not run while target is debugger-paused; an interrupted prior scan can
+leave residual counts that this scan won't clear).
+
 ### Item 5: memory file amendment
 
 `memory/reference_eqswitch_native_phase_error_triggers.md` previously

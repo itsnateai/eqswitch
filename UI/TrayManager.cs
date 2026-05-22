@@ -1630,16 +1630,30 @@ public class TrayManager : IDisposable
                 string label;
                 try
                 {
-                    // IsHungAppWindow is a non-blocking Win32 check (returns
-                    // instantly, no SendMessage roundtrip). Process.Responding
-                    // would block ~5s per hung process via SendMessageTimeout,
-                    // freezing the tray UI proportionally to the hung-client
-                    // count — exactly the wrong tradeoff for a "kill stuck
-                    // client" menu. Gate the MainWindowTitle read on the
-                    // non-blocking check; on hung, skip the title (would also
-                    // block on GetWindowTextW).
-                    IntPtr hwnd = p.MainWindowHandle; // cached, non-blocking
-                    bool hung = hwnd != IntPtr.Zero && NativeMethods.IsHungAppWindow(hwnd);
+                    // Hang detection — matches the v3.22.22 ArrangeMultiMonitor
+                    // pattern at NativeMethods.cs:131-138. Three options were
+                    // considered:
+                    //   1. Process.Responding — blocks ~5s per hung proc
+                    //   2. IsHungAppWindow — non-blocking BUT has documented 5s
+                    //      kernel-threshold latency (false during the first 5s
+                    //      of a non-pumping pump → mis-labels fresh hangs)
+                    //   3. SendMessageTimeout(WM_NULL, SMTO_ABORTIFHUNG, 100ms)
+                    //      — blocks 100ms per hung proc, instant true positive,
+                    //      no 5s warm-up
+                    // (3) wins: 100ms × 6 hung procs = 0.6s worst case, well
+                    // under 1s, no false negatives for sub-5s hangs. Cached
+                    // p.MainWindowHandle access (per-Process cache, populated
+                    // by an EnumWindows walk on first read — fast on
+                    // responsive processes, non-blocking on the target's pump).
+                    IntPtr hwnd = p.MainWindowHandle;
+                    bool hung = false;
+                    if (hwnd != IntPtr.Zero)
+                    {
+                        IntPtr smRes = NativeMethods.SendMessageTimeout(
+                            hwnd, NativeMethods.WM_NULL, IntPtr.Zero, IntPtr.Zero,
+                            NativeMethods.SMTO_ABORTIFHUNG, 100, out _);
+                        hung = smRes == IntPtr.Zero;
+                    }
                     if (hung)
                     {
                         label = $"⚠ HUNG — PID {pid}";
