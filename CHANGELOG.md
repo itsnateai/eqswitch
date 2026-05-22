@@ -1,5 +1,35 @@
 # Changelog
 
+## v3.22.28 — Host-equality self-update allowlist + plug `_hashFileUrl` allowlist gap (2026-05-22)
+
+Cross-app convergent hardening — brings EQSwitch's self-update URL allowlist into line with the host-equality canonical pattern shared by MicMute, MWBToggle v2.5.19, CapsNumTray, and SyncthingPause's `IsAllowedReleaseAssetUrl`. Lifted as part of a multi-task workspace sweep.
+
+### Audit finding closed in the same commit: `_hashFileUrl` had no allowlist
+
+The prescription that drove this sweep covered only `DownloadFileAsync`'s inline 3-prefix `StartsWith` check (the zip-download URL). Auditing the rest of `UpdateDialog.cs` revealed a separate gap: `_hashFileUrl` is populated from the GitHub releases JSON in `CheckForUpdateAsync` (line 213, `asset.GetProperty("browser_download_url")`) and then fetched directly via `_http.GetStringAsync(_hashFileUrl, ...)` in `OnActionClick` with **zero client-side origin validation**. A hostile or compromised API response could have steered the SHA256SUMS fetch to any URL on any host. v3.22.28 closes that gap with the same `IsAllowedHost(Uri, bool allowApi)` helper used for the download check.
+
+### Changes
+
+- **New `IsAllowedHost(Uri uri, bool allowApi)`** in UpdateDialog's Helpers section. Uri-parsed + scheme-pinned-to-HTTPS + host-equality on the two CDN edges (`objects.githubusercontent.com`, `release-assets.githubusercontent.com`) + AbsolutePath-scoped check on `github.com` / `api.github.com` (the latter gated behind `allowApi`).
+- **`DownloadFileAsync` (line ~463)** — replaces the 3-prefix `StartsWith` block with `Uri.TryCreate` + `IsAllowedHost(dlUri, allowApi: false)`.
+- **`OnActionClick` SHA256SUMS branch (line ~340)** — new allowlist gate before `_http.GetStringAsync(_hashFileUrl, ...)`. Rejects on parse failure or unknown host; logs via `FileLogger.Warn`, deletes the zip, and surfaces `"SHA256SUMS URL is not from the expected source. Update aborted for safety."` to the user. Fail-closed — same posture as the rest of the verification chain.
+
+### Why this matters in practice
+
+The current `_http` is configured with default `AllowAutoRedirect=true`, so only the initial pre-redirect URL ever reaches either check. With both URLs sourced from `github.com/itsnateai/eqswitch/releases/...` paths in the GitHub releases JSON, in normal operation neither check ever rejects. The hardening is defense-in-depth against:
+- A future refactor to manual per-hop redirect validation (which would route every hop through `IsAllowedHost`)
+- A compromised GitHub API response that swaps `browser_download_url` for an attacker-controlled URL
+- Malformed URLs (embedded whitespace, mixed-case scheme) that a raw `StartsWith` would accept but that `Uri.TryCreate` rejects
+
+### Repo-scope tightening
+
+Both checks scope to `/itsnateai/eqswitch/` (and `/repos/itsnateai/eqswitch/` for the API host, currently unused at any caller). Previously the prefix check accepted `/itsnateai/` broadly, so a compromised redirect to another itsnateai-owned repo's release asset would have passed. Not a high-realism attack but the tighter scope is free.
+
+### Build
+
+- `dotnet build -c Release` clean (0 warnings, 0 errors).
+- No new tests added — the project has no test harness (a documented gap, not in this sweep's scope).
+
 ## v3.22.27 — Backlog drain: _config.Characters lock symmetry, CDN allowlist hardening, ConfigManager hygiene, hung-PID log disambiguation (2026-05-22)
 
 Picks up the v3.22.26 backlog plus one cross-app finding from a sibling

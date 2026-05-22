@@ -338,6 +338,22 @@ public class UpdateDialog : Form
             if (!TestMode)
             {
                 _lblStatus.Text = "Verifying integrity...";
+                // Security: gate the SHA256SUMS fetch through the same host-equality
+                // allowlist as the zip download. v3.22.27 and earlier validated only
+                // the download URL, not the hash URL — `_hashFileUrl` came straight
+                // from the GitHub-API release JSON without any client-side check, so
+                // a hostile API response could have pointed it anywhere. v3.22.28
+                // closes that gap. allowApi:false because a release-asset must come
+                // from github.com/itsnateai/eqswitch/… or the CDN, not api.github.com.
+                if (!Uri.TryCreate(_hashFileUrl, UriKind.Absolute, out var hashUri) ||
+                    !IsAllowedHost(hashUri, allowApi: false))
+                {
+                    FileLogger.Warn($"Update: rejected SHA256SUMS URL from unexpected origin: {_hashFileUrl}");
+                    TryDelete(zipPath);
+                    ShowError("Hash verification failed.",
+                        "SHA256SUMS URL is not from the expected source. Update aborted for safety.");
+                    return;
+                }
                 try
                 {
                     var hashContent = await _http.GetStringAsync(_hashFileUrl, _cts!.Token);
@@ -462,18 +478,18 @@ public class UpdateDialog : Form
 
     private async Task<bool> DownloadFileAsync(string url, string destPath, string displayName)
     {
-        // Security: only allow downloads from expected GitHub origins.
-        // GitHub release-asset CDN: both `objects.githubusercontent.com` (legacy)
-        // and `release-assets.githubusercontent.com` (new edge, rolled alongside
-        // the legacy) appear in the wild as redirect targets for
-        // `github.com/.../releases/download/...`. Today _http uses default
-        // AllowAutoRedirect=true so only the pre-redirect github.com URL ever
-        // reaches this check — the CDN clauses are defense-in-depth against a
-        // future refactor toward manual per-hop redirect validation (the
-        // hardened pattern in MWBToggle / MicMute / CapsNumTray / SyncthingPause).
-        if (!url.StartsWith("https://github.com/itsnateai/", StringComparison.OrdinalIgnoreCase) &&
-            !url.StartsWith("https://objects.githubusercontent.com/", StringComparison.OrdinalIgnoreCase) &&
-            !url.StartsWith("https://release-assets.githubusercontent.com/", StringComparison.OrdinalIgnoreCase))
+        // Security: only allow downloads from expected GitHub origins. Host-equality
+        // canonical pattern — see `IsAllowedHost`. Today `_http` uses default
+        // AllowAutoRedirect=true so only the pre-redirect github.com URL reaches
+        // this check; the CDN clauses in `IsAllowedHost` are defense-in-depth
+        // against a future refactor toward manual per-hop redirect validation
+        // (the hardened pattern in MWBToggle / MicMute / CapsNumTray /
+        // SyncthingPause). v3.22.28 replaced the prior `StartsWith` 3-prefix
+        // check with Uri parsing + host-equality so malformed URLs (embedded
+        // whitespace, weird userinfo) can't slip through, and repo scope is
+        // checked against AbsolutePath instead of a raw URL substring.
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var dlUri) ||
+            !IsAllowedHost(dlUri, allowApi: false))
         {
             FileLogger.Warn($"Update: rejected download URL from unexpected origin: {url}");
             ShowError("Update failed: download URL is not from the expected source.", url);
@@ -577,6 +593,38 @@ public class UpdateDialog : Form
     }
 
     // ─── Helpers ────────────────────────────────────────────────
+
+    // Host-based allowlist for self-update URLs. Replaces a 3-prefix
+    // `StartsWith` check in DownloadFileAsync (v3.22.27 and earlier) with
+    // Uri parsing + host-equality, lifted from MicMute / MWBToggle /
+    // CapsNumTray (host-equality canonical) and matching the shape of
+    // SyncthingPause's `IsAllowedReleaseAssetUrl`.
+    //
+    // Repo scope on github.com / api.github.com is checked against
+    // AbsolutePath, not a raw-URL substring. CDN coverage unchanged —
+    // both `objects.githubusercontent.com` (legacy edge) and
+    // `release-assets.githubusercontent.com` (new edge, rolled alongside)
+    // are accepted as redirect targets for release-asset downloads.
+    //
+    // `allowApi:false` is used at release-asset / hash-file fetch sites
+    // (api.github.com is not a valid release-asset host). `allowApi:true`
+    // is reserved for the catalogue fetch — currently a hardcoded literal
+    // string at CheckForUpdateAsync, so no caller uses it yet, but the
+    // option is parameterized to match the canonical shape across siblings.
+    internal static bool IsAllowedHost(Uri uri, bool allowApi)
+    {
+        if (uri.Scheme != Uri.UriSchemeHttps) return false;
+        string host = uri.Host;
+        if (host.Equals("objects.githubusercontent.com", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (host.Equals("release-assets.githubusercontent.com", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (host.Equals("github.com", StringComparison.OrdinalIgnoreCase))
+            return uri.AbsolutePath.StartsWith("/itsnateai/eqswitch/", StringComparison.OrdinalIgnoreCase);
+        if (allowApi && host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase))
+            return uri.AbsolutePath.StartsWith("/repos/itsnateai/eqswitch/", StringComparison.OrdinalIgnoreCase);
+        return false;
+    }
 
     private static bool IsWingetManaged() =>
         (Environment.ProcessPath ?? "").Contains(@"Microsoft\WinGet\Packages", StringComparison.OrdinalIgnoreCase);
