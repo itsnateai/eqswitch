@@ -26,11 +26,11 @@ A lightweight EverQuest multiboxer — hotkey switching, encrypted auto-login, P
 
 | File | Size | Purpose |
 |------|------|---------|
-| **EQSwitch.exe** | ~179 MB | Main app (self-contained, no .NET runtime needed) |
-| **eqswitch-hook.dll** | ~133 KB | Window management hooks (SetWindowPos/MoveWindow) |
-| **eqswitch-di8.dll** | ~148 KB | DirectInput hooks for background auto-login |
+| **EQSwitch.exe** | ~180 MB | Main app (self-contained, no .NET runtime needed) |
+| **eqswitch-hook.dll** | ~130 KB | Window management hooks (SetWindowPos/MoveWindow) |
+| **eqswitch-di8.dll** | ~239 KB | DirectInput hooks + login state machine for background auto-login |
 
-All three files must be in the same folder.
+All three files must be in the same folder. A separate `SHA256SUMS` file is published alongside the zip on each release for integrity verification.
 
 </details>
 
@@ -70,9 +70,9 @@ All three files must be in the same folder.
 - **Fullscreen Window** — WinEQ2-style borderless mode that hides the titlebar above the screen edge
 - **DLL Hook Injection** — Hooks SetWindowPos/MoveWindow inside eqgame.exe for zero-flicker window positioning
 - **Multi-Monitor** — One client per physical monitor with automatic arrangement
-- **Process Priority** — Active client on High, background on AboveNormal (configurable per-character)
+- **Process Priority** — Both active and background EQ clients default to AboveNormal (configurable per-character)
 - **CPU Core Assignment** — CPUAffinity0-5 slots written to eqclient.ini for per-client core pinning
-- **PiP Overlay** — Live DWM thumbnail previews (zero CPU, GPU composited). Vertical or horizontal layout, 7 size presets + custom
+- **PiP Overlay** — Live DWM thumbnail previews (zero CPU, GPU composited). Vertical or horizontal layout, 6 size presets (Small / Medium / Large / XL / XXL / XXXL) + custom dimensions
 - **Staggered Launch** — Multi-client launch with configurable delay and auto-arrange
 - **Settings GUI** — Dark-themed tabbed settings (General, Video, Accounts, PiP, Hotkeys, Paths)
 - **EQ Client Settings** — Sub-forms for editing eqclient.ini (Video, Key Mappings, Chat, Particles, Models)
@@ -82,6 +82,7 @@ All three files must be in the same folder.
 - **Custom Tray Icon** — Custom .ico support
 - **Auto-Login** — Encrypted account presets with one-click launch, login, server select, and character enter world
 - **Background Auto-Login** — Injects DirectInput hooks via suspended-process injection for true background input — no focus stealing, no game file modifications
+- **Self-Updater** — Built-in update check against GitHub Releases. Downloads the new zip, verifies SHA256, replaces all three binaries in place (no installer to re-run)
 - **Portable** — One zip, extract anywhere, config stored next to the exe — no installer needed
 - **Privacy First** — Zero telemetry, no network calls, no data collection. Saved passwords are encrypted with Windows DPAPI and can only be decrypted by your Windows account on your machine
 
@@ -95,13 +96,16 @@ All three files must be in the same folder.
 git clone https://github.com/itsnateai/eqswitch.git
 cd eqswitch
 
-# Build the native hook DLL (requires MSVC Build Tools, 32-bit x86 target)
+# Build the native hook DLL (32-bit x86 target)
+# MinGW (Git Bash):
 bash Native/build.sh
+# OR MSVC (from a Developer Command Prompt for VS):
+# Native\build.cmd
 
 # Build the DirectInput injectable DLL (32-bit x86)
 bash Native/build-di8-inject.sh
 
-# Self-contained single-file (~179MB, no runtime needed)
+# Self-contained single-file (~180 MB, no runtime needed)
 dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 ```
 
@@ -111,19 +115,20 @@ Output: `bin/Release/net8.0-windows/win-x64/publish/EQSwitch.exe` + `eqswitch-ho
 
 | Hotkey | Action |
 |--------|--------|
-| `\` | Swap to last active EQ client (EQ must be focused) |
-| `]` | Global switch — cycle next / bring EQ to front |
+| `\` | Switch client — swap-last (default) or cycle-all, depending on Switch Key Mode in Settings → Hotkeys. Only fires when EQ is focused. |
+| `]` | Global switch — same mode as above, but also brings EQ to front when another app is focused |
 | Ctrl+Alt+N | Toggle single-screen / multi-monitor mode |
 
-### Tray Icon Actions (all configurable)
+### Tray Icon Actions (all configurable in Settings → General)
 
-| Action | Result |
-|--------|--------|
-| Right-click | Context menu |
-| Single-click | Launch one EQ client |
-| Triple-click | (configurable) |
-| Middle-click | Toggle PiP overlay |
-| Middle-triple-click | Open Settings |
+| Action | Default | Notes |
+|--------|---------|-------|
+| Right-click | Context menu | Not user-configurable |
+| Single-click | Launch one EQ client | |
+| Double-click | (none) | Configurable |
+| Triple-click | (none) | Configurable |
+| Middle-click | Toggle PiP overlay | |
+| Middle-double-click | Open Settings | Two middle-clicks, not three |
 
 ## Config
 
@@ -139,8 +144,8 @@ Place a file named `eqswitch-custom.ico` next to the exe to use your own icon.
 
 ### Process Priority Defaults
 
-- **Active client**: High priority
-- **Background clients**: High priority
+- **Active client**: AboveNormal priority
+- **Background clients**: AboveNormal priority
 - Per-character priority overrides in Settings → Characters
 - CPU core assignment via eqclient.ini CPUAffinity0-5 slots (Settings → Process Manager)
 
@@ -173,22 +178,21 @@ When **Background Login** is enabled (Settings → Accounts), EQSwitch types pas
 
 ## Auto-Login Security
 
-Passwords are encrypted using **Windows DPAPI** (Data Protection API) and stored locally in your config file. Here's what that means:
+Passwords are encrypted using **Windows DPAPI** (Data Protection API) via `ProtectedData.Protect` with `DataProtectionScope.CurrentUser`, and stored locally in your config file. Here's what that means:
 
-- **AES-256 encryption** — DPAPI derives an encryption key from your Windows login credentials (password hash + machine SID + user SID) using PBKDF2, then encrypts with AES-256
-- **User-scoped** — Only your Windows user account on your machine can decrypt the passwords. Other users on the same PC (even administrators) cannot read them
+- **User-scoped** — Only your Windows user account on your machine can decrypt the passwords. Other users on the same PC (even administrators) cannot read them. The decryption key is derived from your Windows account credentials by the OS — EQSwitch never sees it
 - **Zero network traffic** — Encryption and decryption happen entirely on your machine. Passwords are never transmitted anywhere
-- **No master password** — Your Windows login IS the master key. The encrypted master key is stored in `%APPDATA%\Microsoft\Protect\{SID}\`
+- **No master password** — Your Windows login IS the master key. The OS-managed key material lives in `%APPDATA%\Microsoft\Protect\{SID}\`
 - **Stored as base64** — The encrypted blob is base64-encoded in `eqswitch-config.json`. Even if someone reads the file, they see gibberish without your Windows credentials
 
 > [!IMPORTANT]
 > If you reinstall Windows or create a new user account, stored passwords cannot be recovered. You'll need to re-enter them in Settings.
 
-## First-Run Config Seeding
+## eqclient.ini Handling
 
-On first launch, EQSwitch reads your actual `eqclient.ini` and uses those values as its starting defaults. This means the settings form always shows your real configuration — not generic defaults that could silently overwrite your manual INI edits.
+EQSwitch never writes to your `eqclient.ini` automatically. Whenever you open Settings → Video (or any of the EQ Client Settings sub-forms — Key Mappings, Chat, Particles, Models, VideoMode), EQSwitch reads your *current* `eqclient.ini` so the form reflects your real values, not generic defaults that could silently overwrite your manual INI edits.
 
-Settings are **not enforced** until you explicitly click Save in the EQ Client Settings form.
+Changes are **not written back** until you explicitly click Save in the EQ Client Settings form.
 
 ## Uninstall / Clean Up
 
