@@ -1,5 +1,140 @@
 # Changelog
 
+## v3.22.25 — ApplySettings + autologin SaveImmediate race fix (in-progress)
+
+### Item 1: `ConfigManager.ConfigMutationLock`
+
+Closes the v3.22.24 backlog item "ApplySettings + autologin race — LOCK FIX".
+Same class of bug as v3.22.23's X-flag orphan-reference race but on the
+config-mutation surface instead of the in-memory captured-reference surface.
+
+#### Race surface (pre-fix)
+
+If the user clicks Settings → Apply WHILE `RunLoginStateMachine` is mid-flight
+(SM's finally block running `SaveImmediate(_config)`), three distinct races
+can fire:
+
+1. **List-swap race.** `TrayManager.ReloadConfig` swaps `_config.Accounts =
+   newConfig.Accounts` (line 2541) while SM-finally reads it (already
+   partially defended by snapshot-to-local at AutoLoginManager.cs:1310).
+2. **Per-Account field-read race.** `SettingsForm.ApplySettings` at
+   line ~1797 reads `live.LastLoginResult` to pick up the SM's deferred
+   write, but SM might be mid-write at line 1342 — the staged value goes
+   into `newConfig` as stale, `ReloadConfig` swaps the list, and SM's
+   later write lands on an orphan that's no longer in `_config.Accounts`.
+3. **Torn JSON write.** `SaveImmediate` calls
+   `JsonSerializer.Serialize(config)` which walks every field while
+   `ReloadConfig` is field-by-field mutating those same fields.
+
+The existing `_saveLock` in `ConfigManager` defends only the `_pendingSave`
+queue + `WriteToDisk` critical section. It does NOT cover cross-thread
+mutation of `_config` itself.
+
+#### Fix
+
+New `public static readonly object ConfigMutationLock` on `ConfigManager`.
+Held by:
+
+- `SettingsForm.ApplySettings` across the build-newConfig + `_onApply`
+  call (covers the racy reads at line ~1797 + the dispatch into
+  ReloadConfig). Uses `Monitor.TryEnter(0)`-then-`Enter` so the
+  contended path logs "save deferred — Settings dialog
+  ApplySettings/ReloadConfig in progress" for diagnostics.
+- `TrayManager.ReloadConfig` body via `ReloadConfigCore` helper extract
+  (covers ~50 field-by-field mutations + the `_config.Accounts` list-
+  swap). Reentrant when reached via ApplySettings → _onApply →
+  ReloadConfig — C# `lock` is recursive per thread, so the UI thread
+  re-acquires harmlessly.
+- `AutoLoginManager` SM finally-block "re-resolve + writes + SaveImmediate"
+  sequence at AutoLoginManager.cs:1288-1373, and the legacy
+  `RunLoginSequence` LastLoginResult fail/ok write sites at
+  AutoLoginManager.cs:2940/2960 (extracted to
+  `SaveLastLoginResultLocked` helper for DRY).
+
+Both SM-side entry points use the same `Monitor.TryEnter(0)`-then-`Enter`
+diagnostic pattern, so contention in either direction emits a clear
+log line without changing semantics.
+
+The SM-finally path's existing re-resolve at AutoLoginManager.cs:1310-1314
+(snapshot `_config.Accounts`, FirstOrDefault by Username+Server) is
+retained under the lock — when the lock is held, the re-resolve is
+guaranteed to see either the post-ApplySettings list (fresh) or the
+pre-ApplySettings list (stable), never a mid-mutation snapshot. The
+"renamed mid-autologin" fallback warning still fires for the rare case
+where Settings deleted-or-renamed the account being autoligned (that's
+an identity change the lock can't fix).
+
+The legacy `RunLoginSequence` path does NOT re-resolve — it writes to
+the captured `account` ref directly. Pre-fix this was racy; post-fix
+the lock prevents torn JSON writes but the orphan-ref-on-rename risk
+remains. Legacy is not the deployed surface (UseStateMachine=true is
+the operationally-active path), so the gap is accepted for legacy only.
+
+#### Verification
+
+`dotnet build` clean (0 warnings, 0 errors) against .NET 8 on win-x64.
+
+**Round-1 verifier swarm (6 agents — Sonnet+Opus on T1/T2/T3 topics):**
+- T1 Diff-clean Sonnet+Opus: APPROVE
+- T2 Gap-audit Sonnet: CONCERNS (2 CRITICAL)
+- T2 Gap-audit Opus: REJECT (5 CRITICAL)
+- T3 Code-review Sonnet+Opus: CONCERNS (multiple)
+
+Convergent findings → round-2 fixes applied:
+1. **Canonical `Monitor.Enter(lock, ref tookLock)` pattern** at all three
+   acquire sites (SettingsForm.ApplySettings, AutoLoginManager SM-finally,
+   SaveLastLoginResultLocked). Pre-fix `TryEnter(0)` + naked
+   `Monitor.Enter(lock)` could leak the lock if Enter threw between the
+   acquire and the `try` block — `finally { Monitor.Exit }` would either
+   skip a held lock OR throw `SynchronizationLockException` on a
+   never-acquired one. Now: `bool tookLock = false; try { if (!TryEnter(0))
+   Enter(lock, ref tookLock); else tookLock = true; ... } finally { if
+   (tookLock) Exit(lock); }`.
+2. **`SettingsForm.OnLoginComplete` read of `live.LastLogin*` now locked.**
+   Round-1 fix only covered ApplySettings's read of the same fields;
+   OnLoginComplete is fired on UI thread while a PARALLEL team-login SM
+   could be mid-writing a different Account. Added `lock
+   (ConfigMutationLock)` around the foreach + snapshot-to-locals before
+   the `staged.*` writes.
+3. **`TrayManager.ReloadConfigCore` `_reloading` flag now in try/finally.**
+   Pre-fix a throw in the field-copy or UI-rebuild block left `_reloading
+   = true` permanently — the line 1146 guard would silently drop every
+   foreground-debounce timer tick until restart.
+4. **`ConfigMutationLock` XML doc contract narrowed.** Pre-fix it claimed
+   to cover "ALL cross-thread mutations" but the implementation only
+   covered Accounts + LastLogin*. Now lists explicit COVERS / DOES NOT
+   COVER sections with rationale for each excluded site (PipOverlay,
+   ProcessManagerForm, EQClientSettingsForm, etc.) and a residual-torn-
+   JSON note for v3.22.26 follow-up.
+
+**Round-2 verifier swarm (6 agents — full re-pair-set per spec):**
+- T1 Sonnet+Opus: APPROVE
+- T2 Sonnet: CONCERNS (1 NEW MINOR — BuildAccountsSubmenu display-only torn-read, pre-existing, documented in scope-limit)
+- T2 Opus: CONCERNS (1 MINOR — flagged the residual ProcessManagerForm-Save torn-JSON risk, pre-existing, documented in scope-limit)
+- T3 Sonnet+Opus: APPROVE
+
+**Verdict: 4 APPROVE / 2 CONCERNS (both MINOR, both pre-existing,
+documented as scope-limit). Zero REJECTs. Shippable.**
+
+**Pending:** smoke test of success-path autologin (item 1 is hard to
+trigger manually so smoke is for regression detection, not race
+reproduction).
+
+#### Files
+
+- `Config/ConfigManager.cs:91` — `ConfigMutationLock` declared with
+  full XML doc explaining the contract.
+- `UI/TrayManager.cs:2449-2475` — `ReloadConfig` now wraps
+  `ReloadConfigCore` in `lock (ConfigManager.ConfigMutationLock)`.
+- `UI/SettingsForm.cs:1659-1888` — `Monitor.TryEnter`/`try`/`finally`
+  around the BuildAppConfig initializer + `_onApply(newConfig)` call.
+- `Core/AutoLoginManager.cs:1288-1373` — SM finally save block now
+  holds `ConfigMutationLock` for the entire re-resolve + writes +
+  SaveImmediate sequence.
+- `Core/AutoLoginManager.cs:~2140` — new `SaveLastLoginResultLocked`
+  helper; legacy fail/ok save sites at lines 2940/2960 routed through
+  it for symmetric lock coverage.
+
 ## v3.22.24 — Bad-password fail detection in ~5s instead of 120s (2026-05-21)
 
 Native-side fix to `eqmain_widgets_mq2style` / `login_state_machine`. The C# state

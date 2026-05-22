@@ -1287,26 +1287,47 @@ public class AutoLoginManager
             // Dispose, FireLoginComplete, etc.).
             if (pendingResult != null)
             {
+                // v3.22.25: serialize the entire re-resolve → write → SaveImmediate
+                // sequence against TrayManager.ReloadConfig (which swaps _config.Accounts
+                // wholesale). Canonical Monitor.Enter(lock, ref tookLock) pattern —
+                // if Enter throws, tookLock stays false and the finally branch
+                // does NOT call Exit on a never-acquired lock (which would itself
+                // throw SynchronizationLockException). The diagnostic log for
+                // "save deferred — Settings dialog open" fires when TryEnter(0)
+                // returns false BEFORE we promote to the blocking Enter call.
+                // See ConfigManager.ConfigMutationLock for the full contract.
+                bool tookLock = false;
                 try
                 {
+                    if (!Monitor.TryEnter(ConfigManager.ConfigMutationLock, 0))
+                    {
+                        FileLogger.Info($"AutoLogin-SM: save deferred — Settings dialog ApplySettings/ReloadConfig in progress; waiting for ConfigMutationLock for {account.Name}");
+                        Monitor.Enter(ConfigManager.ConfigMutationLock, ref tookLock);
+                    }
+                    else
+                    {
+                        tookLock = true;
+                    }
+
                     // Re-resolve to the live Account in _config.Accounts by
                     // (Username, Server). SettingsForm.ApplySettings replaces
                     // _config.Accounts with a list of new Account instances on
-                    // every save — if the user opened Settings and clicked
-                    // Apply/OK while this SM was running, our captured
-                    // `account` reference is now an orphan outside the
-                    // serialized list, and mutating it loses the flag.
+                    // every save — pre-v3.22.25 the captured `account` ref
+                    // could become an orphan mid-save. The ConfigMutationLock
+                    // above now ensures ApplySettings/ReloadConfig either
+                    // finished before we entered (fresh re-resolve sees the
+                    // new list) or has not yet run (we hold the lock so its
+                    // swap waits). Re-resolve still required because we may
+                    // have entered AFTER ApplySettings ran.
                     // Match key matches SettingsForm.OnLoginComplete's
                     // reverse-sync (Username + Server, case-insensitive).
-                    // Fallback to `account` covers the rare case where the
+                    // Fallback to `account` covers the case where the
                     // account was renamed or removed in Settings during
                     // autologin — at least the orphan still gets the value,
                     // even if SaveImmediate then doesn't persist it.
-                    // Snapshot `_config.Accounts` to a local so the field is
-                    // read exactly once. TrayManager.ReloadConfig reassigns
-                    // _config.Accounts on the UI thread; without the snapshot
-                    // the JIT could observe a stale reference cached in a
-                    // register across this call, defeating the re-resolve.
+                    // Snapshot `_config.Accounts` to a local for the contract
+                    // symmetry — under the lock the field is stable, but
+                    // keeping the snapshot makes the re-resolve self-contained.
                     var accounts = _config.Accounts;
                     var match = accounts.FirstOrDefault(a =>
                         string.Equals(a.Username, account.Username, StringComparison.OrdinalIgnoreCase) &&
@@ -1319,14 +1340,14 @@ public class AutoLoginManager
                         // was running. The orphan write below lands somewhere
                         // outside _config.Accounts and SaveImmediate won't
                         // persist it. Warn loudly so the silent-failure surface
-                        // is visible in logs even though we can't fix it
-                        // without a lock around the (re-resolve + ApplySettings
-                        // list-replace) pair (backlogged for v3.22.24).
+                        // is visible in logs even though renames are unfixable
+                        // by the lock (the rename itself changed identity, so
+                        // there is no "right" match).
                         FileLogger.Warn($"AutoLogin-SM: live Account for {account.Name} (Username='{account.Username}', Server='{account.Server}') not found in _config.Accounts — likely renamed or removed mid-autologin. LastLoginResult={pendingResult} will not persist this run.");
                     }
                     else if (!ReferenceEquals(live, account))
                     {
-                        FileLogger.Info($"AutoLogin-SM: re-resolved orphan Account ref for {account.Name} (Settings likely saved mid-autologin)");
+                        FileLogger.Info($"AutoLogin-SM: re-resolved orphan Account ref for {account.Name} (Settings saved mid-autologin)");
                     }
                     // Write order: LastLoginAt FIRST, LastLoginResult LAST.
                     // The invariant we want: a UI-thread reader observing a
@@ -1357,6 +1378,13 @@ public class AutoLoginManager
                 catch (Exception saveEx)
                 {
                     FileLogger.Warn($"AutoLogin-SM: deferred SaveImmediate failed for {account.Name}: {saveEx.Message}");
+                }
+                finally
+                {
+                    // Guard against Monitor.Enter having thrown before tookLock was
+                    // set true — Exit on a never-acquired lock throws SyncLockException
+                    // which would mask the real exception in flight.
+                    if (tookLock) Monitor.Exit(ConfigManager.ConfigMutationLock);
                 }
             }
             // Iter-3 fix-round-2 (verifier T3-Opus HIGH-5): SendCancelCommand-on-Error
@@ -2108,6 +2136,56 @@ public class AutoLoginManager
         Report($"{account.Name}: reached char select but Enter World didn't register");
         FileLogger.Warn($"AutoLogin-SM: {account.Name} enter-world failed after all attempts (PID {pid})");
         return LoginPhase.Error;
+    }
+
+    /// <summary>
+    /// v3.22.25: Locked LastLoginAt + LastLoginResult write + SaveImmediate for the
+    /// legacy <see cref="RunLoginSequence"/> path. Takes
+    /// <see cref="ConfigManager.ConfigMutationLock"/> for the duration of the write +
+    /// JsonSerializer call so a concurrent UI-thread ApplySettings/ReloadConfig cannot
+    /// torn-write the JSON nor swap <c>_config.Accounts</c> mid-serialization.
+    /// Emits a "save deferred — Settings dialog open" log line when the lock is
+    /// contended (TryEnter-then-Enter pattern; semantics unchanged).
+    /// <para>Unlike the SM-finally path, this helper does NOT re-resolve the
+    /// captured <paramref name="account"/> reference against <c>_config.Accounts</c>:
+    /// the legacy path is not the deployed surface (UseStateMachine=true is the
+    /// operationally-active path) and re-resolve would be a separate refactor.
+    /// Orphan-ref risk if Settings swapped the list between SM launch and here is
+    /// accepted for the legacy path only.</para>
+    /// </summary>
+    private void SaveLastLoginResultLocked(Account account, string result, string logTag)
+    {
+        // v3.22.25 verifier-round-2 fix: canonical Monitor.Enter(lock, ref tookLock)
+        // pattern. If Monitor.Enter throws (e.g. ThreadAbort, OOM), tookLock stays
+        // false and the finally branch skips Monitor.Exit on a never-acquired lock
+        // (which would itself throw SynchronizationLockException, masking the
+        // original exception in flight).
+        bool tookLock = false;
+        try
+        {
+            if (!Monitor.TryEnter(ConfigManager.ConfigMutationLock, 0))
+            {
+                FileLogger.Info($"{logTag}: save deferred — Settings dialog ApplySettings/ReloadConfig in progress; waiting for ConfigMutationLock for {account.Name}");
+                Monitor.Enter(ConfigManager.ConfigMutationLock, ref tookLock);
+            }
+            else
+            {
+                tookLock = true;
+            }
+            account.LastLoginAt = DateTime.UtcNow;
+            Thread.MemoryBarrier();
+            account.LastLoginResult = result;
+            // SaveImmediate: thread-safe synchronous write. Save() uses a
+            // System.Windows.Forms.Timer whose Tick fires on the creating thread —
+            // calling Save from this background worker creates a Timer with no
+            // message pump, and the write never reaches disk until app shutdown
+            // drain (or never, on a hard kill). SaveImmediate bypasses the timer.
+            ConfigManager.SaveImmediate(_config);
+        }
+        finally
+        {
+            if (tookLock) Monitor.Exit(ConfigManager.ConfigMutationLock);
+        }
     }
 
     /// <summary>
@@ -2937,14 +3015,12 @@ public class AutoLoginManager
                 // (not atomic); writing it BEFORE the atomic string-reference assignment
                 // means a UI-thread reader that sees a non-default LastLoginResult is
                 // guaranteed (under x64 memory ordering) to see the matching LastLoginAt.
-                account.LastLoginAt = DateTime.UtcNow;
-                account.LastLoginResult = "fail";
-                // SaveImmediate: thread-safe synchronous write. Save() uses a
-                // System.Windows.Forms.Timer whose Tick fires on the creating thread —
-                // calling Save from this background worker creates a Timer with no
-                // message pump, and the write never reaches disk until app shutdown
-                // drain (or never, on a hard kill). SaveImmediate bypasses the timer.
-                ConfigManager.SaveImmediate(_config);
+                // v3.22.25: locked against ApplySettings/ReloadConfig for torn-JSON
+                // defense. Note: legacy path lacks the SM-path's re-resolve — orphan-ref
+                // risk if Settings swapped _config.Accounts between SM launch and here.
+                // Legacy is not the deployed path (UseStateMachine=true everywhere),
+                // so re-resolve is intentionally deferred to a separate fix if ever needed.
+                SaveLastLoginResultLocked(account, "fail", "AutoLogin-legacy-fail");
                 return;
             }
             if (hwnd == IntPtr.Zero) { Report($"{account.Name}: lost EQ window during charselect load (crashed or closed)"); return; }
@@ -2956,9 +3032,7 @@ public class AutoLoginManager
             // login. Mark ok now so a downstream MQ2-bridge timeout doesn't downgrade
             // a successful login to ✗. Write ordering + SaveImmediate rationale:
             // see the matching "fail" branch above.
-            account.LastLoginAt = DateTime.UtcNow;
-            account.LastLoginResult = "ok";
-            ConfigManager.SaveImmediate(_config);
+            SaveLastLoginResultLocked(account, "ok", "AutoLogin-legacy-ok");
 
             // ── Enter World gate ──
             // Default intent from type: Character target = enter world, Account-only = stop here.

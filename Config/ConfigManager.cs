@@ -91,6 +91,98 @@ public static class ConfigManager
     private static readonly object _saveLock = new();
 
     /// <summary>
+    /// Serializes the SettingsForm-ApplySettings ↔ AutoLoginManager-SaveImmediate
+    /// race for the <c>Accounts</c> list and per-Account <c>LastLoginAt</c> /
+    /// <c>LastLoginResult</c> fields. Distinct from <c>_saveLock</c>, which guards
+    /// only the _pendingSave queue + the WriteToDisk critical section — that lock
+    /// cannot defend against a background SaveImmediate firing while the UI
+    /// thread is mid-mutation of <c>_config.Accounts</c> (the JsonSerializer.
+    /// Serialize call inside WriteToDisk reads every field of the supplied
+    /// config, and a UI-thread ReloadConfig is mid-mutating those same fields
+    /// — producing a torn JSON write OR an orphan-ref LastLoginResult write
+    /// that never persists).
+    ///
+    /// <para>v3.22.25: introduced to close the ApplySettings + autologin race
+    /// surfaced in v3.22.24 backlog. Same class as v3.22.23's X-flag orphan-
+    /// reference race but on the config-mutation surface instead of the
+    /// in-memory captured-reference surface.</para>
+    ///
+    /// <para><b>SCOPE — what this lock COVERS:</b>
+    /// <list type="bullet">
+    ///   <item><c>SettingsForm.ApplySettings</c> across the build-newConfig
+    ///     + _onApply call (covers the racy read of
+    ///     <c>_config.Accounts.FirstOrDefault(...).LastLoginResult</c> at the
+    ///     "Race fix" Accounts.Select).</item>
+    ///   <item><c>TrayManager.ReloadConfig</c> body (covers the ~50 field-by-
+    ///     field mutations + the <c>_config.Accounts = newConfig.Accounts</c>
+    ///     list swap). Reentrant on the UI thread when reached via
+    ///     ApplySettings → _onApply → ReloadConfig.</item>
+    ///   <item><c>AutoLoginManager</c> SM finally-block "re-resolve + writes +
+    ///     SaveImmediate" sequence and the legacy <c>RunLoginSequence</c>
+    ///     LastLoginResult fail/ok write sites
+    ///     (<see cref="EQSwitch.Core.AutoLoginManager"/>.SaveLastLoginResultLocked).</item>
+    ///   <item><c>SettingsForm.OnLoginComplete</c> read of <c>live.LastLoginAt</c> /
+    ///     <c>live.LastLoginResult</c> from <c>_config.Accounts</c> (added
+    ///     v3.22.25 verifier round 2 — parallel team-login SM may be mid-
+    ///     writing a DIFFERENT account while OnLoginComplete iterates).</item>
+    /// </list></para>
+    ///
+    /// <para><b>SCOPE — what this lock does NOT cover (accepted scope-limit, not bugs):</b>
+    /// <list type="bullet">
+    ///   <item><c>PipOverlay</c> drag-end position writes to <c>_config.Pip.SavedPositions</c>
+    ///     + UI-thread <c>ConfigManager.Save</c>. UI-thread only; SaveImmediate
+    ///     reads <c>_config.Pip</c> only inside its own _saveLock → JsonSerializer
+    ///     window, which is sub-ms.</item>
+    ///   <item><c>ProcessManagerForm.ApplyAllSettings</c>, <c>EQClientSettingsForm</c>,
+    ///     <c>EQModelsForm</c>, <c>EQParticlesForm</c>, <c>EQVideoModeForm</c>,
+    ///     <c>EQChatSpamForm</c>, <c>FileOperations</c>, <c>FirstRunDialog</c>
+    ///     and the tray-hotkey <c>OnToggleMultiMonitor</c> — all mutate non-Account
+    ///     fields then call <c>ConfigManager.Save</c> or <c>SaveImmediate</c>.
+    ///     The mutations themselves don't touch Account state, BUT
+    ///     <c>JsonSerializer.Serialize(_config)</c> inside WriteToDisk walks
+    ///     the entire object graph including <c>Accounts[].LastLoginResult/LastLoginAt</c>
+    ///     — so concurrent SM Account writes CAN in theory produce a torn
+    ///     JSON write triggered from one of these forms. In practice this
+    ///     never fires (these forms are rarely used during active autologin),
+    ///     and the deployed-surface fix is the Accounts race that v3.22.25
+    ///     closes. Tracked for v3.22.26 — full enumeration: take
+    ///     ConfigMutationLock at every non-Account Save site, OR snapshot
+    ///     the Accounts list to a deep copy before SaveImmediate.</item>
+    ///   <item><c>TrayManager.BuildAccountsSubmenu</c> reads
+    ///     <c>captured.Tooltip</c> (derived from <c>LastLoginResult</c>)
+    ///     when called from <c>UpdateClientMenu</c> and other non-Reload
+    ///     paths (not via ReloadConfigCore, which IS lock-covered). This
+    ///     is a display-only torn-read — worst case is a stale glyph for
+    ///     a UI frame. No correctness impact. Tracked for v3.22.26 if it
+    ///     proves user-visible.</item>
+    ///   <item><c>ConfigManager.Shutdown</c> + <c>Application.OnApplicationExit</c>
+    ///     do not acquire this lock; the existing <c>_saveLock</c> handles
+    ///     the file-write race. A background SM mid-finally at tear-down
+    ///     could in principle write a stale LastLoginResult to disk after
+    ///     Shutdown's final FlushSave — acceptable: process is exiting.</item>
+    /// </list></para>
+    ///
+    /// <para><b>Lock ordering:</b> when both <c>ConfigMutationLock</c> and
+    /// <c>_saveLock</c> are taken, the order is ALWAYS
+    /// <c>ConfigMutationLock</c> first, then <c>_saveLock</c> (acquired
+    /// inside SaveImmediate). Any future code that takes <c>_saveLock</c>
+    /// then tries to acquire <c>ConfigMutationLock</c> would deadlock.</para>
+    ///
+    /// <para><b>Reentrancy:</b> C# <c>lock</c> is recursive on the same
+    /// thread, so ApplySettings (UI) calling ReloadConfig (UI) re-acquires
+    /// safely. Cross-thread contention is the only blocking surface —
+    /// UI vs. SM background worker. SM finally-block hold time is
+    /// dominated by JsonSerializer + disk write (low-ms); ReloadConfig
+    /// hold time spans field copies + UI rebuild
+    /// (BuildContextMenu / hotkey re-register), which can be tens of ms
+    /// but is rare (only on user-initiated Settings → Apply).</para>
+    ///
+    /// <para>Public so callers in <c>UI/</c> and <c>Core/</c> can lock
+    /// against the same monitor without going through a wrapper API.</para>
+    /// </summary>
+    public static readonly object ConfigMutationLock = new();
+
+    /// <summary>
     /// Save config to disk. Coalesces rapid calls — the actual write happens
     /// after a 250ms quiet period so rapid toggles don't stall the UI.
     /// </summary>

@@ -2448,7 +2448,34 @@ public class TrayManager : IDisposable
     /// </summary>
     public void ReloadConfig(AppConfig newConfig)
     {
+        // v3.22.25: serialize against any in-flight AutoLoginManager SaveImmediate.
+        // Without this lock, the ~50 field-by-field mutations in
+        // ReloadConfigCore (notably the _config.Accounts list-swap) race with
+        // the SM finally-block's JsonSerializer.Serialize(_config), producing
+        // torn JSON writes OR orphan-ref LastLoginResult writes that never
+        // persist. See ConfigManager.ConfigMutationLock XML doc for full
+        // contract. Reentrant on UI thread when called via
+        // SettingsForm.ApplySettings (which also takes the lock around its
+        // build-newConfig + _onApply call) — C# lock is recursive per thread.
+        lock (ConfigManager.ConfigMutationLock)
+        {
+            FileLogger.Info("ReloadConfig: acquired ConfigMutationLock (blocking any background SaveImmediate)");
+            ReloadConfigCore(newConfig);
+        }
+    }
+
+    private void ReloadConfigCore(AppConfig newConfig)
+    {
+        // v3.22.25 verifier-round-2 fix: wrap body in try/finally so _reloading
+        // is ALWAYS cleared, even if any field-copy or UI-rebuild line throws
+        // (e.g. LoadIcon on a bad ICO can throw OOM from GDI+, ArrangeWindows
+        // can fail on a stale window handle). Pre-fix a throw would leave
+        // _reloading=true permanently, silently dropping every subsequent
+        // foreground-debounce timer tick (line 1146 guard) and freezing the
+        // app's responsiveness to focus changes until restart.
         _reloading = true;
+        try
+        {
         // Update the config reference (AppConfig is a class, so updating fields in-place)
         _config.EQPath = newConfig.EQPath;
         _config.EQProcessName = newConfig.EQProcessName;
@@ -2659,9 +2686,17 @@ public class TrayManager : IDisposable
         // supports both single and multimonitor modes)
         UpdateHookConfig();
 
-        _reloading = false;
         FileLogger.Info("Config reloaded and applied");
         ShowBalloon("Settings applied");
+        } // try
+        finally
+        {
+            // ALWAYS clear _reloading, even on exception in the field-copy or
+            // UI-rebuild blocks above. The C# `lock` in the public ReloadConfig
+            // wrapper releases ConfigMutationLock automatically; this finally
+            // is for the _reloading flag specifically.
+            _reloading = false;
+        }
     }
 
     private void ShowProcessManager()
