@@ -121,7 +121,9 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern bool IsHungAppWindow(IntPtr hWnd);
 
-    // v3.22.22 round-4: responsiveness pre-flight for cross-process arrange.
+    // v3.22.22 round-4 + v3.22.25 round-4: responsiveness pre-flight for
+    // cross-process arrange (WindowManager) AND for the Force-Kill Stuck Client
+    // tray submenu (TrayManager.PopulateForceKillMenu — added v3.22.25 R4).
     // IsHungAppWindow has a 5s kernel-threshold latency — it returns false
     // during the first 5s of a non-pumping pump. SendMessageTimeout with
     // SMTO_ABORTIFHUNG + a small timeout (100ms) is a tighter probe: if the

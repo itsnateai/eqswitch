@@ -1,5 +1,207 @@
 # Changelog
 
+## v3.22.26 — ReloadConfigCore propagation gaps + JsonSerializer torn-write closure + handoff-audit corrections (2026-05-22)
+
+Picks up the v3.22.25 backlog items 1/2/3/6. Two of the four turned out
+to need different fixes than the v3.22.25 verifier prescribed — fully
+audited and re-scoped before implementing per the
+`feedback_audit_before_handoff_prescribe` rule.
+
+### Item 1: `ReloadConfigCore` Launch + LogTrimThresholdMB propagation
+
+The v3.15.2 verifier-T4 catch pattern recurs: SettingsForm.BuildAppConfig
+carries fields forward into `newConfig`, but `TrayManager.ReloadConfigCore`
+never copies them onto the live `_config`, so the live SM keeps reading
+the pre-Apply values until process restart.
+
+R1 T3-Sonnet (the v3.22.25 round-1 verifier) flagged `LogTrimThresholdMB`
++ `Launch.UseStateMachine`. **Audit during implementation widened the
+scope to 8 fields** — the v3.17.0+ JSON-only Launch tunables batch
+(`StaleSessionPollIntervalMs`, `ConnectRetryCount`, `PostBurst2QuickFailCheckMs`,
+`SkipShmEnterWorldOnDalaya`, `SkipNativeWarmup`, `JoinServerId`) was
+added to BuildAppConfig on 2026-05-15 with the same "pass-through to
+preserve user JSON-edited values" rationale, but the propagation block
+in ReloadConfigCore never got the matching update. Same regression class,
+same one-line-per-field fix. R1 caught 2; full audit found 8.
+
+`UseStateMachine` had a SECOND bug at the upstream BuildAppConfig site:
+no Settings UI control existed for the flag, and the Launch initializer
+at SettingsForm.cs:1727 didn't include a pass-through line. Every
+Settings → Apply silently clobbered `UseStateMachine` to `false` (the
+LaunchConfig class default). The in-session in-memory value stayed
+correct only because ReloadConfigCore also didn't propagate it — but
+the persisted disk file got the wrong value, so the next launch would
+load `UseStateMachine=false` and disable the SM path entirely. Fixed by
+adding the pass-through line to BuildAppConfig + propagating in
+ReloadConfigCore (symmetric fix; defense-in-depth against a future UI
+control being added).
+
+The handoff's claim that both fields were "reachable from Settings UI"
+was wrong about `UseStateMachine` — corrected in the implementation.
+
+#### Files touched
+- `UI/TrayManager.cs` — 7 new propagation lines in the Launch.* block
+  (`StaleSessionPollIntervalMs`, `ConnectRetryCount`,
+  `PostBurst2QuickFailCheckMs`, `SkipShmEnterWorldOnDalaya`,
+  `SkipNativeWarmup`, `JoinServerId`, `UseStateMachine`) + 1 new line
+  for `LogTrimThresholdMB` = 8 new propagation lines total. Comments
+  explain the regression class.
+- `UI/SettingsForm.cs` — pass-through line for `UseStateMachine` in the
+  BuildAppConfig Launch initializer.
+
+### Item 2: JsonSerializer torn-write closure (replaces 9-form lock-wrapping)
+
+The v3.22.25 XML doc on `ConfigManager.ConfigMutationLock` listed 9
+forms that call `ConfigManager.Save` while not holding the lock —
+`JsonSerializer.Serialize(_config)` walks the entire object graph
+including `Accounts[].LastLoginResult/LastLoginAt`, so concurrent SM
+Account writes can in theory produce a torn JSON write.
+
+The handoff prescribed wrapping each form's Save call in
+`lock (ConfigMutationLock)`. **This would not have worked.**
+`ConfigManager.Save` is coalesced — it stages `_pendingSave` and
+returns; the actual `WriteToDisk` (which contains the JsonSerializer
+call) fires later via a 250ms `Windows.Forms.Timer` callback. By
+the time the serializer runs, the form's lock has long since
+released.
+
+The fix is at the serializer site itself: take `ConfigMutationLock`
+around the `JsonSerializer.Serialize(config, JsonOptions)` call inside
+`WriteToDisk`. The lock is held only for the serializer (sub-ms),
+not the subsequent `File.WriteAllText` / `File.Move` calls — once
+serialization completes the in-memory mutations don't affect the
+string.
+
+This catches all 9 forms, plus any future caller of `Save`/`SaveImmediate`,
+with a single re-entrant lock acquisition. Lock ordering: from the
+SM-finally path (`ConfigMutationLock` → `SaveImmediate` → `_saveLock` →
+`WriteToDisk` → second `ConfigMutationLock`), C# recursive-lock
+semantics make the inner acquisition a no-op on the same thread.
+From the UI-thread coalesced path, the UI thread holds no lock when
+the timer fires WriteToDisk, so the acquisition is uncontended unless
+the SM is mid-mutation.
+
+#### Files touched
+- `Config/ConfigManager.cs:WriteToDisk` — `lock (ConfigMutationLock)`
+  scoped to the `JsonSerializer.Serialize` call only.
+- `Config/ConfigManager.cs` XML doc — closed the 9-form gap-list entry,
+  added `WriteToDisk` to the COVERS list.
+
+### Item 3: PopulateFromConfig form-open snapshot lock (NOT BuildAccountsSubmenu)
+
+The v3.22.25 XML doc gap-list claimed `TrayManager.BuildAccountsSubmenu`
+reads `captured.Tooltip` "derived from `LastLoginResult`" as an unlocked
+torn-read. Audit during implementation: **the claim was wrong**.
+`Account.Tooltip` (defined at `Models/Account.cs:50`) is
+`$"{Username}@{Server}"` — it reads `Username` and `Server`, two fields
+that the AutoLoginManager never writes. `BuildAccountsSubmenu` has no
+torn-read.
+
+The R1 T3-Sonnet verifier was misled by the stale XML doc comment —
+exactly the failure mode tracked in
+`memory/feedback_misleading_comments_fool_verifiers.md`. The doc comment
+is corrected to a tombstone retained as a guard against re-prescription.
+
+The actual unlocked torn-read site for `LastLoginResult` is
+`SettingsForm.PopulateFromConfig` (the form-open snapshot copies
+`LastLoginResult` and `LastLoginAt` into `_pendingAccounts` without
+holding the lock). Opening Settings while an autologin SM is mid-write
+could torn-read into the staged snapshot. The ApplySettings race-fix
+(reads `live!.LastLoginResult` back under the lock) means torn snapshots
+never persisted a wrong value to disk, but the dialog's Flag column
+could show stale data for the open duration. Fixed by wrapping the
+Select in `lock (ConfigMutationLock)`.
+
+**Verifier-round addendum** (T3 Sonnet + T3 Opus convergent): the lock
+was extended to ALSO cover the `_pendingCharacters` snapshot in the
+same block. SM doesn't write Character fields today, so this is latent
+— but a future SM extension that writes Characters would miss the
+guard silently and the gap-asymmetry-by-omission would be invisible.
+Cheap belt-and-suspenders; one lock acquisition covers both lists.
+
+#### Files touched
+- `UI/SettingsForm.cs:PopulateFromConfig` — Accounts + Characters
+  Select blocks wrapped in `lock (ConfigManager.ConfigMutationLock)`;
+  duplicate unlocked Characters Select removed.
+- `Config/ConfigManager.cs` XML doc — BuildAccountsSubmenu entry retired
+  as a tombstone with a pointer to `Models/Account.cs:50`;
+  PopulateFromConfig added to the COVERS list.
+
+### Item 6: NativeMethods.cs:124 comment update
+
+Cosmetic. The comment block at `Core/NativeMethods.cs:124` said
+"v3.22.22 round-4: responsiveness pre-flight for cross-process arrange"
+but the `SendMessageTimeout` + `SMTO_ABORTIFHUNG` declaration is now
+also used by `TrayManager.PopulateForceKillMenu` (added v3.22.25 R4).
+Updated to credit both versions.
+
+### Items 4 and 5 (deferred)
+
+Item 4 (sister probes hardcode `0x80000000`) is research-tools-only and
+out-of-tree from eqswitch — will ship as a separate commit at
+`_.eqswitch-re/audit-2026-05-21/`.
+
+Item 5 (`SMTO_BLOCK` + `GetLastError` disambiguation) is contested
+between R4 verifier topics (T3 says correct, T2 says missing); deferred
+until re-entrancy is empirically observed in the field.
+
+### Verification
+
+`dotnet build` clean against .NET 8 on win-x64 (0 warnings, 0 errors).
+All 5 inline test suites pass: AppConfigValidateTests, ShmLayoutTests,
+KeyInputWriterTests, CharacterSelectorTests, CharSelectReaderTests.
+
+**Verifier round** (normal stakes, 3 topics × Sonnet+Opus = 6 agents):
+- T1 Diff-clean: Sonnet CONCERNS (minor CHANGELOG factual drift —
+  "8 new lines in Launch.* block" should be "7 Launch + 1 LogTrim = 8
+  total"; fixed in this section), Opus APPROVE.
+- T2 Gap-audit: Sonnet APPROVE (all 22 LaunchConfig fields verified
+  in both BuildAppConfig + ReloadConfigCore; single JsonSerializer.Serialize
+  call site confirmed; no undocumented LastLoginResult reads); Opus
+  APPROVE.
+- T3 Code-review: Sonnet CONCERNS (`_pendingCharacters` snapshot
+  outside the lock — convergent with T3 Opus); Opus CONCERNS
+  (JsonSerializer hold-time "sub-ms" overclaim; orphan `.tmp` leak
+  on save failure path; `_pendingCharacters` unlocked).
+
+**Fix-set applied after verifier round** (convergent findings only):
+1. `_pendingCharacters` snapshot wrapped in the same lock as
+   `_pendingAccounts` in PopulateFromConfig.
+2. WriteToDisk hold-time claim corrected from "sub-ms" to "low-ms
+   typically, up to tens of ms with a fully-populated config";
+   accepted tradeoff with snapshot+unlock alternative.
+3. Orphan `.tmp` cleanup added to WriteToDisk catch block.
+4. CHANGELOG factual drift corrected.
+
+Out-of-scope (pre-existing, single-verifier, not introduced by v3.22.26):
+- `Monitor.TryEnter(0) → Monitor.Enter` pattern in ApplySettings
+  (diagnostic; functionally equivalent to direct Enter).
+- Hardcoded backup retention (10) and coalesce interval (250ms).
+- `FlushSave` re-queue check outside `_saveLock`.
+- `CreateBackup` swallowing failures with Warn-only logging.
+
+### Handoff-audit retrospective
+
+The v3.22.25 → v3.22.26 handoff was authored straight from the v3.22.25
+verifier-round artifacts. The audit-before-prescribe rule (per
+`memory/feedback_audit_before_handoff_prescribe.md`) was applied
+during implementation, and found:
+
+- **Item 1** under-scoped: 2 fields flagged, 8 fields broken (the
+  v3.17.0+ batch was missed by the R1 verifier's narrow read).
+- **Item 1** mis-attributed: `UseStateMachine` has no Settings UI; the
+  real bug was upstream at BuildAppConfig, not at ReloadConfigCore.
+- **Item 2** wrong fix site: form-side lock wrapping would not have
+  protected the coalesced serializer call; correct site is the
+  serializer itself.
+- **Item 3** phantom bug: `Account.Tooltip` is `Username@Server`, not
+  derived from `LastLoginResult`; verifier was misled by a stale doc
+  comment. Real torn-read site is `PopulateFromConfig`.
+
+Three of four prescriptions needed re-scoping. The rule keeps earning
+its keep — every handoff has stale specifics by the time the next
+session reads it.
+
 ## v3.22.25 — ApplySettings race fix + Force-Kill Stuck Client + +0x30C investigation closed (2026-05-22)
 
 ### Item 1: `ConfigManager.ConfigMutationLock`

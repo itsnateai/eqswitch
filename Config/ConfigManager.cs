@@ -125,6 +125,25 @@ public static class ConfigManager
     ///     <c>live.LastLoginResult</c> from <c>_config.Accounts</c> (added
     ///     v3.22.25 verifier round 2 — parallel team-login SM may be mid-
     ///     writing a DIFFERENT account while OnLoginComplete iterates).</item>
+    ///   <item><c>SettingsForm.PopulateFromConfig</c> form-open snapshot
+    ///     <c>_config.Accounts.Select(a => new Account { LastLoginResult = a.LastLoginResult, LastLoginAt = a.LastLoginAt, ... })</c>
+    ///     (added v3.22.26). Opening Settings while an autologin SM was mid-
+    ///     write could torn-read into the staged _pendingAccounts snapshot.
+    ///     ApplySettings re-reads live values back under the same lock so
+    ///     the persisted value was always correct, but the dialog's Flag
+    ///     glyph could show stale data for the open duration. Locked here
+    ///     for completeness symmetry with the other ApplySettings/OnLoginComplete
+    ///     read sites.</item>
+    ///   <item><c>ConfigManager.WriteToDisk</c> wraps the
+    ///     <c>JsonSerializer.Serialize(config, JsonOptions)</c> call (added
+    ///     v3.22.26). Closes the form-side gap previously enumerated in this
+    ///     doc as "the 9 non-Account-mutating forms" — Save is coalesced
+    ///     (250ms timer) so the serializer fires on the timer thread OUTSIDE
+    ///     any caller's lock; wrapping form-side Save() calls would not
+    ///     protect the serializer. Centralizing at the serializer site catches
+    ///     all callers (current + future) with a single re-entrant lock
+    ///     acquisition that's a no-op on the SM-finally → SaveImmediate path
+    ///     (same-thread re-acquire).</item>
     /// </list></para>
     ///
     /// <para><b>SCOPE — what this lock does NOT cover (accepted scope-limit, not bugs):</b>
@@ -133,28 +152,25 @@ public static class ConfigManager
     ///     + UI-thread <c>ConfigManager.Save</c>. UI-thread only; SaveImmediate
     ///     reads <c>_config.Pip</c> only inside its own _saveLock → JsonSerializer
     ///     window, which is sub-ms.</item>
-    ///   <item><c>ProcessManagerForm.ApplyAllSettings</c>, <c>EQClientSettingsForm</c>,
+    ///   <item><b>Closed v3.22.26:</b> previously this list enumerated
+    ///     <c>ProcessManagerForm.ApplyAllSettings</c>, <c>EQClientSettingsForm</c>,
     ///     <c>EQModelsForm</c>, <c>EQParticlesForm</c>, <c>EQVideoModeForm</c>,
-    ///     <c>EQChatSpamForm</c>, <c>FileOperations</c>, <c>FirstRunDialog</c>
-    ///     and the tray-hotkey <c>OnToggleMultiMonitor</c> — all mutate non-Account
-    ///     fields then call <c>ConfigManager.Save</c> or <c>SaveImmediate</c>.
-    ///     The mutations themselves don't touch Account state, BUT
-    ///     <c>JsonSerializer.Serialize(_config)</c> inside WriteToDisk walks
-    ///     the entire object graph including <c>Accounts[].LastLoginResult/LastLoginAt</c>
-    ///     — so concurrent SM Account writes CAN in theory produce a torn
-    ///     JSON write triggered from one of these forms. In practice this
-    ///     never fires (these forms are rarely used during active autologin),
-    ///     and the deployed-surface fix is the Accounts race that v3.22.25
-    ///     closes. Tracked for v3.22.26 — full enumeration: take
-    ///     ConfigMutationLock at every non-Account Save site, OR snapshot
-    ///     the Accounts list to a deep copy before SaveImmediate.</item>
-    ///   <item><c>TrayManager.BuildAccountsSubmenu</c> reads
-    ///     <c>captured.Tooltip</c> (derived from <c>LastLoginResult</c>)
-    ///     when called from <c>UpdateClientMenu</c> and other non-Reload
-    ///     paths (not via ReloadConfigCore, which IS lock-covered). This
-    ///     is a display-only torn-read — worst case is a stale glyph for
-    ///     a UI frame. No correctness impact. Tracked for v3.22.26 if it
-    ///     proves user-visible.</item>
+    ///     <c>EQChatSpamForm</c>, <c>FileOperations</c>, <c>FirstRunDialog</c>,
+    ///     and the tray-hotkey <c>OnToggleMultiMonitor</c> as "the 9 forms
+    ///     that call <c>ConfigManager.Save</c> while not holding this lock —
+    ///     JsonSerializer could torn-write Accounts state". Closed by the
+    ///     <c>WriteToDisk</c> serializer-site lock above. Form-side
+    ///     mutations don't need this lock; the JsonSerializer site does.</item>
+    ///   <item><b>Phantom gap retired v3.22.26:</b> previous versions of
+    ///     this doc claimed <c>TrayManager.BuildAccountsSubmenu</c> reads
+    ///     <c>captured.Tooltip</c> "derived from <c>LastLoginResult</c>" as
+    ///     an unlocked torn-read. Audit during v3.22.26 implementation found
+    ///     the claim was wrong: <c>Account.Tooltip</c> is <c>$"{Username}@{Server}"</c>
+    ///     (see <c>Models/Account.cs:50</c>) and reads NO fields that SM ever
+    ///     writes. The R1 T3-Sonnet verifier was misled by this stale doc
+    ///     comment — exactly the failure mode tracked in
+    ///     <c>memory/feedback_misleading_comments_fool_verifiers.md</c>.
+    ///     Entry retained as a tombstone to prevent re-prescription.</item>
     ///   <item><c>ConfigManager.Shutdown</c> + <c>Application.OnApplicationExit</c>
     ///     do not acquire this lock; the existing <c>_saveLock</c> handles
     ///     the file-write race. A background SM mid-finally at tear-down
@@ -301,8 +317,11 @@ public static class ConfigManager
 
     /// <summary>
     /// Atomic write of the JSON to disk via temp + Move. Caller is responsible
-    /// for any synchronization. Updates LastSaveError + raises SaveFailed on
-    /// failure. Returns true on success.
+    /// for any synchronization of the <em>queue</em> (via <c>_saveLock</c>); this
+    /// method internally takes <see cref="ConfigMutationLock"/> ONLY around the
+    /// <c>JsonSerializer.Serialize</c> call so the serializer's object-graph walk
+    /// is serialized against concurrent SM Account writes. Updates LastSaveError
+    /// + raises SaveFailed on failure. Returns true on success.
     /// </summary>
     private static bool WriteToDisk(AppConfig config)
     {
@@ -311,7 +330,48 @@ public static class ConfigManager
             if (File.Exists(ConfigPath))
                 CreateBackup();
 
-            var json = JsonSerializer.Serialize(config, JsonOptions);
+            // v3.22.26: defends the JsonSerializer's object-graph walk against
+            // concurrent SM Account writes. Previously the 9 non-Account-
+            // mutating forms (ProcessManagerForm, EQClientSettingsForm,
+            // EQModelsForm, EQParticlesForm, EQVideoModeForm, EQChatSpamForm,
+            // FileOperations, FirstRunDialog, OnToggleMultiMonitor) called
+            // ConfigManager.Save while NOT holding ConfigMutationLock. Save is
+            // coalesced (250ms timer) so the JsonSerializer call fired on the
+            // timer thread OUTSIDE any caller lock — wrapping the form Save
+            // sites in ConfigMutationLock would do nothing for THIS race.
+            // Centralizing at the serializer is also future-proof: any new
+            // caller of Save/SaveImmediate gets the protection automatically.
+            //
+            // Lock-ordering note: from the SM-finally path
+            // (ConfigMutationLock → SaveImmediate → _saveLock → WriteToDisk →
+            // ConfigMutationLock), the second ConfigMutationLock acquisition
+            // is on the SAME thread, so C# recursive-lock semantics make it
+            // a no-op. From the UI-thread coalesced path
+            // (Save → timer → FlushSave → WriteToDisk → ConfigMutationLock),
+            // the UI thread holds NO lock when WriteToDisk runs (FlushSave
+            // releases _saveLock before calling WriteToDisk), so the fresh
+            // acquisition is uncontended unless SM is mid-mutation.
+            //
+            // Lock is held ONLY for the serializer call — File.WriteAllText
+            // and File.Move run unlocked since the in-memory mutations don't
+            // affect the already-serialized string.
+            //
+            // Hold-time honesty (v3.22.26 T3 Opus verifier correction): with
+            // JsonOptions.WriteIndented = true and a fully-populated AppConfig
+            // (Accounts + Characters + Hotkeys + Launch + Pip + CustomVideoPresets
+            // + CharacterAliases), JsonSerializer.Serialize can reach tens of
+            // milliseconds — same magnitude as ReloadConfigCore's "tens of ms"
+            // UI-rebuild path. Contention is rare in practice (UI Save coalesces
+            // at 250ms; SM SaveImmediate fires at end-of-login), but during a
+            // concurrent Settings → Apply, an SM finally-block can stall for
+            // the serializer duration. Accepted tradeoff: snapshotting the
+            // graph for unlocked serialization would add deep-clone cost +
+            // GC pressure that exceeds the contention cost in normal use.
+            string json;
+            lock (ConfigMutationLock)
+            {
+                json = JsonSerializer.Serialize(config, JsonOptions);
+            }
             var tempPath = ConfigPath + ".tmp";
             File.WriteAllText(tempPath, json);
             File.Move(tempPath, ConfigPath, overwrite: true);
@@ -321,6 +381,18 @@ public static class ConfigManager
             FileLogger.Error("Config save failed", ex);
             LastSaveError = ex.Message;
             SaveFailed?.Invoke(ex.Message);
+            // v3.22.26 (T3 Opus catch): clean up the orphan .tmp file if
+            // WriteAllText succeeded but Move failed (or any error path that
+            // leaves the temp file on disk). Pre-fix, repeated save failures
+            // leaked eqswitch-config.json.tmp next to the exe. Best-effort —
+            // a delete failure here just leaves the orphan for the next save
+            // attempt to overwrite.
+            try
+            {
+                var orphan = ConfigPath + ".tmp";
+                if (File.Exists(orphan)) File.Delete(orphan);
+            }
+            catch { /* best-effort cleanup */ }
             return false;
         }
 
