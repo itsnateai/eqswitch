@@ -192,8 +192,19 @@ public class AutoLoginManager
     /// </summary>
     public Task LoginAndEnterWorld(Character character, bool? enterWorldOverride = null)
     {
+        // v3.22.27 R2 (T2-Sonnet + T2-Opus convergent HIGH): LoginAndEnter-
+        // World is called from FireTeam's Task.Run threadpool lambda
+        // (TrayManager.cs:2628) — NOT necessarily the UI thread. Without
+        // the lock, a concurrent UI-thread ApplySettings → ReloadConfigCore
+        // swap of _config.Accounts can torn-read this lookup. Lock released
+        // before any heavy work / await (the rest of the method body holds
+        // no _config list iteration).
         var key = character.AccountKey;
-        var account = _config.Accounts.FirstOrDefault(key.Matches);
+        Account? account;
+        lock (ConfigManager.ConfigMutationLock)
+        {
+            account = _config.Accounts.FirstOrDefault(key.Matches);
+        }
         if (account == null)
         {
             // Include the full FK in both log AND StatusUpdate — balloon tooltip is
