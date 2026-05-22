@@ -283,6 +283,77 @@ static void DiscoverDialogWidgets();
 // has explicitly opened the LoginShm for this PID via LoginShmWriter.Open).
 // Bare-launch processes (no LoginShm mapping) never reach this code path
 // — Tick() returns immediately at the magic-mismatch check at line 239.
+// v3.22.24-fix4/5: Dalaya structural offsets for OK error dialog text storage.
+// Pinned via live PID 33768 probe 2026-05-21. Extracted to constexpr to
+// keep all the magic numbers in one place — same drift-trap concern that
+// motivated removing MIN_CHILDREN_SCREEN in fix3.
+static constexpr uint32_t DALAYA_MAIN_TEXT_WIDGET_SLOT_OFF  = 0x25C;
+static constexpr uint32_t DALAYA_OKDISPLAY_TEXT_CXSTR_OFF   = 0x30C;
+static constexpr uint32_t DALAYA_CXSTR_BUFFER_OFF           = 0x14;
+static constexpr uint32_t DALAYA_CXSTR_LENGTH_OFF           = 0x08;
+static constexpr uint32_t DALAYA_DIALOG_TEXT_MAX_LEN        = 4096;
+
+// v3.22.24-fix4/5: Dalaya-specific dialog text reader.
+//
+// Reads the CXStr* at pTextWidget+DALAYA_OKDISPLAY_TEXT_CXSTR_OFF, extracts
+// text from CStrRep+DALAYA_CXSTR_BUFFER_OFF (skipping any leading NUL bytes
+// that Dalaya prepends), writes to outBuf. Returns true if non-empty text
+// was extracted.
+//
+// Distinct from MQ2Bridge::ReadWindowText (which reads CXWnd::WindowText
+// at the canonical +0x11C offset OR +0x1A8 for CEditWnd InputText) —
+// neither applies here: pTextWidget is a Dalaya-repurposed CButtonWnd-class
+// widget whose +0x30C is the actual dialog-text store. See
+// DiscoverDialogWidgets fix4 comment for the live-probe derivation.
+//
+// CStrRep at +0x30C uses a non-standard refCount=0 (ownerless) layout:
+//   +0x00 refCount   = 0   (transient / not refcounted on Dalaya)
+//   +0x04 alloc      = buffer size (e.g. 0x400)
+//   +0x08 length     = text length including any prefix bytes
+//   +0x10 owner ptr  = eqmain code address (non-null but not a CXStr-owner)
+//   +0x14 buffer starts here — first 4 bytes observed as NUL on PID 33768
+//         (format is unverified; could be CSTML markup token, alignment
+//         pad, or a length/type header. Empirically NUL-stripping works
+//         for the observed bad-pass message; alternate prefix bytes would
+//         leave the visible text intact at the first non-NUL position.)
+//
+// We read length bytes from +0x14, then skip leading NUL bytes — handles
+// both standard CStrReps (no prefix) and Dalaya's prefixed format.
+static bool ReadDalayaDialogText(void *pTextWidget, char *outBuf, size_t outBufLen) {
+    if (!pTextWidget || !outBuf || outBufLen < 2) return false;
+    outBuf[0] = '\0';
+
+    void *pCXStr = nullptr;
+    uint32_t length = 0;
+    __try {
+        pCXStr = *(void**)((uint8_t*)pTextWidget + DALAYA_OKDISPLAY_TEXT_CXSTR_OFF);
+        if (!pCXStr || (uintptr_t)pCXStr < 0x10000 || (uintptr_t)pCXStr >= 0x80000000) return false;
+        length = *(uint32_t*)((uint8_t*)pCXStr + DALAYA_CXSTR_LENGTH_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+
+    if (length == 0 || length > DALAYA_DIALOG_TEXT_MAX_LEN) return false;
+
+    size_t toRead = (length < outBufLen - 1) ? length : (outBufLen - 1);
+    __try {
+        memcpy(outBuf, (uint8_t*)pCXStr + DALAYA_CXSTR_BUFFER_OFF, toRead);
+        outBuf[toRead] = '\0';
+    } __except (EXCEPTION_EXECUTE_HANDLER) { outBuf[0] = '\0'; return false; }
+
+    // Strip leading NUL bytes (Dalaya's observed 4-byte prefix). If the
+    // format ever changes to non-NUL prefix bytes, the strip stops at the
+    // first non-NUL char and the visible text remains intact.
+    size_t leading = 0;
+    while (leading < toRead && outBuf[leading] == '\0') ++leading;
+    if (leading > 0 && leading < toRead) {
+        memmove(outBuf, outBuf + leading, toRead - leading);
+        outBuf[toRead - leading] = '\0';
+    } else if (leading == toRead) {
+        outBuf[0] = '\0';
+    }
+
+    return outBuf[0] != '\0';
+}
+
 static void PollOkDisplayToShm(volatile LoginShm *shm) {
     DiscoverDialogWidgets();   // resolves g_pOkDisplay if a dialog is up
 
@@ -291,20 +362,22 @@ static void PollOkDisplayToShm(volatile LoginShm *shm) {
         return;
     }
 
+    // v3.22.24-fix4: use Dalaya-structural reader instead of
+    // MQ2Bridge::ReadWindowText. The legacy reader reads +0x11C (WindowText)
+    // or +0x1A8 (InputText) — both are NULL on Dalaya's repurposed dialog
+    // text widget. The text actually lives in a CXStr at +0x30C.
     char dialogText[512] = {};
-    MQ2Bridge::ReadWindowText(g_pOkDisplay, dialogText, sizeof(dialogText));
-
-    if (!dialogText[0]) {
-        // Widget cached but text empty — dialog was just dismissed, OR
-        // is mid-construction. Clear so C# doesn't see stale text from
-        // a prior tick where the dialog WAS populated.
+    if (!ReadDalayaDialogText(g_pOkDisplay, dialogText, sizeof(dialogText))) {
+        // No text available — dialog dismissed or mid-construction.
         ClearOkDisplay(shm);
         return;
     }
 
     // R2 (v3.18.0): single source of truth via ClassifyDialogText helper.
-    // The in-phase PHASE_WAIT_CONNECT_RESP body uses the same helper, so
-    // adding a new pattern only needs editing one site.
+    // ClassifyDialogText is substring-based, so the Dalaya text fragment
+    // ("r - The username and/or password were not valid...") still matches
+    // the "password were not valid" Fatal pattern — the missing 'Erro' prefix
+    // (consumed by the 4-byte CSTML markup token) doesn't affect classification.
     SetOkDisplay(shm, dialogText, ClassifyDialogText(dialogText));
 }
 
@@ -355,6 +428,13 @@ static void     *g_cachedServerSelect = nullptr;
 static void     *g_cachedOkDialog     = nullptr;
 static void     *g_cachedYesNoDialog  = nullptr;
 static void     *g_cachedConfirmDlg   = nullptr;
+// v3.22.24-fix5: g_cachedMain added to match the v3.21.0-fix-1 cache pattern.
+// DiscoverDialogWidgets calls FindLiveScreenByName("main", 3) every Tick to
+// resolve the structural Dalaya text widget at main+0x25C; without a cache
+// slot here every Tick walks the ~205-widget pWindows array, which is the
+// exact starvation pattern that v3.21.0-fix-1 was created to avoid (3 of 8
+// verifier agents flagged this in the fix4 audit round).
+static void     *g_cachedMain         = nullptr;
 static uintptr_t g_lastEqmainBase     = 0;
 
 static void InvalidateWidgetVisibilityCache() {
@@ -363,9 +443,10 @@ static void InvalidateWidgetVisibilityCache() {
     g_cachedOkDialog     = nullptr;
     g_cachedYesNoDialog  = nullptr;
     g_cachedConfirmDlg   = nullptr;
+    g_cachedMain         = nullptr;
 }
 
-static void *ResolveCachedScreen(void **slot, const char *name) {
+static void *ResolveCachedScreen(void **slot, const char *name, int minChildren = 3) {
     // Cache hit: cached ptr is non-null AND still passes the eqmain
     // vtable-range check. Returns immediately — no heap walk.
     if (*slot && EQMainOffsets::IsEQMainWidget(*slot)) {
@@ -374,7 +455,15 @@ static void *ResolveCachedScreen(void **slot, const char *name) {
     // Cache miss: re-resolve via the proven top-level walk. Result may
     // be nullptr (screen not in widget tree right now) — that's fine,
     // we'll retry on the next Tick.
-    *slot = EQMainWidgetsMQ2::FindLiveScreenByName(name);
+    //
+    // v3.22.24: `minChildren` defaults to 3 (preserves legacy screen-finder
+    // semantics for connect/serverselect). The three modal-dialog lookups
+    // below pass minChildren=0 — okdialog has children=1 (verified via
+    // live-process probe of PID 21864, 2026-05-21) and was previously
+    // filtered out under the 3-child gate, leaving widgetOkDialogVisible
+    // stuck at 0 and forcing C# to wait the full 120s phase timeout
+    // before seeing the bad-pass error.
+    *slot = EQMainWidgetsMQ2::FindLiveScreenByName(name, minChildren);
     return *slot;
 }
 
@@ -422,11 +511,21 @@ static void PollWidgetVisibilityToShm(volatile LoginShm *shm) {
     }
 
     // Snapshot — read each named screen via the cache, gate on visibility.
+    //
+    // v3.22.24: dialog lookups pass minChildren=0 because modal dialogs in
+    // eqmain have only 1-2 children (text label + OK button). Under the
+    // legacy 3-child gate the okdialog widget (slot [176] in PID 21864's
+    // CXWndManager.pWindows, children=1, name 'okdialog' at body +0x1DC)
+    // was always filtered out — so widgetOkDialogVisible was stuck at 0
+    // and the C# state machine couldn't short-circuit on Fatal okClass,
+    // leaving bad-password fail detection blocked behind the 120s phase
+    // timeout. See _.eqswitch-re/audit-2026-05-21/probe_okdialog_search.py
+    // and okdialog-walk-PID21864.txt for the live-process probe data.
     void *pConnect      = ResolveCachedScreen(&g_cachedConnect,      "connect");
     void *pServerSel    = ResolveCachedScreen(&g_cachedServerSelect, "serverselect");
-    void *pOkDialog     = ResolveCachedScreen(&g_cachedOkDialog,     "okdialog");
-    void *pYesNoDialog  = ResolveCachedScreen(&g_cachedYesNoDialog,  "yesnodialog");
-    void *pConfirmDlg   = ResolveCachedScreen(&g_cachedConfirmDlg,   "ConfirmationDialogBox");
+    void *pOkDialog     = ResolveCachedScreen(&g_cachedOkDialog,     "okdialog",              0);
+    void *pYesNoDialog  = ResolveCachedScreen(&g_cachedYesNoDialog,  "yesnodialog",           0);
+    void *pConfirmDlg   = ResolveCachedScreen(&g_cachedConfirmDlg,   "ConfirmationDialogBox", 0);
 
     shm->widgetConnectVisible       = (pConnect      && EQMainWidgetsMQ2::IsCXWndVisible(pConnect))      ? 1u : 0u;
     shm->widgetServerSelectVisible  = (pServerSel    && EQMainWidgetsMQ2::IsCXWndVisible(pServerSel))    ? 1u : 0u;
@@ -536,8 +635,86 @@ static void DiscoverLoginWidgets() {
 }
 
 static void DiscoverDialogWidgets() {
-    g_pOkDisplay = MQ2Bridge::FindWindowByName("OK_Display");
-    g_pOkButton  = MQ2Bridge::FindWindowByName("OK_OKButton");
+    // v3.22.24-fix4 (2026-05-21, Dalaya-structural OK_Display anchor):
+    //
+    // MQ2's pattern `WindowMap["okdialog"]->_GetChildItem("OK_Display")` is
+    // literally `RecurseAndFindName(this, "OK_Display")` per the open MQ2
+    // sources at _.src/_srcexamples/mq2emu-rof2-x86/MQ2Main/EQClasses.cpp.
+    // On vanilla EQ the OK_Display widget is a child of okdialog and the
+    // recurse finds it. On Dalaya it does NOT — confirmed via live probe of
+    // PID 33768 (2026-05-21 16:50 raistlin smoke):
+    //   - okdialog widget @ 0x1176BB80 has only ONE child (OK_Box), whose
+    //     children are an OK button + a non-text widget. The actual dialog
+    //     message is NOT in this subtree.
+    //   - main screen widget @ 0x116F17E0 (pWindows[12]) has TWO structural
+    //     pointer slots — at +0x25C and +0x4E0 — both pointing to a child
+    //     widget @ 0x116F1F20 (a CButtonWnd-class widget whose +0x1A8 label
+    //     is "HELP" but whose +0x30C field is repurposed by Dalaya as the
+    //     dialog text display CXStr).
+    //   - That CXStr at widget+0x30C holds the 877-char "Error - The
+    //     username and/or password were not valid... Please Note: ..." text
+    //     visible to the user.
+    //
+    // So the Dalaya structural anchor (mirrors v3.20.5 ConnectButton pattern
+    // and v3.22.x ConnectWnd password-edit at fixed slot +0x44):
+    //   pMain = FindLiveScreenByName("main", 3)
+    //   pTextWidget = *(void**)(pMain + 0x25C)   // validated via IsEQMainWidget
+    //   pCXStr      = *(void**)(pTextWidget + 0x30C)
+    //   text starts at pCXStr+0x18 (Dalaya prepends 4 null bytes; standard
+    //   CStrRep utf8 buffer at +0x14, but the first 4 bytes are an opaque
+    //   CSTML markup prefix that the renderer skips).
+    //
+    // OK button discovery preserved from fix3: still uses
+    // RecurseAndFindName(okdialog, "OK_OKButton", 0x400) which DOES work
+    // because the OK button IS a child of okdialog (the dialog frame owns
+    // its OK click target, just not the message text widget).
+    //
+    // See _.eqswitch-re/audit-2026-05-21/{probe_okdialog_search.py,
+    // probe_okbox_dump.py, okbox-dump-PID33768.txt} for the live probe data.
+    g_pOkDisplay = nullptr;
+    g_pOkButton  = nullptr;
+
+    // v3.22.24-fix5 visibility gate (Gap-Sonnet + Gap-Opus convergent
+    // finding): resolve g_pOkDisplay ONLY when an okdialog screen is
+    // actually visible. The structural slot main+0x25C points at a
+    // Dalaya-repurposed HELP button widget that ALSO exists during normal
+    // login (no dialog active). Reading its +0x30C CXStr unconditionally
+    // could classify residual HELP popup text as Fatal and abort a valid
+    // in-progress login. The okdialog cache slot is shared with
+    // PollWidgetVisibilityToShm so this is zero-cost on the common path.
+    void *pOkDialogScreen = ResolveCachedScreen(&g_cachedOkDialog, "okdialog", 0);
+    if (!pOkDialogScreen || !EQMainWidgetsMQ2::IsCXWndVisible(pOkDialogScreen)) {
+        return;
+    }
+
+    // v3.22.24-fix5 main-screen cache (Code-Sonnet + Code-Opus + Gap-Opus
+    // convergent finding): use ResolveCachedScreen instead of an uncached
+    // FindLiveScreenByName walk each tick. The pre-fix5 code did the ~205-
+    // node pWindows scan EVERY tick — the exact starvation pattern that
+    // v3.21.0-fix-1 was created to fix for the other 5 cached screens.
+    void *pMain = ResolveCachedScreen(&g_cachedMain, "main", 3);
+    if (pMain) {
+        void *pTextWidget = nullptr;
+        __try {
+            pTextWidget = *(void**)((uint8_t*)pMain + DALAYA_MAIN_TEXT_WIDGET_SLOT_OFF);
+        } __except (EXCEPTION_EXECUTE_HANDLER) { pTextWidget = nullptr; }
+        if (pTextWidget && EQMainOffsets::IsEQMainWidget(pTextWidget)) {
+            g_pOkDisplay = pTextWidget;
+        } else {
+            // Log structural-slot miss so a future Dalaya layout shift is
+            // diagnosable from logs alone (silent in fix4 — Code-Opus flag).
+            static bool s_loggedTextWidgetMiss = false;
+            if (!s_loggedTextWidgetMiss) {
+                DI8Log("login_sm: DiscoverDialogWidgets — main+0x%X structural "
+                       "slot miss (pTextWidget=%p, IsEQMainWidget=false) — "
+                       "Dalaya layout may have shifted",
+                       DALAYA_MAIN_TEXT_WIDGET_SLOT_OFF, pTextWidget);
+                s_loggedTextWidgetMiss = true;
+            }
+        }
+    }
+
+    g_pOkButton = EQMainWidgetsMQ2::RecurseAndFindName(pOkDialogScreen, "OK_OKButton", 0x400);
     // YESNO_YesButton is the "kick existing session" confirm button.
     // EQSwitch launches eqgame.exe with `patchme` (LaunchManager), which
     // bypasses the kick-session flow on Dalaya entirely — no YESNO dialog
@@ -1190,8 +1367,15 @@ void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
 
         if (g_pOkDisplay) {
             // Read dialog text to determine success/failure
+            // v3.22.24-fix5 (5 of 8 verifier agents convergent finding):
+            // use ReadDalayaDialogText here too. Pre-fix5 this site called
+            // MQ2Bridge::ReadWindowText (reads +0x11C / +0x1A8 — both NULL
+            // on the Dalaya-repurposed text widget), which silently bailed
+            // the SetError + recoverable-retry branches at lines 1335-1358
+            // even when a dialog was up. Currently dormant (PATH B uses
+            // PHASE_IDLE) but breaks immediately if PATH A is re-enabled.
             char dialogText[512] = {};
-            MQ2Bridge::ReadWindowText(g_pOkDisplay, dialogText, sizeof(dialogText));
+            ReadDalayaDialogText(g_pOkDisplay, dialogText, sizeof(dialogText));
 
             if (dialogText[0]) {
                 DI8Log("login_sm: dialog text: '%s'", dialogText);

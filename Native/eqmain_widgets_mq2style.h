@@ -117,15 +117,26 @@ constexpr bool kMQ2StyleWidgetLookup = true;
 // ─── Public API ─────────────────────────────────────────────
 // FindLiveScreenByName — finds the first top-level widget whose body
 // contains a CXStr field matching `name` (case-insensitive) AND has at
-// least 3 child widgets. Uses the proven `find_parent_window.py` heuristic:
-// rather than gate on CSidlScreenWnd vtable (which Dalaya may not use
-// uniformly) or on dShow visibility (whose offset is 90% confident, not
-// 100%), it filters by structural shape — top-level widget with eqmain
-// vtable that has children that are themselves eqmain widgets.
+// least `minChildren` child widgets. Uses the proven `find_parent_window.py`
+// heuristic: rather than gate on CSidlScreenWnd vtable (which Dalaya may
+// not use uniformly) or on dShow visibility (whose offset is 90% confident,
+// not 100%), it filters by structural shape — top-level widget with
+// eqmain vtable that has children that are themselves eqmain widgets.
 // Walks MQ2Bridge::IterateAllWindowsPublic.
 //
+// `minChildren` default is 3 — appropriate for SIDL screens like
+// connect/serverselect that have many child controls. Modal dialogs
+// (okdialog/yesnodialog/ConfirmationDialogBox) have only 1-2 children
+// (text label + OK button) and must pass `minChildren=0` to be discovered.
+// Verified via live-process probe of PID 21864 (2026-05-21): okdialog
+// widget at slot [176] in CXWndManager.pWindows has children=1, name
+// 'okdialog' stored at body offsets +0x1DC/+0x1FC/+0x228/+0x22C — the
+// only top-level widget with that name string at any of those offsets.
+// See _.eqswitch-re/audit-2026-05-21/probe_okdialog_search.py +
+// okdialog-walk-PID21864.txt for the verification dump.
+//
 // Returns nullptr when no top-level widget matches.
-void *FindLiveScreenByName(const char *name);
+void *FindLiveScreenByName(const char *name, int minChildren = 3);
 
 // One-shot per-eqmain-load diagnostic. Logs every top-level widget's
 // vtable, child count, and any plausible CXStr names found in its first
@@ -157,14 +168,25 @@ void DumpTopLevelWidgetNamesOnce();
 // The iter 12 port uses field reads at +0x08 / +0x10 directly instead of
 // MQ2's compiler-bound member access.
 //
+// `scanBytes` controls the body-window for the per-node CStrRep name scan.
+// Default 0x200 fits leaf widgets. v3.22.24-fix3 (2026-05-21): dialog-class
+// nodes (CSidlScreenWnd subclasses like OK_Display in okdialog) can store
+// their SIDL name CStrRep at body offsets up to 0x22C, beyond the 0x200
+// child window — verified by the live PID 21864 probe (the okdialog widget
+// itself has names at +0x1DC/+0x1FC/+0x228/+0x22C). Dialog callers should
+// pass 0x400 (matching the top-level screen window).
+//
 // Recursion depth bounded at 32 (deeper than any observed Dalaya UI tree).
 // Sibling iteration bounded at 1024 with cycle detection.
-void *RecurseAndFindName(void *pWnd, const char *name);
+void *RecurseAndFindName(void *pWnd, const char *name, uint32_t scanBytes = 0x200);
 
 // FindChildByName — convenience composition:
 //     FindLiveScreenByName(screenName) → RecurseAndFindName(screen, childName)
 // Returns nullptr on either step's failure.
-void *FindChildByName(const char *screenName, const char *childName);
+// `scanBytes` forwarded to RecurseAndFindName — pass 0x400 for dialog
+// children whose SIDL name CStrRep may live beyond +0x200 (see v3.22.24-fix3).
+void *FindChildByName(const char *screenName, const char *childName,
+                      uint32_t scanBytes = 0x200);
 
 // FindEmptyEditInScreen — STRUCTURAL password lookup that bypasses the
 // CXMLDataManager-name-resolution problem on Dalaya (FindChildByName for

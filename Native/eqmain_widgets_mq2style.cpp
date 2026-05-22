@@ -26,7 +26,10 @@ static constexpr int      MAX_NAME_LEN        = 64;    // names like LOGIN_Passw
 static constexpr int      MAX_SCREEN_SCAN     = 256;   // top-level screens is <30
 static constexpr uint32_t SCAN_BYTES_WIDGET   = 0x200; // child widget body size for name lookup
 static constexpr uint32_t SCAN_BYTES_SCREEN   = 0x400; // top-level screens have larger layout
-static constexpr int      MIN_CHILDREN_SCREEN = 3;     // a screen with fewer than 3 children is unlikely "connect"
+// MIN_CHILDREN_SCREEN removed v3.22.24: each FindLiveScreenByName / ResolveCachedScreen
+// caller supplies its own min-children gate via the `minChildren` parameter (header
+// default 3 for screens; dialog callers pass 0). A file-scope constant here would
+// be a drift trap — the authoritative default is in eqmain_widgets_mq2style.h.
 
 // ─── SEH-wrapped field reads ─────────────────────────────────
 // Every field read goes through these so a stale pointer never crashes the
@@ -222,6 +225,7 @@ static bool CIEquals(const char *a, const char *b) {
 // ─── RecurseAndFindName (the MQ2 port) ───────────────────────
 struct FindNameCtx {
     const char *targetName;
+    uint32_t    scanBytes;   // v3.22.24-fix3: per-call body-scan window
     void       *result;
 };
 
@@ -259,16 +263,16 @@ static int CountDirectChildren(void *pWnd) {
 
 static bool FindNameVisitCb(void *pWnd, void *ctx) {
     FindNameCtx *fnc = static_cast<FindNameCtx*>(ctx);
-    if (CXWndHasXMLName(pWnd, fnc->targetName, SCAN_BYTES_WIDGET)) {
+    if (CXWndHasXMLName(pWnd, fnc->targetName, fnc->scanBytes)) {
         fnc->result = pWnd;
         return true;  // halt
     }
     return false;
 }
 
-void *RecurseAndFindName(void *pWnd, const char *name) {
+void *RecurseAndFindName(void *pWnd, const char *name, uint32_t scanBytes) {
     if (!pWnd || !name) return nullptr;
-    FindNameCtx fnc{ name, nullptr };
+    FindNameCtx fnc{ name, scanBytes, nullptr };
     bool halted = false;
     WalkSubtreeImpl(pWnd, FindNameVisitCb, &fnc, 0, &halted);
     return fnc.result;
@@ -279,12 +283,14 @@ void *RecurseAndFindName(void *pWnd, const char *name) {
 // rejected every screen (notVisible=0, noName=9, result=null). v2 uses
 // the proven `find_parent_window.py:115` shape filter:
 //   - widget vtable IS in eqmain range (loose — any eqmain class)
-//   - widget has at least MIN_CHILDREN_SCREEN direct children (rejects
-//     leaf widgets with tooltip="connect" false-positives)
+//   - widget has at least `minChildren` direct children (v3.22.24:
+//     caller-supplied — default 3 rejects leaf widgets with tooltip
+//     name false-positives; dialog callers pass 0 to admit 1-child modals)
 //   - widget body contains a CXStr matching `name` within 0x400 bytes
 struct FindScreenCtx {
     const char *targetName;
     void       *result;
+    int         minChildren;          // v3.22.24: caller-supplied — 3 for screens, 0 for dialogs
     int         scanned;
     int         skippedNotEqmain;
     int         skippedTooFewChildren;
@@ -299,7 +305,7 @@ static bool FindScreenIterCb(void *pWnd, void *ctx) {
         return false;
     }
     int childCount = CountDirectChildren(pWnd);
-    if (childCount < MIN_CHILDREN_SCREEN) {
+    if (childCount < fsc->minChildren) {
         fsc->skippedTooFewChildren++;
         return false;
     }
@@ -311,13 +317,17 @@ static bool FindScreenIterCb(void *pWnd, void *ctx) {
     return false;
 }
 
-void *FindLiveScreenByName(const char *name) {
+void *FindLiveScreenByName(const char *name, int minChildren) {
     if (!name) return nullptr;
-    FindScreenCtx fsc{ name, nullptr, 0, 0, 0, 0 };
+    // Default MIN_CHILDREN_SCREEN=3 from the header keeps screen-finding
+    // semantics identical to v3.22.23. Dialog callers pass 0 — see comment
+    // in header for the live-process probe that confirmed okdialog has
+    // children=1 (filtered out under the legacy 3-child gate).
+    FindScreenCtx fsc{ name, nullptr, minChildren, 0, 0, 0, 0 };
     bool ok = MQ2Bridge::IterateAllWindowsPublic(FindScreenIterCb, &fsc);
-    DI8Log("eqmain_widgets_mq2style: FindLiveScreenByName('%s') — "
+    DI8Log("eqmain_widgets_mq2style: FindLiveScreenByName('%s', minChildren=%d) — "
            "iterCompleted=%d scanned=%d notEqmain=%d tooFewChildren=%d noName=%d result=%p",
-           name, ok ? 1 : 0, fsc.scanned, fsc.skippedNotEqmain,
+           name, minChildren, ok ? 1 : 0, fsc.scanned, fsc.skippedNotEqmain,
            fsc.skippedTooFewChildren, fsc.skippedNoName, fsc.result);
     return fsc.result;
 }
@@ -357,7 +367,8 @@ void DumpTopLevelWidgetNamesOnce() {
 }
 
 // ─── FindChildByName (composition) ───────────────────────────
-void *FindChildByName(const char *screenName, const char *childName) {
+void *FindChildByName(const char *screenName, const char *childName,
+                      uint32_t scanBytes) {
     if (!screenName || !childName) return nullptr;
     void *screen = FindLiveScreenByName(screenName);
     if (!screen) {
@@ -366,11 +377,11 @@ void *FindChildByName(const char *screenName, const char *childName) {
                screenName, childName);
         return nullptr;
     }
-    void *child = RecurseAndFindName(screen, childName);
+    void *child = RecurseAndFindName(screen, childName, scanBytes);
     if (!child) {
-        DI8Log("eqmain_widgets_mq2style: FindChildByName('%s','%s') — "
+        DI8Log("eqmain_widgets_mq2style: FindChildByName('%s','%s', scanBytes=0x%X) — "
                "screen %p found but child name not found in subtree",
-               screenName, childName, screen);
+               screenName, childName, scanBytes, screen);
     }
     return child;
 }
