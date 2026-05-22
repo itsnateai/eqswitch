@@ -2676,6 +2676,21 @@ public class TrayManager : IDisposable
         _config.Launch.PostBurst1WaitMs             = newConfig.Launch.PostBurst1WaitMs;
         _config.Launch.BridgeInitWaitMs             = newConfig.Launch.BridgeInitWaitMs;
         _config.Launch.StaleSessionWaitMs           = newConfig.Launch.StaleSessionWaitMs;
+        // v3.22.26 (R1 T3-Sonnet catch + audit-widening sweep): the v3.17.0+
+        // JSON-only Launch tunables. BuildAppConfig started carrying these on
+        // 2026-05-15 (v3.17.0 timing-knob audit pass) but the propagation
+        // block here was never updated — same regression class as the v3.15.2
+        // 10-knob catch above. The R1 verifier flagged UseStateMachine
+        // specifically; widened to the full batch on inspection because
+        // every field added to BuildAppConfig.Launch since v3.17.0 has the
+        // same Settings→Apply→clobber-to-default risk path.
+        _config.Launch.StaleSessionPollIntervalMs   = newConfig.Launch.StaleSessionPollIntervalMs;
+        _config.Launch.ConnectRetryCount            = newConfig.Launch.ConnectRetryCount;
+        _config.Launch.PostBurst2QuickFailCheckMs   = newConfig.Launch.PostBurst2QuickFailCheckMs;
+        _config.Launch.SkipShmEnterWorldOnDalaya    = newConfig.Launch.SkipShmEnterWorldOnDalaya;
+        _config.Launch.SkipNativeWarmup             = newConfig.Launch.SkipNativeWarmup;
+        _config.Launch.JoinServerId                 = newConfig.Launch.JoinServerId;
+        _config.Launch.UseStateMachine              = newConfig.Launch.UseStateMachine;
         _config.Pip.Enabled = newConfig.Pip.Enabled;
         _config.Pip.SizePreset = newConfig.Pip.SizePreset;
         _config.Pip.CustomWidth = newConfig.Pip.CustomWidth;
@@ -2734,6 +2749,12 @@ public class TrayManager : IDisposable
         // round-tripped here but had no consumer reading them. See AppConfig.cs
         // comment near the deleted properties.
         _config.RunAtStartup = newConfig.RunAtStartup;
+        // v3.22.26 (R1 T3-Sonnet catch): LogTrimThresholdMB is set from the
+        // Settings → General → Log File Trimming NumericUpDown (SettingsForm
+        // line 503/1864) but was never re-read by FileOperations.TrimLogFiles
+        // after Apply because this propagation line was missing. Mid-session
+        // log-trim threshold changes silently lost until next restart.
+        _config.LogTrimThresholdMB = newConfig.LogTrimThresholdMB;
         _config.HotkeysLegacyBannerDismissed = newConfig.HotkeysLegacyBannerDismissed;
         _config.CustomVideoPresets = newConfig.CustomVideoPresets;
         _config.EQClientIni = newConfig.EQClientIni;

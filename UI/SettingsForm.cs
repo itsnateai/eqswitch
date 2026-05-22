@@ -284,28 +284,50 @@ public class SettingsForm : Form
 
         // Phase 4: load v4 lists directly. LegacyAccounts is now a derived shadow
         // rebuilt from (Accounts, Characters) on Save via ReverseMapToLegacy.
-        _pendingAccounts = _config.Accounts.Select(a => new Account
+        // v3.22.26: lock around the form-open snapshot. Pre-fix, opening
+        // Settings while an autologin SM was mid-write to LastLoginResult
+        // could torn-read the value into _pendingAccounts. The ApplySettings
+        // race-fix (line ~1843 reads `live!.LastLoginResult` back from the
+        // live config under the same lock) means torn snapshots couldn't
+        // persist a wrong value to disk — but the in-form Flag glyph showed
+        // stale data for the duration of the dialog. Narrow display-only
+        // race in practice; covered for completeness symmetry with the
+        // ApplySettings/OnLoginComplete locked reads.
+        //
+        // v3.22.26 verifier round (T3 Sonnet + T3 Opus convergent): also
+        // snapshot _pendingCharacters under the same lock. SM doesn't write
+        // Character fields today, so this is latent — but a future SM
+        // extension that writes Characters would miss this guard silently
+        // and the gap-asymmetry-by-omission would be invisible. Cheap
+        // belt-and-suspenders: one acquire covers both lists.
+        List<Account> snapshotAccounts;
+        List<Character> snapshotCharacters;
+        lock (ConfigManager.ConfigMutationLock)
         {
-            Name = a.Name,
-            Username = a.Username,
-            EncryptedPassword = a.EncryptedPassword,
-            Server = a.Server,
-            UseLoginFlag = a.UseLoginFlag,
-            LastLoginResult = a.LastLoginResult,
-            LastLoginAt = a.LastLoginAt,
-            Notes = a.Notes,
-        }).ToList();
-
-        _pendingCharacters = _config.Characters.Select(c => new Character
-        {
-            Name = c.Name,
-            AccountUsername = c.AccountUsername,
-            AccountServer = c.AccountServer,
-            CharacterSlot = c.CharacterSlot,
-            DisplayLabel = c.DisplayLabel,
-            ClassHint = c.ClassHint,
-            Notes = c.Notes,
-        }).ToList();
+            snapshotAccounts = _config.Accounts.Select(a => new Account
+            {
+                Name = a.Name,
+                Username = a.Username,
+                EncryptedPassword = a.EncryptedPassword,
+                Server = a.Server,
+                UseLoginFlag = a.UseLoginFlag,
+                LastLoginResult = a.LastLoginResult,
+                LastLoginAt = a.LastLoginAt,
+                Notes = a.Notes,
+            }).ToList();
+            snapshotCharacters = _config.Characters.Select(c => new Character
+            {
+                Name = c.Name,
+                AccountUsername = c.AccountUsername,
+                AccountServer = c.AccountServer,
+                CharacterSlot = c.CharacterSlot,
+                DisplayLabel = c.DisplayLabel,
+                ClassHint = c.ClassHint,
+                Notes = c.Notes,
+            }).ToList();
+        }
+        _pendingAccounts = snapshotAccounts;
+        _pendingCharacters = snapshotCharacters;
 
         _pendingTeam1A = _config.Team1Account1;
         _pendingTeam1B = _config.Team1Account2;
@@ -1756,6 +1778,17 @@ public class SettingsForm : Form
                 SkipShmEnterWorldOnDalaya    = _config.Launch.SkipShmEnterWorldOnDalaya,
                 SkipNativeWarmup             = _config.Launch.SkipNativeWarmup,
                 JoinServerId                 = _config.Launch.JoinServerId,
+                // v3.22.26: UseStateMachine has no Settings UI control — it's
+                // a JSON-only flag (default false; deployed installs set it
+                // true). Without this pass-through, every Settings → Apply
+                // silently clobbered it to the LaunchConfig default, persisting
+                // false to disk. The session-live value stayed correct because
+                // ReloadConfigCore (pre-v3.22.26) didn't propagate it either,
+                // but the persisted file got the wrong value — next launch
+                // would load the clobbered value and disable the SM path
+                // entirely. v3.22.26 fix is symmetric: pass-through here +
+                // propagate in ReloadConfigCore (TrayManager.cs).
+                UseStateMachine              = _config.Launch.UseStateMachine,
             },
             Pip = new PipConfig
             {
