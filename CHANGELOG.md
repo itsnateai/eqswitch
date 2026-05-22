@@ -67,10 +67,11 @@ released.
 
 The fix is at the serializer site itself: take `ConfigMutationLock`
 around the `JsonSerializer.Serialize(config, JsonOptions)` call inside
-`WriteToDisk`. The lock is held only for the serializer (sub-ms),
-not the subsequent `File.WriteAllText` / `File.Move` calls — once
-serialization completes the in-memory mutations don't affect the
-string.
+`WriteToDisk`. The lock is held only for the serializer call (low-ms
+typically, up to tens of ms with a fully-populated config — same
+magnitude as `ReloadConfigCore`'s UI-rebuild path), not the subsequent
+`File.WriteAllText` / `File.Move` calls — once serialization completes
+the in-memory mutations don't affect the string.
 
 This catches all 9 forms, plus any future caller of `Save`/`SaveImmediate`,
 with a single re-entrant lock acquisition. Lock ordering: from the
@@ -179,6 +180,44 @@ Out-of-scope (pre-existing, single-verifier, not introduced by v3.22.26):
 - Hardcoded backup retention (10) and coalesce interval (250ms).
 - `FlushSave` re-queue check outside `_saveLock`.
 - `CreateBackup` swallowing failures with Warn-only logging.
+
+### Post-ship verifier round (R2) — convergent doc-fix follow-up
+
+Round 2 (re-verification after R1's fix-set landed) returned 3 APPROVE
++ 3 CONCERNS + 0 REJECT, same ratio as R1. Convergent doc-hygiene
+fixes applied post-ship (release v3.22.26 binary unchanged; main
+branch carries the doc corrections forward to v3.22.27):
+
+- **`tempPath` duplication** (T2 Opus CRITICAL + T3 Opus LOW): the
+  orphan-cleanup catch block re-concatenated `ConfigPath + ".tmp"`
+  as a separate local instead of reusing the `tempPath` declared in
+  the try. Drift risk on future suffix refactor. Hoisted `tempPath`
+  outside the try so the catch references the same variable.
+- **"sub-ms" doc ghost** (T2 Sonnet CRITICAL): the PipOverlay
+  NOT-COVERS entry in `ConfigManager.ConfigMutationLock` XML doc
+  AND this CHANGELOG section both still said the JsonSerializer
+  window was "sub-ms". The R1 fix-set corrected the WriteToDisk
+  inline doc but missed these two adjacent sites — inconsistent
+  with the corrected hold-time claim. Both updated.
+
+Acknowledged-but-deferred (T2 Opus CRITICAL, T2 Sonnet MINOR
+"latent"):
+- `SettingsForm.cs:578` (`int totalC = _config.Characters.Count`)
+- `SettingsForm.cs:730` (`new CharacterHotkeysDialog(_config.Characters, ...)`)
+- `TrayManager.cs:1446` (`BuildCharactersSubmenu(_config.Characters, ...)` —
+  called via `BuildContextMenu`, sometimes outside ReloadConfigCore's lock)
+
+These are unlocked reads of `_config.Characters` outside the
+PopulateFromConfig snapshot that v3.22.26 fixed. T2 Sonnet downgraded
+to "latent" because SM does NOT write Character fields today — the
+torn-read class doesn't exist. T2 Opus flagged as CRITICAL on the
+future-proofing rationale ("if SM ever writes Characters, the gap-
+asymmetry-by-omission would be invisible"). Decision: defer to a
+future release when (a) SM is actually extended to write Characters,
+or (b) a serializer-site lock-extension covers them automatically
+the same way the v3.22.26 WriteToDisk lock covers `_config.Accounts`.
+The serializer-site lock already protects PERSISTED Characters data
+— what remains unprotected is the IN-FORM dialog UI display only.
 
 ### Handoff-audit retrospective
 
