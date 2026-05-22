@@ -149,9 +149,15 @@ public static class ConfigManager
     /// <para><b>SCOPE — what this lock does NOT cover (accepted scope-limit, not bugs):</b>
     /// <list type="bullet">
     ///   <item><c>PipOverlay</c> drag-end position writes to <c>_config.Pip.SavedPositions</c>
-    ///     + UI-thread <c>ConfigManager.Save</c>. UI-thread only; SaveImmediate
-    ///     reads <c>_config.Pip</c> only inside its own _saveLock → JsonSerializer
-    ///     window, which is sub-ms.</item>
+    ///     + UI-thread <c>ConfigManager.Save</c>. UI-thread only — the form-side
+    ///     mutation doesn't need this lock. Cross-thread protection against
+    ///     concurrent SM Account writes during the eventual JsonSerializer call
+    ///     is now provided by the v3.22.26 <c>WriteToDisk</c> serializer-site
+    ///     lock above. (Pre-v3.22.26 this entry claimed "sub-ms" JsonSerializer
+    ///     window as the justification — corrected post-ship: the serializer
+    ///     walks the full AppConfig graph regardless of which form triggered
+    ///     the save, so the real defense is the serializer-site lock, not
+    ///     per-form window narrowness.)</item>
     ///   <item><b>Closed v3.22.26:</b> previously this list enumerated
     ///     <c>ProcessManagerForm.ApplyAllSettings</c>, <c>EQClientSettingsForm</c>,
     ///     <c>EQModelsForm</c>, <c>EQParticlesForm</c>, <c>EQVideoModeForm</c>,
@@ -325,6 +331,12 @@ public static class ConfigManager
     /// </summary>
     private static bool WriteToDisk(AppConfig config)
     {
+        // v3.22.26 R2 (T2 Opus + T3 Opus convergent): hoisted out of the try so
+        // the catch block at the bottom can reference the SAME variable. Pre-fix,
+        // the catch re-concatenated `ConfigPath + ".tmp"` as a separate local,
+        // which would silently drift if the suffix is ever refactored (e.g.
+        // .tmp → .new, or per-PID .tmp.{pid}).
+        var tempPath = ConfigPath + ".tmp";
         try
         {
             if (File.Exists(ConfigPath))
@@ -372,7 +384,6 @@ public static class ConfigManager
             {
                 json = JsonSerializer.Serialize(config, JsonOptions);
             }
-            var tempPath = ConfigPath + ".tmp";
             File.WriteAllText(tempPath, json);
             File.Move(tempPath, ConfigPath, overwrite: true);
         }
@@ -386,11 +397,11 @@ public static class ConfigManager
             // leaves the temp file on disk). Pre-fix, repeated save failures
             // leaked eqswitch-config.json.tmp next to the exe. Best-effort —
             // a delete failure here just leaves the orphan for the next save
-            // attempt to overwrite.
+            // attempt to overwrite. Reuses the hoisted `tempPath` so a future
+            // suffix-rename refactor stays consistent.
             try
             {
-                var orphan = ConfigPath + ".tmp";
-                if (File.Exists(orphan)) File.Delete(orphan);
+                if (File.Exists(tempPath)) File.Delete(tempPath);
             }
             catch { /* best-effort cleanup */ }
             return false;
