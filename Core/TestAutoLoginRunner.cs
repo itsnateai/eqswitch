@@ -56,6 +56,18 @@ public static class TestAutoLoginRunner
         "SEH in ReadWindowText",
     };
 
+    // v3.22.25 item 4 — fast-fail signals are intentional bail-outs introduced
+    // by v3.22.24's fix6/7 (OkDialog Fatal classification + visibility-age
+    // safety net) and the post-BURST-2 fast-failure detection. Counted
+    // separately from SEH because they're correct behavior on bad-pass smokes,
+    // not faults. Reported informationally; do not affect exit code.
+    private static readonly string[] FastFailPatterns =
+    {
+        "bail on long-visible OkDialog",
+        "fast-fail detected post-BURST-2",
+        "credentials likely rejected, fast-failing to retry",
+    };
+
     // The injected DLL writes to this path (relative to the EQ install dir).
     // Derived from the first running eqgame.exe's working directory after launch.
     private const string LogFileName = "eqswitch-dinput8.log";
@@ -153,6 +165,13 @@ public static class TestAutoLoginRunner
         int sehCount = CountSehInLog(logPath, logBaseline);
         Console.WriteLine($"[test-autologin] SEH occurrences in native path (since baseline): {sehCount}");
 
+        // v3.22.25 item 4 — also count fast-fail signals (informational only,
+        // does not affect exit code). Expected to be 0 on a success-path smoke
+        // and >0 on a bad-pass smoke (raistlin et al.) where v3.22.24 fix7's
+        // visibility-age safety net or BURST-2 fast-fail correctly fires.
+        int fastFailCount = CountFastFailInLog(logPath, logBaseline);
+        Console.WriteLine($"[test-autologin] Fast-fail signals (since baseline): {fastFailCount}");
+
         if (sehCount > 0 && exitCode == 0) exitCode = 2;
 
         Console.WriteLine($"[test-autologin] EXIT {exitCode} — {(exitCode == 0 ? "PASS" : "FAIL")}");
@@ -219,6 +238,12 @@ public static class TestAutoLoginRunner
     }
 
     private static int CountSehInLog(string logPath, long baseline)
+        => CountPatternsInLog(logPath, baseline, SehPatterns, printLogExcerpt: true);
+
+    private static int CountFastFailInLog(string logPath, long baseline)
+        => CountPatternsInLog(logPath, baseline, FastFailPatterns, printLogExcerpt: false);
+
+    private static int CountPatternsInLog(string logPath, long baseline, string[] patterns, bool printLogExcerpt)
     {
         if (!File.Exists(logPath)) return 0;
         try
@@ -228,7 +253,7 @@ public static class TestAutoLoginRunner
             using var sr = new StreamReader(fs);
             string content = sr.ReadToEnd();
             int count = 0;
-            foreach (var pat in SehPatterns)
+            foreach (var pat in patterns)
             {
                 int idx = 0;
                 while ((idx = content.IndexOf(pat, idx, StringComparison.Ordinal)) >= 0)
@@ -237,15 +262,20 @@ public static class TestAutoLoginRunner
                     idx += pat.Length;
                 }
             }
-            // Also print the last 40 lines of new log content for operator visibility
-            var lines = content.Split('\n');
-            int takeFrom = Math.Max(0, lines.Length - 40);
-            Console.WriteLine("[test-autologin] --- last 40 log lines of this run ---");
-            for (int i = takeFrom; i < lines.Length; i++)
+            if (printLogExcerpt)
             {
-                Console.WriteLine($"  {lines[i].TrimEnd('\r')}");
+                // Last 40 lines of new log content for operator visibility — only
+                // print once per run (the SEH-count caller passes true; fast-fail
+                // count passes false to avoid duplicating the excerpt).
+                var lines = content.Split('\n');
+                int takeFrom = Math.Max(0, lines.Length - 40);
+                Console.WriteLine("[test-autologin] --- last 40 log lines of this run ---");
+                for (int i = takeFrom; i < lines.Length; i++)
+                {
+                    Console.WriteLine($"  {lines[i].TrimEnd('\r')}");
+                }
+                Console.WriteLine("[test-autologin] --- end log excerpt ---");
             }
-            Console.WriteLine("[test-autologin] --- end log excerpt ---");
             return count;
         }
         catch (Exception ex)
