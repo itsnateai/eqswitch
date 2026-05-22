@@ -2364,7 +2364,14 @@ public class TrayManager : IDisposable
 
         if (enterWorld)
         {
-            var character = _config.FindCharacterByName(legacyRow.CharacterName);
+            // v3.22.27 R1 (T3-Opus convergent): FindCharacterByName iterates
+            // _config.Characters internally — same fix-class as the three
+            // FirstOrDefault locks above. Lock releases before FireCharacterLogin.
+            Character? character;
+            lock (ConfigManager.ConfigMutationLock)
+            {
+                character = _config.FindCharacterByName(legacyRow.CharacterName);
+            }
             if (character != null)
             {
                 LogFirstFire(slot, "Character", character.EffectiveLabel);
@@ -2380,7 +2387,14 @@ public class TrayManager : IDisposable
         // into one v4 Account whose Name matches only the first-seen legacy row. Name-based lookup
         // would miss subsequent legacy rows; AccountKey-based lookup catches them all.
         var accountKey = new AccountKey(legacyRow.Username, legacyRow.Server);
-        var account = _config.Accounts.FirstOrDefault(a => accountKey.Matches(a));
+        // v3.22.27 R1 (originally deferred to v3.22.28 in CHANGELOG, folded back
+        // in per DO-over-DEFER directive): same single-line fix-class as the
+        // four locks above.
+        Account? account;
+        lock (ConfigManager.ConfigMutationLock)
+        {
+            account = _config.Accounts.FirstOrDefault(a => accountKey.Matches(a));
+        }
         if (account != null)
         {
             LogFirstFire(slot, "Account", account.EffectiveLabel);
@@ -2400,17 +2414,30 @@ public class TrayManager : IDisposable
     /// </summary>
     private bool TryFireV4QuickLoginFallback(int slot)
     {
-        var hk = _config.Hotkeys;
-        var combined = hk.CharacterHotkeys.Select(b => (Binding: b, IsCharacter: true))
-            .Concat(hk.AccountHotkeys.Select(b => (Binding: b, IsCharacter: false)))
-            .Where(t => HotkeyBindingUtil.IsPopulated(t.Binding))
-            .ToList();
+        // v3.22.27 R1 (T2-Sonnet + T2-Opus convergent): snapshot the combined
+        // bindings list + the resolved entity lookups under the lock, then
+        // dispatch outside. Same pattern as FireLegacyQuickLoginSlot's
+        // three-tiny-locks. Re-entrant on the ApplySettings → BuildContextMenu
+        // call-path (which already holds the lock).
+        List<(HotkeyBinding Binding, bool IsCharacter)> combined;
+        lock (ConfigManager.ConfigMutationLock)
+        {
+            var hk = _config.Hotkeys;
+            combined = hk.CharacterHotkeys.Select(b => (Binding: b, IsCharacter: true))
+                .Concat(hk.AccountHotkeys.Select(b => (Binding: b, IsCharacter: false)))
+                .Where(t => HotkeyBindingUtil.IsPopulated(t.Binding))
+                .ToList();
+        }
         if (slot < 1 || slot > combined.Count) return false;
 
         var (binding, isCharacter) = combined[slot - 1];
         if (isCharacter)
         {
-            var character = _config.FindCharacterByName(binding.TargetName);
+            Character? character;
+            lock (ConfigManager.ConfigMutationLock)
+            {
+                character = _config.FindCharacterByName(binding.TargetName);
+            }
             if (character != null)
             {
                 LogFirstFire(slot, "Character (v4 fallback)", character.EffectiveLabel);
@@ -2420,8 +2447,12 @@ public class TrayManager : IDisposable
         }
         else
         {
-            var account = _config.Accounts.FirstOrDefault(a =>
-                a.Name.Equals(binding.TargetName, StringComparison.OrdinalIgnoreCase));
+            Account? account;
+            lock (ConfigManager.ConfigMutationLock)
+            {
+                account = _config.Accounts.FirstOrDefault(a =>
+                    a.Name.Equals(binding.TargetName, StringComparison.OrdinalIgnoreCase));
+            }
             if (account != null)
             {
                 LogFirstFire(slot, "Account (v4 fallback)", account.EffectiveLabel);
