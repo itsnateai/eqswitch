@@ -188,6 +188,15 @@ static volatile bool     g_heapScanDone      = false; // one-shot per charselect
 // count stayed 0 forever, Path C never ran, 30s SM timeout aborted autologin.
 // Reset lifecycle mirrors g_heapScanArrayBase (charselect transition + gs=5).
 static volatile int      g_heapScanCount     = 0;
+// v3.22.33 Gap 4 (T2 Sonnet+Opus MEDIUM): promoted from function-local-static
+// inside the pump probe block to file scope. The 5-sec rate-limiter on the
+// LOUD "EQ pump non-responsive" log was lexically scoped, so the limiter
+// could span charselect-transition boundaries and suppress the first
+// pump-non-responsive log line of a fresh charselect cycle. Promoting here
+// lets the transition + gs=5 reset blocks clear it, restoring the changelog's
+// "LOUD log surfaces non-responsive state instead of silent fallthrough"
+// diagnostic-visibility claim for back-to-back cycles.
+static volatile DWORD    g_lastPumpProbeWarnMs = 0;
 // v3.15.2 (2026-05-05) chunked-resume scan position. When budget fires before the array
 // is found, save the next region base and resume there next poll instead of restarting at
 // 0x01000000. After 2-3 polls the full address space (~0x7E000000) is covered exactly
@@ -4006,55 +4015,39 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     if (!charDataRead && g_fnGetItemText) {
         void *pCharList = FindWindowByName("Character_List");
         if (pCharList) {
-            if (!g_uiFallbackLogged) {
-                DI8Log("mq2_bridge: charSelectPlayerArray unavailable — using UI fallback (CListWnd at %p)", pCharList);
-                g_uiFallbackLogged = true;
-
-                // Check if list has a current selection (proves list has items)
-                if (g_fnGetCurSel) {
-                    __try {
-                        int curSel = g_fnGetCurSel(pCharList);
-                        DI8Log("mq2_bridge: Character_List GetCurSel = %d", curSel);
-                    } __except(EXCEPTION_EXECUTE_HANDLER) {
-                        DI8Log("mq2_bridge: Character_List GetCurSel SEH");
-                    }
-                }
-            }
-
-            // v3.22.32 — pump-responsiveness probe.
+            // v3.22.33 — pump-responsiveness probe HOISTED above first-poll
+            // diagnostic GetCurSel.
             //
-            // Path B's column-discovery loop below calls `ReadListItemText`,
-            // which invokes MQ2's `CListWnd::GetItemText`. GetItemText allocates
-            // a CXStr from EQ's CRT heap. Path B2 (further below) calls MQ2's
-            // `CListWnd::SetCurSel` / `GetCurSel` — these mutate the list's
-            // current selection, which routes through EQ's WndProc and can
-            // trigger character-preview re-render. Both surfaces require EQ's
-            // main-thread heap lock (or WndProc dispatch) to make progress.
+            // v3.22.32 placed this probe BELOW the `if (!g_uiFallbackLogged)`
+            // block — which meant the first-poll diagnostic GetCurSel call at
+            // ~line 4025 (inside that block) ran BEFORE the probe could gate
+            // it. T4 Opus verifier-CRITICAL (sev-4) 2026-05-23: the smoke's
+            // smoking-gun was "Character_List GetCurSel = 0" as the last
+            // mq2_bridge line for 44 s of silence — that line is emitted from
+            // the first-poll block, NOT from Path B/B2. The hang point was
+            // GetCurSel itself (an MQ2 export that, on Dalaya, sometimes
+            // touches the CListWnd's internal state in a way that blocks on
+            // EQ's main thread). Skipping it on a non-responsive pump is the
+            // load-bearing protection for the original failure mode.
             //
-            // On a non-responsive background client (DX device idle, char-
-            // select scene render stalled, e.g. PID 4628 in the 2026-05-22
-            // smoke), EQ's main thread holds the heap lock indefinitely. Our
-            // poll thread (ActivateThread → MQ2BridgePollTick → here) blocks
-            // inside HeapAlloc / SendMessage forever, the PollReentryGuard
-            // prevents any subsequent poll from entering, and the entire
-            // bridge goes dark — the exact pattern observed in the failed
-            // client's native log (last entry "Character_List GetCurSel = 0"
-            // then 44 s of silence).
+            // Hoisting also lets us short-circuit ALL three downstream
+            // heap-allocating surfaces (first-poll diagnostic GetCurSel, Path
+            // B column discovery via GetItemText, Path B2 SetCurSel/GetCurSel
+            // probe) on a single probe result rather than maintaining three
+            // independent guards.
             //
             // The probe — SendMessageTimeout WM_NULL with 100 ms budget +
             // SMTO_ABORTIFHUNG | SMTO_BLOCK — short-circuits at this surface.
-            // When pumpResponsive=false, the column-discovery loop and Path B2
-            // are SKIPPED, and execution falls through to Path C (heap scan +
-            // P9 publisher), which is pure memory operations (VirtualQuery +
-            // IsPlausibleName) with no EQ heap/pump dependency. This is the
-            // load-bearing change: heap scan ALWAYS gets a chance to publish
-            // shm->charCount regardless of pump state, so C# autologin makes
-            // forward progress on background clients.
+            // When pumpResponsive=false, the first-poll diagnostic, column-
+            // discovery loop, AND Path B2 are SKIPPED. Execution falls
+            // through to Path C (heap scan + P9 publisher), which is pure
+            // memory operations (VirtualQuery + IsPlausibleName) with no EQ
+            // heap/pump dependency. This is the load-bearing change.
             //
-            // SMTO_BLOCK prevents reentrant dispatch into our hooks while the
-            // probe waits, mirroring the v3.22.22 round-5 ApplySlimTitlebar
-            // probe pattern. The 100 ms budget is consistent with the C# side
-            // (IWindowsApi.IsClientResponsive uses the same value).
+            // SMTO_BLOCK prevents reentrant dispatch into our hooks while
+            // the probe waits, mirroring the v3.22.22 round-5 ApplySlimTitlebar
+            // probe pattern. The 100 ms budget matches IWindowsApi.IsClientResponsive
+            // on the C# side.
             bool pumpResponsive = true;
             HWND eqWnd = GetEqHwnd();
             if (eqWnd) {
@@ -4066,16 +4059,61 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                     DWORD smErr = GetLastError();
                     if (smErr == ERROR_TIMEOUT || smErr == 0) {
                         pumpResponsive = false;
-                        static volatile DWORD g_lastPumpProbeWarnMs = 0;
+                        // v3.22.33 Gap 4 (T2): rate-limiter now file-scope so
+                        // it's cleared on charselect transition + gs=5.
                         DWORD now = GetTickCount();
                         if (now - g_lastPumpProbeWarnMs > 5000) {
                             g_lastPumpProbeWarnMs = now;
-                            DI8Log("mq2_bridge: EQ pump non-responsive (SendMessageTimeoutA WM_NULL > 100ms, err=%u) — SKIPPING Path B column discovery + Path B2 probe (both heap-allocating); Path C heap scan still runs",
-                                   smErr);
+                            // v3.22.33 (T3 Sonnet+Opus MEDIUM): differentiate
+                            // ERROR_TIMEOUT from smErr==0. Conservative skip
+                            // either way (safe-default), but log distinctly
+                            // so the next debugger sees the difference.
+                            const char *cause = (smErr == ERROR_TIMEOUT)
+                                ? "timeout (1460)"
+                                : "unknown (GetLastError not set, treating conservatively)";
+                            DI8Log("mq2_bridge: EQ pump non-responsive (SendMessageTimeoutA WM_NULL > 100ms, err=%u %s) — SKIPPING first-poll diagnostic + Path B column discovery + Path B2 probe (all heap-allocating); Path C heap scan still runs",
+                                   smErr, cause);
                         }
                     }
                 }
             }
+
+            if (pumpResponsive && !g_uiFallbackLogged) {
+                DI8Log("mq2_bridge: charSelectPlayerArray unavailable — using UI fallback (CListWnd at %p)", pCharList);
+                g_uiFallbackLogged = true;
+
+                // Check if list has a current selection (proves list has items).
+                // v3.22.33 (T4 Opus sev-4): gated by pumpResponsive — this is
+                // the exact call site that hung in the 2026-05-23 gotquiz smoke.
+                if (g_fnGetCurSel) {
+                    __try {
+                        int curSel = g_fnGetCurSel(pCharList);
+                        DI8Log("mq2_bridge: Character_List GetCurSel = %d", curSel);
+                    } __except(EXCEPTION_EXECUTE_HANDLER) {
+                        DI8Log("mq2_bridge: Character_List GetCurSel SEH");
+                    }
+                }
+            }
+            else if (!g_uiFallbackLogged) {
+                // Pump non-responsive on the FIRST entry to char-select.
+                // g_uiFallbackLogged stays false so the next responsive poll
+                // can run the diagnostic. Path C below STILL fires this poll
+                // via the gate-widening (`g_uiFallbackLogged` OR Path B2
+                // count) so heap-scan publishes regardless.
+                //
+                // Cosmetic: log the UI-fallback observation directly so the
+                // log trail isn't missing "we reached charselect" entirely.
+                DI8Log("mq2_bridge: charSelectPlayerArray unavailable — UI fallback queued (CListWnd at %p), pump non-responsive this poll — first-poll diagnostic deferred",
+                       pCharList);
+                // Set the latch so Path C below can fire. Subsequent polls'
+                // first-poll diagnostic block is naturally idempotent on
+                // !g_uiFallbackLogged, so re-running it once the pump
+                // recovers is a no-op (the latch stays true).
+                g_uiFallbackLogged = true;
+            }
+
+            // (v3.22.33: pump probe + first-poll diagnostic gating moved above
+            // this point. The original v3.22.32 probe block lived here.)
 
             // Discover name column — retry every poll until found (don't cache failure)
             // Dalaya ROF2 may use non-standard columns, scan wider range (0-9).
@@ -4442,6 +4480,32 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                                 // accounts need the full-array heap scan to succeed.
                                 // The real fix is heap-scan reliability, not muting
                                 // the publisher with a fake count.
+                                //
+                                // v3.22.33 — Gap 1 CRITICAL (T2 Sonnet+Opus
+                                // convergent): invalidate Path B2's cached slot
+                                // count. The anchor branch zeroed slots 1..N-1 of
+                                // shm->names above. If a prior poll's Path B2
+                                // probe had populated `g_cachedSlotCount` to N>1
+                                // (Dalaya's CListWnd accepts SetCurSel beyond
+                                // actual row count, exactly the gotquiz failure
+                                // mode 2026-05-23), the very next poll's cached
+                                // Path B2 path republishes count=N. P9 then
+                                // iterates slots 0..N-1; slot 1 is empty (we
+                                // zeroed it); IsPlausibleName fails; allPlausible
+                                // false; publisher bails every poll → 30s SM
+                                // timeout. Resetting -1 forces Path B2 to either
+                                // re-probe (fresh value) or skip entirely (gate
+                                // requires g_cachedSlotCount > 0 in cached path).
+                                // Single-char accounts (g_cachedSlotCount == 1)
+                                // are unaffected — they'd still trigger anchor
+                                // legitimately and re-publish count=1 next poll
+                                // via the probe.
+                                if (g_cachedSlotCount > 1) {
+                                    int oldSlotCount = g_cachedSlotCount;
+                                    g_cachedSlotCount = -1;
+                                    DI8Log("mq2_bridge: anchor-fallback fired with cached_slot_count=%d>1 — invalidating Path B2 cache (anchor-only state cannot satisfy P9 for multi-char; T2 verifier-convergent CRITICAL fix)",
+                                           oldSlotCount);
+                                }
                             } __except(EXCEPTION_EXECUTE_HANDLER) {
                                 DI8Log("mq2_bridge: SEH writing anchor-scan name to SHM");
                             }
@@ -4609,6 +4673,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                     // already does this for the validated<count case.
                     g_heapScanArrayBase = 0;
                     g_heapScanDone = false;
+                    g_heapScanCount = 0;  // v3.22.33 Gap 3 (T2): companion reset (was missing here)
                     g_lastHeapScanAddr = 0;
                 }
             }
@@ -4678,6 +4743,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 } __except(EXCEPTION_EXECUTE_HANDLER) {
                     DI8Log("mq2_bridge: SEH in standalone heap scan");
                     g_heapScanArrayBase = 0;
+                    g_heapScanCount = 0;  // v3.22.33 Gap 3 (T2): companion reset (was missing here)
                 }
                 if (count > 0) {
                     MemoryBarrier();
@@ -4764,6 +4830,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         } __except(EXCEPTION_EXECUTE_HANDLER) {
             g_heapScanArrayBase = 0;
             g_heapScanDone = false;
+            g_heapScanCount = 0;  // v3.22.33 Gap 3 (T2): companion reset (was missing here)
             g_lastHeapScanAddr = 0;
         }
         if (count > 0) {
@@ -4774,6 +4841,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
             // Cache stale, rescan next poll
             g_heapScanArrayBase = 0;
             g_heapScanDone = false;
+            g_heapScanCount = 0;  // v3.22.33 Gap 3 (T2): companion reset (was missing here)
             g_lastHeapScanAddr = 0;
         }
     }

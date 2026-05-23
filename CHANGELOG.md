@@ -1,5 +1,58 @@
 # Changelog
 
+## v3.22.33 — Post-v3.22.32 verifier sweep: 7 fixes folded in (2026-05-23)
+
+Same-day follow-on to v3.22.32. The post-ship 8-agent verifier swarm surfaced 1 CRITICAL, 1 sev-4, 2 HIGH, and 3 MEDIUM findings against v3.22.32. All folded in here. The original two-bug scope (taskbar coverage + background char-select stall) is unchanged; this ship hardens the v3.22.32 fixes against the gaps verifier-T2/T3/T4 caught.
+
+### Item 1 — Pump probe HOISTED above the first-poll diagnostic GetCurSel (T4 Opus sev-4)
+
+The v3.22.32 probe was placed BELOW the `if (!g_uiFallbackLogged)` block — which meant the first-poll diagnostic `g_fnGetCurSel(pCharList)` (the exact call site whose `Character_List GetCurSel = 0` log was the smoking-gun last line of PID 4628's 44-second silence) ran BEFORE the probe could gate it. The fix protected Path B/B2 but NOT the original failure mode. v3.22.33 hoists the probe to be the first thing inside `if (pCharList)`, gates the entire `!g_uiFallbackLogged` block on `pumpResponsive`, and adds a parallel `pumpResponsive && !g_uiFallbackLogged` else branch that latches `g_uiFallbackLogged = true` even when the diagnostic was deferred (so Path C's widened gate still fires this poll).
+
+### Item 2 — `g_cachedSlotCount` invalidation in Path C anchor fallback (T2 Sonnet+Opus convergent CRITICAL)
+
+The exact 2026-05-23 gotquiz failure mode. When the anchor-only fallback fires (heap-scan budget timed out, single-char-anchor path found the target via `HeapScanForTargetName`), Path B2's cached slot count was untouched. Next poll: cached path repopulates `count = g_cachedSlotCount` (e.g. 10 for gotquiz). P9 iterates slots 0-9; slots 1-9 were zeroed by the anchor branch; `IsPlausibleName` fails; allPlausible=false; publisher bails every poll → 30s SM timeout. Fix: inside the anchor branch, after `g_anchorScanCached = true`, invalidate `g_cachedSlotCount = -1` when it was > 1 (single-char accounts already match the anchor's slot-0-only state, so they're unaffected). The next poll's Path B2 cached path then skips, and the cache is rebuilt on a fresh probe.
+
+### Item 3 — `g_heapScanCount` reset gap closed at three more sites (T2 Sonnet+Opus Gap 3 / Gap 2)
+
+v3.22.32 added the companion `g_heapScanCount = 0` reset alongside six of the eight existing `g_heapScanArrayBase = 0` / `g_heapScanDone = false` reset sites, but missed three: the P9 partial-pop cache invalidation (~`mq2_bridge.cpp:4612`), the standalone heap-scan SEH (`~:4683`), and both branches of the standalone re-read path (`~:4768`, `~:4779`). Without the resets, the cached count could outlive the array base it pointed at, leading to a stale `count > 0` read against a now-zeroed `g_heapScanArrayBase` — caught by the re-read branch's `g_heapScanArrayBase != 0` gate today but a footgun for the next refactor. The "lifecycle mirrors `g_heapScanArrayBase`" invariant claimed in the global's comment is now actually true at every reset.
+
+### Item 4 — `g_lastPumpProbeWarnMs` promoted to file scope + reset on charselect transition + gs=5 (T2 Sonnet+Opus Gap 3 MEDIUM)
+
+v3.22.32 declared the 5-sec rate-limiter as a `static volatile DWORD` inside the probe block — lexically scoped, never reset. If a pump-non-responsive event fired close to a charselect transition, the new cycle's first pump-non-responsive log line was suppressed for up to 5 s. v3.22.33 promotes it to module scope (alongside `g_heapScanCount`) and resets it at both the `FindWindowByName` charselect-transition block and the `Poll()` gs=5 in-game-transition block. Diagnostic-visibility claim in the v3.22.32 changelog now actually holds for back-to-back cycles.
+
+### Item 5 — `RaiseClientsAboveTaskbar` adds `IsClientResponsive(100ms)` gate per client (T4 Opus sev-3)
+
+The cross-process `SetWindowPos` with z-order change dispatches `WM_WINDOWPOSCHANGING` synchronously to the target — the exact failure surface that motivated the v3.22.22-era `IsClientResponsive` helper. v3.22.32 gated on `IsHungAppWindow` (5-second kernel threshold), missing the same tighter-window gap every other z-order primitive in the codebase covers. v3.22.33 adds the 100 ms probe per client; non-responsive clients are skipped with a Warn log and counted in the summary (`skippedUnresponsive=N`).
+
+### Item 6 — `RaiseClientsAboveTaskbar` iterates `clients` for the next foregroundable candidate (T3 Sonnet MEDIUM Issue 4)
+
+v3.22.32 abandoned foreground entirely when the active EQ client was iconic, hung, autologin-active, or unresponsive — even when other clients in the arranged set were viable. In the topology "minimized foreground EQ + non-minimized background EQ" the taskbar would re-raise above the surviving non-iconic client because foreground was never set. v3.22.33 extracts `CanForegroundCandidate` (IsWindow + !IsHungAppWindow + !IsIconic + !IsLoginActive + IsClientResponsive) and falls through to the first viable candidate in `clients` when active fails the predicate. Active still wins when responsive — it's the user's actual focus.
+
+### Item 7 — `TrayManager._disposed` guard for the ClientLost 250ms recovery timer (T2 Opus Gap 5 MEDIUM)
+
+The 250 ms recovery timer is created ad-hoc inside the `ClientLost` handler and not tracked in `Dispose()`'s teardown list. If `TrayManager.Dispose()` ran between `ClientLost` firing and the 250 ms tick, the queued tick would read `_processManager` / `_windowManager` post-dispose → NRE → swallowed by the surrounding catch as a misleading "post-close taskbar-recovery failed" Error log line. v3.22.33 adds `private volatile bool _disposed`, sets it first thing in `Dispose()`, and short-circuits the recovery timer tick AND `RaiseRemainingClientsAboveTaskbar` on the flag.
+
+### Item 8 — Pump probe `smErr == 0` log differentiation (T3 Sonnet+Opus MEDIUM)
+
+When `SendMessageTimeoutA` returns 0 and `GetLastError()` also returns 0 (documented edge case: GetLastError was not set), v3.22.32 conflated this with `ERROR_TIMEOUT` in the LOUD log. Pumping `pumpResponsive = false` is the right conservative behavior either way, but the log line said "err=0" with no explanation. v3.22.33 differentiates the log message: `"timeout (1460)"` vs `"unknown (GetLastError not set, treating conservatively)"`. Pure diagnostic clarity, no behavior change.
+
+### Build
+
+- `dotnet build -c Release` clean (0/0).
+- `dotnet build -c Debug` clean (0/0).
+- `Native/build-di8-inject.sh` clean — same .dll size class (~245 KB).
+- All seven fixes are surgical and address verifier-flagged gaps; no scope creep beyond the post-v3.22.32 finding list.
+
+### Out of scope (carried forward from v3.22.32, restated for visibility)
+
+- **Multi-character accounts with slow-loading slots still fail char-select** when `HeapScanForCharArray` times out within its 1500 ms budget AND the heap state doesn't yet have 5 contiguous IsPlausibleName + race-byte-valid entries. The pump probe + Path C widening + anchor invalidation in v3.22.33 close the failure cascade, but the underlying "heap scan can't find the array" reliability issue requires a Dalaya-specific Path A offset (`charSelectPlayerArray`) derived via Ghidra. **Tracked for next ship via the Ghidra session.**
+- Minimized EQ window restore hangs + EQSwitch-close-crash reports — separate DI8/hook-detach investigation, not blended into this fix.
+- `OnSwitchKey` / `OnGlobalSwitchKey` / `LaunchSequenceComplete` ArrangeWindows callsites still don't run the topmost dance (T2 Opus + T4 Sonnet+Opus MEDIUM/notable). Out of scope per v3.22.32; revisit when smoke evidence demands it.
+
+### Note on v3.22.32
+
+Bug B (taskbar coverage after sibling close) was user-confirmed working in the 2026-05-23 smoke ("the remaining covers taskbar so thats a win"). Bug A was partial: the pump-probe + Path C widening helped single-char accounts but multi-char failed via the Gap 1 CRITICAL path Item 2 above closes. v3.22.33 is the patch that makes the v3.22.32 narrative actually hold for the multi-char case the smoke surfaced.
+
 ## v3.22.32 — Background char-select stall fix + Fix Window taskbar z-order recovery (2026-05-23)
 
 Two user-reported regressions from the 2026-05-22 v3.22.31 smoke. Diagnosed from the per-PID `eqswitch-dinput8-{pid}.log` files plus the main C# log; smoke transcript at `Logs/eqswitch.log` 21:07:21–21:10:20.

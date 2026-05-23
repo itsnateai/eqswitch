@@ -78,6 +78,14 @@ public class TrayManager : IDisposable
     // Guard against stale timer ticks during ReloadConfig() — foreground debounce
     // callbacks queued on the message pump can fire between Stop/Start cycles.
     private bool _reloading;
+    // v3.22.33 (T2 Opus Gap 5 MEDIUM): shutdown guard for ad-hoc one-shot
+    // timers (recoveryTimer, detectTimer, arrangeTimer, etc.) that may be
+    // queued in the WinForms message pump after Dispose() runs. Without
+    // this, the tick handler reads _processManager / _windowManager which
+    // were just disposed → NRE → swallowed by the surrounding try/catch
+    // as a misleading "post-close taskbar-recovery failed" Error log line.
+    // Set first thing in Dispose().
+    private volatile bool _disposed;
 
     // DLL hook injection — hooks SetWindowPos/MoveWindow inside eqgame.exe
     private HookConfigWriter? _hookConfig;
@@ -468,6 +476,12 @@ public class TrayManager : IDisposable
                 {
                     recoveryTimer.Stop();
                     recoveryTimer.Dispose();
+                    // v3.22.33 (T2 Opus Gap 5 MEDIUM): bail out if TrayManager
+                    // is mid-Dispose. Without this guard the tick reads
+                    // _processManager / _windowManager which were already
+                    // disposed → NRE → swallowed by the catch below as a
+                    // misleading "recovery failed" Error log line.
+                    if (_disposed) return;
                     try { RaiseRemainingClientsAboveTaskbar(); }
                     catch (Exception ex)
                     {
@@ -1076,12 +1090,28 @@ public class TrayManager : IDisposable
         if (clients.Count == 0) return;
         const uint flags = NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE;
         int raised = 0;
+        int skippedUnresponsive = 0;
         foreach (var c in clients)
         {
             var hwnd = c.WindowHandle;
             if (!NativeMethods.IsWindow(hwnd)) continue;
             if (NativeMethods.IsHungAppWindow(hwnd)) continue;
             if (_autoLoginManager.IsLoginActive(c.ProcessId)) continue;
+            // v3.22.33 (T4 Opus sev-3): match the convention every other z-order
+            // primitive in the codebase uses — IsClientResponsive 100ms probe
+            // before cross-process SetWindowPos. The taskbar dance is two
+            // SetWindowPos calls with z-order change; USER32 dispatches
+            // WM_WINDOWPOSCHANGING synchronously to the target, and a hung
+            // pump there is the exact failure surface that motivated the
+            // v3.22.22-era IsClientResponsive helper. Skipping fast-fail is
+            // strictly better than waiting for IsHungAppWindow's 5s kernel
+            // threshold (the proxy gate above).
+            if (!IsClientHwndResponsive(hwnd, out int lastErr))
+            {
+                skippedUnresponsive++;
+                FileLogger.Warn($"RaiseClientsAboveTaskbar: skipping non-responsive window {c} (SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset; lastErr={lastErr})");
+                continue;
+            }
             // The topmost dance reorders z-band without moving/sizing the
             // window. Either call can fail benignly on a transient pump
             // block; we log + continue rather than abort the whole loop.
@@ -1096,42 +1126,102 @@ public class TrayManager : IDisposable
 
         if (foregroundActive)
         {
-            var active = _processManager.GetActiveClient() ?? clients.FirstOrDefault();
-            // v3.22.32 verifier-convergent (T3 Sonnet+Opus CRITICAL): IsIconic
-            // gate. SwitchToClient calls ShowWindow(SW_RESTORE) unconditionally
-            // (Core/WindowManager.cs:44). Restoring a minimized EQ window while
-            // its DX device is in windowed-fullscreen mode crashes the device —
-            // ForceDxReinit already has this exact gate with the same safety
-            // advice ("Maximize on launch" must be enabled first). Without this
-            // check the new recovery path would have a DX crash hazard worse
-            // than the original bug.
-            if (active != null && NativeMethods.IsWindow(active.WindowHandle)
-                && !NativeMethods.IsHungAppWindow(active.WindowHandle)
-                && !NativeMethods.IsIconic(active.WindowHandle))
+            // v3.22.33 (T3 Sonnet MEDIUM Issue 4): iterate for the next
+            // non-iconic, non-hung, non-autologin, responsive candidate
+            // instead of giving up at the first iconic active candidate.
+            // Topology "minimized foreground EQ + non-minimized background
+            // EQ" was a Bug-B re-failure surface in v3.22.32 — taskbar yield
+            // requires a foreground window in the non-topmost band, and the
+            // active-only check abandoned foreground entirely. Active still
+            // wins when responsive — it's the user's actual focus. The
+            // fallback walk only kicks in when active is unusable, and only
+            // through `clients` (not the wider _processManager.Clients) so
+            // we never foreground something the caller didn't already
+            // include in the dance.
+            EQClient? candidate = null;
+            string? skipReason = null;
+            var active = _processManager.GetActiveClient();
+            if (active != null && CanForegroundCandidate(active, out skipReason))
             {
-                try
-                {
-                    _windowManager.SwitchToClient(active);
-                    FileLogger.Info($"RaiseClientsAboveTaskbar: foregrounded {active} after topmost dance ({raised}/{clients.Count} raised)");
-                }
-                catch (Exception ex)
-                {
-                    FileLogger.Warn($"RaiseClientsAboveTaskbar: ForceForegroundWindow on {active} threw — {ex.Message}");
-                }
-            }
-            else if (active != null && NativeMethods.IsIconic(active.WindowHandle))
-            {
-                FileLogger.Warn($"RaiseClientsAboveTaskbar: active client {active} is minimized — skipping foreground (SW_RESTORE on a minimized EQ window may crash DX device unless Settings → Video → \"Maximize on launch\" is enabled; raised={raised}/{clients.Count})");
+                candidate = active;
             }
             else
             {
-                FileLogger.Info($"RaiseClientsAboveTaskbar: no foregroundable client (raised={raised}/{clients.Count})");
+                if (active != null && skipReason != null)
+                    FileLogger.Info($"RaiseClientsAboveTaskbar: active client {active} not foregroundable ({skipReason}) — trying next candidate from {clients.Count} arranged");
+                foreach (var c in clients)
+                {
+                    if (active != null && c.ProcessId == active.ProcessId) continue;
+                    if (CanForegroundCandidate(c, out _))
+                    {
+                        candidate = c;
+                        break;
+                    }
+                }
+            }
+
+            if (candidate != null)
+            {
+                try
+                {
+                    _windowManager.SwitchToClient(candidate);
+                    FileLogger.Info($"RaiseClientsAboveTaskbar: foregrounded {candidate} after topmost dance ({raised}/{clients.Count} raised, {skippedUnresponsive} skipped)");
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Warn($"RaiseClientsAboveTaskbar: ForceForegroundWindow on {candidate} threw — {ex.Message}");
+                }
+            }
+            else
+            {
+                FileLogger.Warn($"RaiseClientsAboveTaskbar: no foregroundable candidate (all iconic/hung/autologin/unresponsive); raised={raised}/{clients.Count}, skippedUnresponsive={skippedUnresponsive}. Taskbar may still slice through windows until the user manually focuses one.");
             }
         }
         else
         {
-            FileLogger.Info($"RaiseClientsAboveTaskbar: raised {raised}/{clients.Count} client(s) (no foreground change)");
+            FileLogger.Info($"RaiseClientsAboveTaskbar: raised {raised}/{clients.Count} client(s) (no foreground change, {skippedUnresponsive} skipped)");
         }
+    }
+
+    /// <summary>
+    /// v3.22.33: inline 100ms pump-responsiveness probe matching the
+    /// `WindowsApi.IsClientResponsive` implementation. Inlined here rather
+    /// than routed through the WindowManager's IWindowsApi seam because
+    /// TrayManager doesn't hold an `_api` reference — the WindowManager
+    /// owns the test seam for its own SetWindowPos / SetWindowLongPtr calls.
+    /// Inlining keeps the dependency surface from TrayManager to the
+    /// Core/NativeMethods.cs P/Invoke layer, where the rest of TrayManager's
+    /// Win32 calls already live.
+    /// </summary>
+    private static bool IsClientHwndResponsive(IntPtr hwnd, out int lastErr)
+    {
+        IntPtr ok = NativeMethods.SendMessageTimeout(
+            hwnd, NativeMethods.WM_NULL, IntPtr.Zero, IntPtr.Zero,
+            NativeMethods.SMTO_ABORTIFHUNG | NativeMethods.SMTO_BLOCK,
+            100, out _);
+        lastErr = (ok == IntPtr.Zero) ? System.Runtime.InteropServices.Marshal.GetLastWin32Error() : 0;
+        return ok != IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// v3.22.33: shared "is this client a safe foreground target?" predicate
+    /// for the topmost-dance recovery path. A candidate is foregroundable
+    /// when it's a live window, not hung (per IsHungAppWindow's 5s threshold),
+    /// not iconic (SW_RESTORE would risk DX crash on minimized EQ), not
+    /// autologin-active (ForceForegroundWindow during credential typing
+    /// would disrupt the DirectInput shared-memory injection), and the EQ
+    /// pump is responsive (IsClientResponsive 100ms — fast-fail).
+    /// </summary>
+    private bool CanForegroundCandidate(EQClient c, out string? skipReason)
+    {
+        var hwnd = c.WindowHandle;
+        if (!NativeMethods.IsWindow(hwnd)) { skipReason = "window gone"; return false; }
+        if (NativeMethods.IsHungAppWindow(hwnd)) { skipReason = "hung"; return false; }
+        if (NativeMethods.IsIconic(hwnd)) { skipReason = "minimized (SW_RESTORE DX crash risk)"; return false; }
+        if (_autoLoginManager.IsLoginActive(c.ProcessId)) { skipReason = "autologin active"; return false; }
+        if (!IsClientHwndResponsive(hwnd, out _)) { skipReason = "pump non-responsive"; return false; }
+        skipReason = null;
+        return true;
     }
 
     /// <summary>
@@ -1144,6 +1234,7 @@ public class TrayManager : IDisposable
     /// </summary>
     private void RaiseRemainingClientsAboveTaskbar()
     {
+        if (_disposed) return;  // v3.22.33: shutdown guard
         if (!_config.Layout.SlimTitlebar) return;
         var clients = _processManager.Clients;
         if (clients.Count == 0) return;
@@ -3846,6 +3937,11 @@ public class TrayManager : IDisposable
 
     public void Dispose()
     {
+        // v3.22.33 (T2 Opus Gap 5): flag flips first so any ad-hoc one-shot
+        // timer ticks queued in the WinForms message pump bail out cleanly
+        // rather than NRE-ing on disposed managers. Idempotent on re-entry.
+        if (_disposed) return;
+        _disposed = true;
         StopForegroundHook();
         CleanupHookInjection();
         _retryTimer?.Stop();
