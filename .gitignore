@@ -100,3 +100,4 @@ _comms/
 
 # Internal — local debugging tools, not for public repo
 tools/
+dist/

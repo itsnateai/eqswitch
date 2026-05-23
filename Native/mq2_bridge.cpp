@@ -19,6 +19,7 @@
 #include "login_shm.h"
 #include "login_givetime_detour.h"
 #include "eqmain_offsets.h"
+#include "device_proxy.h"  // v3.22.32: GetEqHwnd() for pump-responsiveness probe
 
 // ─── Forward declarations ──────────────────────────────────────
 
@@ -178,6 +179,15 @@ static volatile DWORD    g_lastColDiscoveryFailMs = 0;
 static volatile bool     g_verificationDone  = false;
 static volatile uintptr_t g_heapScanArrayBase = 0;   // heap scan result (0 = not found/not scanned)
 static volatile bool     g_heapScanDone      = false; // one-shot per charselect session
+// v3.22.32: heap-scan-derived char count. Separate from Path B/B2's `count`
+// local (which dies between polls). Cached here so subsequent polls can seed
+// their local count from the prior poll's heap scan result, enabling the
+// re-read + P9 publish paths to fire every poll without needing Path B2's
+// SetCurSel probe to succeed. Closes the 2026-05-22 PID 4628 stall: probe
+// hung on a background-client EQ pump (DX idle, no foreground render cycle),
+// count stayed 0 forever, Path C never ran, 30s SM timeout aborted autologin.
+// Reset lifecycle mirrors g_heapScanArrayBase (charselect transition + gs=5).
+static volatile int      g_heapScanCount     = 0;
 // v3.15.2 (2026-05-05) chunked-resume scan position. When budget fires before the array
 // is found, save the next region base and resume there next poll instead of restarting at
 // 0x01000000. After 2-3 polls the full address space (~0x7E000000) is covered exactly
@@ -3038,6 +3048,7 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                     if (pCharSelWnd != nullptr) {
                         g_heapScanDone = false;
                         g_heapScanArrayBase = 0;
+                        g_heapScanCount = 0;  // v3.22.32: companion reset
                         g_anchorScanCached = false;
                         g_standaloneDelay = 0;
                         g_uiFallbackLogged = false;
@@ -3866,6 +3877,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         g_cachedSlotCount = -1;
         g_heapScanDone = false;
         g_heapScanArrayBase = 0;
+        g_heapScanCount = 0;  // v3.22.32: companion reset
         g_anchorScanCached = false;
         g_standaloneDelay = 0;  // reset for next charselect cycle
         g_verificationDone = false;
@@ -4009,6 +4021,62 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 }
             }
 
+            // v3.22.32 — pump-responsiveness probe.
+            //
+            // Path B's column-discovery loop below calls `ReadListItemText`,
+            // which invokes MQ2's `CListWnd::GetItemText`. GetItemText allocates
+            // a CXStr from EQ's CRT heap. Path B2 (further below) calls MQ2's
+            // `CListWnd::SetCurSel` / `GetCurSel` — these mutate the list's
+            // current selection, which routes through EQ's WndProc and can
+            // trigger character-preview re-render. Both surfaces require EQ's
+            // main-thread heap lock (or WndProc dispatch) to make progress.
+            //
+            // On a non-responsive background client (DX device idle, char-
+            // select scene render stalled, e.g. PID 4628 in the 2026-05-22
+            // smoke), EQ's main thread holds the heap lock indefinitely. Our
+            // poll thread (ActivateThread → MQ2BridgePollTick → here) blocks
+            // inside HeapAlloc / SendMessage forever, the PollReentryGuard
+            // prevents any subsequent poll from entering, and the entire
+            // bridge goes dark — the exact pattern observed in the failed
+            // client's native log (last entry "Character_List GetCurSel = 0"
+            // then 44 s of silence).
+            //
+            // The probe — SendMessageTimeout WM_NULL with 100 ms budget +
+            // SMTO_ABORTIFHUNG | SMTO_BLOCK — short-circuits at this surface.
+            // When pumpResponsive=false, the column-discovery loop and Path B2
+            // are SKIPPED, and execution falls through to Path C (heap scan +
+            // P9 publisher), which is pure memory operations (VirtualQuery +
+            // IsPlausibleName) with no EQ heap/pump dependency. This is the
+            // load-bearing change: heap scan ALWAYS gets a chance to publish
+            // shm->charCount regardless of pump state, so C# autologin makes
+            // forward progress on background clients.
+            //
+            // SMTO_BLOCK prevents reentrant dispatch into our hooks while the
+            // probe waits, mirroring the v3.22.22 round-5 ApplySlimTitlebar
+            // probe pattern. The 100 ms budget is consistent with the C# side
+            // (IWindowsApi.IsClientResponsive uses the same value).
+            bool pumpResponsive = true;
+            HWND eqWnd = GetEqHwnd();
+            if (eqWnd) {
+                DWORD_PTR smResult = 0;
+                LRESULT smRet = SendMessageTimeoutA(eqWnd, WM_NULL, 0, 0,
+                                                   SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                                                   100, &smResult);
+                if (smRet == 0) {
+                    DWORD smErr = GetLastError();
+                    if (smErr == ERROR_TIMEOUT || smErr == 0) {
+                        pumpResponsive = false;
+                        static volatile DWORD g_lastPumpProbeWarnMs = 0;
+                        DWORD now = GetTickCount();
+                        if (now - g_lastPumpProbeWarnMs > 5000) {
+                            g_lastPumpProbeWarnMs = now;
+                            DI8Log("mq2_bridge: EQ pump non-responsive (SendMessageTimeoutA WM_NULL > 100ms, err=%u) — SKIPPING Path B column discovery + Path B2 probe (both heap-allocating); Path C heap scan still runs",
+                                   smErr);
+                        }
+                    }
+                }
+            }
+
             // Discover name column — retry every poll until found (don't cache failure)
             // Dalaya ROF2 may use non-standard columns, scan wider range (0-9).
             // v3.22.16: scan rows 0-3 instead of just row 0. The single-row scan
@@ -4019,8 +4087,9 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
             // rule: row-0-empty handling (this), failure-log re-arm (below),
             // and Path B2 fallback timing (unchanged — still fires when
             // count==0 && nameCol<0 after the loop, which is now correct).
+            // v3.22.32: gated on pumpResponsive (above) — heap-allocating paths.
             int nameCol = g_cachedNameCol;
-            if (nameCol < 0) {
+            if (pumpResponsive && nameCol < 0) {
                 for (int tryCol = 0; tryCol <= 9 && nameCol < 0; tryCol++) {
                     for (int tryRow = 0; tryRow < 4 && nameCol < 0; tryRow++) {
                         char test[CHARSEL_NAME_LEN] = {};
@@ -4068,8 +4137,20 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 }
             }
 
-            int count = 0;
-            if (nameCol >= 0) {
+            // v3.22.32: seed local count from a prior poll's heap-scan result.
+            // Without this seed each poll started at count=0 and Path B2's
+            // SetCurSel/GetCurSel probe became the only producer — but the
+            // probe stalls on background-client EQ pumps (PID 4628 smoke
+            // 2026-05-22 hung indefinitely after `Character_List GetCurSel = 0`).
+            // With the seed, once Path C below has discovered the heap array
+            // ONCE, every subsequent poll's re-read + P9 publish runs without
+            // needing the probe to return again. First poll after charselect
+            // is the only one that still depends on Path B/B2 OR the new
+            // Path C "fire on g_uiFallbackLogged" gate (below).
+            int count = (g_heapScanDone && g_heapScanCount > 0) ? g_heapScanCount : 0;
+            // v3.22.32: Path B (per-row GetItemText) gated on pumpResponsive.
+            if (pumpResponsive && nameCol >= 0) {
+                count = 0;  // Path B owns count when it has a name column
                 for (int i = 0; i < CHARSEL_MAX_CHARS; i++) {
                     char nameBuf[CHARSEL_NAME_LEN] = {};
                     if (ReadListItemText(pCharList, i, nameCol, nameBuf, CHARSEL_NAME_LEN) && nameBuf[0]) {
@@ -4094,7 +4175,10 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
             // Path B2: if GetItemText failed (empty columns) but GetCurSel works,
             // the list HAS items — populate charCount for slot-based selection.
             // Cache result to avoid re-probing every 500ms poll cycle.
-            if (count == 0 && nameCol < 0 && g_fnGetCurSel) {
+            // v3.22.32: gated on pumpResponsive — SetCurSel triggers EQ WndProc
+            // dispatch + character-preview re-render, both of which block on a
+            // hung pump and deadlock the bridge poll thread (PID 4628 2026-05-22).
+            if (pumpResponsive && count == 0 && nameCol < 0 && g_fnGetCurSel) {
                 if (g_cachedSlotCount > 0) {
                     // Use cached probe result — just update selectedIndex
                     count = g_cachedSlotCount;
@@ -4173,14 +4257,40 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
 
             // Path C: heap scan for real character names when slot-based mode is active.
             // Dalaya stores names in a heap array at stride 0x160. One-shot scan per session.
-            if (count > 0 && !g_heapScanDone) {
+            //
+            // v3.22.32: gate widened from `count > 0` to `(count > 0 || g_uiFallbackLogged)`.
+            // The original gate required Path B/B2 to publish a count first — but Path B2's
+            // SetCurSel probe stalls on background clients (DX device idle, EQ pump non-
+            // responsive at char-select; observed 2026-05-22 PID 4628). g_uiFallbackLogged
+            // is set this same poll once we've located pCharList, so it's a strict superset
+            // of `count > 0` — heap-scan still gated on actually being at char-select, just
+            // no longer gated on Path B2 returning. Heap scan is memory-only (VirtualQuery
+            // + IsPlausibleName + race-byte sanity check) — no EQ pump dependency — so it
+            // runs to completion regardless of background/foreground state. On success it
+            // populates g_heapScanCount which the count-seed at the top of this block
+            // propagates into subsequent polls' re-read + P9 publish paths.
+            if ((count > 0 || g_uiFallbackLogged) && !g_heapScanDone) {
                 g_heapScanDone = true;
                 uintptr_t arrayBase = HeapScanForCharArray();
                 if (arrayBase) {
                     g_heapScanArrayBase = arrayBase;
                     g_anchorScanCached = false;  // full-array path: real list, real curSel
+                    // v3.22.32: scan all 10 slots regardless of incoming count.
+                    // The HeapScanForCharArray validator required `validCount >= 5`
+                    // adjacent plausible entries to anchor the array, so the array
+                    // itself is known to hold at least 5 valid characters. We scan
+                    // up to CHARSEL_MAX_CHARS and track the highest valid index for
+                    // contiguous account layouts (the standard EQ pattern), with a
+                    // fallback to count-of-plausible for sparse heap states.
+                    int scanLimit = CHARSEL_MAX_CHARS;
+                    if (count > 0 && count < scanLimit) {
+                        // Path B/B2 already published a count; trust it as the cap.
+                        scanLimit = count;
+                    }
+                    int highestValidIdx = -1;
+                    int plausibleEntries = 0;
                     __try {
-                        for (int i = 0; i < count && i < CHARSEL_MAX_CHARS; i++) {
+                        for (int i = 0; i < scanLimit; i++) {
                             const uint8_t *entry = (const uint8_t *)(arrayBase + i * HEAP_SCAN_STRIDE);
                             if (!IsPlausibleName(entry)) {
                                 // Zero stale data from Path A/B so C# doesn't read mismatched names
@@ -4192,11 +4302,38 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                                 nameLen++;
                             memcpy((void *)shm->names[i], entry, nameLen);
                             ((char *)shm->names[i])[nameLen] = '\0';
+                            highestValidIdx = i;
+                            plausibleEntries++;
                             // +0x44 confirmed to be RACE (1=Hum, 11=Halfling, etc), NOT class.
                             // Class and level offsets unknown — leave shm fields untouched.
                             int32_t race = *(const int32_t *)(entry + 0x44);
                             DI8Log("mq2_bridge: heap scan: slot %d = \"%s\" race=%d (cls/lvl unknown)",
                                    i, (const char *)shm->names[i], race);
+                        }
+                        // v3.22.32: derive count from heap scan when Path B/B2 hasn't.
+                        // Use highestValidIdx+1 for contiguous layouts (standard EQ
+                        // convention — characters fill slots 0..N-1). Cache in
+                        // g_heapScanCount so subsequent polls' count-seed at top of
+                        // this block picks it up without re-running this path.
+                        if (count == 0 && highestValidIdx >= 0) {
+                            count = highestValidIdx + 1;
+                            g_heapScanCount = count;
+                            DI8Log("mq2_bridge: heap scan: derived count=%d from scan (Path B/B2 didn't publish; %d plausible slots, highest=%d) — closes background-client char-select stall",
+                                   count, plausibleEntries, highestValidIdx);
+                            // v3.22.32 defensive: EQ char slots are always contiguous
+                            // in practice (deleted slots collapse), so highestValidIdx+1
+                            // should equal plausibleEntries. Sparse layout would cause
+                            // the P9 publisher to bail every poll (intervening empty
+                            // slots fail IsPlausibleName). Log loud so the next smoke
+                            // surfaces this if it ever happens — better than silent
+                            // 30s SM timeout on a never-publishing sparse layout.
+                            if (highestValidIdx + 1 != plausibleEntries) {
+                                DI8Log("mq2_bridge: heap scan: SPARSE LAYOUT WARN — highestValidIdx+1=%d but plausibleEntries=%d (P9 will bail). Investigate: heap-array stride wrong, or characters at non-contiguous slots?",
+                                       highestValidIdx + 1, plausibleEntries);
+                            }
+                        } else if (count > 0) {
+                            // Path B/B2 published count; persist for re-read across polls.
+                            g_heapScanCount = count;
                         }
                         // v3.22.22 round-3: charSelectReady=1 latch deferred to
                         // P9's allPlausible block at ~line 4392. Path C's
@@ -4211,6 +4348,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                     } __except(EXCEPTION_EXECUTE_HANDLER) {
                         DI8Log("mq2_bridge: SEH reading heap-scanned char array");
                         g_heapScanArrayBase = 0;
+                        g_heapScanCount = 0;  // v3.22.32: companion reset on SEH
                     }
                 } else {
                     // Track B v3 (2026-05-05): full-array scan failed (single-char
@@ -4295,6 +4433,15 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                                 // Cache the anchor address for re-read path below
                                 g_heapScanArrayBase = (uintptr_t)entry;
                                 g_anchorScanCached = true;  // re-read branch will re-pin selectedIndex=0
+                                // NOTE 2026-05-23: an earlier v3.22.32 patch forced
+                                // count=1 here. REVERTED — user clarified gotquiz
+                                // actually has 10 characters (Backup is the target,
+                                // sits at slot 2). Forcing count=1 would cause EQ to
+                                // log into slot 1 (the wrong character). The anchor
+                                // branch is the SINGLE-CHAR fallback; multi-char
+                                // accounts need the full-array heap scan to succeed.
+                                // The real fix is heap-scan reliability, not muting
+                                // the publisher with a fake count.
                             } __except(EXCEPTION_EXECUTE_HANDLER) {
                                 DI8Log("mq2_bridge: SEH writing anchor-scan name to SHM");
                             }
@@ -4340,6 +4487,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                                validated, count);
                         g_heapScanArrayBase = 0;
                         g_heapScanDone = false;
+                        g_heapScanCount = 0;  // v3.22.32: companion reset on stale cache
                         // v3.15.2: cache turned stale → next scan should be a clean
                         // full search, not a chunked resume from where we last stopped.
                         g_lastHeapScanAddr = 0;
@@ -4348,6 +4496,7 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                     DI8Log("mq2_bridge: SEH re-reading heap array -- rescanning next poll");
                     g_heapScanArrayBase = 0;
                     g_heapScanDone = false;
+                    g_heapScanCount = 0;  // v3.22.32: companion reset on SEH
                     g_lastHeapScanAddr = 0;
                 }
             }
@@ -4721,6 +4870,7 @@ void MQ2Bridge::Shutdown() {
     // doesn't serve a stale count from the previous session's charselect.
     g_cachedSlotCount = -1;
     g_heapScanArrayBase = 0;
+    g_heapScanCount = 0;  // v3.22.32: companion reset to keep the seed expression honest
 
     // Track B fix (2026-05-05, T2 Opus verifier callout): reset the heap-scan-done
     // flag so a mid-process MQ2 re-init doesn't land in an Init() with

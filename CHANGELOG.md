@@ -1,5 +1,69 @@
 # Changelog
 
+## v3.22.32 — Background char-select stall fix + Fix Window taskbar z-order recovery (2026-05-23)
+
+Two user-reported regressions from the 2026-05-22 v3.22.31 smoke. Diagnosed from the per-PID `eqswitch-dinput8-{pid}.log` files plus the main C# log; smoke transcript at `Logs/eqswitch.log` 21:07:21–21:10:20.
+
+### Item 1 — Background client char-select stall (Native: `mq2_bridge.cpp`)
+
+**Symptom.** PID 4628 (background client, gotquiz1) reached charselect at C# `t=33s` (`WaitConnectResponse → CharSelect`) but never got past it. 30 seconds later the SM aborted with `MQ2 bridge didn't populate char list after 30000ms — stopping at char select to avoid wrong-character enter-world`. PID 7560 (foreground, gotquiz) succeeded at the equivalent moment.
+
+**Root cause.** Path A (`CEverQuest::charSelectPlayerArray`) is permanently unavailable on Dalaya — the vtable delta at line `mq2_bridge: NOTE — CCharacterSelect vtable 0x00C95410 (expected 0x00B05410, delta=+1638400)` reports the same gap in both processes. With Path A down, the bridge depends on Path B (CListWnd `GetItemText` column probe) → Path B2 (`SetCurSel`/`GetCurSel` slot probe) → Path C (heap scan + IsPlausibleName) to publish `shm->charCount`. Path B2 hung on the background client: native log's last `mq2_bridge` line was `Character_List GetCurSel = 0` at native tick `14551031`, then silence for the remaining 44s until the user closed the process. The foreground client's log at the equivalent point shows `UI fallback: slot-based mode — probed 10 slots (curSel=1)` followed immediately by the heap scan that finds real names.
+
+The probe runs MQ2's `SetCurSel(pCharList, i)` for `i = 0..9`. On the foreground client, the CListWnd's internal cursor field flips fast and `GetCurSel` returns immediately. On the background client, EQ's pump is non-responsive (the C# `ApplySlimTitlebar` probe in the same time window reports `SendMessageTimeout WM_NULL > 100ms — lastErr=1460 (ERROR_TIMEOUT)`), and one of those calls blocks indefinitely. `PollReentryGuard` then prevents any subsequent poll from starting, so the rest of `MQ2Bridge::Poll` (including the heap scan that's memory-only and doesn't need the pump) never runs.
+
+**Fix.** Decouple Path C (heap scan + publish) from Path B/B2's `count > 0` gate.
+
+- Path C gate widens from `if (count > 0 && !g_heapScanDone)` to `if ((count > 0 || g_uiFallbackLogged) && !g_heapScanDone)`. `g_uiFallbackLogged` is set this same poll once Path B has located `pCharList`, so the new condition is a strict superset.
+- Inside Path C, the per-slot read loop now scans up to `CHARSEL_MAX_CHARS` slots when no incoming count was supplied (the `validCount >= 5` invariant inside `HeapScanForCharArray` already guarantees the array is real). Highest valid slot index + 1 becomes the derived count.
+- Derived count is cached in a new file-scope `g_heapScanCount`. The local `count` variable inside `MQ2Bridge::Poll` now seeds from this cache at the top of the Path B block, so every subsequent poll's re-read + P9 publisher fires without needing Path B2 to publish again.
+- `g_heapScanCount` is reset on the same lifecycle boundaries as `g_heapScanArrayBase`: the `pinstCCharacterSelect != lastObserved` charselect-transition block (~`mq2_bridge.cpp:3038`), the `gameState == 5` in-game transition (~`:3848`), and the SEH/stale-cache invalidation paths inside Path C.
+
+Heap scan is memory-only (VirtualQuery + IsPlausibleName + race-byte sanity check) — it doesn't depend on the EQ pump being responsive, so background clients now make forward progress through char-select even when their pump is hung on background DX state. Path B/B2 stays in the code unchanged; on foreground clients it still runs first and the seed pathway becomes idempotent on subsequent polls.
+
+### Item 2 — Fix Window doesn't restore taskbar coverage after sibling close (C#: `TrayManager.cs`, `NativeMethods.cs`)
+
+**Symptom.** Two-client team1 smoke. Foreground client succeeded, covered the taskbar (slim-titlebar mode). User closed the failed background client. Main client window stopped covering the taskbar — Fix Window button did not restore coverage. The C# log shows Fix Window DID size the window correctly: `ApplySlimTitlebar: hwnd=1378660 → (0,-13) 1920x1093, offset=13px hidden`. So the bounds are right; the taskbar is just visually slicing through.
+
+**Root cause.** Z-order, not bounds. The Windows taskbar is `WS_EX_TOPMOST` by default. EQ slim-titlebar mode sizes the window to span the taskbar's rect (`monitor.Top - offset` to `monitor.Bottom`) — taskbar yields automatically *only when EQ is foreground AND covering its area*. When the sibling client closed, the OS raised the taskbar's z-band back above the surviving non-topmost EQ window as part of its post-close shuffle. The slim-titlebar guard timer + the hook DLL only re-issue `SetWindowPos` with `SWP_NOZORDER`, so neither path could undo the OS-side z-shift. `WindowManager.ApplySlimTitlebar` itself uses `SWP_NOZORDER` (lines 730, 748 — deliberately, to avoid focus theft from background callers like the guard timer).
+
+**Fix.** Two new entry points in `TrayManager.cs` that own the explicit-user-action z-order recovery:
+
+- `RaiseClientsAboveTaskbar(clients, foregroundActive)` — runs the topmost dance per client (two `SetWindowPos` calls: `HWND_TOPMOST` then `HWND_NOTOPMOST`, both with `SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE`). The dance pushes each window above the taskbar's z-band without leaving it permanently always-on-top. When `foregroundActive=true` it then calls `_windowManager.SwitchToClient(active)` (which uses the existing `ForceForegroundWindow` workaround) on the foreground client — load-bearing because Windows only auto-hides the taskbar for a *foreground* full-monitor window.
+- `RaiseRemainingClientsAboveTaskbar()` — invoked from a 250ms delayed timer in the `ClientLost` handler (gated on `_config.Layout.SlimTitlebar && _processManager.Clients.Count > 0`). Re-applies slim positioning on each responsive non-autologin client (because the hook DLL never re-asserts after a sibling close — there's no EQ-initiated `SetWindowPos` to intercept), refreshes hook config, then runs `RaiseClientsAboveTaskbar`. The 250ms delay lets the OS finish its post-close z-shuffle first.
+
+`OnArrangeWindows` now also calls `RaiseClientsAboveTaskbar` after `ArrangeWindows` + `UpdateHookConfig`, gated on `_config.Layout.SlimTitlebar` (non-slim wants the taskbar visible, so the dance would be wrong). The `HWND_TOPMOST`/`HWND_NOTOPMOST` sentinels added to `NativeMethods.cs` are typed `IntPtr` because `SetWindowPos`'s `hWndInsertAfter` parameter is `IntPtr` in our P/Invoke signature; using readonly `IntPtr` with negative values matches the Win32 convention (`(HWND)-1`/`(HWND)-2`).
+
+Filter discipline mirrors `OnArrangeWindows`: hung, autologin-active, and pump-unresponsive clients are skipped. Each `SetWindowPos` pair logs partial failures (`up=true down=false`) so a wedged dance is visible in the log rather than silent.
+
+### Pre-ship verifier round (8 agents, T1/T2/T3/T4 × Sonnet+Opus)
+
+Verifier swarm caught three convergent findings that the initial fix missed; all three folded into this ship before tag:
+
+- **T2 Sonnet + T2 Opus CRITICAL — Path C source-order**: the v3.22.32 widened Path C gate (`g_uiFallbackLogged || count > 0`) was inert against the actual repro path because Path B's column-discovery loop (`ReadListItemText` → MQ2's `CListWnd::GetItemText` → CXStr allocation from EQ's CRT heap) AND Path B2's `SetCurSel` probe both run BEFORE Path C in source order. On a non-responsive background pump, EQ's main thread holds the heap lock indefinitely; our `ActivateThread` blocks inside `HeapAlloc` or `SendMessage`, `PollReentryGuard` prevents subsequent polls from entering, and Path C never executes. **Fix:** added a `SendMessageTimeoutA(eqWnd, WM_NULL, 0, 0, SMTO_ABORTIFHUNG | SMTO_BLOCK, 100, &smResult)` probe at the top of the `if (pCharList)` block. When `pumpResponsive=false`, Path B's column-discovery loop AND Path B2 are skipped (`if (pumpResponsive && ...)` gates added on both); execution falls through to Path C which is pure VirtualQuery + IsPlausibleName memory operations with no EQ heap/pump dependency. The 5-sec-rate-limited LOUD log surfaces the pump-non-responsive state instead of silent fallthrough to the 30s SM timeout.
+
+- **T3 Sonnet + T3 Opus CRITICAL — `RaiseClientsAboveTaskbar` missing `IsIconic` gate**: `_windowManager.SwitchToClient(active)` calls `ShowWindow(SW_RESTORE)` unconditionally (`Core/WindowManager.cs:44`). Restoring a minimized EQ window while its DX device is in windowed-fullscreen state crashes the device — `ForceDxReinit` already has this exact gate with a documented warning. Without the check, the new recovery path would have a DX crash hazard worse than the original bug. **Fix:** added `!NativeMethods.IsIconic(active.WindowHandle)` to the gating predicate, and a `FileLogger.Warn` on the iconic branch matching `ForceDxReinit`'s log line.
+
+- **T2 Opus + T3 Sonnet HIGH — ClientLost focus theft on non-EQ foreground**: `RaiseRemainingClientsAboveTaskbar` was passing `foregroundActive: true` unconditionally, which would yank focus to a surviving EQ window if a background client closed while the user was in Discord / a browser / any non-EQ app. **Fix:** the ClientLost timer-tick path now checks `_processManager.GetActiveClient() != null` — i.e., does EQ already own the foreground? — and passes that boolean to `foregroundActive`. The Fix Window button path still passes `true` unconditionally (the user's explicit press is the consent signal).
+
+Also folded in (lower-severity, single-agent flags):
+
+- **T3 Sonnet HIGH — sparse-slot diagnostic**: added a `DI8Log` warn when the heap-scan-derived count via `highestValidIdx + 1` diverges from `plausibleEntries`. EQ char slots are contiguous in practice (deleted slots collapse), so this should never fire — but if it ever does, the P9 publisher will bail forever (intervening empty slots fail IsPlausibleName), and surfacing the layout shape early beats a silent 30s SM timeout.
+- **T4 Sonnet + T4 Opus — `g_heapScanCount` missing from `MQ2Bridge::Init()` reset block**: added the companion reset next to the existing `g_heapScanArrayBase = 0` / `g_heapScanDone = false` resets at ~line 4853. Mid-process MQ2 re-init now zeroes the new cache, matching the "lifecycle mirrors `g_heapScanArrayBase`" claim in the global's comment.
+
+### Out of scope (noted for follow-up)
+
+User-reported but deferred to a separate ship: (a) minimized EQ window hangs on restore, (b) EQ client crashes when EQSwitch process exits. Both involve the DI8/hook DLL detach + EQ's pump state and need their own diagnosis pass — not blended into this fix.
+
+Verifier-flagged but deferred: `OnSwitchKey` / `OnGlobalSwitchKey` / `LaunchSequenceComplete` ArrangeWindows callsites don't run the topmost dance (T2 Opus + T4 Sonnet+Opus MEDIUM/notable). The user-reported bug B is specifically the Fix Window + sibling-close pair; expanding scope to every arrange callsite is a separate consistency pass.
+
+### Build
+
+- `dotnet build -c Release` clean (0/0).
+- `dotnet build -c Debug` clean (0/0).
+- `Native/build-di8-inject.sh` clean — `g_heapScanCount` is a single `static volatile int`, no struct layout change to SHM. The new pump probe adds a `SendMessageTimeoutA` import that's already pulled in via `windows.h`; `device_proxy.h` include added for `GetEqHwnd()`.
+- No tests added: the Native fix lives below the SHM boundary (no C# call site to mock) and the C# z-order helpers exercise live Win32 APIs (`SetWindowPos` to `HWND_TOPMOST`) that the unit-test seam doesn't model. Smoke verification (real Dalaya team1 launch) is the load-bearing check — same posture as the v3.22.30 self-update polish ship.
+
 ## v3.22.31 — IsClientResponsive → IWindowsApi DI seam + P9 SEH index attribution (2026-05-22)
 
 Same-day follow-on to v3.22.30. Two small, contained improvements: P2 restores the testability seam for the pump-responsiveness probe (private static → `IWindowsApi` method), and P3c sharpens the P9 SEH log attribution so a fault at `shm->names[7]` no longer reports `shm->names[0]`. Both are behavior-equivalent / telemetry-only; no user-visible semantic change.

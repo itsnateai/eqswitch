@@ -447,6 +447,35 @@ public class TrayManager : IDisposable
 
             // Drop the PID→name binding so a recycled PID doesn't inherit a stale name.
             AutoLoginManager.ClearBoundName(c.ProcessId);
+
+            // v3.22.32: recover taskbar coverage on the remaining clients.
+            // When the closing window was sized over the taskbar (slim mode),
+            // Windows raises the WS_EX_TOPMOST taskbar back above the remaining
+            // sibling's z-band as soon as our window disappears. The sibling's
+            // bounds are still right but the taskbar visually slices through
+            // its bottom edge. SetWindowPos with SWP_NOZORDER (the only thing
+            // the slim-titlebar guard timer + hook DLL use) can't undo this.
+            // Schedule a delayed re-arrange so the OS finishes its post-close
+            // z-order shuffle first; 250ms is empirically enough on Win11.
+            // Filter out autologin-active and hung clients, mirroring
+            // OnArrangeWindows' gates so we don't disturb a mid-credential-
+            // type sequence on a sibling.
+            if (_config.Layout.SlimTitlebar
+                && _processManager.Clients.Count > 0)
+            {
+                var recoveryTimer = new System.Windows.Forms.Timer { Interval = 250 };
+                recoveryTimer.Tick += (_, _) =>
+                {
+                    recoveryTimer.Stop();
+                    recoveryTimer.Dispose();
+                    try { RaiseRemainingClientsAboveTaskbar(); }
+                    catch (Exception ex)
+                    {
+                        FileLogger.Error("ClientLost: post-close taskbar-recovery failed", ex);
+                    }
+                };
+                recoveryTimer.Start();
+            }
         };
 
         // Immediately detect newly launched clients so slim titlebar applies without
@@ -865,6 +894,22 @@ public class TrayManager : IDisposable
         // configs refreshed to reflect the new slot map.
         UpdateHookConfig();
 
+        // v3.22.32: explicit user-action Fix Window button path includes the
+        // taskbar-coverage recovery dance. ArrangeWindows → ArrangeSingleScreen
+        // → ApplySlimTitlebar sizes EQ to span the full monitor including the
+        // taskbar's rect, but uses SWP_NOZORDER so z-order is unchanged. If
+        // the taskbar (WS_EX_TOPMOST) was previously raised above EQ — common
+        // after a sibling client closed or after Alt+Tab through Explorer —
+        // Fix Window pre-fix would leave the taskbar visually slicing through
+        // EQ's bottom edge despite the size being correct. The topmost dance
+        // (HWND_TOPMOST → HWND_NOTOPMOST) pushes EQ above the taskbar's
+        // z-band without leaving it permanently always-on-top, then
+        // ForceForegroundWindow on the active client makes Windows commit to
+        // the new foreground state. Skipped when slim is off (taskbar should
+        // be visible) or in autologin (Fix Window already skipped those).
+        if (_config.Layout.SlimTitlebar)
+            RaiseClientsAboveTaskbar(clientsToArrange, foregroundActive: true);
+
         string skippedLabel = skippedAutologin > 0
             ? $" ({skippedAutologin} skipped — autologin active)"
             : "";
@@ -997,6 +1042,165 @@ public class TrayManager : IDisposable
             FileLogger.Info($"ForceDxReinit: PID {pid} click 2 posted ok={ok2}");
         };
         t.Start();
+    }
+
+    /// <summary>
+    /// v3.22.32: raise EQ client windows above the taskbar's z-band via the
+    /// HWND_TOPMOST → HWND_NOTOPMOST dance. Recovers slim-titlebar coverage
+    /// after the OS has popped the taskbar above EQ — typically after a
+    /// sibling EQ client closed or after focus moved through Explorer.
+    /// <para>
+    /// Filters out hung windows, autologin-active clients, and unresponsive
+    /// pumps (the same gates ArrangeWindows applies). Each surviving client
+    /// gets two SetWindowPos calls with SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE:
+    /// first to HWND_TOPMOST (forces above WS_EX_TOPMOST taskbar), then
+    /// immediately back to HWND_NOTOPMOST (drops out of always-on-top so EQ
+    /// doesn't cover unrelated topmost windows like overlays). The window
+    /// ends up at the top of the non-topmost z-band — above the taskbar but
+    /// below any user-pinned topmost apps. SWP_NOACTIVATE avoids focus theft
+    /// during the dance itself.
+    /// </para>
+    /// <para>
+    /// When <paramref name="foregroundActive"/> is true, the active client
+    /// (per ProcessManager.GetActiveClient) is brought to foreground after
+    /// the dance via ForceForegroundWindow. This is the load-bearing step
+    /// for "taskbar yields" — Windows only auto-hides the taskbar for a
+    /// genuinely-foreground full-monitor window. The Fix Window button path
+    /// passes true (the user's explicit press is implicit consent to focus
+    /// the EQ window); the ClientLost recovery path also passes true
+    /// because the sibling-close already shifted focus.
+    /// </para>
+    /// </summary>
+    private void RaiseClientsAboveTaskbar(IReadOnlyList<EQClient> clients, bool foregroundActive)
+    {
+        if (clients.Count == 0) return;
+        const uint flags = NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE;
+        int raised = 0;
+        foreach (var c in clients)
+        {
+            var hwnd = c.WindowHandle;
+            if (!NativeMethods.IsWindow(hwnd)) continue;
+            if (NativeMethods.IsHungAppWindow(hwnd)) continue;
+            if (_autoLoginManager.IsLoginActive(c.ProcessId)) continue;
+            // The topmost dance reorders z-band without moving/sizing the
+            // window. Either call can fail benignly on a transient pump
+            // block; we log + continue rather than abort the whole loop.
+            bool up = NativeMethods.SetWindowPos(hwnd, NativeMethods.HWND_TOPMOST,
+                0, 0, 0, 0, flags);
+            bool down = NativeMethods.SetWindowPos(hwnd, NativeMethods.HWND_NOTOPMOST,
+                0, 0, 0, 0, flags);
+            if (up && down) raised++;
+            else
+                FileLogger.Warn($"RaiseClientsAboveTaskbar: {c} dance partial (up={up} down={down}) — taskbar may still slice through this window's bottom edge until next focus event");
+        }
+
+        if (foregroundActive)
+        {
+            var active = _processManager.GetActiveClient() ?? clients.FirstOrDefault();
+            // v3.22.32 verifier-convergent (T3 Sonnet+Opus CRITICAL): IsIconic
+            // gate. SwitchToClient calls ShowWindow(SW_RESTORE) unconditionally
+            // (Core/WindowManager.cs:44). Restoring a minimized EQ window while
+            // its DX device is in windowed-fullscreen mode crashes the device —
+            // ForceDxReinit already has this exact gate with the same safety
+            // advice ("Maximize on launch" must be enabled first). Without this
+            // check the new recovery path would have a DX crash hazard worse
+            // than the original bug.
+            if (active != null && NativeMethods.IsWindow(active.WindowHandle)
+                && !NativeMethods.IsHungAppWindow(active.WindowHandle)
+                && !NativeMethods.IsIconic(active.WindowHandle))
+            {
+                try
+                {
+                    _windowManager.SwitchToClient(active);
+                    FileLogger.Info($"RaiseClientsAboveTaskbar: foregrounded {active} after topmost dance ({raised}/{clients.Count} raised)");
+                }
+                catch (Exception ex)
+                {
+                    FileLogger.Warn($"RaiseClientsAboveTaskbar: ForceForegroundWindow on {active} threw — {ex.Message}");
+                }
+            }
+            else if (active != null && NativeMethods.IsIconic(active.WindowHandle))
+            {
+                FileLogger.Warn($"RaiseClientsAboveTaskbar: active client {active} is minimized — skipping foreground (SW_RESTORE on a minimized EQ window may crash DX device unless Settings → Video → \"Maximize on launch\" is enabled; raised={raised}/{clients.Count})");
+            }
+            else
+            {
+                FileLogger.Info($"RaiseClientsAboveTaskbar: no foregroundable client (raised={raised}/{clients.Count})");
+            }
+        }
+        else
+        {
+            FileLogger.Info($"RaiseClientsAboveTaskbar: raised {raised}/{clients.Count} client(s) (no foreground change)");
+        }
+    }
+
+    /// <summary>
+    /// v3.22.32: post-ClientLost taskbar-recovery entry point. Called from a
+    /// 250ms delayed timer in the ClientLost handler so the OS finishes its
+    /// post-close z-order shuffle before we re-arrange. Re-applies the slim-
+    /// titlebar position to every responsive non-autologin client (matching
+    /// the single-screen ApplyDeferredCosmetics path) and then runs the
+    /// topmost dance to push them above the resurfaced taskbar.
+    /// </summary>
+    private void RaiseRemainingClientsAboveTaskbar()
+    {
+        if (!_config.Layout.SlimTitlebar) return;
+        var clients = _processManager.Clients;
+        if (clients.Count == 0) return;
+
+        // Build the responsive subset using the same gates ArrangeWindows applies.
+        var responsive = new List<EQClient>(clients.Count);
+        foreach (var c in clients)
+        {
+            if (_autoLoginManager.IsLoginActive(c.ProcessId)) continue;
+            if (!NativeMethods.IsWindow(c.WindowHandle)) continue;
+            if (NativeMethods.IsHungAppWindow(c.WindowHandle)) continue;
+            responsive.Add(c);
+        }
+        if (responsive.Count == 0)
+        {
+            FileLogger.Info($"RaiseRemainingClientsAboveTaskbar: no responsive non-autologin clients to recover (clients={clients.Count})");
+            return;
+        }
+
+        // Re-apply slim positioning on each client. The hook DLL maintains
+        // position from inside the EQ process at every intercepted SetWindowPos,
+        // but the sibling-close event doesn't trigger an EQ-side SetWindowPos —
+        // so the hook never re-asserts after the close. Re-applying from outside
+        // re-issues the SetWindowPos cross-process; the hook intercepts and
+        // confirms its own config, the visible result is the desired bounds.
+        bool isMM = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+        if (isMM)
+        {
+            _windowManager.ArrangeWindows(responsive, _monitorSlotByPid);
+        }
+        else
+        {
+            var monitor = _windowManager.GetTargetMonitorBounds();
+            int offset = _config.Layout.TitlebarOffset;
+            foreach (var c in responsive)
+                _windowManager.ApplySlimTitlebar(c.WindowHandle, monitor, offset);
+        }
+
+        // Refresh hook config so the per-PID shared memory reflects current
+        // state (no slot rotation happened, but defensive).
+        UpdateHookConfig();
+
+        // Z-order recovery — the load-bearing part of this method.
+        //
+        // v3.22.32 verifier-convergent (T2 Opus + T3 Sonnet HIGH): foreground
+        // only when EQ already owns the foreground. The sibling-close path
+        // fires regardless of which app the user is currently in; passing
+        // `true` unconditionally would yank focus from Discord / browser /
+        // any non-EQ app at any time a background EQ client closes. Checking
+        // GetActiveClient() != null gates the foreground call on "EQ is what
+        // the user is currently looking at" — if true, taking foreground to
+        // a surviving EQ is a visual continuity win (taskbar yields); if
+        // false, the user has moved on and stealing focus is hostile.
+        bool eqAlreadyForeground = _processManager.GetActiveClient() != null;
+        RaiseClientsAboveTaskbar(responsive, foregroundActive: eqAlreadyForeground);
+
+        FileLogger.Info($"RaiseRemainingClientsAboveTaskbar: re-arranged + raised {responsive.Count}/{clients.Count} client(s) after sibling close (eqAlreadyForeground={eqAlreadyForeground})");
     }
 
     /// <summary>

@@ -185,6 +185,18 @@ internal static class NativeMethods
     public const uint SWP_NOACTIVATE = 0x0010;
     public const uint SWP_FRAMECHANGED = 0x0020;
 
+    // v3.22.32: hWndInsertAfter sentinels used by SetWindowPos for the topmost
+    // dance. EQ slim-titlebar mode positions the window over the taskbar's
+    // bounds; Windows' taskbar is WS_EX_TOPMOST so it sits above any non-
+    // topmost window in z-order. Promoting EQ to TOPMOST then demoting to
+    // NOTOPMOST in two SetWindowPos calls pushes EQ above the taskbar's
+    // z-band without leaving it permanently always-on-top — the standard
+    // pattern for "raise above topmost shell windows" without focus theft.
+    public static readonly IntPtr HWND_TOP       = new IntPtr(0);
+    public static readonly IntPtr HWND_BOTTOM    = new IntPtr(1);
+    public static readonly IntPtr HWND_TOPMOST   = new IntPtr(-1);
+    public static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
+
     public const int SW_SHOW = 5;
     public const int SW_RESTORE = 9;
     public const int SW_MINIMIZE = 6;
