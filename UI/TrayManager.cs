@@ -224,6 +224,24 @@ public class TrayManager : IDisposable
         // refresh shared-memory config (position + title template).
         if (_injectedPids.Contains(pid))
             UpdateHookConfigForPid(pid);
+
+        // v3.22.38: z-order recovery for the autologin-completion path.
+        // v3.22.32 added RaiseClientsAboveTaskbar to OnArrangeWindows (manual
+        // Fix Window) and the sibling-close recovery path, but missed this
+        // ApplyDeferredCosmetics path that runs from LoginCredentialsSent
+        // (T+~7s) and LoginComplete (T+~30s). Result: clients reaching
+        // in-world via autologin had correct slim-titlebar bounds but no
+        // z-order recovery — taskbar (WS_EX_TOPMOST) visually sliced through
+        // EQ's bottom edge. Confirmed in 2026-05-23 team1 smoke. Same gate
+        // as the sibling-close path at line ~1292: foreground only when EQ
+        // already owns foreground, so a background autologin completion
+        // doesn't yank focus from Discord/etc. Skipped when slim is off
+        // (normal titlebar = no taskbar overlap to recover).
+        if (_config.Layout.SlimTitlebar)
+        {
+            bool eqAlreadyForeground = _processManager.GetActiveClient() != null;
+            RaiseClientsAboveTaskbar(new[] { client }, foregroundActive: eqAlreadyForeground);
+        }
     }
 
     public void Initialize()

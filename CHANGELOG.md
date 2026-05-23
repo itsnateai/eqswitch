@@ -1,5 +1,36 @@
 # Changelog
 
+## v3.22.38 — taskbar-coverage gap in ApplyDeferredCosmetics + first full publish since v3.22.34 (2026-05-23)
+
+### Bug pinned in live smoke
+
+2026-05-23 ~12:00 team1 smoke (per Nate): both clients reached in-world via autologin but slim-titlebar windows did NOT cover the taskbar. v3.22.32 (this morning) shipped the taskbar-coverage recovery dance (`RaiseClientsAboveTaskbar` — HWND_TOPMOST → HWND_NOTOPMOST + ForceForegroundWindow) and wired it into:
+
+- `OnArrangeWindows` (the manual Fix Window button path, line ~925)
+- `ClientLost` post-sibling-close recovery (line ~1292)
+
+But MISSED the autologin-completion path: `ApplyDeferredCosmetics` (line ~206) called from `LoginCredentialsSent` (T+~7s) and `LoginComplete` (T+~30s, with 15s extra defer for the DX swap-chain reset). That path called `ApplySlimTitlebar` to set the bounds but never followed up with the z-order recovery — so the WS_EX_TOPMOST taskbar sat above EQ even though the slim-titlebar bounds were correct. Same exact symptom v3.22.32 was meant to fix; same exact dance is the fix; just at one more call site.
+
+### Fix
+
+Added the `RaiseClientsAboveTaskbar` call at the end of `ApplyDeferredCosmetics`, gated on `_config.Layout.SlimTitlebar` (normal titlebar = no overlap to recover) and using the same `eqAlreadyForeground = GetActiveClient() != null` foreground-gate as the sibling-close recovery path. A background autologin completion (Nate in Discord while clients log themselves in) won't yank focus; a foreground autologin will continue visual continuity.
+
+### First full publish since v3.22.34
+
+The v3.22.35/36/37 trilogy shipped only the native `Native/eqswitch-di8.dll` rebuild + a git tag, NOT a `dotnet publish` of the full EXE. As of this commit the user's local install at `C:\Users\nate\proggy\Everquest\EQSwitch\EQSwitch.exe` was still v3.22.34 (mtime 09:25); the Path A fix existed in the source tree + tagged commits but had never been delivered to a running binary. v3.22.38 ships the full EXE artifact via `dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true` so the Path A bridge fix + the taskbar regression fix both reach production.
+
+### Live-smoke runtime confirmation of v3.22.35 Path A fix
+
+2026-05-23 ~11:55 PID 36492 (team4 client) bridge log line 877-878 (v3.22.34 baseline):
+
+```
+[69198421]   ppEverQuest: export=6B6877D8 -> CEverQuest*=00EE7CCC
+[69198421]     charSelectPlayerArray at offset 0x38E6C: Count=0
+[69198421]   SHM: charCount=10 selectedIndex=0 mq2Available=1 gameState=0
+```
+
+`0x00EE7CCC - 0xA67CCC = 0x00480000` (eqgame load base in this PID); the "CEverQuest*=00EE7CCC" the bridge LOGS is actually the pinst storage address (the 1-deref bug result). Reading at `0x00EE7CCC + 0x38E6C = 0x00F20B38` lands in eqgame.exe `.rdata` → `Count=0`. `SHM: charCount=10` because Path B/C combo did the work via heap-scan. This is the runtime paired-probe confirmation v3.22.35's FINDINGS.md said was still required — the 4 alternative explanations in §D (per-process mismatch / async race / ASLR / MQ2 export resolution) are now ruled out by direct measurement. v3.22.38's published EXE will have the 2-deref helper from v3.22.35 + the per-case logging from v3.22.37 — next team4 smoke should show `Count=N` matching account size and Path C heap-scan invocations dropping to zero.
+
 ## v3.22.37 — Path A trilogy DONE: per-case deref-null gates, L2722 comment-lie, Shutdown reset symmetry (2026-05-23)
 
 8-agent verifier round on v3.22.36 (commit `9d6c067`) returned 2 APPROVE + 6 CONCERNS with 5 convergent findings — all addressable as either logic gaps in the v3.22.36 fix or downstream doc-rot. v3.22.37 closes them all as the **terminal round** of the v3.22.34→35→36→37 Path A trilogy (per [[reference_verifier_round_diminishing_returns_signal]] the iterative-rounds pattern hits diminishing returns at round 3; further rounds yield only noise).
