@@ -1,8 +1,8 @@
 # Changelog
 
-## v3.22.42 — Single-screen ReloadConfig slim-toggle-on gap + csproj test-exclusion glob (2026-05-23)
+## v3.22.42 — Single-screen ReloadConfig + SwapWindows slim parity + csproj test-exclusion glob (2026-05-23)
 
-Cleanup pass on two of the six deferred CONCERNs from the v3.22.40+41 verifier rounds. UI-only release; Native DLLs unchanged from v3.22.41 (sha256 parity verified at deploy time). One commit, one verifier round.
+Cleanup pass on two of the six deferred CONCERNs from the v3.22.40+41 verifier rounds, plus a third gap surfaced by the v3.22.42 pre-ship verifier round itself. UI-only release; Native DLLs unchanged from v3.22.41 (sha256 parity verified at deploy time). One ship, one full 6-agent verifier round + one 2-agent delta-verifier round.
 
 ### Item 2 — single-screen ReloadConfig slim-toggle-on gap (T2-Opus "primary user surface")
 
@@ -13,6 +13,14 @@ T2-Opus during the v3.22.41 verifier round escalated this as "Settings → toggl
 **Fix:** added a sibling `else if (_config.Layout.SlimTitlebar && _processManager.Clients.Count > 0)` branch that calls `ApplySlimTitlebarToAll` + `RaiseClientsAboveTaskbar` immediately. Same foreground-gating as the MM path (`foregroundActive: eqAlreadyForeground`). Doesn't wait for the guard timer's first tick (500ms hookActive, 5s without).
 
 The MM branch is unchanged.
+
+### Item 2b — SwapWindows tray-action single-screen branch (T2-Opus, found during v3.22.42 verifier round)
+
+`UI/TrayManager.cs:~2498-2503` — same regression class as Item 2 at a sibling call site. The tray `Video → Swap Windows` action (also reachable as a configurable TrayClick action) single-screen branch calls `SwapWindows` + `ResizeToCurrentMonitors` (both `SWP_NOZORDER`; the latter targets work-area bounds with taskbar visible) + `UpdateHookConfig`. With SlimTitlebar on, the guard timer's next tick re-applies full-monitor slim bounds, but no z-order recovery follows — the taskbar (`WS_EX_TOPMOST`) slices EQ's bottom edge until next focus event.
+
+T2-Opus's gap-audit during the v3.22.42 verifier round caught this — the v3.22.40 deferred-item-#2 analysis had only flagged the MM `ArrangeWindows` branches of the switch-hotkey paths, missing this SS sibling. Fixed in-ship rather than deferred to v3.22.43 because (a) total verifier-burn is strictly lower for an in-ship delta-verifier than for a full v3.22.43 follow-on round, (b) the gap is the SAME bug class v3.22.42 was already shipping a fix for, and (c) leaving a known-load-bearing sibling gap on the shelf would defeat the verifier round's purpose.
+
+**Fix:** added the same pattern as the ReloadConfig single-screen branch (`ApplySlimTitlebarToAll` + foreground-gated `RaiseClientsAboveTaskbar`) after `UpdateHookConfig` in the SS `else` block.
 
 ### Item 5 — EQSwitch.csproj test-exclusion glob recursion (T2-Sonnet)
 

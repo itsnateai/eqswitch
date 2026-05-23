@@ -2500,6 +2500,24 @@ public class TrayManager : IDisposable
                         _windowManager.SwapWindows(swapClients);
                         _windowManager.ResizeToCurrentMonitors(swapClients);
                         UpdateHookConfig();
+
+                        // v3.22.42: SwapWindows + ResizeToCurrentMonitors both
+                        // use SWP_NOZORDER, and ResizeToCurrentMonitors targets
+                        // work-area bounds (taskbar visible). When SlimTitlebar
+                        // is on, the guard timer's next tick re-applies
+                        // full-monitor bounds — but with no z-order recovery
+                        // the taskbar's WS_EX_TOPMOST keeps slicing EQ's
+                        // bottom edge until next focus event. Apply slim
+                        // bounds + raise immediately. Same foreground-gating
+                        // as the ReloadConfig single-screen branch: don't
+                        // yank focus on a background tray-menu invocation.
+                        if (_config.Layout.SlimTitlebar && swapClients.Count > 0)
+                        {
+                            _windowManager.ApplySlimTitlebarToAll(swapClients, _injectedPids);
+                            bool eqAlreadyForeground = _processManager.GetActiveClient() != null;
+                            RaiseClientsAboveTaskbar(swapClients, foregroundActive: eqAlreadyForeground);
+                            FileLogger.Info("TraySwap: single-screen slim — applied bounds + raised");
+                        }
                     }
                 }
                 break;
@@ -3379,17 +3397,21 @@ public class TrayManager : IDisposable
         }
         else if (_config.Layout.SlimTitlebar && _processManager.Clients.Count > 0)
         {
-            // v3.22.42: single-screen slim-toggle-on parity with the MM branch
-            // above. Settings Apply is the primary user surface for toggling
-            // SlimTitlebar; without this branch the guard timer's first tick
-            // (500ms or 5s depending on hookActive) re-applies bounds, but no
-            // raise follows so the taskbar (WS_EX_TOPMOST) keeps slicing EQ's
-            // bottom edge until the next focus event. Apply bounds immediately
-            // and raise — same foreground-gating as the MM path.
+            // v3.22.42: single-screen slim parity with the MM branch above.
+            // Settings Apply is the primary user surface for SlimTitlebar;
+            // without this branch the guard timer's first tick (500ms or 5s
+            // depending on hookActive) re-applies bounds, but no raise
+            // follows so the taskbar (WS_EX_TOPMOST) keeps slicing EQ's
+            // bottom edge until the next focus event. Apply bounds
+            // immediately and raise — same foreground-gating as the MM path.
+            // Fires on every non-MM Apply with slim enabled (not strictly
+            // "toggle-on") to mirror the MM branch's unconditional fire-when-
+            // gated semantic; the actual bound-apply is cheap due to the
+            // rect-match early-exit inside ApplySlimTitlebarToAll.
             _windowManager.ApplySlimTitlebarToAll(_processManager.Clients, _injectedPids);
             bool eqAlreadyForeground = _processManager.GetActiveClient() != null;
             RaiseClientsAboveTaskbar(_processManager.Clients, foregroundActive: eqAlreadyForeground);
-            FileLogger.Info("ReloadConfig: single-screen slim-toggle-on — applied bounds + raised");
+            FileLogger.Info("ReloadConfig: single-screen slim active — applied bounds + raised");
         }
 
         // Update hook configs for all injected processes (per-PID shared memory
