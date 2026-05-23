@@ -1,5 +1,53 @@
 # Changelog
 
+## v3.22.39 — ApplyDeferredCosmetics: raise ALL clients, not just the one that completed (2026-05-23)
+
+v3.22.38 fixed the missing taskbar-coverage call site (`ApplyDeferredCosmetics`) but passed a single-element array `new[] { client }` to `RaiseClientsAboveTaskbar` — only the PID that just fired `LoginCredentialsSent` / `LoginComplete` got the dance. The v3.22.38 verifier round (T2 Sonnet specifically) called this out at the time:
+
+> "If team1 logs in client A first, ApplyDeferredCosmetics(A) raises A. While A is at top of non-topmost band, client B finishes login 7s later, its ApplyDeferredCosmetics(B) raises B over A. A drops below the taskbar again."
+
+Confirmed in Nate's 2026-05-23 ~13:03 team1 smoke (PIDs 36308 + 34068 with the v3.22.37 native DLLs deployed): both clients reached in-world but "window on gotquiz took a few `\` presses for it to slowly glitch its way into covering the taskbar". Path A trilogy worked correctly (Count=1 for gotquiz1, Count=10 for gotquiz, both heap CEverQuest* pointers — runtime-confirmed) but the per-client raise pattern left z-order broken until the foreground events from Nate's `\`-switching eventually nudged the surviving sibling above the taskbar.
+
+### Fix
+
+Changed the call site at the end of `ApplyDeferredCosmetics` from:
+
+```csharp
+RaiseClientsAboveTaskbar(new[] { client }, foregroundActive: eqAlreadyForeground);
+```
+
+to:
+
+```csharp
+RaiseClientsAboveTaskbar(_processManager.Clients, foregroundActive: eqAlreadyForeground);
+```
+
+Matches the sibling-close path at line ~1310 which passes all `responsive` clients for the same reason. `RaiseClientsAboveTaskbar`'s per-client loop already filters `IsLoginActive` (so still-mid-login peers are skipped at the T+7s call from `LoginCredentialsSent`) and iconic / non-responsive windows.
+
+### v3.22.35 Path A runtime confirmation (logged here for posterity)
+
+The Path A trilogy was confirmed live in the same 2026-05-23 team1 smoke. PID 36308 (gotquiz1):
+
+```
+ppEverQuest: export=6B6877D8 -> CEverQuest*=062B29A0
+  charSelectPlayerArray at offset 0x38E6C: Count=1
+SHM: charCount=1
+```
+
+PID 34068 (gotquiz):
+
+```
+ppEverQuest: export=6B6877D8 -> CEverQuest*=065F29A0
+  charSelectPlayerArray at offset 0x38E6C: Count=10
+SHM: charCount=10
+```
+
+The `CEverQuest*` values are heap addresses (not the storage `0x00EE7CCC` from the v3.22.34 baseline). 2 derefs resolved correctly. Counts match account sizes. The v3.22.37 per-case logging also fired exactly once per PID on the early-poll transient ("both derefs OK but CEverQuest* is null (object not yet constructed, normal in early charselect polls)") then suppressed — one-shot semantics correct. Nate: "both landed in world, very quickly". The 4 alternative explanations enumerated in FINDINGS.md §D (per-process mismatch / async populate race / ASLR / MQ2 export resolution path) are now ruled out by direct measurement.
+
+### Deploy gotcha noted for future sessions
+
+The v3.22.38 ship copied only `EQSwitch.exe` to the install dir, leaving the OLD v3.22.34 `eqswitch-di8.dll` + `eqswitch-hook.dll` in place. Both DLLs are `ExcludeFromSingleFile="true"` per `EQSwitch.csproj` — the publish output ships them side-by-side, NOT embedded. v3.22.38's first team1 smoke at 13:00 ran with v3.22.38 EXE but v3.22.34 native DLLs → still showed `Count=0`. After deploying all 3 publish-output files (EXE + di8 DLL + hook DLL) at 13:02, the refire smoke at 13:03 was the first one running fully-v3.22.38 code, and that's where the runtime confirmation above came from.
+
 ## v3.22.38 — taskbar-coverage gap in ApplyDeferredCosmetics + first full publish since v3.22.34 (2026-05-23)
 
 ### Bug pinned in live smoke

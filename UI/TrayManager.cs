@@ -240,7 +240,19 @@ public class TrayManager : IDisposable
         if (_config.Layout.SlimTitlebar)
         {
             bool eqAlreadyForeground = _processManager.GetActiveClient() != null;
-            RaiseClientsAboveTaskbar(new[] { client }, foregroundActive: eqAlreadyForeground);
+            // v3.22.39: pass ALL clients, not just the one that fired LoginComplete.
+            // The v3.22.38 `new[] { client }` singleton left siblings' z-order
+            // broken — when client A completed first and got its dance, then
+            // client B completed 7s later and got its own dance, B's TOPMOST→
+            // NOTOPMOST raised B above A and A dropped back below the taskbar.
+            // Nate's 2026-05-23 ~13:03 team1 smoke: "window on gotquiz took a
+            // few \ presses for it to slowly glitch its way into covering the
+            // taskbar". The sibling-close path at line ~1310 raises ALL
+            // responsive clients for this exact reason; this path should too.
+            // RaiseClientsAboveTaskbar's per-client loop already filters
+            // IsLoginActive (so still-mid-login peers are skipped at the T+7s
+            // call from LoginCredentialsSent) and iconic/non-responsive windows.
+            RaiseClientsAboveTaskbar(_processManager.Clients, foregroundActive: eqAlreadyForeground);
         }
     }
 
