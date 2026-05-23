@@ -1,5 +1,68 @@
 # Changelog
 
+## v3.22.40 — Taskbar-coverage parity at 3 more call sites + ApplyDeferredCosmetics comment polish (2026-05-23)
+
+Cleanup pass for the v3.22.35→39 Path A + taskbar trilogy. UI-only release; Native DLLs unchanged from v3.22.39 (sha256 parity verified at deploy time). One comprehensive ship, single verifier round.
+
+### The taskbar-coverage parity gap
+
+The v3.22.38 fix added `RaiseClientsAboveTaskbar` to `ApplyDeferredCosmetics` (the autologin-completion path), and v3.22.39 corrected the singleton to all-clients. But three other call sites had the same regression class — they applied slim-titlebar bounds and then called `ArrangeWindows`-family methods (all use `SWP_NOZORDER`) without the z-order recovery dance. With slim active, the taskbar's `WS_EX_TOPMOST` z-band sat above EQ even after the bounds were correct.
+
+| Call site | Trigger | Patched |
+|---|---|---|
+| `ClientDiscovered` handler (`UI/TrayManager.cs:444-472`) | Manually-launched eqgame.exe discovered by ProcessManager poll, OR EQSwitch-launched client at the moment of discovery (early-return excludes mid-autologin clients). | Added gated raise inside the existing `_config.Layout.SlimTitlebar` block. |
+| `OnToggleMultiMonitor` (`UI/TrayManager.cs:~1401`) | Alt+M or Settings checkbox toggles MM mode while slim is active. | Added gated raise after `ArrangeWindows` + `UpdateHookConfig`. |
+| `ReloadConfig` MM-backfill (`UI/TrayManager.cs:~3353`) | Settings Apply toggles layout / mode while slim is active and clients exist AND is currently in MM mode. | Added gated raise after the auto-arrange + info log. Single-screen-mode toggle of slim ON via Settings Apply is a separate path with its own gap — see "Known v3.22.41-worthy gaps" below. |
+
+Each new call site uses the canonical v3.22.39 pattern:
+
+```csharp
+if (_config.Layout.SlimTitlebar)
+{
+    bool eqAlreadyForeground = _processManager.GetActiveClient() != null;
+    RaiseClientsAboveTaskbar(/*all clients*/, foregroundActive: eqAlreadyForeground);
+}
+```
+
+`RaiseClientsAboveTaskbar`'s per-client loop already filters `IsLoginActive` (so mid-login siblings are skipped) and iconic / non-responsive windows. The `foregroundActive` gate continues to prevent background operations from yanking focus from non-EQ apps.
+
+### Comment polish in `ApplyDeferredCosmetics`
+
+T3-Opus convergent on the v3.22.38 round noted that the comment's "runs from LoginCredentialsSent (T+~7s) and LoginComplete (T+~30s)" framing was correct but underspecified: at T+~7s `IsLoginActive` is still true so the per-client loop in `RaiseClientsAboveTaskbar` filters out the calling PID — the dance is a no-op for that PID at that moment, though the slim-titlebar bounds above DO apply. The dance effectively fires from the T+~30s `LoginComplete` call after `IsLoginActive` flips false. The T+~7s call is retained because (a) sibling clients that already completed login can be raised here, and (b) it costs nothing when filtered. Added the clarification inline.
+
+### Runtime-confirmation note (memory only — no code change)
+
+The v3.22.35→37 Path A bridge deref-count fix was originally documented in `reference_dalaya_path_a_bridge_deref_bug.md` with a `⚠️ Static-only — runtime confirmation REQUIRED` block, listing 4 rival hypotheses (per-process mismatch / async populate race / ASLR / MQ2 export resolution path) that had to be ruled out before the static evidence chain could be treated as load-bearing. The 2026-05-23 ~13:03 team1 smoke produced direct measurement of all four:
+
+- Each PID showed a unique heap-allocated `CEverQuest*` (062B29A0 vs 065F29A0), distinct from each other AND from the v3.22.34 baseline log line `CEverQuest*=00EE7CCC` (which was the storage address — the 1-deref-bug artifact). Per-process semantics confirmed.
+- The v3.22.37 per-case null-source gate fired once per PID on the early-poll transient ("both derefs OK but CEverQuest* is null") then suppressed — matches the "first N polls null, then immediate Count=N" pattern the 2-deref hypothesis predicted, not the late-server-packet rival.
+- Bridge's resolved address agreed with the probe's resolved address (no ASLR perturbation).
+- Bridge logs `export=6B6877D8` matching Dalaya MQ2's `ppEverQuest` publication.
+
+The memory file and `_.eqswitch-re/pathA-2026-05-23/FINDINGS.md` were both updated to drop the `⚠️ Static-only` block and replace it with the runtime evidence. The "do not apply the fix without runtime confirmation" caveat is now satisfied retroactively.
+
+### Deploy gotcha codified
+
+`feedback_eqswitch_deploy_workflow.md` was carrying stale guidance — pre-v3.22.38 it mentioned only `EQSwitch.exe` + `dinput8.dll` (the dinput8.dll proxy was actually removed in v3.4.3, ~6 weeks ago). The current publish-output ships THREE files that must all reach the install dir: `EQSwitch.exe`, `eqswitch-di8.dll`, `eqswitch-hook.dll`. Both DLLs are `ExcludeFromSingleFile="true"` in csproj (lines 51-52) — they live side-by-side, NOT embedded. The v3.22.38 first-team1 smoke at 13:00 ran v3.22.38 EXE with v3.22.34 native DLLs (Count=0), then `~`13:02 deploy of all 3 files, then 13:03 refire was the first fully-v3.22.38 run — ~3 min between symptom and resolution, the sha256 diff was what flagged the DLL-currency mismatch. Memory file rewritten with the 3-file rule and a sha256 parity check step.
+
+### Known v3.22.41-worthy gaps (deferred per the diminishing-returns boundary)
+
+The v3.22.40 verifier round (8 agents, normal stakes) surfaced 3 substantive CONCERNs that are NOT fixed in v3.22.40 because they require more than a simple call-site-symmetry pattern and the prompt's explicit "single comprehensive batch" rule deferred them to a follow-up:
+
+1. **Single-screen ReloadConfig slim-toggle-on gap** (T3-Opus). The v3.22.40 raise in `ReloadConfig` is gated inside `if (isMultiMon && _processManager.Clients.Count > 0)`. Toggling SlimTitlebar ON via Settings Apply while in **single-screen** mode with clients running rebuilds the `_slimTitlebarGuard` timer (lines ~3322-3329) which applies slim bounds on its next tick — but no `RaiseClientsAboveTaskbar` follows. Taskbar slice persists until next focus event. Recoverable, rare trigger (slim is typically a persistent preference), but real regression-class. Fix likely needs immediate `ApplySlimTitlebarToAll` + raise after the guard rebuild in single-screen mode, not just adding a raise.
+
+2. **Switch-hotkey MM-arrange paths missing the dance** (T2-Opus, disputed by T2-Sonnet). `OnSwitchKey` (~803), `OnGlobalSwitchKey` (~874), and the `SwapWindows` tray action (~2468) call `ArrangeWindows` in MM mode which re-applies slim bounds covering the taskbar, then call `SwitchToClient` (which only does `ShowWindow(SW_RESTORE) + ForceForegroundWindow` — no topmost dance). T2-Sonnet argues the foreground transfer naturally demotes the taskbar; T2-Opus argues TOPMOST `WS_EX_TOPMOST` taskbar stays above non-TOPMOST EQ regardless of foreground. The pre-existing behavior (no dance at these sites) has held since the project's history without Nate reporting a regression, so the empirical evidence is on T2-Sonnet's side, but a paired smoke would settle it. Defer until empirically observed in the wild.
+
+3. **OnToggleMultiMonitor 200ms UI-thread block under hammer-spam** (T3-Sonnet). Each `RaiseClientsAboveTaskbar` call probes each client with a 100ms `SendMessageTimeoutA WM_NULL` for responsiveness. With 2 clients and the 500ms debounce on Alt+M, rapid legal toggles eat 200ms of UI-thread blocking per cycle. Not a crash, bounded by debounce, but user-visible stutter under spam is possible. Cosmetic; defer.
+
+### Probe re-verification — deferred
+
+`tools/probe-charselect-offset.py` was rewritten in v3.22.37 (default offset 0x38E70 → 0x38E6C, unpack order `(Data,Count,Alloc)` → `(Count,Data,Alloc)`, 12→16 bytes). The rewrite is implicitly validated by the bridge's own log lines from the 13:03 smoke (Count=10 / Count=1 / heap `CEverQuest*` values match account sizes), but a direct probe-script re-test against a live char-select PID hasn't run since the rewrite. No eqgame.exe processes were running at v3.22.40 ship time; the re-verification is queued for the next team1 fire. The probe is a diagnostic tool (not a shipped artifact) so this doesn't gate the ship.
+
+### Diminishing-returns boundary
+
+Per `reference_verifier_round_diminishing_returns_signal` and the explicit STOP signal in the v3.22.37 CHANGELOG entry, the trilogy is closed at 3 rounds. v3.22.40 is the single comprehensive cleanup pass; if the verifier round flags a v3.22.41-worthy issue, evaluate whether it's load-bearing (load-bearing → ship one more time and STOP; not → defer).
+
 ## v3.22.39 — ApplyDeferredCosmetics: raise ALL clients, not just the one that completed (2026-05-23)
 
 v3.22.38 fixed the missing taskbar-coverage call site (`ApplyDeferredCosmetics`) but passed a single-element array `new[] { client }` to `RaiseClientsAboveTaskbar` — only the PID that just fired `LoginCredentialsSent` / `LoginComplete` got the dance. The v3.22.38 verifier round (T2 Sonnet specifically) called this out at the time:

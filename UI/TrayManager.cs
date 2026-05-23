@@ -237,6 +237,16 @@ public class TrayManager : IDisposable
         // already owns foreground, so a background autologin completion
         // doesn't yank focus from Discord/etc. Skipped when slim is off
         // (normal titlebar = no taskbar overlap to recover).
+        //
+        // v3.22.40 clarification (T3-Opus convergent): the dance is a no-op
+        // for the calling PID at the T+~7s LoginCredentialsSent call because
+        // IsLoginActive is still true at that moment; RaiseClientsAboveTaskbar's
+        // per-client loop filters it out. The slim-titlebar bounds above DO
+        // still apply at T+~7s. The dance effectively fires from the
+        // LoginComplete (T+~30s) call after IsLoginActive flips false — that's
+        // the call that does the z-order recovery work. The T+~7s call is
+        // retained because (a) sibling clients that ALREADY completed login
+        // can be raised here, and (b) it costs nothing when filtered.
         if (_config.Layout.SlimTitlebar)
         {
             bool eqAlreadyForeground = _processManager.GetActiveClient() != null;
@@ -445,6 +455,20 @@ public class TrayManager : IDisposable
                         _windowManager.GetTargetMonitorBounds(),
                         _config.Layout.TitlebarOffset);
                 }
+
+                // v3.22.40: taskbar-coverage parity for the manual-launch path.
+                // The autologin path is covered by ApplyDeferredCosmetics
+                // (v3.22.38/39), but a manually-launched eqgame.exe discovered
+                // by ProcessManager's poll runs through here and previously got
+                // the slim bounds without the z-order recovery dance. Pass all
+                // clients (matching v3.22.39's correction over v3.22.38's
+                // singleton) so any siblings the dance affects are raised
+                // together; mid-login siblings are filtered internally by
+                // RaiseClientsAboveTaskbar's IsLoginActive check. The early
+                // return at line ~426 already excludes this client itself when
+                // its own autologin is mid-flight.
+                bool eqAlreadyForeground = _processManager.GetActiveClient() != null;
+                RaiseClientsAboveTaskbar(_processManager.Clients, foregroundActive: eqAlreadyForeground);
             }
 
             // For EQSwitch-launched clients, both DLLs are already injected pre-resume.
@@ -1366,6 +1390,16 @@ public class TrayManager : IDisposable
             }
             _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
             UpdateHookConfig();
+
+            // v3.22.40: taskbar-coverage parity. Toggling MM mode while slim is
+            // active rearranges via ArrangeWindows (SWP_NOZORDER) which doesn't
+            // restore z-order if the taskbar slipped above EQ. Same pattern as
+            // v3.22.38/39 ApplyDeferredCosmetics + v3.22.32 OnArrangeWindows.
+            if (_config.Layout.SlimTitlebar)
+            {
+                bool eqAlreadyForeground = _processManager.GetActiveClient() != null;
+                RaiseClientsAboveTaskbar(clients, foregroundActive: eqAlreadyForeground);
+            }
         }
     }
 
@@ -3305,6 +3339,19 @@ public class TrayManager : IDisposable
             }
             _windowManager.ArrangeWindows(_processManager.Clients, _monitorSlotByPid);
             FileLogger.Info("ReloadConfig: auto-arranged for multimonitor mode");
+
+            // v3.22.40: taskbar-coverage parity with v3.22.38's ApplyDeferredCosmetics
+            // fix and v3.22.39's all-clients correction. ReloadConfig fires when
+            // Settings Apply toggles layout while slim is active; ArrangeWindows
+            // uses SWP_NOZORDER so the taskbar (WS_EX_TOPMOST) can slice through
+            // EQ's bottom edge if it was raised above EQ before the toggle.
+            // Foreground-gated like the sibling-close path so a background apply
+            // doesn't yank focus from non-EQ apps.
+            if (_config.Layout.SlimTitlebar)
+            {
+                bool eqAlreadyForeground = _processManager.GetActiveClient() != null;
+                RaiseClientsAboveTaskbar(_processManager.Clients, foregroundActive: eqAlreadyForeground);
+            }
         }
 
         // Update hook configs for all injected processes (per-PID shared memory
