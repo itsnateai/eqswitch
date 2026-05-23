@@ -1,5 +1,21 @@
 # Changelog
 
+## v3.22.43 — LOW-severity polish from v3.22.42 delta-verifier (2026-05-23)
+
+Same-session same-day follow-on to v3.22.42. Two cosmetic LOW-severity findings from the v3.22.42 delta-verifier that were initially deferred, then promoted to ship per user direction. UI-only release; Native DLLs unchanged from v3.22.42 (sha256 parity verified at deploy time). One commit, one 2-agent delta-verifier round.
+
+### Nitpick 1 — redundant inner `Count > 0` guard at SwapWindows SS branch
+
+`UI/TrayManager.cs:~2514` — the new v3.22.42 SwapWindows single-screen slim block had `if (_config.Layout.SlimTitlebar && swapClients.Count > 0)`. The outer `if (swapClients.Count >= 2)` at line 2477 already gates this entire branch, so the inner `Count > 0` is always true. Removed for consistency — the MM sibling above also doesn't re-check the count.
+
+### Nitpick 2 — rect-match early-exit comment imprecision
+
+`UI/TrayManager.cs:~3380` — the v3.22.42 explanatory comment said the bound-apply was "cheap due to the rect-match early-exit inside `ApplySlimTitlebarToAll`." Technically correct (the early-exit exists at `WindowManager.cs:692`), but it understated the dominant fast path: for injected clients (the typical post-autologin case), the `injectedPids.Contains` check at `WindowManager.cs:686-687` skips position enforcement entirely BEFORE the rect-match. Rewrote the comment to mention both paths explicitly so the next reader understands which fast-exit fires for which client type.
+
+### What's not in scope
+
+Item 1 from the v3.22.42 prompt (switch-hotkey MM-arrange paths missing the dance) remains deferred-indefinitely. T3-Opus re-confirmed this exists for the MM tray SwapWindows branch during the v3.22.42 delta-verify, but the defer decision was made at the v3.22.42 ship review and stands.
+
 ## v3.22.42 — Single-screen ReloadConfig + SwapWindows slim parity + csproj test-exclusion glob (2026-05-23)
 
 Cleanup pass on two of the six deferred CONCERNs from the v3.22.40+41 verifier rounds, plus a third gap surfaced by the v3.22.42 pre-ship verifier round itself. UI-only release; Native DLLs unchanged from v3.22.41 (sha256 parity verified at deploy time). One ship, one full 6-agent verifier round + one 2-agent delta-verifier round.

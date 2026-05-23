@@ -2511,7 +2511,7 @@ public class TrayManager : IDisposable
                         // bounds + raise immediately. Same foreground-gating
                         // as the ReloadConfig single-screen branch: don't
                         // yank focus on a background tray-menu invocation.
-                        if (_config.Layout.SlimTitlebar && swapClients.Count > 0)
+                        if (_config.Layout.SlimTitlebar)
                         {
                             _windowManager.ApplySlimTitlebarToAll(swapClients, _injectedPids);
                             bool eqAlreadyForeground = _processManager.GetActiveClient() != null;
@@ -3406,8 +3406,11 @@ public class TrayManager : IDisposable
             // immediately and raise — same foreground-gating as the MM path.
             // Fires on every non-MM Apply with slim enabled (not strictly
             // "toggle-on") to mirror the MM branch's unconditional fire-when-
-            // gated semantic; the actual bound-apply is cheap due to the
-            // rect-match early-exit inside ApplySlimTitlebarToAll.
+            // gated semantic. The bound-apply is cheap: injected clients
+            // (typical post-autologin case) hit the injectedPids skip at
+            // WindowManager.cs:686 and exit before any geometry work;
+            // non-injected clients fall through to the rect-match early-exit
+            // at WindowManager.cs:692 (if rect.Top == expectedY).
             _windowManager.ApplySlimTitlebarToAll(_processManager.Clients, _injectedPids);
             bool eqAlreadyForeground = _processManager.GetActiveClient() != null;
             RaiseClientsAboveTaskbar(_processManager.Clients, foregroundActive: eqAlreadyForeground);
