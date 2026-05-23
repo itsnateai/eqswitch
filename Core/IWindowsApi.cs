@@ -23,6 +23,19 @@ public interface IWindowsApi
     bool IsWindow(IntPtr hwnd);
     bool IsIconic(IntPtr hwnd);
     bool IsHungAppWindow(IntPtr hwnd);
+
+    /// <summary>
+    /// Pump-responsiveness probe via SendMessageTimeout(WM_NULL,
+    /// SMTO_ABORTIFHUNG|SMTO_BLOCK, 100ms). Returns false when the target's
+    /// thread is kernel-marked hung OR not dispatching messages within 100ms —
+    /// tighter than IsHungAppWindow's 5s threshold (v3.22.22 round-5).
+    /// On zero-return, lastErr captures GetLastWin32Error so callers can
+    /// disambiguate timeout (lastErr=0) from window-gone
+    /// (ERROR_INVALID_WINDOW_HANDLE=1400) from access-denied
+    /// (ERROR_ACCESS_DENIED=5) in warn logs (v3.22.29 Orphan-2).
+    /// </summary>
+    bool IsClientResponsive(IntPtr hwnd, out int lastErr);
+
     bool ShowWindow(IntPtr hwnd, int nCmdShow);
     bool SetForegroundWindow(IntPtr hwnd);
     bool BringWindowToTop(IntPtr hwnd);

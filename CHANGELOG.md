@@ -1,5 +1,37 @@
 # Changelog
 
+## v3.22.31 — IsClientResponsive → IWindowsApi DI seam + P9 SEH index attribution (2026-05-22)
+
+Same-day follow-on to v3.22.30. Two small, contained improvements: P2 restores the testability seam for the pump-responsiveness probe (private static → `IWindowsApi` method), and P3c sharpens the P9 SEH log attribution so a fault at `shm->names[7]` no longer reports `shm->names[0]`. Both are behavior-equivalent / telemetry-only; no user-visible semantic change.
+
+### Item 1 — `IsClientResponsive` extracted into `IWindowsApi`
+
+`WindowManager.IsClientResponsive(IntPtr hwnd, out int lastErr)` lived as a `private static` since v3.22.22 round-5. It wrapped `NativeMethods.SendMessageTimeout(WM_NULL, SMTO_ABORTIFHUNG|SMTO_BLOCK, 100ms)` to fast-fail on a non-pumping target before the cross-process `SetWindowPos` / `SetWindowLongPtr` calls that crashed PID 24672 in the 2026-05-20 14.5s pass-1 stall. v3.22.29's Orphan-2 added the `out int lastErr` form for timeout-vs-window-gone-vs-access-denied disambiguation.
+
+The probe was correct but couldn't be mocked — calls bypassed `_api`, so unit tests had to invoke the real `SendMessageTimeout` against a real HWND. v3.22.31 promotes the method to `IWindowsApi.IsClientResponsive`; production impl lives in `WindowsApi.cs`. The 5 caller sites in `WindowManager.cs` (`ArrangeSingleScreen`, `ArrangeMultiMonitor`, `SwapWindows`, `ResizeToCurrentMonitors`, `ApplySlimTitlebar`) all route through `_api.IsClientResponsive(...)` now. The dead no-`out` overload at the old `WindowManager.cs:34` (zero callers) was deleted rather than migrated.
+
+Closes the v3.22.23 backlog "IsClientResponsive bypasses IWindowsApi DI" item (R5 T3 Sonnet+Opus convergent MEDIUM). Both Release and Debug builds clean (0/0) after the swap. Test seam is restored; no mocks consume it yet — that's intentional for this ship.
+
+### Item 2 — P9 `__try` index hoist for SEH log attribution (`Native/mq2_bridge.cpp` ~L4382)
+
+The Path B/C combined publisher's plausibility loop runs inside `__try` to catch DLL-detach / stale-SHM faults inside `IsPlausibleName((const uint8_t *)shm->names[i])`. Pre-v3.22.31 the `__except` log hardcoded `shm->names[0]=%p` — misleading when the fault was at `names[7]` (the realistic case in dual-box smokes where Path A populates the first slots before B/C race in).
+
+Fix: hoist `int i = 0;` above the `__try` so `__except` can format `idx=%d` for attribution. Loop becomes `for (i = 0; ...)` (declaration moved up). No `volatile` added on `i` — matches the existing `firstBadIdx` pattern (also non-volatile, read after `__try`); MSVC `/EHa` is conservative across SEH boundaries in practice, and diagnostic-attribution-quality is the right bar.
+
+**Convergent CRITICAL caught by 8-agent verifier round** (T2 Sonnet+Opus, T3 Sonnet+Opus): the original P3c log line included `(const void *)shm->names[i]` as a `%p` arg. Verifiers flagged a recursive-SEH footgun — if the original fault came from `shm` itself being unmapped (the exact scenario the comment names), recomputing `shm->names[i]` in `__except` could re-fault and tear the process down. Technically `(const void *)shm->names[i]` is pointer arithmetic for `char[N][M]` array members (no memory load happens for the expression itself), so the verifier reasoning was slightly off — but the pragmatic move is simpler: drop the `%p` arg entirely. The `idx=%d` is the load-bearing diagnostic; the pointer was duplicative sanity-check. Zero information loss, footgun defused.
+
+### Build
+
+- `dotnet build -c Release` clean (0 warnings / 0 errors).
+- `dotnet build -c Debug` clean (0/0). `Core/*Tests.cs` don't reference `IWindowsApi.IsClientResponsive`, so existing test contracts are untouched.
+- `Native/build-di8-inject.sh` → 244736-byte DLL (size identical to v3.22.30; only the SEH log path differs). Pre-existing C5051 warning in `eqmain_widgets.cpp:259` is unrelated.
+
+### Notes flagged by verifiers for the next ship
+
+- **Inline duplicate of the probe.** T4 (blast-radius) flagged `UI/TrayManager.cs:1670` — the `PopulateForceKillMenu` hung-detection probe still calls `NativeMethods.SendMessageTimeout` inline. The divergence (no `SMTO_BLOCK`) is deliberate, but a future `IsClientResponsiveNoBlock` interface variant would let it route through `_api` for consistency.
+- **`lastErr` doc-comment gap.** `IWindowsApi.cs:32-36` advertises three error codes (0/1400/5). `ERROR_TIMEOUT (1460)` is also reachable and gets the same generic warn-log path. Pre-existing diagnostic looseness; not introduced by this ship.
+- **Other `__try` blocks in `mq2_bridge.cpp`** (~95 of them) iterating `shm->names[i]` haven't been audited for the same hardcoded-`names[0]` log pattern P3c fixed. If a future ship touches the P9 path, sweep neighboring SEH log lines for the same issue.
+
 ## v3.22.30 — Verifier-driven self-update polish: atomic multi-file swap, hash filename pinning, drop .ok orphan-sweep cycle, broaden torn-state recovery gate (2026-05-22)
 
 Same-day follow-on to v3.22.29. Four small, contained fixes that close the last items from the v3.22.27 → v3.22.29 cascade plus one item the v3.22.30 pre-ship verifier round found in the new code. After this, the released GitHub artifact and `main` are back in sync and the v3.22.29 CHANGELOG framing of "after this, the cross-app delta is zero" actually holds.
@@ -48,11 +80,11 @@ The narrower atomic-rollback variant ("move committed-new files aside to `.new` 
 
 ### Why this isn't v3.22.29+1's worth of feature work
 
-Cross-app verifier comparisons against MWBToggle drove v3.22.27 → v3.22.29. The three items here came from a post-tag final round on v3.22.29's `UpdateDialog.cs` rewrite — same comparison method, just one cycle later. After this ship, TODO_LIST.md returns to maintenance-only and EQSwitch's released artifact equals `main` for the first time since v3.22.27. Verifier-driven shipping ends here; reopen only on real bug reports.
+Cross-app verifier comparisons against MWBToggle drove v3.22.27 → v3.22.29. The three items here came from a post-tag final round on v3.22.29's `UpdateDialog.cs` rewrite — same comparison method, just one cycle later. After this ship, EQSwitch's released artifact equals `main` for the first time since v3.22.27. Cross-app parity-driven shipping closes here; further work should be weighed against EQSwitch's actual threat model.
 
 ## v3.22.29 — Full UpdateDialog hardening parity with MWBToggle + lock-symmetry orphan sweep (2026-05-22)
 
-Final maintenance ship. Closes every item carried over from the v3.22.27 → v3.22.28 verifier cascade. After this, EQSwitch returns to **maintenance-only mode** per the v3.22.10 closeout stance — TODO_LIST.md drains to zero outstanding.
+Closes every item carried over from the v3.22.27 → v3.22.28 verifier cascade.
 
 ### Self-update hardening (UpdateDialog.cs rewrite)
 
@@ -101,11 +133,11 @@ These were scoped for v3.22.28 but only Item 3 (URL allowlist) actually shipped 
 
 - **Orphan 5: AutoLoginManager wider `_config.*` threadpool audit.** Re-audited `RunLoginSequence` (lines ~310-812) and `HandleCharSelectViaShm` paths. Only existing `_config.Accounts` read sites are already under `ConfigMutationLock` (line 1313 + 1342 + 2177) — no new sites needed locking. Confirmed.
 
-### Why "maintenance-only" mode resumes after this ship
+### Closing note on the cross-app parity cascade
 
-The v3.22.27 → v3.22.28 → v3.22.29 cycle was driven by **convergent-verifier comparison against MWBToggle** — a sibling app with a different threat model (wider distribution, more attack surface, includes per-hop redirect validation precisely because earlier security iterations surfaced the gap). EQSwitch's actual threat model is personal-use multibox for a single user against GitHub-Releases as the update channel; none of these items shipped because a real bug was reported or a real exploit was observed. They shipped because the verifier loop flagged "MWBToggle has this, EQSwitch doesn't" and Nate's directive was clear-the-backlog. After v3.22.29 the cross-app delta is zero — there is nothing left for the verifier loop to find on a "MWBToggle has X" basis.
+The v3.22.27 → v3.22.28 → v3.22.29 cycle was driven by **convergent-verifier comparison against MWBToggle** — a sibling app with a different threat model (wider distribution, more attack surface, includes per-hop redirect validation precisely because earlier security iterations surfaced the gap). EQSwitch's actual threat model is personal-use multibox for a single user against GitHub-Releases as the update channel; none of these items shipped because a real bug was reported or a real exploit was observed. They shipped because the verifier loop flagged "MWBToggle has this, EQSwitch doesn't" and Nate's directive was clear-the-backlog. After v3.22.29 the cross-app delta is zero on the MWBToggle parity axis.
 
-`TODO_LIST.md` returns to the v3.22.10 closeout state: zero outstanding, reopen only on real bug report / accepted-known-limit trigger firing / new architectural decision.
+Future "sibling has X, we don't" verifier findings should be weighed against EQSwitch's actual threat model before shipping; treat parity-shaped findings as already-known unless the pattern is genuinely new.
 
 ### Build
 

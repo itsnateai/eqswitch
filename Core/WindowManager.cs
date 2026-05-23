@@ -16,41 +16,6 @@ public class WindowManager
     private readonly IWindowsApi _api;
     [ThreadStatic] private static System.Text.StringBuilder? _titleSb;
 
-    /// <summary>
-    /// v3.22.22 round-5: pump-responsiveness probe shared across all
-    /// window-management entry points (ArrangeMultiMonitor, ArrangeSingleScreen,
-    /// SwapWindows). SendMessageTimeout(WM_NULL, SMTO_ABORTIFHUNG|SMTO_BLOCK,
-    /// 100ms) returns 0 when the target window's thread is either kernel-marked
-    /// hung OR not dispatching messages within 100ms. SMTO_BLOCK serializes the
-    /// calling UI thread for the probe duration so we don't accept reentrant
-    /// arrange calls during the 100ms wait (R4 T3-Opus MEDIUM finding).
-    /// Background: 2026-05-20 PID 24672 smoke crash — IsHungAppWindow returned
-    /// false because the kernel's 5s hung-threshold hadn't elapsed when pass-1
-    /// entered. SetWindowLongPtr on a pump that was blocked mid-zone-load
-    /// stalled for 14,471ms, EQ crashed mid-DX-reconfig. This 100ms probe is
-    /// much tighter than IsHungAppWindow's 5s and catches the transient
-    /// mid-zone-load case at the entry to every per-client style/move loop.
-    /// </summary>
-    private static bool IsClientResponsive(IntPtr hwnd) => IsClientResponsive(hwnd, out _);
-
-    /// <summary>
-    /// v3.22.29 Orphan-2 extension: capture GetLastWin32Error on
-    /// SendMessageTimeout zero-return so callers can disambiguate hung-thread
-    /// (timeout, lastErr=0) from window-gone (ERROR_INVALID_WINDOW_HANDLE=1400)
-    /// from access-denied (ERROR_ACCESS_DENIED=5) in their warn logs. Diagnostic
-    /// quality only — no behavior change.
-    /// </summary>
-    private static bool IsClientResponsive(IntPtr hwnd, out int lastErr)
-    {
-        UIntPtr result;
-        IntPtr ok = NativeMethods.SendMessageTimeout(
-            hwnd, NativeMethods.WM_NULL, IntPtr.Zero, IntPtr.Zero,
-            NativeMethods.SMTO_ABORTIFHUNG | NativeMethods.SMTO_BLOCK,
-            100, out result);
-        lastErr = (ok == IntPtr.Zero) ? System.Runtime.InteropServices.Marshal.GetLastWin32Error() : 0;
-        return ok != IntPtr.Zero;
-    }
-
     public WindowManager(AppConfig config, IWindowsApi? api = null)
     {
         _config = config;
@@ -177,7 +142,7 @@ public class WindowManager
             // a client mid-zone-load (DX device reset blocks pump). Without the
             // probe, single-screen mode would crash the same way as the
             // 2026-05-20 PID 24672 multi-monitor incident.
-            if (!IsClientResponsive(client.WindowHandle, out int lastErr))
+            if (!_api.IsClientResponsive(client.WindowHandle, out int lastErr))
             {
                 FileLogger.Warn($"ArrangeSingleScreen: skipping non-responsive window {client} (SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset or transient pump block; lastErr={lastErr})");
                 continue;
@@ -341,7 +306,7 @@ public class WindowManager
             // kernel threshold — catches transient mid-zone-load pump blocks
             // at 100ms. Round-5 adds SMTO_BLOCK to the probe to prevent
             // reentrant arrange dispatch during the probe wait.
-            if (!IsClientResponsive(client.WindowHandle, out int lastErr))
+            if (!_api.IsClientResponsive(client.WindowHandle, out int lastErr))
             {
                 FileLogger.Warn($"ArrangeMultiMonitor: skipping non-responsive window {client} (SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset or transient pump block; pre-empts the v3.22.21 14.5s pass-1 block that crashed PID 24672; lastErr={lastErr})");
                 continue;
@@ -567,7 +532,7 @@ public class WindowManager
                 FileLogger.Info($"SwapWindows: aborting — hung window {client}");
                 return;
             }
-            if (!IsClientResponsive(client.WindowHandle, out int lastErr))
+            if (!_api.IsClientResponsive(client.WindowHandle, out int lastErr))
             {
                 FileLogger.Warn($"SwapWindows: aborting — non-responsive window {client} (SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset; lastErr={lastErr})");
                 return;
@@ -680,7 +645,7 @@ public class WindowManager
             // the cross-process SetWindowPos. Called immediately after SwapWindows
             // from TrayManager.cs:1940 — a client could enter zone-load DX reset
             // in the millisecond gap between SwapWindows' probe and this call.
-            if (!IsClientResponsive(client.WindowHandle, out int lastErr))
+            if (!_api.IsClientResponsive(client.WindowHandle, out int lastErr))
             {
                 FileLogger.Warn($"ResizeToCurrentMonitors: skipping non-responsive window {client} (SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset; SetWindowPos would stall; lastErr={lastErr})");
                 continue;
@@ -750,7 +715,7 @@ public class WindowManager
         // of the slim-titlebar style — the slim-titlebar guard timer
         // (TrayManager._slimTitlebarGuard) re-fires every 500ms and will
         // re-apply once the pump recovers.
-        if (!IsClientResponsive(hwnd, out int lastErr))
+        if (!_api.IsClientResponsive(hwnd, out int lastErr))
         {
             FileLogger.Warn($"ApplySlimTitlebar: skipping non-responsive window (hwnd=0x{hwnd.ToInt64():X} SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset; guard timer will retry; lastErr={lastErr})");
             return;

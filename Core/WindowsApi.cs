@@ -13,6 +13,17 @@ public class WindowsApi : IWindowsApi
     public bool IsWindow(IntPtr hwnd) => NativeMethods.IsWindow(hwnd);
     public bool IsIconic(IntPtr hwnd) => NativeMethods.IsIconic(hwnd);
     public bool IsHungAppWindow(IntPtr hwnd) => NativeMethods.IsHungAppWindow(hwnd);
+
+    public bool IsClientResponsive(IntPtr hwnd, out int lastErr)
+    {
+        IntPtr ok = NativeMethods.SendMessageTimeout(
+            hwnd, NativeMethods.WM_NULL, IntPtr.Zero, IntPtr.Zero,
+            NativeMethods.SMTO_ABORTIFHUNG | NativeMethods.SMTO_BLOCK,
+            100, out _);
+        lastErr = (ok == IntPtr.Zero) ? Marshal.GetLastWin32Error() : 0;
+        return ok != IntPtr.Zero;
+    }
+
     public bool ShowWindow(IntPtr hwnd, int nCmdShow) => NativeMethods.ShowWindow(hwnd, nCmdShow);
     public bool SetForegroundWindow(IntPtr hwnd) => NativeMethods.SetForegroundWindow(hwnd);
     public bool BringWindowToTop(IntPtr hwnd) => NativeMethods.BringWindowToTop(hwnd);

@@ -4379,8 +4379,16 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 // partial-pop bug. Full-entries validation closes that gap.
                 bool allPlausible = true;
                 int firstBadIdx = -1;
+                // v3.22.31 P3c: hoist `i` out of __try so the __except handler
+                // can attribute which index faulted. Pre-fix the SEH log
+                // hardcoded `shm->names[0]` — misleading when names[7] is the
+                // faulting entry (DLL detach race or partial unmap). MSVC SEH
+                // spec leaves register-cached locals "undefined" in __except,
+                // but practice across /EHa matches the existing pattern used
+                // by `firstBadIdx` (also read after __try without volatile).
+                int i = 0;
                 __try {
-                    for (int i = 0; i < count && i < CHARSEL_MAX_CHARS; i++) {
+                    for (i = 0; i < count && i < CHARSEL_MAX_CHARS; i++) {
                         if (!IsPlausibleName((const uint8_t *)shm->names[i])) {
                             allPlausible = false;
                             firstBadIdx = i;
@@ -4391,13 +4399,20 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                     // v3.22.5: distinguish SEH from the non-SEH "placeholder or
                     // empty" path. Pre-v3.22.5 the empty __except fell through to
                     // the else-if below which logs "entry[0] is placeholder or
-                    // empty" — wrong description if shm->names[0] itself faulted
+                    // empty" — wrong description if shm->names[i] itself faulted
                     // (DLL detach race, MMF unmapped). One-shot per cycle alongside
                     // g_p9GateLogged so DebugView signal stays high without flooding.
+                    // v3.22.31 P3c: log the hoisted `i` for index attribution.
+                    // Do NOT re-read shm->names[i] in the __except — even though
+                    // the expression is pointer arithmetic (no memory load for
+                    // `char names[N][M]` array members), the convergent verifier
+                    // finding (4-of-8 agents, 2026-05-22) flagged it as a
+                    // recursive-SEH footgun. The index `i` alone is the
+                    // load-bearing attribution; pointer value was duplicative.
                     if (!g_p9SehLogged) {
                         g_p9SehLogged = true;
-                        DI8Log("mq2_bridge: P9 gate SEH in IsPlausibleName predicate (shm->names[0]=%p) — treating as not plausible, deferring publish; check for DLL detach race or stale SHM mapping",
-                               (const void *)shm->names[0]);
+                        DI8Log("mq2_bridge: P9 gate SEH in IsPlausibleName predicate (idx=%d) — treating as not plausible, deferring publish; check for DLL detach race or stale SHM mapping",
+                               i);
                     }
                     allPlausible = false;
                 }
