@@ -1216,14 +1216,38 @@ public class TrayManager : IDisposable
 
             if (candidate != null)
             {
-                try
+                // v3.22.41: skip foreground transfer when candidate is ALREADY
+                // the current foreground window. ApplyDeferredCosmetics fires
+                // up to 4 times during a 2-client autologin (each client's
+                // LoginCredentialsSent at T+~7s + LoginComplete at T+~30s);
+                // each raise's SwitchToClient runs ForceForegroundWindow's
+                // AttachThreadInput + BringWindowToTop + SetForegroundWindow
+                // chain — visible as a focus-grab + minor resize flash even
+                // when candidate IS the current foreground. The topmost dance
+                // above is the load-bearing z-order work; the foreground
+                // transfer is only needed when foreground is a non-EQ window
+                // or a DIFFERENT EQ client. Nate's 2026-05-23 13:38 team1
+                // smoke at char-select: "both windows looked like they resized
+                // and stole focus a few times" — caused by ~4 raises ×
+                // redundant SwitchToClient on the already-foreground candidate.
+                // GetForegroundWindow is fast (no IPC, kernel-cached) so the
+                // check is cheap enough to run unconditionally.
+                var currentFg = NativeMethods.GetForegroundWindow();
+                if (currentFg == candidate.WindowHandle)
                 {
-                    _windowManager.SwitchToClient(candidate);
-                    FileLogger.Info($"RaiseClientsAboveTaskbar: foregrounded {candidate} after topmost dance ({raised}/{clients.Count} raised, {skippedUnresponsive} skipped)");
+                    FileLogger.Info($"RaiseClientsAboveTaskbar: candidate {candidate} already foreground — skipping SwitchToClient ({raised}/{clients.Count} raised, {skippedUnresponsive} skipped)");
                 }
-                catch (Exception ex)
+                else
                 {
-                    FileLogger.Warn($"RaiseClientsAboveTaskbar: ForceForegroundWindow on {candidate} threw — {ex.Message}");
+                    try
+                    {
+                        _windowManager.SwitchToClient(candidate);
+                        FileLogger.Info($"RaiseClientsAboveTaskbar: foregrounded {candidate} after topmost dance ({raised}/{clients.Count} raised, {skippedUnresponsive} skipped)");
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLogger.Warn($"RaiseClientsAboveTaskbar: ForceForegroundWindow on {candidate} threw — {ex.Message}");
+                    }
                 }
             }
             else

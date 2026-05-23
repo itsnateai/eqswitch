@@ -1,5 +1,50 @@
 # Changelog
 
+## v3.22.41 — RaiseClientsAboveTaskbar: skip SwitchToClient when candidate is already foreground (2026-05-23)
+
+Same-day same-session follow-on to v3.22.40 — closes the focus-bounce-at-char-select issue Nate observed in the 13:38 team1 live smoke immediately after v3.22.40 deployed.
+
+### Bug pinned in live smoke
+
+2026-05-23 ~13:39 (Nate, during v3.22.40 team1 smoke at char-select): "both windows looked like they resized and stole focus a few times". Translation: during the ~30s window between team1 launch and both clients reaching char-select, the user-visible behavior was 3–4 focus transfers between clients accompanied by minor resize flashes.
+
+### Root cause — pre-existing v3.22.39 behavior amplified at slow-server latency
+
+`ApplyDeferredCosmetics` (`UI/TrayManager.cs:~206`) fires from BOTH `LoginCredentialsSent` (T+~7s) and `LoginComplete` (T+~30s) per client. With a 2-client autologin team, that's up to 4 fires. Each fire calls `RaiseClientsAboveTaskbar(_processManager.Clients, foregroundActive: eqAlreadyForeground)` — the v3.22.39 "all clients" correction — and the foreground block at `RaiseClientsAboveTaskbar:~1217` unconditionally calls `_windowManager.SwitchToClient(candidate)` even when `candidate` IS the current Windows foreground window.
+
+`SwitchToClient` calls `ShowWindow(SW_RESTORE) + ForceForegroundWindow`, and `ForceForegroundWindow` (`Core/WindowsApi.cs:36`) uses the `AttachThreadInput` + `BringWindowToTop` + `SetForegroundWindow` workaround for Windows' foreground-restrictions — that chain is visible as a focus-grab flash + brief minor resize even when the target is ALREADY the foreground window. With 4 raises × `ForceForegroundWindow` on the same already-foreground client, the visual effect is exactly what Nate described.
+
+### Fix
+
+`RaiseClientsAboveTaskbar` (`UI/TrayManager.cs:~1217`) now queries `GetForegroundWindow()` before the SwitchToClient call:
+
+```csharp
+var currentFg = NativeMethods.GetForegroundWindow();
+if (currentFg == candidate.WindowHandle)
+{
+    // log + skip — candidate is already foreground, the topmost dance above did the z-order work
+}
+else
+{
+    _windowManager.SwitchToClient(candidate);
+}
+```
+
+Reasoning: the load-bearing z-order recovery is the `HWND_TOPMOST → HWND_NOTOPMOST` dance ABOVE this block. The foreground transfer is only needed when the current foreground is a non-EQ window OR a DIFFERENT EQ client (the canonical "user clicked Fix Window while in Discord" or "sibling closed and we need to commit a surviving client to foreground" cases). When the candidate is already foreground, the `AttachThreadInput`-based foreground-set is pure redundancy that causes the focus-grab flash.
+
+`GetForegroundWindow` is fast (no IPC, kernel-cached state), so the check is cheap enough to run unconditionally without measurable overhead.
+
+### Doesn't break the original use cases
+
+- **Fix Window button (`OnArrangeWindows:~979`)**: user clicks Fix Window. If EQ already foreground AND active client is the candidate → skip SwitchToClient (redundant). If user clicked while in Discord → currentFg != candidate.WindowHandle → SwitchToClient still fires. ✓
+- **Sibling-close (`RaiseRemainingClientsAboveTaskbar:~1346`)**: a sibling closed. currentFg is either the dead sibling's HWND (now invalid) or a non-EQ window (user moved on) — in either case currentFg != surviving candidate.WindowHandle → SwitchToClient still fires. ✓
+- **ApplyDeferredCosmetics (the bug case)**: autologin completion just brought the client to foreground naturally as part of the Enter World transition. currentFg == candidate.WindowHandle → skip SwitchToClient → no bounce. ✓
+- **v3.22.40 ClientDiscovered / OnToggleMultiMonitor / ReloadConfig**: each of these patches benefits from the same "skip redundant foreground" optimization, since by the time these fire the user is typically already focused on EQ. ✓
+
+### Diminishing-returns boundary
+
+v3.22.41 is the same-day cleanup that v3.22.40's CHANGELOG flagged as "evaluate v3.22.41-worthy issues for load-bearing". The focus-bounce was observed end-user during a live smoke, which makes it load-bearing per the spec. The other 3 deferred CONCERNs from the v3.22.40 verifier round (single-screen ReloadConfig gap, switch-hotkey MM paths, hammer-spam UI block) remain deferred — not user-observed regressions.
+
 ## v3.22.40 — Taskbar-coverage parity at 3 more call sites + ApplyDeferredCosmetics comment polish (2026-05-23)
 
 Cleanup pass for the v3.22.35→39 Path A + taskbar trilogy. UI-only release; Native DLLs unchanged from v3.22.39 (sha256 parity verified at deploy time). One comprehensive ship, single verifier round.
