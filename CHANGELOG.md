@@ -1,5 +1,29 @@
 # Changelog
 
+## v3.22.37 — Path A trilogy DONE: per-case deref-null gates, L2722 comment-lie, Shutdown reset symmetry (2026-05-23)
+
+8-agent verifier round on v3.22.36 (commit `9d6c067`) returned 2 APPROVE + 6 CONCERNS with 5 convergent findings — all addressable as either logic gaps in the v3.22.36 fix or downstream doc-rot. v3.22.37 closes them all as the **terminal round** of the v3.22.34→35→36→37 Path A trilogy (per [[reference_verifier_round_diminishing_returns_signal]] the iterative-rounds pattern hits diminishing returns at round 3; further rounds yield only noise).
+
+### Fixes
+
+1. **`DerefEverQuestPointer` single `g_derefNullLogged` flag split into 4 per-case flags.** v3.22.36's shared gate meant whichever failure mode fired first silenced the other three for the rest of the process lifetime — actively hiding signal across distinct failure modes (T2 Sonnet + T2 Opus + T3 Opus convergent CRITICAL). v3.22.37 has independent flags: `g_derefNullExportLogged` (g_ppEverQuest nullptr), `g_derefNullSehLogged` (SEH on deref), `g_derefNullStorageLogged` (`*g_ppEverQuest` zero — pinst storage uninitialised), `g_derefNullUnreadableLogged` (storage non-zero but page !IsReadablePtr — decommitted), `g_derefNullObjectLogged` (both derefs OK but CEverQuest* still null). Also: v3.22.36 conflated "pinstStorage==null" with "object==null" into a single ambiguous "constructed-nullptr" message; v3.22.37 separates them.
+
+2. **Gate-set moved AFTER `DI8Log` returns.** Pre-v3.22.37 a silently-failing `DI8Log` (disk full, log file exclusive-locked by an external tailer) would set the gate to `true` and produce zero log output — burning the only one-shot opportunity with no diagnostic trace. v3.22.37 sets the gate after the log call so a failed log doesn't consume the flag (T2 Sonnet CRITICAL).
+
+3. **`pinstCCharacterSelect` stale comment at the static declaration** (`mq2_bridge.cpp:99` pre-v3.22.37) fixed. The comment said `pinstCCharacterSelect: direct pointer to CCharacterSelect window (bypasses CXWndManager)` — the "direct pointer" phrasing is the exact same comment-lie pattern as the L2684 comment v3.22.36 fixed for `pinstCXWndManager`. T2 Opus + T2 Sonnet caught it. v3.22.37 replaced with the proper 2-deref doc-block + a note that "bypasses CXWndManager" referred to the operational intent (don't enumerate the window manager's children to find the char-select window) not a deref-count claim.
+
+4. **`g_derefNull*Logged` flags added to BOTH the Shutdown reset block AND the per-charselect-cycle reset block** (T3 Opus IMPORTANT). v3.22.36's lone flag was never reset, breaking the bridge's own re-init contract that resets 5 sibling `*Logged` flags on Shutdown and 5 more on charselect cycle transitions. v3.22.37 brings the new flags in line — Shutdown/Init cycle and charselect cycle both clear them for fresh diagnostic signal.
+
+5. **Downstream docs updated to drop stale line references** (T4 Sonnet + T4 Opus convergent). `memory/reference_dalaya_path_a_bridge_deref_bug.md` and `_.eqswitch-re/pathA-2026-05-23/FINDINGS.md` were carrying the same wrong line numbers (944/2688/3497, 2711/2794/3069) that v3.22.36 fixed in the source files; same `grep storageAddr = \*g_pinst` idiom now used downstream. The "L3954" reference in the memory file was a hallucinated artifact from v3.22.35's writeup — removed.
+
+### Diminishing-returns boundary — STOP
+
+This is round 3 of the Path A trilogy. Per the workspace pattern documented in [[reference_verifier_round_diminishing_returns_signal]] (and explicitly recapped in `_.eqswitch-re/NEXT-SESSION-PROMPT-v3.22.28.md` describing the v3.22.27 R0→R1→R2 cycle), iterative verifier rounds find 3-5 new findings per round in the same fix-class — the value drops sharply after round 3. Future Path A work should batch into a single comprehensive grep-and-lock pass rather than another iterative round; if a v3.22.38 verifier round happens, it should explicitly justify why the previous batch wasn't sufficient.
+
+### Verification
+
+Still recommended: paired-probe at live char-select per v3.22.35's verification plan. None of v3.22.36/v3.22.37's changes affect the load-bearing claim (the 2-deref helper itself is structurally unchanged); these rounds were diagnostic-quality and downstream-doc cleanup. Functional verification is one runtime smoke against a live Dalaya char-select.
+
 ## v3.22.36 — v3.22.35 verifier fix-ups: line refs, mislabel, stale L2684 comment, helper one-shot log (2026-05-23)
 
 8-agent verifier round on v3.22.35 (commit `4819d9d`, 4 topics × Sonnet+Opus) returned 2 APPROVE + 6 CONCERNS with three convergent findings: (1) the line numbers in the v3.22.35 CHANGELOG + `mq2_bridge.cpp:86` comment block (`944/2688/2711/2794/3069/3497` for the sibling 2-deref sites) were stale — those numbers were pre-helper-insertion and shifted ~45 lines down post-insert. The cited lines now land on unrelated code (function signatures, GetProcAddress assignments, comment headers). (2) v3.22.35 called the third Path A read site "Init smoke-log" but `MQ2Bridge::Init` only logs the raw pointer at ~line 2693 without dereferencing — the actual third site is `EmitVerificationReport` (line ~3508), fired once on first successful charselect. (3) The stale comment at `mq2_bridge.cpp:2684` `// pinstCXWndManager is a uintptr_t — value IS the CXWndManager pointer (single deref)` was missed by v3.22.35's "comment cleanup" pass. Two verifiers flagged it as the exact comment-lie pattern that could seed a future repeat of the bug.

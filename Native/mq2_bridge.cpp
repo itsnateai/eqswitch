@@ -96,6 +96,15 @@ static void         **g_ppEverQuest     = nullptr;    // CEverQuest** — 2 dere
 static void         **g_ppWndMgr        = nullptr;    // ppWndMgr: triple-ptr (&ForeignPointer.m_ptr)
 static uintptr_t     *g_pinstWndMgr     = nullptr;    // pinstCXWndManager — 2 derefs to reach CXWndManager*
 static uintptr_t     *g_pinstEQMainWnd  = nullptr;    // pinstCEQMainWnd — 2 derefs to reach CEQMainWnd*
+// pinstCCharacterSelect export — same 2-deref pattern as the rest (storage
+// addr in eqgame.exe holds CCharacterSelect*, dereferenced once gives the
+// heap object). v3.22.37 corrected the pre-v3.22.37 phrasing "direct pointer
+// to CCharacterSelect window (bypasses CXWndManager)" which was a misleading
+// shorthand of the same shape as the pre-v3.22.36 L2684 comment-lie that
+// shipped the original Path A bug. "bypasses CXWndManager" was the operational
+// intent (don't enumerate the window manager's children); not a deref-count
+// claim. All consumer sites do `storageAddr = *g_pinstCharSelect; actual =
+// *(void**)storageAddr` (grep `storageAddr = \*g_pinstCharSelect`).
 static uintptr_t     *g_pinstCharSelect = nullptr;    // pinstCCharacterSelect — 2 derefs to reach CCharacterSelect*
 static HMODULE        g_hEQMain         = nullptr;    // eqmain.dll handle (login screen module)
 static FN_GetItemText   g_fnGetItemText   = nullptr;
@@ -664,37 +673,59 @@ static bool IsReadablePtr(const void *ptr, size_t size) {
 // site, invoked once on first successful charselect. Corrected v3.22.36.)
 //
 // This helper SEH-wraps the two derefs and returns nullptr on any failure
-// (matches the prior 1-deref site's error semantics). v3.22.36 adds a
-// one-shot Warn log on first nullptr return so a deferred-MQ2-init race
-// or partial-DLL-unload doesn't fail silently — the prior 1-deref code
-// at least produced a stable bogus pointer that downstream sanity gates
-// rejected; the helper bails earlier, so we surface the bail at least once.
-static volatile bool g_derefNullLogged = false;
+// (matches the prior 1-deref site's error semantics). v3.22.36 added a
+// one-shot Warn log on first nullptr return; v3.22.37 split that single
+// gate into 4 per-case flags so the first-failure case doesn't silence
+// subsequent distinct failure modes (a deferred-init transient on poll 1
+// must not mute a real page-fault on poll 10000). Each flag is reset on
+// Shutdown() and per-charselect-cycle (sibling pattern with
+// g_uiFallbackLogged / g_p8GateLogged / etc). Volatile-bool check-then-set
+// is not atomic — worst case is two log lines from racing threads, which
+// matches the established convention of the sibling *Logged flags above.
+// Gate is set AFTER DI8Log returns so a silently-failed log doesn't burn
+// the flag (DI8Log can fail-silent on disk full / exclusive-locked log file).
+static volatile bool g_derefNullExportLogged     = false;  // g_ppEverQuest is nullptr (Init never resolved)
+static volatile bool g_derefNullSehLogged        = false;  // SEH on deref (page decommitted / partial unload)
+static volatile bool g_derefNullStorageLogged    = false;  // *g_ppEverQuest == 0 (pinst storage zero — MQ2 init incomplete)
+static volatile bool g_derefNullUnreadableLogged = false;  // *g_ppEverQuest != 0 but storage page !IsReadablePtr
+static volatile bool g_derefNullObjectLogged     = false;  // both derefs returned, but the CEverQuest* itself is 0
 static void *DerefEverQuestPointer() {
     if (!g_ppEverQuest) {
-        if (!g_derefNullLogged) {
-            g_derefNullLogged = true;
-            DI8Log("mq2_bridge: DerefEverQuestPointer — g_ppEverQuest is nullptr (Init never resolved the export?). Suppressing further log of this case.");
+        if (!g_derefNullExportLogged) {
+            DI8Log("mq2_bridge: DerefEverQuestPointer — g_ppEverQuest is nullptr (MQ2Bridge::Init never resolved the export?). Suppressing further log of this case until Shutdown/charselect-cycle reset.");
+            g_derefNullExportLogged = true;
         }
         return nullptr;
     }
     void *pEverQuest = nullptr;
+    bool storageNull = false, storageUnreadable = false, objectNull = false;
     __try {
-        void *pinstStorage = *g_ppEverQuest;   // deref 1: eqgame pinst storage addr
-        if (pinstStorage && IsReadablePtr(pinstStorage, sizeof(void *))) {
+        void *pinstStorage = *g_ppEverQuest;       // deref 1: eqgame pinst storage addr
+        if (!pinstStorage) {
+            storageNull = true;
+        } else if (!IsReadablePtr(pinstStorage, sizeof(void *))) {
+            storageUnreadable = true;
+        } else {
             pEverQuest = *(void **)pinstStorage;   // deref 2: actual CEverQuest*
+            if (!pEverQuest) objectNull = true;
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        if (!g_derefNullLogged) {
-            g_derefNullLogged = true;
-            DI8Log("mq2_bridge: DerefEverQuestPointer — SEH on deref (page decommitted or MQ2 partially unloaded?). Suppressing further log of this case.");
+        if (!g_derefNullSehLogged) {
+            DI8Log("mq2_bridge: DerefEverQuestPointer — SEH on deref (page decommitted or MQ2 partially unloaded?). Suppressing further log of this case until Shutdown/charselect-cycle reset.");
+            g_derefNullSehLogged = true;
         }
         return nullptr;
     }
-    if (!pEverQuest && !g_derefNullLogged) {
-        g_derefNullLogged = true;
-        DI8Log("mq2_bridge: DerefEverQuestPointer — returned nullptr (CEverQuest not yet constructed, or pinstStorage decommitted). Suppressing further log of this case.");
+    if (storageNull && !g_derefNullStorageLogged) {
+        DI8Log("mq2_bridge: DerefEverQuestPointer — pinst storage is zero (MQ2 export resolved but pinstCEverQuest not yet initialised — deferred-init race). Suppressing further log of this case until Shutdown/charselect-cycle reset.");
+        g_derefNullStorageLogged = true;
+    } else if (storageUnreadable && !g_derefNullUnreadableLogged) {
+        DI8Log("mq2_bridge: DerefEverQuestPointer — pinst storage address non-zero but not readable (decommitted page or stale stride). Suppressing further log of this case until Shutdown/charselect-cycle reset.");
+        g_derefNullUnreadableLogged = true;
+    } else if (objectNull && !g_derefNullObjectLogged) {
+        DI8Log("mq2_bridge: DerefEverQuestPointer — both derefs OK but CEverQuest* is null (object not yet constructed, normal in early charselect polls). Suppressing further log of this case until Shutdown/charselect-cycle reset.");
+        g_derefNullObjectLogged = true;
     }
     return pEverQuest;
 }
@@ -2717,6 +2748,8 @@ bool MQ2Bridge::Init() {
     // misleading shorthand — the actual code at the consumer sites already
     // does the canonical 2-deref via `storageAddr = *g_pinstWndMgr; actual =
     // *(void**)storageAddr`. Storage at eqgame_base+RVA holds CXWndManager*.
+    // v3.22.37 confirmed the equivalent pinstCCharacterSelect comment-lie at
+    // L99 was also missed by v3.22.36 — both now corrected.
     g_pinstWndMgr = (uintptr_t *)GetProcAddress(g_hMQ2, "pinstCXWndManager");
     g_pinstEQMainWnd = (uintptr_t *)GetProcAddress(g_hMQ2, "pinstCEQMainWnd");
     // pinstCCharacterSelect: direct pointer to CCharacterSelect window (bypasses CXWndManager)
@@ -3187,6 +3220,14 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                         g_p9GateLogged = false;
                         g_p9SehLogged = false;
                         g_partialPopLogged = false;
+                        // v3.22.37: per-charselect-cycle reset for deref-null
+                        // gates so the diagnostic re-fires on each new char-select
+                        // session (consistent with the sibling *Logged flags above).
+                        g_derefNullExportLogged     = false;
+                        g_derefNullSehLogged        = false;
+                        g_derefNullStorageLogged    = false;
+                        g_derefNullUnreadableLogged = false;
+                        g_derefNullObjectLogged     = false;
                         g_cachedSlotCount = -1;
                         g_cachedNameCol = -1;
                         // v3.15.2: clear chunked-resume cursors so a fresh charselect
@@ -5050,6 +5091,15 @@ void MQ2Bridge::Shutdown() {
     g_p9GateLogged     = false;
     g_p9SehLogged      = false;
     g_partialPopLogged = false;
+    // v3.22.37: reset the 4 per-case deref-null gates so a Shutdown/re-Init
+    // cycle gets fresh diagnostic signal (sibling pattern with the *Logged
+    // flags above — pre-v3.22.37 the single shared flag was never reset,
+    // permanently silencing the deferred-init log after first cycle).
+    g_derefNullExportLogged     = false;
+    g_derefNullSehLogged        = false;
+    g_derefNullStorageLogged    = false;
+    g_derefNullUnreadableLogged = false;
+    g_derefNullObjectLogged     = false;
     g_cachedNameCol    = -1;
     g_verificationDone = false;
     g_findLogCount     = 0;
