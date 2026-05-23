@@ -81,11 +81,15 @@ typedef void (__thiscall *FN_CXStrDtor)(void *thisPtr);
 // so two derefs are needed to reach the heap T*:
 //   *g_pinst  -> storage address in eqgame.exe (eqgame_base + RVA)
 //   **g_pinst -> the actual T* heap object  (== *(T**)(*g_pinst))
-// The g_pinstWndMgr/g_pinstCharSelect call sites already do this correctly via
-// the `storageAddr = *g_pinst; actual = *(void**)storageAddr` idiom — see lines
-// 944/2688/2711/2794/3069/3497. The g_ppEverQuest Path A sites historically
-// did only one deref (the "Path A unreachable on Dalaya" bug); fixed in
-// v3.22.35 via the DerefEverQuestPointer() helper defined after IsReadablePtr.
+// The g_pinstWndMgr/g_pinstCharSelect/g_pinstEQMainWnd call sites already do
+// this correctly via the `storageAddr = *g_pinst; actual = *(void**)storageAddr`
+// idiom — grep `storageAddr = \*g_pinst` for the canonical sites (the actual
+// line numbers shift with edits; the IDIOM is the durable reference). The
+// g_ppEverQuest Path A sites historically did only one deref (the "Path A
+// unreachable on Dalaya" bug); fixed in v3.22.35 via the DerefEverQuestPointer()
+// helper defined after IsReadablePtr. v3.22.36 corrected this comment block —
+// the v3.22.35 line citations (944/2688/2711/2794/3069/3497) were stale: that
+// numbering was pre-helper-insertion and shifted ~45 lines down post-insert.
 static HMODULE        g_hMQ2            = nullptr;
 static volatile int  *g_pGameState      = nullptr;
 static void         **g_ppEverQuest     = nullptr;    // CEverQuest** — 2 derefs to reach CEverQuest* (use DerefEverQuestPointer())
@@ -645,7 +649,7 @@ static bool IsReadablePtr(const void *ptr, size_t size) {
 //   deref 2: *(void**)<deref1> -> the heap-allocated CEverQuest*
 //
 // Pre-v3.22.35 the Path A read sites in PopulateCharacterData / Poll /
-// the Init smoke-log did only ONE deref, reading at `(eqgame_base+0xA67CCC)
+// EmitVerificationReport did only ONE deref, reading at `(eqgame_base+0xA67CCC)
 // + 0x38E6C` = `eqgame_base + 0xAA0B38` (eqgame.exe .rdata). That memory
 // is linker-padding or unrelated constants — reliably read as Count=0 or
 // out-of-range garbage that fails the sanity gate. Symptom: "Path A
@@ -654,10 +658,26 @@ static bool IsReadablePtr(const void *ptr, size_t size) {
 // bug, not a Dalaya structural quirk. See _.eqswitch-re/pathA-2026-05-23/
 // FINDINGS.md for the full Ghidra-evidenced writeup.
 //
+// (v3.22.35's CHANGELOG and adjacent comments called the third site the
+// "Init smoke-log"; that was wrong — Init only logs the raw pointer at line
+// ~2693 without dereferencing. EmitVerificationReport is the actual third
+// site, invoked once on first successful charselect. Corrected v3.22.36.)
+//
 // This helper SEH-wraps the two derefs and returns nullptr on any failure
-// (matches the prior 1-deref site's error semantics).
+// (matches the prior 1-deref site's error semantics). v3.22.36 adds a
+// one-shot Warn log on first nullptr return so a deferred-MQ2-init race
+// or partial-DLL-unload doesn't fail silently — the prior 1-deref code
+// at least produced a stable bogus pointer that downstream sanity gates
+// rejected; the helper bails earlier, so we surface the bail at least once.
+static volatile bool g_derefNullLogged = false;
 static void *DerefEverQuestPointer() {
-    if (!g_ppEverQuest) return nullptr;
+    if (!g_ppEverQuest) {
+        if (!g_derefNullLogged) {
+            g_derefNullLogged = true;
+            DI8Log("mq2_bridge: DerefEverQuestPointer — g_ppEverQuest is nullptr (Init never resolved the export?). Suppressing further log of this case.");
+        }
+        return nullptr;
+    }
     void *pEverQuest = nullptr;
     __try {
         void *pinstStorage = *g_ppEverQuest;   // deref 1: eqgame pinst storage addr
@@ -665,7 +685,17 @@ static void *DerefEverQuestPointer() {
             pEverQuest = *(void **)pinstStorage;   // deref 2: actual CEverQuest*
         }
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (!g_derefNullLogged) {
+            g_derefNullLogged = true;
+            DI8Log("mq2_bridge: DerefEverQuestPointer — SEH on deref (page decommitted or MQ2 partially unloaded?). Suppressing further log of this case.");
+        }
+        return nullptr;
+    }
+    if (!pEverQuest && !g_derefNullLogged) {
+        g_derefNullLogged = true;
+        DI8Log("mq2_bridge: DerefEverQuestPointer — returned nullptr (CEverQuest not yet constructed, or pinstStorage decommitted). Suppressing further log of this case.");
+    }
     return pEverQuest;
 }
 
@@ -2681,7 +2711,12 @@ bool MQ2Bridge::Init() {
     g_pGameState = (volatile int *)GetProcAddress(g_hMQ2, "gGameState");
     g_ppEverQuest = (void **)GetProcAddress(g_hMQ2, "ppEverQuest");
     g_ppWndMgr = (void **)GetProcAddress(g_hMQ2, "ppWndMgr");
-    // pinstCXWndManager is a uintptr_t — value IS the CXWndManager pointer (single deref)
+    // pinstCXWndManager export — same 2-deref pattern as g_ppEverQuest (see
+    // DerefEverQuestPointer / the doc-block at top of globals section). The
+    // pre-v3.22.36 phrasing "*ptr IS CXWndManager* (single deref)" was a
+    // misleading shorthand — the actual code at the consumer sites already
+    // does the canonical 2-deref via `storageAddr = *g_pinstWndMgr; actual =
+    // *(void**)storageAddr`. Storage at eqgame_base+RVA holds CXWndManager*.
     g_pinstWndMgr = (uintptr_t *)GetProcAddress(g_hMQ2, "pinstCXWndManager");
     g_pinstEQMainWnd = (uintptr_t *)GetProcAddress(g_hMQ2, "pinstCEQMainWnd");
     // pinstCCharacterSelect: direct pointer to CCharacterSelect window (bypasses CXWndManager)

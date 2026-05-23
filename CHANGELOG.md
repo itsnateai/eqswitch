@@ -1,5 +1,33 @@
 # Changelog
 
+## v3.22.36 — v3.22.35 verifier fix-ups: line refs, mislabel, stale L2684 comment, helper one-shot log (2026-05-23)
+
+8-agent verifier round on v3.22.35 (commit `4819d9d`, 4 topics × Sonnet+Opus) returned 2 APPROVE + 6 CONCERNS with three convergent findings: (1) the line numbers in the v3.22.35 CHANGELOG + `mq2_bridge.cpp:86` comment block (`944/2688/2711/2794/3069/3497` for the sibling 2-deref sites) were stale — those numbers were pre-helper-insertion and shifted ~45 lines down post-insert. The cited lines now land on unrelated code (function signatures, GetProcAddress assignments, comment headers). (2) v3.22.35 called the third Path A read site "Init smoke-log" but `MQ2Bridge::Init` only logs the raw pointer at ~line 2693 without dereferencing — the actual third site is `EmitVerificationReport` (line ~3508), fired once on first successful charselect. (3) The stale comment at `mq2_bridge.cpp:2684` `// pinstCXWndManager is a uintptr_t — value IS the CXWndManager pointer (single deref)` was missed by v3.22.35's "comment cleanup" pass. Two verifiers flagged it as the exact comment-lie pattern that could seed a future repeat of the bug.
+
+### Fixes
+
+- **`mq2_bridge.cpp:85-89` doc-block** — removed the wrong line citations; pointed readers at `grep storageAddr = \*g_pinst` for the durable canonical reference instead.
+- **`mq2_bridge.cpp:647-655` helper doc-block** — corrected "Init smoke-log" → "EmitVerificationReport".
+- **`mq2_bridge.cpp:2684` stale comment** — replaced with a multi-line doc-block pointing at the canonical 2-deref idiom and noting the misleading shorthand was the same kind of comment-lie the v3.22.35 fix was designed to surface.
+- **`DerefEverQuestPointer()` helper** — added one-shot Warn log on first nullptr return (3 distinct cases: `g_ppEverQuest is nullptr`, SEH on deref, both derefs succeeded but result is nullptr). Pre-v3.22.36 a deferred-MQ2-init race or partial-DLL-unload scenario would fail silently and look identical to "EQ hasn't populated CEverQuest yet." Now surfaces once per session via the per-PID `eqswitch-dinput8-{pid}.log` so the next investigator gets a breadcrumb. Global `g_derefNullLogged` is `volatile bool`; never reset (one-shot per process lifetime).
+
+### Also amended in v3.22.35 entry below
+
+The wrong line-number citations and the "Init smoke-log" mislabel were edited in-place in the v3.22.35 CHANGELOG entry (rather than left as-is) because future readers grepping the CHANGELOG for these lines would follow the broken references. The v3.22.35 fix itself was correct; only the documentation was off.
+
+### What did NOT change
+
+- The DerefEverQuestPointer helper's two-deref semantics — unchanged from v3.22.35.
+- The 3 call sites in PopulateCharacterData / Poll / EmitVerificationReport — unchanged from v3.22.35.
+- The runtime paired-probe verification step (still recommended before declaring victory on the deref-count claim).
+
+### Verifier convergence notes (for the future-debugger archaeologist)
+
+- All 8 agents independently confirmed the core technical claim (MQ2 `ppEverQuest` requires 2 derefs from `GetProcAddress`).
+- T3-Opus did the deepest cross-grep and verified 10+ sibling 2-deref sites in the bridge (`g_pinstWndMgr`/`g_pinstCharSelect`/`g_pinstEQMainWnd`), corroborating the "localized bug" framing.
+- T4-Sonnet found the `check-native-dll-currency.sh` release gate would have blocked the v3.22.35 tag if the DLL hadn't been rebuilt — confirming the gate is doing its job (the DLL WAS rebuilt before commit so the gate passed).
+- No verifier found a structural REJECT — all CONCERNS were documentation/diagnostic-quality issues, not load-bearing logic gaps.
+
 ## v3.22.35 — Path A actually WORKING: bridge deref-count fix + comment / probe cleanup (2026-05-23)
 
 v3.22.34 fixed two structural bugs (offset 0x18EC0→0x38E6C, field order `{Data,Count,Alloc}`→`{Count,Data,Alloc}`) but Path A still presented as `Count=0` at char-select on Dalaya. The remaining hidden bug was finally found via a next-Ghidra session against `eqgame.exe` (`X:/_Projects/_.eqswitch-re/projects/eqswitch.gpr`, analysis_complete=true, 34,698 funcs). The "Path A unreachable at char-select on Dalaya" diagnosis (memory file `reference_dalaya_path_a_unreachable_at_charselect.md`) was wrong about the cause: the array IS populated at char-select; the bridge had a missing-second-deref bug on `g_ppEverQuest`.
@@ -14,9 +42,9 @@ g_ppEverQuest          → MQ2 data:    address of MQ2.ppEverQuest variable
 **g_ppEverQuest        → eqgame data: actual heap-allocated CEverQuest*
 ```
 
-Pre-v3.22.35 the three Path A read sites (`PopulateCharacterData`, `Poll`, `Init` smoke-log) each did ONLY ONE DEREF, then computed `pEverQuest + OFFSET_CHARSELECT_ARRAY` = `(eqgame_base + 0xA67CCC) + 0x38E6C` = `eqgame_base + 0xAA0B38`. That address lands in eqgame.exe's `.rdata` section (read-only constant data); whatever the linker padded there is reliably either 0 or fails the `count >= 1 && count <= LOGIN_MAX_CHARS` sanity gate. Result: every poll returned `Count=0` forever — the symptom historically attributed to "Dalaya doesn't populate at char-select."
+Pre-v3.22.35 the three Path A read sites (`PopulateCharacterData`, `Poll`, `EmitVerificationReport` — v3.22.35 originally said "Init smoke-log" but Init itself only logs the raw pointer without dereferencing; the actual third site is `EmitVerificationReport`, fired once on first successful charselect) each did ONLY ONE DEREF, then computed `pEverQuest + OFFSET_CHARSELECT_ARRAY` = `(eqgame_base + 0xA67CCC) + 0x38E6C` = `eqgame_base + 0xAA0B38`. That address lands in eqgame.exe's `.rdata` section (read-only constant data); whatever the linker padded there is reliably either 0 or fails the `count >= 1 && count <= LOGIN_MAX_CHARS` sanity gate. Result: every poll returned `Count=0` forever — the symptom historically attributed to "Dalaya doesn't populate at char-select."
 
-The bridge ALREADY did two-deref correctly for the parallel pinst exports `g_pinstWndMgr` (lines 944/2688/3497) and `g_pinstCharSelect` (lines 2711/2794/3069) — confirming the bridge author understood the pattern; it was a localized miss on `g_ppEverQuest` only.
+The bridge ALREADY did two-deref correctly for the parallel pinst exports `g_pinstWndMgr` and `g_pinstCharSelect` at multiple call sites — `grep storageAddr = \*g_pinst` shows them — confirming the bridge author understood the pattern; it was a localized miss on `g_ppEverQuest` only. (v3.22.35 originally cited specific line numbers here for the two-deref sites; verifier round caught that those line numbers were stale by ~45 lines because the helper insertion shifted everything down. The line citations are corrected/removed in v3.22.36; the IDIOM is the durable reference.)
 
 ### Fix
 
