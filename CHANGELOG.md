@@ -1,5 +1,36 @@
 # Changelog
 
+## v3.22.42 — Single-screen ReloadConfig slim-toggle-on gap + csproj test-exclusion glob (2026-05-23)
+
+Cleanup pass on two of the six deferred CONCERNs from the v3.22.40+41 verifier rounds. UI-only release; Native DLLs unchanged from v3.22.41 (sha256 parity verified at deploy time). One commit, one verifier round.
+
+### Item 2 — single-screen ReloadConfig slim-toggle-on gap (T2-Opus "primary user surface")
+
+`UI/TrayManager.cs:~3374` — the v3.22.40 raise was gated inside `if (isMultiMon && _processManager.Clients.Count > 0)`. Toggling SlimTitlebar ON via Settings → Apply in **single-screen mode** with clients running rebuilt the `_slimTitlebarGuard` timer but no raise followed. Result: the taskbar (WS_EX_TOPMOST) kept slicing EQ's bottom edge until the next focus event — could be never if the user backgrounded the Settings form.
+
+T2-Opus during the v3.22.41 verifier round escalated this as "Settings → toggle Slim → Apply is the *primary* user surface for this preference" — the v3.22.40 framing as "rare trigger" was undercharacterized.
+
+**Fix:** added a sibling `else if (_config.Layout.SlimTitlebar && _processManager.Clients.Count > 0)` branch that calls `ApplySlimTitlebarToAll` + `RaiseClientsAboveTaskbar` immediately. Same foreground-gating as the MM path (`foregroundActive: eqAlreadyForeground`). Doesn't wait for the guard timer's first tick (500ms hookActive, 5s without).
+
+The MM branch is unchanged.
+
+### Item 5 — EQSwitch.csproj test-exclusion glob recursion (T2-Sonnet)
+
+`<Compile Remove="Core\*Tests.cs" />` only caught `Core/FooTests.cs`, not subdirectories like `Core/Login/FooTests.cs`. No subdirectory tests exist today, but the glob would silently miss them if added later — a Console.WriteLine in a future `Core/Login/SomethingTests.cs` would leak to shipped stdout.
+
+**Fix:** changed to `<Compile Remove="Core\**\*Tests.cs" />`. Backward-compatible — existing `Core/AppConfigValidateTests.cs`, `CharacterSelectorTests.cs`, `CharSelectReaderTests.cs`, `KeyInputWriterTests.cs`, `ShmLayoutTests.cs` still excluded. Verified via `dotnet publish -c Release` — zero Tests.dll/Tests.exe in publish output.
+
+### Items 1/3/4/6 — deferred indefinitely
+
+- **Item 1** (switch-hotkey MM paths missing the dance): disputed between T2-Opus and T2-Sonnet, no field repro, MM mode off most of the time. Trilogy memory file `project_eqswitch_v3_22_34_to_39_trilogy.md` holds the full analysis if it ever resurfaces.
+- **Item 3** (`OnToggleMultiMonitor` 200ms UI-thread block under hammer-spam): cosmetic, debounce-bounded, not user-observed.
+- **Item 4** (cached-HWND staleness in foreground equality check): T3-Opus verdict was "not worth a v3.22.42 on its own — net-positive on average, worst case is same as v3.22.40 behavior." Bundling skipped because Item 2's fix doesn't touch the foreground-equality check.
+- **Item 6** (vault re-dream for `memory/vault/eqswitch.md`): banner added in v3.22.40 redirects readers to authoritative sources; full consolidation deferred to next `/dreamz` session.
+
+### Diminishing-returns boundary
+
+Per `reference_verifier_round_diminishing_returns_signal` — the v3.22.34→41 trilogy + cleanup arc burned 16 verifier agents across 3 rounds. v3.22.42 is ONE batch, ONE 6-agent verifier round, ONE tag + push. If the verifier round flags new issues: load-bearing → ship v3.22.43 once and STOP; not → defer permanently.
+
 ## v3.22.41 — RaiseClientsAboveTaskbar: skip SwitchToClient when candidate is already foreground (2026-05-23)
 
 Same-day same-session follow-on to v3.22.40 — closes the focus-bounce-at-char-select issue Nate observed in the 13:38 team1 live smoke immediately after v3.22.40 deployed.

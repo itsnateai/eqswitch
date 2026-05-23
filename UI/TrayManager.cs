@@ -3377,6 +3377,20 @@ public class TrayManager : IDisposable
                 RaiseClientsAboveTaskbar(_processManager.Clients, foregroundActive: eqAlreadyForeground);
             }
         }
+        else if (_config.Layout.SlimTitlebar && _processManager.Clients.Count > 0)
+        {
+            // v3.22.42: single-screen slim-toggle-on parity with the MM branch
+            // above. Settings Apply is the primary user surface for toggling
+            // SlimTitlebar; without this branch the guard timer's first tick
+            // (500ms or 5s depending on hookActive) re-applies bounds, but no
+            // raise follows so the taskbar (WS_EX_TOPMOST) keeps slicing EQ's
+            // bottom edge until the next focus event. Apply bounds immediately
+            // and raise — same foreground-gating as the MM path.
+            _windowManager.ApplySlimTitlebarToAll(_processManager.Clients, _injectedPids);
+            bool eqAlreadyForeground = _processManager.GetActiveClient() != null;
+            RaiseClientsAboveTaskbar(_processManager.Clients, foregroundActive: eqAlreadyForeground);
+            FileLogger.Info("ReloadConfig: single-screen slim-toggle-on — applied bounds + raised");
+        }
 
         // Update hook configs for all injected processes (per-PID shared memory
         // supports both single and multimonitor modes)

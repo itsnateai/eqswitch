@@ -7,7 +7,7 @@
     <ApplicationIcon>eqswitch.ico</ApplicationIcon>
     <AssemblyName>EQSwitch</AssemblyName>
     <RootNamespace>EQSwitch</RootNamespace>
-    <Version>3.22.41</Version>
+    <Version>3.22.42</Version>
     <Description>EverQuest Multiboxing Window Manager for Shards of Dalaya</Description>
     <Authors>itsnateai</Authors>
     <Copyright>© itsnateai</Copyright>
@@ -37,7 +37,7 @@
        for Debug-time test runs, but would bloat the 155 MB single-file publish and leak
        Console.WriteLine to stdout in shipped binaries. -->
   <ItemGroup Condition="'$(Configuration)' == 'Release'">
-    <Compile Remove="Core\*Tests.cs" />
+    <Compile Remove="Core\**\*Tests.cs" />
   </ItemGroup>
 
   <ItemGroup>
