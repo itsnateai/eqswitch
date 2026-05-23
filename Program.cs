@@ -421,21 +421,30 @@ static class Program
         // This branch fires when an interrupted update left the system without
         // an EQSwitch.exe (e.g., power failure between the original→.old move
         // and the .new→original move). Restoring .old gets the user back to
-        // the previous working version. Hook/DI8 DLLs auto-restore via the
-        // same .old → original move in the per-DLL pattern loop below.
+        // the previous working version.
+        //
+        // v3.22.29 verifier-found gap (Opus T3 #6): the prior version only
+        // restored EQSwitch.exe and left hook.dll / di8.dll in whatever torn
+        // state the interrupt produced. Result: mismatched-version binaries.
+        // This loop now restores ALL three updateables symmetrically — if any
+        // of them is missing AND its .old sibling exists, restore it.
         if (!File.Exists(exePath))
         {
-            var oldPath = exePath + ".old";
-            if (File.Exists(oldPath))
+            foreach (var fname in new[] { "EQSwitch.exe", "eqswitch-hook.dll", "eqswitch-di8.dll" })
             {
-                try
+                var fullPath = Path.Combine(dir, fname);
+                var oldPath = fullPath + ".old";
+                if (!File.Exists(fullPath) && File.Exists(oldPath))
                 {
-                    File.Move(oldPath, exePath);
-                    FileLogger.Warn("Recovered EQSwitch.exe from .old after interrupted update.");
-                }
-                catch (Exception ex)
-                {
-                    FileLogger.Error($"Failed to recover EQSwitch.exe from .old: {ex.Message}");
+                    try
+                    {
+                        File.Move(oldPath, fullPath);
+                        FileLogger.Warn($"Recovered {fname} from .old after interrupted update.");
+                    }
+                    catch (Exception ex)
+                    {
+                        FileLogger.Error($"Failed to recover {fname} from .old: {ex.Message}");
+                    }
                 }
             }
             return;

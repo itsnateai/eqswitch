@@ -2592,8 +2592,12 @@ public class TrayManager : IDisposable
         var (slots, _) = ResolveTeamConfig(teamIndex);
         // v3.22.29 Orphan-1: per-slot lookups under ConfigMutationLock so a
         // ReloadConfig mid-tooltip-build can't torn-read Characters/Accounts.
-        // Lock per-call (not per-slot) to amortize Monitor.Enter cost across
-        // typical 4-6 slot teams.
+        // NOTE: lock is acquired per-slot (inside the lambda), not per-call.
+        // For typical 4-6 slot teams that's 4-6 Monitor.Enter/Exit cycles —
+        // negligible cost (microseconds). Per-slot scoping keeps the lock
+        // held only for the FindCharacterByName + FindAccountByName lookup
+        // pair, avoiding holding it across the EQSwitch.Models accessor reads
+        // (LabelWithClass, EffectiveLabel) that happen after the snapshot.
         string ResolveForTooltip(string raw)
         {
             if (string.IsNullOrEmpty(raw)) return "(empty)";

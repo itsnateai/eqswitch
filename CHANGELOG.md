@@ -30,6 +30,8 @@ Cross-app parity port from `MousewithoutBordersToggle/UpdateDialog.cs`. Single r
 
 11. **Catalogue fetch routed through `SendAllowlistedAsync`** (closed by item 1).
 
+12. **(intentionally skipped — see below)** UpdateDialog test coverage port was scoped here but moved to accepted-gap. The hardening code itself is the canonical version of the well-tested MWBToggle pattern; EQSwitch's threat model doesn't justify the test-infra investment. Numbering preserved from the v3.22.28 handoff backlog for cross-reference.
+
 13. **`BeginInvoke` (fire-and-forget) for download UI marshaling.** Replaces `Invoke` (blocking) at the download progress callback. At 81920-byte chunks per ~MB/s a 50 MB zip is ~640 synchronous cross-thread round-trips; `BeginInvoke` is structurally correct here since the call is a UI repaint, not a synchronization point.
 
 14. **`GitHubRepo` const.** Replaces the two hardcoded `/itsnateai/eqswitch/` literals at the host-equality check sites with a single `const string GitHubRepo = "itsnateai/eqswitch"`. Fork-friendly single edit point.

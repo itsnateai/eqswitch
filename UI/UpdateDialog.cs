@@ -457,9 +457,25 @@ public class UpdateDialog : Form
         _progressFill.Location = new Point(0, 0);
 
         var localVersion = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
-        var isNewer = Version.TryParse(_remoteVersion, out var remote)
-                   && Version.TryParse(localVersion, out var local)
-                   && remote > local;
+
+        // v3.22.29 verifier-found gap (Opus T3 #2): if _remoteVersion is empty
+        // or unparseable (malformed tag_name in the GitHub release JSON),
+        // Version.TryParse returns false silently and the UI shows "You're on
+        // the latest version!" — a false negative that hides API-level bugs.
+        // Log a Warn so the silent failure surfaces in logs even though we
+        // intentionally don't break the UI flow (a no-update outcome is the
+        // safer default than a crash dialog).
+        bool remoteParsed = Version.TryParse(_remoteVersion, out var remote);
+        bool localParsed = Version.TryParse(localVersion, out var local);
+        if (!remoteParsed && !string.IsNullOrEmpty(_remoteVersion))
+        {
+            FileLogger.Warn($"Update: GitHub returned unparseable remote version '{_remoteVersion}' — falling back to 'up to date' display.");
+        }
+        else if (string.IsNullOrEmpty(_remoteVersion))
+        {
+            FileLogger.Warn("Update: GitHub returned empty tag_name — falling back to 'up to date' display.");
+        }
+        var isNewer = remoteParsed && localParsed && remote > local;
 
         _lblDetail.Text = $"Current: {localVersion}  →  GitHub: {_remoteVersion}";
         _progressOuter.Visible = false;
