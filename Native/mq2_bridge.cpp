@@ -75,13 +75,24 @@ typedef void (__thiscall *FN_CXStrDtor)(void *thisPtr);
 
 // ─── Static globals ────────────────────────────────────────────
 
+// MQ2 pinst deref semantics (post-v3.22.35 audit, see CHANGELOG):
+// GetProcAddress returns the ADDRESS of MQ2's exported variable in MQ2's data
+// section. Standard MQ2 publishes pinst exports as `T** pinstX = (T**)(eqgame_base + RVA)`,
+// so two derefs are needed to reach the heap T*:
+//   *g_pinst  -> storage address in eqgame.exe (eqgame_base + RVA)
+//   **g_pinst -> the actual T* heap object  (== *(T**)(*g_pinst))
+// The g_pinstWndMgr/g_pinstCharSelect call sites already do this correctly via
+// the `storageAddr = *g_pinst; actual = *(void**)storageAddr` idiom — see lines
+// 944/2688/2711/2794/3069/3497. The g_ppEverQuest Path A sites historically
+// did only one deref (the "Path A unreachable on Dalaya" bug); fixed in
+// v3.22.35 via the DerefEverQuestPointer() helper defined after IsReadablePtr.
 static HMODULE        g_hMQ2            = nullptr;
 static volatile int  *g_pGameState      = nullptr;
-static void         **g_ppEverQuest     = nullptr;
+static void         **g_ppEverQuest     = nullptr;    // CEverQuest** — 2 derefs to reach CEverQuest* (use DerefEverQuestPointer())
 static void         **g_ppWndMgr        = nullptr;    // ppWndMgr: triple-ptr (&ForeignPointer.m_ptr)
-static uintptr_t     *g_pinstWndMgr     = nullptr;    // pinstCXWndManager: *ptr IS CXWndManager*
-static uintptr_t     *g_pinstEQMainWnd  = nullptr;    // pinstCEQMainWnd: eqmain's window
-static uintptr_t     *g_pinstCharSelect = nullptr;    // pinstCCharacterSelect: direct char select wnd
+static uintptr_t     *g_pinstWndMgr     = nullptr;    // pinstCXWndManager — 2 derefs to reach CXWndManager*
+static uintptr_t     *g_pinstEQMainWnd  = nullptr;    // pinstCEQMainWnd — 2 derefs to reach CEQMainWnd*
+static uintptr_t     *g_pinstCharSelect = nullptr;    // pinstCCharacterSelect — 2 derefs to reach CCharacterSelect*
 static HMODULE        g_hEQMain         = nullptr;    // eqmain.dll handle (login screen module)
 static FN_GetItemText   g_fnGetItemText   = nullptr;
 static FN_SetCurSel     g_fnSetCurSel     = nullptr;
@@ -622,11 +633,51 @@ static bool IsReadablePtr(const void *ptr, size_t size) {
     return true;
 }
 
+// ─── MQ2 pinst deref helper (v3.22.35 Path A fix) ─────────────
+//
+// MQ2's `ppEverQuest` export is `CEverQuest** ppEverQuest;` initialized as
+// `ppEverQuest = (CEverQuest**)pinstCEverQuest;` where `pinstCEverQuest` is
+// the runtime absolute address `eqgame_base + RVA` (0xA67CCC on Dalaya).
+// So MQ2's ppEverQuest VALUE = eqgame storage address (not the CEverQuest*).
+// GetProcAddress("ppEverQuest") returns the address of that MQ2 variable,
+// making `g_ppEverQuest` effectively `CEverQuest***`. Two derefs needed:
+//   deref 1: *g_ppEverQuest    -> eqgame_base + 0xA67CCC (storage in eqgame)
+//   deref 2: *(void**)<deref1> -> the heap-allocated CEverQuest*
+//
+// Pre-v3.22.35 the Path A read sites in PopulateCharacterData / Poll /
+// the Init smoke-log did only ONE deref, reading at `(eqgame_base+0xA67CCC)
+// + 0x38E6C` = `eqgame_base + 0xAA0B38` (eqgame.exe .rdata). That memory
+// is linker-padding or unrelated constants — reliably read as Count=0 or
+// out-of-range garbage that fails the sanity gate. Symptom: "Path A
+// unreachable on Dalaya at char-select" reported in
+// reference_dalaya_path_a_unreachable_at_charselect.md — actually a bridge
+// bug, not a Dalaya structural quirk. See _.eqswitch-re/pathA-2026-05-23/
+// FINDINGS.md for the full Ghidra-evidenced writeup.
+//
+// This helper SEH-wraps the two derefs and returns nullptr on any failure
+// (matches the prior 1-deref site's error semantics).
+static void *DerefEverQuestPointer() {
+    if (!g_ppEverQuest) return nullptr;
+    void *pEverQuest = nullptr;
+    __try {
+        void *pinstStorage = *g_ppEverQuest;   // deref 1: eqgame pinst storage addr
+        if (pinstStorage && IsReadablePtr(pinstStorage, sizeof(void *))) {
+            pEverQuest = *(void **)pinstStorage;   // deref 2: actual CEverQuest*
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+    return pEverQuest;
+}
+
 // ─── WndMgr window iteration ─────────────────────────────────
 // CXWndManager layout (from MQ2 CXWnd.h):
 //   64-bit: pWindows ArrayClass<CXWnd*> at offset 0x008
 //   32-bit (x86): vtable(4) then pWindows ArrayClass at offset 0x004
-// ArrayClass on x86 = {T* Data, int Count, int Alloc} = 12 bytes
+// ArrayClass on x86 = {int Count, T* Data, int Alloc} = 12 bytes — matches
+// the corrected ArrayClassHeader struct above (Count at +0, Data at +4, Alloc
+// at +8 — v3.22.34 fix). The prior `{T* Data, int Count, int Alloc}` comment
+// here was wrong; the code in TryWndMgrPointer already used arr->Count and
+// arr->Data correctly via the struct definition. Comment corrected v3.22.35.
 // We scan a range of offsets starting from the top of the struct.
 
 static const uint32_t g_wndMgrOffsets[] = {
@@ -3327,22 +3378,20 @@ void MQ2Bridge::PopulateCharacterData(volatile LoginShm *shm) {
         return;
     }
 
-    void *pEverQuest = nullptr;
-    __try { pEverQuest = *g_ppEverQuest; }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+    void *pEverQuest = DerefEverQuestPointer();   // v3.22.35: 2-deref via helper (was 1-deref bug)
     if (!pEverQuest) return;
 
     const uint8_t *pEQ = (const uint8_t *)pEverQuest;
 
     // MQ2-canonical "trust the offset" — read pEverQuest->charSelectPlayerArray
-    // directly each poll. Per MQ2 RoF2-emu (x86) source EverQuest.h:963 the
-    // array sits at offset 0x18EC0; confirmed plug-and-play on Dalaya by Nate
-    // 2026-05-17 + live empirical probe. Count==0 means EQ has not populated
-    // yet (dominant first-poll state after pinstCCharacterSelect transitions);
-    // we return zero and the next tick retries — same shape as MQ2's
-    // MQ2CharSelectListType.cpp. See CHANGELOG.md v3.22.1 entry for the
-    // detailed history of the validate-then-permanently-latch antipattern
-    // that v3.22.1 removed and v3.22.2 buried.
+    // directly each poll. Dalaya x86 has the array at OFFSET_CHARSELECT_ARRAY
+    // = 0x38E6C (mq2emu-rof2-x86 build, shifted -0x14 from canonical
+    // RoF2-Test 0x38E80; the prior 0x18EC0 value was wrongly imported from
+    // the x64 macroquest-rof2-emu tree and was corrected in v3.22.34).
+    // Count==0 means EQ has not populated yet (dominant first-poll state
+    // after pinstCCharacterSelect transitions); we return zero and the next
+    // tick retries — same shape as MQ2's MQ2CharSelectListType.cpp. See
+    // CHANGELOG.md v3.22.1 / v3.22.34 / v3.22.35 entries for the history.
     __try {
         const ArrayClassHeader *arr = (const ArrayClassHeader *)(pEQ + OFFSET_CHARSELECT_ARRAY);
         int count = arr->Count;
@@ -3518,7 +3567,8 @@ static void EmitVerificationReport(volatile CharSelectShm *shm) {
     // in v3.22.1 / v3.22.2 — see CHANGELOG.)
     if (g_ppEverQuest) {
         __try {
-            void *pEQ = *g_ppEverQuest;
+            // v3.22.35: use 2-deref helper (was 1-deref bug — reading at storage addr + offset)
+            void *pEQ = DerefEverQuestPointer();
             DI8Log("  ppEverQuest: export=%p -> CEverQuest*=%p", g_ppEverQuest, pEQ);
             if (pEQ) {
                 const ArrayClassHeader *arr = (const ArrayClassHeader *)((uint8_t *)pEQ + OFFSET_CHARSELECT_ARRAY);
@@ -3944,16 +3994,15 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     bool charDataRead = false;
 
     // Path A: CEverQuest::charSelectPlayerArray (struct-based, gives level+class)
-    void *pEverQuest = nullptr;
-    __try { pEverQuest = *g_ppEverQuest; }
-    __except (EXCEPTION_EXECUTE_HANDLER) { pEverQuest = nullptr; }
+    void *pEverQuest = DerefEverQuestPointer();   // v3.22.35: 2-deref via helper (was 1-deref bug)
 
     if (pEverQuest) {
         const uint8_t *pEQ = (const uint8_t *)pEverQuest;
         // MQ2-canonical "trust the offset" — same rationale as
-        // PopulateCharacterData above. Trust OFFSET_CHARSELECT_ARRAY = 0x18EC0
-        // per MQ2 RoF2-emu (x86) EverQuest.h:963 and let Count==0 polls retry
-        // next tick.
+        // PopulateCharacterData above. Trust OFFSET_CHARSELECT_ARRAY = 0x38E6C
+        // (mq2emu-rof2-x86 build, Dalaya-shifted from canonical 0x38E80; v3.22.34
+        // corrected the prior 0x18EC0 imported from the x64 tree) and let
+        // Count==0 polls retry next tick.
         __try {
             const ArrayClassHeader *arr = (const ArrayClassHeader *)(pEQ + OFFSET_CHARSELECT_ARRAY);
             int count = arr->Count;

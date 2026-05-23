@@ -1,5 +1,53 @@
 # Changelog
 
+## v3.22.35 — Path A actually WORKING: bridge deref-count fix + comment / probe cleanup (2026-05-23)
+
+v3.22.34 fixed two structural bugs (offset 0x18EC0→0x38E6C, field order `{Data,Count,Alloc}`→`{Count,Data,Alloc}`) but Path A still presented as `Count=0` at char-select on Dalaya. The remaining hidden bug was finally found via a next-Ghidra session against `eqgame.exe` (`X:/_Projects/_.eqswitch-re/projects/eqswitch.gpr`, analysis_complete=true, 34,698 funcs). The "Path A unreachable at char-select on Dalaya" diagnosis (memory file `reference_dalaya_path_a_unreachable_at_charselect.md`) was wrong about the cause: the array IS populated at char-select; the bridge had a missing-second-deref bug on `g_ppEverQuest`.
+
+### The bug — missing second deref on `g_ppEverQuest`
+
+`Native/mq2_bridge.cpp` resolves `g_ppEverQuest = (void**)GetProcAddress(g_hMQ2, "ppEverQuest")`. MQ2's exported `ppEverQuest` is declared `CEverQuest** ppEverQuest;` and initialized as `ppEverQuest = (CEverQuest**)pinstCEverQuest;` where `pinstCEverQuest = eqgame_base + 0xA67CCC` (the storage address in eqgame.exe where the heap `CEverQuest*` lives). So MQ2's `ppEverQuest` VALUE is the eqgame storage address, NOT the CEverQuest* itself. `GetProcAddress` then returns the address of MQ2's `ppEverQuest` variable — making bridge's `g_ppEverQuest` effectively `CEverQuest***`. Two derefs are needed:
+
+```
+g_ppEverQuest          → MQ2 data:    address of MQ2.ppEverQuest variable
+*g_ppEverQuest         → MQ2 data:    eqgame_base + 0xA67CCC (pinst storage)
+**g_ppEverQuest        → eqgame data: actual heap-allocated CEverQuest*
+```
+
+Pre-v3.22.35 the three Path A read sites (`PopulateCharacterData`, `Poll`, `Init` smoke-log) each did ONLY ONE DEREF, then computed `pEverQuest + OFFSET_CHARSELECT_ARRAY` = `(eqgame_base + 0xA67CCC) + 0x38E6C` = `eqgame_base + 0xAA0B38`. That address lands in eqgame.exe's `.rdata` section (read-only constant data); whatever the linker padded there is reliably either 0 or fails the `count >= 1 && count <= LOGIN_MAX_CHARS` sanity gate. Result: every poll returned `Count=0` forever — the symptom historically attributed to "Dalaya doesn't populate at char-select."
+
+The bridge ALREADY did two-deref correctly for the parallel pinst exports `g_pinstWndMgr` (lines 944/2688/3497) and `g_pinstCharSelect` (lines 2711/2794/3069) — confirming the bridge author understood the pattern; it was a localized miss on `g_ppEverQuest` only.
+
+### Fix
+
+Added `DerefEverQuestPointer()` helper after `IsReadablePtr` — SEH-wrapped two-deref returning the heap `CEverQuest*` or nullptr. Replaced all three call sites to use the helper. Stale comments referencing the pre-v3.22.34 offset (0x18EC0) at the call sites updated to the current canonical 0x38E6C with provenance pointer. The misleading `g_pinstWndMgr` comment ("*ptr IS CXWndManager*") corrected to document the actual two-deref pattern. Tracking comment block at the top of the static globals section explains the pinst deref semantics so the next reader doesn't repeat the bug.
+
+### Provenance
+
+Full Ghidra-side evidence chain at `X:/_Projects/_.eqswitch-re/pathA-2026-05-23/FINDINGS.md`:
+- `CCharacterListWnd` CTOR/vtable/cluster decomp (CTOR `0x0042F910`, vtable `0x009C5410`, object size `0x300`, static instance at `eqgame.exe + 0x91FC34`)
+- `pinstCEverQuest` confirmed at RVA `0xA67CCC` two ways: Ghidra decomp of `FUN_0042FEC0` (game's own slot iterator uses `*(int*)(DAT_00e67ccc + 0x38e6c)` for count) AND binary-grep of `dinput8_dalaya_reference.dll` for LE-pattern `CC 7C A6 00` → exactly 1 hit at file offset `0x27D6` (the `INITIALIZE_EQGAME_OFFSET` init code)
+- CSINFO stride 0x160, name at offset 0 of each entry (verified via `FUN_0042F240` = `CCharacterListWnd::FindCharacterByName`)
+- Field order `{Count: +0, Data: +4, Alloc: +8}` (matches v3.22.34's struct fix)
+
+Memory: `reference_dalaya_path_a_bridge_deref_bug.md` (new), `reference_dalaya_path_a_unreachable_at_charselect.md` (marked SUPERSEDED with per-row table corrections).
+
+### Also fixed
+
+- **`tools/probe-charselect-offset.py`** — pre-v3.22.35 the script defaulted to `--offset 0x38E70` (the Data pointer field, not the array header start) and unpacked 12 bytes as `(Data, Count, Alloc)`. With offset 0x38E70 those 12 bytes are actually `(Data, Alloc, IsValid)` — "Count" was misprinted as Alloc, which self-cancelled only when `Count == Alloc` (the common N==max-slots case) and broke for 1-char characters. Changed to read 16 bytes at canonical offset `0x38E6C` and unpack as `(Count, Data, Alloc, IsValid)`. Slot walk now caps at `min(Count, Alloc, 12)` instead of `min(Count, 12)` (defensive against junk Count). Docstring rewritten to document the correct ArrayClassHeader layout.
+- **Stale `OFFSET_CHARSELECT_ARRAY = 0x18EC0` comments** at the two Path A read sites (PopulateCharacterData header + Poll header) updated to the post-v3.22.34 canonical 0x38E6C. The pre-fix comments still pointed at the x64-tree value v3.22.34 had already corrected.
+- **`ArrayClass on x86 = {T* Data, int Count, int Alloc}`** comment near the WndMgr iteration code corrected to `{int Count, T* Data, int Alloc}` — the struct definition at line 595 was always the canonical order; this comment lied. The code in `TryWndMgrPointer` already read `arr->Count` then `arr->Data` correctly via the struct.
+
+### Verification
+
+The static evidence chain is rock-solid (Ghidra + binary-grep + MQ2 source patterns + verified-parallel two-deref usage at 6 sibling sites). Runtime paired-probe still recommended before declaring victory:
+1. Launch via team1 hotkey, get a client to char-select
+2. Tail per-PID `eqswitch-dinput8-{pid}.log` — first Path A poll should report `Count=N` (matching account's char count) instead of `Count=0`
+3. Run `tools/probe-charselect-offset.py --pid <PID>` and confirm it agrees with the bridge log
+4. Path C heap-scan invocations should drop to zero per char-select session (Path C is the fallback; Path A firing means fallback never runs)
+
+If Path A fires successfully, char-select wall-clock should be unchanged (Path C was fast enough — Dalaya login-server delay dominates) but the bridge log gets cleaner and future MQ2-style features (level/class/race reads) become trivially available.
+
 ## v3.22.34 — Path A WORKING on Dalaya: correct OFFSET_CHARSELECT_ARRAY + fixed ArrayClassHeader field order (2026-05-23)
 
 The two-bug-deep root cause for "Path A unavailable on Dalaya" — finally pinned with a live `ReadProcessMemory` probe against the in-game `gotquiz` (10-char) + `gotquiz1` (1-char) clients. Both bugs were active in every v3.22.x ship; they masked each other so the failure mode presented as `Count=0` rather than crash/garbage, which is why "confirmed plug-and-play on Dalaya by Nate" comments lingered.
