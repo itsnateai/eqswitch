@@ -2,6 +2,10 @@
 
 ## v3.22.28 — Host-equality self-update allowlist + plug `_hashFileUrl` allowlist gap (2026-05-22)
 
+**Errata (added post-ship, 2026-05-22 verifier round):**
+- The "brings EQSwitch's self-update URL allowlist into line with the host-equality canonical pattern shared by MicMute, MWBToggle, CapsNumTray, and SyncthingPause" framing below is **partial parity, not full parity**. EQSwitch adopts the host-equality *shape* (`Uri.TryCreate` + `IsAllowedHost`) but still **lacks the per-hop redirect validation** (`SendAllowlistedAsync`) that MWBToggle and SyncthingPause have. EQSwitch's `_http` is configured with the default `AllowAutoRedirect=true`, so only the initial pre-redirect URL is checked. A hostile 3xx redirect would pass through unchallenged. The "defense-in-depth" framing later in this entry acknowledges this; the opening framing was overstated. Multi-hop validation is in the v3.22.29 backlog (see `TODO_LIST.md`).
+- The "No new tests added — the project has no test harness" claim further down is **wrong**. The project has a `Core/*Tests.cs` set (5 test files) that's Release-excluded via `<Compile Remove="Core\*Tests.cs" />` in `EQSwitch.csproj`. They cover other modules; `UpdateDialog` specifically has no test coverage. UpdateDialog test coverage is in the v3.22.29 backlog.
+
 Cross-app convergent hardening — brings EQSwitch's self-update URL allowlist into line with the host-equality canonical pattern shared by MicMute, MWBToggle v2.5.19, CapsNumTray, and SyncthingPause's `IsAllowedReleaseAssetUrl`. Lifted as part of a multi-task workspace sweep.
 
 ### Audit finding closed in the same commit: `_hashFileUrl` had no allowlist
