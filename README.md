@@ -53,7 +53,7 @@ All three files must be in the same folder. A separate `SHA256SUMS` file is publ
 <tr>
 <td align="center"><a href="docs/img/eqswitchpaths.png" target="_blank" rel="noopener"><img src="docs/img/eqswitchpaths.png" alt="Paths tab" width="260"></a><br><sub>Settings — Paths</sub></td>
 <td align="center"><a href="docs/img/eqswitchpip.png" target="_blank" rel="noopener"><img src="docs/img/eqswitchpip.png" alt="PiP DWM thumbnail overlay" width="260"></a><br><sub>PiP overlay (DWM)</sub></td>
-<td align="center"><a href="docs/img/eqswitchwindowssetting.png" target="_blank" rel="noopener"><img src="docs/img/eqswitchwindowssetting.png" alt="Window style + slim titlebar" width="260"></a><br><sub>Window style — slim titlebar</sub></td>
+<td align="center"><a href="docs/img/eqswitchautologinteams.png" target="_blank" rel="noopener"><img src="docs/img/eqswitchautologinteams.png" alt="Auto-login teams configuration" width="260"></a><br><sub>Auto-login — teams</sub></td>
 </tr>
 <tr>
 <td align="center"><a href="docs/img/eqswitchvideo.png" target="_blank" rel="noopener"><img src="docs/img/eqswitchvideo.png" alt="Video / eqclient.ini settings" width="260"></a><br><sub>Video / eqclient.ini</sub></td>
