@@ -210,15 +210,25 @@ public class UpdateDialog : Form
     /// Extract the hex hash for the EQSwitch zip bundle from a SHA256SUMS body.
     /// Handles GNU-coreutils format (`hexhash  filename` or `hexhash *filename`),
     /// BSD-tag format (`SHA256 (filename) = hexhash`), CRLF line endings,
-    /// multi-entry files, and tab separators. Filename match is prefix+suffix
-    /// (EQSwitch-X.Y.Z.zip) and case-insensitive. Returns null if no entry
-    /// for an EQSwitch zip is found OR if the parsed hash isn't a 64-char
-    /// hex string (defends against malformed SHA256SUMS bodies — the parser
-    /// is the actual trust-decision input for self-update).
+    /// multi-entry files, and tab separators.
+    ///
+    /// v3.22.30 Item 2: filename match is PINNED to the exact expected zip name
+    /// (`EQSwitch-{expectedVersion}.zip`), not a loose `EQSwitch-*.zip` glob.
+    /// Pre-v3.22.30 the first matching line won regardless of which zip version
+    /// it described — a SHA256SUMS body with multiple EQSwitch entries (extra
+    /// line targeting any EQSwitch-*.zip) could shadow the real release's hash.
+    /// release.yml emits one entry per release, so the pinning is conservative;
+    /// it just makes that contract explicit at parse time. Returns null on
+    /// null/empty <paramref name="expectedVersion"/> — fail-closed.
+    ///
+    /// Returns null if no entry for the expected zip is found OR if the parsed
+    /// hash isn't a 64-char hex string (defends against malformed SHA256SUMS
+    /// bodies — the parser is the actual trust-decision input for self-update).
     /// </summary>
-    internal static string? ParseHashForZipBundle(string? content)
+    internal static string? ParseHashForZipBundle(string? content, string? expectedVersion)
     {
-        if (string.IsNullOrEmpty(content)) return null;
+        if (string.IsNullOrEmpty(content) || string.IsNullOrEmpty(expectedVersion)) return null;
+        var expectedName = $"EQSwitch-{expectedVersion}.zip";
         foreach (var rawLine in content.Split('\n'))
         {
             var line = rawLine.TrimEnd('\r').Trim();
@@ -235,7 +245,7 @@ public class UpdateDialog : Form
                 if (lparen >= 0 && rparen > lparen && eq > rparen)
                 {
                     var name = line.Substring(lparen + 1, rparen - lparen - 1).Trim();
-                    if (IsEQSwitchZipName(name))
+                    if (name.Equals(expectedName, StringComparison.OrdinalIgnoreCase))
                         candidate = line.Substring(eq + 1).Trim();
                 }
             }
@@ -247,7 +257,7 @@ public class UpdateDialog : Form
                 if (parts.Length == 2)
                 {
                     var fname = parts[1].Trim().TrimStart('*');
-                    if (IsEQSwitchZipName(fname))
+                    if (fname.Equals(expectedName, StringComparison.OrdinalIgnoreCase))
                         candidate = parts[0].Trim();
                 }
             }
@@ -593,7 +603,9 @@ public class UpdateDialog : Form
                         _cts!.Token);
                     hashResponse.EnsureSuccessStatusCode();
                     var hashContent = await hashResponse.Content.ReadAsStringAsync(_cts.Token);
-                    string? expectedHash = ParseHashForZipBundle(hashContent);
+                    // v3.22.30 Item 2: pin parser to the exact remote version so a
+                    // multi-entry SHA256SUMS body can't shadow the real release.
+                    string? expectedHash = ParseHashForZipBundle(hashContent, _remoteVersion);
 
                     if (!string.IsNullOrEmpty(expectedHash))
                     {
@@ -647,26 +659,120 @@ public class UpdateDialog : Form
             }
             TryDelete(zipPath);
 
-            // Rename dance: current → .old, .new → current. v3.22.29: delete
-            // any stale .ok sentinel before the swap so post-launch sentinel
-            // write is the authoritative signal that the new exe came up
-            // (otherwise a sentinel left over from the previous successful
-            // run would mark the new-but-untested binary as already-OK).
+            // v3.22.30 Item 1: atomic two-phase swap across all updateables.
+            // Pre-v3.22.30 interleaved per-file (move localPath→.old then
+            // .new→localPath in the same loop iteration). An IOException on
+            // file 2 (e.g., AV scan transient lock, brief antivirus quarantine)
+            // AFTER file 1's swap fully landed left file 1 with new content,
+            // file 2 with old content, file 3 untouched — a mismatched-version
+            // state. The `.ok` sentinel + torn-state recovery only fires when
+            // the exe is gone (CleanupUpdateArtifacts line 431); it cannot
+            // detect a successful-but-mismatched swap.
+            //
+            // Phase A — stage: original → .old for every file with a pending
+            // .new. If ANY Phase A move fails, unwind the successful stages
+            // and abort. No .new content has been committed yet, so old state
+            // is fully recoverable.
+            //
+            // Phase B — commit: .new → original for every staged file. If ANY
+            // Phase B move fails (rare — at this point both source and dest
+            // dirs are the same, dest doesn't exist yet, so File.Move is just
+            // a rename), unwind the successful Phase B commits (localPath →
+            // .new) AND unwind Phase A (oldPath → localPath) so all files
+            // return to their pre-update state. Modulo IO failures during
+            // rollback itself, which surface via FileLogger.Warn rather than
+            // crashing the dialog.
+            //
+            // Also: v3.22.29 .ok pre-delete behavior is preserved — clearing
+            // happens AFTER successful Phase B so a mid-swap abort leaves the
+            // old .ok sentinels intact (matches the pre-update binary, which
+            // is still on disk under .old).
             _lblStatus.Text = "Applying update...";
-            foreach (var (_, localPath) in files)
-            {
-                var newPath = localPath + ".new";
-                var oldPath = localPath + ".old";
-                if (!File.Exists(newPath)) continue;
 
-                if (File.Exists(localPath))
+            // Phase A — stage
+            var stagedMoves = new List<(string localPath, string oldPath)>();
+            try
+            {
+                foreach (var (_, localPath) in files)
                 {
+                    var newPath = localPath + ".new";
+                    var oldPath = localPath + ".old";
+                    if (!File.Exists(newPath)) continue;
+                    if (!File.Exists(localPath)) continue;  // first-time-install case
                     TryDelete(oldPath);
                     File.Move(localPath, oldPath);
+                    stagedMoves.Add((localPath, oldPath));
                 }
-                File.Move(newPath, localPath);
             }
-            // Clear sentinels for all rewritten files — new binary must prove itself
+            catch (Exception phaseAEx)
+            {
+                FileLogger.Warn($"Phase A stage failed after {stagedMoves.Count} successful move(s): {phaseAEx.GetType().Name}: {phaseAEx.Message}");
+                foreach (var (localPath, oldPath) in stagedMoves)
+                {
+                    try
+                    {
+                        if (File.Exists(oldPath) && !File.Exists(localPath))
+                            File.Move(oldPath, localPath);
+                    }
+                    catch (Exception unwindEx)
+                    {
+                        FileLogger.Warn($"Phase A unwind {localPath}: {unwindEx.GetType().Name}: {unwindEx.Message}");
+                    }
+                }
+                throw;
+            }
+
+            // Phase B — commit
+            var committedMoves = new List<(string localPath, string newPath)>();
+            try
+            {
+                foreach (var (_, localPath) in files)
+                {
+                    var newPath = localPath + ".new";
+                    if (!File.Exists(newPath)) continue;
+                    File.Move(newPath, localPath);
+                    committedMoves.Add((localPath, newPath));
+                }
+            }
+            catch (Exception phaseBEx)
+            {
+                FileLogger.Warn($"Phase B commit failed after {committedMoves.Count} successful move(s): {phaseBEx.GetType().Name}: {phaseBEx.Message}");
+                // Roll back Phase B commits first (newest changes), then Phase A
+                // stages (oldest changes). Order matters: if both directions of
+                // rollback succeed for the same file, the .new lands back first,
+                // then .old restores localPath to old content.
+                foreach (var (localPath, newPath) in committedMoves)
+                {
+                    try
+                    {
+                        if (File.Exists(localPath) && !File.Exists(newPath))
+                            File.Move(localPath, newPath);
+                    }
+                    catch (Exception uncommitEx)
+                    {
+                        FileLogger.Warn($"Phase B uncommit {localPath}: {uncommitEx.GetType().Name}: {uncommitEx.Message}");
+                    }
+                }
+                foreach (var (localPath, oldPath) in stagedMoves)
+                {
+                    try
+                    {
+                        if (File.Exists(oldPath) && !File.Exists(localPath))
+                            File.Move(oldPath, localPath);
+                    }
+                    catch (Exception unwindEx)
+                    {
+                        FileLogger.Warn($"Phase B unwind {localPath}: {unwindEx.GetType().Name}: {unwindEx.Message}");
+                    }
+                }
+                throw;
+            }
+
+            // Clear .ok sentinels for all rewritten files — new binaries must
+            // prove themselves via WriteStartupSentinel after Application.Run.
+            // v3.22.29 introduced pre-swap clearing; v3.22.30 keeps it but
+            // moves it post-Phase-B so a mid-swap abort leaves the old .ok
+            // sentinels in place (matches the rolled-back-on-disk old binary).
             foreach (var (_, localPath) in files)
                 TryDelete(localPath + ".ok");
 

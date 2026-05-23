@@ -415,22 +415,44 @@ static class Program
     private static void CleanupUpdateArtifacts()
     {
         var dir = AppDomain.CurrentDomain.BaseDirectory;
-        var exePath = Path.Combine(dir, "EQSwitch.exe");
+        var updateables = new[] { "EQSwitch.exe", "eqswitch-hook.dll", "eqswitch-di8.dll" };
 
-        // Torn-state recovery: if exe is missing but .old exists, restore it.
-        // This branch fires when an interrupted update left the system without
-        // an EQSwitch.exe (e.g., power failure between the original→.old move
-        // and the .new→original move). Restoring .old gets the user back to
-        // the previous working version.
+        // Torn-state recovery: any updateable missing while its `.old` sibling
+        // exists indicates an update was interrupted (hard crash / power loss
+        // between Phase A's `localPath → .old` move and Phase B's `.new →
+        // localPath` move). Restore from `.old` to get back to the previous
+        // working install.
         //
         // v3.22.29 verifier-found gap (Opus T3 #6): the prior version only
         // restored EQSwitch.exe and left hook.dll / di8.dll in whatever torn
-        // state the interrupt produced. Result: mismatched-version binaries.
-        // This loop now restores ALL three updateables symmetrically — if any
-        // of them is missing AND its .old sibling exists, restore it.
-        if (!File.Exists(exePath))
+        // state the interrupt produced. Fixed there by restoring all three
+        // updateables symmetrically — but only when EXE was the one missing.
+        //
+        // v3.22.30 verifier-found gap (T3 Opus, same-day cascade): the gate
+        // was still `if (!File.Exists(exePath))`, so a Phase-B-mid-loop crash
+        // where Phase B committed EQSwitch.exe but didn't commit a DLL left
+        // the exe present with the DLL missing — the recovery branch
+        // skipped, and the `.ok`-gated `.old` cleanup below then DELETED the
+        // missing DLL's `.old` sibling (because the previous launch's `.ok`
+        // sentinel was still present, never cleared by the in-progress
+        // Phase B which crashed before reaching the post-swap `.ok` delete).
+        // Result: new exe + missing DLLs + no recovery sources = bricked
+        // install. Widened the gate to fire whenever ANY updateable is
+        // missing-while-.old-exists.
+        bool tornState = false;
+        foreach (var fname in updateables)
         {
-            foreach (var fname in new[] { "EQSwitch.exe", "eqswitch-hook.dll", "eqswitch-di8.dll" })
+            var fullPath = Path.Combine(dir, fname);
+            if (!File.Exists(fullPath) && File.Exists(fullPath + ".old"))
+            {
+                tornState = true;
+                break;
+            }
+        }
+
+        if (tornState)
+        {
+            foreach (var fname in updateables)
             {
                 var fullPath = Path.Combine(dir, fname);
                 var oldPath = fullPath + ".old";
@@ -490,22 +512,18 @@ static class Program
             TryRemoveWithRetry(path, name);
         }
 
-        // After the .old cleanup, also remove stale .ok sentinels whose .old
-        // pairs no longer exist — they were already swept above. Leaving them
-        // would mean a future update's freshly-moved .old would be auto-cleaned
-        // before the new binary had a chance to prove itself (the swap step in
-        // OnActionClick already removes .ok pre-swap; this is belt+suspenders).
-        foreach (var fname in new[] { "EQSwitch.exe", "eqswitch-hook.dll", "eqswitch-di8.dll" })
-        {
-            var sentinelPath = Path.Combine(dir, fname + ".ok");
-            var oldPath = Path.Combine(dir, fname + ".old");
-            if (File.Exists(sentinelPath) && !File.Exists(oldPath))
-            {
-                // .ok lingers from a prior update; safe to remove now that .old is gone.
-                try { File.Delete(sentinelPath); }
-                catch (Exception ex) { FileLogger.Warn($"Failed to remove stale sentinel {fname}.ok: {ex.Message}"); }
-            }
-        }
+        // v3.22.30 Item 3: the prior orphan-sweep that deleted stale .ok
+        // sentinels (when no .old pair existed) is removed. It caused a
+        // one-launch-delay cycle — every launch where no update was pending
+        // deleted the existing .ok files, then the WriteStartupSentinel timer
+        // rewrote them 5s later. The "belt+suspenders" framing was wrong:
+        // OnActionClick's swap step already deletes .ok pre-swap (UpdateDialog
+        // line ~775), so an update can never see a stranded .ok sentinel
+        // pre-empt its own freshness check. A .ok sentinel left across launches
+        // is harmless — its only consumer is the .old cleanup loop above, which
+        // pairs each .ok against the matching .old at the same moment in time.
+        // The stale-timestamp concern is also moot: presence-of-.ok is the
+        // safety property, not its UtcNow stamp.
     }
 
     /// <summary>Retry delete with 500ms backoff — covers the MMF-release race on .old.</summary>

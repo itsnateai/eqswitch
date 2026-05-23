@@ -1,5 +1,55 @@
 # Changelog
 
+## v3.22.30 — Verifier-driven self-update polish: atomic multi-file swap, hash filename pinning, drop .ok orphan-sweep cycle, broaden torn-state recovery gate (2026-05-22)
+
+Same-day follow-on to v3.22.29. Four small, contained fixes that close the last items from the v3.22.27 → v3.22.29 cascade plus one item the v3.22.30 pre-ship verifier round found in the new code. After this, the released GitHub artifact and `main` are back in sync and the v3.22.29 CHANGELOG framing of "after this, the cross-app delta is zero" actually holds.
+
+### Item 1 — Atomic two-phase swap in `UpdateDialog.OnActionClick`
+
+Pre-v3.22.30 the swap loop interleaved `localPath → .old` and `.new → localPath` per-file in a single iteration. An IOException on file 2 (e.g., antivirus transient lock on the freshly-moved-in `.new`) AFTER file 1's swap fully landed left the install in a mismatched-version state: file 1 = new content, file 2 = old content, file 3 untouched. The v3.22.29 `.ok` sentinel + torn-state recovery only catches "exe is missing" (CleanupUpdateArtifacts triggers when `!File.Exists(exePath)`); it cannot detect a successful-but-mismatched swap.
+
+v3.22.30 splits the swap into two strict phases:
+
+- **Phase A (stage).** For every file with a pending `.new`, move `localPath → .old`. Track each successful move. If any move throws, unwind the successful stages (`oldPath → localPath`) and re-throw — no `.new` content has been committed yet, so old state is fully recoverable.
+- **Phase B (commit).** For every staged file, move `.new → localPath`. Track each successful commit. If any move throws, unwind Phase B commits first (`localPath → newPath` to put the staged binary back), then unwind Phase A stages (`oldPath → localPath` to restore old content). Each rollback move is wrapped in its own try-catch — rollback IO failures surface via `FileLogger.Warn` rather than crashing the dialog.
+
+The `.ok` sentinel pre-deletion moves from pre-swap to post-Phase-B so a mid-swap abort leaves the old `.ok` sentinels in place (matching the rolled-back-on-disk old binary). Phase B in practice almost never fails — at that point both source and dest are the same directory, dest doesn't exist, and `File.Move` is a metadata rename — but the symmetry makes the guarantee unconditional rather than "almost-always-true."
+
+### Item 2 — Pin `ParseHashForZipBundle` filename to `_remoteVersion`
+
+The hash parser previously accepted any line matching `EQSwitch-*.zip` and returned the first match. A SHA256SUMS body with multiple `EQSwitch-*.zip` entries (extra line targeting any EQSwitch zip name) could shadow the real release's hash regardless of which version it described. `release.yml` emits exactly one entry per release so the gap is theoretical, but the contract is now explicit at parse time instead of implicit in the emission convention.
+
+Parser signature changed: `ParseHashForZipBundle(string? content)` → `ParseHashForZipBundle(string? content, string? expectedVersion)`. The expected filename is computed as `EQSwitch-{expectedVersion}.zip` and matched with `Equals(..., OrdinalIgnoreCase)`. Null/empty `expectedVersion` returns null (fail-closed). Caller in `OnActionClick` now passes `_remoteVersion` (already pulled from `tag_name` upstream in `CheckForUpdateAsync`).
+
+### Item 3 — Drop the `.ok` orphan-sweep loop in `Program.CleanupUpdateArtifacts`
+
+Pre-v3.22.30 the cleanup ran a "belt+suspenders" pass after the `.old`/`.new`/`update.zip` cleanup: for each updateable, if a `.ok` sentinel existed but no matching `.old` did, delete the `.ok`. This caused a one-launch-delay cycle — every launch where no update was pending deleted the existing `.ok` files, then `WriteStartupSentinel`'s 5s timer rewrote them. Harmless but wasteful.
+
+The "belt+suspenders" framing was wrong on inspection: `OnActionClick`'s swap step already deletes `.ok` pre-swap (now post-Phase-B per Item 1), so an update can never see a stranded `.ok` pre-empt its own freshness check. A `.ok` sentinel surviving across launches is harmless — its only consumer is the `.old` cleanup loop, which pairs each `.ok` against the matching `.old` at the same moment in time. The stale-timestamp concern is also moot: presence-of-`.ok` is the safety property, not its `UtcNow` stamp.
+
+Sweep loop removed. The `.old`/`.new`/`update.zip` cleanup above it is unchanged.
+
+### Item 4 — Broaden torn-state recovery gate in `Program.CleanupUpdateArtifacts`
+
+Pre-v3.22.30 (and v3.22.29) the torn-state recovery branch in `CleanupUpdateArtifacts` was gated on `if (!File.Exists(exePath))` — only ran when EQSwitch.exe was specifically the missing file. The two-phase swap from Item 1 makes a new hard-crash failure mode reachable: Phase A stages all three files to `.old`, Phase B commits file 1 (EQSwitch.exe), then a power loss / BSOD hits before Phase B commits files 2 and 3. On reboot the exe is present (new content), but hook.dll and di8.dll are missing — Phase A moved them to `.old`, Phase B never started for them.
+
+Pre-fix, the recovery branch saw exe present and skipped. The `.ok`-gated `.old` cleanup loop then ran. Pre-existing `.ok` sentinels from the previous good launch were still present (never deleted because Phase B's post-swap `.ok`-clear never ran), so the cleanup loop saw sentinel + `.old` and *deleted* `hook.dll.old` and `di8.dll.old`. `alwaysCleanup` then deleted `hook.dll.new` and `di8.dll.new`. Final state: new EQSwitch.exe, no DLLs, no recovery sources — bricked install requiring manual re-download from GitHub.
+
+This failure mode pre-existed v3.22.30 (the original single-loop swap has the same window between `localPath → .old` and `.new → localPath`), but the two-phase split widens it because Phase A moves all three files to `.old` before Phase B starts any of them. The v3.22.30 verifier round caught it.
+
+Fix: the gate now detects torn state by scanning all three updateables — torn state is *any* updateable missing while its `.old` sibling exists. When torn state is detected, missing files are restored from their `.old` siblings as before. Files that are present (e.g., the committed new exe in the scenario above) are left in place; `.new` artifacts are preserved (the function `return`s before `alwaysCleanup`). The user ends up with a runnable install — for v3.22.30 specifically this is a clean state because the DLLs were unchanged between v3.22.29 and v3.22.30 (mismatched-version is ABI-identical for this ship). If a future ship changes DLL ABIs and trips this same recovery path, the user lands on a v3.22.29-shape install with the v3.22.30 `.new` files preserved on disk for manual completion or re-trigger of the updater.
+
+The narrower atomic-rollback variant ("move committed-new files aside to `.new` and restore all three from `.old`") was considered and rejected — it adds code complexity and File.Move risk for a strictly better outcome only when DLL ABIs actually shift between successive ships. The minimal fix turns "bricked / unrunnable" into "runnable, possibly mismatched", which is the clear win.
+
+### Build
+
+- `dotnet build -c Release` clean (0 warnings, 0 errors).
+- No new tests added — `ParseHashForZipBundle` test coverage remains in the "accepted gap" tier per the same threat-model rationale documented in the v3.22.29 entry. The two-phase swap is structurally simple enough that line-by-line review is the right verification method, not test-infra investment.
+
+### Why this isn't v3.22.29+1's worth of feature work
+
+Cross-app verifier comparisons against MWBToggle drove v3.22.27 → v3.22.29. The three items here came from a post-tag final round on v3.22.29's `UpdateDialog.cs` rewrite — same comparison method, just one cycle later. After this ship, TODO_LIST.md returns to maintenance-only and EQSwitch's released artifact equals `main` for the first time since v3.22.27. Verifier-driven shipping ends here; reopen only on real bug reports.
+
 ## v3.22.29 — Full UpdateDialog hardening parity with MWBToggle + lock-symmetry orphan sweep (2026-05-22)
 
 Final maintenance ship. Closes every item carried over from the v3.22.27 → v3.22.28 verifier cascade. After this, EQSwitch returns to **maintenance-only mode** per the v3.22.10 closeout stance — TODO_LIST.md drains to zero outstanding.
