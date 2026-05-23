@@ -107,7 +107,22 @@ struct CXStr {
 // Verified CCharacterSelect vtable on Dalaya ROF2 (stable across sessions)
 static const uintptr_t CHARSELECT_EXPECTED_VTABLE = 0x00B05410;
 
-static const uint32_t OFFSET_CHARSELECT_ARRAY = 0x18EC0;
+// v3.22.34 — DALAYA-SPECIFIC offset, confirmed via live ReadProcessMemory
+// probe against in-game gotquiz (10 chars) + gotquiz1 (1 char) clients
+// 2026-05-23. The prior value 0x18EC0 came from `macroquest-rof2-emu`
+// (x64 modern build — wrong tree per CLAUDE.md "do NOT mix the trees"
+// rule). Canonical x86 RoF2-Test (mq2emu-rof2-x86/MQ2Main/EQData(Test).h:
+// 4839) listed 0x38E80, but Dalaya's EVERQUEST struct is shifted 0x14
+// bytes earlier — the actual `pCharSelectPlayerArray` field (an
+// `ArrayClass_RO<CSINFO>` header) begins at 0x38E6C on Dalaya. Verified
+// by:
+//   * gotquiz (PID 40300): +0x38E6C reads 10 (= chars), +0x38E70 reads
+//     0x12A5A900 (matches heap-scan-found array address exactly)
+//   * gotquiz1 (PID 38608): +0x38E6C reads 1 (= 1 char "Natedogg"),
+//     +0x38E70 reads 0x06644AC8 (first slot's CSINFO begins with
+//     null-terminated "Natedogg")
+// Probe script: tools/probe-charselect-offset.py
+static const uint32_t OFFSET_CHARSELECT_ARRAY = 0x38E6C;
 // Hotfix v6f: stride is 0x160, not 0x170 (per live RPM intel 2026-04-14 and the
 // comment 10 lines below this at line 111 that says "0x160-byte structs" — the
 // constant was wrong-by-one-nibble since the reader was written). The 0x10-byte
@@ -556,11 +571,32 @@ static bool ReadListItemText(void *listWnd, int row, int col, char *outBuf, int 
 }
 
 // ─── ArrayClass header ────────────────────────────────────────
-
+// v3.22.34 — corrected field order to match MQ2 `CDynamicArrayBase` +
+// `ArrayClass_RO` actual layout per `mq2emu-rof2-x86/MQ2Main/ArrayClass.h`:
+//   class CDynamicArrayBase { /*+0x00*/ int m_length; };
+//   class ArrayClass_RO<T> : public CDynamicArrayBase {
+//       /*+0x04*/ T* m_array;
+//       /*+0x08*/ int m_alloc;
+//       /*+0x0c*/ bool m_isValid;
+//   };
+//
+// Prior order `{Data, Count, Alloc}` was wrong — it would have read
+// m_length as Data (massive int interpreted as ptr) and m_array as
+// Count (heap address interpreted as count). The reason Path A's bug
+// presented as "Count=0" rather than crashing/garbage was that
+// OFFSET_CHARSELECT_ARRAY was ALSO wrong (0x18EC0 came from the x64
+// tree; that address holds zeros on Dalaya x86) — so both bugs masked
+// each other. Live ReadProcessMemory probe via tools/probe-charselect-
+// offset.py 2026-05-23 confirmed:
+//   * +0x00 (m_length): 10 for gotquiz, 1 for gotquiz1 ← real count
+//   * +0x04 (m_array):  heap ptr to CSINFO[Count] @ stride 0x160
+//   * +0x08 (m_alloc):  10 (slots allocated, EQ default)
+//   * +0x0c (m_isValid): 1
 struct ArrayClassHeader {
-    uint8_t *Data;
-    int      Count;
-    int      Alloc;
+    int      Count;     // m_length
+    uint8_t *Data;       // m_array
+    int      Alloc;      // m_alloc
+    // m_isValid (bool, +0x0c) intentionally omitted — code reads Data/Count/Alloc only
 };
 
 // ─── (removed v3.22.2) ─────────────────────────────────────────

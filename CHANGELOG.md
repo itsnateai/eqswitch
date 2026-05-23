@@ -1,5 +1,70 @@
 # Changelog
 
+## v3.22.34 — Path A WORKING on Dalaya: correct OFFSET_CHARSELECT_ARRAY + fixed ArrayClassHeader field order (2026-05-23)
+
+The two-bug-deep root cause for "Path A unavailable on Dalaya" — finally pinned with a live `ReadProcessMemory` probe against the in-game `gotquiz` (10-char) + `gotquiz1` (1-char) clients. Both bugs were active in every v3.22.x ship; they masked each other so the failure mode presented as `Count=0` rather than crash/garbage, which is why "confirmed plug-and-play on Dalaya by Nate" comments lingered.
+
+### Bug 1 — wrong tree's offset (`0x18EC0` from x64 modern build)
+
+`Native/mq2_bridge.cpp` had `OFFSET_CHARSELECT_ARRAY = 0x18EC0`. That value is from `macroquest-rof2-emu/src/eqlib/include/eqlib/game/EverQuest.h:963` — the **x64 modern EQ build's** layout. The CLAUDE.md "TWO trees exist with different roles" callout warns specifically against copying numerics from this tree because its addresses target a different bitness AND a different struct layout. On Dalaya (x86 RoF2-Test-based) the `EVERQUEST` struct field at `0x18EC0` holds zeros — confirmed by live probe.
+
+### Bug 2 — wrong ArrayClassHeader field order
+
+The existing `struct ArrayClassHeader { uint8_t *Data; int Count; int Alloc; }` does NOT match MQ2's actual `CDynamicArrayBase + ArrayClass_RO<T>` layout from `mq2emu-rof2-x86/MQ2Main/ArrayClass.h:43-355`:
+
+```cpp
+class CDynamicArrayBase { /*+0x00*/ int m_length; };
+class ArrayClass_RO<T> : public CDynamicArrayBase {
+    /*+0x04*/ T* m_array;
+    /*+0x08*/ int m_alloc;
+    /*+0x0c*/ bool m_isValid;
+};
+```
+
+So `m_length` (the Count we care about) sits at `+0x00`, **before** `m_array`. The pre-fix code was reading `m_length` as `Data*` and `m_array` as `Count` — meaningless even if the offset had been right. Combined with Bug 1, this would have crashed loudly if both happened to align; the "both wrong" combination produced quiet zeros instead because `0x18EC0` happens to be a zero-filled region in Dalaya's `EVERQUEST` struct.
+
+### Fix
+
+- `OFFSET_CHARSELECT_ARRAY = 0x38E6C` (Dalaya-specific; canonical x86 RoF2-Test lists `0x38E80` for the same field, but Dalaya shifted the surrounding struct by `0x14` bytes).
+- `struct ArrayClassHeader { int Count; uint8_t *Data; int Alloc; }` — reordered to match the actual base+derived layout.
+
+### Verification
+
+Live probe against two in-game clients (`tools/probe-charselect-offset.py`):
+
+```
+[PID 40300 gotquiz, 10 chars]    +0x38E6C: Count=10  +0x38E70: Data=0x12A5A900
+  slot 0: "Acpots"   slot 1: "Backup"   slot 2: "Healpots"  slot 3: "Jonopua"
+  slot 4: "Nate"     slot 5: "Potiongirl" slot 6: "Potionguy" slot 7: "Staxue"
+  slot 8: "Thazguard" slot 9: "Zfree"
+[PID 38608 gotquiz1, 1 char]     +0x38E6C: Count=1   +0x38E70: Data=0x06644AC8
+  slot 0: "Natedogg"
+```
+
+Cross-verified against the same-session heap-scan log entries:
+- gotquiz: `heap scan FOUND char array at 0x12A5A900` — exact address match.
+- gotquiz1: anchor-scan branch found "Natedogg" via target-name search; live probe now shows Count=1, matching the anchor's single-char assumption.
+
+The probe walks all 10 slot positions at stride `HEAP_SCAN_STRIDE = 0x160` (the existing constant), confirming Dalaya's `CSINFO` is `0x160` bytes (not the canonical RoF2-Test `0x170` — Dalaya stripped or shortened some fields).
+
+### Behavioral impact
+
+- **Path A now publishes `shm->charCount` and names directly from the struct** — no dependency on heap-scan timing, no dependency on Path B's `GetItemText` (which is empty on Dalaya), no dependency on Path B2's `SetCurSel`/`GetCurSel` probe (which is non-deterministic on Dalaya).
+- The pump-responsiveness probe + Path C heap-scan + anchor fallback all stay in place as **defense in depth**. Path A success short-circuits the entire pCharList block via the existing `charDataRead = true` latch.
+- Expected log diff vs v3.22.33: `charSelectPlayerArray unavailable` line disappears for both clients; `heap scan FOUND` / `slot-based mode probed N slots` / `anchor scan FOUND` lines also disappear (Path B/B2/C don't fire); `charSelectPlayerArray at offset 0x38E6C: Count=N` reports the real count.
+
+### Build
+
+- `Native/build-di8-inject.sh` clean — DLL grows by 1KB for the new comment-heavy block, no functional bloat.
+- `dotnet build -c Release` clean (no C# changes — just version bump).
+- No tests added: the Native fix is below the SHM boundary; the probe script `tools/probe-charselect-offset.py` is the verification harness.
+
+### Out of scope (carried forward)
+
+- Minimize-restore hang + EQSwitch-close-crash reports — separate DI8/hook-detach investigation.
+- `OnSwitchKey` / `OnGlobalSwitchKey` / `LaunchSequenceComplete` topmost-dance parity (v3.22.32 + v3.22.33 framing).
+- `HEAP_SCAN_STRIDE = 0x160` Dalaya-specific stride is empirical (canonical RoF2-Test `CSINFO` is `0x170`). Not changing this — the existing value is verified to align Path C heap-scan correctly.
+
 ## v3.22.33 — Post-v3.22.32 verifier sweep: 7 fixes folded in (2026-05-23)
 
 Same-day follow-on to v3.22.32. The post-ship 8-agent verifier swarm surfaced 1 CRITICAL, 1 sev-4, 2 HIGH, and 3 MEDIUM findings against v3.22.32. All folded in here. The original two-bug scope (taskbar coverage + background char-select stall) is unchanged; this ship hardens the v3.22.32 fixes against the gaps verifier-T2/T3/T4 caught.
