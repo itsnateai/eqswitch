@@ -357,6 +357,23 @@ static class Program
                 postUpdateTimer.Start();
             }
 
+            // v3.22.29 Items 6+7: write .ok startup sentinel(s) once the tray
+            // is up and the message pump has been ticking for a few seconds.
+            // CleanupUpdateArtifacts gates .old removal on these sentinels, so
+            // if the NEW binary crashes during init before this Timer fires,
+            // .old persists across the next launch and the torn-state branch
+            // can restore it. 5s gives the WinForms loop time to absorb any
+            // first-tick GDI/COM exceptions that a sentinel-on-launch would
+            // miss.
+            var sentinelTimer = new System.Windows.Forms.Timer { Interval = 5000 };
+            sentinelTimer.Tick += (_, _) =>
+            {
+                sentinelTimer.Stop();
+                sentinelTimer.Dispose();
+                UpdateDialog.WriteStartupSentinel();
+            };
+            sentinelTimer.Start();
+
             // --test-update: simulate update flow without hitting GitHub
 #if DEBUG
             if (args.Contains("--test-update"))
@@ -400,7 +417,12 @@ static class Program
         var dir = AppDomain.CurrentDomain.BaseDirectory;
         var exePath = Path.Combine(dir, "EQSwitch.exe");
 
-        // Torn-state recovery: if exe is missing but .old exists, restore it
+        // Torn-state recovery: if exe is missing but .old exists, restore it.
+        // This branch fires when an interrupted update left the system without
+        // an EQSwitch.exe (e.g., power failure between the original→.old move
+        // and the .new→original move). Restoring .old gets the user back to
+        // the previous working version. Hook/DI8 DLLs auto-restore via the
+        // same .old → original move in the per-DLL pattern loop below.
         if (!File.Exists(exePath))
         {
             var oldPath = exePath + ".old";
@@ -419,32 +441,82 @@ static class Program
             return;
         }
 
-        // Clean up each artifact independently so one locked file doesn't block the rest.
-        // Retry exe.old — the old process may still be releasing the memory-mapped file.
-        foreach (var pattern in new[] { "EQSwitch.exe.old", "EQSwitch.exe.new",
-                                        "eqswitch-hook.dll.old", "eqswitch-hook.dll.new",
-                                        "eqswitch-di8.dll.old", "eqswitch-di8.dll.new",
-                                        "update.zip" })
-        {
-            var path = Path.Combine(dir, pattern);
-            if (!File.Exists(path)) continue;
+        // v3.22.29 Items 6+7: .old cleanup is now gated on the .ok startup
+        // sentinel for each updateable file. The new binary writes the
+        // sentinel ~5s after Application.Run starts (see Program.Main); if
+        // the new binary crashed during init the sentinel was never written
+        // and .old persists, giving us a recovery path that doesn't require
+        // a user rebuilding from GitHub.
+        //
+        // Per-file pairing:
+        //   EQSwitch.exe.old      kept until EQSwitch.exe.ok       exists
+        //   eqswitch-hook.dll.old kept until eqswitch-hook.dll.ok  exists
+        //   eqswitch-di8.dll.old  kept until eqswitch-di8.dll.ok   exists
+        // .new and update.zip artifacts are always safe to remove (incomplete
+        // download or interrupted extract — never the user's only good copy).
+        var oldFiles = new[] { "EQSwitch.exe.old", "eqswitch-hook.dll.old", "eqswitch-di8.dll.old" };
+        var alwaysCleanup = new[] { "EQSwitch.exe.new", "eqswitch-hook.dll.new", "eqswitch-di8.dll.new", "update.zip" };
 
-            for (int attempt = 0; attempt < 3; attempt++)
+        foreach (var oldName in oldFiles)
+        {
+            var oldFullPath = Path.Combine(dir, oldName);
+            if (!File.Exists(oldFullPath)) continue;
+
+            // Sentinel name: strip ".old" and append ".ok". So "EQSwitch.exe.old" → "EQSwitch.exe.ok".
+            var originalName = oldName.Substring(0, oldName.Length - ".old".Length);
+            var sentinelPath = Path.Combine(dir, originalName + ".ok");
+            if (!File.Exists(sentinelPath))
             {
-                try
-                {
-                    File.Delete(path);
-                    FileLogger.Info($"Cleaned up update artifact: {pattern}");
-                    break;
-                }
-                catch (Exception) when (attempt < 2)
-                {
-                    Thread.Sleep(500);
-                }
-                catch (Exception ex)
-                {
-                    FileLogger.Warn($"Failed to clean up {pattern}: {ex.Message}");
-                }
+                FileLogger.Warn($"Keeping {oldName} — sentinel {originalName}.ok missing (new binary did not finish init last launch).");
+                continue;
+            }
+
+            TryRemoveWithRetry(oldFullPath, oldName);
+        }
+
+        foreach (var name in alwaysCleanup)
+        {
+            var path = Path.Combine(dir, name);
+            if (!File.Exists(path)) continue;
+            TryRemoveWithRetry(path, name);
+        }
+
+        // After the .old cleanup, also remove stale .ok sentinels whose .old
+        // pairs no longer exist — they were already swept above. Leaving them
+        // would mean a future update's freshly-moved .old would be auto-cleaned
+        // before the new binary had a chance to prove itself (the swap step in
+        // OnActionClick already removes .ok pre-swap; this is belt+suspenders).
+        foreach (var fname in new[] { "EQSwitch.exe", "eqswitch-hook.dll", "eqswitch-di8.dll" })
+        {
+            var sentinelPath = Path.Combine(dir, fname + ".ok");
+            var oldPath = Path.Combine(dir, fname + ".old");
+            if (File.Exists(sentinelPath) && !File.Exists(oldPath))
+            {
+                // .ok lingers from a prior update; safe to remove now that .old is gone.
+                try { File.Delete(sentinelPath); }
+                catch (Exception ex) { FileLogger.Warn($"Failed to remove stale sentinel {fname}.ok: {ex.Message}"); }
+            }
+        }
+    }
+
+    /// <summary>Retry delete with 500ms backoff — covers the MMF-release race on .old.</summary>
+    private static void TryRemoveWithRetry(string path, string displayName)
+    {
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            try
+            {
+                File.Delete(path);
+                FileLogger.Info($"Cleaned up update artifact: {displayName}");
+                return;
+            }
+            catch (Exception) when (attempt < 2)
+            {
+                Thread.Sleep(500);
+            }
+            catch (Exception ex)
+            {
+                FileLogger.Warn($"Failed to clean up {displayName}: {ex.Message}");
             }
         }
     }

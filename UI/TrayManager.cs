@@ -2174,7 +2174,22 @@ public class TrayManager : IDisposable
         // ExecuteTrayAction so the gate has to be duplicated here.
         if (_settingsForm != null && !_settingsForm.IsDisposed) return;
 
-        var account = _config.FindAccountByName(name);
+        // v3.22.29 Orphan-1: snapshot all three _config reads under
+        // ConfigMutationLock. Pre-v3.22.29 each line touched a list-typed
+        // _config field outside the lock, racing TrayManager.ReloadConfigCore's
+        // mid-Settings-Apply swap of those lists. Snapshot-then-release lets
+        // the heavy FireAccountLogin / FireCharacterLogin dispatch run lock-free.
+        Account? account;
+        LoginAccount? legacyRow;
+        Character? legacyToCharacter;
+        lock (ConfigManager.ConfigMutationLock)
+        {
+            account = _config.FindAccountByName(name);
+            legacyRow = _config.LegacyAccounts.FirstOrDefault(a =>
+                a.CharacterName.Equals(name, StringComparison.OrdinalIgnoreCase) && a.AutoEnterWorld);
+            legacyToCharacter = legacyRow != null ? _config.FindCharacterByName(name) : null;
+        }
+
         if (account == null)
         {
             var key = "A:" + name;
@@ -2195,11 +2210,9 @@ public class TrayManager : IDisposable
         // the migration glitch where v3 → v4 split created AccountHotkey bindings for
         // names that semantically meant "enter world as character X". User can override
         // by explicitly rebinding in Settings → Hotkeys → Account vs Character family.
-        var legacyRow = _config.LegacyAccounts.FirstOrDefault(a =>
-            a.CharacterName.Equals(name, StringComparison.OrdinalIgnoreCase) && a.AutoEnterWorld);
         if (legacyRow != null)
         {
-            var character = _config.FindCharacterByName(name);
+            var character = legacyToCharacter;
             if (character != null)
             {
                 var key = "A2C:" + name;
@@ -2249,7 +2262,13 @@ public class TrayManager : IDisposable
     {
         if (_settingsForm != null && !_settingsForm.IsDisposed) return;   // Phase 3.5-A parity
 
-        var character = _config.FindCharacterByName(name);
+        // v3.22.29 Orphan-1: snapshot under ConfigMutationLock. Same fix-class
+        // as FireAccountHotkeyByName.
+        Character? character;
+        lock (ConfigManager.ConfigMutationLock)
+        {
+            character = _config.FindCharacterByName(name);
+        }
         if (character == null)
         {
             var key = "C:" + name;
@@ -2548,9 +2567,17 @@ public class TrayManager : IDisposable
     private string ResolveTeamSlotDisplayName(string raw)
     {
         if (string.IsNullOrEmpty(raw)) return "";
-        var ch = _config.FindCharacterByName(raw);
+        // v3.22.29 Orphan-1: snapshot both lookups under ConfigMutationLock.
+        // Called from per-team tooltip / submenu builds on UI thread; ReloadConfig
+        // swaps Characters/Accounts mid-call would torn-read otherwise.
+        Character? ch;
+        Account? acc;
+        lock (ConfigManager.ConfigMutationLock)
+        {
+            ch = _config.FindCharacterByName(raw);
+            acc = ch == null ? _config.FindAccountByName(raw) : null;
+        }
         if (ch != null) return ch.Name;
-        var acc = _config.FindAccountByName(raw);
         if (acc != null && !string.IsNullOrEmpty(acc.Username)) return acc.Username;
         return raw;
     }
@@ -2563,12 +2590,21 @@ public class TrayManager : IDisposable
     private string BuildTeamTooltip(int teamIndex)
     {
         var (slots, _) = ResolveTeamConfig(teamIndex);
+        // v3.22.29 Orphan-1: per-slot lookups under ConfigMutationLock so a
+        // ReloadConfig mid-tooltip-build can't torn-read Characters/Accounts.
+        // Lock per-call (not per-slot) to amortize Monitor.Enter cost across
+        // typical 4-6 slot teams.
         string ResolveForTooltip(string raw)
         {
             if (string.IsNullOrEmpty(raw)) return "(empty)";
-            var ch = _config.FindCharacterByName(raw);
+            Character? ch;
+            Account? acc;
+            lock (ConfigManager.ConfigMutationLock)
+            {
+                ch = _config.FindCharacterByName(raw);
+                acc = ch == null ? _config.FindAccountByName(raw) : null;
+            }
             if (ch != null) return $"{ch.LabelWithClass} \u2192 enter world";
-            var acc = _config.FindAccountByName(raw);
             if (acc != null) return $"{acc.EffectiveLabel} \u2192 charselect";
             return $"{raw} (unresolved)";
         }

@@ -1,5 +1,66 @@
 # Changelog
 
+## v3.22.29 — Full UpdateDialog hardening parity with MWBToggle + lock-symmetry orphan sweep (2026-05-22)
+
+Final maintenance ship. Closes every item carried over from the v3.22.27 → v3.22.28 verifier cascade. After this, EQSwitch returns to **maintenance-only mode** per the v3.22.10 closeout stance — TODO_LIST.md drains to zero outstanding.
+
+### Self-update hardening (UpdateDialog.cs rewrite)
+
+Cross-app parity port from `MousewithoutBordersToggle/UpdateDialog.cs`. Single rewrite preserves all EQSwitch-specific behavior (zip bundle, multi-file extract, TestMode, DarkTheme styling) while layering the MWBToggle security envelope on top.
+
+1. **`SendAllowlistedAsync` per-hop redirect validation.** `_http` flips to `AllowAutoRedirect=false`; redirects are followed manually with a 5-hop cap, and every hop's URL is re-validated through `IsAllowedHost`. Pre-v3.22.29 only the initial URL was checked because the default `HttpClientHandler` followed 3xx server-side. A hostile redirect from an allowlisted origin would now be rejected at the next hop. Catalogue, download, and SHA256SUMS fetches all route through this helper.
+
+2. **`MaxDownloadBytes = 200 MB` cap.** Header-side gate fails closed when the server reports `Content-Length` over the ceiling; mid-stream byte counter aborts chunked-transfer bodies that have no `Content-Length`. Defends against a compromised CDN edge serving an infinite chunked body inside the 30s `HttpClient.Timeout` window.
+
+3. **`MaxResponseContentBufferSize = 1 MB` ceiling on `HttpClient`.** Default is ~2 GB. Affects all `ReadAsStringAsync` calls (releases JSON, SHA256SUMS body). Without this, a hostile edge could pull arbitrary text into RAM.
+
+4. **`ParseHashForZipBundle` + `IsValidSha256Hex` parser hardening.** Replaces the inline parser that accepted any whitespace-bounded token as the hash. New parser handles BSD-tag (`SHA256 (filename) = hash`) + GNU-coreutils + tab separators + CRLF + multi-entry files, and rejects anything that isn't exactly 64 hex chars. The downstream `OrdinalIgnoreCase` compare still catches a wrong-content acceptance, but the parser is the trust boundary and should fail-closed on malformed content.
+
+5. **`TryDelete` / `TryRollback` logging.** Pre-v3.22.29 both wrappers had bare `catch { }`. Stranded `.new`/`.old` artifacts on locked files were invisible to support. Now log to `FileLogger.Warn` with exception type + message.
+
+6. **`.ok` post-init sentinel + torn-state recovery.** After self-update, `.old` is no longer deleted unconditionally on next startup — `Program.CleanupUpdateArtifacts` now gates `.old` removal on the presence of a `.ok` sentinel that the NEW binary writes 5s after `Application.Run` starts. If the new binary crashes during init the sentinel is never written, `.old` persists, and the next-launch torn-state branch can restore it. Sentinels are deleted as part of the swap so a leftover from a prior update can't mark a freshly-swapped untested binary as already-OK.
+
+7. **Torn-state recovery on next launch** (folded into item 6).
+
+8. **`OnActionClick` async-void exception fence widened.** The outer `try` now wraps from the top of the method — pre-try state setup (button toggle, cts dispose, ProcessPath null-check, files-array construction) used to throw to the `SynchronizationContext` as unhandled.
+
+9. **`TestMode` static setter gated behind `#if DEBUG`.** Release builds expose the getter (always `false`) but no setter, so a future code path can't accidentally flip the tray into "all-security-checks-bypassed" mode in shipped builds.
+
+10. **`Process.Start` return value disposed.** The relaunch invocation now uses `using var _ = Process.Start(...)` so the `Process` handle is released; previously leaked because the return value was discarded.
+
+11. **Catalogue fetch routed through `SendAllowlistedAsync`** (closed by item 1).
+
+13. **`BeginInvoke` (fire-and-forget) for download UI marshaling.** Replaces `Invoke` (blocking) at the download progress callback. At 81920-byte chunks per ~MB/s a 50 MB zip is ~640 synchronous cross-thread round-trips; `BeginInvoke` is structurally correct here since the call is a UI repaint, not a synchronization point.
+
+14. **`GitHubRepo` const.** Replaces the two hardcoded `/itsnateai/eqswitch/` literals at the host-equality check sites with a single `const string GitHubRepo = "itsnateai/eqswitch"`. Fork-friendly single edit point.
+
+### Orphans folded back in from v3.22.28 handoff (carryover, NOT MWBToggle parity)
+
+These were scoped for v3.22.28 but only Item 3 (URL allowlist) actually shipped — re-captured here so they don't rot.
+
+- **Orphan 1: UI-thread `_config.*` lock-symmetry sweep.** Snapshot-then-release pattern under `ConfigManager.ConfigMutationLock` applied to:
+  - `UI/TrayManager.cs:FireAccountHotkeyByName` — three reads (`FindAccountByName`, `LegacyAccounts.FirstOrDefault`, `FindCharacterByName`) snapshotted into one critical section before the smart-routing branch.
+  - `UI/TrayManager.cs:FireCharacterHotkeyByName` — `FindCharacterByName` snapshot.
+  - `UI/TrayManager.cs:ResolveTeamSlotDisplayName` — `FindCharacterByName` + `FindAccountByName` snapshotted in one section.
+  - `UI/TrayManager.cs:BuildTeamTooltip` — per-slot `FindCharacterByName` + `FindAccountByName` under lock (per-call, not per-slot — amortized for typical 4-6 slot teams).
+  - `Core/WindowManager.cs:SetWindowTitle` — `FindCharacterByName(boundName)` snapshot. Fires from WinForms timer (UI thread) but a Settings → Apply swap of `_config.Characters` could still torn-read.
+
+- **Orphan 2: `IsClientResponsive` `GetLastWin32Error` extension.** Added second overload `IsClientResponsive(IntPtr hwnd, out int lastErr)`; original 5 call sites (`ArrangeSingleScreen`, `ArrangeMultiMonitor`, `SwapWindows`, `ResizeToCurrentMonitors`, `ApplySlimTitlebar`) all updated to capture and include `lastErr` in their warn logs. Diagnostic-quality only — disambiguates timeout (`lastErr=0`) from window-gone (`ERROR_INVALID_WINDOW_HANDLE=1400`) from access-denied (`ERROR_ACCESS_DENIED=5`).
+
+- **Orphan 5: AutoLoginManager wider `_config.*` threadpool audit.** Re-audited `RunLoginSequence` (lines ~310-812) and `HandleCharSelectViaShm` paths. Only existing `_config.Accounts` read sites are already under `ConfigMutationLock` (line 1313 + 1342 + 2177) — no new sites needed locking. Confirmed.
+
+### Why "maintenance-only" mode resumes after this ship
+
+The v3.22.27 → v3.22.28 → v3.22.29 cycle was driven by **convergent-verifier comparison against MWBToggle** — a sibling app with a different threat model (wider distribution, more attack surface, includes per-hop redirect validation precisely because earlier security iterations surfaced the gap). EQSwitch's actual threat model is personal-use multibox for a single user against GitHub-Releases as the update channel; none of these items shipped because a real bug was reported or a real exploit was observed. They shipped because the verifier loop flagged "MWBToggle has this, EQSwitch doesn't" and Nate's directive was clear-the-backlog. After v3.22.29 the cross-app delta is zero — there is nothing left for the verifier loop to find on a "MWBToggle has X" basis.
+
+`TODO_LIST.md` returns to the v3.22.10 closeout state: zero outstanding, reopen only on real bug report / accepted-known-limit trigger firing / new architectural decision.
+
+### Build
+
+- `dotnet build -c Release` clean (0 warnings, 0 errors).
+- `dotnet build -c Debug` clean (Core/*Tests.cs included in Debug, all pass restore + compile).
+- No new tests added — UpdateDialog test coverage stays in the "accepted gap" tier per the same threat-model logic above. The Core/* test files (AppConfig, CharacterSelector, CharSelectReader, KeyInputWriter, ShmLayout) remain authoritative for the domains they cover.
+
 ## v3.22.28 — Host-equality self-update allowlist + plug `_hashFileUrl` allowlist gap (2026-05-22)
 
 **Errata (added post-ship, 2026-05-22 verifier round):**

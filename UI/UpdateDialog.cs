@@ -19,6 +19,29 @@ public class UpdateDialog : Form
 {
     private static readonly HttpClient _http = CreateHttpClient();
 
+    // Repo path single source of truth — used by IsAllowedHost AbsolutePath gating
+    // and the catalogue fetch URL builder. Replace the two hardcoded literals
+    // (formerly at IsAllowedHost lines 623-626) with one const so a fork edits
+    // exactly one place.
+    private const string AppName = "EQSwitch";
+    private const string GitHubRepo = "itsnateai/eqswitch";
+
+    // Hard ceiling on a single download. Self-contained EQSwitch release zip is
+    // ~60 MB; 200 MB gives ~3x headroom for future asset growth (extra DLLs,
+    // localization, etc.) without giving a compromised CDN edge unbounded
+    // write authority. Without this cap, a hostile Content-Length: 50 GB or
+    // chunked-transfer with no Content-Length at all could fill the user's
+    // disk inside the 30s HttpClient.Timeout window before the SHA256 verify
+    // step fires.
+    internal const long MaxDownloadBytes = 200L * 1024 * 1024;
+
+    // Cap the in-memory response buffer for ReadAsStringAsync calls (release
+    // JSON, SHA256SUMS body). The default ceiling is ~2 GB; tighten to 1 MB
+    // so a hostile CDN edge can't blow up the tray with an unbounded text
+    // body. Streaming downloads (DownloadFileAsync) use a separate per-write
+    // ceiling — see MaxDownloadBytes.
+    private const long MaxResponseBufferBytes = 1L * 1024 * 1024;
+
     private readonly Label _lblStatus;
     private readonly Label _lblDetail;
     private readonly Panel _progressOuter;
@@ -33,8 +56,18 @@ public class UpdateDialog : Form
     private string? _hashFileUrl;
     private long _downloadSize;
 
-    /// <summary>Set by --test-update flag to simulate the full update flow locally.</summary>
+    // Gate the TestMode setter behind #if DEBUG. The Release build still
+    // exposes the getter (defaults to false, always false in Release) so
+    // existing call sites that read it compile. The setter — which bypasses
+    // ALL security checks (allowlist skipped, SHA verification skipped) —
+    // is unreachable in Release so a future code path can't accidentally
+    // (or maliciously, given any process with handle access could mutate
+    // static fields) flip the tray into test mode in shipped builds.
+#if DEBUG
     public static bool TestMode { get; set; }
+#else
+    public static bool TestMode { get; } = false;
+#endif
 
     // Marquee animation
     private readonly System.Windows.Forms.Timer _marqueeTimer;
@@ -100,7 +133,8 @@ public class UpdateDialog : Form
         _btnCancel.Size = new Size(80, 32);
         _btnCancel.Click += (_, _) =>
         {
-            _cts?.Cancel();
+            try { _cts?.Cancel(); }
+            catch (ObjectDisposedException) { /* rapid double-click race with Dispose */ }
             DialogResult = DialogResult.Cancel;
             Close();
         };
@@ -124,10 +158,175 @@ public class UpdateDialog : Form
     private static HttpClient CreateHttpClient()
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
-        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("EQSwitch", version));
+        // Disable auto-redirect: the default handler follows redirects WITHOUT
+        // re-checking each hop against the allowlist, which would let an
+        // allowlisted origin (github.com) hand off to an attacker-controlled
+        // host via a crafted 3xx. We follow manually in SendAllowlistedAsync,
+        // validating each hop. v3.22.29 hardening.
+        var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
+        // Per-call response-buffer ceiling. The default is ~2 GB and applies to
+        // ReadAsStringAsync — without this cap a hostile SHA256SUMS edge could
+        // stream until OOM. Streaming downloads (DownloadFileAsync) bypass
+        // this and use MaxDownloadBytes instead.
+        client.MaxResponseContentBufferSize = MaxResponseBufferBytes;
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue(AppName, version));
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         return client;
+    }
+
+    // Host-based allowlist for self-update URLs. Replaces a 3-prefix
+    // `StartsWith` check (pre-v3.22.28) with Uri parsing + host-equality.
+    // Repo scope on github.com / api.github.com is checked against
+    // AbsolutePath, not a raw-URL substring. CDN coverage:
+    // both `objects.githubusercontent.com` (legacy edge) and
+    // `release-assets.githubusercontent.com` (new edge, rolled alongside)
+    // are accepted as redirect targets for release-asset downloads.
+    //
+    // `allowApi:false` is used at release-asset / hash-file fetch sites
+    // (api.github.com is not a valid release-asset host). `allowApi:true`
+    // is used at the catalogue fetch (releases/latest).
+    internal static bool IsAllowedHost(Uri uri, bool allowApi)
+    {
+        if (uri.Scheme != Uri.UriSchemeHttps) return false;
+        string host = uri.Host;
+        if (host.Equals("objects.githubusercontent.com", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (host.Equals("release-assets.githubusercontent.com", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (host.Equals("github.com", StringComparison.OrdinalIgnoreCase))
+            return uri.AbsolutePath.StartsWith($"/{GitHubRepo}/", StringComparison.OrdinalIgnoreCase);
+        if (allowApi && host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase))
+            return uri.AbsolutePath.StartsWith($"/repos/{GitHubRepo}/", StringComparison.OrdinalIgnoreCase);
+        return false;
+    }
+
+    internal static bool IsAllowlisted(string? url, bool allowApi = true) =>
+        !string.IsNullOrEmpty(url) &&
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+        IsAllowedHost(uri, allowApi);
+
+    /// <summary>
+    /// Extract the hex hash for the EQSwitch zip bundle from a SHA256SUMS body.
+    /// Handles GNU-coreutils format (`hexhash  filename` or `hexhash *filename`),
+    /// BSD-tag format (`SHA256 (filename) = hexhash`), CRLF line endings,
+    /// multi-entry files, and tab separators. Filename match is prefix+suffix
+    /// (EQSwitch-X.Y.Z.zip) and case-insensitive. Returns null if no entry
+    /// for an EQSwitch zip is found OR if the parsed hash isn't a 64-char
+    /// hex string (defends against malformed SHA256SUMS bodies — the parser
+    /// is the actual trust-decision input for self-update).
+    /// </summary>
+    internal static string? ParseHashForZipBundle(string? content)
+    {
+        if (string.IsNullOrEmpty(content)) return null;
+        foreach (var rawLine in content.Split('\n'))
+        {
+            var line = rawLine.TrimEnd('\r').Trim();
+            if (line.Length == 0) continue;
+
+            string? candidate = null;
+
+            // BSD-tag format: SHA256 (filename) = hexhash
+            if (line.StartsWith("SHA256 (", StringComparison.OrdinalIgnoreCase))
+            {
+                int lparen = line.IndexOf('(');
+                int rparen = line.IndexOf(')');
+                int eq = line.IndexOf('=');
+                if (lparen >= 0 && rparen > lparen && eq > rparen)
+                {
+                    var name = line.Substring(lparen + 1, rparen - lparen - 1).Trim();
+                    if (IsEQSwitchZipName(name))
+                        candidate = line.Substring(eq + 1).Trim();
+                }
+            }
+            else
+            {
+                // GNU-coreutils format: "hexhash  filename" or "hexhash *filename"
+                // (binary-mode emit). Tab separator also seen in the wild.
+                var parts = line.Split(new[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 2)
+                {
+                    var fname = parts[1].Trim().TrimStart('*');
+                    if (IsEQSwitchZipName(fname))
+                        candidate = parts[0].Trim();
+                }
+            }
+
+            if (candidate != null && IsValidSha256Hex(candidate))
+                return candidate;
+        }
+        return null;
+    }
+
+    /// <summary>EQSwitch release ZIP filename convention: EQSwitch-X.Y.Z.zip.</summary>
+    internal static bool IsEQSwitchZipName(string filename) =>
+        !string.IsNullOrEmpty(filename) &&
+        filename.StartsWith("EQSwitch-", StringComparison.OrdinalIgnoreCase) &&
+        filename.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
+
+    // SHA-256 produces 32 bytes = 64 hex chars. Reject anything else so a
+    // malformed SHA256SUMS body (truncated, non-hex, empty after `=`) can't
+    // reach the equality compare and silently fall into the "no entry" branch
+    // by accident.
+    internal static bool IsValidSha256Hex(string s)
+    {
+        if (string.IsNullOrEmpty(s) || s.Length != 64) return false;
+        foreach (var c in s)
+        {
+            bool isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            if (!isHex) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// True when an asserted download size is within the per-file ceiling.
+    /// Negative or zero is ALLOWED here (caller handles "no Content-Length"
+    /// separately by streaming + counting); the ceiling test is a "is this
+    /// number too big" gate, not a "is this number sane" gate.
+    /// </summary>
+    internal static bool IsAllowedDownloadSize(long bytes) =>
+        bytes <= MaxDownloadBytes;
+
+    /// <summary>
+    /// Issue a GET and follow up to 5 redirects manually. Every hop's URL —
+    /// including the initial one — is validated against IsAllowedHost before
+    /// the request is sent. Throws if any hop lands off-list or if the redirect
+    /// chain exceeds the hop limit.
+    /// </summary>
+    private static async Task<HttpResponseMessage> SendAllowlistedAsync(
+        string url, HttpCompletionOption completion, bool allowApi, CancellationToken ct)
+    {
+        const int maxHops = 5;
+        for (int hop = 0; hop < maxHops; hop++)
+        {
+            // Belt-and-suspenders: IsAllowedHost already requires Uri.Scheme == https,
+            // but a future allowlist edit accidentally accepting http would silently
+            // disable transport encryption. Independently enforce HTTPS here so
+            // scheme-downgrade can never happen regardless of allowlist contents.
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var validatedUri) ||
+                !validatedUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
+                throw new HttpRequestException($"URL must be HTTPS: {url}");
+
+            if (!IsAllowedHost(validatedUri, allowApi))
+                throw new HttpRequestException($"URL not in allowlist: {url}");
+
+            var response = await _http.GetAsync(url, completion, ct);
+
+            int status = (int)response.StatusCode;
+            if (status >= 300 && status < 400 && response.Headers.Location != null)
+            {
+                var next = response.Headers.Location.IsAbsoluteUri
+                    ? response.Headers.Location.ToString()
+                    : new Uri(new Uri(url), response.Headers.Location).ToString();
+                response.Dispose();
+                url = next;
+                continue;
+            }
+
+            return response;
+        }
+        throw new HttpRequestException($"Too many redirects (>{maxHops}) starting from initial URL.");
     }
 
     // ─── State 1: Check GitHub ──────────────────────────────────
@@ -165,8 +364,15 @@ public class UpdateDialog : Form
                 return;
             }
 
-            var response = await _http.GetAsync(
-                "https://api.github.com/repos/itsnateai/eqswitch/releases/latest",
+            // Catalogue fetch — explicit allowlist gate (allowApi:true is the
+            // only site that accepts api.github.com). v3.22.29 routes through
+            // SendAllowlistedAsync so a hostile 3xx from api.github.com gets
+            // validated at every hop. Item 11 closed alongside item 1.
+            var catalogueUrl = $"https://api.github.com/repos/{GitHubRepo}/releases/latest";
+            var response = await SendAllowlistedAsync(
+                catalogueUrl,
+                HttpCompletionOption.ResponseContentRead,
+                allowApi: true,
                 _cts.Token);
 
             if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
@@ -200,8 +406,7 @@ public class UpdateDialog : Form
                 foreach (var asset in assets.EnumerateArray())
                 {
                     var name = asset.GetProperty("name").GetString() ?? "";
-                    if (name.StartsWith("EQSwitch-", StringComparison.OrdinalIgnoreCase)
-                        && name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                    if (IsEQSwitchZipName(name))
                     {
                         _downloadUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
                         _downloadSize = asset.TryGetProperty("size", out var sizeEl)
@@ -279,29 +484,38 @@ public class UpdateDialog : Form
 
     private async void OnActionClick(object? sender, EventArgs e)
     {
-        _btnAction.Enabled = false;
-        _btnCancel.Text = "Cancel";
-        _progressOuter.Visible = true;
-        _progressFill.Location = new Point(0, 0);
-        _lblStatus.Text = $"Downloading EQSwitch {_remoteVersion}...";
-
-        _cts?.Dispose();
-        _cts = new CancellationTokenSource();
-        var exePath = Environment.ProcessPath
-            ?? throw new InvalidOperationException("Cannot determine executable path.");
-        var exeDir = Path.GetDirectoryName(exePath)!;
-        var zipPath = Path.Combine(exeDir, "update.zip");
-
-        // Files to update: (name in zip, local path)
-        var files = new[]
-        {
-            ("EQSwitch.exe", exePath),
-            ("eqswitch-hook.dll", Path.Combine(exeDir, "eqswitch-hook.dll")),
-            ("eqswitch-di8.dll", Path.Combine(exeDir, "eqswitch-di8.dll"))
-        };
+        // v3.22.29 Item 8: widen the async-void exception fence to cover the
+        // pre-try setup. Previously state setup (button toggle, cts dispose,
+        // ProcessPath null-check, files array construction) ran outside the
+        // outer try — an exception there propagated to the SynchronizationContext
+        // as unhandled. Now everything sits inside the fence.
+        string? exePath = null;
+        string? zipPath = null;
+        (string name, string localPath)[] files = Array.Empty<(string, string)>();
 
         try
         {
+            _btnAction.Enabled = false;
+            _btnCancel.Text = "Cancel";
+            _progressOuter.Visible = true;
+            _progressFill.Location = new Point(0, 0);
+            _lblStatus.Text = $"Downloading EQSwitch {_remoteVersion}...";
+
+            _cts?.Dispose();
+            _cts = new CancellationTokenSource();
+            exePath = Environment.ProcessPath
+                ?? throw new InvalidOperationException("Cannot determine executable path.");
+            var exeDir = Path.GetDirectoryName(exePath)!;
+            zipPath = Path.Combine(exeDir, "update.zip");
+
+            // Files to update: (name in zip, local path)
+            files = new[]
+            {
+                ("EQSwitch.exe", exePath),
+                ("eqswitch-hook.dll", Path.Combine(exeDir, "eqswitch-hook.dll")),
+                ("eqswitch-di8.dll", Path.Combine(exeDir, "eqswitch-di8.dll"))
+            };
+
             // Download the zip bundle
             bool success;
             if (TestMode)
@@ -343,8 +557,8 @@ public class UpdateDialog : Form
                 // the download URL, not the hash URL — `_hashFileUrl` came straight
                 // from the GitHub-API release JSON without any client-side check, so
                 // a hostile API response could have pointed it anywhere. v3.22.28
-                // closes that gap. allowApi:false because a release-asset must come
-                // from github.com/itsnateai/eqswitch/… or the CDN, not api.github.com.
+                // closed the static URL gap; v3.22.29 routes through SendAllowlistedAsync
+                // so every redirect hop is re-validated.
                 if (!Uri.TryCreate(_hashFileUrl, UriKind.Absolute, out var hashUri) ||
                     !IsAllowedHost(hashUri, allowApi: false))
                 {
@@ -356,20 +570,14 @@ public class UpdateDialog : Form
                 }
                 try
                 {
-                    var hashContent = await _http.GetStringAsync(_hashFileUrl, _cts!.Token);
-                    string? expectedHash = null;
-                    foreach (var line in hashContent.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-                    {
-                        // Format: "hexhash  filename" or "hexhash *filename"
-                        var parts = line.Split(new[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
-                        var fname = parts.Length == 2 ? parts[1].Trim().TrimStart('*') : "";
-                        if (fname.StartsWith("EQSwitch-", StringComparison.OrdinalIgnoreCase)
-                            && fname.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
-                        {
-                            expectedHash = parts[0].Trim();
-                            break;
-                        }
-                    }
+                    using var hashResponse = await SendAllowlistedAsync(
+                        _hashFileUrl!,
+                        HttpCompletionOption.ResponseContentRead,
+                        allowApi: false,
+                        _cts!.Token);
+                    hashResponse.EnsureSuccessStatusCode();
+                    var hashContent = await hashResponse.Content.ReadAsStringAsync(_cts.Token);
+                    string? expectedHash = ParseHashForZipBundle(hashContent);
 
                     if (!string.IsNullOrEmpty(expectedHash))
                     {
@@ -423,7 +631,11 @@ public class UpdateDialog : Form
             }
             TryDelete(zipPath);
 
-            // Rename dance: current → .old, .new → current
+            // Rename dance: current → .old, .new → current. v3.22.29: delete
+            // any stale .ok sentinel before the swap so post-launch sentinel
+            // write is the authoritative signal that the new exe came up
+            // (otherwise a sentinel left over from the previous successful
+            // run would mark the new-but-untested binary as already-OK).
             _lblStatus.Text = "Applying update...";
             foreach (var (_, localPath) in files)
             {
@@ -438,10 +650,16 @@ public class UpdateDialog : Form
                 }
                 File.Move(newPath, localPath);
             }
+            // Clear sentinels for all rewritten files — new binary must prove itself
+            foreach (var (_, localPath) in files)
+                TryDelete(localPath + ".ok");
 
-            // Relaunch and exit
+            // Relaunch and exit. v3.22.29 Item 10: dispose the Process handle.
+            // Previously leaked — the static Process.Start return value was
+            // discarded with no using. Application.Exit takes a few ms anyway
+            // so the using's Dispose isn't disruptive.
             FileLogger.Info($"Update applied: {_remoteVersion}. Restarting...");
-            Process.Start(new ProcessStartInfo(exePath)
+            using var _ = Process.Start(new ProcessStartInfo(exePath)
             {
                 Arguments = "--after-update",
                 UseShellExecute = true
@@ -451,9 +669,12 @@ public class UpdateDialog : Form
         catch (IOException ex)
         {
             // Try to roll back
-            foreach (var (_, localPath) in files)
-                TryRollback(localPath, localPath + ".old", localPath + ".new");
-            TryDelete(zipPath);
+            if (files.Length > 0)
+            {
+                foreach (var (_, localPath) in files)
+                    TryRollback(localPath, localPath + ".old", localPath + ".new");
+            }
+            if (zipPath != null) TryDelete(zipPath);
 
             if (ex.Message.Contains("being used by another process", StringComparison.OrdinalIgnoreCase))
                 ShowError("Cannot replace the executable.", "Your antivirus may be locking the file. Try again.");
@@ -462,16 +683,22 @@ public class UpdateDialog : Form
         }
         catch (TaskCanceledException)
         {
-            foreach (var (_, localPath) in files)
-                TryDelete(localPath + ".new");
-            TryDelete(zipPath);
+            if (files.Length > 0)
+            {
+                foreach (var (_, localPath) in files)
+                    TryDelete(localPath + ".new");
+            }
+            if (zipPath != null) TryDelete(zipPath);
             if (!IsDisposed) ShowVersionComparison();
         }
         catch (Exception ex)
         {
-            foreach (var (_, localPath) in files)
-                TryDelete(localPath + ".new");
-            TryDelete(zipPath);
+            if (files.Length > 0)
+            {
+                foreach (var (_, localPath) in files)
+                    TryDelete(localPath + ".new");
+            }
+            if (zipPath != null) TryDelete(zipPath);
             if (!IsDisposed) ShowError("Update failed.", ex.Message);
         }
     }
@@ -479,15 +706,10 @@ public class UpdateDialog : Form
     private async Task<bool> DownloadFileAsync(string url, string destPath, string displayName)
     {
         // Security: only allow downloads from expected GitHub origins. Host-equality
-        // canonical pattern — see `IsAllowedHost`. Today `_http` uses default
-        // AllowAutoRedirect=true so only the pre-redirect github.com URL reaches
-        // this check; the CDN clauses in `IsAllowedHost` are defense-in-depth
-        // against a future refactor toward manual per-hop redirect validation
-        // (the hardened pattern in MWBToggle / MicMute / CapsNumTray /
-        // SyncthingPause). v3.22.28 replaced the prior `StartsWith` 3-prefix
-        // check with Uri parsing + host-equality so malformed URLs (embedded
-        // whitespace, weird userinfo) can't slip through, and repo scope is
-        // checked against AbsolutePath instead of a raw URL substring.
+        // canonical pattern — see IsAllowedHost. v3.22.29 routes through
+        // SendAllowlistedAsync so every redirect hop is re-validated, not just
+        // the initial github.com URL (the pre-v3.22.29 _http was AllowAutoRedirect=true
+        // by default; only the pre-redirect URL hit the gate).
         if (!Uri.TryCreate(url, UriKind.Absolute, out var dlUri) ||
             !IsAllowedHost(dlUri, allowApi: false))
         {
@@ -496,10 +718,23 @@ public class UpdateDialog : Form
             return false;
         }
 
-        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, _cts!.Token);
+        using var response = await SendAllowlistedAsync(
+            url, HttpCompletionOption.ResponseHeadersRead, allowApi: false, _cts!.Token);
         response.EnsureSuccessStatusCode();
 
         var totalBytes = response.Content.Headers.ContentLength ?? 0;
+
+        // v3.22.29 Item 2: header-side gate. If the server tells us up-front that
+        // the body exceeds the ceiling, fail-closed before opening the destination
+        // file. Defends against hostile Content-Length: 50_000_000_000 — fills disk
+        // inside HttpClient.Timeout window before SHA256 verify fires.
+        if (!IsAllowedDownloadSize(totalBytes))
+        {
+            ShowError("Download too large.",
+                      $"Server reports {totalBytes:N0} bytes; max is {MaxDownloadBytes:N0}.");
+            return false;
+        }
+
         await using var contentStream = await response.Content.ReadAsStreamAsync(_cts.Token);
         await using var fileStream = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920);
 
@@ -512,13 +747,29 @@ public class UpdateDialog : Form
             await fileStream.WriteAsync(buffer.AsMemory(0, read), _cts.Token);
             downloaded += read;
 
+            // v3.22.29 Item 2: mid-stream gate. Defends against chunked-transfer
+            // bodies (no Content-Length up front) that stream forever within the
+            // HttpClient.Timeout window. Header check above missed this case
+            // because totalBytes was 0.
+            if (downloaded > MaxDownloadBytes)
+            {
+                TryDelete(destPath);
+                ShowError("Download exceeded size limit.",
+                          $"Got {downloaded:N0} bytes; max is {MaxDownloadBytes:N0}.");
+                return false;
+            }
+
             if (totalBytes > 0)
             {
                 int pct = (int)(downloaded * 100 / totalBytes);
                 var dlMB = downloaded / (1024.0 * 1024.0);
                 var totalMB = totalBytes / (1024.0 * 1024.0);
 
-                if (!IsDisposed) Invoke(() =>
+                // v3.22.29 Item 13: BeginInvoke (fire-and-forget) instead of
+                // Invoke (blocking). At 81920-byte chunks per ~MB/s, a 50 MB zip
+                // is ~640 synchronous UI marshals on the worker thread — that's
+                // ~640 cross-thread round-trips when fire-and-forget would do.
+                if (!IsDisposed) BeginInvoke(() =>
                 {
                     if (IsDisposed) return;
                     _progressFill.Size = new Size(
@@ -536,6 +787,15 @@ public class UpdateDialog : Form
             TryDelete(destPath);
             ShowError($"Download of {displayName} was incomplete.",
                       $"Expected {totalBytes:N0} bytes, got {downloaded:N0}.");
+            return false;
+        }
+
+        // Minimum size sanity check — reject truncated/empty downloads
+        if (downloaded < 100_000)
+        {
+            TryDelete(destPath);
+            ShowError($"Downloaded {displayName} is too small.",
+                      $"Got {downloaded:N0} bytes — expected a valid zip bundle.");
             return false;
         }
 
@@ -561,7 +821,7 @@ public class UpdateDialog : Form
             // Throttle to simulate download speed (~2 MB/s)
             await Task.Delay(20, _cts.Token);
 
-            if (totalBytes > 0 && !IsDisposed) Invoke(() =>
+            if (totalBytes > 0 && !IsDisposed) BeginInvoke(() =>
             {
                 if (IsDisposed) return;
                 int pct = (int)(copied * 100 / totalBytes);
@@ -594,44 +854,18 @@ public class UpdateDialog : Form
 
     // ─── Helpers ────────────────────────────────────────────────
 
-    // Host-based allowlist for self-update URLs. Replaces a 3-prefix
-    // `StartsWith` check in DownloadFileAsync (v3.22.27 and earlier) with
-    // Uri parsing + host-equality, lifted from MicMute / MWBToggle /
-    // CapsNumTray (host-equality canonical) and matching the shape of
-    // SyncthingPause's `IsAllowedReleaseAssetUrl`.
-    //
-    // Repo scope on github.com / api.github.com is checked against
-    // AbsolutePath, not a raw-URL substring. CDN coverage unchanged —
-    // both `objects.githubusercontent.com` (legacy edge) and
-    // `release-assets.githubusercontent.com` (new edge, rolled alongside)
-    // are accepted as redirect targets for release-asset downloads.
-    //
-    // `allowApi:false` is used at release-asset / hash-file fetch sites
-    // (api.github.com is not a valid release-asset host). `allowApi:true`
-    // is reserved for the catalogue fetch — currently a hardcoded literal
-    // string at CheckForUpdateAsync, so no caller uses it yet, but the
-    // option is parameterized to match the canonical shape across siblings.
-    internal static bool IsAllowedHost(Uri uri, bool allowApi)
-    {
-        if (uri.Scheme != Uri.UriSchemeHttps) return false;
-        string host = uri.Host;
-        if (host.Equals("objects.githubusercontent.com", StringComparison.OrdinalIgnoreCase))
-            return true;
-        if (host.Equals("release-assets.githubusercontent.com", StringComparison.OrdinalIgnoreCase))
-            return true;
-        if (host.Equals("github.com", StringComparison.OrdinalIgnoreCase))
-            return uri.AbsolutePath.StartsWith("/itsnateai/eqswitch/", StringComparison.OrdinalIgnoreCase);
-        if (allowApi && host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase))
-            return uri.AbsolutePath.StartsWith("/repos/itsnateai/eqswitch/", StringComparison.OrdinalIgnoreCase);
-        return false;
-    }
-
     private static bool IsWingetManaged() =>
         (Environment.ProcessPath ?? "").Contains(@"Microsoft\WinGet\Packages", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Delete a file if present, logging any failure. Stranded `.new`/`.old`
+    /// artifacts on locked files used to be invisible to support because the
+    /// catch was bare. v3.22.29 Item 5: log to FileLogger.Warn.
+    /// </summary>
     private static void TryDelete(string path)
     {
-        try { if (File.Exists(path)) File.Delete(path); } catch { }
+        try { if (File.Exists(path)) File.Delete(path); }
+        catch (Exception ex) { FileLogger.Warn($"TryDelete({path}): {ex.GetType().Name}: {ex.Message}"); }
     }
 
     private static string ComputeFileHash(string filePath)
@@ -641,6 +875,13 @@ public class UpdateDialog : Form
         return Convert.ToHexString(hashBytes).ToLowerInvariant();
     }
 
+    /// <summary>
+    /// Rollback after a partial swap: if `original` is gone and `oldPath`
+    /// exists, restore it; then drop the stray `.new`. v3.22.29 Item 5:
+    /// log torn-state restore failures so support can spot stranded `.old`
+    /// files on next run (instead of the bare-catch silent-swallow from
+    /// pre-v3.22.29).
+    /// </summary>
     private static void TryRollback(string original, string oldPath, string newPath)
     {
         try
@@ -649,7 +890,47 @@ public class UpdateDialog : Form
                 File.Move(oldPath, original);
             TryDelete(newPath);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            FileLogger.Warn($"TryRollback({original}): {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    // ─── Sentinel + Cleanup (v3.22.29 Items 6 + 7) ──────────────
+
+    /// <summary>
+    /// Write a .ok sentinel next to each updateable file once the new version
+    /// has successfully reached its running state. CleanupUpdateArtifacts uses
+    /// this to decide whether it's safe to remove .old — if the new exe
+    /// crashes before the sentinel is written, .old persists and the user
+    /// (or torn-state recovery) can restore it.
+    ///
+    /// Called from Program.cs on a delay after Application.Run starts the
+    /// message pump, so the sentinel only appears once the new binary has
+    /// proven it can spin up far enough to schedule a Timer Tick.
+    /// </summary>
+    internal static void WriteStartupSentinel()
+    {
+        try
+        {
+            var dir = AppDomain.CurrentDomain.BaseDirectory;
+            foreach (var fname in new[] { "EQSwitch.exe", "eqswitch-hook.dll", "eqswitch-di8.dll" })
+            {
+                var path = Path.Combine(dir, fname);
+                if (!File.Exists(path)) continue;
+                var sentinel = path + ".ok";
+                if (!File.Exists(sentinel))
+                {
+                    try { File.WriteAllText(sentinel, DateTime.UtcNow.ToString("O")); }
+                    catch (Exception ex) { FileLogger.Warn($"WriteStartupSentinel({fname}): {ex.Message}"); }
+                }
+            }
+            FileLogger.Info("Update startup sentinel(s) written — new binary verified running.");
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Warn($"WriteStartupSentinel: {ex.Message}");
+        }
     }
 
     protected override void Dispose(bool disposing)
