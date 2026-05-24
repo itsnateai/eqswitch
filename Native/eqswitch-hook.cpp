@@ -44,6 +44,36 @@ static HANDLE g_initThread = NULL;
 static volatile LONG g_initialized = 0;
 static volatile LONG g_hooksInstalled = 0;  // set only if MH_EnableHook succeeded
 
+// v3.22.44 Gate #4 — detour-body critical section. Each of the four hook
+// functions below (HookedSetWindowPos / HookedMoveWindow / HookedSetWindowTextA
+// / HookedShowWindow) Enters this at entry and Leaves on exit. The Cleanup()
+// teardown path Enters it before MH_DisableHook / MH_Uninitialize — which
+// means an in-flight EQ thread inside a detour keeps the unhook path waiting
+// until the detour returns. Without this, FreeLibrary-driven cleanup
+// (CreateRemoteThread eject from C# side) races with EQ's rendering thread
+// mid-detour: the trampoline pages are freed under it and the return path
+// lands in unmapped memory → eqgame.exe AV. Mirrors MacroQuest's
+// CAutoLock(&gDetourCS) discipline in MQ2DetourAPI.cpp.
+//
+// v3.22.44 round-2 (T3-Opus HIGH #1): switched from SRWLOCK to CRITICAL_SECTION
+// to make recursive same-thread re-entry safe. The eqswitch-di8 sibling lock
+// had a fundamental flaw: HookedGetForegroundWindow (IAT-replaced) takes
+// shared, then calls g_realGetForegroundWindow whose prologue is inline-
+// patched to InlineHookedGetForegroundWindow which takes shared AGAIN on the
+// same thread. Windows SRWLOCK explicitly forbids recursive shared acquire,
+// and with an exclusive waiter pending (Cleanup running) the inner shared
+// blocks → outer cannot release → exclusive cannot acquire → permanent
+// deadlock that hangs eqgame.exe. CRITICAL_SECTION is recursive by design
+// (same-thread Enter increments a count; Leave decrements). Both DLLs use the
+// same primitive now for consistency, even though eqswitch-hook.cpp's four
+// hooks don't recurse (they're symmetrical for code-review clarity).
+// MQ2 picked CRITICAL_SECTION over SRWLOCK for gDetourCS for the same reason.
+// Initialized in DllMain DLL_PROCESS_ATTACH (safe — no loader-lock interaction)
+// before the init thread is spawned. NOT deleted in Cleanup — the DLL is
+// unloading; the kernel object goes away with the .data section.
+static CRITICAL_SECTION g_detourCs;
+static volatile LONG g_detourCsInitialized = 0;  // set by DllMain ATTACH
+
 // Original function pointers (trampolines)
 typedef BOOL(WINAPI* PFN_SetWindowPos)(HWND, HWND, int, int, int, int, UINT);
 typedef BOOL(WINAPI* PFN_MoveWindow)(HWND, int, int, int, int, BOOL);
@@ -94,29 +124,74 @@ static void LogMessage(const char* fmt, ...) {
 }
 
 // Check if a window belongs to this EQ process.
+//
+// v3.22.44 Gate #5: tightened cache validation. EQ recreates its top-level
+// window across major state transitions — most importantly char-select →
+// in-world, where the CSidlScreenWnd-backed char-select window is destroyed
+// and the in-game DAG3D window is constructed. Pre-Gate-#5 this function
+// cached the FIRST hwnd that satisfied the four checks (in-process, no
+// parent, visible) and held onto it via the fast-path comparison
+// `g_cachedEqHwnd == hWnd`. When EQ destroyed the cached HWND, the next
+// hooked SetWindowPos for the NEW HWND fell through to the slow path (good)
+// and re-cached (good), but if a hooked operation arrived for the OLD HWND
+// (or an arbitrary new window EQ created later that didn't match the cache),
+// the fast path returned TRUE for the cached value when it should have
+// invalidated. The fix: invalidate the cache eagerly whenever it fails any
+// of its invariants, AND don't cache a window unless it stably satisfies
+// the "main eqgame window" predicate (parent==NULL + visible + matches our
+// PID). The char-select→in-world close (Scenario C in Nate's 2026-05-23
+// bug report) is the symptom this is meant to address.
 static BOOL IsEqWindow(HWND hWnd) {
-    // Fast path: cached handle still valid
-    if (g_cachedEqHwnd && g_cachedEqHwnd == hWnd && IsWindow(hWnd)) {
-        return TRUE;
+    // Fast path: cached handle is the one we're querying AND it still exists.
+    // Cheap to re-validate IsWindow on every call (kernel walks the desktop
+    // table; this is sub-microsecond on Win10/11).
+    if (g_cachedEqHwnd != NULL && g_cachedEqHwnd == hWnd) {
+        if (IsWindow(hWnd)) {
+            return TRUE;
+        }
+        // Cached HWND was destroyed. Invalidate so subsequent calls don't
+        // try to reuse it. The slow-path below will re-cache the next
+        // qualifying window.
+        g_cachedEqHwnd = NULL;
     }
 
-    // Verify window belongs to our process
+    // Slow path: validate the requested hWnd against the full predicate set.
+
+    // Filter by process FIRST — cheapest reject for non-our-process windows
+    // (Discord overlay, Steam, audio drivers, etc.).
     DWORD pid = 0;
     GetWindowThreadProcessId(hWnd, &pid);
     if (pid != GetCurrentProcessId()) {
         return FALSE;
     }
 
-    // Skip child windows and message-only windows
+    // Skip child windows and message-only windows. EQ's main eqgame window
+    // is a top-level visible window; child windows belong to its UI elements
+    // and should not get the slim-titlebar treatment.
     if (GetParent(hWnd) != NULL) {
         return FALSE;
     }
 
-    // Must be a visible top-level window (skip hidden helper windows)
+    // Must be visible. Excludes hidden helper windows EQ may create during
+    // char-select → in-world transitions. The OLD char-select window
+    // becomes IsWindowVisible=FALSE during teardown — the slow-path here
+    // rejects it correctly, but if we'd cached it earlier the fast-path
+    // would have already returned TRUE incorrectly. Gate #5's IsWindow
+    // invalidation above closes that gap.
     if (!IsWindowVisible(hWnd)) {
+        // Also: if this is the currently-cached window and it just became
+        // hidden, invalidate the cache so we re-detect the new visible
+        // top-level window on the next call (typically EQ's new state
+        // window). Prevents the hook from operating on a hidden window
+        // during a state-transition tear-down.
+        if (g_cachedEqHwnd == hWnd) {
+            g_cachedEqHwnd = NULL;
+        }
         return FALSE;
     }
 
+    // All predicates passed — this is a valid eqgame top-level window. Cache
+    // it for the fast path on subsequent calls. (Re-)caching is idempotent.
     g_cachedEqHwnd = hWnd;
     return TRUE;
 }
@@ -140,10 +215,19 @@ static BOOL ReadConfig(HookConfig* out) {
 }
 
 // ─── Hooked SetWindowPos ─────────────────────────────────────────
+// v3.22.44 Gate #4 (round 2 — CRITICAL_SECTION): Enter/Leave the detour CS
+// around the entire detour body. Cleanup enters the CS before MH_DisableHook
+// and never Leaves, so any in-flight detour bodies must Leave before the
+// unhook proceeds. CRITICAL_SECTION serializes detour bodies (each Enter is
+// exclusive per-owner with recursive same-thread re-entry); SRWLOCK shared
+// was used in round-1 but failed via recursive shared deadlock against the
+// IAT→inline call chain in iat_hook.cpp. See g_detourCs declaration for
+// full rationale.
 static BOOL WINAPI HookedSetWindowPos(
     HWND hWnd, HWND hWndInsertAfter,
     int X, int Y, int cx, int cy, UINT uFlags)
 {
+    EnterCriticalSection(&g_detourCs);  // v3.22.44 r2
     HookConfig cfg;
     if (IsEqWindow(hWnd) && ReadConfig(&cfg) && cfg.enabled) {
         X = cfg.targetX;
@@ -166,13 +250,16 @@ static BOOL WINAPI HookedSetWindowPos(
         }
     }
 
-    return g_origSetWindowPos(hWnd, hWndInsertAfter, X, Y, cx, cy, uFlags);
+    BOOL r = g_origSetWindowPos(hWnd, hWndInsertAfter, X, Y, cx, cy, uFlags);
+    LeaveCriticalSection(&g_detourCs);  // v3.22.44 r2
+    return r;
 }
 
 // ─── Hooked MoveWindow ───────────────────────────────────────────
 static BOOL WINAPI HookedMoveWindow(
     HWND hWnd, int X, int Y, int nWidth, int nHeight, BOOL bRepaint)
 {
+    EnterCriticalSection(&g_detourCs);  // v3.22.44 r2
     HookConfig cfg;
     if (IsEqWindow(hWnd) && ReadConfig(&cfg) && cfg.enabled) {
         X = cfg.targetX;
@@ -189,7 +276,9 @@ static BOOL WINAPI HookedMoveWindow(
         }
     }
 
-    return g_origMoveWindow(hWnd, X, Y, nWidth, nHeight, bRepaint);
+    BOOL r = g_origMoveWindow(hWnd, X, Y, nWidth, nHeight, bRepaint);
+    LeaveCriticalSection(&g_detourCs);  // v3.22.44 r2
+    return r;
 }
 
 // ─── Hooked SetWindowTextA ───────────────────────────────────────
@@ -198,13 +287,17 @@ static BOOL WINAPI HookedMoveWindow(
 // This is how WinEQ2 makes titles stick — hook from inside the process.
 static BOOL WINAPI HookedSetWindowTextA(HWND hWnd, LPCSTR lpString)
 {
+    EnterCriticalSection(&g_detourCs);  // v3.22.44 r2
     HookConfig cfg;
+    BOOL r;
     if (IsEqWindow(hWnd) && ReadConfig(&cfg) && cfg.windowTitle[0] != '\0') {
         // Use our title instead of whatever EQ wants to set
-        return g_origSetWindowTextA(hWnd, cfg.windowTitle);
+        r = g_origSetWindowTextA(hWnd, cfg.windowTitle);
+    } else {
+        r = g_origSetWindowTextA(hWnd, lpString);
     }
-
-    return g_origSetWindowTextA(hWnd, lpString);
+    LeaveCriticalSection(&g_detourCs);  // v3.22.44 r2
+    return r;
 }
 
 // ─── Hooked ShowWindow ───────────────────────────────────────────
@@ -212,6 +305,7 @@ static BOOL WINAPI HookedSetWindowTextA(HWND hWnd, LPCSTR lpString)
 // Block SW_MINIMIZE/SW_SHOWMINIMIZED/SW_SHOWMINNOACTIVE when configured.
 static BOOL WINAPI HookedShowWindow(HWND hWnd, int nCmdShow)
 {
+    EnterCriticalSection(&g_detourCs);  // v3.22.44 r2
     HookConfig cfg;
     if (IsEqWindow(hWnd) && ReadConfig(&cfg) && cfg.blockMinimize) {
         if (nCmdShow == SW_MINIMIZE ||        // 6
@@ -220,11 +314,14 @@ static BOOL WINAPI HookedShowWindow(HWND hWnd, int nCmdShow)
             nCmdShow == SW_FORCEMINIMIZE)     // 11
         {
             LogMessage("Blocked minimize attempt (nCmdShow=%d)", nCmdShow);
+            LeaveCriticalSection(&g_detourCs);  // v3.22.44 r2
             return TRUE; // Pretend we did it
         }
     }
 
-    return g_origShowWindow(hWnd, nCmdShow);
+    BOOL r = g_origShowWindow(hWnd, nCmdShow);
+    LeaveCriticalSection(&g_detourCs);  // v3.22.44 r2
+    return r;
 }
 
 // ─── Shared Memory ──────────────────────────────────────────────
@@ -326,7 +423,29 @@ static void Cleanup() {
     // Only tear down MinHook if it was successfully initialized and hooks enabled.
     // If OpenSharedMemory failed, MH_Initialize was never called — calling
     // MH_Uninitialize on uninitialized state is undefined behavior.
+    //
+    // v3.22.44 Gate #4 (round 2): Enter the detour CRITICAL_SECTION before
+    // flipping hooks back. EnterCriticalSection blocks until every in-flight
+    // holder (EQ threads currently inside HookedSetWindowPos /
+    // HookedMoveWindow / HookedSetWindowTextA / HookedShowWindow) Leaves.
+    // MH_DisableHook then atomically restores the trampoline prologues while
+    // no detour body is on a stack frame whose return address points into
+    // our about-to-be-unmapped code. CRITICAL_SECTION is recursive (same
+    // thread can re-enter) which matches MQ2's gDetourCS discipline.
+    //
+    // The CS is NOT Left by Cleanup itself — once we're past MH_Uninitialize,
+    // no further detour body will ever run (the trampolines are gone), so no
+    // new entry is possible. The CRITICAL_SECTION struct goes away with the
+    // DLL section.
     if (g_hooksInstalled) {
+        // v3.22.44 r2: EnterCriticalSection serializes against any in-flight
+        // detour body (recursive same-thread re-enter still works because CS
+        // is recursive). Blocks until all current holders Leave. NOT followed
+        // by LeaveCriticalSection — we deliberately keep the CS held for the
+        // remainder of cleanup so no new detour entry is possible before
+        // MH_Uninitialize frees the trampoline pages. The CRITICAL_SECTION
+        // memory itself goes away with the DLL section.
+        if (g_detourCsInitialized) EnterCriticalSection(&g_detourCs);
         MH_DisableHook(MH_ALL_HOOKS);
         MH_Uninitialize();
     }
@@ -373,6 +492,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     case DLL_PROCESS_ATTACH:
         g_hModule = hModule;
         DisableThreadLibraryCalls(hModule);
+        // v3.22.44 r2: initialize the detour critical section BEFORE the init
+        // thread spawns. Detours can only fire after InitThread calls
+        // MH_EnableHook (inside Cleanup of OpenSharedMemory + InstallHooks),
+        // so the CS is guaranteed live before any acquire. Spin count 4000
+        // matches MQ2's gDetourCS — favors short uncontended acquires without
+        // crossing into the kernel.
+        InitializeCriticalSectionAndSpinCount(&g_detourCs, 4000);
+        InterlockedExchange(&g_detourCsInitialized, 1);
         // Build log path (safe — GetModuleFileNameA doesn't re-acquire loader lock).
         BuildLogPath();
         // Spawn init thread — runs after DllMain releases the loader lock.

@@ -1,5 +1,136 @@
 # Changelog
 
+## v3.22.44 — Minimize / sibling-close / tray-exit crash hardening (2026-05-23)
+
+Field-reported crash class with four symptom flavors mapped to two architectural problems. UI + Native release; both DLLs rebuilt. Root-cause writeup harvested into the vault as `memory/reference_eqswitch_v3_22_44_crash_gating.md`. Shipped after two rounds of 8-agent verifier swarm (round 1 surfaced 3 HIGH findings; round-2 fixes below).
+
+### Round 2 fixes (post-verifier-swarm)
+
+The round-1 verifier swarm surfaced four blocking findings that needed code fixes before ship:
+
+- **Round-2 fix R1 (T3-Opus HIGH #1):** Round-1 used `SRWLOCK` for both detour critical sections. The IAT-replaced `HookedGetForegroundWindow` (+ `GetFocus`, `GetActiveWindow`) calls `g_real*` which point to user32 functions whose prologues `InstallInlineHooks` has patched with a jump to `InlineHooked*`. Same thread enters the lock recursively. Windows SRWLOCK forbids recursive shared acquire — with an exclusive waiter pending (Cleanup running) the inner shared blocks → outer cannot release → eqgame.exe deadlocks. Migrated both `g_detourLock` (eqswitch-hook.cpp) and `g_di8DetourLock` (eqswitch-di8.cpp + iat_hook.cpp) from `SRWLOCK` to `CRITICAL_SECTION` (recursive by design). Matches MacroQuest's `gDetourCS` discipline. Initialized in `DllMain DLL_PROCESS_ATTACH` via `InitializeCriticalSectionAndSpinCount(&cs, 4000)`. `DetourSharedLock` RAII guard renamed semantically retained (still wraps Enter/Leave). The variables are now `g_detourCs` / `g_di8DetourCs`.
+
+- **Round-2 fix R2 (T3-Opus HIGH #2):** `HookedDirectInput8Create` used manual `EnterCriticalSection` / `LeaveCriticalSection` and contained `*ppvOut = new DI8Proxy(*ppvOut);` which can throw `std::bad_alloc`. The throw skipped the manual Leave → permanent CS leak → all future Cleanup attempts deadlock. Wrapped with a sibling `Di8DetourLock` RAII guard (mirrors iat_hook.cpp's `DetourSharedLock`) — destructor fires on any C++ exception unwind path.
+
+- **Round-2 fix R3 (T2-Opus HIGH Item B):** Gate #2's round-1 iconic filter covered `RaiseClientsAboveTaskbar` + `RaiseRemainingClientsAboveTaskbar` but missed five other paths that pass `_processManager.Clients` (including iconic siblings) into `ArrangeWindows` / `ArrangeMultiMonitor` / `ArrangeSingleScreen` / `SwapWindows` / `ResizeToCurrentMonitors` / `ApplySlimTitlebar`. Worst offender: `ApplyDeferredCosmetics` (fires from `LoginCredentialsSent` T+~7s + `LoginComplete` T+~30s) — background autologin completion would issue cross-process `SW_RESTORE` on a minimized sibling A, racing A's D3D9 device-lost recovery → same crash class users reported. Added IsIconic skip in every iteration site:
+  - `WindowManager.ArrangeSingleScreen` per-client loop
+  - `WindowManager.ArrangeMultiMonitor` per-client loop
+  - `WindowManager.SwapWindows` (aborts the whole swap if any client is iconic — partial-skip would produce asymmetric rotation)
+  - `WindowManager.ResizeToCurrentMonitors` per-client loop
+  - `WindowManager.ApplySlimTitlebar` leaf-level (covers `ApplySlimTitlebarToAll` guard timer path + direct calls from `ClientDiscovered` / `ApplyDeferredCosmetics`)
+  - **Behavior change:** the user-initiated "Fix Windows" hotkey no longer restores iconic clients. User must manually restore (taskbar click); the in-process hook DLL enforces slim-titlebar bounds on EQ's restore-path `SetWindowPos`.
+
+- **Round-2 fix R4 (T2-Sonnet B1 MEDIUM):** `ResizeToCurrentMonitors` round-1 SW_RESTORE'd iconic clients BEFORE the IsClientResponsive probe — inverted vs. `ArrangeSingleScreen` / `ArrangeMultiMonitor`. Reordered to probe first, then skip iconic (per R3) — same order as the other Arrange paths.
+
+- **Round-2 fix R5 (T4-Sonnet + T4-Opus Item 4 MEDIUM convergent):** `CycleNext` / `CyclePrev` round-1 returned `null` on the first `SwitchToClient` failure. User pressing the cycle hotkey while one sibling is mid-zone-load got stuck (next-from-current always picks the same loading client). Replaced with a bounded ring-walk (`offset = 1..clients.Count-1`) — try up to N-1 candidates before giving up. 3-client setup with B mid-zone-load now goes A→C cleanly.
+
+- **Round-2 fix R6 (T3-Sonnet F7 / T3-Opus #5 MEDIUM):** "Detach Hooks" menu item's `Enabled` state was computed at `BuildContextMenu` time only. After first-run, when the user launched clients via the hotkey, `InjectPreResume` populated `_injectedPids` but the menu item stayed disabled with the misleading "No injected eqgame.exe processes" tooltip — making the new opt-in eject path effectively unreachable. Cached the item reference as `_detachItem`; `UpdateClientMenu()` (called on every `ClientListChanged`) now refreshes `Enabled` + `ToolTipText`.
+
+- **Round-2 comment fix:** `eqswitch-hook.cpp::Cleanup()` and `eqswitch-di8.cpp::Cleanup()` comments updated to remove the misleading "GiveTime detour drained" claim (converged by T2-Sonnet C1 + T3-Sonnet F1 + T2-Opus + T3-Opus). GiveTime explicitly noted as deferred coverage with the actual rationale (perf cost on a 50–130 Hz hot-path detour).
+
+### Round 3 fixes (post-second-verifier-swarm)
+
+Round-2 verifier swarm surfaced 2 HIGH-convergent UX defects + a handful of MEDIUM/LOW items. Round-3 fixes are surgical:
+
+- **R3-1 (4-way HIGH convergent: T2-Sonnet Gap G + T2-Opus Finding 1 + T4-Sonnet Item 1 + T4-Opus F1):** `ArrangeWindows` / `ArrangeMultiMonitor` / `ArrangeSingleScreen` now return `int` (count of iconic-skipped clients). `OnArrangeWindows` uses the return to surface "Fixed N of M window(s) — K minimized (restore manually)" instead of the round-2 silent omission. Pre-r3 the balloon said "Fixed 2 window(s)" when 1 was iconic and untouched. Existing void-style callers ignore the return.
+- **R3-2 (3-way HIGH convergent: T2-Opus Finding 2 + T4-Sonnet Item 2 + T4-Opus F2):** `SwapWindows` now returns a `SwapResult` enum (`Swapped` / `TooFew` / `AbortedIconic` / `AbortedNotResponsive`). The tray "Swap Windows" action branches on `AbortedIconic` and surfaces a balloon: *"Swap skipped — at least one client is minimized. Restore from the taskbar, then re-press swap."* Other abort reasons stay silent (rare, user can't act on them).
+- **R3-3 (T3-Opus F3 MEDIUM regression):** `CycleNext` / `CyclePrev` special-case `clients.Count == 1`. Round-2 ring-walk loop `for (offset = 1; offset < 1; ...)` never executed for a single-client list, so pressing the cycle hotkey with one client and no current focus returned null silently. Restored round-1 behavior: try `clients[0]` when no current is set; return null only when current is already the only client.
+- **R3-4 (T3-Sonnet F7 + T3-Opus F4 MEDIUM, 2-way convergent):** Extracted `RefreshDetachMenuState()` helper from the `UpdateClientMenu` r2 inline refresh. Now also called from `InjectPreResume` (both `_di8InjectedPids.Add` + `_injectedPids.Add` sites) and from `InjectHookDll` so the "Detach Hooks from Running Clients" menu item enables immediately on injection, not 10 seconds later when `ProcessManager`'s poll fires `ClientListChanged`. Closes the round-2 partial-fix gap.
+- **R3-5 (T2-Opus Finding 3 LOW):** `WindowManager.ApplySlimTitlebar` now routes through `_api.IsIconic` instead of `NativeMethods.IsIconic`, restoring the IWindowsApi abstraction parity with the other four iconic-skip sites added in r2.
+- **R3-6 (T3-Sonnet F8 + T3-Opus F8 LOW, 2-way convergent):** Stale `"shared/exclusive asymmetry"` comment in `eqswitch-hook.cpp` (lines 218-222) replaced with accurate CRITICAL_SECTION description. SRWLOCK-era terminology removed from the load-bearing comment block.
+
+### Documented limitations (round-3 deliberate, not blocking)
+
+- **Orphan-thread waiter on Cleanup (T3-Opus F1, single-agent HIGH):** When the user clicks "Detach Hooks from Running Clients" while ActivateThread (device_proxy.cpp) is mid-`GetForegroundWindow`, the thread can block inside the inline-hook's `EnterCriticalSection` and remain parked when the DLL unmaps. Strictly *better* than round-1's recursive-shared-deadlock (which hung eqgame entirely) — round-3 cleans up successfully but leaks one stuck thread per Detach Hooks invocation. Mitigation path (deferred to follow-up): add a `g_di8DetachInProgress` volatile flag checked at hook entry before `Di8DetourLock`/`DetourSharedLock` is constructed, so in-flight detours bypass the CS and call the real function when a detach is in progress. Estimated ~30 lines across 9 hooks + 1 detour. Acceptable risk because Detach Hooks is user-opt-in and rare.
+- **`GiveTime_Detour` not lock-covered:** see r2 documented limitation above — still applies. Now revisitable under CRITICAL_SECTION's recursive Enter, but not done in r3.
+- **`HookedShowWindow` uses manual Enter/Leave** (T3-Sonnet F3 MEDIUM, single-agent): currently correct; flagged as a maintenance landmine if a future edit adds a third return path. Acceptable; documented for future review.
+- **`CyclePrev` has zero callers** (T2-Sonnet D MEDIUM, pre-existing): not introduced by r2 or r3. Either wire to a reverse-cycle hotkey or delete in a future cleanup.
+
+### Round 3.5 fixes (mid-third-verifier-swarm)
+
+Two convergent findings from the round-3 verifier swarm needed an immediate patch:
+
+- **R3.5-1 (R3-T3-Sonnet C4 HIGH + R3-T4-Sonnet Item 4 MEDIUM convergent):** `RefreshDetachMenuState` had a cross-thread WinForms violation. The AutoLogin path (`FireTeam` → `Task.Run` → `AutoLoginManager.BeginLogin` → `LaunchSuspendedAndInject` → `PreResumeCallback.Invoke` → `InjectPreResume`) calls it from a threadpool thread, but it writes `_detachItem.Enabled` and `.ToolTipText` (WinForms control properties — UI-thread-only). Wrapped the method body with the same `_uiContext.Post` marshal pattern `ShowBalloon` uses at L2306-2309. LaunchManager's WinForms Timer path is already UI-thread and the marshal short-circuits as a no-op there.
+- **R3.5-2 (R3-T2-Sonnet Finding B MEDIUM):** Added `RefreshDetachMenuState()` call after the `_injectedPids.Remove` / `_di8InjectedPids.Remove` lines in the `ClientLost` handler. Round-3 wired the refresh into all three Add sites but missed this Remove site — when the last client exited, the menu item stayed enabled with stale tooltip until ProcessManager's next 10s `ClientListChanged` tick.
+
+- **R3.5-3 (R3-T3-Opus F1 HIGH + R3-T3-Sonnet C2 MEDIUM + R3-T2-Opus A1 MEDIUM — 3-way convergent):** R3's `ArrangeWindows` returned `int skippedIconic`, but `ArrangeMultiMonitor` / `ArrangeSingleScreen` also silently skip non-iconic clients (`IsWindow=false`, `IsHungAppWindow`, `!IsClientResponsive`) without counting them. So `arranged = clientsToArrange.Count - skippedIconic` over-claimed "Fixed N" by the silent-skip count — the exact bug shape R3 set out to fix, just on a different axis. Changed return to `(int Iconic, int Other)` value-tuple; OnArrangeWindows now subtracts both for `arranged` math and appends a `"(N unresponsive — transient)"` parenthetical when `Other > 0`. The 10 void-discarding callers continue to work — C# discards tuple returns the same as int.
+
+- **R3.5-4 (R3-T2-Opus Finding B1 MEDIUM):** Added `RefreshDetachMenuState()` after the `EjectFromAllInjectedClients()` call in `OnDetachHooksMenuItem`. Eject clears `_injectedPids` / `_di8InjectedPids` but the eqgame.exe processes stay alive (eject ≠ kill), so `ClientLost` doesn't fire. Without this refresh the menu item stayed falsely enabled with stale tooltip for up to 10s after a user-driven eject.
+
+### Round 3.6 — injection-rollback Remove sites (4-way convergent post-R3.5)
+
+R3.5 verifier swarm flagged a 4-way convergent gap (R3-T2-Opus B2 + R3.5-T2-Sonnet Gap D + R3.5-T4-Opus Additional + R3.5-T2-Opus Gap D): three `_injectedPids.Remove` failure-rollback sites in `InjectPreResume` (TrayManager.cs:3622 hook-DLL inject failure) and `InjectHookDll` (TrayManager.cs:3665 DLL-not-found, TrayManager.cs:3686 delayed-Timer injection failure) didn't call `RefreshDetachMenuState()` after rollback. Same missed-Remove pattern R3.5-2 closed for the `ClientLost` path. Each Add site already called the refresh; the symmetric Remove on failure rollback was missing. Added the call after each — 3-line patch.
+
+Severity per agents: LOW-MEDIUM (only fires on actual injection failure which is itself rare, but the 2s `InjectHookDll` delayed-Timer path gives a user-observable window where the menu stays falsely enabled).
+
+### Build
+
+C# rebuilt clean. Native rebuilt (round 3, unchanged in r3.5):
+- `eqswitch-hook.dll` (133,120 bytes) sha256 `1ff592019b7c5dca884fc6ccd1ae8965f3e74489959d6ff491ee729273ed2302`
+- `eqswitch-di8.dll` (249,344 bytes) sha256 `2a9683304be01e1f1bdbe05db0b58aba7b8b9e6dbcbee55f8d3137999732db97`
+
+### Symptom map → root cause
+
+User reported four crash scenarios:
+
+1. Client A minimized + client B (open) camps → A crashes
+2. Two clients open, one exits → remaining crashes when EQSwitch tries to focus it
+3. Char-select → entering game transition: window just closes
+4. EQSwitch tray closes → all running eqgames crash hard
+
+All four trace to:
+
+- **Architectural problem 1 — unsafe DLL ejection.** `TrayManager.Dispose()` → `CleanupHookInjection()` unconditionally called `DllInjector.Eject` (`CreateRemoteThread(FreeLibrary)`) on every PID for both `eqswitch-hook.dll` and `eqswitch-di8.dll`. FreeLibrary triggers DllMain DETACH → `MH_DisableHook` + `MH_Uninitialize` + IAT-restore. ANY EQ thread currently executing inside one of the four eqswitch-hook detours, the nine iat_hook hooks, the DirectInput8Create detour, the GiveTime detour, or the COM device-proxy wrappers holds a stack frame whose return address points into a code page that's about to be unmapped — the thread returns into freed memory and eqgame.exe AVs. MQ2's loader-exit pattern (MacroQuest.cpp:2066-2087) leaves mq2main.dll resident in running eqgames for exactly this reason. Scenario #4 outright + much of #2.
+- **Architectural problem 2 — iconic operations.** `RaiseRemainingClientsAboveTaskbar` (fires 250ms after sibling close in slim-titlebar mode) built its `responsive` set with no `IsIconic` filter. `ApplySlimTitlebar` + the `HWND_TOPMOST↔HWND_NOTOPMOST` dance ran on minimized A → cross-process SetWindowPos with frame-change + z-band changes on a window whose D3D9 device was released by Dalaya's minimize handler → race with the device-lost recovery path → A crashes. Scenario #1, and contributes to #2.
+
+### Gate #1 — stop ejecting hooks on Dispose
+
+`TrayManager.cs:CleanupHookInjection` split into:
+
+- `CleanupHookConfigOnly()` — closes the C#-side per-PID memory-mapped file handles + clears tracking dictionaries. The kernel keeps the named-mapping objects alive as long as the DLLs hold mapped views, so a future EQSwitch instance re-attaches by re-opening the same names. Used by `Dispose()` and `Shutdown()`.
+- `EjectFromAllInjectedClients()` — original Eject-everything path. Now ONLY wired to the new "Detach Hooks from Running Clients" tray menu item, gated behind a yes/no confirmation that surfaces the risk in plain English.
+
+Tray exit now leaves the hook DLLs resident in every live eqgame.exe. The DLLs only clean up via their own `DLL_PROCESS_DETACH` when eqgame itself exits — the OS-managed safe path. Matches MacroQuest's loader-shutdown contract.
+
+### Gate #2 — IsIconic filter in post-close raise
+
+`TrayManager.cs:RaiseRemainingClientsAboveTaskbar` `responsive` set + `RaiseClientsAboveTaskbar` dance loop both now skip iconic clients. `CanForegroundCandidate` (TrayManager.cs:1298) already had this exclusion under the comment "minimized (SW_RESTORE DX crash risk)" — Gate #2 extends the rule to the dance loop + the geometry re-apply pass that sat upstream of it. Iconic A is recovered on the user's next manual restore; the slim-titlebar guard timer + the ApplyDeferredCosmetics LoginComplete path re-assert bounds on the next focus event.
+
+### Gate #3 — SwitchToClient 4-gate check
+
+`WindowManager.SwitchToClient` was the only switch primitive in the codebase that lacked the four-gate `IsWindow + IsHungAppWindow + IsClientResponsive + IsLoginActive` pattern. Pre-Gate-#3 it checked only `IsWindow` + `IsHungAppWindow` (5s kernel threshold — too slow to catch 100-500ms transient mid-zone-load DX-reset blocks), then naively fired `ShowWindow(SW_RESTORE)` + `ForceForegroundWindow`. Now adds a 100ms `SendMessageTimeout(WM_NULL, SMTO_ABORTIFHUNG|SMTO_BLOCK)` pump-responsiveness probe before any window manipulation, matching every other cross-process SetWindowPos site (`ArrangeSingleScreen`, `ArrangeMultiMonitor`, `SwapWindows`, `ApplySlimTitlebar`, `ResizeToCurrentMonitors`). Optional `Func<int, bool>? isLoginActive` parameter lets callers with access to `AutoLoginManager.IsLoginActive` pass it through; all 8 TrayManager call sites + the 3 `CycleNext`/`CyclePrev` paths now pass `_autoLoginManager.IsLoginActive` so the cycle hotkeys never disrupt a credential-typing client.
+
+### Gate #4 — detour critical section in Native
+
+Both injected DLLs now serialize teardown against in-flight detour bodies.
+
+- **eqswitch-hook.cpp**: `SRWLOCK g_detourLock`, shared-acquired at entry of `HookedSetWindowPos` / `HookedMoveWindow` / `HookedSetWindowTextA` / `HookedShowWindow`, exclusive-acquired in `Cleanup()` before `MH_DisableHook` + `MH_Uninitialize`. `AcquireSRWLockExclusive` blocks until every in-flight shared holder drains, so the trampoline pages stay alive while EQ threads are mid-detour. Mirrors MacroQuest's `CAutoLock(&gDetourCS)` in MQ2DetourAPI.cpp:144-200.
+- **eqswitch-di8.cpp**: `SRWLOCK g_di8DetourLock` (non-static — `iat_hook.cpp` references via `extern`), shared-acquired in `HookedDirectInput8Create` + all 9 `iat_hook.cpp` hooks (6 IAT-replaced + 3 inline-patched). `iat_hook.cpp` adds a `DetourSharedLock` RAII guard struct so every early-return path releases correctly. `Cleanup()` takes exclusive BEFORE `NetDebug::Remove` / `IatHook::RemoveKeyboardHooks` / `DeviceProxy_Shutdown` / `GiveTimeDetour::Uninstall` / `MH_DisableHook` + `MH_Uninitialize`.
+
+**Deferred coverage (documented limitation):** `GiveTime_Detour` in `login_givetime_detour.cpp` is NOT wrapped. The detour calls `g_trampoline` which recurses into eqmain → user32 → our IAT hooks; wrapping the outer detour with a shared lock would deadlock against `Cleanup`'s exclusive waiter via the recursive-shared-acquire-with-pending-exclusive SRWLOCK rule. SEH wrappers inside MQ2BridgePollTick catch the small remaining race window. Same reasoning for `device_proxy.cpp`'s COM vtbl wrappers — added complexity not justified given Gate #1 already eliminated the automatic Dispose-time eject; only the opt-in user "Detach Hooks" menu now exercises this path.
+
+### Gate #5 — stale-HWND defense in hook DLL
+
+`eqswitch-hook.cpp:IsEqWindow` cached the first hwnd that satisfied its four checks (in-process, no parent, visible) and reused it via fast-path `g_cachedEqHwnd == hWnd`. When EQ destroyed the cached window during the char-select → in-world transition (Scenario #3), the cache wasn't invalidated, and hook operations could route through a stale HWND. Now:
+
+- Fast-path validates `IsWindow(cached)` and clears the cache when it fails.
+- Slow-path additionally clears the cache when the requested HWND is the cached one AND becomes hidden (state-transition tear-down).
+- Re-caching happens on the slow path when the requested HWND stably matches the full eqgame-top-level predicate.
+
+### Build
+
+C# rebuilt clean (Debug + Release). Native rebuilt: `eqswitch-hook.dll` (build.cmd MSVC x86, /O2 /W3 /DNDEBUG), `eqswitch-di8.dll` (build-di8-inject.sh). DLL sha256s recorded in commit message.
+
+### Verifier pass
+
+High-stakes per `_.claude/_templates/lessons-learned/principles/active-knowledge-system.md` — Native + release tooling — 8 agents (4 topics × Sonnet+Opus). Findings → ship review notes.
+
+### What's not in scope
+
+- Background-rendering frame limiter (MQ2-style `RealRender_World` throttle for minimized clients). Per the v3.22.44 brainstorm: deferred unless Gates #1–#5 don't fully kill the minimize-crash scenarios in field testing. Frame-limiter is a new Native subsystem; the per-scenario gates above are surgical and lower-risk.
+- `device_proxy.cpp` COM wrapper locking — see Gate #4 documented limitation.
+- `login_givetime_detour.cpp` lock — see Gate #4 documented limitation.
+
 ## v3.22.43 — LOW-severity polish from v3.22.42 delta-verifier (2026-05-23)
 
 Same-session same-day follow-on to v3.22.42. Two cosmetic LOW-severity findings from the v3.22.42 delta-verifier that were initially deferred, then promoted to ship per user direction. UI-only release; Native DLLs unchanged from v3.22.42 (sha256 parity verified at deploy time). One commit, one 2-agent delta-verifier round.

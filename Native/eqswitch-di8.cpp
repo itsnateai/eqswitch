@@ -511,6 +511,48 @@ static HANDLE g_stopEvent = nullptr;   // signaled on DLL_PROCESS_DETACH to stop
 static volatile LONG g_initialized = 0;
 static bool g_hookInstalled = false;
 
+// v3.22.44 Gate #4 — cross-TU detour critical section. Detours in this file
+// (HookedDirectInput8Create) and iat_hook.cpp (HookedGetAsyncKeyState +
+// 8 sibling user32 hooks) Enter this at entry, Leave on exit. Cleanup()
+// Enters it before the IAT-restore / MinHook-uninstall teardown so any
+// EQ thread mid-detour drains before we yank the trampoline pages.
+// Non-static — iat_hook.cpp references via `extern CRITICAL_SECTION
+// g_di8DetourCs;`. Matches MacroQuest's gDetourCS discipline.
+//
+// v3.22.44 round-2 (T3-Opus HIGH #1): switched from SRWLOCK to
+// CRITICAL_SECTION because of the IAT-redirect → inline-patch chain in
+// iat_hook.cpp. HookedGetForegroundWindow (IAT-replaced) takes shared,
+// then calls g_realGetForegroundWindow whose prologue is inline-patched
+// to InlineHookedGetForegroundWindow which takes shared AGAIN on the same
+// thread. SRWLOCK forbids recursive shared acquire — with an exclusive
+// waiter pending (Cleanup running) the inner shared blocks → outer cannot
+// release → permanent deadlock that hangs eqgame.exe. CRITICAL_SECTION is
+// recursive by design. The deferred GiveTime_Detour wrapping concern from
+// round 1 is partially resolved too: the recursive-acquire reason that
+// blocked locking GiveTime no longer applies with CRITICAL_SECTION. (We
+// still don't lock GiveTime in round 2 because the existing g_detachInProgress
+// guard in login_givetime_detour.cpp covers the operational path; revisit
+// in a follow-up to add full coverage.)
+//
+// Initialized in DllMain DLL_PROCESS_ATTACH (safe — no loader-lock
+// interaction) before the init thread is spawned. NOT deleted in Cleanup —
+// the DLL is unloading; the kernel object goes away with the .data section.
+CRITICAL_SECTION g_di8DetourCs;
+volatile LONG g_di8DetourCsInitialized = 0;  // set by DllMain ATTACH
+
+// v3.22.44 round-2 (T3-Opus HIGH #2): RAII guard so HookedDirectInput8Create's
+// `new DI8Proxy(*ppvOut)` throw path can't leak the critical section.
+// Sibling pattern to iat_hook.cpp's DetourSharedLock, but Enters/Leaves a
+// CRITICAL_SECTION instead of SRWLOCK shared.
+namespace {
+struct Di8DetourLock {
+    Di8DetourLock() { EnterCriticalSection(&g_di8DetourCs); }
+    ~Di8DetourLock() { LeaveCriticalSection(&g_di8DetourCs); }
+    Di8DetourLock(const Di8DetourLock&) = delete;
+    Di8DetourLock& operator=(const Di8DetourLock&) = delete;
+};
+} // namespace
+
 // ─── Logging ────────────────────────────────────────────────────
 
 static FILE *g_logFile = nullptr;
@@ -544,9 +586,20 @@ static HRESULT WINAPI HookedDirectInput8Create(
     HINSTANCE hinst, DWORD dwVersion, REFIID riidltf,
     LPVOID *ppvOut, LPUNKNOWN punkOuter)
 {
+    // v3.22.44 r2 (T3-Opus HIGH #2): RAII guard replaces manual Enter/Leave.
+    // The `new DI8Proxy(*ppvOut)` line below can throw std::bad_alloc; without
+    // RAII the throw skips the manual LeaveCriticalSection and permanently
+    // leaks the CS, so every future Cleanup() / Detach-Hooks attempt
+    // deadlocks. Di8DetourLock's dtor runs on any unwind path including C++
+    // exceptions. Note we used SRWLock+manual in round 1; round 2 migrated
+    // to CRITICAL_SECTION for recursive safety against the IAT→inline chain
+    // in iat_hook.cpp (see g_di8DetourCs comment).
+    Di8DetourLock _l;
     DI8Log("DirectInput8Create: version=0x%04X", dwVersion);
 
-    if (!g_trampolineCreate) return E_FAIL;
+    if (!g_trampolineCreate) {
+        return E_FAIL;
+    }
 
     // Call Dalaya's original DirectInput8Create (which calls system32 internally)
     HRESULT hr = g_trampolineCreate(hinst, dwVersion, riidltf, ppvOut, punkOuter);
@@ -669,8 +722,33 @@ static void Cleanup() {
     DI8Log("Cleanup: removing hooks");
 
     // Unregister DLL notification FIRST so no late load/unload events
-    // arrive during teardown of downstream state.
+    // arrive during teardown of downstream state. This call doesn't depend
+    // on the detour lock — Ldr notification callbacks don't go through any
+    // of our hooked functions.
     UnregisterDllNotification();
+
+    // v3.22.44 r2 (T3-Opus HIGH #1, #3): Enter the detour CRITICAL_SECTION
+    // before flipping ANY hook off. EnterCriticalSection blocks until every
+    // in-flight holder Leaves, which means every EQ thread currently inside
+    // HookedGetAsyncKeyState / Hooked{Get,Inline}{Foreground,Focus,Active}Window
+    // / HookedDirectInput8Create has returned. CRITICAL_SECTION supports
+    // recursive same-thread Enter — required because iat_hook.cpp's
+    // IAT-replaced GetForegroundWindow calls into user32 whose prologue is
+    // inline-patched to InlineHookedGetForegroundWindow which Enters AGAIN
+    // on the same thread; round-1's SRWLOCK shared would deadlock that chain.
+    // Mirrors MacroQuest's CAutoLock(&gDetourCS) at MQ2DetourAPI.cpp:144-200.
+    //
+    // CS is NOT Left — once we're past the un-hook calls below no further
+    // detour body entry is possible (their code pages are about to be
+    // unmapped). The CRITICAL_SECTION struct goes away with the DLL.
+    //
+    // Documented limitation (round-2 deliberate, not blocking): GiveTime_Detour
+    // in login_givetime_detour.cpp does NOT Enter g_di8DetourCs. Its own
+    // g_detachInProgress flag covers the main shutdown path; the detour only
+    // fires while eqmain.dll is loaded (login/charselect phases), and EnterCS
+    // on a hot-path detour at 50–130 Hz is a measurable perf cost worth
+    // measuring before adding. Follow-up planned.
+    if (g_di8DetourCsInitialized) EnterCriticalSection(&g_di8DetourCs);
 
     NetDebug::Remove();
     IatHook::RemoveKeyboardHooks();
@@ -700,6 +778,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     case DLL_PROCESS_ATTACH: {
         g_hModule = hModule;
         DisableThreadLibraryCalls(hModule);
+
+        // v3.22.44 r2 — initialize detour CRITICAL_SECTION before InitThread
+        // spawns. Detours can only fire after MH_EnableHook completes inside
+        // InitThread, so the CS is guaranteed initialized before any Enter.
+        // Spin count 4000 matches MQ2's gDetourCS — favors short uncontended
+        // acquires without crossing into the kernel.
+        InitializeCriticalSectionAndSpinCount(&g_di8DetourCs, 4000);
+        InterlockedExchange(&g_di8DetourCsInitialized, 1);
 
         // Build per-PID log path next to eqgame.exe (not next to our DLL —
         // we're alongside EQSwitch.exe, not in the game folder). Per-PID

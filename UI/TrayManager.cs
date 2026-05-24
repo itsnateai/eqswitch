@@ -35,6 +35,14 @@ public class TrayManager : IDisposable
     private NotifyIcon? _trayIcon;
     private ContextMenuStrip? _contextMenu;
     private ToolStripMenuItem? _clientsMenu;
+    // v3.22.44 r2 (T3-Sonnet F7 / T3-Opus #5 MEDIUM): cache the Detach Hooks
+    // item so UpdateClientMenu can refresh its Enabled state on every
+    // ClientListChanged event. Round-1 only computed Enabled at
+    // BuildContextMenu time, so the item was stuck disabled after first-run
+    // (no clients yet) until the user happened to toggle MultiMonitor / PiP
+    // / Settings — meaning the new opt-in eject path was effectively
+    // unreachable from the tray menu right after launching clients.
+    private ToolStripMenuItem? _detachItem;
     private Font? _boldMenuFont;
 
     // Hidden window to receive TaskbarCreated message (explorer.exe restart recovery)
@@ -501,6 +509,13 @@ public class TrayManager : IDisposable
             _injectedPids.Remove(c.ProcessId);
             _di8InjectedPids.Remove(c.ProcessId);
             _hookConfig?.Close(c.ProcessId);
+            // v3.22.44 r3.5 (R3-T2-Sonnet Finding B MEDIUM): refresh the
+            // Detach Hooks menu Enabled state. Round-3 added the refresh on
+            // the Add sites but missed this Remove site, leaving the item
+            // stuck enabled with the stale "Removes the EQSwitch hooks..."
+            // tooltip after the last client exits — until ProcessManager's
+            // next 10s ClientListChanged tick.
+            RefreshDetachMenuState();
 
             // v3.22.20: drop monitor-slot binding so a recycled PID doesn't
             // inherit a stale slot. New PIDs re-enter via ClientDiscovered's
@@ -733,7 +748,7 @@ public class TrayManager : IDisposable
         var client = _processManager.GetClientBySlot(slot);
         if (client != null)
         {
-            _windowManager.SwitchToClient(client);
+            _windowManager.SwitchToClient(client, _autoLoginManager.IsLoginActive);
             FileLogger.Info($"Direct switch to slot {slot + 1}: {client}");
         }
         else
@@ -764,7 +779,7 @@ public class TrayManager : IDisposable
         if (current == null)
         {
             var first = clients[0];
-            _windowManager.SwitchToClient(first);
+            _windowManager.SwitchToClient(first, _autoLoginManager.IsLoginActive);
             FileLogger.Info($"SwitchKey: no EQ focused — focused {first}");
             return;
         }
@@ -824,20 +839,20 @@ public class TrayManager : IDisposable
                 }
                 if (target != null)
                 {
-                    _windowManager.SwitchToClient(target);
+                    _windowManager.SwitchToClient(target, _autoLoginManager.IsLoginActive);
                     FileLogger.Info($"SwitchKey: {(isMultiMon ? "swapped positions + " : "")}swapped to last active {target}");
                     return;
                 }
             }
             // Fallback to cycle if no previous client tracked
-            var next = _windowManager.CycleNext(clients, current);
+            var next = _windowManager.CycleNext(clients, current, _autoLoginManager.IsLoginActive);
             if (next != null)
                 FileLogger.Info($"SwitchKey: {(isMultiMon ? "swapped positions + " : "")}cycled (no previous tracked) to {next}");
         }
         else
         {
             // Cycle through all clients round-robin
-            var next = _windowManager.CycleNext(clients, current);
+            var next = _windowManager.CycleNext(clients, current, _autoLoginManager.IsLoginActive);
             if (next != null)
                 FileLogger.Info($"SwitchKey: {(isMultiMon ? "swapped positions + " : "")}cycled to {next}");
         }
@@ -886,7 +901,7 @@ public class TrayManager : IDisposable
         if (current != null)
         {
             // EQ is focused — cycle to next
-            var next = _windowManager.CycleNext(clients, current);
+            var next = _windowManager.CycleNext(clients, current, _autoLoginManager.IsLoginActive);
             if (next != null)
                 FileLogger.Info($"GlobalSwitchKey: {(isMultiMon ? "swapped positions + " : "")}cycled to {next}");
         }
@@ -894,7 +909,7 @@ public class TrayManager : IDisposable
         {
             // EQ is NOT focused — bring first client to front
             var first = clients[0];
-            _windowManager.SwitchToClient(first);
+            _windowManager.SwitchToClient(first, _autoLoginManager.IsLoginActive);
             FileLogger.Info($"GlobalSwitchKey: focused {first}");
         }
     }
@@ -951,7 +966,22 @@ public class TrayManager : IDisposable
             return;
         }
 
-        _windowManager.ArrangeWindows(clientsToArrange, _monitorSlotByPid);
+        // v3.22.44 r3 (4-way HIGH convergent: T2-Sonnet Gap G + T2-Opus
+        // Finding 1 + T4-Sonnet Item 1 + T4-Opus F1): capture iconic-skip
+        // count so the user-facing balloon below reports actual arranged
+        // count rather than the over-counted attempted total. Round-2 added
+        // IsIconic skips inside ArrangeMultiMonitor / ArrangeSingleScreen
+        // but the void return type left OnArrangeWindows blind to them →
+        // balloon said "Fixed 2 windows" when 1 was iconic and untouched.
+        // v3.22.44 r3.5 (R3-T3-Opus F1 HIGH / R3-T3-Sonnet C2 / R3-T2-Opus A1
+        // 3-way convergent): also capture non-iconic skips (IsWindow=false,
+        // IsHungAppWindow, IsClientResponsive=false) so the balloon's
+        // "Fixed N" arithmetic is correct in those cases too. Round-3
+        // reintroduced the same overcounting bug shape for the non-iconic
+        // silent skips.
+        var skips = _windowManager.ArrangeWindows(clientsToArrange, _monitorSlotByPid);
+        int skippedIconic = skips.Iconic;
+        int skippedOther = skips.Other;
         // UpdateHookConfig() iterates _injectedPids. Autologin clients ARE
         // in that set (added during CREATE_SUSPENDED PreResume, before
         // autologin starts) — the round-3 gate inside UpdateHookConfig
@@ -978,10 +1008,18 @@ public class TrayManager : IDisposable
         if (_config.Layout.SlimTitlebar)
             RaiseClientsAboveTaskbar(clientsToArrange, foregroundActive: true);
 
-        string skippedLabel = skippedAutologin > 0
-            ? $" ({skippedAutologin} skipped — autologin active)"
-            : "";
-        FileLogger.Info($"ArrangeWindows: arranged {clientsToArrange.Count}/{allClients.Count} client(s){skippedLabel}");
+        // v3.22.44 r3.5: extend skippedLabel to include BOTH iconic and other
+        // non-iconic skip counts; arrange-count subtracts both so the balloon's
+        // "Fixed N" reflects what actually moved.
+        string skippedLabel = "";
+        if (skippedAutologin > 0)
+            skippedLabel += $" ({skippedAutologin} skipped — autologin active)";
+        if (skippedIconic > 0)
+            skippedLabel += $" ({skippedIconic} minimized — restore manually)";
+        if (skippedOther > 0)
+            skippedLabel += $" ({skippedOther} unresponsive — transient)";
+        int arranged = clientsToArrange.Count - skippedIconic - skippedOther;
+        FileLogger.Info($"ArrangeWindows: arranged {arranged}/{allClients.Count} client(s){skippedLabel}");
 
         // v3.22.21: force DX swap-chain reinit. PostMessage(WM_NCLBUTTONDBLCLK,
         // HTCAPTION) hits the same WndProc path as a real user titlebar
@@ -993,7 +1031,7 @@ public class TrayManager : IDisposable
             ForceDxReinit(c);
 
         string mode = _config.Layout.SlimTitlebar ? "slim titlebar" : "stacked";
-        ShowBalloon($"Fixed {clientsToArrange.Count} window(s) ({mode}){skippedLabel}");
+        ShowBalloon($"Fixed {arranged} window(s) ({mode}){skippedLabel}");
     }
 
     /// <summary>
@@ -1145,12 +1183,30 @@ public class TrayManager : IDisposable
         const uint flags = NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE;
         int raised = 0;
         int skippedUnresponsive = 0;
+        int skippedIconic = 0;
         foreach (var c in clients)
         {
             var hwnd = c.WindowHandle;
             if (!NativeMethods.IsWindow(hwnd)) continue;
             if (NativeMethods.IsHungAppWindow(hwnd)) continue;
             if (_autoLoginManager.IsLoginActive(c.ProcessId)) continue;
+            // v3.22.44 Gate #2 — DON'T touch iconic clients. The topmost dance
+            // (TOPMOST↔NOTOPMOST) on a minimized EQ window is the suspect for
+            // the "minimized client A crashes when sibling B camps" symptom.
+            // Even with SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE, USER32 still
+            // dispatches WM_WINDOWPOSCHANGING synchronously into EQ's
+            // WndProc; on Dalaya the D3D9 device is released-on-minimize, so
+            // the WndProc's downstream handling collides with the device-
+            // lost recovery path that the renderer thread is concurrently
+            // running. The CanForegroundCandidate helper at L1298 already
+            // has this same IsIconic exclusion ("SW_RESTORE DX crash risk")
+            // — extending the rule to the dance loop closes the matching gap.
+            // Iconic clients are recovered on the user's next manual restore.
+            if (NativeMethods.IsIconic(hwnd))
+            {
+                skippedIconic++;
+                continue;
+            }
             // v3.22.33 (T4 Opus sev-3): match the convention every other z-order
             // primitive in the codebase uses — IsClientResponsive 100ms probe
             // before cross-process SetWindowPos. The taskbar dance is two
@@ -1241,8 +1297,8 @@ public class TrayManager : IDisposable
                 {
                     try
                     {
-                        _windowManager.SwitchToClient(candidate);
-                        FileLogger.Info($"RaiseClientsAboveTaskbar: foregrounded {candidate} after topmost dance ({raised}/{clients.Count} raised, {skippedUnresponsive} skipped)");
+                        _windowManager.SwitchToClient(candidate, _autoLoginManager.IsLoginActive);
+                        FileLogger.Info($"RaiseClientsAboveTaskbar: foregrounded {candidate} after topmost dance ({raised}/{clients.Count} raised, skippedIconic={skippedIconic} skippedUnresponsive={skippedUnresponsive})");
                     }
                     catch (Exception ex)
                     {
@@ -1252,12 +1308,12 @@ public class TrayManager : IDisposable
             }
             else
             {
-                FileLogger.Warn($"RaiseClientsAboveTaskbar: no foregroundable candidate (all iconic/hung/autologin/unresponsive); raised={raised}/{clients.Count}, skippedUnresponsive={skippedUnresponsive}. Taskbar may still slice through windows until the user manually focuses one.");
+                FileLogger.Warn($"RaiseClientsAboveTaskbar: no foregroundable candidate (all iconic/hung/autologin/unresponsive); raised={raised}/{clients.Count}, skippedIconic={skippedIconic}, skippedUnresponsive={skippedUnresponsive}. Taskbar may still slice through windows until the user manually focuses one.");
             }
         }
         else
         {
-            FileLogger.Info($"RaiseClientsAboveTaskbar: raised {raised}/{clients.Count} client(s) (no foreground change, {skippedUnresponsive} skipped)");
+            FileLogger.Info($"RaiseClientsAboveTaskbar: raised {raised}/{clients.Count} client(s) (no foreground change, skippedIconic={skippedIconic} skippedUnresponsive={skippedUnresponsive})");
         }
     }
 
@@ -1317,18 +1373,34 @@ public class TrayManager : IDisposable
         var clients = _processManager.Clients;
         if (clients.Count == 0) return;
 
-        // Build the responsive subset using the same gates ArrangeWindows applies.
+        // Build the responsive subset using the same gates ArrangeWindows applies,
+        // PLUS the v3.22.44 Gate #2 iconic exclusion. ApplySlimTitlebar /
+        // ArrangeWindows below call cross-process SetWindowPos with explicit
+        // geometry and SWP_FRAMECHANGED — issuing those against a minimized
+        // EQ window where Dalaya has released the D3D9 device race-collides
+        // with the next user-initiated SW_RESTORE's device-recreate handler
+        // and can crash A when sibling B exits (the original Scenario A
+        // field report). Iconic A is re-positioned when the user restores
+        // it themselves; the slim-titlebar guard timer (and the
+        // ApplyDeferredCosmetics path on LoginComplete) re-asserts the
+        // bounds on the next focus event.
         var responsive = new List<EQClient>(clients.Count);
+        int skippedIconic = 0;
         foreach (var c in clients)
         {
             if (_autoLoginManager.IsLoginActive(c.ProcessId)) continue;
             if (!NativeMethods.IsWindow(c.WindowHandle)) continue;
             if (NativeMethods.IsHungAppWindow(c.WindowHandle)) continue;
+            if (NativeMethods.IsIconic(c.WindowHandle))
+            {
+                skippedIconic++;
+                continue;
+            }
             responsive.Add(c);
         }
         if (responsive.Count == 0)
         {
-            FileLogger.Info($"RaiseRemainingClientsAboveTaskbar: no responsive non-autologin clients to recover (clients={clients.Count})");
+            FileLogger.Info($"RaiseRemainingClientsAboveTaskbar: no responsive non-iconic non-autologin clients to recover (clients={clients.Count}, skippedIconic={skippedIconic})");
             return;
         }
 
@@ -1863,6 +1935,27 @@ public class TrayManager : IDisposable
         forceKillMenu.DropDownItems.Add("(scanning...)").Enabled = false;
         _contextMenu.Items.Add(forceKillMenu);
 
+        // v3.22.44 Gate #1 — explicit "Detach hooks from running clients" entry
+        // point. Eject path is no longer the Dispose default (see
+        // CleanupHookConfigOnly); this menu item is the ONLY way the user
+        // triggers DllInjector.Eject on running eqgame.exe processes from C#.
+        // Still inherently racy without Gate #4's Native-side detour critical
+        // section — surface the risk in the label + confirmation prompt so the
+        // user knows what they're consenting to. Only enabled when at least
+        // one process is currently tracked as injected.
+        bool anyInjected = _injectedPids.Count > 0 || _di8InjectedPids.Count > 0;
+        var detachItem = new ToolStripMenuItem("🔌  Detach Hooks from Running Clients")
+        {
+            Enabled = anyInjected,
+            ToolTipText = anyInjected
+                ? "Removes the EQSwitch window/input hooks from every running eqgame.exe. May briefly stutter or crash a client if EQ is mid-render through one of our hooked functions."
+                : "No injected eqgame.exe processes."
+        };
+        detachItem.Click += (_, _) => OnDetachHooksMenuItem();
+        _contextMenu.Items.Add(detachItem);
+        // v3.22.44 r2: cache so UpdateClientMenu can refresh Enabled state.
+        _detachItem = detachItem;
+
         // Video Settings submenu
         var videoMenu = new ToolStripMenuItem("\uD83D\uDCFA  Video Settings") { DropDownDirection = ToolStripDropDownDirection.Right };
         videoMenu.DropDownItems.Add("\uD83D\uDCDD  Video Settings...", null, (_, _) =>
@@ -1946,6 +2039,16 @@ public class TrayManager : IDisposable
 
     private void UpdateClientMenu()
     {
+        // v3.22.44 r3 (T3-Opus F4 / T3-Sonnet F7 MEDIUM): delegate to shared
+        // helper. Round 2 had the refresh inline here; round 3 extracts it so
+        // InjectPreResume and InjectHookDll can also call it directly without
+        // waiting for the next ProcessManager 10s poll (which is what fires
+        // ClientListChanged → UpdateClientMenu). Without this, the user could
+        // launch a team via the hotkey and see the Detach Hooks menu stuck
+        // disabled for up to 10 seconds even though _injectedPids was already
+        // populated by InjectPreResume.
+        RefreshDetachMenuState();
+
         if (_clientsMenu == null) return;
 
         // Don't rebuild while the menu is open — it causes the menu to close
@@ -1981,7 +2084,7 @@ public class TrayManager : IDisposable
         {
             var c = client; // capture for closure
             var item = new ToolStripMenuItem($"[{client.SlotIndex + 1}] {client}");
-            item.Click += (_, _) => _windowManager.SwitchToClient(c);
+            item.Click += (_, _) => _windowManager.SwitchToClient(c, _autoLoginManager.IsLoginActive);
             _clientsMenu.DropDownItems.Add(item);
         }
 
@@ -2497,7 +2600,20 @@ public class TrayManager : IDisposable
                     }
                     else
                     {
-                        _windowManager.SwapWindows(swapClients);
+                        // v3.22.44 r3 (3-way HIGH convergent: T2-Opus Finding 2 + T4-Sonnet
+                        // Item 2 + T4-Opus F2): branch on SwapResult so a swap aborted on
+                        // iconic clients surfaces a balloon instead of silently no-opping.
+                        // Pre-r3 the tray "Swap Windows" action returned void from
+                        // SwapWindows; user pressed it with one minimized client and saw
+                        // nothing happen, no feedback. Now: AbortedIconic → balloon
+                        // "restore manually". Other aborts (hung/not-responsive) stay
+                        // silent — they're rare and the user can't act on them.
+                        var swapResult = _windowManager.SwapWindows(swapClients);
+                        if (swapResult == Core.SwapResult.AbortedIconic)
+                        {
+                            ShowBalloon("Swap skipped — at least one client is minimized. Restore from the taskbar, then re-press swap.");
+                            return;
+                        }
                         _windowManager.ResizeToCurrentMonitors(swapClients);
                         UpdateHookConfig();
 
@@ -3470,6 +3586,7 @@ public class TrayManager : IDisposable
             if (DllInjector.Inject(sp.Pid, di8Path))
             {
                 _di8InjectedPids.Add(sp.Pid);
+                RefreshDetachMenuState();  // v3.22.44 r3 — close 10s poll-detection gap
                 FileLogger.Info($"PreResume: injected eqswitch-di8.dll into PID {sp.Pid}");
             }
             else
@@ -3489,6 +3606,7 @@ public class TrayManager : IDisposable
             if (_hookConfig.Open(sp.Pid))
             {
                 _injectedPids.Add(sp.Pid);
+                RefreshDetachMenuState();  // v3.22.44 r3 — close 10s poll-detection gap
                 UpdateHookConfigForPid(sp.Pid);
 
                 var hookPath = Path.Combine(exeDir, "eqswitch-hook.dll");
@@ -3501,6 +3619,7 @@ public class TrayManager : IDisposable
                     else
                     {
                         _injectedPids.Remove(sp.Pid);
+                        RefreshDetachMenuState();  // v3.22.44 r3.6 (4-way convergent rollback gap)
                         FileLogger.Warn($"PreResume: eqswitch-hook.dll injection failed for PID {sp.Pid}");
                     }
                 }
@@ -3532,6 +3651,7 @@ public class TrayManager : IDisposable
         // Track immediately so UpdateHookConfig() includes this PID during the
         // injection delay — shared memory is open and configured, just awaiting DLL load
         _injectedPids.Add(pid);
+        RefreshDetachMenuState();  // v3.22.44 r3 — close 10s poll-detection gap
 
         // Write this process's config before injection so the DLL reads correct values on attach
         UpdateHookConfigForPid(pid);
@@ -3543,6 +3663,7 @@ public class TrayManager : IDisposable
         {
             FileLogger.Warn($"InjectHookDll: DLL not found at {dllPath}");
             _injectedPids.Remove(pid);
+            RefreshDetachMenuState();  // v3.22.44 r3.6 (4-way convergent rollback gap)
             return;
         }
 
@@ -3563,6 +3684,7 @@ public class TrayManager : IDisposable
             else
             {
                 _injectedPids.Remove(pid);
+                RefreshDetachMenuState();  // v3.22.44 r3.6 (4-way convergent rollback gap)
                 FileLogger.Warn($"InjectHookDll: injection failed for PID {pid}, falling back to guard timer");
             }
         };
@@ -3949,7 +4071,56 @@ public class TrayManager : IDisposable
         return monitorOrder[slot % monitorOrder.Count];
     }
 
-    private void CleanupHookInjection()
+    /// <summary>
+    /// v3.22.44 Gate #1 — Dispose/Shutdown path. Closes the C#-side per-PID
+    /// memory-mapped file handles + clears tracking dictionaries, but leaves
+    /// the injected DLLs RESIDENT in every live eqgame.exe. The kernel keeps
+    /// the named-mapping objects alive as long as the DLLs hold mapped views,
+    /// so a future EQSwitch instance can re-attach by re-opening the same
+    /// names.
+    /// <para>
+    /// Why no eject here: <c>DllInjector.Eject</c> does
+    /// <c>CreateRemoteThread(eqgame, FreeLibrary, dllBase)</c>. FreeLibrary
+    /// triggers <c>DllMain(DLL_PROCESS_DETACH)</c> which runs
+    /// <c>MH_DisableHook</c> + <c>MH_Uninitialize</c> in both eqswitch-hook.dll
+    /// and eqswitch-di8.dll, plus IAT-restore in iat_hook.cpp. Any EQ thread
+    /// currently executing inside one of those detour bodies / IAT-redirected
+    /// wrappers holds a stack frame whose return address points into a code
+    /// page that's about to be unmapped — the thread returns into freed
+    /// memory and eqgame.exe access-violates. This is the root cause of the
+    /// "EQSwitch tray closes → all eqgames crash hard" symptom Nate has been
+    /// hitting in field reports. MacroQuest's loader-exit pattern at
+    /// <c>MacroQuest.cpp:2066-2087</c> does the same thing — it leaves
+    /// mq2main.dll resident in running eqgame.exe processes; the DLL only
+    /// cleans up via its own DLL_PROCESS_DETACH when eqgame itself exits.
+    /// </para>
+    /// <para>
+    /// User-driven eject still exists at <see cref="EjectFromAllInjectedClients"/>
+    /// — wired to the "Detach from running clients" tray menu item. That path
+    /// is also unsafe without Gate #4's detour critical section in Native,
+    /// but at least it's an explicit user choice rather than an automatic
+    /// consequence of closing the tray.
+    /// </para>
+    /// </summary>
+    private void CleanupHookConfigOnly()
+    {
+        _injectedPids.Clear();
+        _di8InjectedPids.Clear();
+        _hookConfig?.Dispose();
+        _hookConfig = null;
+    }
+
+    /// <summary>
+    /// v3.22.44 Gate #1 — user-initiated detach via tray menu only. Ejects
+    /// both hook DLLs from every live eqgame.exe by calling
+    /// <c>CreateRemoteThread(FreeLibrary)</c>. Still racy without Gate #4's
+    /// Native-side detour critical section — call sites should warn users
+    /// that this can crash running clients. Use case: an EQSwitch upgrade
+    /// where the user wants to swap in a new hook DLL before relaunching
+    /// EQSwitch, OR a user who explicitly wants to remove EQSwitch's window
+    /// manipulation from running clients.
+    /// </summary>
+    private void EjectFromAllInjectedClients()
     {
         foreach (var pid in _injectedPids.ToArray())
             DllInjector.Eject(pid, "eqswitch-hook.dll");
@@ -3959,6 +4130,84 @@ public class TrayManager : IDisposable
         _di8InjectedPids.Clear();
         _hookConfig?.Dispose();
         _hookConfig = null;
+    }
+
+    /// <summary>
+    /// v3.22.44 Gate #1 — tray menu handler that confirms before calling
+    /// <see cref="EjectFromAllInjectedClients"/>. The confirmation isn't
+    /// theater — Eject is still inherently racy until Gate #4's Native-side
+    /// detour critical section ships, so user consent is the load-bearing
+    /// safety net on the C# side.
+    /// </summary>
+    /// <summary>
+    /// v3.22.44 r3 — refreshes the "Detach Hooks" tray menu item's Enabled
+    /// state + tooltip. Called from UpdateClientMenu (on ClientListChanged)
+    /// AND directly from InjectPreResume / InjectHookDll so the menu reflects
+    /// injection state as soon as it changes, not after the next 10-second
+    /// ProcessManager poll. T3-Opus F4 / T3-Sonnet F7 fix.
+    /// <para>
+    /// v3.22.44 r3.5 (R3-T3-Sonnet C4 HIGH + R3-T4-Sonnet Item 4 MEDIUM
+    /// convergent): the AutoLogin path calls this from a Task.Run threadpool
+    /// thread (FireTeam → BeginLogin → LaunchSuspendedAndInject →
+    /// PreResumeCallback.Invoke → InjectPreResume). Writing to
+    /// ToolStripMenuItem.Enabled / ToolTipText from a non-UI thread is a
+    /// WinForms cross-thread violation. Mirror ShowBalloon's marshal at
+    /// L2306-2309 to bounce back to the UI thread when the caller isn't
+    /// already on it. LaunchManager's WinForms Timer path is already UI-
+    /// thread and the marshal is a no-op there.
+    /// </para>
+    /// </summary>
+    private void RefreshDetachMenuState()
+    {
+        if (_uiContext != null && SynchronizationContext.Current != _uiContext)
+        {
+            _uiContext.Post(_ => RefreshDetachMenuState(), null);
+            return;
+        }
+        if (_detachItem == null) return;
+        bool anyInjected = _injectedPids.Count > 0 || _di8InjectedPids.Count > 0;
+        _detachItem.Enabled = anyInjected;
+        _detachItem.ToolTipText = anyInjected
+            ? "Removes the EQSwitch window/input hooks from every running eqgame.exe. May briefly stutter or crash a client if EQ is mid-render through one of our hooked functions."
+            : "No injected eqgame.exe processes.";
+    }
+
+    private void OnDetachHooksMenuItem()
+    {
+        int hookCount = _injectedPids.Count;
+        int di8Count = _di8InjectedPids.Count;
+        if (hookCount == 0 && di8Count == 0)
+        {
+            ShowBalloon("No injected clients to detach.");
+            return;
+        }
+
+        var result = MessageBox.Show(
+            $"Eject EQSwitch hooks from {hookCount} hook-injected + {di8Count} di8-injected eqgame.exe process(es)?\n\n" +
+            "This calls FreeLibrary inside each client. If any EQ thread is currently executing inside one of our hooked Win32 functions, the client will crash. " +
+            "Normal exit doesn't do this — the hooks stay resident and clean up when eqgame itself closes.\n\n" +
+            "Use this only if you need EQSwitch's window control removed from running clients without closing them.",
+            "Detach EQSwitch Hooks?",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2);
+        if (result != DialogResult.Yes)
+        {
+            FileLogger.Info("OnDetachHooksMenuItem: user cancelled");
+            return;
+        }
+
+        FileLogger.Warn($"OnDetachHooksMenuItem: user requested eject — hookPids={hookCount} di8Pids={di8Count}");
+        EjectFromAllInjectedClients();
+        // v3.22.44 r3.5 (R3-T2-Opus B1 MEDIUM): the Eject path clears
+        // _injectedPids / _di8InjectedPids but does NOT kill the eqgame.exe
+        // processes — so ClientLost / ClientListChanged won't fire to refresh
+        // the menu. Without this explicit refresh the "Detach Hooks" item
+        // stays falsely enabled with stale tooltip for up to 10s (until the
+        // ProcessManager poll's next ClientListChanged). Mirror the Add-site
+        // pattern from InjectPreResume/InjectHookDll.
+        RefreshDetachMenuState();
+        ShowBalloon("Hooks detached. Restart EQSwitch to re-inject.");
     }
 
     private void StopForegroundHook()
@@ -3987,7 +4236,7 @@ public class TrayManager : IDisposable
     private void Shutdown()
     {
         StopForegroundHook();
-        CleanupHookInjection();
+        CleanupHookConfigOnly();
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
         _launchManager.CancelLaunch();
@@ -4083,7 +4332,7 @@ public class TrayManager : IDisposable
         if (_disposed) return;
         _disposed = true;
         StopForegroundHook();
-        CleanupHookInjection();
+        CleanupHookConfigOnly();
         _retryTimer?.Stop();
         _retryTimer?.Dispose();
         _launchManager.Dispose();

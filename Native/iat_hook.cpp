@@ -27,6 +27,33 @@ void DI8Log(const char *fmt, ...);
 // Defined in device_proxy.cpp
 HWND GetEqHwnd();
 
+// v3.22.44 Gate #4 — detour CRITICAL_SECTION, defined in eqswitch-di8.cpp.
+// All hooked functions in this file (IAT-replaced + inline-patched) Enter
+// at entry, Leave on exit (via RAII). eqswitch-di8.cpp::Cleanup() Enters it
+// before IatHook::RemoveKeyboardHooks() restores IAT slots and patched
+// function prologues. The barrier ensures any EQ thread mid-callback inside
+// a hook body has fully unwound back to user32.dll / win32u.dll BEFORE our
+// wrapper code section is potentially unmapped. RAII guard makes every
+// early-return path correct without per-return cleanup boilerplate.
+//
+// v3.22.44 round-2 (T3-Opus HIGH #1): migrated from SRWLOCK shared to
+// CRITICAL_SECTION because the IAT-replaced hooks (HookedGetForegroundWindow
+// etc.) call g_realGet*  which point to the user32 functions whose
+// prologues `InstallInlineHooks` has patched to jump to InlineHooked*
+// counterparts — same thread Enters the lock recursively. SRWLOCK shared
+// forbids that (deadlocks against pending exclusive); CRITICAL_SECTION is
+// recursive by design.
+extern CRITICAL_SECTION g_di8DetourCs;
+
+namespace {
+struct DetourSharedLock {
+    DetourSharedLock() { EnterCriticalSection(&g_di8DetourCs); }
+    ~DetourSharedLock() { LeaveCriticalSection(&g_di8DetourCs); }
+    DetourSharedLock(const DetourSharedLock&) = delete;
+    DetourSharedLock& operator=(const DetourSharedLock&) = delete;
+};
+} // namespace
+
 // --- eqgame.exe address range for caller checks ---
 // Inline hooks patch user32.dll globally (process-wide). Without a caller
 // check, Discord overlay, Steam, audio drivers, etc. all get fake results.
@@ -109,6 +136,7 @@ static volatile bool g_diagWasActive = false;
 static bool EqIsTrueForeground();
 
 static SHORT WINAPI HookedGetAsyncKeyState(int vKey) {
+    DetourSharedLock _l;  // v3.22.44 Gate #4
     bool active = KeyShm::IsActive();
     // Reset counters on active edge (new login session)
     if (active && !g_diagWasActive) {
@@ -141,6 +169,7 @@ static SHORT WINAPI HookedGetAsyncKeyState(int vKey) {
 }
 
 static SHORT WINAPI HookedGetKeyState(int nVirtKey) {
+    DetourSharedLock _l;  // v3.22.44 Gate #4
     if (nVirtKey >= 0 && nVirtKey <= 255) {
         UINT scan = MapVirtualKeyW(nVirtKey, MAPVK_VK_TO_VSC);
         if (scan > 0 && scan < 256 && KeyShm::IsKeyPressed((uint8_t)scan))
@@ -152,6 +181,7 @@ static SHORT WINAPI HookedGetKeyState(int nVirtKey) {
 }
 
 static BOOL WINAPI HookedGetKeyboardState(PBYTE lpKeyState) {
+    DetourSharedLock _l;  // v3.22.44 Gate #4
     BOOL ok = g_realGetKeyboardState ? g_realGetKeyboardState(lpKeyState) : FALSE;
     if (lpKeyState) {
         // Phantom-keys hotfix v2: if EQ isn't truly focused, zero the physical
@@ -169,6 +199,7 @@ static BOOL WINAPI HookedGetKeyboardState(PBYTE lpKeyState) {
 }
 
 static HWND WINAPI HookedGetForegroundWindow() {
+    DetourSharedLock _l;  // v3.22.44 Gate #4
     HWND hwnd = GetEqHwnd();
     if (hwnd && KeyShm::IsActive())
         return hwnd;
@@ -176,6 +207,7 @@ static HWND WINAPI HookedGetForegroundWindow() {
 }
 
 static HWND WINAPI HookedGetFocus() {
+    DetourSharedLock _l;  // v3.22.44 Gate #4
     HWND hwnd = GetEqHwnd();
     if (hwnd && KeyShm::IsActive())
         return hwnd;
@@ -183,6 +215,7 @@ static HWND WINAPI HookedGetFocus() {
 }
 
 static HWND WINAPI HookedGetActiveWindow() {
+    DetourSharedLock _l;  // v3.22.44 Gate #4
     HWND hwnd = GetEqHwnd();
     if (hwnd && KeyShm::IsActive())
         return hwnd;
@@ -300,6 +333,7 @@ static bool EqIsTrueForeground() {
 static volatile int g_inlineGfwLogCount = 0;
 
 static HWND WINAPI InlineHookedGetForegroundWindow() {
+    DetourSharedLock _l;  // v3.22.44 Gate #4
     HWND hwnd = GetEqHwnd();
     bool active = KeyShm::IsActive();
 
@@ -324,6 +358,7 @@ static HWND WINAPI InlineHookedGetForegroundWindow() {
 }
 
 static HWND WINAPI InlineHookedGetFocus() {
+    DetourSharedLock _l;  // v3.22.44 Gate #4
     HWND hwnd = GetEqHwnd();
     if (hwnd && KeyShm::IsActive())
         return hwnd;
@@ -335,6 +370,7 @@ static HWND WINAPI InlineHookedGetFocus() {
 }
 
 static HWND WINAPI InlineHookedGetActiveWindow() {
+    DetourSharedLock _l;  // v3.22.44 Gate #4
     HWND hwnd = GetEqHwnd();
     if (hwnd && KeyShm::IsActive())
         return hwnd;

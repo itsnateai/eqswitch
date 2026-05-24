@@ -7,6 +7,20 @@ using EQSwitch.Models;
 namespace EQSwitch.Core;
 
 /// <summary>
+/// v3.22.44 r3 — result of WindowManager.SwapWindows. Pre-r3 returned void,
+/// so the tray-action / hotkey caller had no way to surface a balloon when
+/// the swap was aborted. Now callers branch on the result to show "Swap
+/// skipped — N clients minimized — restore manually first" or equivalent.
+/// </summary>
+public enum SwapResult
+{
+    Swapped,
+    TooFew,                 // clients.Count < 2 — no-op, no balloon needed
+    AbortedIconic,          // at least one client is iconic — user needs to restore + retry
+    AbortedNotResponsive,   // hung / non-responsive / window-gone — no balloon needed
+}
+
+/// <summary>
 /// Handles window positioning, switching, arrangement, and style manipulation.
 /// Win32 calls go through IWindowsApi for testability.
 /// </summary>
@@ -26,23 +40,78 @@ public class WindowManager
 
     /// <summary>
     /// Switch focus to a specific EQ client. Sets it as foreground window
-    /// and optionally restores it if minimized.
+    /// and restores it if minimized.
+    /// <para>
+    /// v3.22.44 Gate #3 — hardened with the same four-gate check the
+    /// <c>CanForegroundCandidate</c> helper in <see cref="UI.TrayManager"/>
+    /// already uses for the auto-recovery path. Pre-this version, the cycle
+    /// hotkeys (Alt+`, Alt+], etc.) called this with only
+    /// <c>IsWindow</c>+<c>IsHungAppWindow</c> coverage, then naively fired
+    /// <c>SW_RESTORE</c>+<c>ForceForegroundWindow</c>. If the target was
+    /// mid-zone-load (DirectX device reset in progress because a sibling
+    /// process exit just flushed the graphics driver), the unguarded
+    /// <c>SW_RESTORE</c> collided with EQ's device-lost recovery handler
+    /// and crashed the surviving client. <c>IsHungAppWindow</c> alone has a
+    /// 5-second kernel-threshold latency before it returns true — too slow
+    /// to catch a 100–500 ms transient. The
+    /// <c>IsClientResponsive</c> <c>SendMessageTimeout(WM_NULL, 100ms,
+    /// SMTO_ABORTIFHUNG|SMTO_BLOCK)</c> probe fast-fails inside that window.
+    /// </para>
+    /// <para>
+    /// <paramref name="isLoginActive"/> is an optional predicate the caller
+    /// supplies if they have access to <c>AutoLoginManager.IsLoginActive</c>.
+    /// When non-null and returns true for the client's PID,
+    /// <c>SwitchToClient</c> short-circuits — taking foreground during
+    /// DirectInput credential injection disrupts the SHM-driven typing
+    /// sequence. Callers that already pre-filtered (e.g.
+    /// <c>RaiseClientsAboveTaskbar</c>'s post-dance foreground transfer)
+    /// can pass null.
+    /// </para>
     /// </summary>
-    public bool SwitchToClient(EQClient client)
+    public bool SwitchToClient(EQClient client, Func<int, bool>? isLoginActive = null)
     {
-        if (!_api.IsWindow(client.WindowHandle))
-            return false;
+        var hwnd = client.WindowHandle;
 
-        if (_api.IsHungAppWindow(client.WindowHandle))
+        // Gate 1: window-validity. Cheap, no IPC. Eliminates the "EQ
+        // recreated its HWND during gameplay and ProcessManager hasn't
+        // refreshed yet" case.
+        if (!_api.IsWindow(hwnd)) return false;
+
+        // Gate 2: kernel-level hung detection. 5s threshold but cheap.
+        // Filters genuinely-frozen clients up front.
+        if (_api.IsHungAppWindow(hwnd))
         {
             FileLogger.Info($"SwitchToClient: skipping hung window {client}");
             return false;
         }
 
+        // Gate 3: optional autologin filter. Caller passes null when they
+        // don't have access to the predicate or already filtered.
+        if (isLoginActive != null && isLoginActive(client.ProcessId))
+        {
+            FileLogger.Info($"SwitchToClient: skipping {client} — autologin in progress (taking foreground would disrupt DirectInput credential typing)");
+            return false;
+        }
+
+        // Gate 4: 100 ms pump-responsiveness probe. Catches transient
+        // mid-zone-load DX-reset blocks that IsHungAppWindow's 5s
+        // threshold lets through. Matches the convention used by every
+        // other cross-process SetWindowPos site in the codebase
+        // (WindowManager.ArrangeSingleScreen/MultiMonitor, SwapWindows,
+        // ApplySlimTitlebar, ResizeToCurrentMonitors).
+        if (!_api.IsClientResponsive(hwnd, out int lastErr))
+        {
+            FileLogger.Warn($"SwitchToClient: skipping non-responsive window {client} (SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset; SW_RESTORE would race the device-lost recovery; lastErr={lastErr})");
+            return false;
+        }
+
         try
         {
-            _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
-            _api.ForceForegroundWindow(client.WindowHandle);
+            // SW_RESTORE is safe now: we've already verified the pump is
+            // alive within the last ~100 ms. The window is either non-iconic
+            // (no-op) or iconic and ready to accept the state transition.
+            _api.ShowWindow(hwnd, NativeMethods.SW_RESTORE);
+            _api.ForceForegroundWindow(hwnd);
             return true;
         }
         catch (Exception ex)
@@ -54,9 +123,21 @@ public class WindowManager
 
     /// <summary>
     /// Cycle to the next EQ client in the list.
-    /// Returns the client that was switched to, or null if failed.
+    /// Returns the client that was switched to, or null if all N-1 candidates failed.
+    /// <para>
+    /// v3.22.44 r2 (T4-Sonnet+Opus Item 4 MEDIUM convergent): ring-walk
+    /// fallback. Round 1 returned null on the FIRST SwitchToClient failure,
+    /// leaving the user stuck on the current client when one sibling was
+    /// mid-zone-load. If clients = [A, B, C] and user is on A, pressing
+    /// cycle while B is mid-zone-load returned null forever (B's
+    /// IsClientResponsive probe always fails during zone-load, B is always
+    /// the next-from-A in the ring). Now we walk up to N-1 candidates before
+    /// giving up — A→B fails → try C → succeeds → user lands on C, skipping
+    /// the loading client. Bounded loop (clients.Count iterations max) so
+    /// no infinite spin.
+    /// </para>
     /// </summary>
-    public EQClient? CycleNext(IReadOnlyList<EQClient> clients, EQClient? current)
+    public EQClient? CycleNext(IReadOnlyList<EQClient> clients, EQClient? current, Func<int, bool>? isLoginActive = null)
     {
         if (clients.Count == 0) return null;
 
@@ -66,16 +147,37 @@ public class WindowManager
             for (int j = 0; j < clients.Count; j++)
                 if (clients[j] == current) { currentIndex = j; break; }
         }
-        int nextIndex = (currentIndex + 1) % clients.Count;
 
-        var next = clients[nextIndex];
-        return SwitchToClient(next) ? next : null;
+        // v3.22.44 r3 (T3-Opus F3 MEDIUM): special-case clients.Count == 1 with
+        // no current selection. Round-1 behavior tried clients[0] in that case;
+        // round-2's ring-walk loop `for (offset = 1; offset < 1; ...)` never
+        // executes, so the function returned null and the cycle hotkey silently
+        // did nothing. Restore the round-1 single-client cold-start by trying
+        // clients[0] explicitly when current is null.
+        if (clients.Count == 1)
+        {
+            if (current != null) return null;  // nothing to cycle to
+            return SwitchToClient(clients[0], isLoginActive) ? clients[0] : null;
+        }
+
+        // Try up to N-1 candidates starting from (currentIndex + 1). Bounded
+        // by clients.Count, so worst-case linear in client count (~1-6).
+        for (int offset = 1; offset < clients.Count; offset++)
+        {
+            int candidateIndex = (currentIndex + offset) % clients.Count;
+            var candidate = clients[candidateIndex];
+            if (SwitchToClient(candidate, isLoginActive)) return candidate;
+        }
+
+        FileLogger.Info($"CycleNext: all {clients.Count - 1} candidates failed (likely zone-load/login/iconic); user stays on current");
+        return null;
     }
 
     /// <summary>
     /// Cycle to the previous EQ client in the list.
+    /// v3.22.44 r2: ring-walk fallback — see CycleNext for rationale.
     /// </summary>
-    public EQClient? CyclePrev(IReadOnlyList<EQClient> clients, EQClient? current)
+    public EQClient? CyclePrev(IReadOnlyList<EQClient> clients, EQClient? current, Func<int, bool>? isLoginActive = null)
     {
         if (clients.Count == 0) return null;
 
@@ -85,10 +187,27 @@ public class WindowManager
             for (int j = 0; j < clients.Count; j++)
                 if (clients[j] == current) { currentIndex = j; break; }
         }
-        int prevIndex = (currentIndex - 1 + clients.Count) % clients.Count;
 
-        var prev = clients[prevIndex];
-        return SwitchToClient(prev) ? prev : null;
+        // v3.22.44 r3 (T3-Opus F3 MEDIUM): match CycleNext's single-client
+        // special case.
+        if (clients.Count == 1)
+        {
+            if (current != null) return null;
+            return SwitchToClient(clients[0], isLoginActive) ? clients[0] : null;
+        }
+
+        for (int offset = 1; offset < clients.Count; offset++)
+        {
+            // Walk backwards: (currentIndex - offset) mod N. Add N once to
+            // keep the dividend non-negative; offset is bounded to clients.Count-1
+            // so a single addition suffices.
+            int candidateIndex = (currentIndex - offset + clients.Count) % clients.Count;
+            var candidate = clients[candidateIndex];
+            if (SwitchToClient(candidate, isLoginActive)) return candidate;
+        }
+
+        FileLogger.Info($"CyclePrev: all {clients.Count - 1} candidates failed (likely zone-load/login/iconic); user stays on current");
+        return null;
     }
 
     // ─── Window Arrangement ───────────────────────────────────────
@@ -104,14 +223,32 @@ public class WindowManager
     /// ProcessId), enabling SwitchKey-driven slot rotation. Null falls back
     /// to clientIndex (matches v3.22.19 behavior).
     /// </summary>
-    public void ArrangeWindows(IReadOnlyList<EQClient> clients, IReadOnlyDictionary<int, int>? monitorSlotByPid = null)
+    /// <summary>
+    /// v3.22.44 r3 (T2-Sonnet Gap G HIGH / T2-Opus Finding 1 / T4-Opus F1 4-way convergent):
+    /// returns per-reason skip counts so callers (OnArrangeWindows balloon)
+    /// can surface "Fixed N of M (K minimized — restore manually)" instead
+    /// of the round-2 silent omission.
+    /// <para>
+    /// v3.22.44 r3.5 (R3-T3-Opus F1 HIGH + R3-T3-Sonnet C2 MEDIUM convergent):
+    /// changed return from `int skippedIconic` to a tuple `(int Iconic, int Other)`.
+    /// Round-3 captured only iconic skips; ArrangeSingleScreen/ArrangeMultiMonitor
+    /// also silently skip non-iconic clients (IsWindow=false, IsHungAppWindow,
+    /// IsClientResponsive=false) which weren't counted, so the balloon's
+    /// `arranged = clientsToArrange.Count - skippedIconic` arithmetic
+    /// over-claimed "Fixed N" by the number of silently-skipped non-iconic
+    /// clients. Same class of bug round-3 set out to fix, just in a different
+    /// shape. Tuple return lets the caller distinguish "iconic — user can
+    /// restore" from "other — transient, no user action".
+    /// </para>
+    /// </summary>
+    public (int Iconic, int Other) ArrangeWindows(IReadOnlyList<EQClient> clients, IReadOnlyDictionary<int, int>? monitorSlotByPid = null)
     {
-        if (clients.Count == 0) return;
+        if (clients.Count == 0) return (0, 0);
 
         if (_config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase))
-            ArrangeMultiMonitor(clients, monitorSlotByPid);
+            return ArrangeMultiMonitor(clients, monitorSlotByPid);
         else
-            ArrangeSingleScreen(clients);
+            return ArrangeSingleScreen(clients);
     }
 
     /// <summary>
@@ -119,21 +256,26 @@ public class WindowManager
     /// In 1x1 (stacked) mode, windows keep their own size from eqclient.ini.
     /// Slim Titlebar mode pushes the titlebar off-screen (WinEQ2 method).
     /// </summary>
-    private void ArrangeSingleScreen(IReadOnlyList<EQClient> clients)
+    private (int Iconic, int Other) ArrangeSingleScreen(IReadOnlyList<EQClient> clients)
     {
         bool slimTitlebar = _config.Layout.SlimTitlebar;
         var monitor = GetTargetMonitor(slimTitlebar);
         var layout = _config.Layout;
+        int skippedIconic = 0;
+        int skippedOther = 0;  // v3.22.44 r3.5 — IsWindow=false / IsHungAppWindow / IsClientResponsive=false
 
         FileLogger.Info($"ArrangeSingleScreen: monitor bounds L={monitor.Left} T={monitor.Top} R={monitor.Right} B={monitor.Bottom} ({monitor.Width}x{monitor.Height})");
 
         for (int i = 0; i < clients.Count; i++)
         {
             var client = clients[i];
-            if (!_api.IsWindow(client.WindowHandle)) continue;
+            // v3.22.44 r3.5: count non-iconic skips so the balloon math
+            // doesn't over-claim "Fixed N" by silent skips.
+            if (!_api.IsWindow(client.WindowHandle)) { skippedOther++; continue; }
             if (_api.IsHungAppWindow(client.WindowHandle))
             {
                 FileLogger.Info($"ArrangeWindows: skipping hung window {client}");
+                skippedOther++;
                 continue;
             }
             // v3.22.22 round-5 (R4 T2 verifier CRITICAL): same pump-responsiveness
@@ -145,11 +287,28 @@ public class WindowManager
             if (!_api.IsClientResponsive(client.WindowHandle, out int lastErr))
             {
                 FileLogger.Warn($"ArrangeSingleScreen: skipping non-responsive window {client} (SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset or transient pump block; lastErr={lastErr})");
+                skippedOther++;
                 continue;
             }
 
+            // v3.22.44 r2 (T2-Opus HIGH Item B): skip iconic clients. Cross-
+            // process ShowWindow(SW_RESTORE) + SetWindowPos(SWP_FRAMECHANGED)
+            // on a minimized EQ window races EQ's D3D9 device-lost recovery
+            // (Dalaya releases the device on minimize). Same crash class as
+            // Gate #2's RaiseClientsAboveTaskbar fix — extended here because
+            // ArrangeSingleScreen fires from ApplyDeferredCosmetics, sibling-
+            // close recovery, ClientDiscovered, ReloadConfig, and the
+            // user-initiated Fix Windows hotkey. The user can manually restore
+            // an iconic client (taskbar click); EQ's own restore-path
+            // SetWindowPos is intercepted by the in-process hook DLL which
+            // enforces slim-titlebar bounds. So slim-titlebar is preserved
+            // on the next manual restore.
             if (_api.IsIconic(client.WindowHandle))
-                _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+            {
+                FileLogger.Info($"ArrangeSingleScreen: skipping iconic {client} (v3.22.44 r2: don't cross-process SW_RESTORE iconic clients)");
+                skippedIconic++;
+                continue;
+            }
 
             SetWindowTitle(client, i);
 
@@ -172,7 +331,8 @@ public class WindowManager
         }
 
         string mode = slimTitlebar ? "slim titlebar" : "stacked";
-        FileLogger.Info($"ArrangeSingleScreen: {clients.Count} window(s) in {mode}");
+        FileLogger.Info($"ArrangeSingleScreen: {clients.Count} window(s) in {mode}, skippedIconic={skippedIconic} skippedOther={skippedOther}");
+        return (skippedIconic, skippedOther);
     }
 
     /// <summary>
@@ -206,8 +366,10 @@ public class WindowManager
     /// </list>
     /// </para>
     /// </summary>
-    private void ArrangeMultiMonitor(IReadOnlyList<EQClient> clients, IReadOnlyDictionary<int, int>? monitorSlotByPid = null)
+    private (int Iconic, int Other) ArrangeMultiMonitor(IReadOnlyList<EQClient> clients, IReadOnlyDictionary<int, int>? monitorSlotByPid = null)
     {
+        int skippedIconic = 0;
+        int skippedOther = 0;  // v3.22.44 r3.5 — non-iconic silent skips
         // v3.22.19: per-monitor slim override. Primary uses SlimTitlebar,
         // secondary uses SlimTitlebarSecondary. Need BOTH full-bounds and
         // work-area lists so each client can pick the right one without a
@@ -216,14 +378,14 @@ public class WindowManager
         bool secondarySlim = _config.Layout.SlimTitlebarSecondary;
         var fullBounds = _api.GetAllMonitorBounds();
         var workAreas = _api.GetAllMonitorWorkAreas();
-        if (fullBounds.Count == 0 || workAreas.Count == 0) return;
+        if (fullBounds.Count == 0 || workAreas.Count == 0) return (skippedIconic, skippedOther);
         // Defensive: both enumerations should return the same count in the
         // same order (both walk EnumDisplayMonitors). If they ever diverge,
         // log loud and bail rather than picking wrong-monitor bounds.
         if (fullBounds.Count != workAreas.Count)
         {
             FileLogger.Error($"ArrangeMultiMonitor: monitor enumeration count mismatch — fullBounds={fullBounds.Count} workAreas={workAreas.Count}, aborting arrange");
-            return;
+            return (skippedIconic, skippedOther);
         }
 
         // Build ordered monitor list: primary first, then secondary.
@@ -295,10 +457,12 @@ public class WindowManager
         for (int i = 0; i < clients.Count; i++)
         {
             var client = clients[i];
-            if (!_api.IsWindow(client.WindowHandle)) continue;
+            // v3.22.44 r3.5: count non-iconic silent skips for accurate balloon math.
+            if (!_api.IsWindow(client.WindowHandle)) { skippedOther++; continue; }
             if (_api.IsHungAppWindow(client.WindowHandle))
             {
                 FileLogger.Info($"ArrangeMultiMonitor: skipping hung window {client}");
+                skippedOther++;
                 continue;
             }
             // v3.22.22 round-4 / round-5 (R4 T3-Opus MEDIUM): use shared
@@ -309,6 +473,7 @@ public class WindowManager
             if (!_api.IsClientResponsive(client.WindowHandle, out int lastErr))
             {
                 FileLogger.Warn($"ArrangeMultiMonitor: skipping non-responsive window {client} (SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset or transient pump block; pre-empts the v3.22.21 14.5s pass-1 block that crashed PID 24672; lastErr={lastErr})");
+                skippedOther++;
                 continue;
             }
 
@@ -343,8 +508,18 @@ public class WindowManager
                 effectiveBounds = mon;
             }
 
+            // v3.22.44 r2 (T2-Opus HIGH Item B): skip iconic clients — same
+            // rationale as ArrangeSingleScreen above. ApplyDeferredCosmetics
+            // (LoginCredentialsSent / LoginComplete) is the highest-risk
+            // caller: client B finishes autologin while A is minimized in
+            // background, and the cross-process restore on A is exactly the
+            // crash class users reported.
             if (_api.IsIconic(client.WindowHandle))
-                _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+            {
+                FileLogger.Info($"ArrangeMultiMonitor: skipping iconic {client} (v3.22.44 r2: don't cross-process SW_RESTORE iconic clients)");
+                skippedIconic++;
+                continue;
+            }
 
             SetWindowTitle(client, i);
 
@@ -429,8 +604,8 @@ public class WindowManager
 
         if (targets.Count == 0)
         {
-            FileLogger.Info($"ArrangeMultiMonitor: no eligible clients to arrange (all hung/invalid)");
-            return;
+            FileLogger.Info($"ArrangeMultiMonitor: no eligible clients to arrange (all hung/invalid/iconic), skippedIconic={skippedIconic} skippedOther={skippedOther}");
+            return (skippedIconic, skippedOther);
         }
         long tPass1 = swArrange.ElapsedMilliseconds;
 
@@ -505,16 +680,24 @@ public class WindowManager
         // Deltas between adjacent values reveal whether the DeferWindowPos
         // batch is truly atomic (all timestamps cluster) or sequential-within-
         // the-batch (timestamps spread across the swap latency).
-        FileLogger.Info($"ArrangeMultiMonitor: pass2-stages [{string.Join(",", pass2Stages)}]ms");
+        FileLogger.Info($"ArrangeMultiMonitor: pass2-stages [{string.Join(",", pass2Stages)}]ms, skippedIconic={skippedIconic} skippedOther={skippedOther}");
+        return (skippedIconic, skippedOther);
     }
 
     /// <summary>
     /// Rotate window positions: each window moves to the next window's position.
     /// Window 1→2, 2→3, ..., N→1. Replicates AHK SwapWindows.
+    /// <para>
+    /// v3.22.44 r3 (T4-Opus F2 / T2-Opus Finding 2 / T4-Sonnet Item 2 3-way
+    /// convergent HIGH): returns a status enum so callers can surface a
+    /// balloon when the swap was aborted on iconic clients. Pre-r3 returned
+    /// void with only `FileLogger.Info` — user pressed Alt+\` with one
+    /// minimized client and nothing visibly happened.
+    /// </para>
     /// </summary>
-    public void SwapWindows(IReadOnlyList<EQClient> clients)
+    public SwapResult SwapWindows(IReadOnlyList<EQClient> clients)
     {
-        if (clients.Count < 2) return;
+        if (clients.Count < 2) return SwapResult.TooFew;
 
         // Check for hung windows — abort if any are unresponsive.
         // v3.22.22 round-5 (R4 T2 verifier CRITICAL): IsHungAppWindow alone
@@ -530,12 +713,12 @@ public class WindowManager
             if (_api.IsHungAppWindow(client.WindowHandle))
             {
                 FileLogger.Info($"SwapWindows: aborting — hung window {client}");
-                return;
+                return SwapResult.AbortedNotResponsive;
             }
             if (!_api.IsClientResponsive(client.WindowHandle, out int lastErr))
             {
                 FileLogger.Warn($"SwapWindows: aborting — non-responsive window {client} (SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset; lastErr={lastErr})");
-                return;
+                return SwapResult.AbortedNotResponsive;
             }
         }
 
@@ -546,16 +729,31 @@ public class WindowManager
             if (!_api.IsWindow(client.WindowHandle))
             {
                 FileLogger.Info($"SwapWindows: window gone for {client}");
-                return;
+                return SwapResult.AbortedNotResponsive;
             }
             _api.GetWindowRect(client.WindowHandle, out var rect);
             positions.Add(rect);
         }
 
-        // Restore minimized windows first
+        // v3.22.44 r2 (T2-Opus HIGH Item B): if any client is iconic, abort
+        // the swap entirely. Same SW_RESTORE-on-iconic D3D9 race as the
+        // Arrange paths. User can manually restore the iconic client(s) then
+        // re-press the swap hotkey. Note this is stricter than the earlier
+        // partial-skip approach because SwapWindows captures ALL client
+        // positions and rotates — skipping individual iconic clients would
+        // produce an asymmetric rotation, so we abort cleanly.
+        // v3.22.44 r3: count iconic clients so the SwapResult carries enough
+        // info for the caller to render a meaningful balloon.
+        int iconicCount = 0;
         foreach (var client in clients)
+        {
             if (_api.IsIconic(client.WindowHandle))
-                _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
+            {
+                FileLogger.Info($"SwapWindows: aborting — iconic {client} (v3.22.44 r2: restore manually then re-press swap)");
+                iconicCount++;
+            }
+        }
+        if (iconicCount > 0) return SwapResult.AbortedIconic;
 
         // Atomic batch move — all windows reposition in a single
         // screen update, eliminating the desktop flash between moves.
@@ -586,7 +784,7 @@ public class WindowManager
 
         _api.EndDeferWindowPos(hdwp);
         FileLogger.Info($"SwapWindows: rotated {clients.Count} window positions (atomic)");
-        return;
+        return SwapResult.Swapped;
 
     sequential:
         for (int i = 0; i < clients.Count; i++)
@@ -602,6 +800,7 @@ public class WindowManager
                 NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
         }
         FileLogger.Info($"SwapWindows: rotated {clients.Count} window positions (sequential fallback)");
+        return SwapResult.Swapped;
     }
 
     /// <summary>
@@ -637,17 +836,25 @@ public class WindowManager
             if (bestMon == null) continue;
             var m = bestMon.Value;
 
-            // SW_RESTORE first in case EQ locked its size in a maximized/minimized state
-            if (_api.IsIconic(client.WindowHandle))
-                _api.ShowWindow(client.WindowHandle, NativeMethods.SW_RESTORE);
-
-            // v3.22.22 round-6 (R5 T2 CRITICAL): pump-responsiveness probe before
-            // the cross-process SetWindowPos. Called immediately after SwapWindows
-            // from TrayManager.cs:1940 — a client could enter zone-load DX reset
-            // in the millisecond gap between SwapWindows' probe and this call.
+            // v3.22.44 r2 (T2-Sonnet B1 MEDIUM): IsClientResponsive probe FIRST,
+            // THEN any SW_RESTORE. Round-1 ordering had SW_RESTORE before the
+            // probe — if the client was iconic AND mid-zone-load, the
+            // unconditional cross-process SW_RESTORE fired before we knew the
+            // client was non-responsive, racing the device-lost recovery.
+            // ArrangeSingleScreen and ArrangeMultiMonitor already use this
+            // order (probe-then-conditional); ResizeToCurrentMonitors is
+            // brought into alignment here.
+            //
+            // v3.22.44 r2 (T2-Opus HIGH Item B): additionally, skip iconic
+            // clients entirely — same rationale as the Arrange paths.
             if (!_api.IsClientResponsive(client.WindowHandle, out int lastErr))
             {
                 FileLogger.Warn($"ResizeToCurrentMonitors: skipping non-responsive window {client} (SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset; SetWindowPos would stall; lastErr={lastErr})");
+                continue;
+            }
+            if (_api.IsIconic(client.WindowHandle))
+            {
+                FileLogger.Info($"ResizeToCurrentMonitors: skipping iconic {client} (v3.22.44 r2: don't cross-process SW_RESTORE iconic clients)");
                 continue;
             }
 
@@ -718,6 +925,26 @@ public class WindowManager
         if (!_api.IsClientResponsive(hwnd, out int lastErr))
         {
             FileLogger.Warn($"ApplySlimTitlebar: skipping non-responsive window (hwnd=0x{hwnd.ToInt64():X} SendMessageTimeout WM_NULL > 100ms — likely mid-zone-load DX reset; guard timer will retry; lastErr={lastErr})");
+            return;
+        }
+
+        // v3.22.44 r2 (T4-Opus Item 2 sub-finding, T2-Sonnet B2): leaf-level
+        // IsIconic skip. ApplySlimTitlebar is called from many sites including
+        // the slim-titlebar guard timer (500ms tick) on non-injected clients.
+        // SetWindowLongPtr(GWL_STYLE) + SetWindowPos(SWP_FRAMECHANGED) on a
+        // minimized EQ window with a released D3D9 device is the same crash
+        // class as the Arrange paths. The hook DLL inside eqgame intercepts
+        // EQ's own restore-path SetWindowPos and enforces slim bounds on
+        // manual restore, so iconic clients still end up correctly slimmed
+        // when the user brings them back into view.
+        //
+        // v3.22.44 r3 (T2-Opus LOW Finding 3): route through _api.IsIconic
+        // instead of NativeMethods.IsIconic directly — round-2 broke the
+        // IWindowsApi abstraction here. Every other iconic skip in r2 went
+        // through _api, this one bypassed unit-test mockability.
+        if (_api.IsIconic(hwnd))
+        {
+            FileLogger.Info($"ApplySlimTitlebar: skipping iconic window (hwnd=0x{hwnd.ToInt64():X}; v3.22.44 r2)");
             return;
         }
 
