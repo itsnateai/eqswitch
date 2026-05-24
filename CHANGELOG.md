@@ -1,5 +1,75 @@
 # Changelog
 
+## v3.22.45 — Win11 DWM frame-bleed fix: kill the 1-px vertical text seam + desktop sliver on slim-titlebar windows (2026-05-24)
+
+UI-only release; Native DLLs unchanged. Field-reported visual bug, reproduced + root-caused + fixed in one session. No native rebuild required.
+
+### Symptom
+
+User reported (a) a ~1-px-wide vertical line near the horizontal center of the EQ window where text was visibly distorted/smeared, and (b) "a sliver of desktop on the side" of the EQ window — both on a single 1920×1080 primary monitor in slim-titlebar mode. Initially suspected PowerToys FancyZones padding or DPI scaling; live diagnostic ruled both out.
+
+### Root cause
+
+`WindowManager.ApplySlimTitlebar` was sized OUTER-window-to-monitor-bounds with the implicit assumption that, after stripping `WS_THICKFRAME`, the only remaining non-client area was the caption (~22 px on Win10). That assumption held on Win10 and produced a client area equal to monitor width.
+
+Windows 11's DWM keeps an invisible ~8 px frame zone on the left, right and bottom of every top-level window for rounded-corner masking + drop-shadow hit-testing, **regardless of whether `WS_THICKFRAME` is present**. So setting `outer.W = 1920` on a 1920-wide monitor produces a CLIENT area of **1904 px** — leaving an 8 px desktop sliver visible on each side AND forcing EQ's DX swap chain (initialized from `eqclient.ini WindowedWidth=1920`) to bilinear-stretch its rendered frame into the narrower client area. The horizontal compression ratio (1920 → 1904 ≈ 0.83%) produces a visible interpolation seam at the midpoint x ≈ 960 — the "1-px vertical line" with surrounding text smear.
+
+Same bug class as the v3.22.21 multi-monitor "cross-monitor smoosh on SwitchKey swap" issue (`WindowManager.cs:432` lock-to-primary-dims policy was added to suppress one variant of it). v3.22.45 fixes the underlying single-monitor case + extends the lock-to-primary-dims correctness so multi-monitor mode also gets the bleed accounting right per client.
+
+### Fix
+
+Three-part:
+
+1. **`ComputeSlimTitlebarOuterRect` helper in `WindowManager.cs`.** Probes the actual non-client bleed via `AdjustWindowRectEx` for the post-WS_THICKFRAME-strip style, then computes outer rect so visible client lines up edge-to-edge with the monitor. `titlebarOffset` semantics preserved exactly as "px of caption to keep visible inside the screen for dragging" — historical Win10 behavior, just now with correct bleed accounting on Win11. Pure-math companion `ComputeOuterRectFromBleeds` extracted for unit tests (no `IWindowsApi` mocking required).
+
+2. **All five callsites routed through the helper:**
+   - `WindowManager.ApplySlimTitlebar` (single-screen direct path)
+   - `WindowManager.ArrangeMultiMonitor` pass-1 slim branch (per-client target rect; queued through `DeferWindowPos` batch)
+   - `WindowManager.ApplySlimTitlebarToAll` guard-timer "already positioned?" check (was comparing against pre-fix `monitor.Top - offset`, would re-fire SetWindowPos every 500 ms tick after the fix landed elsewhere)
+   - `TrayManager.UpdateHookConfigForPid` multi-monitor slim branch (hook-DLL target dims via shared memory)
+   - `TrayManager.UpdateHookConfigForPid` single-screen slim branch (same)
+
+3. **Stale-config purge:**
+   - **`eqclient.ini` auto-purge** — `EQClientSettingsForm.EnforceOverrides` (which runs on every launch from `LaunchManager` + `AutoLoginManager`) now writes `WindowedHeight = monitor.Height - captionVisible` via a live `AdjustWindowRectEx` probe (helper `SlimTitlebarCaptionVisible`), instead of the pre-fix `monitor.Height - BottomOffset`. Net: a user with stale `WindowedHeight=1059` from pre-v3.22.45 gets it rewritten to e.g. `1067` on their next launch. EQ's DX swap chain then matches the visible client area exactly — zero stretch.
+   - **`eqswitch-config.json` migrator v4 → v5** — zeroes out `layout.bottomOffset` when `layout.slimTitlebar` is true. `bottomOffset` previously encoded part of the broken Win10-era height-subtraction; it's now redundant and would silently over-subtract `BottomOffset` px from the bottom of the game area. The SettingsForm UI will show 0 next time the user opens it.
+
+### Tests + verification
+
+- New `Core/OuterRectMathTests.cs` — 7 scenarios driving `ComputeOuterRectFromBleeds` (Win10 zero-bleed regression guard, Win11 8 px bleed, `titlebarOffset=0`, over-`topBleed` clamp, negative clamp, asymmetric bleed values, negative-origin secondary monitor). Asserts the four geometric invariants: `client.Left == monitor.Left`, `client.Right == monitor.Right`, `client.Bottom == monitor.Bottom`, `client.Top == monitor.Top + captionVisible`. Run via `--test-outer-rect-math` from Debug builds.
+
+### Post-verifier-swarm fixes (12-agent verification pass over two rounds)
+
+Three rounds of normal-stakes pair-by-topic verification (Sonnet + Opus on Diff-clean / Gap-audit / Code-review) surfaced six actionable findings; all addressed before ship:
+
+- **HIGH (T2-Sonnet R1 — Gap-audit):** `ResizeToCurrentMonitors` was a 6th missed callsite. Called by `TrayManager.SwapWindows` immediately after every swap, it set `(m.Left, m.Top + yOffset, m.Width, m.Height)` unconditionally — producing a one-frame Win11 sliver flash on every swap when slim-titlebar was active (the subsequent `ApplySlimTitlebarToAll` guard tick would re-correct, but injected PIDs were skipped by that guard). Fixed by adding a `_config.Layout.SlimTitlebar` branch that routes through `ComputeSlimTitlebarOuterRect`.
+- **MEDIUM (T3-Sonnet R1 — Code-review):** The `ApplySlimTitlebarToAll` guard timer's "already positioned correctly?" check compared only `rect.Top == expectedY`. After the fix landed elsewhere a non-injected client that drifted horizontally (external tool, user drag, EQ self-positioning) would no longer trigger re-apply — left-edge sliver returned. Fixed by comparing all four dimensions (`Left`, `Top`, `Width`, `Height`).
+- **HIGH (T3-Opus R2 — Code-review):** The guard timer used the 2-arg overload (canonical `SLIM_TITLEBAR_STYLE`) while `ApplySlimTitlebar` used the live style — undocumented Win32 behavior could let a future Windows version diverge bleed values for `WS_MAXIMIZEBOX`-bearing windows. ApplySlimTitlebar now also reads live `GWL_EXSTYLE` and passes it to `AdjustWindowRectEx`.
+- **MEDIUM convergent (T2-Opus R2 + T3-Sonnet R2 — Gap-audit + Code-review):** `EQVideoModeForm.EnforceOverrides` iterates `VideoModeOverrides` dict and writes every key to `[VideoMode]`. Called LAST in the EnforceOverrides chain, it would silently stomp the corrected `WindowedHeight` if a user had ever saved a value via the Video Mode form. Fixed by skipping `WindowedWidth` / `WindowedHeight` / `Width` / `Height` keys when slim-titlebar is active — those dims are owned by the slim block; non-slim mode keeps legacy "write what user typed" behavior.
+- **MEDIUM (T3-Opus R2 — Code-review):** `Marshal.GetLastWin32Error()` in `ComputeSlimTitlebarOuterRect`'s fallback log path could be clobbered by the property-setter work between the P/Invoke return and the call. Moved the `lastErr` capture INSIDE `WindowsApi.AdjustWindowRectEx` wrapper where no intervening managed work happens.
+- **MEDIUM (T3-Opus R2 — Code-review):** Hard-coded `exStyle: 0` ignored live `GWL_EXSTYLE`. Live Win11 probe shows `WS_EX_CLIENTEDGE` shifts bleed from 8/31/8/8 to 10/33/10/10 — a smaller version of the original sliver bug returns if EQ ever has that extended style. Helper now takes `exStyle` explicitly; HWND-aware callsites pass live `GWL_EXSTYLE`. Two new test scenarios cover the case (high-DPI 200% simulation + `WS_EX_CLIENTEDGE` bleed).
+
+After fixes: 4 of 6 round-2 verifiers ended `[VERIFY-CLEAN]`; remaining LOW findings (DPI gap for non-`HighDpiMode.SystemAware` configs, `BottomOffset` SettingsForm UI still editable when slim is on) documented below as deferred follow-ups. Final test count: 41 assertions across 9 scenarios (Win10 zero-bleed regression guard, Win11 8 px bleed, `titlebarOffset=0`, over-`topBleed` clamp, negative clamp, asymmetric bleed, negative-origin secondary monitor, **200% DPI simulation**, **WS_EX_CLIENTEDGE bleed**).
+
+### Additional post-swarm fixes (rounds 3 & 4 of verifier sweep)
+
+- **MEDIUM (T3-Sonnet final round — Code-review):** `ResizeToCurrentMonitors`'s new slim branch checked only `Layout.SlimTitlebar`, ignoring `Layout.SlimTitlebarSecondary`. In multi-monitor mode with mixed slim flags (primary slim, secondary non-slim), a window swapped onto the secondary monitor would get slim outer-rect math + bleed correction even though it should stay non-slim. Fixed by gating the slim branch on `Mode == "multimonitor" ? (SlimTitlebar && SlimTitlebarSecondary) : SlimTitlebar` — defers per-monitor correction to `ArrangeMultiMonitor` / `UpdateHookConfigForPid` which already have the right per-slot logic.
+- **HIGH (T2-Opus post-SaveSettings round — Gap-audit):** `EQVideoModeForm.SaveSettings` (user clicks Save in the Video Mode dialog) was the symmetric stomp path — wrote dim keys directly to INI AND persisted them to `VideoModeOverrides`. The launch-time `EnforceOverrides` filter shipped earlier didn't help because this write happens at user-Save time, before the next launch. Fixed with the same `slimOwnedKeys` filter: drops the four dim keys from the changeset AND scrubs stale entries from `VideoModeOverrides` when slim is on, with unconditional logging on entry.
+- **MEDIUM + HIGH (T3-Sonnet + T3-Opus post-SaveSettings — Code-review convergent):** SaveSettings's slim-only early-return path didn't update `_initialValues`, causing repeated Apply clicks on slim-owned dim NUDs to spam-write config backups (10-deep rotation churned per click). Fixed by refreshing `_initialValues[k]` from live NUD values inside the filter loop, regardless of whether the user actually changed the key.
+- **LOW (T3-Sonnet post-SaveSettings):** `dropped.Count > 0` log gate suppressed the scrub-stale log when user made no NUD edits but stale `VideoModeOverrides` entry existed. Replaced with `dropped.Count > 0 || anyScrub`.
+- **MEDIUM (T3-Opus final round — Code-review):** Hoisted `ComputeSlimTitlebarOuterRect` in `ApplySlimTitlebarToAll` used the canonical-style 2-arg overload, while `ApplySlimTitlebar` uses live `GWL_STYLE` + `GWL_EXSTYLE`. If EQ ever has `WS_EX_CLIENTEDGE` (live probe: shifts bleed 8→10), the hoisted canonical rect would never match the live-applied rect → guard fires `ApplySlimTitlebar` every 500 ms cross-process forever. Practical risk today: 0 (Dalaya doesn't set those styles). Latent risk: high if any future patcher does. Fixed by reverting the hoist — per-client probe inside the loop now uses live style + live exStyle, matching the applied rect. Verifier estimate: ~one kernel call per client per tick (~8 for a 6-client setup), negligible vs. the storm risk.
+
+Verifier rounds summary: 3 rounds × 6 agents = 18 verifications. Findings tally: 1 HIGH (resolved), 6 MEDIUM (resolved), 5 LOW (3 resolved, 2 documented as deferred follow-ups below). Final round all-CLEAN except deferred items.
+
+### Known follow-ups (deferred, non-blocking)
+
+- The `BottomOffset` field stays in `WindowLayout` for backward JSON compat. The SettingsForm UI still shows the NumericUpDown but its value is ignored when slim-titlebar is on (the v4→v5 migration zeroes it; users can still tweak it for non-slim modes if needed). A future cleanup release can remove the UI field entirely.
+- `EQVideoModeForm` Save path (not EnforceOverrides — that's now slim-aware) still writes `[VideoMode]` keys directly when the user clicks Save in the form. Mitigated by EnforceOverrides re-running on every launch + slim-aware filter, but the form itself could be made slim-aware too for UI consistency.
+- `AdjustWindowRectEx` documented as "not DPI aware" — EQSwitch is `HighDpiMode.SystemAware` (see `Program.cs`) so per-monitor DPI differences silently use the primary monitor's scale. If a future maintainer switches to `PerMonitorV2` (which v3.22.19 tried) the helper would silently produce wrong bleed on secondary monitors at different DPI. Worth a `// REQUIRES HighDpiMode.SystemAware` comment in `ComputeSlimTitlebarOuterRect`, or migrate to `AdjustWindowRectExForDpi` (Win10 1703+).
+- `SettingsForm.VideoSaveToIni` (the main Settings → Video tab's Save button) writes `[VideoMode] Width` and `Height` from user NUD inputs without a slim-aware filter. The values are NOT `WindowedWidth`/`WindowedHeight` (those go through `EQVideoModeForm.SaveSettings` which IS now slim-filtered), and `EQClientSettingsForm.EnforceOverrides` re-writes both Width and Height on every EQSwitch-mediated launch — so the smoosh-bug symptom does not regress. But a user clicking Save in this form while slim is on writes stale `Width`/`Height` to INI that persists until next launch. Code-hygiene fix deferred to a future SettingsForm pass.
+- `EQVideoModeForm` UI does not visually indicate that `WindowedWidth` / `WindowedHeight` / `Width` / `Height` NUDs are slim-owned and will be silently dropped on Save when slim is on. The filter logs the drop but the user gets no on-screen feedback. Recommended: gray out / disable these NUDs when `Layout.SlimTitlebar` is true (consistent with how `BottomOffset` is currently handled in `SettingsForm`), or add a status label. UI-only fix deferred.
+- T3-Opus flagged `EQVideoModeForm.EnforceOverrides` filter as unprotected against whitespace-padded keys in hand-edited JSON. `SetIniValue` parsing already trims, so canonical dict keys would never have padding from normal use — only a hand-edited JSON could inject `" WindowedHeight "`. Filter currently log-only; defer.
+- `OuterRectMathTests.cs` Case 1 is named "Win10 baseline" but is technically a zero-bleed degenerate edge case. Rename for clarity in a future test pass.
+
 ## v3.22.44 — Minimize / sibling-close / tray-exit crash hardening (2026-05-23)
 
 Field-reported crash class with four symptom flavors mapped to two architectural problems. UI + Native release; both DLLs rebuilt. Root-cause writeup harvested into the vault as `memory/reference_eqswitch_v3_22_44_crash_gating.md`. Shipped after two rounds of 8-agent verifier swarm (round 1 surfaced 3 HIGH findings; round-2 fixes below).

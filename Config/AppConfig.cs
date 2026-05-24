@@ -16,7 +16,7 @@ namespace EQSwitch.Config;
 public class AppConfig
 {
     /// <summary>Schema version for config migration. Bump when making breaking changes.</summary>
-    public const int CurrentConfigVersion = 4;
+    public const int CurrentConfigVersion = 5;
 
     public int ConfigVersion { get; set; } = CurrentConfigVersion;
     public bool IsFirstRun { get; set; } = true;

@@ -42,6 +42,17 @@ public interface IWindowsApi
     void ForceForegroundWindow(IntPtr hwnd);
     bool SetWindowPos(IntPtr hwnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
     bool GetWindowRect(IntPtr hwnd, out WinRect rect);
+
+    /// <summary>
+    /// v3.22.45 — given a desired CLIENT-area rect + window style, returns the
+    /// OUTER-window rect that wraps it. Used by ComputeSlimTitlebarOuterRect
+    /// to size the slim-titlebar window so its visible client area covers the
+    /// full monitor on Win11 (where DWM keeps ~8 px invisible frame on each
+    /// edge regardless of WS_THICKFRAME). The input rect is mutated in place
+    /// to the outer dims, matching the underlying Win32 AdjustWindowRectEx
+    /// contract.
+    /// </summary>
+    bool AdjustWindowRectEx(ref WinRect rect, uint style, bool hasMenu, uint exStyle);
     IntPtr GetWindowLongPtr(IntPtr hwnd, int nIndex);
     IntPtr SetWindowLongPtr(IntPtr hwnd, int nIndex, IntPtr dwNewLong);
     bool SetWindowText(IntPtr hwnd, string text);

@@ -3809,10 +3809,13 @@ public class TrayManager : IDisposable
             if (slimForThisPid)
             {
                 var monBounds = GetMonitorForPid(pid, clientIndex);
-                x = monBounds.Left;
-                y = monBounds.Top - _config.Layout.TitlebarOffset;
-                w = monBounds.Right - monBounds.Left;
-                h = (monBounds.Bottom - monBounds.Top) + _config.Layout.TitlebarOffset;
+                // v3.22.45: route hook-DLL target dims through the same
+                // AdjustWindowRectEx-based math as ApplySlimTitlebar so the
+                // hook (which forces these exact dims on every EQ-side
+                // SetWindowPos call) lands the OUTER rect with the bleed
+                // off-screen — visible client area = monitor edge-to-edge,
+                // DX swap chain matches client area exactly (no smoosh).
+                (x, y, w, h) = _windowManager.ComputeSlimTitlebarOuterRect(monBounds, _config.Layout.TitlebarOffset);
                 posEnabled = true;
                 stripFrame = true;
             }
@@ -3836,10 +3839,11 @@ public class TrayManager : IDisposable
             if (posEnabled)
             {
                 var monBounds = _windowManager.GetTargetMonitorBounds();
-                x = monBounds.Left;
-                y = monBounds.Top - _config.Layout.TitlebarOffset;
-                w = monBounds.Right - monBounds.Left;
-                h = (monBounds.Bottom - monBounds.Top) + _config.Layout.TitlebarOffset;
+                // v3.22.45: same Win11-DWM-bleed fix as the multi-monitor
+                // branch above. Single-screen hook config now lands the OUTER
+                // rect with bleed off-screen so the in-process hook DLL stops
+                // EQ from re-sliver'ing the window on every SetWindowPos.
+                (x, y, w, h) = _windowManager.ComputeSlimTitlebarOuterRect(monBounds, _config.Layout.TitlebarOffset);
             }
         }
 

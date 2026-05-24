@@ -53,6 +53,14 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
+    // v3.22.45: needed to compute the OUTER-window dims that produce a
+    // CLIENT area covering the full monitor on Win11. Win11 DWM keeps
+    // ~8 px of invisible frame on each side (rounded-corner / shadow
+    // zone) regardless of WS_THICKFRAME, so the Win10-era assumption
+    // "outer = monitor → client = monitor" is off by 16 px horizontally.
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool AdjustWindowRectEx(ref RECT lpRect, uint dwStyle, bool bMenu, uint dwExStyle);
+
     // ─── Deferred Window Positioning (atomic batch moves) ───────────
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -172,6 +180,11 @@ internal static class NativeMethods
     public const long WS_SYSMENU = 0x00080000L;
     public const long WS_MINIMIZEBOX = 0x00020000L;
     public const long WS_MAXIMIZEBOX = 0x00010000L;
+    // v3.22.45: needed by SLIM_TITLEBAR_STYLE canonical style for
+    // AdjustWindowRectEx probing in ComputeSlimTitlebarOuterRect.
+    public const long WS_VISIBLE = 0x10000000L;
+    public const long WS_CLIPSIBLINGS = 0x04000000L;
+    public const long WS_CLIPCHILDREN = 0x02000000L;
 
     // Extended styles for borderless fullscreen
     public const long WS_EX_DLGMODALFRAME = 0x00000001L;

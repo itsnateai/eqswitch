@@ -609,6 +609,38 @@ public class EQClientSettingsForm : Form
     }
 
     /// <summary>
+    /// v3.22.45 — return the number of pixels of caption that will be VISIBLE
+    /// inside the monitor after <c>WindowManager.ApplySlimTitlebar</c> runs.
+    /// This is the value EnforceOverrides must subtract from monitor height
+    /// when writing <c>WindowedHeight</c> to <c>eqclient.ini</c>, so the
+    /// game's DX swap chain matches the visible client area exactly.
+    /// <para>
+    /// Re-probes the actual non-client bleed for the slim-titlebar style on
+    /// the live OS (Win10 caption ~22 px / Win11 caption ~31 px) so the
+    /// formula stays correct across Windows versions without hard-coded
+    /// constants. Falls back to <paramref name="titlebarOffset"/> if the
+    /// AdjustWindowRectEx probe fails — same behaviour as
+    /// WindowManager.ComputeSlimTitlebarOuterRect's fallback path.
+    /// </para>
+    /// </summary>
+    internal static int SlimTitlebarCaptionVisible(int titlebarOffset)
+    {
+        const long WS_CAPTION = 0x00C00000;
+        const long WS_SYSMENU = 0x00080000;
+        const long WS_CLIPSIBLINGS = 0x04000000;
+        const long WS_CLIPCHILDREN = 0x02000000;
+        const long WS_VISIBLE = 0x10000000;
+        long slimStyle = WS_CAPTION | WS_SYSMENU | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_VISIBLE;
+
+        var probe = new Core.NativeMethods.RECT { Left = 0, Top = 0, Right = 100, Bottom = 100 };
+        if (!Core.NativeMethods.AdjustWindowRectEx(ref probe, (uint)slimStyle, false, 0))
+            return Math.Max(0, titlebarOffset);
+
+        int topBleed = -probe.Top;
+        return Math.Clamp(titlebarOffset, 0, topBleed);
+    }
+
+    /// <summary>
     /// Set a key=value in the specified section of an INI file.
     /// Creates the section if it doesn't exist.
     /// </summary>
@@ -736,8 +768,21 @@ public class EQClientSettingsForm : Form
                 int monW = screen.Bounds.Width;
                 int monH = screen.Bounds.Height;
                 int offset = config.Layout.TitlebarOffset;
-                int bottomOffset = config.Layout.BottomOffset;
-                int gameH = monH - bottomOffset;
+
+                // v3.22.45: client height for EQ's DX swap chain must equal
+                // the slim-titlebar window's VISIBLE client height, otherwise
+                // DX bilinear-stretches the rendered frame into the window
+                // and produces the 1-px vertical text-smear seam.
+                //
+                // The visible client height = monitor.Height - captionVisible,
+                // where captionVisible is clamped to the actual caption height
+                // for the post-WS_THICKFRAME-strip style (queried via
+                // AdjustWindowRectEx — same primitive WindowManager's
+                // ComputeSlimTitlebarOuterRect uses, kept symmetrical here so
+                // INI height and window client height stay in lockstep
+                // regardless of Win10/Win11 caption-height differences).
+                int captionVisible = SlimTitlebarCaptionVisible(offset);
+                int gameH = monH - captionVisible;
 
                 SetIniValue(lines, "Defaults", "WindowedMode", "TRUE");
                 SetIniValue(lines, "VideoMode", "WindowedMode", "TRUE");
@@ -757,7 +802,7 @@ public class EQClientSettingsForm : Form
                 // our multi-monitor toggle hotkey. 0 = unbound.
                 SetIniValue(lines, "Defaults", "KEYMAPPING_TOGGLE_STORYWIN_1", "0");
                 SetIniValue(lines, "Defaults", "KEYMAPPING_TOGGLE_STORYWIN_2", "0");
-                FileLogger.Info($"EnforceOverrides: SlimTitlebar ON → forced {monW}x{gameH} (monitor {monH} - bottom {bottomOffset}), titlebar hidden {offset}px, Maximized=0, WindowedMode=TRUE, Story Window unbound");
+                FileLogger.Info($"EnforceOverrides: SlimTitlebar ON → forced {monW}x{gameH} (monitor {monH} - captionVisible {captionVisible}px), Maximized=0, WindowedMode=TRUE, Story Window unbound");
             }
 
             if (config.EQClientIni.MaxFPS > 0)

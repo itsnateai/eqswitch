@@ -73,6 +73,38 @@ public class WindowsApi : IWindowsApi
         return result;
     }
 
+    public bool AdjustWindowRectEx(ref WinRect rect, uint style, bool hasMenu, uint exStyle)
+    {
+        var nativeRect = new NativeMethods.RECT
+        {
+            Left = rect.Left,
+            Top = rect.Top,
+            Right = rect.Right,
+            Bottom = rect.Bottom
+        };
+        bool result = NativeMethods.AdjustWindowRectEx(ref nativeRect, style, hasMenu, exStyle);
+        // v3.22.45 post-T3-Opus MEDIUM: capture last-error IMMEDIATELY after the
+        // P/Invoke. CLR work between the native return and a later
+        // Marshal.GetLastWin32Error() call (allocations, property setters) can
+        // clobber the TEB last-error slot, so the failure-path log in the caller
+        // would routinely surface 0 instead of the real Win32 error. Log here
+        // where the wrapper is small enough that no intervening managed work
+        // happens between the P/Invoke and this capture.
+        if (!result)
+        {
+            int lastErr = Marshal.GetLastWin32Error();
+            FileLogger.Warn($"WindowsApi.AdjustWindowRectEx failed: style=0x{style:X8} exStyle=0x{exStyle:X8} lastErr={lastErr}");
+        }
+        rect = new WinRect
+        {
+            Left = nativeRect.Left,
+            Top = nativeRect.Top,
+            Right = nativeRect.Right,
+            Bottom = nativeRect.Bottom
+        };
+        return result;
+    }
+
     public IntPtr GetWindowLongPtr(IntPtr hwnd, int nIndex)
         => NativeMethods.GetWindowLongPtr(hwnd, nIndex);
 

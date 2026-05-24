@@ -180,6 +180,60 @@ public class EQVideoModeForm : Form
             return;
         }
 
+        // v3.22.45 post-T2-Opus MEDIUM (final round): symmetric slim-aware
+        // filter for the SAVE path. EnforceOverrides was patched in the
+        // post-swarm round to skip dim keys when slim is on, but
+        // SaveSettings (user clicks Save in the Video Mode dialog) was the
+        // OTHER half of the stomp pair — it wrote the user-typed value
+        // directly to eqclient.ini AND persisted it to VideoModeOverrides,
+        // so even though EnforceOverrides skipped the dict-replay on next
+        // launch, the INI was already stomped + the bad value lived in JSON
+        // forever (re-applies the moment user flips slim OFF). Drop these
+        // four keys from the changeset when slim is active; user gets a log
+        // line explaining why. UI improvement (graying out the dim NUDs
+        // when slim is on) deferred to a future SettingsForm pass.
+        if (_config.Layout.SlimTitlebar)
+        {
+            string[] slimOwnedKeys = { "WindowedWidth", "WindowedHeight", "Width", "Height" };
+            var dropped = new List<string>();
+            bool anyScrub = false;
+            foreach (string k in slimOwnedKeys)
+            {
+                // Drop from changed even if user hand-typed the same value, AND
+                // scrub any stale entry that's already in VideoModeOverrides.
+                if (changed.Remove(k, out string? droppedVal))
+                    dropped.Add($"{k}={droppedVal}");
+                if (_config.EQClientIni.VideoModeOverrides.Remove(k))
+                {
+                    dropped.Add($"VideoModeOverrides[{k}] (scrubbed stale)");
+                    anyScrub = true;
+                }
+                // v3.22.45 post-T3-Sonnet MEDIUM (final round): update the
+                // snapshot for slim-owned keys regardless of whether the user
+                // touched them this Save. Without this, the slim-only early-
+                // return path leaves _initialValues holding the pre-Save NUD
+                // value, so the next Save click re-detects "changed" and
+                // burns another no-op cycle through the filter. Read live
+                // NUD value into the snapshot now.
+                if (_numerics.TryGetValue(k, out var nud))
+                    _initialValues[k] = ((int)nud.Value).ToString();
+            }
+            // v3.22.45 post-T3-Sonnet LOW: don't gate the log on `dropped`
+            // — the scrub could fire even when `changed` had no matching key
+            // (user made no NUD edits but stale VideoModeOverrides entry
+            // existed). Without unconditional logging, silent scrubs leave
+            // no audit trail for "why did my config grow smaller on Save?"
+            if (dropped.Count > 0 || anyScrub)
+                FileLogger.Info($"EQVideoMode.SaveSettings: slim-owned dim handling — slim-titlebar mode owns these (v3.22.45): {(dropped.Count > 0 ? string.Join(", ", dropped) : "no entries to drop")}");
+            if (changed.Count == 0)
+            {
+                // All the user changed was slim-owned dims; persist the scrub then bail.
+                ConfigManager.Save(_config);
+                FileLogger.Info("EQVideoMode: no non-dim changes to save (slim mode owned all changed keys)");
+                return;
+            }
+        }
+
         // Save to config
         foreach (var (key, val) in changed)
             _config.EQClientIni.VideoModeOverrides[key] = val;
@@ -222,7 +276,30 @@ public class EQVideoModeForm : Form
     /// </summary>
     public static void EnforceOverrides(AppConfig config, List<string> lines)
     {
+        // v3.22.45 (T2-Opus + T3-Sonnet convergent MEDIUM): EnforceOverrides
+        // chain calls EQClientSettingsForm.EnforceOverrides's slim block FIRST
+        // (writes the bleed-corrected WindowedHeight / WindowedWidth) then
+        // this method LAST — so a user with a stale VideoModeOverrides entry
+        // for WindowedHeight or WindowedWidth would silently stomp the
+        // corrected values, reintroducing the 1-px vertical seam on every
+        // launch even after a clean v3.22.45 install. When slim is active
+        // the [VideoMode] dim keys are owned by the slim block; skip them
+        // here. Non-slim users keep the legacy "save whatever the user typed"
+        // behaviour. Other [VideoMode] keys (refresh rate, bits-per-pixel,
+        // gamma, etc.) pass through unchanged for both modes.
+        bool slimOwnsDims = config.Layout.SlimTitlebar;
         foreach (var (key, value) in config.EQClientIni.VideoModeOverrides)
+        {
+            if (slimOwnsDims
+                && (key.Equals("WindowedWidth", StringComparison.OrdinalIgnoreCase)
+                    || key.Equals("WindowedHeight", StringComparison.OrdinalIgnoreCase)
+                    || key.Equals("Width", StringComparison.OrdinalIgnoreCase)
+                    || key.Equals("Height", StringComparison.OrdinalIgnoreCase)))
+            {
+                FileLogger.Info($"EQVideoModeForm.EnforceOverrides: skipping VideoModeOverrides[{key}]={value} (slim-titlebar owns this dim — v3.22.45 bleed correction)");
+                continue;
+            }
             EQClientSettingsForm.SetIniValue(lines, "VideoMode", key, value);
+        }
     }
 }

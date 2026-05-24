@@ -59,6 +59,10 @@ public static class ConfigVersionMigrator
                     MigrateV3ToV4(root);
                     break;
 
+                case 4:
+                    MigrateV4ToV5(root);
+                    break;
+
                 default:
                     // Unknown version ahead of us — don't touch it
                     FileLogger.Warn($"ConfigMigrator: config version {version} is newer than supported ({AppConfig.CurrentConfigVersion})");
@@ -427,5 +431,34 @@ public static class ConfigVersionMigrator
 
         if (skippedMalformed > 0)
             FileLogger.Warn($"ConfigMigrator v3→v4: {skippedMalformed} malformed account entr{(skippedMalformed == 1 ? "y" : "ies")} skipped during migration");
+    }
+
+    /// <summary>
+    /// v4 → v5: zero out <c>layout.bottomOffset</c> when <c>layout.slimTitlebar</c>
+    /// is true. v3.22.45 reworked slim-titlebar sizing to use
+    /// <c>AdjustWindowRectEx</c>-derived non-client bleed for Win11 DWM
+    /// correctness; <c>bottomOffset</c> previously absorbed part of that bleed
+    /// as a manual subtraction on the INI <c>WindowedHeight</c> write, but is
+    /// now redundant and produces over-subtraction (the new math handles the
+    /// caption + bottom-bleed accounting on its own). Leaving the legacy value
+    /// in JSON would silently strand <c>bottomOffset</c> px of game area at the
+    /// bottom of the window after launch and confuse the SettingsForm UI on
+    /// next open.
+    /// </summary>
+    private static void MigrateV4ToV5(JsonObject root)
+    {
+        if (root["layout"]?.AsObject() is not { } layout)
+            return;
+
+        bool slim = layout["slimTitlebar"]?.GetValue<bool>() ?? false;
+        if (!slim)
+            return;
+
+        int oldOffset = layout["bottomOffset"]?.GetValue<int>() ?? 0;
+        if (oldOffset == 0)
+            return;
+
+        layout["bottomOffset"] = 0;
+        FileLogger.Info($"ConfigMigrator v4→v5: cleared layout.bottomOffset (was {oldOffset}, now redundant after v3.22.45 AdjustWindowRectEx-based slim-titlebar sizing — Win11 DWM bleed accounting is now automatic)");
     }
 }

@@ -225,6 +225,27 @@ static class Program
             Environment.Exit(exitCode);
             return;
         }
+
+        // --test-outer-rect-math — exercise WindowManager.ComputeOuterRectFromBleeds
+        // against Win10 / Win11 / clamp / asymmetric / neg-origin scenarios.
+        // Guards the v3.22.45 fix for the Win11 DWM-bleed "vertical seam + desktop
+        // sliver" bug from regressing. No HWNDs / no IWindowsApi mock — pure math.
+        if (args.Length >= 1 && args[0] == "--test-outer-rect-math")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.OuterRectMathTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"OuterRectMathTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
 #endif
 
         // Enforce single instance

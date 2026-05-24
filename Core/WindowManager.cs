@@ -563,10 +563,16 @@ public class WindowManager
                 }
 
                 // Step 3 (the move) is queued for pass-2 batch.
-                x = effectiveBounds.Left;
-                y = effectiveBounds.Top - titlebarOffset;
-                w = effectiveBounds.Right - effectiveBounds.Left;
-                h = (effectiveBounds.Bottom - effectiveBounds.Top) + titlebarOffset;
+                // v3.22.45: route through the shared helper so multi-monitor
+                // slim windows get the same Win11-DWM-bleed correction as
+                // single-screen. Without this, the lock-to-primary-dims
+                // policy would still leave 8 px desktop slivers on each side
+                // of both monitors, AND DX swap-chain stretch artifacts
+                // would appear on every client — exactly the same bug class
+                // the lock-to-primary-dims was added to suppress on swap.
+                long currentSlimStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64() & ~NativeMethods.WS_THICKFRAME;
+                long currentExStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_EXSTYLE).ToInt64();
+                (x, y, w, h) = ComputeSlimTitlebarOuterRect(effectiveBounds, titlebarOffset, currentSlimStyle, currentExStyle);
                 swpFlags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE;
             }
             else
@@ -858,13 +864,55 @@ public class WindowManager
                 continue;
             }
 
+            // v3.22.45 (T2-Sonnet HIGH): branch on SlimTitlebar so post-swap
+            // sizing uses the same Win11-DWM-bleed-corrected outer rect as
+            // ApplySlimTitlebar / ArrangeMultiMonitor. Pre-v3.22.45 this path
+            // unconditionally wrote the non-slim work-area math even when
+            // slim mode was active — producing a one-frame Win11 sliver flash
+            // after every SwapWindows (the subsequent ApplySlimTitlebarToAll
+            // guard tick would re-correct, but injected PIDs were skipped by
+            // that guard, leaving the wrong rect persistent on the hook side
+            // until UpdateHookConfigForPid caught up).
+            //
+            // v3.22.45 post-T3-Sonnet MEDIUM (final round): only take the
+            // slim path when ALL targets in the current mode want slim. In
+            // multimonitor mode with mixed flags (primary slim, secondary
+            // non-slim) we can't know from monitor center alone whether THIS
+            // window's monitor is primary or secondary (the per-PID slot map
+            // lives in TrayManager). Falling back to the pre-fix non-slim
+            // sizing here is safe: ArrangeMultiMonitor + UpdateHookConfigForPid
+            // own the per-monitor-correct slim math + bleed correction, and
+            // they fire on every SwapWindows alongside this call.
+            bool useSlim;
+            if (_config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase))
+            {
+                useSlim = _config.Layout.SlimTitlebar && _config.Layout.SlimTitlebarSecondary;
+            }
+            else
+            {
+                useSlim = _config.Layout.SlimTitlebar;
+            }
+
+            int x, y, w, h;
+            if (useSlim)
+            {
+                (x, y, w, h) = ComputeSlimTitlebarOuterRect(m, _config.Layout.TitlebarOffset);
+            }
+            else
+            {
+                x = m.Left;
+                y = m.Top + yOffset;
+                w = m.Width;
+                h = m.Height;
+            }
+
             _api.SetWindowPos(
                 client.WindowHandle, IntPtr.Zero,
-                m.Left, m.Top + yOffset, m.Width, m.Height,
+                x, y, w, h,
                 NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE |
                 NativeMethods.SWP_SHOWWINDOW | NativeMethods.SWP_FRAMECHANGED);
 
-            FileLogger.Info($"ResizeToCurrentMonitors: {client} → ({m.Left},{m.Top + yOffset}) {m.Width}x{m.Height}");
+            FileLogger.Info($"ResizeToCurrentMonitors: {client} → ({x},{y}) {w}x{h} ({(_config.Layout.SlimTitlebar ? "slim" : "non-slim")})");
         }
     }
 
@@ -893,10 +941,33 @@ public class WindowManager
             if (injectedPids != null && injectedPids.Contains(client.ProcessId))
                 continue;
 
-            // Check if already positioned correctly — avoid unnecessary repositioning
+            // Check if already positioned correctly — avoid unnecessary repositioning.
+            //
+            // v3.22.45 post-T3-Sonnet MEDIUM: compare ALL FOUR dims. The
+            // pre-this version checked only rect.Top, which let a non-injected
+            // client drift horizontally (external tool, user drag, EQ self-
+            // positioning) without triggering re-apply — reintroducing the
+            // left-edge sliver until the next style change. Width / height
+            // drift is rarer but also possible (DPI change mid-session).
+            //
+            // v3.22.45 post-T3-Opus MEDIUM (final round): probe expected rect
+            // using LIVE style + LIVE exStyle to match what ApplySlimTitlebar
+            // will actually apply. The prior version hoisted the expected
+            // rect using the canonical SLIM_TITLEBAR_STYLE — fast, but if EQ
+            // ever has a non-zero exStyle (WS_EX_CLIENTEDGE shifts bleed
+            // from 8/31/8/8 to 10/33/10/10), the hoisted canonical rect
+            // never matches the live-style applied rect → guard always fails
+            // → ApplySlimTitlebar re-fires every 500 ms cross-process. Per-
+            // client probe is ~one kernel call per client per tick (~8 for
+            // a 6-client setup) — negligible vs. the storm risk.
+            long liveStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64() & ~NativeMethods.WS_THICKFRAME;
+            long liveExStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_EXSTYLE).ToInt64();
             _api.GetWindowRect(client.WindowHandle, out var rect);
-            int expectedY = monitor.Top - offset;
-            if (rect.Top == expectedY) continue;
+            var (expectedX, expectedY, expectedW, expectedH) = ComputeSlimTitlebarOuterRect(monitor, offset, liveStyle, liveExStyle);
+            if (rect.Left == expectedX
+                && rect.Top == expectedY
+                && rect.Width == expectedW
+                && rect.Height == expectedH) continue;
 
             ApplySlimTitlebar(client.WindowHandle, monitor, offset);
         }
@@ -961,22 +1032,152 @@ public class WindowManager
             NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER |
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_FRAMECHANGED);
 
-        // Step 2: Position and size the window to cover the full monitor.
-        // We MUST set explicit size — stripping WS_THICKFRAME shrinks the window
-        // (thick frame borders ~7px each side are gone), and the bottomOffset in
-        // the INI reduces the client area further. Without explicit sizing, the
-        // window is too short to cover the taskbar.
-        // Height = monitorHeight + titlebarOffset ensures the window spans from
-        // y (above the monitor) to exactly the monitor's bottom edge.
-        int x = monitor.Left;
-        int y = monitor.Top - titlebarOffset;
-        int w = monitor.Right - monitor.Left;
-        int h = (monitor.Bottom - monitor.Top) + titlebarOffset;
+        // Step 2: Position and size the window so the VISIBLE client area
+        // covers the full monitor edge-to-edge. v3.22.45 fix — see
+        // ComputeSlimTitlebarOuterRect for the Win11 DWM-bleed root cause.
+        // Read live GWL_EXSTYLE (v3.22.45 post-T3-Opus MEDIUM) — pass it to
+        // AdjustWindowRectEx so any WS_EX_CLIENTEDGE-style bits on the real
+        // EQ window get reflected in the bleed calculation. Skipping this
+        // step reintroduces a 4-px-per-side sliver if EQ ever has CLIENTEDGE.
+        long exStyle = _api.GetWindowLongPtr(hwnd, NativeMethods.GWL_EXSTYLE).ToInt64();
+        var (x, y, w, h) = ComputeSlimTitlebarOuterRect(monitor, titlebarOffset, style, exStyle);
         _api.SetWindowPos(
             hwnd, IntPtr.Zero, x, y, w, h,
             NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
 
-        FileLogger.Info($"ApplySlimTitlebar: hwnd={hwnd} → ({x},{y}) {w}x{h}, offset={titlebarOffset}px hidden");
+        FileLogger.Info($"ApplySlimTitlebar: hwnd={hwnd} → ({x},{y}) {w}x{h}, offset={titlebarOffset}px caption visible");
+    }
+
+    /// <summary>
+    /// v3.22.45 — canonical post-WS_THICKFRAME-strip style for an EQ slim-
+    /// titlebar window. Used by the no-HWND overload of
+    /// <see cref="ComputeSlimTitlebarOuterRect(WinRect, int)"/> because
+    /// AdjustWindowRectEx output depends only on style bits, not which
+    /// exact window we're sizing.
+    /// </summary>
+    internal const long SLIM_TITLEBAR_STYLE =
+        NativeMethods.WS_CAPTION
+        | NativeMethods.WS_SYSMENU
+        | NativeMethods.WS_CLIPSIBLINGS
+        | NativeMethods.WS_CLIPCHILDREN
+        | NativeMethods.WS_VISIBLE;
+
+    /// <summary>
+    /// Overload for callers that don't hold a live HWND (TrayManager hook-config
+    /// builder, ArrangeMultiMonitor lock-to-primary-dims policy). Uses the
+    /// canonical slim style — produces the same bleed values as the HWND-aware
+    /// overload because AdjustWindowRectEx output depends only on style bits.
+    /// </summary>
+    internal (int x, int y, int w, int h) ComputeSlimTitlebarOuterRect(
+        WinRect monitor, int titlebarOffset)
+        => ComputeSlimTitlebarOuterRect(monitor, titlebarOffset, SLIM_TITLEBAR_STYLE, 0);
+
+    /// <summary>
+    /// v3.22.45 — compute the OUTER-window rect for a slim-titlebar window so
+    /// its VISIBLE CLIENT area exactly covers the given monitor.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Pre-v3.22.45 the math assumed that stripping WS_THICKFRAME left no
+    /// non-client area other than the caption, and that <c>titlebarOffset</c>
+    /// equalled the caption height. Both were roughly true on Windows 10 —
+    /// where a slim-styled (WS_CAPTION only) window had ~0 px frame bleed and
+    /// a ~22 px caption — so setting <c>outer.W = monitor.W</c> yielded a
+    /// client area exactly the monitor width.
+    /// </para>
+    /// <para>
+    /// On Windows 11, DWM keeps an invisible ~8 px frame zone on the left,
+    /// right and bottom of every window for rounded-corner masking + shadow
+    /// hit-testing, regardless of WS_THICKFRAME. So <c>outer.W = 1920</c> on
+    /// a 1920-wide monitor produces a client area of <b>1904 px</b>: an 8 px
+    /// sliver of desktop is visible on each side AND EQ's DX swap chain
+    /// (initialized from <c>eqclient.ini WindowedWidth=1920</c>) gets
+    /// bilinearly stretched into the narrower client area, producing the
+    /// reported 1-px-wide vertical text-smear seam near screen centre.
+    /// </para>
+    /// <para>
+    /// The fix asks Win32 (via <c>AdjustWindowRectEx</c>) what the actual
+    /// non-client bleed is for the post-WS_THICKFRAME-strip style and offsets
+    /// the outer rect so the bleed sits OFF-SCREEN on every edge. Result:
+    /// <c>client.Left == monitor.Left</c>, <c>client.Right == monitor.Right</c>,
+    /// <c>client.Bottom == monitor.Bottom</c>, no visible desktop sliver,
+    /// DX swap chain renders 1:1 into the client area.
+    /// </para>
+    /// <para>
+    /// <c>titlebarOffset</c> semantics preserved exactly: <i>"pixels of caption
+    /// to leave VISIBLE inside the monitor for dragging"</i>. With
+    /// <c>titlebarOffset=0</c> the caption is fully off-screen (max game area,
+    /// no drag target); with <c>titlebarOffset=13</c> (default) 13 px of
+    /// caption sit inside the top of the monitor and the playable client area
+    /// loses 13 px at the top — historical Win10 behaviour. The arg is
+    /// clamped to <c>[0, topBleed]</c> so a misconfigured value can never
+    /// push the whole caption off-screen unintentionally.
+    /// </para>
+    /// <para>
+    /// If <c>AdjustWindowRectEx</c> fails for any reason (style param garbage,
+    /// kernel WTF), the method falls back to the pre-v3.22.45 math so a Win11
+    /// regression in this code path produces "old broken sliver" rather than
+    /// "window in random place".
+    /// </para>
+    /// </remarks>
+    internal (int x, int y, int w, int h) ComputeSlimTitlebarOuterRect(
+        WinRect monitor, int titlebarOffset, long style, long exStyle)
+    {
+        // v3.22.45 post-T3-Opus MEDIUM: exStyle is now a real arg. If the live
+        // EQ window has WS_EX_CLIENTEDGE (live Win11 probe: shifts bleed from
+        // 8/31/8/8 to 10/33/10/10), passing exStyle=0 under-sizes the outer
+        // rect by 4 px each side and a smaller sliver returns. Dalaya's Edge-
+        // DINPUT8 build hasn't been observed using any non-zero exStyle but
+        // we let AdjustWindowRectEx decide.
+        //
+        // Probe the non-client bleed with a 100x100 sentinel rect — the
+        // returned negative L/T and excess R/B are the bleed amounts.
+        var probe = new WinRect { Left = 0, Top = 0, Right = 100, Bottom = 100 };
+        bool ok = _api.AdjustWindowRectEx(ref probe, (uint)style, false, (uint)exStyle);
+        // lastErr already captured + logged inside WindowsApi.AdjustWindowRectEx
+        // wrapper (v3.22.45 post-T3-Opus MEDIUM fix) — don't reach for
+        // Marshal.GetLastWin32Error() here because the rect-copy below would
+        // clobber it. Keep this fallback branch simple.
+        if (!ok)
+        {
+            FileLogger.Warn($"ComputeSlimTitlebarOuterRect: AdjustWindowRectEx returned false — falling back to pre-v3.22.45 math (may leave Win11 desktop sliver)");
+            return (
+                monitor.Left,
+                monitor.Top - titlebarOffset,
+                monitor.Right - monitor.Left,
+                (monitor.Bottom - monitor.Top) + titlebarOffset);
+        }
+
+        int leftBleed   = -probe.Left;
+        int topBleed    = -probe.Top;
+        int rightBleed  = probe.Right - 100;
+        int bottomBleed = probe.Bottom - 100;
+
+        return ComputeOuterRectFromBleeds(monitor, titlebarOffset, leftBleed, topBleed, rightBleed, bottomBleed);
+    }
+
+    /// <summary>
+    /// Pure-math companion to <see cref="ComputeSlimTitlebarOuterRect(WinRect, int, long)"/>
+    /// — given pre-probed non-client bleed values, compute the outer rect.
+    /// Split out for unit-testability (no Win32 dependency, no IWindowsApi
+    /// mock surface required).
+    /// </summary>
+    /// <remarks>
+    /// All four bleed args are positive pixel counts. <paramref name="titlebarOffset"/>
+    /// is clamped to <c>[0, topBleed]</c> — above the caption height there's
+    /// no caption left to show, and a negative value would push the outer
+    /// rect downward (cutting game area off the top).
+    /// </remarks>
+    internal static (int x, int y, int w, int h) ComputeOuterRectFromBleeds(
+        WinRect monitor, int titlebarOffset,
+        int leftBleed, int topBleed, int rightBleed, int bottomBleed)
+    {
+        int captionVisible = Math.Clamp(titlebarOffset, 0, topBleed);
+        int x = monitor.Left - leftBleed;
+        int y = monitor.Top - topBleed + captionVisible;
+        int w = (monitor.Right - monitor.Left) + leftBleed + rightBleed;
+        int h = (monitor.Bottom - monitor.Top) + topBleed + bottomBleed - captionVisible;
+        return (x, y, w, h);
     }
 
     /// <summary>
