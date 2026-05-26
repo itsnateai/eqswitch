@@ -925,6 +925,24 @@ public class WindowManager
     public void ApplySlimTitlebarToAll(IReadOnlyList<EQClient> clients, IReadOnlySet<int>? injectedPids = null)
     {
         if (!_config.Layout.SlimTitlebar) return;
+
+        // v3.22.47 post-T2/T3 verifier: bail in multimonitor mode. This helper
+        // sizes EVERY passed client to GetTargetMonitor(true) (the SINGLE
+        // primary-or-configured target monitor), which is correct for
+        // single-screen slim but disastrous in MM mode where each client lives
+        // on a DIFFERENT monitor. With the v3.22.47 injected-clients-skip
+        // removal, an MM-mode tick would compute expected_rect from primary
+        // for the secondary client, the rect-compare would always fail, and
+        // ApplySlimTitlebar would fire SetWindowPos targeting primary's rect
+        // on a secondary-monitor client every 500 ms — fighting both
+        // ArrangeMultiMonitor's per-client placement AND the hook DLL's
+        // shared-memory enforcement. Pre-v3.22.47 the injected-skip masked
+        // this latent bug; removing the skip exposed it. ArrangeMultiMonitor
+        // (and UpdateHookConfigForPid + the hook DLL) own positioning in MM
+        // mode; the C# guard belongs only to single-screen slim.
+        if (_config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase))
+            return;
+
         var monitor = GetTargetMonitor(true);
         int offset = _config.Layout.TitlebarOffset;
 
@@ -936,10 +954,23 @@ public class WindowManager
             // Re-apply custom window title if EQ overwrote it
             SetWindowTitle(client, i);
 
-            // Skip position enforcement if hook DLL is active in this process —
-            // the DLL handles it from inside, no need for external repositioning
-            if (injectedPids != null && injectedPids.Contains(client.ProcessId))
-                continue;
+            // v3.22.47: REMOVED the "skip injected clients" gate. Pre-v3.22.47
+            // the C# guard skipped injected clients entirely on the assumption
+            // that the in-process hook DLL would catch every resize EQ tried.
+            // In practice, EQ's world-load DX device reset can trigger window
+            // resizes via APIs the hook doesn't intercept (style changes,
+            // direct WM_SIZE dispatches) — leaving the window in EQ's default
+            // dimensions until the next foreground event or other trigger
+            // (Nate's 2026-05-25 report: "6s ish before user has a working
+            // screen ... wineq2.exe doesn't have this issue"). With the skip
+            // removed, the rect-compare below (lines 967-970) makes the loop
+            // a no-op for injected clients whose hook DLL kept them sized
+            // correctly — so the cost in the happy path is just three cross-
+            // process kernel reads per client per tick. When EQ DID resize
+            // out from under the hook, the C# guard catches it within one
+            // tick instead of waiting on an unrelated event.
+            // (No comment from this line forward — the original perf-skip is
+            //  superseded by the rect-compare which is cheaper anyway.)
 
             // Check if already positioned correctly — avoid unnecessary repositioning.
             //
@@ -1153,8 +1184,77 @@ public class WindowManager
         int rightBleed  = probe.Right - 100;
         int bottomBleed = probe.Bottom - 100;
 
-        return ComputeOuterRectFromBleeds(monitor, titlebarOffset, leftBleed, topBleed, rightBleed, bottomBleed);
+        // v3.22.46: clip outer-rect extension on edges where ANOTHER monitor
+        // abuts the target monitor. Pre-v3.22.46 the outer rect extended past
+        // the monitor by `bleed` on every side so the DWM frame zone sat off-
+        // desktop (invisible). On a multi-monitor setup that "off-desktop"
+        // space is actually another monitor — and the DWM frame-shadow strip
+        // becomes visibly painted on the adjacent monitor (Nate's 2026-05-25
+        // report: "the window now bleeds over onto the right monitor"). Drop
+        // the extension to 0 on adjacent edges; visible client loses `bleed`
+        // px there (~8 px gap of desktop visible on primary monitor's edge,
+        // same as pre-v3.22.45 baseline) but no longer paints onto the other
+        // monitor. WindowedWidth/Height in eqclient.ini compensates so the DX
+        // swap chain stays 1:1 with the new visible client size — no text
+        // smear returns. See ClampBleedsForAdjacency for the per-edge logic.
+        var allMonitors = _api.GetAllMonitorBounds();
+        var (effLeftBleed, effRightBleed, effBottomBleed) = ClampBleedsForAdjacency(
+            monitor, allMonitors, leftBleed, rightBleed, bottomBleed);
+
+        return ComputeOuterRectFromBleeds(monitor, titlebarOffset, effLeftBleed, topBleed, effRightBleed, effBottomBleed);
     }
+
+    /// <summary>
+    /// v3.22.46 — given a target monitor + the full monitor list, return
+    /// effective bleed values for the left, right, and bottom edges where
+    /// each is set to 0 if another monitor abuts that edge.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// "Abuts" = the neighbor's edge exactly meets the target's edge on the
+    /// orthogonal axis AND the two monitors overlap on the parallel axis.
+    /// Win11 desktop arrangement always aligns abutting edges to exact pixel
+    /// boundaries (the OS snaps during Display Settings configuration) so an
+    /// exact-equality check is safe here; partial overlap (the monitor
+    /// "doesn't quite reach" a corner) still counts as adjacency because the
+    /// DWM-shadow strip would land on the overlap region.
+    /// </para>
+    /// <para>
+    /// Top edge is intentionally NOT clipped: ApplySlimTitlebar's caption-
+    /// visibility math (clamp <c>titlebarOffset</c> to <c>[0, topBleed]</c>)
+    /// depends on the outer rect extending <c>topBleed</c> px above the
+    /// monitor so the caption sits partially above-screen. Clipping top
+    /// would force the caption to render INSIDE the monitor as 31 px of
+    /// non-client area, eating game area. Setups with a monitor directly
+    /// above primary are rare and the cost there (~18 px shadow strip) is
+    /// accepted as a future enhancement.
+    /// </para>
+    /// </remarks>
+    internal static (int leftBleed, int rightBleed, int bottomBleed) ClampBleedsForAdjacency(
+        WinRect target, IReadOnlyList<WinRect> all,
+        int leftBleed, int rightBleed, int bottomBleed)
+    {
+        bool hasLeft = false, hasRight = false, hasBottom = false;
+        foreach (var m in all)
+        {
+            if (m.Left == target.Left && m.Top == target.Top && m.Right == target.Right && m.Bottom == target.Bottom)
+                continue; // skip the target itself
+            // Left adjacency: neighbor.Right == target.Left AND vertical overlap.
+            if (m.Right == target.Left && m.Bottom > target.Top && m.Top < target.Bottom)
+                hasLeft = true;
+            // Right adjacency: neighbor.Left == target.Right AND vertical overlap.
+            if (m.Left == target.Right && m.Bottom > target.Top && m.Top < target.Bottom)
+                hasRight = true;
+            // Bottom adjacency: neighbor.Top == target.Bottom AND horizontal overlap.
+            if (m.Top == target.Bottom && m.Right > target.Left && m.Left < target.Right)
+                hasBottom = true;
+        }
+        return (
+            hasLeft ? 0 : leftBleed,
+            hasRight ? 0 : rightBleed,
+            hasBottom ? 0 : bottomBleed);
+    }
+
 
     /// <summary>
     /// Pure-math companion to <see cref="ComputeSlimTitlebarOuterRect(WinRect, int, long)"/>

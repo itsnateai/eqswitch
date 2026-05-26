@@ -250,6 +250,131 @@ public static class OuterRectMathTests
             failures += Assert("neg-origin client.Bottom == 1080", clientBottom, 1080);
         }
 
+        // v3.22.46 — ClampBleedsForAdjacency: bleed extension goes to 0 on
+        // edges where another monitor abuts. Pre-v3.22.46 the outer rect
+        // extended past every edge by `bleed`, which on a multi-monitor
+        // setup landed visibly on the adjacent monitor (Nate's 2026-05-25
+        // "bleeds onto right monitor" report). The new helper clips the
+        // extension to 0 on adjacent edges, returning the effective bleed
+        // values that ComputeOuterRectFromBleeds gets.
+
+        // Case A — single monitor (no neighbors): all bleeds pass through.
+        {
+            var primary = new WinRect { Left = 0, Top = 0, Right = 1920, Bottom = 1080 };
+            var all = new List<WinRect> { primary };
+            var (effL, effR, effB) = WindowManager.ClampBleedsForAdjacency(primary, all, 8, 8, 8);
+            failures += Assert("adj single-monitor effLeft passthrough", effL, 8);
+            failures += Assert("adj single-monitor effRight passthrough", effR, 8);
+            failures += Assert("adj single-monitor effBottom passthrough", effB, 8);
+        }
+
+        // Case B — secondary monitor to the RIGHT of primary (Nate's setup
+        // per the 2026-05-25 report). Right bleed clipped, left/bottom
+        // untouched.
+        {
+            var primary = new WinRect { Left = 0, Top = 0, Right = 1920, Bottom = 1080 };
+            var rightNeighbor = new WinRect { Left = 1920, Top = 0, Right = 3840, Bottom = 1080 };
+            var all = new List<WinRect> { primary, rightNeighbor };
+            var (effL, effR, effB) = WindowManager.ClampBleedsForAdjacency(primary, all, 8, 8, 8);
+            failures += Assert("adj right-neighbor effLeft passthrough", effL, 8);
+            failures += Assert("adj right-neighbor effRight clipped to 0", effR, 0);
+            failures += Assert("adj right-neighbor effBottom passthrough", effB, 8);
+        }
+
+        // Case C — secondary monitor to the LEFT of primary. Left bleed
+        // clipped.
+        {
+            var primary = new WinRect { Left = 0, Top = 0, Right = 1920, Bottom = 1080 };
+            var leftNeighbor = new WinRect { Left = -1920, Top = 0, Right = 0, Bottom = 1080 };
+            var all = new List<WinRect> { primary, leftNeighbor };
+            var (effL, effR, effB) = WindowManager.ClampBleedsForAdjacency(primary, all, 8, 8, 8);
+            failures += Assert("adj left-neighbor effLeft clipped to 0", effL, 0);
+            failures += Assert("adj left-neighbor effRight passthrough", effR, 8);
+            failures += Assert("adj left-neighbor effBottom passthrough", effB, 8);
+        }
+
+        // Case D — three monitors with primary in the middle (left + right
+        // both adjacent). Both side bleeds clipped, bottom passthrough.
+        // Visible client width loses 2 × bleed; pre-v3.22.45 baseline (no
+        // text smear once WindowedWidth follows the smaller visible client).
+        {
+            var primary = new WinRect { Left = 0, Top = 0, Right = 1920, Bottom = 1080 };
+            var leftN  = new WinRect { Left = -1920, Top = 0, Right = 0, Bottom = 1080 };
+            var rightN = new WinRect { Left = 1920, Top = 0, Right = 3840, Bottom = 1080 };
+            var all = new List<WinRect> { primary, leftN, rightN };
+            var (effL, effR, effB) = WindowManager.ClampBleedsForAdjacency(primary, all, 8, 8, 8);
+            failures += Assert("adj 3-monitor effLeft clipped to 0", effL, 0);
+            failures += Assert("adj 3-monitor effRight clipped to 0", effR, 0);
+            failures += Assert("adj 3-monitor effBottom passthrough", effB, 8);
+        }
+
+        // Case E — no vertical overlap = NOT adjacent. A monitor whose
+        // bottom is at y=-100 (entirely above target's top edge) is on the
+        // same axis but doesn't touch the target's left edge even if its
+        // Right == target.Left. Defends against the naive "Right == Left"
+        // check that would false-positive on offset-stack layouts.
+        {
+            var primary = new WinRect { Left = 0, Top = 0, Right = 1920, Bottom = 1080 };
+            var aboveLeftN = new WinRect { Left = -1920, Top = -1080, Right = 0, Bottom = -100 };
+            var all = new List<WinRect> { primary, aboveLeftN };
+            var (effL, effR, effB) = WindowManager.ClampBleedsForAdjacency(primary, all, 8, 8, 8);
+            failures += Assert("adj non-overlapping neighbor effLeft passthrough", effL, 8);
+        }
+
+        // Case F — vertical overlap at the boundary (neighbor.Bottom ==
+        // target.Top). The half-open interval check (m.Bottom > target.Top)
+        // correctly treats touching-at-a-corner as NON-adjacent on the left/
+        // right edges (it's a TOP adjacency, not a LEFT adjacency).
+        {
+            var primary = new WinRect { Left = 0, Top = 0, Right = 1920, Bottom = 1080 };
+            var cornerN = new WinRect { Left = -1920, Top = -1080, Right = 0, Bottom = 0 };
+            var all = new List<WinRect> { primary, cornerN };
+            var (effL, effR, effB) = WindowManager.ClampBleedsForAdjacency(primary, all, 8, 8, 8);
+            failures += Assert("adj corner-touch neighbor effLeft passthrough", effL, 8);
+        }
+
+        // Case G — bottom adjacency: neighbor sits directly below primary
+        // (e.g., portrait-oriented secondary stacked under primary). Bottom
+        // bleed clipped, sides untouched.
+        {
+            var primary = new WinRect { Left = 0, Top = 0, Right = 1920, Bottom = 1080 };
+            var belowN = new WinRect { Left = 0, Top = 1080, Right = 1920, Bottom = 2160 };
+            var all = new List<WinRect> { primary, belowN };
+            var (effL, effR, effB) = WindowManager.ClampBleedsForAdjacency(primary, all, 8, 8, 8);
+            failures += Assert("adj below-neighbor effLeft passthrough", effL, 8);
+            failures += Assert("adj below-neighbor effRight passthrough", effR, 8);
+            failures += Assert("adj below-neighbor effBottom clipped to 0", effB, 0);
+        }
+
+        // Case H — composition: the v3.22.46 outer-rect pipeline. Given a
+        // primary monitor with a right neighbor (Nate's setup), confirm the
+        // full ComputeOuterRectFromBleeds(...) call using the clipped
+        // bleeds produces the expected outer rect (-8, -18, 1928, 1106) on
+        // a 1920×1080 monitor with default 13 px titlebarOffset. Pre-fix
+        // this would have been (-8, -18, 1936, 1106) — the extra 8 px width
+        // is what bled onto the right monitor.
+        {
+            var primary = new WinRect { Left = 0, Top = 0, Right = 1920, Bottom = 1080 };
+            var rightN = new WinRect { Left = 1920, Top = 0, Right = 3840, Bottom = 1080 };
+            var all = new List<WinRect> { primary, rightN };
+            int titlebarOffset = 13;
+            int lB = 8, tB = 31, rB = 8, bB = 8;
+            var (effL, effR, effB) = WindowManager.ClampBleedsForAdjacency(primary, all, lB, rB, bB);
+            var (x, y, w, h) = WindowManager.ComputeOuterRectFromBleeds(primary, titlebarOffset, effL, tB, effR, effB);
+            failures += Assert("compose right-neighbor x", x, -8);
+            failures += Assert("compose right-neighbor y", y, -18);
+            failures += Assert("compose right-neighbor w (no right extension)", w, 1928);
+            failures += Assert("compose right-neighbor h", h, 1106);
+
+            // Visible client edges: left at monitor.Left, right is 8 px INSIDE
+            // monitor (the desktop gap that replaces what would've been a
+            // bleed onto the secondary monitor).
+            int clientLeft = x + lB;
+            int clientRight = x + w - rB;
+            failures += Assert("compose right-neighbor client.Left == monitor.Left", clientLeft, 0);
+            failures += Assert("compose right-neighbor client.Right == monitor.Right - 8", clientRight, 1912);
+        }
+
         Console.WriteLine(failures == 0
             ? $"OuterRectMathTests: ALL PASS"
             : $"OuterRectMathTests: {failures} FAILURE(S)");

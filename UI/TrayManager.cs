@@ -100,6 +100,56 @@ public class TrayManager : IDisposable
     private readonly HashSet<int> _injectedPids = new();
     private readonly HashSet<int> _di8InjectedPids = new();
 
+    // v3.22.46: dedupe RaiseClientsAboveTaskbar post-login fires. Pre-v3.22.46
+    // ApplyDeferredCosmetics ran the TOPMOST↔NOTOPMOST dance from BOTH
+    // LoginCredentialsSent (T+~7s) AND LoginComplete (T+~45s deferred) on
+    // ALL clients — for a 2-client team launch that's 4 dance events, each
+    // visibly nudging every client's z-band. Nate's 2026-05-25 report:
+    // "happens a lot after the char enters the game ... 2nd client background
+    // dances it might steal focus". The dance is still needed once per PID
+    // to trigger Win11's taskbar-collapse, but firing repeatedly is the user-
+    // facing problem. Tracking arrival-once-per-PID lets a session-spanning
+    // re-launch (PID died → respawned, new PID) still get its initial dance;
+    // entries are cleared on ClientLost.
+    //
+    // v3.22.46 post-T3-Sonnet thread-safety: lock-guarded. ClientLost's
+    // Remove runs on the WinForms-timer UI thread (ProcessManager polls via
+    // System.Windows.Forms.Timer), but the Add sites fire from
+    // ApplyDeferredCosmetics → LoginCredentialsSent / LoginComplete handlers
+    // in AutoLoginManager, which Post via _syncContext when set BUT have
+    // bare-fallback Invoke paths at AutoLoginManager.cs:1024 / 2231 / 2396 /
+    // 3533 that fire on the background thread when _syncContext is null
+    // (early-init race). Concurrent HashSet<int> mutation is undefined
+    // behavior in .NET — the lock cost is negligible (~3 fires per session
+    // per PID) and the storm risk is real per
+    // [[feedback_eqswitch_autologinmanager_static_field_race]].
+    private readonly HashSet<int> _taskbarRaisedAfterLoginPids = new();
+    private readonly object _taskbarRaisedLock = new();
+
+    /// <summary>
+    /// v3.22.46 thread-safe wrapper for the dedupe HashSet.Add. Returns true
+    /// only on the FIRST insertion of <paramref name="pid"/> in this session.
+    /// </summary>
+    private bool TryClaimTaskbarRaise(int pid)
+    {
+        lock (_taskbarRaisedLock)
+        {
+            return _taskbarRaisedAfterLoginPids.Add(pid);
+        }
+    }
+
+    /// <summary>
+    /// v3.22.46 thread-safe wrapper for the dedupe HashSet.Remove, called
+    /// from ClientLost so a re-launched PID gets its first-arrival dance back.
+    /// </summary>
+    private void DropTaskbarRaiseClaim(int pid)
+    {
+        lock (_taskbarRaisedLock)
+        {
+            _taskbarRaisedAfterLoginPids.Remove(pid);
+        }
+    }
+
     // v3.22.20: per-PID monitor slot (0=primary, 1=secondary, ...). Replaces
     // the legacy clientIndex-positional assignment so SwitchKey can actually
     // rotate which client owns which monitor — UpdateHookConfigForPid and
@@ -240,37 +290,56 @@ public class TrayManager : IDisposable
         // (T+~7s) and LoginComplete (T+~30s). Result: clients reaching
         // in-world via autologin had correct slim-titlebar bounds but no
         // z-order recovery — taskbar (WS_EX_TOPMOST) visually sliced through
-        // EQ's bottom edge. Confirmed in 2026-05-23 team1 smoke. Same gate
-        // as the sibling-close path at line ~1292: foreground only when EQ
-        // already owns foreground, so a background autologin completion
-        // doesn't yank focus from Discord/etc. Skipped when slim is off
-        // (normal titlebar = no taskbar overlap to recover).
+        // EQ's bottom edge. Skipped when slim is off (normal titlebar = no
+        // taskbar overlap to recover).
         //
-        // v3.22.40 clarification (T3-Opus convergent): the dance is a no-op
-        // for the calling PID at the T+~7s LoginCredentialsSent call because
-        // IsLoginActive is still true at that moment; RaiseClientsAboveTaskbar's
-        // per-client loop filters it out. The slim-titlebar bounds above DO
-        // still apply at T+~7s. The dance effectively fires from the
-        // LoginComplete (T+~30s) call after IsLoginActive flips false — that's
-        // the call that does the z-order recovery work. The T+~7s call is
-        // retained because (a) sibling clients that ALREADY completed login
-        // can be raised here, and (b) it costs nothing when filtered.
+        // v3.22.46: gated by two new conditions in response to Nate's
+        // 2026-05-25 "dance happens a lot ... background dance steals focus"
+        // report.
+        //
+        //   (1) Dedupe-per-PID via _taskbarRaisedAfterLoginPids: the dance
+        //       fires AT MOST ONCE per PID per session. Pre-v3.22.46 the
+        //       dance fired from LoginCredentialsSent (T+~7s) AND LoginComplete
+        //       (T+~45s deferred) for EVERY client — 4 fires for a 2-client
+        //       team. The Win11 taskbar-collapse trigger only needs one dance
+        //       per arrival to take effect; subsequent fires churn z-order
+        //       visibly without changing outcome. Manual Fix Windows and
+        //       ClientLost sibling-close recovery still bypass this dedupe
+        //       (different call sites, distinct purposes — user-driven
+        //       repair vs. autologin one-shot).
+        //
+        //   (2) Active-EQ-other-PID skip: when a DIFFERENT EQ client is the
+        //       current foreground, suppress the dance entirely. The dance
+        //       briefly puts the just-completed background PID into the
+        //       TOPMOST band, which (even with SWP_NOACTIVATE) USER32 paints
+        //       above the foreground client for one or two frames — visible
+        //       as a flicker that disturbs the user actively playing on the
+        //       other EQ window. The background PID's taskbar coverage will
+        //       be re-applied the next time the user switches to it (via
+        //       SwitchToClient or click) since the slim-titlebar guard timer
+        //       and ApplyDeferredCosmetics's slim re-apply still run.
         if (_config.Layout.SlimTitlebar)
         {
-            bool eqAlreadyForeground = _processManager.GetActiveClient() != null;
-            // v3.22.39: pass ALL clients, not just the one that fired LoginComplete.
-            // The v3.22.38 `new[] { client }` singleton left siblings' z-order
-            // broken — when client A completed first and got its dance, then
-            // client B completed 7s later and got its own dance, B's TOPMOST→
-            // NOTOPMOST raised B above A and A dropped back below the taskbar.
-            // Nate's 2026-05-23 ~13:03 team1 smoke: "window on gotquiz took a
-            // few \ presses for it to slowly glitch its way into covering the
-            // taskbar". The sibling-close path at line ~1310 raises ALL
-            // responsive clients for this exact reason; this path should too.
-            // RaiseClientsAboveTaskbar's per-client loop already filters
-            // IsLoginActive (so still-mid-login peers are skipped at the T+7s
-            // call from LoginCredentialsSent) and iconic/non-responsive windows.
-            RaiseClientsAboveTaskbar(_processManager.Clients, foregroundActive: eqAlreadyForeground);
+            var activeClient = _processManager.GetActiveClient();
+            bool eqAlreadyForeground = activeClient != null;
+            bool foregroundIsDifferentEQ = activeClient != null && activeClient.ProcessId != pid;
+
+            if (foregroundIsDifferentEQ)
+            {
+                FileLogger.Info($"ApplyDeferredCosmetics: PID {pid} background-completed while {activeClient} is foreground — skipping RaiseClientsAboveTaskbar to avoid disturbing user (v3.22.46)");
+            }
+            else if (!TryClaimTaskbarRaise(pid))
+            {
+                FileLogger.Info($"ApplyDeferredCosmetics: PID {pid} already raised once this session — skipping repeat dance (v3.22.46 dedupe)");
+            }
+            else
+            {
+                // v3.22.39: pass ALL clients, not just the one that fired
+                // LoginComplete. B's dance raised B above A, which dropped A
+                // below the taskbar; raising every responsive client restores
+                // each client's coverage in one pass.
+                RaiseClientsAboveTaskbar(_processManager.Clients, foregroundActive: eqAlreadyForeground);
+            }
         }
     }
 
@@ -376,12 +445,22 @@ public class TrayManager : IDisposable
             _keyboardHook.UpdateFilteredPids(_processManager.Clients.Select(c => c.ProcessId));
 
             // Start/stop slim titlebar position guard based on client count.
-            // When hook injection is active, the DLL handles positioning from inside
-            // the process, so we increase the guard interval (backup only).
+            // v3.22.47: guard interval is 500 ms always, regardless of injection
+            // state. Pre-v3.22.47 used 5000 ms when the hook DLL was injected,
+            // on the assumption that the in-process hook would catch every
+            // resize EQ tried. In practice, EQ's world-load DX device reset
+            // triggers resizes via APIs the hook misses (style changes, direct
+            // WM_SIZE dispatches), and the user would see a ~6 s delay before
+            // the window snapped back to slim — bad UX, WinEQ2 doesn't have
+            // this (Nate's 2026-05-25 report). The rect-compare guard inside
+            // ApplySlimTitlebarToAll makes the loop a no-op when the hook DLL
+            // kept things aligned, so 500 ms costs ~3 cross-process kernel
+            // reads per client per tick = ~36 reads/sec for a 6-client team =
+            // negligible. When the hook DOES miss, C# catches it within 500 ms.
             if (_config.Layout.SlimTitlebar && _processManager.Clients.Count > 0)
             {
                 bool hookActive = _injectedPids.Count > 0;
-                int guardInterval = hookActive ? 5000 : 500;
+                int guardInterval = 500;
 
                 if (_slimTitlebarGuard == null)
                 {
@@ -466,17 +545,31 @@ public class TrayManager : IDisposable
 
                 // v3.22.40: taskbar-coverage parity for the manual-launch path.
                 // The autologin path is covered by ApplyDeferredCosmetics
-                // (v3.22.38/39), but a manually-launched eqgame.exe discovered
-                // by ProcessManager's poll runs through here and previously got
-                // the slim bounds without the z-order recovery dance. Pass all
-                // clients (matching v3.22.39's correction over v3.22.38's
-                // singleton) so any siblings the dance affects are raised
-                // together; mid-login siblings are filtered internally by
-                // RaiseClientsAboveTaskbar's IsLoginActive check. The early
-                // return at line ~426 already excludes this client itself when
-                // its own autologin is mid-flight.
-                bool eqAlreadyForeground = _processManager.GetActiveClient() != null;
-                RaiseClientsAboveTaskbar(_processManager.Clients, foregroundActive: eqAlreadyForeground);
+                // (v3.22.38/39); a manually-launched eqgame.exe discovered by
+                // ProcessManager's poll runs through here and previously got
+                // the slim bounds without the z-order recovery dance.
+                //
+                // v3.22.46: same dedupe + active-EQ-other-PID skip as
+                // ApplyDeferredCosmetics — manual launch is one of the two
+                // first-arrival paths, so a manual launch followed by an
+                // autologin LoginComplete for the same PID shouldn't fire two
+                // dances. _taskbarRaisedAfterLoginPids is checked here too.
+                var activeClient = _processManager.GetActiveClient();
+                bool eqAlreadyForeground = activeClient != null;
+                bool foregroundIsDifferentEQ = activeClient != null && activeClient.ProcessId != c.ProcessId;
+
+                if (foregroundIsDifferentEQ)
+                {
+                    FileLogger.Info($"ClientDiscovered manual-launch: {c} background-discovered while {activeClient} is foreground — skipping RaiseClientsAboveTaskbar (v3.22.46)");
+                }
+                else if (!TryClaimTaskbarRaise(c.ProcessId))
+                {
+                    FileLogger.Info($"ClientDiscovered manual-launch: PID {c.ProcessId} already raised once this session — skipping repeat dance (v3.22.46 dedupe)");
+                }
+                else
+                {
+                    RaiseClientsAboveTaskbar(_processManager.Clients, foregroundActive: eqAlreadyForeground);
+                }
             }
 
             // For EQSwitch-launched clients, both DLLs are already injected pre-resume.
@@ -509,6 +602,13 @@ public class TrayManager : IDisposable
             _injectedPids.Remove(c.ProcessId);
             _di8InjectedPids.Remove(c.ProcessId);
             _hookConfig?.Close(c.ProcessId);
+            // v3.22.46: drop the dedupe entry so a recycled PID (or a fresh
+            // launch of the same character later in the session) gets its
+            // first-arrival dance again. The set is purely a per-session,
+            // per-PID one-shot — clearing on PID death is the correct
+            // lifecycle hook. Thread-safe wrapper guards against the bare-
+            // fallback event paths in AutoLoginManager racing this Remove.
+            DropTaskbarRaiseClaim(c.ProcessId);
             // v3.22.44 r3.5 (R3-T2-Sonnet Finding B MEDIUM): refresh the
             // Detach Hooks menu Enabled state. Round-3 added the refresh on
             // the Add sites but missed this Remove site, leaving the item
@@ -3476,8 +3576,11 @@ public class TrayManager : IDisposable
         // disposed the old guard and it won't be recreated until the next ClientListChanged.
         if (_config.Layout.SlimTitlebar && _processManager.Clients.Count > 0 && _slimTitlebarGuard == null)
         {
-            bool hookActive = _injectedPids.Count > 0;
-            _slimTitlebarGuard = new System.Windows.Forms.Timer { Interval = hookActive ? 5000 : 500 };
+            // v3.22.47: 500 ms always — see the matching change in ClientListChanged
+            // around line ~466 for the full rationale (world-load DX reset can resize
+            // EQ's window via APIs the hook DLL misses; C# safety net at 500 ms catches
+            // it within one tick instead of waiting on foreground event).
+            _slimTitlebarGuard = new System.Windows.Forms.Timer { Interval = 500 };
             _slimTitlebarGuard.Tick += (_, _) =>
                 _windowManager.ApplySlimTitlebarToAll(_processManager.Clients, _injectedPids);
             if (!_processManager.Clients.Any(c => _autoLoginManager.IsLoginActive(c.ProcessId)))

@@ -641,6 +641,62 @@ public class EQClientSettingsForm : Form
     }
 
     /// <summary>
+    /// v3.22.46 — return the visible (width, height) of the slim-titlebar
+    /// window's client area on the target monitor, accounting for adjacent-
+    /// monitor bleed clipping. EnforceOverrides writes these as
+    /// <c>WindowedWidth</c>/<c>WindowedHeight</c> in <c>eqclient.ini</c> so
+    /// EQ's DX swap chain matches the visible client edge-to-edge — no
+    /// bilinear smear when adjacency clips the outer rect inward.
+    /// </summary>
+    /// <remarks>
+    /// Falls back to full monitor width / monH-captionVisible if the
+    /// AdjustWindowRectEx probe fails (same shape as the pre-v3.22.46 math).
+    /// </remarks>
+    internal static (int width, int height) SlimTitlebarVisibleClientSize(
+        System.Drawing.Rectangle monitorBounds, int titlebarOffset)
+    {
+        const long WS_CAPTION = 0x00C00000;
+        const long WS_SYSMENU = 0x00080000;
+        const long WS_CLIPSIBLINGS = 0x04000000;
+        const long WS_CLIPCHILDREN = 0x02000000;
+        const long WS_VISIBLE = 0x10000000;
+        long slimStyle = WS_CAPTION | WS_SYSMENU | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_VISIBLE;
+
+        var probe = new Core.NativeMethods.RECT { Left = 0, Top = 0, Right = 100, Bottom = 100 };
+        if (!Core.NativeMethods.AdjustWindowRectEx(ref probe, (uint)slimStyle, false, 0))
+            return (monitorBounds.Width, Math.Max(0, monitorBounds.Height - Math.Max(0, titlebarOffset)));
+
+        int leftBleed   = -probe.Left;
+        int topBleed    = -probe.Top;
+        int rightBleed  = probe.Right - 100;
+        int bottomBleed = probe.Bottom - 100;
+
+        // Translate Screen.AllScreens to WinRect list so the WindowManager
+        // adjacency clamp helper can be shared with the runtime sizing path.
+        var monitorWinRect = new Core.WinRect
+        {
+            Left = monitorBounds.Left, Top = monitorBounds.Top,
+            Right = monitorBounds.Right, Bottom = monitorBounds.Bottom
+        };
+        var all = new List<Core.WinRect>();
+        foreach (var s in Screen.AllScreens)
+        {
+            all.Add(new Core.WinRect
+            {
+                Left = s.Bounds.Left, Top = s.Bounds.Top,
+                Right = s.Bounds.Right, Bottom = s.Bounds.Bottom
+            });
+        }
+        var (effLeft, effRight, effBottom) = Core.WindowManager.ClampBleedsForAdjacency(
+            monitorWinRect, all, leftBleed, rightBleed, bottomBleed);
+
+        int captionVisible = Math.Clamp(titlebarOffset, 0, topBleed);
+        int width  = monitorBounds.Width  - (leftBleed - effLeft) - (rightBleed - effRight);
+        int height = monitorBounds.Height - captionVisible        - (bottomBleed - effBottom);
+        return (width, height);
+    }
+
+    /// <summary>
     /// Set a key=value in the specified section of an INI file.
     /// Creates the section if it doesn't exist.
     /// </summary>
@@ -769,20 +825,24 @@ public class EQClientSettingsForm : Form
                 int monH = screen.Bounds.Height;
                 int offset = config.Layout.TitlebarOffset;
 
-                // v3.22.45: client height for EQ's DX swap chain must equal
-                // the slim-titlebar window's VISIBLE client height, otherwise
-                // DX bilinear-stretches the rendered frame into the window
-                // and produces the 1-px vertical text-smear seam.
+                // v3.22.46: WindowedWidth / WindowedHeight must match the
+                // VISIBLE client area of the slim-titlebar window, which is
+                // adjacency-aware as of v3.22.46. On edges where another
+                // monitor abuts the target monitor, the outer rect is clipped
+                // (no bleed onto neighbor) and the visible client loses
+                // `bleed` px on that edge — so WindowedWidth shrinks too,
+                // keeping the DX swap-chain 1:1 with the visible client (no
+                // bilinear-stretch smear). On non-adjacent edges the bleed
+                // sits off-desktop (invisible) and visible client still
+                // reaches the monitor edge.
                 //
-                // The visible client height = monitor.Height - captionVisible,
-                // where captionVisible is clamped to the actual caption height
-                // for the post-WS_THICKFRAME-strip style (queried via
-                // AdjustWindowRectEx — same primitive WindowManager's
-                // ComputeSlimTitlebarOuterRect uses, kept symmetrical here so
-                // INI height and window client height stay in lockstep
-                // regardless of Win10/Win11 caption-height differences).
+                // v3.22.45 wrote (monW, monH - captionVisible) here, which
+                // matched the OUTER-extends-past-monitor strategy. With
+                // adjacency clipping in WindowManager, the outer no longer
+                // extends past on adjacent sides, so the INI dims must
+                // follow or DX will smear the rendered frame.
                 int captionVisible = SlimTitlebarCaptionVisible(offset);
-                int gameH = monH - captionVisible;
+                var (gameW, gameH) = SlimTitlebarVisibleClientSize(screen.Bounds, offset);
 
                 SetIniValue(lines, "Defaults", "WindowedMode", "TRUE");
                 SetIniValue(lines, "VideoMode", "WindowedMode", "TRUE");
@@ -790,9 +850,9 @@ public class EQClientSettingsForm : Form
                 SetIniValue(lines, "VideoMode", "Maximized", "0");
                 SetIniValue(lines, "VideoMode", "Width", monW.ToString());
                 SetIniValue(lines, "VideoMode", "Height", monH.ToString());
-                SetIniValue(lines, "VideoMode", "WindowedWidth", monW.ToString());
+                SetIniValue(lines, "VideoMode", "WindowedWidth", gameW.ToString());
                 SetIniValue(lines, "VideoMode", "WindowedHeight", gameH.ToString());
-                SetIniValue(lines, "Defaults", "WindowedWidth", monW.ToString());
+                SetIniValue(lines, "Defaults", "WindowedWidth", gameW.ToString());
                 SetIniValue(lines, "Defaults", "WindowedHeight", gameH.ToString());
                 SetIniValue(lines, "Defaults", "WindowedModeXOffset", "0");
                 SetIniValue(lines, "Defaults", "WindowedModeYOffset", "0");
@@ -802,7 +862,7 @@ public class EQClientSettingsForm : Form
                 // our multi-monitor toggle hotkey. 0 = unbound.
                 SetIniValue(lines, "Defaults", "KEYMAPPING_TOGGLE_STORYWIN_1", "0");
                 SetIniValue(lines, "Defaults", "KEYMAPPING_TOGGLE_STORYWIN_2", "0");
-                FileLogger.Info($"EnforceOverrides: SlimTitlebar ON → forced {monW}x{gameH} (monitor {monH} - captionVisible {captionVisible}px), Maximized=0, WindowedMode=TRUE, Story Window unbound");
+                FileLogger.Info($"EnforceOverrides: SlimTitlebar ON → forced {gameW}x{gameH} (monitor {monW}x{monH} - captionVisible {captionVisible}px - adjacency-clipped bleeds), Maximized=0, WindowedMode=TRUE, Story Window unbound");
             }
 
             if (config.EQClientIni.MaxFPS > 0)

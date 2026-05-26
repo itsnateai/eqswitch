@@ -1,5 +1,80 @@
 # Changelog
 
+## v3.22.47 — kill the 6 s post-world-load slim-titlebar latency (2026-05-25)
+
+UI-only release; Native DLLs unchanged. Field-reported by Nate 2026-05-25 immediately after v3.22.46 deploy: *"once inworld, it does take a bit too long b4 it fixes the window tbh, its an awkward 6sec ish b4 user has a working screen, which prob will cost us users because wineq2.exe doesnt have this issue with their window and we inspired ours from there"*.
+
+### Root cause
+
+Pre-v3.22.47 the slim-titlebar safety-net timer in `TrayManager` ran with two performance optimizations that combined to produce a multi-second window where EQ's self-resize on world-load could leave the window in default (non-slim) dimensions:
+
+1. **`guardInterval = 5000ms` when any hook DLL was injected.** Comment: *"the DLL handles positioning from inside the process, so we increase the guard interval (backup only)"*. With injection active the C# fall-back fired every 5 s instead of every 500 ms.
+2. **`ApplySlimTitlebarToAll` skipped injected clients entirely.** Comment: *"the DLL handles it from inside, no need for external repositioning"* — the C# guard never even checked injected clients' bounds, leaving the in-process hook as the sole positioning authority.
+
+The in-process hook DLL intercepts `SetWindowPos` and `MoveWindow` inside `eqgame.exe` (per `Native/eqswitch-hook.cpp`). EQ's world-load DX device reset can change the window through paths the hook doesn't observe (style changes via `SetWindowLongPtr`, direct `WM_SIZE` dispatches, `ShowWindow` calls). When that happened, the window stayed in EQ's chosen dimensions until an unrelated event (next foreground change, manual Fix Windows, etc.) triggered re-apply — Nate's reported ~6 s of awkward unstyled window.
+
+WinEQ2 doesn't have this delay; presumably its in-process hook intercepts a richer event surface (WM_SIZE, style changes, etc.) so it catches every resize the instant EQ tries one. Bringing parity by extending the Native hook is the proper long-term fix, but a much cheaper one-line change is removing the C# safety-net's perf shortcuts.
+
+### Fix
+
+Two changes in `UI/TrayManager.cs` + one in `Core/WindowManager.cs`:
+
+1. **`guardInterval` is 500 ms always** (both call sites at `ClientListChanged` and `ReloadConfigCore`). Pre-v3.22.47 conditional `hookActive ? 5000 : 500` is gone — the rect-compare guard inside `ApplySlimTitlebarToAll` (v3.22.45) makes the loop a no-op when the in-process hook kept things aligned, so 500 ms costs ~3 cross-process kernel reads per client per tick (~36 reads/s for a 6-client team — negligible). When the hook DOES miss a resize, C# catches it within 500 ms instead of 5 s.
+
+2. **`ApplySlimTitlebarToAll` no longer skips injected clients.** The rect-compare guard inside the loop (the live-style/live-exStyle + GetWindowRect probe against `ComputeSlimTitlebarOuterRect`) already short-circuits the loop body when the live rect matches the expected slim rect, so injected clients whose hook DLL kept them sized correctly produce zero extra Win32 work. When the hook missed a resize, the C# guard re-applies via `ApplySlimTitlebar` — same cross-process primitive that's always been the safety net for non-injected clients.
+
+3. **`ApplySlimTitlebarToAll` short-circuits in multi-monitor mode** (post-T2/T3 verifier round catch). The method sizes every client to `GetTargetMonitor(true)` — a SINGLE configured target monitor. In multi-monitor mode that's wrong for the secondary client, which lives on a different monitor. Pre-v3.22.47 the injected-skip happened to mask this latent bug (in MM mode every client is hook-injected, so the skip swallowed the whole loop); removing the skip exposed it. The early-return at the top of the method (`if (Mode == "multimonitor") return`) restores correctness: in MM mode, `ArrangeMultiMonitor` + `UpdateHookConfigForPid` + the hook DLL own positioning; the C# guard belongs only to single-screen slim.
+
+### Trade-offs
+
+- **CPU cost:** 6 clients × 3 cross-process kernel reads × 2 ticks/s = ~36 calls/s. Negligible; no perceptible impact on either main thread or eqgame.exe.
+- **Hook DLL conflict:** the in-process hook is a MinHook inline-patch on user32!SetWindowPos *inside eqgame.exe's address space* (each process owns its own user32 mapping). Cross-process `SetWindowPos` from EQSwitch.exe transitions through the kernel via `NtUserSetWindowPos` and delivers a `WM_WINDOWPOSCHANGED` message into eqgame's queue — it never re-enters the patched user32 entry point in eqgame's process. So the in-process hook only sees EQ's own SetWindowPos attempts; the C# guard's cross-process calls are unhooked. The two layers stay independent — no flicker, no dueling. (T3-Sonnet noted that the previous CHANGELOG draft's "DefWindowProc dispatch path" wording was inaccurate; the correct mechanism is the kernel-syscall bypass described here.)
+- **`IsClientResponsive` cascade risk:** when many clients drift simultaneously (worst case: post-world-load DX reset on a 6-client team), the guard's `ApplySlimTitlebar` calls hit `IsClientResponsive` (100 ms `SendMessageTimeout`) per client on the WinForms-timer-owning UI thread. Worst-case 6 × 100 ms = 600 ms UI block in one tick. T3-Opus flagged this as a real risk; deferred — current real-world teams are 2-3 clients (= 200-300 ms worst case), within tolerance. A follow-up could background-thread the probe or batch with a global Stopwatch budget.
+- **Dead `injectedPids` parameter** (T2-Opus, T3-Opus): with the skip removed, the parameter is no longer read inside the method body. Kept on the signature for backward compat with the five call sites; cleanup follow-up not blocking this release.
+- **Bleed-once-per-PID dance dedupe (v3.22.46) unaffected.** That logic lives in `ApplyDeferredCosmetics`, not in the guard timer.
+
+### What about the X-button sliver loss in v3.22.46?
+
+Nate flagged that in v3.22.45 a sliver of the X (close) button used to be visible bleeding onto DISPLAY1. v3.22.46's adjacency clip removed that bleed — and the X sliver was the same pixels, so it disappeared too. This is a deliberate trade-off, accepted as "minor" by Nate. If the X-sliver visibility is ever wanted back, the right knob is `Layout.TitlebarOffset` (currently 13 → bigger value shows more of the caption inside primary monitor) — NOT undoing the adjacency clip.
+
+---
+
+## v3.22.46 — multi-monitor bleed-clip + post-login dance dedupe (2026-05-25)
+
+UI-only release; Native DLLs unchanged. Three field-reported issues from Nate's first real session on v3.22.45, fixed together because they share the same code paths (slim-titlebar apply + post-login cosmetics).
+
+### Symptoms
+
+1. **Window bleeds onto adjacent monitor.** v3.22.45 sized the outer rect 8 px past the monitor on every edge so the DWM frame-shadow zone landed off-desktop (invisible). On a single-monitor setup that works. On a multi-monitor setup the "off-desktop" pixels are actually the adjacent monitor — and the DWM shadow strip became visibly painted there.
+
+2. **Resize dance fires too often after entering game.** `ApplyDeferredCosmetics` ran `RaiseClientsAboveTaskbar` (the `TOPMOST↔NOTOPMOST` dance that triggers Win11 taskbar-collapse) on every `LoginCredentialsSent` (T+~7s) AND every `LoginComplete` (T+~45s deferred). For a 2-client team launch that's 4 dance events; each one visibly nudges every client's z-band.
+
+3. **Background-completed client steals focus from active client.** The dance briefly puts the just-completed PID into the TOPMOST band. Even with `SWP_NOACTIVATE`, USER32 paints the TOPMOST window above the foreground for one or two frames — visible as a flicker that disturbs the user actively playing on a different EQ window.
+
+### Fixes
+
+1. **Adjacency-aware bleed clipping (`Core/WindowManager.cs`).** New `ClampBleedsForAdjacency` static helper enumerates `IWindowsApi.GetAllMonitorBounds()` and clips the bleed extension to 0 on edges where another monitor abuts the target monitor (exact-pixel `Right==Left` / `Left==Right` / `Top==Bottom` check + parallel-axis overlap). Top edge is intentionally NOT clipped — the caption-visibility math (`captionVisible = clamp(titlebarOffset, 0, topBleed)`) depends on the outer rect extending `topBleed` px above the monitor. `ComputeSlimTitlebarOuterRect` now passes the clamped bleeds into the existing pure-math `ComputeOuterRectFromBleeds` — single change point covers all 6 callsites from v3.22.45.
+
+2. **`WindowedWidth`/`WindowedHeight` track adjacency-clipped visible client (`UI/EQClientSettingsForm.cs`).** New `SlimTitlebarVisibleClientSize` static helper translates `Screen.AllScreens` → `WinRect` list, reuses `WindowManager.ClampBleedsForAdjacency`, and returns the actual visible client size after adjacency clipping. `EnforceOverrides`'s slim block writes those dims so EQ's DX swap chain stays 1:1 with the visible client area — no bilinear-stretch smear when adjacency clips the outer inward by 8 px.
+
+3. **Post-login dance dedupe + active-EQ-other-PID skip (`UI/TrayManager.cs`).** New `_taskbarRaisedAfterLoginPids: HashSet<int>` field (lock-guarded; T3-Sonnet verifier flagged that `AutoLoginManager`'s `LoginCredentialsSent`/`LoginComplete` events have bare-fallback Invoke paths at lines 1024/2231/2396/3533 that fire on the background thread when `_syncContext` is null, racing the UI-thread `ClientLost` Remove — `TryClaimTaskbarRaise` / `DropTaskbarRaiseClaim` wrappers serialize access via `_taskbarRaisedLock`). `ApplyDeferredCosmetics` and the manual-launch path now gate `RaiseClientsAboveTaskbar` on TWO conditions:
+   - Dedupe-per-PID: the dance fires at most once per PID per session. Future fires (later autologin phase events, repeated manual triggers) log "already raised, skipping repeat" and no-op. Cleared on `ClientLost` so a recycled / re-launched PID gets its first-arrival dance back.
+   - Active-EQ-other-PID skip: if a DIFFERENT EQ client is currently foreground (user is actively playing it), skip the dance entirely for the just-completed PID. Its taskbar coverage will be re-applied the next time the user switches to it via SwitchToClient / click. The slim-titlebar guard timer + slim re-apply in `ApplyDeferredCosmetics` still run, so the window's *bounds* are correct on arrival — only the z-order dance is deferred.
+
+   Manual Fix Windows (`OnArrangeWindows`) and the sibling-close `ClientLost` recovery path intentionally bypass this dedupe — both are user-driven repair actions, not autologin one-shots.
+
+### Tests
+
+8 new adjacency cases added to `OuterRectMathTests.cs`: single-monitor passthrough, right-neighbor (Nate's setup), left-neighbor, 3-monitor primary-in-middle, non-overlapping (false-positive defense), corner-touch (half-open interval check), bottom-neighbor, and composition test confirming the Nate-setup outer rect is exactly `(-8, -18, 1928, 1106)` with `client.Right == monitor.Right - 8`. Existing 41 assertions from v3.22.45 pass unchanged — `ComputeOuterRectFromBleeds`'s signature didn't move; only `ComputeSlimTitlebarOuterRect`'s caller pre-clips the bleeds.
+
+### Behavioural notes
+
+- On a multi-monitor setup with the secondary to one side: an 8 px gap of desktop is now visible on the primary monitor's edge facing the secondary. Same baseline as pre-v3.22.45 except the DX 1:1 mapping is preserved so text doesn't smear.
+- Pure single-monitor users see no change from v3.22.45 — all bleeds pass through unchanged.
+- The Win11 taskbar-collapse fix (v3.22.32) still triggers once per PID per session. Subsequent z-order disturbances (sibling close, user-triggered Fix Windows) still re-fire the dance — only the autologin-driven multi-fire storm is suppressed.
+
+---
+
 ## v3.22.45 — Win11 DWM frame-bleed fix: kill the 1-px vertical text seam + desktop sliver on slim-titlebar windows (2026-05-24)
 
 UI-only release; Native DLLs unchanged. Field-reported visual bug, reproduced + root-caused + fixed in one session. No native rebuild required.
