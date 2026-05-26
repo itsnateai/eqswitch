@@ -42,7 +42,12 @@ public class TrayManager : IDisposable
     // (no clients yet) until the user happened to toggle MultiMonitor / PiP
     // / Settings — meaning the new opt-in eject path was effectively
     // unreachable from the tray menu right after launching clients.
-    private ToolStripMenuItem? _detachItem;
+    // v3.22.54: field retired — Detach Hooks menu item removed. Kept
+    // declared (initialized to null) so the 10 RefreshDetachMenuState
+    // callers stay valid without churn; the method early-returns and
+    // does nothing now. Re-introducing the menu item would just
+    // re-assign this field inside BuildContextMenu.
+    private ToolStripMenuItem? _detachItem = null;
     // v3.22.53: cache the Force-Kill submenu so UpdateClientMenu can rebuild
     // the per-client items below it without disposing it (would orphan the
     // DropDownOpening handler and the cached reference).
@@ -52,9 +57,10 @@ public class TrayManager : IDisposable
     // on every rebuild.
     private ToolStripSeparator? _clientsAdminSeparator;
     // v3.22.53: count of admin items at the top of the Clients submenu that
-    // UpdateClientMenu must preserve (do NOT dispose). Currently: forceKill +
-    // detach + separator = 3. Bump if you add more pre-list items.
-    private const int ClientsMenuAdminItemCount = 3;
+    // UpdateClientMenu must preserve (do NOT dispose). Bump if you add more
+    // pre-list items. v3.22.54: dropped 3 → 2 after Detach Hooks menu item
+    // removed (forceKill + separator now).
+    private const int ClientsMenuAdminItemCount = 2;
     private Font? _boldMenuFont;
 
     // Hidden window to receive TaskbarCreated message (explorer.exe restart recovery)
@@ -2180,32 +2186,18 @@ public class TrayManager : IDisposable
         _forceKillMenu.DropDownItems.Add("(scanning...)").Enabled = false;
         _clientsMenu.DropDownItems.Add(_forceKillMenu);
 
-        // v3.22.44 Gate #1 — explicit "Detach hooks from running clients" entry
-        // point. Eject path is no longer the Dispose default (see
-        // CleanupHookConfigOnly); this menu item is the ONLY way the user
-        // triggers DllInjector.Eject on running eqgame.exe processes from C#.
-        // Still inherently racy without Gate #4's Native-side detour critical
-        // section — surface the risk in the label + confirmation prompt so the
-        // user knows what they're consenting to. Only enabled when at least
-        // one process is currently tracked as injected.
-        // v3.22.53: clearer label + tooltip per Nate 2026-05-26 — he ran it
-        // once and the popup didn't make the purpose obvious. It's a
-        // clean-exit tool, not a crash-prevention tool: if eqgame is already
-        // corrupting itself (DX deadlock, zone-load OOM) detaching hooks
-        // won't save the client.
-        bool anyInjected = _injectedPids.Count > 0 || _di8InjectedPids.Count > 0;
-        _detachItem = new ToolStripMenuItem("🔌  Detach EQSwitch from Running Clients")
-        {
-            Enabled = anyInjected,
-            ToolTipText = anyInjected
-                ? "Lets EQSwitch fully release its window/input hooks from every running eqgame.exe so you can close EQSwitch without also closing the game.\nNote: this is a clean-exit tool, not a crash-prevention tool. If EQ is mid-render through one of our hooks the client may briefly stutter."
-                : "No injected eqgame.exe processes."
-        };
-        _detachItem.Click += (_, _) => OnDetachHooksMenuItem();
-        _clientsMenu.DropDownItems.Add(_detachItem);
+        // v3.22.54: Detach Hooks menu item removed per Nate 2026-05-26 —
+        // "i tried the detach hook again and the game was working but was
+        // minimized and it still crashed. so i dont think we need to provide
+        // the detach hook feature tbh". The underlying EjectFromAllInjectedClients
+        // method + _injectedPids tracking are kept (load-bearing for the
+        // hook DLL lifecycle: CleanupHookConfigOnly, the post-process-exit
+        // cleanup, etc.) but no user-facing surface invokes Eject anymore.
+        // Separator under the Force-Kill item is also gone since there's
+        // only one admin item left to separate from the client list.
 
-        // Separator under the two admin items. Cached so UpdateClientMenu
-        // can find/skip it during the rebuild.
+        // Separator between the single admin item (Force-Kill) and the
+        // per-client list below.
         _clientsAdminSeparator = new ToolStripSeparator();
         _clientsMenu.DropDownItems.Add(_clientsAdminSeparator);
 
@@ -3601,6 +3593,9 @@ public class TrayManager : IDisposable
         // take effect until restart. Mirror the SlimTitlebar copy.
         _config.Layout.SlimTitlebarSecondary = newConfig.Layout.SlimTitlebarSecondary;
         _config.Layout.TitlebarOffset = newConfig.Layout.TitlebarOffset;
+        // v3.22.54: horizontal nudge propagation (slim-mode 1-px DPI sliver fix).
+        // Live-applies on the next slim-titlebar guard-timer tick or foreground hook.
+        _config.Layout.HorizontalNudgePx = newConfig.Layout.HorizontalNudgePx;
         // v3.22.53: dark titlebar opt-in. Propagated here so a Settings →
         // Apply round-trip reflects without restart. The slim-titlebar guard
         // timer fires every 500–2000 ms so live clients pick it up on the
@@ -4517,55 +4512,14 @@ public class TrayManager : IDisposable
             : "No injected eqgame.exe processes.";
     }
 
-    private void OnDetachHooksMenuItem()
-    {
-        int hookCount = _injectedPids.Count;
-        int di8Count = _di8InjectedPids.Count;
-        if (hookCount == 0 && di8Count == 0)
-        {
-            ShowBalloon("No injected clients to detach.");
-            return;
-        }
-
-        // v3.22.53: rewritten per Nate 2026-05-26 — old copy led with
-        // "Eject" + FreeLibrary jargon, which didn't explain why you'd want
-        // this. Make the intent loud: this is a clean-exit hatch so you can
-        // close EQSwitch without taking eqgame down with it. NOT a crash
-        // prevention tool (if eqgame is already corrupting itself, detaching
-        // won't save it).
-        var result = MessageBox.Show(
-            $"Release EQSwitch from {hookCount + di8Count} running eqgame.exe process(es)?\n\n" +
-            "WHAT THIS DOES\n" +
-            "• Removes EQSwitch's window-manager + input hooks from each client.\n" +
-            "• After this, you can close EQSwitch and your clients keep running on their own.\n" +
-            "• Slim titlebar / multi-monitor positioning will stop being maintained.\n\n" +
-            "WHAT THIS DOES NOT DO\n" +
-            "• It does NOT prevent eqgame crashes. If a client is already hung or mid-crash, detaching won't save it.\n" +
-            "• It does NOT close eqgame. To kill a stuck client, use Force-Kill Stuck Client instead.\n\n" +
-            "RISK\n" +
-            "If EQ is mid-render through one of our hooked Win32 calls at the moment we eject, the client may stutter briefly or (rarely) crash. The normal Exit path avoids this by leaving hooks resident until eqgame itself closes — so only use Detach when you specifically need EQSwitch out of the picture before closing it.",
-            "Detach EQSwitch from running clients?",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Warning,
-            MessageBoxDefaultButton.Button2);
-        if (result != DialogResult.Yes)
-        {
-            FileLogger.Info("OnDetachHooksMenuItem: user cancelled");
-            return;
-        }
-
-        FileLogger.Warn($"OnDetachHooksMenuItem: user requested eject — hookPids={hookCount} di8Pids={di8Count}");
-        EjectFromAllInjectedClients();
-        // v3.22.44 r3.5 (R3-T2-Opus B1 MEDIUM): the Eject path clears
-        // _injectedPids / _di8InjectedPids but does NOT kill the eqgame.exe
-        // processes — so ClientLost / ClientListChanged won't fire to refresh
-        // the menu. Without this explicit refresh the "Detach Hooks" item
-        // stays falsely enabled with stale tooltip for up to 10s (until the
-        // ProcessManager poll's next ClientListChanged). Mirror the Add-site
-        // pattern from InjectPreResume/InjectHookDll.
-        RefreshDetachMenuState();
-        ShowBalloon("Hooks detached. Restart EQSwitch to re-inject.");
-    }
+    // v3.22.54: OnDetachHooksMenuItem deleted — there's no menu item left
+    // to fire it. EjectFromAllInjectedClients is kept (could be wired to a
+    // future programmatic exit path, sandbox smoke-test, or re-introduced
+    // menu surface) but currently has no callers. _detachItem stays nullable
+    // so the 10 RefreshDetachMenuState call sites scattered through the file
+    // safely no-op without churning every injection site. (Chesterton: those
+    // sites mark "moments when injected-PID set changes" which is useful
+    // information even without a UI consumer.)
 
     private void StopForegroundHook()
     {

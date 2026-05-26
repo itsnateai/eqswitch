@@ -1,5 +1,45 @@
 # Changelog
 
+## v3.22.54 — Horizontal 1px nudge, Detach removal, DarkTitlebar UX move, General-tab padding (2026-05-26)
+
+UI-only release; Native DLLs unchanged. Field-tested response to Nate's v3.22.53 upgrade session.
+
+### Changes
+
+1. **`Layout.HorizontalNudgePx` config + UI** — new ±10 px slim-mode horizontal shift. User reported a 1 px desktop sliver on the RIGHT edge of slim-titlebar windows with the LEFT edge flush. Setting `HorizontalNudgePx = 1` shifts the entire window +1 px right (gap moves from right to left edge; right becomes flush). Default 0. Applied in `ComputeSlimTitlebarOuterRect` — the single per-monitor entry point — so every slim apply path picks it up uniformly (single-screen, multi-monitor, foreground hook, guard timer). Surfaced in Settings → Video → Offsets... dialog with a section divider distinguishing slim-mode (Horizontal Nudge) from non-slim mode (Offset X/Y/Top Offset). The latter three only take effect when Fullscreen Window is OFF — added explicit hint copy so users don't tweak fields that do nothing in their current config.
+
+2. **Detach Hooks menu item removed.** User: *"i tried the detach hook again and the game was working but was minimized and it still crashed. so i dont think we need to provide the detach hook feature tbh"*. Pulled the user-facing surface from the Clients submenu + the `OnDetachHooksMenuItem` confirmation MessageBox. `EjectFromAllInjectedClients` method + `_injectedPids` tracking + `RefreshDetachMenuState` (now a no-op) kept in place — load-bearing for the hook DLL lifecycle and trivially re-attachable to a programmatic surface if needed later. `ClientsMenuAdminItemCount` dropped 3 → 2 (Force-Kill + separator only).
+
+3. **DarkTitlebar checkbox promoted from Wrapper dialog to Video tab → Window Style card** at the bottom under "Maximize on Launch". User: feature didn't appear to work (turned out it was just never enabled — default off, no Layout fields in config). Moving it from the buried two-clicks-deep "Advanced..." dialog up to the main Window Style card makes it discoverable. Hint: *"DWM immersive dark caption (Win10 1809+/11)"*. Card height bumped 112 → 138 to fit. Removed the chkDark local, dialog growth (+42 px), reset entry, and OK write-back from `ShowWrapperDialog`.
+
+4. **General tab Right click menu row** — added 8 px padding above so it reads as a distinct section rather than a continuation of the Exe/Args row above. Card height 148 → 156, advance 156 → 164. User screenshot showed the rows sitting flush.
+
+### Why the Window Offsets dialog reorganized
+
+User asked what the Offset X / Offset Y / Top Offset fields actually do. They save to `eqclient.ini` (`XOffset`, `YOffset`) or `_config.Layout.TopOffset`, which EQ honors only when our slim-titlebar math ISN'T enforcing window position. With Fullscreen Window (slim) ON — the default — our hook DLL + `ComputeSlimTitlebarOuterRect` override EQ's position immediately on launch, so the three fields are effectively dead UI in default config. The new section divider + mode-gating hint copy makes this loud rather than silent.
+
+### Verifier rounds (post-implementation hardening)
+
+**Round 1 → fixes:**
+- **CRITICAL (T3 Sonnet):** Window Style card height bumped 112 → 138 for the new Dark Titlebar row but the post-card advance `y += 120` was left stale → Preferences card overlapped Window Style by 18 px, painting over the Dark Titlebar checkbox + conflict hint. Fixed: `y += 146` to preserve the 8 px historical gap.
+- **IMPORTANT (T3 Sonnet + T3 Opus convergent):** `VideoResetDefaults` cleared `TopOffset` but skipped `_nudHorizontalNudge`. Same class of per-layout offset — inconsistent behavior. Fixed: added `_nudHorizontalNudge.Value = 0;` next to the other resets.
+- **MINOR (T3 Opus):** Stale `_chkDarkTitlebar` field comment still referenced the Wrapper Settings dialog after the relocation. Updated.
+
+**Round 2 → fixes:**
+- **IMPORTANT (T2 Opus + T3 Opus convergent):** Naive `x += nudge` post-`ClampBleedsForAdjacency` translates the outer rect uniformly. With `HorizontalNudgePx = +1` and a right-adjacent neighbor monitor, the right edge pushes 1 px onto the neighbor — re-introduces the exact v3.22.46 cross-monitor bleed bug. Fixed: when nudge direction matches a clipped edge (adjacency), narrow `w` by the nudge magnitude so the window translates WITHIN the monitor instead of overflowing. Non-adjacent edge: translate normally.
+- **IMPORTANT (T3 Opus):** The `AdjustWindowRectEx` fallback branch returned early with no nudge applied — silent failure in the exact mode the nudge exists to mitigate ("Win11 desktop sliver"). Fixed: apply nudge in the fallback tuple + log the applied value.
+
+**Round 3 → fixes:**
+- **CRITICAL (T1 Sonnet + T1 Opus + T3 Opus convergent):** round-2's left-clipped branch did `x += nudge; w += nudge;` but with `leftClipped=true` the pre-shift `x` is already `monitor.Left`, so `x += nudge` (negative) pushed `outer.Left` past `monitor.Left` onto the left-adjacent monitor — the exact v3.22.46 regression the adjacency fix was supposed to prevent. Comment claimed "outer.Left stays at monitor.Left" but code did the opposite. Fixed: drop `x += nudge`, keep only `w += nudge` (narrows right edge so visible content shifts left without crossing the left adjacency). Comment rewritten with the correct geometry explanation.
+
+**Round 4 verification:** clean build.
+
+### Build verification
+
+`dotnet build -c Release` — 0 warnings / 0 errors. No new Native changes; existing `eqswitch-hook.dll` + `eqswitch-di8.dll` ship unchanged.
+
+---
+
 ## v3.22.53 — Dalaya.exe shortcut, Clients submenu reshuffle, `\` debounce, titlebar visibility, dark titlebar, LaunchOne autologin opt-in (2026-05-26)
 
 UI + small Core release; Native DLLs unchanged. Bundled response to Nate's field session covering 8 items.

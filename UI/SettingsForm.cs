@@ -68,8 +68,10 @@ public class SettingsForm : Form
     // ─── Window Style controls (on Video tab)
     private CheckBox _chkSlimTitlebar = null!;
     // v3.22.53: dark immersive titlebar (DWMWA_USE_IMMERSIVE_DARK_MODE).
-    // Lives in the Wrapper Settings dialog alongside the other slim-titlebar
-    // knobs since it's only meaningful when SlimTitlebar exposes caption pixels.
+    // v3.22.54: promoted from the Wrapper Settings dialog to the main Video
+    // tab Window Style card so the toggle is discoverable rather than buried
+    // two clicks deep. Still only meaningful when SlimTitlebar exposes caption
+    // pixels — but with DarkTitlebar default-off the user opts in deliberately.
     private CheckBox _chkDarkTitlebar = null!;
     private NumericUpDown _nudTitlebarOffset = null!;
     private NumericUpDown _nudBottomOffset = null!;
@@ -170,6 +172,10 @@ public class SettingsForm : Form
     private NumericUpDown _nudVideoOffsetX = null!;
     private NumericUpDown _nudVideoOffsetY = null!;
     private NumericUpDown _nudVideoTopOffset = null!;
+    // v3.22.54: slim-mode horizontal nudge — the only one of the four
+    // offsets that takes effect with Fullscreen Window (slim titlebar)
+    // enabled. Maps to Layout.HorizontalNudgePx, clamped ±10.
+    private NumericUpDown _nudHorizontalNudge = null!;
     private CheckBox _chkVideoWindowed = null!;
     private CheckBox _chkVideoMultiMon = null!;
     private ComboBox _cboVideoPrimaryMon = null!;
@@ -426,7 +432,10 @@ public class SettingsForm : Form
         // ─── EverQuest Setup card ────────────────────────────────
         // v3.22.49: height bumped 118 → 148 to fit the new "Right click menu:" row
         // below Exe/Args. Field mirrors _txtShowMenu on the Hotkeys tab.
-        var cardEQ = DarkTheme.MakeCard(page, "⚔", "EverQuest Setup", DarkTheme.CardGreen, 10, y, 480, 148);
+        // v3.22.54: bumped 148 → 156 to add 8 px padding between the Args
+        // textbox and the Right click menu row (Nate screenshot 2026-05-26 —
+        // the rows were sitting flush and read as a single group).
+        var cardEQ = DarkTheme.MakeCard(page, "⚔", "EverQuest Setup", DarkTheme.CardGreen, 10, y, 480, 156);
         int cy = 30;
 
         // Switch key — prominent, right under card title
@@ -468,7 +477,9 @@ public class SettingsForm : Form
         _txtExeName = DarkTheme.AddCardTextBox(cardEQ, I, cy, 100, 50);
         DarkTheme.AddCardLabel(cardEQ, "Args:", 240, cy);
         _txtArgs = DarkTheme.AddCardTextBox(cardEQ, I2, cy, 100, 100);
-        cy += R;
+        // v3.22.54: extra 8 px padding before the Right click menu row so it
+        // reads as a distinct section, not a continuation of the Exe/Args row.
+        cy += R + 8;
 
         // v3.22.49: Right-click-menu hotkey. Pops the tray context menu above the
         // system clock without opening Start (bypasses the Win11 z-band issue
@@ -483,7 +494,10 @@ public class SettingsForm : Form
         };
         DarkTheme.AddCardHint(cardEQ, "pop menu above clock", 250, cy + 2);
 
-        y += 156;
+        // v3.22.54: card-advance matched to card height (was 156 paired with
+        // a 148 card; now 164 paired with the 156 card so the next card
+        // doesn't crowd the Right click menu row).
+        y += 164;
 
         // ─── Preferences card ────────────────────────────────────
         var cardPrefs = DarkTheme.MakeCard(page, "\u2699", "Preferences", DarkTheme.CardGold, 10, y, 480, 38);
@@ -1567,6 +1581,7 @@ public class SettingsForm : Form
         _chkVideoWindowed.Checked = _config.EQClientIni.ForceWindowedMode;
         _chkVideoMultiMon.Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
         _nudVideoTopOffset.Value = DarkTheme.ClampNud(_nudVideoTopOffset, _config.Layout.TopOffset);
+        _nudHorizontalNudge.Value = DarkTheme.ClampNud(_nudHorizontalNudge, _config.Layout.HorizontalNudgePx);
         PopulateVideoFromIni();
     }
 
@@ -1784,6 +1799,7 @@ public class SettingsForm : Form
                 TargetMonitor = _cboVideoPrimaryMon.SelectedIndex >= 0 ? _cboVideoPrimaryMon.SelectedIndex : 0,
                 SecondaryMonitor = _cboVideoSecondaryMon.SelectedIndex <= 0 ? -1 : _cboVideoSecondaryMon.SelectedIndex - 1,
                 TopOffset = (int)_nudVideoTopOffset.Value,
+                HorizontalNudgePx = (int)_nudHorizontalNudge.Value,
                 SlimTitlebar = _chkSlimTitlebar.Checked,
                 DarkTitlebar = _chkDarkTitlebar.Checked,
                 TitlebarOffset = (int)_nudTitlebarOffset.Value,
@@ -3084,6 +3100,7 @@ public class SettingsForm : Form
         _nudVideoOffsetX = new NumericUpDown { Minimum = -5000, Maximum = 5000, Value = 0 };
         _nudVideoOffsetY = new NumericUpDown { Minimum = -5000, Maximum = 5000, Value = 0 };
         _nudVideoTopOffset = new NumericUpDown { Minimum = -100, Maximum = 200, Value = _config.Layout.TopOffset };
+        _nudHorizontalNudge = new NumericUpDown { Minimum = -10, Maximum = 10, Value = _config.Layout.HorizontalNudgePx };
 
         var btnReset = DarkTheme.AddCardButton(cardRes, "🔄 Reset", 370, cy, 95);
         btnReset.Click += (_, _) => VideoResetDefaults();
@@ -3142,7 +3159,9 @@ public class SettingsForm : Form
         y += 136;
 
         // ─── Window Style card ───────────────────────────────────
-        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 112);
+        // v3.22.54: card height bumped 112 → 138 to fit the new Dark Titlebar
+        // row below Maximize on Launch.
+        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 138);
         cy = 32;
 
         const int hintX = 260;
@@ -3162,6 +3181,13 @@ public class SettingsForm : Form
 
         _chkMaximizeWindow = DarkTheme.AddCardCheckBox(cardStyle, "Maximize on Launch", L, cy);
         DarkTheme.AddCardHint(cardStyle, "Sets Maximized=1 in eqclient.ini", hintX, cy + 2);
+        cy += 26;
+
+        // v3.22.54: DarkTitlebar promoted from the Advanced wrapper dialog up
+        // to the main Window Style card per Nate 2026-05-26 — it's a regular
+        // visual preference that shouldn't be buried two clicks deep.
+        _chkDarkTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Dark Titlebar", L, cy);
+        DarkTheme.AddCardHint(cardStyle, "DWM immersive dark caption (Win10 1809+/11)", hintX, cy + 2);
         cy += 22;
 
         _lblStyleDisabledHint = new Label
@@ -3202,10 +3228,8 @@ public class SettingsForm : Form
         _nudTitlebarOffset = new NumericUpDown { Value = 22, Minimum = 0, Maximum = 40 };
         _nudBottomOffset = new NumericUpDown { Value = 22, Minimum = 0, Maximum = 100 };
         _chkUseHook = new CheckBox();
-        // v3.22.53: detached storage checkbox — actual UI lives inside
-        // ShowWrapperDialog (chkDark below). Stored here so PopulateFromConfig
-        // / BuildAppConfig have a stable target between dialog opens.
-        _chkDarkTitlebar = new CheckBox();
+        // v3.22.54: _chkDarkTitlebar is now a real Window Style card child
+        // (constructed above near _chkMaximizeWindow), not detached storage.
         btnWrapper.Click += (_, _) => ShowWrapperDialog();
 
         _chkSlimTitlebar.CheckedChanged += (_, _) =>
@@ -3228,7 +3252,12 @@ public class SettingsForm : Form
 
         _chkMaximizeWindow.CheckedChanged += (_, _) => UpdateStyleHint();
 
-        y += 120;
+        // v3.22.54 round-1 fix (T3 Sonnet CRITICAL): card height bumped
+        // 112 → 138 for the new Dark Titlebar row, but the post-card
+        // advance was left at +120 → Preferences card overlapped Window
+        // Style by 18 px, painting over the Dark Titlebar checkbox + hint.
+        // Bumped to +146 to preserve the 8 px historical gap (138 + 8).
+        y += 146;
 
         // ─── Preferences card ────────────────────────────────────
         // Left: Show Tooltips toggle (moved from Paths → Startup card — pairs
@@ -3253,10 +3282,19 @@ public class SettingsForm : Form
 
     private void ShowOffsetsDialog()
     {
+        // v3.22.54: dialog reorganized into two sections.
+        //   Slim-mode (Fullscreen Window ON, default): only Horizontal Nudge
+        //     applies — our hook DLL + slim-titlebar math override the
+        //     eqclient.ini X/Y positions immediately on launch.
+        //   Non-slim mode (Fullscreen Window OFF): Offset X/Y/Top Offset
+        //     take effect — they write to eqclient.ini, which EQ honors
+        //     when SlimTitlebar isn't enforcing its own position.
+        // Hints now make the mode-gating explicit so users don't tweak
+        // values that do nothing in their current config.
         using var dlg = new Form
         {
             Text = "Window Offsets",
-            Size = new Size(300, 184),
+            Size = new Size(340, 268),
             FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition = FormStartPosition.CenterParent,
             MaximizeBox = false,
@@ -3266,26 +3304,39 @@ public class SettingsForm : Form
         DarkTheme.StyleForm(dlg, dlg.Text, dlg.Size);
 
         int y = 15;
-        const int L = 15, I = 120;
+        const int L = 15, I = 140;
+
+        bool slim = _chkSlimTitlebar.Checked;
+        string slimNote = slim ? " (Fullscreen Window ON — this one)" : "";
+        string nonSlimNote = slim ? "" : " (Fullscreen Window OFF — these)";
+
+        DarkTheme.AddHint(dlg, $"Slim-titlebar mode{slimNote}:", L, y);
+        y += 18;
+
+        DarkTheme.AddLabel(dlg, "Horizontal Nudge:", L, y + 2);
+        var nudHoriz = DarkTheme.AddNumeric(dlg, I, y, 60, _nudHorizontalNudge.Value, -10, 10);
+        DarkTheme.AddHint(dlg, "1 = shift +1px right", 210, y + 4);
+        y += 32;
+
+        DarkTheme.AddHint(dlg, $"Normal mode{nonSlimNote}:", L, y);
+        y += 18;
 
         DarkTheme.AddLabel(dlg, "Offset X:", L, y + 2);
         var nudX = DarkTheme.AddNumeric(dlg, I, y, 70, _nudVideoOffsetX.Value, -5000, 5000);
-        DarkTheme.AddHint(dlg, "px from left edge", 200, y + 4);
+        DarkTheme.AddHint(dlg, "px from left edge", 220, y + 4);
         y += 28;
 
         DarkTheme.AddLabel(dlg, "Offset Y:", L, y + 2);
         var nudY = DarkTheme.AddNumeric(dlg, I, y, 70, _nudVideoOffsetY.Value, -5000, 5000);
-        DarkTheme.AddHint(dlg, "px from top edge", 200, y + 4);
+        DarkTheme.AddHint(dlg, "px from top edge", 220, y + 4);
         y += 28;
 
         DarkTheme.AddLabel(dlg, "Top Offset:", L, y + 2);
         var nudTop = DarkTheme.AddNumeric(dlg, I, y, 70, _nudVideoTopOffset.Value, -100, 200);
-        DarkTheme.AddHint(dlg, "px down from top", 200, y + 4);
-        y += 32;
+        DarkTheme.AddHint(dlg, "px down from top", 220, y + 4);
+        y += 28;
 
-        DarkTheme.AddHint(dlg, "Most users can leave these at 0.", L, y);
-        y += 16;
-        DarkTheme.AddHint(dlg, "Saves to eqclient.ini on Apply. Requires EQ restart.", L, y);
+        DarkTheme.AddHint(dlg, "X/Y/TopOffset save to eqclient.ini; EQ restart req.", L, y);
         y += 22;
 
         var btnOK = DarkTheme.MakePrimaryButton("Save", L, y);
@@ -3295,6 +3346,7 @@ public class SettingsForm : Form
             _nudVideoOffsetX.Value = nudX.Value;
             _nudVideoOffsetY.Value = nudY.Value;
             _nudVideoTopOffset.Value = nudTop.Value;
+            _nudHorizontalNudge.Value = nudHoriz.Value;
             dlg.DialogResult = DialogResult.OK;
         };
         dlg.Controls.Add(btnOK);
@@ -3343,28 +3395,22 @@ public class SettingsForm : Form
         chkHook.Checked = _chkUseHook.Checked;
         y += 20;
         DarkTheme.AddHint(dlg, "Hooks SetWindowPos inside EQ", L, y);
-        y += 22;
-
-        // v3.22.53: dark immersive titlebar (DWMWA_USE_IMMERSIVE_DARK_MODE)
-        var chkDark = DarkTheme.AddCheckBox(dlg, "Dark Titlebar", L, y);
-        chkDark.Checked = _chkDarkTitlebar.Checked;
-        y += 20;
-        DarkTheme.AddHint(dlg, "Win10 1809+/Win11 only — DWM dark caption", L, y);
         y += 28;
 
-        // Grow the dialog so the new control fits the existing layout.
-        dlg.Size = new Size(dlg.Width, dlg.Height + 42);
+        // v3.22.54: Dark Titlebar moved out of this dialog up to the main
+        // Window Style card on the Video tab. Removed the local chkDark, the
+        // dialog growth, the reset entry, and the OK write-back.
 
         var btnReset = DarkTheme.MakeButton("Reset Defaults", DarkTheme.BgMedium, L, y);
         btnReset.Width = 110;
         btnReset.Click += (_, _) =>
         {
-            // Defaults track AppConfig.WindowLayout (v3.22.53):
-            //   TitlebarOffset = 18, BottomOffset = 21, UseHook = true, DarkTitlebar = false.
+            // Defaults track AppConfig.WindowLayout:
+            //   TitlebarOffset = 18, BottomOffset = 21, UseHook = true.
+            //   DarkTitlebar default lives on the Window Style card now.
             nudTitle.Value = 18;
             nudBottom.Value = 21;
             chkHook.Checked = true;
-            chkDark.Checked = false;
         };
         dlg.Controls.Add(btnReset);
         y += 36;
@@ -3376,7 +3422,6 @@ public class SettingsForm : Form
             _nudTitlebarOffset.Value = nudTitle.Value;
             _nudBottomOffset.Value = nudBottom.Value;
             _chkUseHook.Checked = chkHook.Checked;
-            _chkDarkTitlebar.Checked = chkDark.Checked;
             dlg.DialogResult = DialogResult.OK;
         };
         dlg.Controls.Add(btnOK);
@@ -3666,6 +3711,10 @@ public class SettingsForm : Form
         _chkVideoWindowed.Checked = true;
         _chkVideoMultiMon.Checked = false;
         _nudVideoTopOffset.Value = 0;
+        // v3.22.54 round-1 fix (T3 Sonnet + T3 Opus convergent IMPORTANT):
+        // same class of per-layout offset as TopOffset — must reset along
+        // with the other three or Reset Defaults silently keeps the nudge.
+        _nudHorizontalNudge.Value = 0;
     }
 
     private void PopulateVideoPresets()

@@ -1264,9 +1264,16 @@ public class WindowManager
         // clobber it. Keep this fallback branch simple.
         if (!ok)
         {
-            FileLogger.Warn($"ComputeSlimTitlebarOuterRect: AdjustWindowRectEx returned false — falling back to pre-v3.22.45 math (may leave Win11 desktop sliver)");
+            // v3.22.54 round-2 fix (T3 Opus IMPORTANT): apply nudge in the
+            // fallback path too. Skipping it here was silent — the user
+            // configured HorizontalNudgePx to fix the exact "Win11 desktop
+            // sliver" the fallback comment warns about, so dropping the
+            // nudge here is exactly the wrong place to drop it. Loud-fail
+            // contract per [[reference_loud_runtime_silent_rest]].
+            int fallbackNudge = _config.Layout.HorizontalNudgePx;
+            FileLogger.Warn($"ComputeSlimTitlebarOuterRect: AdjustWindowRectEx returned false — falling back to pre-v3.22.45 math (may leave Win11 desktop sliver). HorizontalNudgePx={fallbackNudge} applied to fallback rect.");
             return (
-                monitor.Left,
+                monitor.Left + fallbackNudge,
                 monitor.Top - titlebarOffset,
                 monitor.Right - monitor.Left,
                 (monitor.Bottom - monitor.Top) + titlebarOffset);
@@ -1294,7 +1301,66 @@ public class WindowManager
         var (effLeftBleed, effRightBleed, effBottomBleed) = ClampBleedsForAdjacency(
             monitor, allMonitors, leftBleed, rightBleed, bottomBleed);
 
-        return ComputeOuterRectFromBleeds(monitor, titlebarOffset, effLeftBleed, topBleed, effRightBleed, effBottomBleed);
+        var (x, y, w, h) = ComputeOuterRectFromBleeds(monitor, titlebarOffset, effLeftBleed, topBleed, effRightBleed, effBottomBleed);
+
+        // v3.22.54: apply horizontal nudge. Win11 multi-monitor DPI rounding can
+        // leave a 1-px desktop sliver on one edge of the client area while the
+        // other edge sits flush against the monitor border. Setting
+        // Layout.HorizontalNudgePx = +1 shifts the whole window right by 1
+        // (gap moves from right edge to left edge); -1 shifts it left. Field
+        // clamped to ±10 in Validate. Applied here (the single per-monitor
+        // entry point for slim-titlebar outer-rect math) so single-screen,
+        // multi-monitor, ApplySlimTitlebarToAll, ArrangeMultiMonitor, and
+        // ResizeToCurrentMonitors all pick it up uniformly.
+        //
+        // v3.22.54 round-2 fix (T2 Opus + T3 Opus convergent IMPORTANT):
+        // a naive `x += nudge` translates the WHOLE outer rect uniformly.
+        // On the adjacent-monitor edge — where ClampBleedsForAdjacency
+        // already set the bleed to 0 to keep the window from painting onto
+        // the neighbor — translating past that boundary re-introduces the
+        // exact v3.22.46 bleed-onto-adjacent-monitor regression. When the
+        // nudge direction matches a clipped edge, NARROW w instead of
+        // letting the outer rect overflow. Net effect: the window shifts
+        // within the monitor (gap appears on the opposite edge as intended)
+        // without crossing the adjacency boundary.
+        int nudge = _config.Layout.HorizontalNudgePx;
+        bool leftClipped  = effLeftBleed  != leftBleed;  // ClampBleedsForAdjacency zeroed it
+        bool rightClipped = effRightBleed != rightBleed;
+        if (nudge > 0 && rightClipped)
+        {
+            // Right adjacency: outer.Right is pinned at monitor.Right. Shift x
+            // right by nudge AND narrow w by the same amount so outer.Right
+            // stays at the boundary. Visible content shifts right; gap appears
+            // on the left edge of the monitor.
+            x += nudge;
+            w -= nudge;
+        }
+        else if (nudge < 0 && leftClipped)
+        {
+            // Left adjacency: outer.Left is pinned at monitor.Left (effLeftBleed=0
+            // means x is already at monitor.Left). To "shift left" visually
+            // (gap on right edge), DON'T touch x — narrow w from the right
+            // by |nudge| instead. Round-3 fix (T1 Sonnet + T1 Opus + T3 Opus
+            // convergent CRITICAL): the previous shape did `x += nudge` AND
+            // `w += nudge` which pushed outer.Left across monitor.Left into
+            // the left neighbor — the exact v3.22.46 regression. The
+            // right-clipped mirror narrows on the SAME side as the shift
+            // because the shift moves AWAY from the clipped side there; here
+            // the shift moves TOWARD the clipped side, so the analog is to
+            // not shift at all and only narrow on the unclipped side.
+            w += nudge;  // nudge < 0 narrows w by |nudge|; x unchanged
+        }
+        else
+        {
+            // No adjacency in the nudge direction — translate normally.
+            // Reachable cases: nudge=0 (no-op), nudge>0 with no right
+            // adjacency, nudge<0 with no left adjacency. Off-screen bleed
+            // on the side away from a clipped edge is benign (the screen
+            // clips it; no neighbor to paint onto).
+            x += nudge;
+        }
+
+        return (x, y, w, h);
     }
 
     /// <summary>

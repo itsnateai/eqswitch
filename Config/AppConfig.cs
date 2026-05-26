@@ -339,6 +339,10 @@ public class AppConfig
         Layout.TopOffset = Math.Clamp(Layout.TopOffset, -200, 200);
         Layout.TitlebarOffset = Math.Clamp(Layout.TitlebarOffset, 0, 40);
         Layout.BottomOffset = Math.Clamp(Layout.BottomOffset, 0, 100);
+        // v3.22.54: clamp the horizontal nudge to a sane range. Values
+        // beyond ±10 are almost certainly a config typo; the legitimate
+        // Win11-DPI-sliver fix is ±1.
+        Layout.HorizontalNudgePx = Math.Clamp(Layout.HorizontalNudgePx, -10, 10);
 
         Affinity.LaunchRetryCount = Math.Clamp(Affinity.LaunchRetryCount, 0, 20);
         Affinity.LaunchRetryDelayMs = Math.Clamp(Affinity.LaunchRetryDelayMs, 500, 30000);
@@ -520,6 +524,17 @@ public class WindowLayout
     /// Equivalent to AHK's FIX_TOP_OFFSET — adjusts for taskbar/title bars/bezels.
     /// </summary>
     public int TopOffset { get; set; } = 0;
+
+    /// <summary>
+    /// v3.22.54 — horizontal pixel nudge added to the slim-titlebar outer.X.
+    /// On some Win11 multi-monitor setups the DPI rounding leaves a 1 px
+    /// desktop sliver on one edge of the client area while the other edge
+    /// sits flush against the monitor border. Setting this to +1 shifts the
+    /// whole window one pixel right (gap moves from right edge to left edge);
+    /// -1 shifts it left. Clamped to [-10, 10] in Validate. Default 0.
+    /// Only applies in slim-titlebar mode.
+    /// </summary>
+    public int HorizontalNudgePx { get; set; } = 0;
 
     /// <summary>
     /// Current layout mode: "single" (all on one monitor) or "multimonitor" (one per monitor).
