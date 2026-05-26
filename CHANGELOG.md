@@ -1,5 +1,35 @@
 # Changelog
 
+## v3.22.55 — Apply slim-titlebar during autologin (login-screen offset fix) (2026-05-26)
+
+UI-only release; Native DLLs unchanged. Field-tested response to Nate's v3.22.54 right-click → Launch client screenshot.
+
+### What changed
+
+`TrayManager.ClientDiscovered` previously early-returned **all** window manipulation when `AutoLoginManager.IsLoginActive(pid)` was true — slim-titlebar style+position, taskbar dance, and hook-config refresh all deferred to `ApplyDeferredCosmetics` at `LoginCredentialsSent` (T+~7 s). With `WindowedWidth/Height` in `eqclient.ini` written as slim-titlebar *visible-client* values (v3.22.45/46 bleed compensation), EQ's login screen renders with **normal titlebar non-client adornments** wrapped around those slim-mode client dims for the full pre-slim window — visible as the "big gap right, slightly off-screen left" symptom on right-click → Launch client (which routes through `AutoLoginManager` per v3.22.53's `DefaultLaunchOneAccount` opt-in).
+
+v3.22.55 splits the autologin gate into two tiers:
+
+- **Slim-titlebar (style + position) now applies at `ClientDiscovered` even during autologin.** v3.5.0's 3-layer focus defense (inline `GetForegroundWindow` spoof + WndProc subclass blocking `WM_KILLFOCUS`/`WM_ACTIVATEAPP(FALSE)` + activation blast) catches any focus loss `SetWindowLongPtr`/`SetWindowPos` might trigger. `ApplyDeferredCosmetics` already runs the same code path at T+~7 s mid-credential-typing — if it's safe then, it's safer at T+~1.5 s before credential typing starts.
+- **Taskbar dance + `SwitchToClient` foreground transfer still defer** to `ApplyDeferredCosmetics`'s gated path. Those are the parts that disturb DirectInput cooperative-level handoff (z-band reorder while dinput8 is mid-cred-input → focus spoof can race). Also avoids burning the PID's `TryClaimTaskbarRaise` dedupe slot so the deferred fire still runs.
+- **Hook-config refresh** is reachable now too, but no behavior change for autologin — `UpdateHookConfig`'s internal `IsLoginActive` gate (TrayManager.cs L1107) still filters autologin clients out, so the call is a no-op for them. Non-autologin paths that race `ClientDiscovered` against launch-time `HookConfigWriter` writes pick up the refresh as before.
+
+### Why this is safe
+
+The replaced early-return was over-broad — its comment listed `SetWindowPos`/`SetWindowLongPtr`/`CreateRemoteThread` as the interference surface, but only the third one (`CreateRemoteThread`) is genuinely autologin-hostile (DLL injection mid-typing) and that hasn't run from `ClientDiscovered` since v3.4.3 moved injection to `PreResumeCallback`. The other two are already invoked during autologin at T+~7 s by `ApplyDeferredCosmetics` without issue.
+
+### Files
+
+- `UI/TrayManager.cs` — `ClientDiscovered` handler (autologin gate split, ~30 lines edited, ~60 lines of justification comments added).
+- `EQSwitch.csproj` — version 3.22.54 → 3.22.55.
+- `CHANGELOG.md` — this entry.
+
+### Known not-yet-addressed
+
+- **Background client flashes twice on Launch Team after both chars in-game** (Nate 2026-05-26). Hypothesis: `RaiseClientsAboveTaskbar` does TOPMOST↔NOTOPMOST on every client in the list, so PID1's dance drags PID2 through it too — v3.22.46's gate-2 active-EQ-other-PID skip suppresses PID2's *own* trigger but not its participation in PID1's list. Deferred to a follow-up — applying slim earlier here may change flash timing, so worth observing post-v3.22.55 before piling on a fix.
+
+---
+
 ## v3.22.54 — Horizontal 1px nudge, Detach removal, DarkTitlebar UX move, General-tab padding (2026-05-26)
 
 UI-only release; Native DLLs unchanged. Field-tested response to Nate's v3.22.53 upgrade session.

@@ -535,11 +535,29 @@ public class TrayManager : IDisposable
             // causes the game to lose foreground and minimize itself
             _affinityManager.ScheduleRetry(c);
 
-            // Defer all window manipulation when auto-login is active —
-            // SetWindowPos/SetWindowLongPtr/CreateRemoteThread can interfere
-            // with the DirectInput login sequence.
-            if (_autoLoginManager.IsLoginActive(c.ProcessId))
-                return;
+            // v3.22.55: split the prior unconditional autologin-skip into two
+            // tiers. Pre-v3.22.55 the entire block (slim-titlebar style+pos,
+            // hook-config refresh, and the topmost dance) early-returned when
+            // autologin was active — leaving the login-screen window sized to
+            // the slim outer rect's visible-client values (eqclient.ini per
+            // v3.22.45/46) but with NORMAL titlebar non-client adornments, so
+            // the user saw 7+ seconds of "big gap right, slightly off-screen
+            // left" until LoginCredentialsSent (T+~7s) → ApplyDeferredCosmetics
+            // re-applied slim. Nate's 2026-05-26 right-click → Launch client
+            // screenshot.
+            //
+            // Slim-titlebar (SetWindowLongPtr style + SetWindowPos position
+            // with SWP_NOACTIVATE) is safe during autologin: v3.5.0's 3-layer
+            // focus defense (inline GetForegroundWindow spoof + WndProc
+            // subclass blocking WM_KILLFOCUS/WM_ACTIVATEAPP(FALSE) + activation
+            // blast) catches any focus loss the style change might trigger, and
+            // ApplyDeferredCosmetics already runs the same code path at T+~7s
+            // mid-credential-typing without issues. The topmost dance +
+            // SwitchToClient foreground transfer ARE the parts that disturb
+            // DirectInput cooperative level handoff (z-band reorder while
+            // dinput8 is mid-cred-input → spoof can race), so those still
+            // defer to ApplyDeferredCosmetics's gated path.
+            bool autologinActive = _autoLoginManager.IsLoginActive(c.ProcessId);
 
             // Apply slim titlebar immediately so the window covers the taskbar
             // from the moment it's discovered — don't wait for the guard timer.
@@ -572,23 +590,49 @@ public class TrayManager : IDisposable
                 // first-arrival paths, so a manual launch followed by an
                 // autologin LoginComplete for the same PID shouldn't fire two
                 // dances. _taskbarRaisedAfterLoginPids is checked here too.
-                var activeClient = _processManager.GetActiveClient();
-                bool eqAlreadyForeground = activeClient != null;
-                bool foregroundIsDifferentEQ = activeClient != null && activeClient.ProcessId != c.ProcessId;
-
-                if (foregroundIsDifferentEQ)
+                //
+                // v3.22.55: skip when autologin is active — ApplyDeferredCosmetics
+                // at LoginCredentialsSent (T+~7s) owns the dance for the autologin
+                // path, and running it here too would either (a) fire the dance
+                // mid-credential-typing (DI cooperative-level handoff risk) or
+                // (b) burn the PID's TryClaimTaskbarRaise dedupe slot so the
+                // ApplyDeferredCosmetics fire silently no-ops.
+                if (autologinActive)
                 {
-                    FileLogger.Info($"ClientDiscovered manual-launch: {c} background-discovered while {activeClient} is foreground — skipping RaiseClientsAboveTaskbar (v3.22.46)");
-                }
-                else if (!TryClaimTaskbarRaise(c.ProcessId))
-                {
-                    FileLogger.Info($"ClientDiscovered manual-launch: PID {c.ProcessId} already raised once this session — skipping repeat dance (v3.22.46 dedupe)");
+                    FileLogger.Info($"ClientDiscovered: PID {c.ProcessId} autologin active — slim-titlebar applied, taskbar dance deferred to ApplyDeferredCosmetics (v3.22.55)");
                 }
                 else
                 {
-                    RaiseClientsAboveTaskbar(_processManager.Clients, foregroundActive: eqAlreadyForeground);
+                    var activeClient = _processManager.GetActiveClient();
+                    bool eqAlreadyForeground = activeClient != null;
+                    bool foregroundIsDifferentEQ = activeClient != null && activeClient.ProcessId != c.ProcessId;
+
+                    if (foregroundIsDifferentEQ)
+                    {
+                        FileLogger.Info($"ClientDiscovered manual-launch: {c} background-discovered while {activeClient} is foreground — skipping RaiseClientsAboveTaskbar (v3.22.46)");
+                    }
+                    else if (!TryClaimTaskbarRaise(c.ProcessId))
+                    {
+                        FileLogger.Info($"ClientDiscovered manual-launch: PID {c.ProcessId} already raised once this session — skipping repeat dance (v3.22.46 dedupe)");
+                    }
+                    else
+                    {
+                        RaiseClientsAboveTaskbar(_processManager.Clients, foregroundActive: eqAlreadyForeground);
+                    }
                 }
             }
+
+            // v3.22.55: the rest of this handler (hook-config refresh, manual
+            // hook injection for externally-launched eqgame, fallback title
+            // setter) was previously gated by the unconditional autologin
+            // early-return. The hook-config refresh is internally gated by
+            // IsLoginActive (TrayManager.UpdateHookConfig L1107) so running
+            // it here is a no-op for autologin clients — but the call still
+            // populates per-PID shared memory for non-autologin paths that
+            // race ClientDiscovered with launch-time HookConfigWriter writes.
+            // The InjectHookDll branch only fires for externally-launched
+            // eqgame.exe (not in _injectedPids), which the autologin path
+            // doesn't produce, so the conditional is still correct.
 
             // For EQSwitch-launched clients, both DLLs are already injected pre-resume.
             // For manually-launched clients (detected by ProcessManager poll), inject
