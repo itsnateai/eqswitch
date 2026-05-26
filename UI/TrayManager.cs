@@ -765,6 +765,7 @@ public class TrayManager : IDisposable
 
         TryRegister(hk.ArrangeWindows, OnArrangeWindows, "FixWindows");
         TryRegister(hk.ToggleMultiMonitor, OnToggleMultiMonitor, "MultiMon");
+        TryRegister(hk.ShowMenu, OnShowTrayMenu, "ShowMenu");
         TryRegister(hk.LaunchOne, OnLaunchOne, "LaunchOne");
         TryRegister(hk.LaunchAll, () => ExecuteTrayAction("LaunchAll"), "LaunchAll");
         TryRegister(hk.TogglePip, () => ExecuteTrayAction("TogglePiP"), "TogglePiP");
@@ -1600,6 +1601,94 @@ public class TrayManager : IDisposable
     }
 
     /// <summary>
+    /// Pop the tray context menu above the system clock on the primary monitor —
+    /// or dismiss it if it's already open (toggle). Bypasses the Win11 z-band
+    /// ceiling that lets Start cover normal tray UI by stealing foreground
+    /// before Show(), so the menu wins the same-band activation race against
+    /// e.g. an EQ slim-titlebar TOPMOST window.
+    ///
+    /// v3.22.49 hardening over v3.22.48 (field-reported by Nate: needed
+    /// ~4 presses for the menu to appear when EQ was foreground; second
+    /// press didn't dismiss):
+    ///   • Toggle: re-press while visible closes the menu (matches tray UX).
+    ///   • Activation: SetForegroundWindow on the menu's HWND after Show()
+    ///     forces same-band winning over EQ's TOPMOST slim-titlebar.
+    ///   • Logging: FileLogger.Info on entry so field reports of "did the
+    ///     hotkey fire?" can be answered from the log.
+    ///   • Disposed-snapshot guard: BuildContextMenu disposes + reassigns
+    ///     _contextMenu; snapshot to local so we never call .Show() on a
+    ///     disposed instance during the rebuild window.
+    /// </summary>
+    private void OnShowTrayMenu()
+    {
+        var menu = _contextMenu;
+        if (menu == null || menu.IsDisposed)
+        {
+            FileLogger.Info("OnShowTrayMenu: menu null/disposed, no-op");
+            return;
+        }
+
+        // Toggle: re-press dismisses (matches tray right-click UX).
+        if (menu.Visible)
+        {
+            FileLogger.Info("OnShowTrayMenu: visible → closing");
+            menu.Close();
+            return;
+        }
+
+        var screen = Screen.PrimaryScreen ?? Screen.AllScreens.FirstOrDefault();
+        if (screen == null)
+        {
+            FileLogger.Warn("OnShowTrayMenu: no screen available (headless/RDP), aborting");
+            return;
+        }
+        var workArea = screen.WorkingArea;
+        // Anchor at the bottom-right of the working area — the clock's territory.
+        // ToolStripDropDownDirection.AboveLeft makes the menu grow up-and-left
+        // from that anchor, matching where Explorer pops a real tray right-click.
+        // WinForms auto-flips the direction if it would go off-screen, so this
+        // also works on edge taskbar configurations.
+        var anchor = new Point(workArea.Right, workArea.Bottom);
+        FileLogger.Info($"OnShowTrayMenu: showing at {anchor}");
+
+        // v3.22.51: hotkey-only submenu-bleed fix. The hotkey path always
+        // anchors at the primary monitor's bottom-right, so default-direction
+        // submenus (or explicitly Right-set ones like videoMenu/launcherMenu)
+        // bleed onto the secondary monitor. Right-click path uses the cursor
+        // anchor (wherever the user clicked), where original directions are
+        // fine — don't touch them. Snapshot here, override to Left for the
+        // duration of THIS show, restore on Closed so the next right-click
+        // sees pristine directions.
+        var savedDirections = new Dictionary<ToolStripMenuItem, ToolStripDropDownDirection>();
+        foreach (ToolStripItem item in menu.Items)
+        {
+            if (item is ToolStripMenuItem mi && mi.DropDownItems.Count > 0)
+            {
+                savedDirections[mi] = mi.DropDownDirection;
+                mi.DropDownDirection = ToolStripDropDownDirection.Left;
+            }
+        }
+        void RestoreOnce(object? s, ToolStripDropDownClosedEventArgs e)
+        {
+            menu.Closed -= RestoreOnce;
+            foreach (var kvp in savedDirections)
+                kvp.Key.DropDownDirection = kvp.Value;
+            FileLogger.Info("OnShowTrayMenu: restored original submenu directions");
+        }
+        menu.Closed += RestoreOnce;
+
+        menu.Show(anchor, ToolStripDropDownDirection.AboveLeft);
+
+        // ToolStripDropDown.Show internally uses SW_SHOWNOACTIVATE, so the menu
+        // joins the TOPMOST z-band but doesn't take foreground. If EQ is also
+        // TOPMOST (slim-titlebar mode), its prior activation wins paint order
+        // within the same band and our menu renders invisible underneath.
+        // Promote the menu's own HWND to foreground to flip that order.
+        if (menu.Handle != IntPtr.Zero)
+            NativeMethods.SetForegroundWindow(menu.Handle);
+    }
+
+    /// <summary>
     /// Launch one EQ client.
     /// </summary>
     private void OnLaunchOne()
@@ -2122,6 +2211,14 @@ public class TrayManager : IDisposable
 
         _contextMenu.Items.Add(new ToolStripSeparator());
         _contextMenu.Items.Add("\u2716  Exit", null, (_, _) => Shutdown());
+
+        // v3.22.50\u2192v3.22.51: NO global submenu-direction sweep here. The
+        // right-click path preserves the original per-item direction (some
+        // submenus \u2014 videoMenu, launcherMenu, forceKillMenu \u2014 explicitly set
+        // `Right` and Nate's muscle-memory expects that). Only the Ctrl+Alt+M
+        // hotkey path applies a Left override (in OnShowTrayMenu) with a
+        // matched Closed-event restore so the next right-click sees pristine
+        // directions.
 
         // ContextMenuStrip is toggled on/off in MouseDown to prevent left-click
         // from showing the menu (which steals focus and breaks double-click).
@@ -3401,6 +3498,15 @@ public class TrayManager : IDisposable
         _config.Hotkeys.LaunchOne = newConfig.Hotkeys.LaunchOne;
         _config.Hotkeys.LaunchAll = newConfig.Hotkeys.LaunchAll;
         _config.Hotkeys.TogglePip = newConfig.Hotkeys.TogglePip;
+        // v3.22.52: ShowMenu propagation. Added in v3.22.48 but the propagation
+        // line was omitted — same regression class as the v3.15.2 launch-knob
+        // and v3.22.26 UseStateMachine bugs documented at line 3520+. Without
+        // this, BuildAppConfig correctly carries the new value into newConfig
+        // but the live _config keeps the old value, then ConfigManager.Save
+        // serializes _config to disk → user's hotkey edit silently reverts on
+        // reopen of Settings. Lesson: every new HotkeyConfig field needs an
+        // entry in BOTH BuildAppConfig AND here.
+        _config.Hotkeys.ShowMenu = newConfig.Hotkeys.ShowMenu;
         // Phase 5a family tables — sync both, defense-in-depth matching the TogglePip pattern.
         _config.Hotkeys.AccountHotkeys = newConfig.Hotkeys.AccountHotkeys;
         _config.Hotkeys.CharacterHotkeys = newConfig.Hotkeys.CharacterHotkeys;

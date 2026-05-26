@@ -615,6 +615,13 @@ public class HotkeyConfig
     public string TeamLogin4 { get; set; } = "";
 
     /// <summary>
+    /// Pop the tray context menu above the system clock on the primary monitor.
+    /// Lets users invoke the menu without opening Start (which sits in a higher
+    /// Win11 z-band and covers any tray UI underneath it).
+    /// </summary>
+    public string ShowMenu { get; set; } = "Ctrl+Alt+M";
+
+    /// <summary>
     /// v4 Account family hotkeys. Each binding fires LoginToCharselect on the
     /// matching Account (resolved by TargetName == Account.Name). Populated
     /// by MigrateV3ToV4 from v3 (AutoLoginN, QuickLoginN) pairs that resolved

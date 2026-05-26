@@ -38,6 +38,8 @@ public class SettingsForm : Form
     private NumericUpDown _nudTooltipDuration = null!;
     private TextBox _txtCustomIconPath = null!;
     private TextBox _txtSwitchKeyGeneral = null!;
+    private TextBox _txtShowMenuGeneral = null!;
+    private TextBox _txtShowMenu = null!;
     private Label _lblSwitchKey = null!;
     private Label _lblSwitchKeyHotkey = null!;
 
@@ -418,7 +420,9 @@ public class SettingsForm : Form
         const int L = 10, I = 120, I2 = 310, BRW = 370, IW = 240, R = 28;
 
         // ─── EverQuest Setup card ────────────────────────────────
-        var cardEQ = DarkTheme.MakeCard(page, "⚔", "EverQuest Setup", DarkTheme.CardGreen, 10, y, 480, 118);
+        // v3.22.49: height bumped 118 → 148 to fit the new "Right click menu:" row
+        // below Exe/Args. Field mirrors _txtShowMenu on the Hotkeys tab.
+        var cardEQ = DarkTheme.MakeCard(page, "⚔", "EverQuest Setup", DarkTheme.CardGreen, 10, y, 480, 148);
         int cy = 30;
 
         // Switch key — prominent, right under card title
@@ -460,8 +464,22 @@ public class SettingsForm : Form
         _txtExeName = DarkTheme.AddCardTextBox(cardEQ, I, cy, 100, 50);
         DarkTheme.AddCardLabel(cardEQ, "Args:", 240, cy);
         _txtArgs = DarkTheme.AddCardTextBox(cardEQ, I2, cy, 100, 100);
+        cy += R;
 
-        y += 126;
+        // v3.22.49: Right-click-menu hotkey. Pops the tray context menu above the
+        // system clock without opening Start (bypasses the Win11 z-band issue
+        // where Start covers the tray menu underneath it). Width 120 fits the
+        // longest expected combo "Ctrl+Alt+Shift+E" in Consolas 9pt.
+        DarkTheme.AddCardLabel(cardEQ, "Right click menu:", L, cy);
+        _txtShowMenuGeneral = MakeHotkeyBox(cardEQ, I, cy - 2, 120);
+        _txtShowMenuGeneral.TextChanged += (_, _) =>
+        {
+            if (_txtShowMenu != null && _txtShowMenu.Text != _txtShowMenuGeneral.Text)
+                _txtShowMenu.Text = _txtShowMenuGeneral.Text;
+        };
+        DarkTheme.AddCardHint(cardEQ, "pop menu above clock", 250, cy + 2);
+
+        y += 156;
 
         // ─── Preferences card ────────────────────────────────────
         var cardPrefs = DarkTheme.MakeCard(page, "\u2699", "Preferences", DarkTheme.CardGold, 10, y, 480, 38);
@@ -690,6 +708,7 @@ public class SettingsForm : Form
             ("Launch All",       _txtLaunchAll.Text.Trim()),
             ("Multi-Mon Toggle", _txtToggleMultiMon.Text.Trim()),
             ("PiP Toggle",       _txtTogglePip.Text.Trim()),
+            ("Show Menu",        _txtShowMenuGeneral.Text.Trim()),
             ("Team 1",           _pendingTeamLogin1),
             ("Team 2",           _pendingTeamLogin2),
             ("Team 3",           _pendingTeamLogin3),
@@ -733,6 +752,7 @@ public class SettingsForm : Form
             ("Launch All",       _txtLaunchAll.Text.Trim()),
             ("Multi-Mon Toggle", _txtToggleMultiMon.Text.Trim()),
             ("PiP Toggle",       _txtTogglePip.Text.Trim()),
+            ("Show Menu",        _txtShowMenuGeneral.Text.Trim()),
             ("Team 1",           _pendingTeamLogin1),
             ("Team 2",           _pendingTeamLogin2),
             ("Team 3",           _pendingTeamLogin3),
@@ -780,6 +800,7 @@ public class SettingsForm : Form
             ("Launch All",       _txtLaunchAll.Text.Trim()),
             ("Multi-Mon Toggle", _txtToggleMultiMon.Text.Trim()),
             ("PiP Toggle",       _txtTogglePip.Text.Trim()),
+            ("Show Menu",        _txtShowMenuGeneral.Text.Trim()),
         };
         foreach (var b in _config.Hotkeys.AccountHotkeys)
             if (HotkeyBindingUtil.IsPopulated(b))
@@ -939,6 +960,21 @@ public class SettingsForm : Form
         cy += R + 2;
 
         y += 98;
+
+        // ─── Right Click Menu card (v3.22.49) ────────────────────
+        // Mirrors _txtShowMenuGeneral on the General tab. Sits above Actions
+        // Launcher (per user request) so it's adjacent to Window Switching.
+        var cardShowMenu = DarkTheme.MakeCard(page, "🗔", "Right Click Menu", DarkTheme.CardBlue, 10, y, 480, 60);
+        DarkTheme.AddCardLabel(cardShowMenu, "Show Menu:", L, 32);
+        _txtShowMenu = MakeHotkeyBox(cardShowMenu, I, 30, 120);
+        _txtShowMenu.TextChanged += (_, _) =>
+        {
+            if (_txtShowMenuGeneral != null && _txtShowMenuGeneral.Text != _txtShowMenu.Text)
+                _txtShowMenuGeneral.Text = _txtShowMenu.Text;
+        };
+        DarkTheme.AddCardHint(cardShowMenu, "Pops menu above clock", 280, 35);
+
+        y += 68;
 
         // ─── Actions card ────────────────────────────────────────
         var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions Launcher", DarkTheme.CardGold, 10, y, 480, 140);
@@ -1458,6 +1494,8 @@ public class SettingsForm : Form
         _txtLaunchOne.Text = _config.Hotkeys.LaunchOne;
         _txtLaunchAll.Text = _config.Hotkeys.LaunchAll;
         _txtTogglePip.Text = _config.Hotkeys.TogglePip;
+        _txtShowMenuGeneral.Text = _config.Hotkeys.ShowMenu;
+        _txtShowMenu.Text = _config.Hotkeys.ShowMenu;
         // Phase 5a: _txtAutoLogin1-4 removed from UI. v3 AutoLogin hotkeys are edited via
         // AccountHotkeysDialog / CharacterHotkeysDialog — legacy field values pass through
         // unchanged via BuildAppConfig below.
@@ -1579,6 +1617,7 @@ public class SettingsForm : Form
             ("Launch All",       _txtLaunchAll.Text.Trim()),
             ("Multi-Mon Toggle", _txtToggleMultiMon.Text.Trim()),
             ("PiP Toggle",       _txtTogglePip.Text.Trim()),
+            ("Show Menu",        _txtShowMenuGeneral.Text.Trim()),
             ("AutoLogin 1 (legacy)", _config.Hotkeys.AutoLogin1),
             ("AutoLogin 2 (legacy)", _config.Hotkeys.AutoLogin2),
             ("AutoLogin 3 (legacy)", _config.Hotkeys.AutoLogin3),
@@ -1750,6 +1789,7 @@ public class SettingsForm : Form
                 LaunchOne = _txtLaunchOne.Text.Trim(),
                 LaunchAll = _txtLaunchAll.Text.Trim(),
                 TogglePip = _txtTogglePip.Text.Trim(),
+                ShowMenu = _txtShowMenuGeneral.Text.Trim(),
                 // Phase 5a: legacy AutoLogin1-4 pass through — values flow via v4 family tables now.
                 AutoLogin1 = _config.Hotkeys.AutoLogin1,
                 AutoLogin2 = _config.Hotkeys.AutoLogin2,
@@ -3691,7 +3731,8 @@ public class SettingsForm : Form
             // Dispose inline Font objects on hotkey TextBoxes and other controls
             // that were created with new Font() — base.Dispose doesn't clean these up
             DisposeControlFonts(_txtSwitchKeyGeneral, _txtSwitchKey, _txtGlobalSwitchKey,
-                _txtArrangeWindows, _txtToggleMultiMon, _txtLaunchOne, _txtLaunchAll);
+                _txtArrangeWindows, _txtToggleMultiMon, _txtLaunchOne, _txtLaunchAll,
+                _txtShowMenuGeneral, _txtShowMenu);
             foreach (var f in _inlineFonts)
                 f.Dispose();
             _inlineFonts.Clear();

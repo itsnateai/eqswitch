@@ -1,5 +1,203 @@
 # Changelog
 
+## v3.22.52 — ShowMenu save round-trip fix + Hotkeys tab hint clipping (2026-05-26)
+
+UI-only release; Native DLLs unchanged. Field-reported by Nate: *"i change ctrl+alt+E in Right click menu section general tab to ctrl+alt+M and save and come back and its still ctrl alt e"*. Plus: *"the words 'bypasses' and anything after also disappears in the hotkeys tab"* (hint text clipping).
+
+### Root cause #1 — ShowMenu propagation missing in ReloadConfigCore
+
+`SettingsForm.ApplySettings()` builds a `newConfig` (correctly including `ShowMenu = _txtShowMenuGeneral.Text.Trim()` at BuildAppConfig line ~1792), calls `_onApply(newConfig)` → `TrayManager.ReloadConfig(newConfig)` → `ReloadConfigCore(newConfig)`. ReloadConfigCore manually field-copies every `_config.Hotkeys.*` from `newConfig.Hotkeys.*` — but the new `ShowMenu` field added in v3.22.48 was never added to that copy block. So:
+
+1. UI shows correct value (loaded from `_config.Hotkeys.ShowMenu` at startup)
+2. User edits to `Ctrl+Alt+M`, clicks Save
+3. BuildAppConfig writes `Ctrl+Alt+M` into `newConfig.Hotkeys.ShowMenu` ✓
+4. ReloadConfigCore copies all OTHER hotkey fields to `_config.Hotkeys.*` but misses ShowMenu — live `_config.Hotkeys.ShowMenu` stays at `Ctrl+Alt+E`
+5. `ConfigManager.Save(_config)` serializes the unchanged `_config` to disk — `Ctrl+Alt+E` persists ✗
+6. User reopens Settings — PopulateFromConfig loads `_config.Hotkeys.ShowMenu` (`Ctrl+Alt+E`) back into the textbox
+
+This is the **third occurrence** of this exact bug pattern. v3.15.2 fixed it for the 10 LaunchConfig timing knobs (comments at TrayManager.cs:3520-3525); v3.22.26 fixed it for `UseStateMachine` (comments at 3536-3543); now v3.22.52 fixes it for `ShowMenu`. The codebase has a 2-place coupling between `BuildAppConfig` and `ReloadConfigCore` — every new HotkeyConfig / LaunchConfig field needs an entry in both, or the round-trip silently drops the value on Save.
+
+### Root cause #2 — hint text clipping in Hotkeys tab Right Click Menu card
+
+The card is 480px wide; the hint text was placed at `x = 280` (textbox ends at 270 + small gap), leaving only ~200px of room. The hint string "Pops tray menu above the clock — bypasses the Start menu z-order issue." needs ~340px at 9pt — overflows the card right edge, gets clipped by the card's `Panel` bounds. `AddCardHint` uses an `AutoSize = true` Label which doesn't word-wrap, so it just extends past the edge invisibly.
+
+### Fix
+
+**`UI/TrayManager.cs::ReloadConfigCore`** — one new line after the TogglePip propagation block:
+```csharp
+_config.Hotkeys.ShowMenu = newConfig.Hotkeys.ShowMenu;
+```
+With a comment that flags the recurring class so the next person hits the warning before adding a HotkeyConfig field.
+
+**`UI/SettingsForm.cs`** — shortened the Hotkeys-tab Right Click Menu card hint from the full sentence to `"Pops menu above clock"` (~150px in 9pt, fits cleanly). The full explanation is in the CHANGELOG / the General-tab hint already says the same thing; tooltips don't need to repeat docs.
+
+### Trade-offs
+
+- **One-line propagation fix vs. structural refactor:** the real fix is replacing the 60+ field-by-field copy in ReloadConfigCore with `_config.Hotkeys = newConfig.Hotkeys;` (full reference swap). Risky because other components — TrayManager itself, AutoLoginManager, KeyboardHookManager — may have captured the old `_config.Hotkeys` reference at init time and would silently start reading stale state. Verifier sweep needed before that lands. Out of scope for this hotfix; line-add buys correctness today with zero risk to other components.
+- **Hint text loses detail** — the General-tab "Right click menu:" row already has `"pop menu above clock"` (lowercase) as its hint, plus the full explanation lives in CHANGELOG. The Hotkeys-tab card's 200px-of-room cap is a card-layout constraint; widening the card would push the rest of the Hotkeys tab around. Shorter text is the right trade.
+- **Existing wrong-value configs:** users whose `eqswitch-config.json` was saved with v3.22.49-3.22.51 may have stale `ShowMenu` values that don't match what they typed in Settings (because of this bug). One Settings → Apply on v3.22.52 will round-trip correctly and overwrite.
+
+---
+
+## v3.22.51 — submenu direction split: right-click keeps Right, hotkey-only goes Left (2026-05-26)
+
+UI-only release; Native DLLs unchanged. Field-reported by Nate immediately after v3.22.50: *"problem, we want to right click menu to still go to the right side like it used to, and only our new Ctrl-Alt-M menu to open to the left"*. v3.22.50's unconditional sweep at the end of `BuildContextMenu` forced ALL paths to open submenus leftward, breaking the muscle-memory of the existing right-click flow (where some submenus — videoMenu, launcherMenu, forceKillMenu — explicitly opened Right and that was the desired UX).
+
+### Root cause split
+
+- **Right-click path** anchors at the cursor (wherever Nate clicked the tray icon). WinForms' auto-flip generally works for this path because submenu space is computed relative to the cursor, and Nate's tray-icon-right-click cursor is well-positioned for Right-opening submenus.
+- **Ctrl+Alt+M hotkey path** always anchors at the bottom-right corner of the primary monitor's `WorkingArea`. That's the worst case for Right-opening submenus on a multi-monitor setup — they spill onto the screen to the right.
+
+The right fix is path-specific direction, not a global override.
+
+### Fix
+
+Three changes in `UI/TrayManager.cs`:
+
+1. **Removed the v3.22.50 sweep from `BuildContextMenu`** (was at line ~2189). Right-click path now sees pristine per-item directions exactly as v3.22.49 and earlier shipped.
+
+2. **Added a hotkey-scoped snapshot+restore in `OnShowTrayMenu`:**
+   ```csharp
+   var savedDirections = new Dictionary<ToolStripMenuItem, ToolStripDropDownDirection>();
+   foreach (ToolStripItem item in menu.Items)
+       if (item is ToolStripMenuItem mi && mi.DropDownItems.Count > 0)
+       { savedDirections[mi] = mi.DropDownDirection;
+         mi.DropDownDirection = ToolStripDropDownDirection.Left; }
+   void RestoreOnce(object? s, ToolStripDropDownClosedEventArgs e)
+   { menu.Closed -= RestoreOnce;
+     foreach (var kvp in savedDirections)
+         kvp.Key.DropDownDirection = kvp.Value; }
+   menu.Closed += RestoreOnce;
+   ```
+   Per-show snapshot + matched one-shot restore on `Closed`. Self-cleaning (handler removes itself before the restore runs), so no event-handler leak even if the hotkey is hammered.
+
+3. **`FileLogger.Info` on restore** completes the round-trip log so a field report of "submenus opened the wrong way after using the hotkey" is diagnosable from the log timeline.
+
+### Trade-offs
+
+- **Race-with-rebuild:** if `BuildContextMenu` fires while the hotkey menu is open, the restore-handler holds stale references in `savedDirections`. Already mitigated: `UpdateClientMenu` (line ~2217) bails out when `_contextMenu?.Visible == true` and sets `_clientMenuDirty = true` for a later rebuild — same guard covers this case. No code change needed.
+- **Race-with-direct-Close-then-instant-hotkey:** the user closes the menu (which fires `Closed` → `RestoreOnce` → directions restored) and instantly fires the hotkey again before `RestoreOnce` completes. WinForms' `Closed` event runs synchronously on the UI thread; the next hotkey dispatch can't interleave because both run on the same thread serialized by the message pump. Safe.
+- **Memory:** `savedDirections` dictionary allocates per-show; freed when `RestoreOnce` runs. ~6-8 entries × ~24 bytes each = negligible.
+- **Cleanup deferred:** the explicit `Right` assignments on forceKillMenu / videoMenu / launcherMenu in `BuildContextMenu` are now back to being load-bearing (they were dead in v3.22.50). Keep as-is.
+
+---
+
+## v3.22.50 — submenu bleed onto secondary monitor (2026-05-26)
+
+UI-only release; Native DLLs unchanged. Field-reported by Nate immediately after v3.22.49 deploy: *"problem, because it opens on the system tray - the submenus like accounts and characters bleed off onto the other screen any thoughts"*.
+
+### Root cause
+
+The tray context menu always anchors near the bottom-right of the primary monitor — both the right-click-on-tray-icon path AND the new `Ctrl+Alt+M` hotkey path land there because that's where the tray icon and clock physically sit. When submenus on top-level items (Accounts, Characters, Teams, Clients, Force-Kill Stuck Client, Video Settings, Launcher) open, WinForms' auto-flip logic checks whether the submenu's `Bounds` fit on screen — but in a multi-monitor setup the *virtual desktop* extends across all screens, so WinForms sees "room" to the right and lets the submenu paint onto the next monitor. There's no auto-flip across screen boundaries.
+
+This was a latent bug in the right-click path too (forceKillMenu / videoMenu / launcherMenu explicitly set `DropDownDirection = Right`, which guaranteed bleed); it just became more visible with the hotkey path because the new menu always opens in the same anchor position, and the Accounts/Characters dropdowns were the most-used submenus.
+
+### Fix
+
+Single sweep at the end of `BuildContextMenu` (TrayManager.cs, near line 2189):
+
+```csharp
+foreach (ToolStripItem item in _contextMenu.Items)
+{
+    if (item is ToolStripMenuItem mi && mi.DropDownItems.Count > 0)
+        mi.DropDownDirection = ToolStripDropDownDirection.Left;
+}
+```
+
+Forces every top-level menu item with a submenu to open leftward (toward the primary monitor's interior), so submenus never cross the right edge of the primary screen. Intentionally overrides the prior explicit `Right` settings on forceKillMenu / videoMenu / launcherMenu — those were wrong for the same reason; the new sweep is the single source of truth for submenu direction.
+
+### Trade-offs
+
+- **Single-monitor users:** the menu opens at the right edge of their only screen, so `Left` is correct there too. No regression. WinForms still auto-flips within a single screen if the leftward space is too narrow (an unusually wide submenu near the left edge of a tiny screen would flip back to Right).
+- **Sub-submenus** (e.g. the "Links" submenu nested inside Launcher) inherit direction from their parent's chosen anchor and are recomputed by WinForms each time — no recursive sweep needed.
+- **Future submenu additions** to `_contextMenu` automatically inherit the Left direction via the sweep — no per-site `DropDownDirection = Left` boilerplate needed in `BuildContextMenu` going forward.
+- **The leftover explicit `Right` assignments** on forceKillMenu / videoMenu / launcherMenu are now dead — kept for now (the sweep overrides them) but a follow-up cleanup could remove them. Leaving them in place this release because they're harmless and removing would inflate the diff.
+
+---
+
+## v3.22.49 — ShowMenu hotkey: toggle, activation, logging, Settings UI (2026-05-26)
+
+UI-only release; Native DLLs unchanged. Field-reported by Nate immediately after v3.22.48 deploy: *"it took like 4 presses at first for it to show up, idk if u have any logging to see why. also when i press ctrl+alt+E again the menu won't disappear"*. Plus a UX-completeness ask: surface the hotkey in Settings (General tab + Hotkeys tab) instead of leaving it as a config-file-edit-only field. Default key changed `Ctrl+Alt+E` → `Ctrl+Alt+M` per request (M for "Menu", easier to discover).
+
+### Root causes
+
+**1. "4 presses to show up" — same-band activation race against EQ's slim-titlebar TOPMOST.**
+
+`ToolStripDropDown.Show(Point, Direction)` internally calls `ShowWindow(SW_SHOWNOACTIVATE)` after creating its underlying window with `WS_EX_TOPMOST`. So the menu does land in the TOPMOST z-band as designed — but it doesn't take foreground/activation. When EQ is foreground with slim-titlebar mode active, its window is ALSO TOPMOST (slim-titlebar strips WS_THICKFRAME and reaches the same TOPMOST band — see `Core/WindowManager.cs` slim-titlebar handling). Within the TOPMOST band, paint order is governed by activation order; EQ's prior activation wins, and our menu renders invisibly underneath it. Successive presses eventually shifted activation enough (or Nate happened to mouse-over the right spot) that the menu became visible — making it look like an intermittent hotkey-registration issue when the actual cause was z-order within a shared band.
+
+This is a different failure than the v3.22.48 CHANGELOG's z-band rationale claimed. The v3.22.48 wording said "the menu activates itself on Show()" — that's wrong on the mechanism. `ToolStripDropDown.Show` explicitly does NOT activate (`SW_SHOWNOACTIVATE`). The Start-menu-dismissal-as-side-effect read was therefore also misleading; what actually dismisses Start is the user pressing a hotkey directed at our process (focus diverted away from Start's HWND). Pre-v3.22.49 CHANGELOG corrected by reference here, not edited in place (history is history).
+
+**2. "Press again won't dismiss" — no toggle guard.**
+
+v3.22.48 `OnShowTrayMenu` had no `Visible`-check. A second `_contextMenu.Show()` on an already-visible drop-down re-anchors it without dismissing. Tray UX expects toggle semantics on the same input.
+
+**3. "Any logging to see why?" — silent on the critical path.**
+
+Every other tray action (left/middle click, hotkey-routed actions via `ExecuteTrayAction`) logs an `Info` line. `OnShowTrayMenu` was the lone exception — no log at all, so a field report of "did the hotkey reach me?" couldn't be answered from `eqswitch.log`.
+
+### Fix
+
+**`Core/NativeMethods.cs`** — no change (already exposes `SetForegroundWindow`).
+
+**`UI/TrayManager.cs::OnShowTrayMenu`** — rewritten:
+- `var menu = _contextMenu; if (menu == null || menu.IsDisposed) return;` — snapshot to local + dispose-check. Closes the verifier-flagged race where `BuildContextMenu` disposes-and-reassigns `_contextMenu` between the null-check and the `.Show()` call (would have thrown `ObjectDisposedException` swallowed by the hotkey-callback try/catch in `HotkeyManager.cs:89`).
+- `if (menu.Visible) { menu.Close(); return; }` — toggle.
+- `Screen.PrimaryScreen ?? Screen.AllScreens.FirstOrDefault()` then null-check + log + return — closes the `Screen.AllScreens[0]` IndexOutOfRangeException path on headless/RDP. Same coverage gap but fail-loud instead of crash.
+- `FileLogger.Info` at entry, on visible→close, on show, and `Warn` on no-screen.
+- `NativeMethods.SetForegroundWindow(menu.Handle)` after `Show()` — forces same-band activation winner. Calling SetForegroundWindow on `menu.Handle` works because the underlying ToolStripDropDown HWND exists by the time `Show()` returns.
+
+**`Config/AppConfig.cs::HotkeyConfig.ShowMenu`** — default `"Ctrl+Alt+E"` → `"Ctrl+Alt+M"`. M is more discoverable for "menu"; no known Windows-default chord on `Ctrl+Alt+M`. Existing user configs that already wrote a `ShowMenu` value (which would have been v3.22.48's `Ctrl+Alt+E`) preserve their binding — only fresh installs / never-saved configs pick up the new default.
+
+**`UI/SettingsForm.cs`** — three additions:
+- General tab → EverQuest Setup card: card height bumped 118 → 148, new row "Right click menu:" below Exe/Args with a 120px-wide hotkey textbox (fits "Ctrl+Alt+Shift+E" max). `y += 126` → `y += 156` to push subsequent cards down.
+- Hotkeys tab: new "Right Click Menu" card (60px tall, single row, "Show Menu:" label + 120px box) inserted between Window Switching and Actions Launcher per Nate's specified placement.
+- Mirroring: General↔Hotkeys textboxes sync via `TextChanged` handlers (same pattern as `_txtSwitchKey` / `_txtSwitchKeyGeneral` mirror introduced earlier).
+- Load (`PopulateFromConfig`), save (`BuildAppConfig`), and dispose (`DisposeControlFonts`) wired.
+- Conflict-check tuples (4 sites: `OpenAccountHotkeysDialog`, `OpenCharacterHotkeysDialog`, `OpenTeamHotkeysDialog`, `CheckAllHotkeyConflicts`) extended with `("Show Menu", _txtShowMenuGeneral.Text.Trim())` so the dialog warns on collision with any account/character/team hotkey.
+
+### Trade-offs
+
+- **SetForegroundWindow restrictions:** Win10+ Foreground Lock Timeout can block `SetForegroundWindow` calls from non-foreground processes. Our hotkey path runs in-process when the user just pressed a key bound to our window, which counts as a foreground-input event for that process per `GetForegroundWindow`/`AllowSetForegroundWindow` rules — so we're allowed to take foreground. If it ever fails, the menu still appears (just maybe behind EQ), and the user can left-click anywhere in the EQ window to drop EQ from foreground, then re-press the hotkey. Worst case is the v3.22.48 behaviour, which Nate already experienced.
+- **Toggle behaviour matches tray right-click expectation** but differs from "hotkey re-fire builds new menu" pattern some apps use. The codebase already has `_contextMenu.Visible` check in `UpdateClientMenu` (line ~2178) using the same pattern — consistent.
+- **Card-layout y-offsets** (General tab `y += 126` → `y += 156`; Hotkeys tab `y += 98` then new `y += 68` before Actions Launcher) push subsequent cards down by 30 / 68px respectively. Settings form has scrolling; no card clipping.
+- **Hotkey conflict reporting** continues through the existing `failedKeys` balloon on `RegisterHotkeys` failure path. If `Ctrl+Alt+M` happens to be claimed by another running app, the user gets the same loud warning as any other conflict — no special-casing needed.
+- **Threading reaffirmation:** verifier pair confirmed `HotkeyMessageWindow.CreateHandle` runs on the WinForms UI thread (called from `TrayManager` ctor before `Application.Run()`), so `OnShowTrayMenu` is dispatched on the UI thread and the direct `_contextMenu.Show()` call is thread-safe. Documented here so future refactors don't quietly move `HotkeyManager` construction off the UI thread.
+
+---
+
+## v3.22.48 — global hotkey to pop the tray menu above the clock (2026-05-26)
+
+UI-only release; Native DLLs unchanged. Field-reported by Nate 2026-05-26: pressing the Windows key to summon an auto-hidden taskbar so he can right-click the EQSwitch tray icon also pops the Start menu — and the Start menu's host (`StartMenuExperienceHost.exe`) sits in a higher Win11 z-band than user-mode TOPMOST windows, so it composites on top of any tray menu we open underneath it.
+
+### Root cause (it's the OS, not us)
+
+Windows 11 (verified build 26200) organizes window z-order into discrete *bands*. Shell hosts — Start, Search, Action Center, lock screen — live in bands above `ZBID_DESKTOP_TOPMOST`, which is the highest user-mode processes can reach without a UIAccess manifest + code-signed binary deployed to a trusted location (Program Files). `SetWindowPos(HWND_TOPMOST)` and `WM_WINDOWPOSCHANGING` overrides only reorder *within* a band — they cannot cross the band boundary. We don't have a signing cert, so the UIAccess escape isn't accessible today.
+
+This bites every always-on-top API equivalently (Win32, WinForms `Form.TopMost`, AHK `+AlwaysOnTop`, Electron `setAlwaysOnTop`) and is documented in `memory/reference_win11_zband_ceiling_user_topmost.md` from the TaskbarStats v1.1.6→v1.1.11 trajectory.
+
+### Fix
+
+A new global hotkey (`HotkeyConfig.ShowMenu`, default `Ctrl+Alt+E`) that bypasses the taskbar entirely:
+
+1. **`Config/AppConfig.cs`** — adds `string ShowMenu = "Ctrl+Alt+E"` to `HotkeyConfig`. No config migration needed: missing field in old configs deserializes to the default.
+
+2. **`UI/TrayManager.cs::OnShowTrayMenu()`** — anchors `_contextMenu.Show()` at `Screen.PrimaryScreen.WorkingArea`'s bottom-right (the clock's natural territory) with `ToolStripDropDownDirection.AboveLeft`, so the menu grows up-and-left from that anchor exactly like a real right-click on the system tray. WinForms auto-flips the direction if the menu would clip off-screen, so it tolerates edge taskbar configurations without extra code.
+
+3. **`UI/TrayManager.cs::RegisterHotkeys()`** — one new `TryRegister` line, slotted next to the existing utility hotkeys (FixWindows, MultiMon). Same conflict-reporting path as everything else.
+
+### Why this dodges the z-band
+
+A `ContextMenuStrip.Show()` popup activates itself — that focus shift causes Windows to dismiss any open Start menu as a side effect, so the user never has to choose between "see the taskbar" and "see the EQSwitch menu". The z-band ceiling only matters for *persistent* always-on-top windows (TaskbarStats-style overlays); transient menus inherit normal active-app focus, no banding involved.
+
+### Trade-offs
+
+- **`_trayIcon.ContextMenuStrip` is normally null** and only swapped in on right-click MouseDown (`TrayManager.cs:402`) — a guard against Windows auto-popping on left/middle click. Our hotkey path calls `_contextMenu.Show()` directly, bypassing NotifyIcon, so the guard stays intact. Verified by inspection: no path through `OnShowTrayMenu` touches `_trayIcon.ContextMenuStrip`.
+- **No SettingsForm UI yet** — the field is rebindable via direct config edit (`%cd%/eqswitch-config.json` → `Hotkeys.ShowMenu`). Adding the picker to the Hotkeys tab is a follow-up; not blocking ship since the default works out of the box.
+- **Default `Ctrl+Alt+E` collision risk** is low (no common Windows shortcut on that chord), but if it conflicts with another app the existing hotkey-conflict balloon (`RegisterHotkeys`'s `failedKeys` path) surfaces it loudly — user can rebind without code change.
+- **Edge taskbar positions** (top/left/right) — `WorkingArea` is already taskbar-aware, and `AboveLeft` flips to whatever direction fits, so this works in all four taskbar configurations without extra geometry.
+
+---
+
 ## v3.22.47 — kill the 6 s post-world-load slim-titlebar latency (2026-05-25)
 
 UI-only release; Native DLLs unchanged. Field-reported by Nate 2026-05-25 immediately after v3.22.46 deploy: *"once inworld, it does take a bit too long b4 it fixes the window tbh, its an awkward 6sec ish b4 user has a working screen, which prob will cost us users because wineq2.exe doesnt have this issue with their window and we inspired ours from there"*.
