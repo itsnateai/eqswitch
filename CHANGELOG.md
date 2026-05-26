@@ -1,5 +1,92 @@
 # Changelog
 
+## v3.22.53 — Dalaya.exe shortcut, Clients submenu reshuffle, `\` debounce, titlebar visibility, dark titlebar, LaunchOne autologin opt-in (2026-05-26)
+
+UI + small Core release; Native DLLs unchanged. Bundled response to Nate's field session covering 8 items.
+
+### Changes
+
+1. **Default desktop shortcut renamed to `Dalaya.exe.lnk`.** `Path.Combine(desktopPath, "EQSwitch.lnk")` → `"Dalaya.exe.lnk"` in `StartupManager.cs`. Cleanup-on-create now also sweeps legacy names (`EQSwitch.lnk`, `EQSwitch.exe.lnk`) so users don't end up with two shortcuts after upgrade. `Core/UninstallHelper.cs` + `uninstall.bat` updated to delete all three names on uninstall. **DalayaPatcher verification attempted:** binary at `C:/Users/nate/proggy/Everquest/dalaya_patcher/dalaya_patcher.exe` is 18 MB with stripped/encrypted ASCII strings — couldn't confirm its shortcut convention without executing it (which would modify the game install). Proceeding with `Dalaya.exe.lnk` per Nate's stated intent.
+
+2. **Force-Kill + Detach moved INTO the Clients submenu.** Previously top-level peers of `Clients` and `Process Manager`. Now at the top of the Clients submenu with a separator underneath. Both target the same set of running `eqgame.exe` processes the Clients submenu lists. Constructed as fields (`_forceKillMenu`, `_detachItem`, `_clientsAdminSeparator`) so `UpdateClientMenu` can rebuild the per-client list below them without disposing the cached refs — `RefreshDetachMenuState` relies on `_detachItem` staying alive across rebuilds.
+
+3. **Clients submenu default keyboard focus.** New `_clientsMenu.DropDownOpened` handler calls `SelectClientsMenuDefault()` which walks from `ClientsMenuAdminItemCount` (skips Force-Kill + Detach + separator) and selects the first enabled client item. Opening the Clients submenu lands focus on the first client (or Refresh row if no clients), not on Force-Kill. Up/down keys traverse clients immediately; Force-Kill is one Up away if needed.
+
+4. **Detach Hooks UX rewrite.** Label: `"Detach Hooks from Running Clients"` → `"Detach EQSwitch from Running Clients"`. Tooltip + MessageBox copy rewritten with WHAT THIS DOES / WHAT THIS DOES NOT DO / RISK sections — old copy led with FreeLibrary jargon and didn't explain why a user would want this. Nate ran it once and the popup didn't make the purpose obvious (his crash continued; he thought Detach should have prevented it). New copy makes it loud: clean-exit hatch so EQSwitch can close without taking eqgame down. NOT a crash-prevention tool — if eqgame is already corrupting itself, detaching won't help.
+
+5. **`\` switch-key debounce.** `KeyboardHookManager.HookCallback` added per-VK timestamp gate (`_lastFireTickByVk` + `RepeatDebounceMs = 80`). Closes two real-world causes of the "extra swap" Nate reported: (a) hardware key-bounce (some mechanical keyboards generate 2 fast `WM_KEYDOWN`s from one press, ~10–40 ms apart); (b) OS typematic auto-repeat — holding `\` for >~400 ms triggers Windows repeat at ~30 Hz. `KBDLLHOOKSTRUCT` has no autorepeat flag (unlike standard `WM_KEYDOWN lParam` bit 30), so timestamp window is the only reliable filter. 80 ms is tight enough that deliberate fast tapping (60–80 ms/press cadence is already faster than most humans sustain) is preserved while bounces and the slowest autorepeat tick are absorbed. Duplicate is **swallowed** (still returns `(IntPtr)1`) so the focused window doesn't see the second `\` either — only the callback is suppressed.
+
+6. **Default tray clicks: Single=None, Double=LaunchOne.** Was `Single=LaunchOne, Double=None`. Reduces accidental spawns; double-click is the deliberate action.
+
+7. **Titlebar visibility fix.** `Layout.TitlebarOffset` default bumped 13 → 18. At 13 the title text and `−`/`X` buttons were both invisible — only a 13 px sliver peeked below the monitor edge, less than the ~22 px down where Win11 button glyphs start. 18 exposes title text and the top of the buttons (WinEQ2-style sliver). Still clamped `[0, 40]`; the clamping math in `ComputeOuterRectFromBleeds` is unchanged — no resolution-formula side-effects.
+
+8. **Dark titlebar option (`Layout.DarkTitlebar`).** New opt-in checkbox in Settings → Video → Advanced wrapper. When enabled, applies `DWMWA_USE_IMMERSIVE_DARK_MODE` (attribute 20, legacy fallback 19 for Win10 1809–1909) to every EQ window after each slim-titlebar apply. Cross-process safe — DWM is a system service. Idempotent re-apply (DWM no-ops if attribute unchanged), self-healing if EQ flips it back. Also fires from `ArrangeMultiMonitor` post-batch since that path inlines its own `SetWindowPos`. Default `false`.
+
+9. **LaunchOne autologin opt-in (`Launch.DefaultLaunchOneAccount`).** New config field (string, default `""`). When set to an account `Name` that resolves in `AppConfig.Accounts`, LaunchOne (tray double-click or hotkey) routes through `AutoLoginManager.LoginToCharselect` via `FireAccountLogin` — same code path as team1. Single-click LaunchOne feels like team1: EULA auto-dismissed, credentials typed via dinput8 SHM, window arranged after login screen settles. Empty default preserves historical plain-launch behavior. Falls back to plain launch + balloon ("LaunchOne default account 'foo' not found — launching without autologin") if the named account was renamed/deleted. **JSON-only today** — surfaced in `eqswitch-config.json`, no Settings UI control yet.
+
+### Why patchme alone doesn't bypass EULA/Sony screens
+
+`Launch.Arguments` defaults to `"patchme"` so LaunchOne IS launching with that arg. The EULA + Sony login screens still show because Dalaya's dinput8.dll patcher ("Edge") explicitly disables `patchme` shortly after process start — string `"disabling patchme"` at VA `0x100f7fc0` in Edge, confirmed in 2026-05-21 Edge audit at `_.eqswitch-re/audit-2026-05-21/dalaya-dinput8-audit.md`. The autologin path side-steps this not by re-enabling patchme but by typing credentials via dinput8 SHM — Edge's MQ2-derived connection management handles concurrent multi-client launches compatibly when each client has unique credentials.
+
+### Trade-offs
+
+- **DalayaPatcher convention couldn't be verified mechanically.** Binary has stripped ASCII/UTF-16 strings; `upx -d` reports "not packed by UPX" (matches were coincidental). Confirming would require executing the patcher in a sandbox — overkill for a naming choice. Easy to adjust later if needed.
+- **Detach Hooks crash-prevention misconception:** Nate's crash continued after running Detach + closing EQSwitch. Expected — Detach removes EQSwitch from the picture but if eqgame.exe is already mid-crash (DX deadlock, zone-load OOM, native vtable corruption), nothing EQSwitch can do will recover it. Real "client is stuck" recovery is Force-Kill Stuck Client, now one row up in the same Clients submenu.
+- **80 ms debounce sweet spot:** catches typematic autorepeat (~33 ms intervals after the initial delay) AND hardware bounce (~10–40 ms). 100 ms would start clipping the fastest deliberate tap-tap-tap.
+- **TitlebarOffset 18 vs Nate's "2 px down" eyeball estimate (which would have been 15):** at 15 the title starts to show but the `−`/`X` buttons (~22 px down in Win11's caption) are still hidden. 18 exposes a small sliver of the button tops — matches the WinEQ2 reference Nate cited. Settings → Video → Advanced has the knob; 14–17 for "title text only", 22–26 for "full button hit-target".
+- **`DefaultLaunchOneAccount` no Settings UI yet:** the right surface is Accounts tab (radio: "Set as LaunchOne default" per account) or Settings → Hotkeys → Tray Clicks card. Both are bigger UX changes than tonight's scope. JSON-edit path is the same hand-edit path used for the 10 autologin-timing tunables since v3.15.2 — documented in `AppConfig.LaunchConfig.DefaultLaunchOneAccount` field comment.
+- **Settings reload propagation:** new fields (`DarkTitlebar`, `DefaultLaunchOneAccount`) added to all THREE required sites per `[[reference_settings_apply_dual_propagation_bug]]` — `AppConfig` initializer, `SettingsForm.BuildAppConfig` round-trip, and `TrayManager.ReloadConfigCore`. Skipping any one silently drops the field on Settings → Apply.
+
+### Verifier rounds (post-implementation hardening)
+
+Two rounds of 6-agent verification (T1 Diff-clean + T2 Gap-audit + T3 Code-review, Sonnet+Opus pair on identical prompt per topic) surfaced 9 follow-up findings across the round-1 implementation. All resolved before ship:
+
+**Round 1 → fixes:**
+- **CRITICAL (T2 convergent):** `KeyboardHookManager.Reset()` cleared `_bindings` but not `_lastFireTickByVk` — a Settings → Apply that re-`Register`'d the switch-key within 80 ms of a recent press would have suppressed the first legitimate press post-reload. Fixed: `Reset()` and `Unregister()` now clear/remove the timestamp; also migrated both dicts to `ConcurrentDictionary` to close the LL-hook thread-safety doubt (T2 pair flagged it even though T1+T3 Opus correctly ruled out the live race).
+- **CRITICAL (T2 Sonnet):** `uninstall.bat` was missing step 4 of `UninstallHelper.RestoreLegacyDlls` — the per-PID native-log sweep (`eqswitch-*.log` in the EQ folder). Users running the bat script (vs. the GUI button) accumulated logs across sessions. Added the sweep block + mirrored the `[OK]/[!!]` reporting pattern.
+- **IMPORTANT (T3 Opus):** `WindowManager.ApplyDarkTitlebarIfRequested` early-returned on `DarkTitlebar=false`, so toggle-off didn't restore the light caption — Settings → Apply silently no-op'd until eqgame restart. Fixed: helper now writes `useDark = (DarkTitlebar ? 1 : 0)` unconditionally; the multi-monitor call-site `if (DarkTitlebar)` gate was also removed so OFF transition reaches every code path.
+- **IMPORTANT (T2 Opus):** `AppConfig.Validate` didn't normalize `Launch.DefaultLaunchOneAccount` — JSON `" gotquiz "` round-tripped with spaces. Added `Trim()` next to the other Launch clamps.
+
+**Round 2 → fixes:**
+- **CRITICAL (T2 Opus + T3 Sonnet convergent):** `ApplyDarkTitlebarIfRequested` was only called from `ApplySlimTitlebar` (single-screen slim) and `ArrangeMultiMonitor` (multi-monitor) — neither covers the `SlimTitlebar=false + single-monitor` case. A user enabling DarkTitlebar without SlimTitlebar got zero DWM calls and silently saw no effect. Fixed: hoisted the helper call above the `SlimTitlebar`/multimonitor early-returns inside `ApplySlimTitlebarToAll` so the foreground hook + guard-timer cover every config combo.
+- **CRITICAL (T2 Opus):** The round-1 `Trim()` mutated in-memory state but didn't set `mutated = true`, so a hand-edited config with whitespace was normalized at read-time but never re-persisted. Fixed: track the trim outcome and set `mutated` only when the trim actually changed the value (avoids unnecessary saves on already-clean configs).
+- **IMPORTANT (T2 Sonnet):** `HookCallback` intercepted `WM_KEYDOWN`/`WM_SYSKEYDOWN` but let the paired `WM_KEYUP`/`WM_SYSKEYUP` leak. An Alt+`\` chord (which routes through `WM_SYSKEYDOWN`) would drop an orphan SYSKEYUP on the focused EQ window and EQ's WndProc could treat it as a partial Alt+key chord (menu-bar beep). Fixed: symmetric swallow for KEYUP/SYSKEYUP whenever the VK is bound. Added `WM_SYSKEYUP = 0x0105` constant to `NativeMethods.cs`.
+- **IMPORTANT (T2 Opus):** `uninstall.bat`'s round-1 log sweep silently swallowed per-file delete failures. Added `LOG_FAILED` counter + `[!!] N log file(s) locked — close all eqgame.exe clients then re-run` surface so a running client mid-uninstall is loud, not silent.
+- **MINOR (T2 Sonnet):** `uninstall.bat` had two `:: 4.` labels (new log sweep + pre-existing app-folder DLL block). Renumbered the app-folder block to `:: 5.` to mirror `UninstallHelper.cs`'s step ordering.
+
+**Round 3 → fixes:**
+- **CRITICAL (T3 Opus):** my round-2 `uninstall.bat` edit used `set /a COUNT+=!LOG_REMOVED!` — inflated the "Reverted N changes" summary by file count instead of one-per-action. Fixed to `+=1` matching the C# helper's single `actions.Add` per sweep.
+- **IMPORTANT (T3 Opus):** my round-2 KEYUP swallow unconditionally ate any KEYUP for a bound VK, including one whose KEYDOWN we never saw (e.g. key held BEFORE EQSwitch installed the hook). Sticky-key risk. Fixed: added `_downSwallowedByVk` ConcurrentDictionary set on the KEYDOWN swallow path (both fire-path and debounce-path) and cleared on KEYUP swallow; only swallow KEYUP when matching KEYDOWN was eaten. Cleared in `Reset()` and `Unregister()` too.
+- **IMPORTANT (T2 Sonnet):** `Validate()` guards 6 string-enum fields with allowlist fallbacks but didn't include `TrayClickConfig.{Single,Double,Triple,Middle,MiddleDouble}Click`. Hand-edited garbage silently no-op'd in `ExecuteTrayAction`. Added 5 fallbacks matching the existing pattern.
+
+**Round 4 → fixes:**
+- **CRITICAL (T2 Sonnet + T2 Opus convergent):** my round-3 KEYUP gate consumed `_downSwallowedByVk` via `TryRemove` BEFORE filter-condition checks. If `RequireClients`/`ProcessFilter` flipped between paired KEYDOWN and KEYUP, the flag was eaten AND the keyup passed through orphaned — re-introducing the exact bug round-3 was meant to fix. Fixed: rewrote to "if we swallowed the matching KEYDOWN, the focused window never saw the down, so we MUST also swallow the up regardless of current filter state" — atomic `if (TryRemove) return 1`. Filter re-check removed.
+- **IMPORTANT (T2 Opus):** my round-3 TrayClick allowlist fallback didn't set `mutated = true`, so a hand-edited garbage value was normalized in-memory but never re-persisted (silent re-normalize on every load). Set `mutated = true` per fallback, matching the round-2 DefaultLaunchOneAccount Trim pattern.
+
+**Round 5 → fixes:**
+- **IMPORTANT (T2 Sonnet + T2 Opus convergent):** my round-4 KEYUP `ContainsKey + TryRemove` was a two-op non-atomic pair where `if (TryRemove(...)) return 1` is single-op, atomic, and equivalent. The round-4 comment claimed "leave flag for OS retry" but that's unrealizable (Windows never re-fires `WM_SYSKEYUP` for the same physical release). Collapsed to atomic form; comment rewritten to match code.
+- **IMPORTANT (T3 Sonnet + T3 Opus convergent):** `UninstallHelper.RestoreLegacyDlls` step 4 (the round-2 C# log sweep) silently `FileLogger.Warn`-ed locked-file failures while the matching `uninstall.bat` path surfaced `[!!] N log file(s) locked`. Settings → Paths → Uninstall (the GUI path the bat itself recommends) was the silent side. Added `failed` counter + `actions.Add($"{failed} log file(s) locked — close all eqgame.exe clients then re-run uninstall")` for parity.
+- **IMPORTANT (T2 Opus):** my round-3 `TrayClickValid` allowlist truncated at `LoginAll4` but `ExecuteTrayAction` dispatches `LoginAll5`/`LoginAll6`. With round-4's `mutated = true` fallback, a hand-edited Team 5/6 binding got silently reset AND persisted. Added `LoginAll5|LoginAll6` to the allowlist.
+
+**Round 6 → fixes:**
+- **IMPORTANT (T2 Opus):** round-5's allowlist widening for Teams 5/6 wasn't matched by the Settings dropdown (`clickActions` array + `_trayActionDisplayMap`/`_trayDisplayActionMap` only knew Team 1-4). Users with hand-edited 5/6 bindings opened Settings to a blank dropdown — BuildAppConfig fallback preserved the value but there was no in-UI way to change it. Added `AutoLoginTeam5`/`AutoLoginTeam6` to `clickActions` and both bidirectional maps so the round-trip is complete.
+- **IMPORTANT (T2 Opus + T3 Opus convergent):** stale `TrayClickConfig.SingleClick` XML doc still said "Teams 5/6 are tray-right-click-only by design — not exposed as click bindings". Updated to cite `TrayClickValid` as source of truth.
+- **IMPORTANT (T3 Opus):** `uninstall.bat`'s trailing "Nothing to clean up — no external modifications found" still fired when only failures occurred (LOG_FAILED > 0, COUNT == 0) — contradicting the earlier `[!!] N log file(s) locked` message. Gated trailer on `COUNT == 0 AND LOG_FAILED == 0`; surfaces a specific "Could not complete" message when failures dominate, and a "N reverted, M still locked" message for the mixed case. Defensive `if not defined LOG_FAILED set "LOG_FAILED=0"` covers the EQPATH-skipped path.
+
+**Round 7 verification:** clean build, 4/6 verifiers APPROVE (both T1, T2 Opus, T3 Opus explicit ship). T2 Sonnet + T3 Sonnet CONCERNS resolved as cosmetic/false-positive after analysis (the flagged conflict-checker concern relied on `_pendingTeamLogin5/6` fields that don't exist; the `/ 4 hotkey-bound` label is accurate since Teams 5/6 are tray-only by design). Per [[feedback_verifier_loop_diminishing_returns]] this is the canonical stop signal — convergent Opus approval + round-7 findings below the IMPORTANT bar.
+
+**Deferred (NOT introduced by v3.22.53 — pre-existing scope):**
+- `Hotkeys.DirectSwitchKeys.RemoveAll(null)` / `AccountHotkeys` / `CharacterHotkeys` / `Accounts` / `Characters` / `CharacterAliases` / `CustomVideoPresets` null-guards in `Validate()` consistently don't set `mutated = true`. Pattern across all 6 lists predates v3.22.53.
+- Startup-folder shortcut at `Startup\EQSwitch.lnk` doesn't have legacy-name sweep parity with the new desktop sweep. The desktop rename was explicitly your request; the startup-folder rename is a scope-leak follow-up.
+
+Files modified across all rounds: `Core/KeyboardHookManager.cs`, `Core/NativeMethods.cs`, `Core/WindowManager.cs`, `Core/UninstallHelper.cs`, `Config/AppConfig.cs`, `UI/StartupManager.cs`, `UI/SettingsForm.cs`, `UI/TrayManager.cs`, `uninstall.bat`, `EQSwitch.csproj`, `CHANGELOG.md`. **Total: 42 verifier-agent dispatches across 7 rounds caught 24 real findings on top of the 9 original feature deltas.**
+
+### Build verification
+
+`dotnet build -c Release` — 0 warnings / 0 errors. No new Native changes; existing `eqswitch-hook.dll` + `eqswitch-di8.dll` ship unchanged.
+
+---
+
 ## v3.22.52 — ShowMenu save round-trip fix + Hotkeys tab hint clipping (2026-05-26)
 
 UI-only release; Native DLLs unchanged. Field-reported by Nate: *"i change ctrl+alt+E in Right click menu section general tab to ctrl+alt+M and save and come back and its still ctrl alt e"*. Plus: *"the words 'bypasses' and anything after also disappears in the hotkeys tab"* (hint text clipping).

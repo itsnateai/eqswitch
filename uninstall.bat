@@ -125,11 +125,46 @@ if defined EQPATH if exist "!EQPATH!" (
             set /a COUNT+=1
         )
     )
+
+    :: 4. Native DLL logs accumulated in the EQ folder. eqswitch-di8.dll
+    :: writes eqswitch-dinput8-{pid}.log per-process and eqswitch-hook.dll
+    :: writes eqswitch-hook.log; neither rotates. Mirrors step 4 of
+    :: UninstallHelper.RestoreLegacyDlls (Core/UninstallHelper.cs:157-188).
+    :: v3.22.53 post-verifier-fix (T2 Opus IMPORTANT): also count failed
+    :: deletes (file locked by a running eqgame.exe) and surface a [!!]
+    :: message so the user knows to close clients first. Otherwise the
+    :: failure was silent and the user thought the sweep succeeded.
+    set "LOG_REMOVED=0"
+    set "LOG_FAILED=0"
+    for %%L in ("!EQPATH!\eqswitch-*.log") do (
+        if exist "%%~L" (
+            del "%%~L" >nul 2>&1
+            if not exist "%%~L" (
+                set /a LOG_REMOVED+=1
+            ) else (
+                set /a LOG_FAILED+=1
+            )
+        )
+    )
+    if !LOG_REMOVED! gtr 0 (
+        echo  [OK] Removed !LOG_REMOVED! native log file^(s^) from EQ folder ^(eqswitch-*.log^)
+        :: v3.22.53 post-round-3 fix (T3 Opus CRITICAL): +=1 for the whole
+        :: sweep, not +=N for the file count. Every other step in this script
+        :: contributes one to COUNT per [OK] line, and UninstallHelper.cs:179
+        :: adds a single action string per sweep — diverging the two paths
+        :: would produce mismatched summary numbers from identical state.
+        set /a COUNT+=1
+    )
+    if !LOG_FAILED! gtr 0 (
+        echo  [!!] !LOG_FAILED! log file^(s^) locked -- close all eqgame.exe clients then re-run
+    )
 ) else if defined EQPATH (
     echo  [--] EQ path "!EQPATH!" does not exist -- skipping EQ-folder cleanup
 )
 
-:: 4. Legacy dinput8.dll in EQSwitch's own folder (no longer shipped post-v3.4.3).
+:: 5. Legacy dinput8.dll in EQSwitch's own folder (no longer shipped post-v3.4.3).
+::    Sits outside the EQPATH block — this DLL is in the EQSwitch install dir,
+::    not the EQ folder, so it runs regardless of EQPATH status.
 set "APPDLL=%~dp0dinput8.dll"
 if exist "!APPDLL!" (
     del "!APPDLL!" >nul 2>&1
@@ -156,14 +191,19 @@ if exist "!STARTUP!" (
 for /f "usebackq delims=" %%d in (`powershell -NoProfile -Command "[Environment]::GetFolderPath('Desktop')"`) do set "DESKTOPDIR=%%d"
 if not defined DESKTOPDIR set "DESKTOPDIR=%USERPROFILE%\Desktop"
 
-set "DESKTOP=!DESKTOPDIR!\EQSwitch.lnk"
-if exist "!DESKTOP!" (
-    del "!DESKTOP!" >nul 2>&1
+:: Sweep both the current name (Dalaya.exe.lnk) and historical names so
+:: a user who created a shortcut with any past build still gets a clean
+:: uninstall. Order: current first, then legacy.
+for %%S in ("Dalaya.exe.lnk" "EQSwitch.lnk" "EQSwitch.exe.lnk") do (
+    set "DESKTOP=!DESKTOPDIR!\%%~S"
     if exist "!DESKTOP!" (
-        echo  [!!] Could not remove desktop shortcut -- file may be in use
-    ) else (
-        echo  [OK] Removed desktop shortcut
-        set /a COUNT+=1
+        del "!DESKTOP!" >nul 2>&1
+        if exist "!DESKTOP!" (
+            echo  [!!] Could not remove desktop shortcut %%~S -- file may be in use
+        ) else (
+            echo  [OK] Removed desktop shortcut %%~S
+            set /a COUNT+=1
+        )
     )
 )
 
@@ -181,11 +221,24 @@ if not errorlevel 1 (
 )
 
 :: ----- Summary -------------------------------------------------
+:: v3.22.53 post-round-6 fix (T3 Opus IMPORTANT): if COUNT==0 BUT
+:: LOG_FAILED>0, we printed "[!!] N log file(s) locked" earlier and now
+:: contradict it with "Nothing to clean up". Surface the failure instead
+:: so the user knows their action is required.
 echo.
+if not defined LOG_FAILED set "LOG_FAILED=0"
 if !COUNT! equ 0 (
-    echo  Nothing to clean up -- no external modifications found.
+    if !LOG_FAILED! gtr 0 (
+        echo  Could not complete -- !LOG_FAILED! log file^(s^) are locked. Close all eqgame.exe clients and re-run.
+    ) else (
+        echo  Nothing to clean up -- no external modifications found.
+    )
 ) else (
-    echo  Done! Reverted !COUNT! change^(s^).
+    if !LOG_FAILED! gtr 0 (
+        echo  Done! Reverted !COUNT! change^(s^). !LOG_FAILED! log file^(s^) still locked -- close eqgame.exe and re-run to finish.
+    ) else (
+        echo  Done! Reverted !COUNT! change^(s^).
+    )
 )
 echo.
 echo  You can now delete the EQSwitch folder to fully remove it.

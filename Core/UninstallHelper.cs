@@ -158,10 +158,21 @@ public static class UninstallHelper
         //    eqswitch-dinput8-{pid}.log per-process (Native/eqswitch-di8.cpp), and
         //    eqswitch-hook.dll writes eqswitch-hook.log. These accumulate one per
         //    eqgame.exe PID until uninstall — current versions don't rotate them.
+        //
+        // v3.22.53 post-round-5 fix (T3 Sonnet + T3 Opus convergent IMPORTANT):
+        // also track failed deletes (file locked by a running eqgame.exe) and
+        // surface them in the actions list. The Settings → Paths → Uninstall
+        // path returns this list to the user as the visible summary, so a
+        // silent FileLogger.Warn here means the user sees "Removed N log
+        // files" while another M are still in the EQ folder — exactly the
+        // class of silent failure uninstall.bat's [!!] message was hardened
+        // against in round-2. Parity restored: both paths now report
+        // "N locked — close eqgame.exe and retry" instead of dropping it.
         try
         {
             var logFiles = Directory.GetFiles(eqPath, "eqswitch-*.log");
             int removed = 0;
+            int failed = 0;
             foreach (var log in logFiles)
             {
                 try
@@ -171,6 +182,7 @@ public static class UninstallHelper
                 }
                 catch (Exception ex)
                 {
+                    failed++;
                     FileLogger.Warn($"Uninstall: could not delete {log}: {ex.Message}");
                 }
             }
@@ -178,6 +190,11 @@ public static class UninstallHelper
             {
                 actions.Add($"Removed {removed} native log file(s) from EQ folder (eqswitch-*.log)");
                 FileLogger.Info($"Uninstall: deleted {removed} eqswitch-*.log files from {eqPath}");
+            }
+            if (failed > 0)
+            {
+                actions.Add($"{failed} log file(s) locked — close all eqgame.exe clients then re-run uninstall");
+                FileLogger.Warn($"Uninstall: {failed} eqswitch-*.log files locked in {eqPath} (likely running eqgame.exe)");
             }
         }
         catch (Exception ex)
@@ -243,20 +260,24 @@ public static class UninstallHelper
             }
         }
 
-        var desktopPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
-            "EQSwitch.lnk");
-        if (File.Exists(desktopPath))
+        // Sweep every shortcut filename we've ever shipped with on the desktop.
+        // Order: current name first (Dalaya.exe.lnk), then legacy. Keeps the
+        // uninstall summary readable when only one exists.
+        var desktopDir = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+        var desktopShortcutNames = new[] { "Dalaya.exe.lnk", "EQSwitch.lnk", "EQSwitch.exe.lnk" };
+        foreach (var name in desktopShortcutNames)
         {
+            var desktopPath = Path.Combine(desktopDir, name);
+            if (!File.Exists(desktopPath)) continue;
             try
             {
                 File.Delete(desktopPath);
-                actions.Add("Removed desktop shortcut");
+                actions.Add($"Removed desktop shortcut ({name})");
                 FileLogger.Info($"Uninstall: deleted {desktopPath}");
             }
             catch (Exception ex)
             {
-                actions.Add($"Could not remove desktop shortcut: {ex.Message}");
+                actions.Add($"Could not remove desktop shortcut '{name}': {ex.Message}");
             }
         }
 

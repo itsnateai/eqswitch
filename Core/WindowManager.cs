@@ -674,6 +674,21 @@ public class WindowManager
         }
         long tPass2 = swArrange.ElapsedMilliseconds;
 
+        // v3.22.53: apply dark-titlebar attribute to every arranged client.
+        // ArrangeMultiMonitor doesn't go through ApplySlimTitlebar (inlines
+        // its own SetWindowPos in pass-2 for atomic batching), so the helper
+        // wouldn't otherwise fire on the multi-monitor path. Idempotent —
+        // DWM no-ops when the attribute is already at the requested value.
+        //
+        // v3.22.53 post-verifier-fix: helper now writes BOTH 0 and 1 so the
+        // OFF transition propagates without restart. We unconditionally call
+        // it on every arrange (cost ~1 µs × N clients) so a user who toggles
+        // DarkTitlebar off in Settings → Apply sees the light caption return
+        // on the next arrange — not "stuck dark until eqgame restart". The
+        // prior `if (DarkTitlebar)` gate suppressed the off-restore.
+        foreach (var t in targets)
+            ApplyDarkTitlebarIfRequested(t.hwnd);
+
         foreach (var t in targets)
             FileLogger.Info($"ArrangeMultiMonitor: {t.logLabel}");
 
@@ -924,6 +939,21 @@ public class WindowManager
     /// </summary>
     public void ApplySlimTitlebarToAll(IReadOnlyList<EQClient> clients, IReadOnlySet<int>? injectedPids = null)
     {
+        // v3.22.53 post-verifier-fix (T2 Opus + T3 Sonnet convergent CRITICAL):
+        // dark-titlebar must apply even when SlimTitlebar is OFF, otherwise a
+        // user who enables DarkTitlebar without SlimTitlebar gets zero DWM
+        // calls and silently sees no effect. ApplyDarkTitlebarIfRequested is
+        // idempotent (writes the CURRENT bool value — 0 to restore light, 1
+        // to set dark) so it's safe to call unconditionally. Hoisted ABOVE
+        // the SlimTitlebar/Multimonitor early-returns below so the dark
+        // attribute reaches every EQ window on every foreground-hook /
+        // guard-timer tick regardless of titlebar style.
+        foreach (var c in clients)
+        {
+            if (_api.IsWindow(c.WindowHandle))
+                ApplyDarkTitlebarIfRequested(c.WindowHandle);
+        }
+
         if (!_config.Layout.SlimTitlebar) return;
 
         // v3.22.47 post-T2/T3 verifier: bail in multimonitor mode. This helper
@@ -1076,7 +1106,70 @@ public class WindowManager
             hwnd, IntPtr.Zero, x, y, w, h,
             NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
 
+        // v3.22.53: apply the dark-titlebar attribute on every slim apply.
+        // Re-applying every tick is cheap (DWM compares and no-ops if
+        // unchanged) and self-healing — if EQ flips the attribute back via
+        // its own DWM call during a screen transition, the guard-timer's
+        // next ApplySlimTitlebarToAll pass restores it.
+        ApplyDarkTitlebarIfRequested(hwnd);
+
         FileLogger.Info($"ApplySlimTitlebar: hwnd={hwnd} → ({x},{y}) {w}x{h}, offset={titlebarOffset}px caption visible");
+    }
+
+    /// <summary>
+    /// v3.22.53 — apply <c>DWMWA_USE_IMMERSIVE_DARK_MODE</c> to the given EQ
+    /// window, writing the current value of <see cref="WindowLayout.DarkTitlebar"/>
+    /// (1 if on, 0 if off). Both transitions matter: writing 0 actively
+    /// restores the light caption when the user disables the option in
+    /// Settings → Apply, so the toggle is symmetric and live-effective
+    /// without an eqgame restart.
+    ///
+    /// Cross-process safe: DWM is a system service so the attribute lookup
+    /// uses the target HWND regardless of which process makes the call.
+    /// Tries the modern attribute id (20) first and falls back to the Win10
+    /// 1809–1909 legacy id (19) if DWM returns a failure code — ~1 µs cost
+    /// avoids missing the old builds.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// HRESULT semantics: <c>0</c> = S_OK; negative = failure. We only retry
+    /// the legacy attribute on a clear failure (HRESULT &lt; 0), not on
+    /// S_FALSE (which means "applied, but didn't change anything").
+    /// </para>
+    /// <para>
+    /// v3.22.53 post-verifier-fix (T3 Opus IMPORTANT): the previous shape
+    /// early-returned on <c>!DarkTitlebar</c>, leaving any HWND that had been
+    /// dark-applied stuck with the dark caption indefinitely until the
+    /// eqgame process exited. The Settings → Apply flow promises live
+    /// effect (see ReloadConfigCore plumbing for DarkTitlebar) so an
+    /// asymmetric toggle is a real bug, not a feature. Now writes whichever
+    /// value the live config holds.
+    /// </para>
+    /// </remarks>
+    private void ApplyDarkTitlebarIfRequested(IntPtr hwnd)
+    {
+        try
+        {
+            int useDark = _config.Layout.DarkTitlebar ? 1 : 0;
+            int hr = NativeMethods.DwmSetWindowAttribute(
+                hwnd, NativeMethods.DWMWA_USE_IMMERSIVE_DARK_MODE, ref useDark, sizeof(int));
+            if (hr < 0)
+            {
+                hr = NativeMethods.DwmSetWindowAttribute(
+                    hwnd, NativeMethods.DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY, ref useDark, sizeof(int));
+                if (hr < 0)
+                {
+                    FileLogger.Warn($"ApplyDarkTitlebar: both attribute ids failed for hwnd=0x{hwnd.ToInt64():X} useDark={useDark} (HRESULT=0x{hr:X}); likely pre-1809 Windows");
+                    return;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // DWM call should never throw, but log defensively rather than
+            // crash the guard-timer tick.
+            FileLogger.Warn($"ApplyDarkTitlebar: unexpected exception: {ex.Message}");
+        }
     }
 
     /// <summary>

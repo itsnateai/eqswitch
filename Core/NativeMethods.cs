@@ -237,6 +237,11 @@ internal static class NativeMethods
     public const int WM_KEYUP = 0x0101;
     public const int WM_CHAR = 0x0102;
     public const int WM_SYSKEYDOWN = 0x0104;
+    // v3.22.53: needed by KeyboardHookManager to symmetrically swallow the
+    // KEYUP half of any KEYDOWN we intercept under Alt-modified chords —
+    // otherwise the focused window sees an orphan SYSKEYUP and EQ's WndProc
+    // can treat it as a partial Alt+key chord (menu-bar beep).
+    public const int WM_SYSKEYUP = 0x0105;
 
     // OEM keys (US keyboard layout)
     public const uint VK_OEM_5 = 0xDC;   // '\' key
@@ -552,6 +557,13 @@ internal static class NativeMethods
     public const int DWMWCP_ROUNDSMALL = 3;
     public const int DWMWCP_DEFAULT = 0;
     public const int DWMWCP_DONOTROUND = 1;
+
+    // v3.22.53 — Win10 1809+ / Win11. Set BOOL (int 0/1) via DwmSetWindowAttribute
+    // to flip the caption + frame between light and dark immersive themes.
+    // 20 is the canonical attribute id on Win10 20H1+ and Win11; older 1809–1909
+    // builds used 19. We try 20 first and fall back to 19 inside ApplyDarkTitlebar.
+    public const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+    public const int DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY = 19;
 
     // ─── GDI Region (custom rounded corners) ──────────────────────
 

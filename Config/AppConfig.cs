@@ -346,6 +346,30 @@ public class AppConfig
         Launch.NumClients = Math.Clamp(Launch.NumClients, 1, 6);
         Launch.LaunchDelayMs = Math.Clamp(Launch.LaunchDelayMs, 2000, 30000);
         Launch.FixDelayMs = Math.Clamp(Launch.FixDelayMs, 1000, 120000);
+        // v3.22.53 post-verifier-fix: normalize the new JSON-only opt-in.
+        // Read site (TrayManager.OnLaunchOne) already calls .Trim() defensively
+        // but the value persisted to disk wasn't normalized — a hand-edited
+        // " gotquiz " round-tripped with the spaces still attached. Set
+        // `mutated = true` only when the trim actually changed something so
+        // the caller (ConfigManager.Save when Validate returns true) flushes
+        // the normalized value back to disk. Distinct from the Math.Clamp
+        // lines above, which silently clamp without setting `mutated` — those
+        // are normalized cheap enough to re-apply on every load that
+        // round-tripping doesn't pay back the extra save.
+        var originalDefaultLaunchOne = Launch.DefaultLaunchOneAccount ?? string.Empty;
+        var trimmedDefaultLaunchOne = originalDefaultLaunchOne.Trim();
+        if (originalDefaultLaunchOne != trimmedDefaultLaunchOne)
+        {
+            Launch.DefaultLaunchOneAccount = trimmedDefaultLaunchOne;
+            mutated = true;
+        }
+        else if (Launch.DefaultLaunchOneAccount == null)
+        {
+            // Handle the JSON-null deserialization case so downstream reads
+            // never NRE on a hand-edited config with `"DefaultLaunchOneAccount": null`.
+            Launch.DefaultLaunchOneAccount = string.Empty;
+            mutated = true;
+        }
 
         // v3.15.2: clamp the 10 new autologin-timing tunables. Floors are
         // calibrated against the comments next to each property in LaunchConfig
@@ -408,6 +432,37 @@ public class AppConfig
             Affinity.BackgroundPriority = "AboveNormal";
         if (Hotkeys.SwitchKeyMode is not ("swapLast" or "cycleAll"))
             Hotkeys.SwitchKeyMode = "swapLast";
+
+        // v3.22.53 post-round-3 fix (T2 Sonnet IMPORTANT): TrayClick string-
+        // enum allowlist parity with the other 6 enums above. Hand-edited
+        // garbage values fell through to ExecuteTrayAction's string switch
+        // which silently no-ops on unknown values — no user-visible signal
+        // that the binding is broken. Falling back to the class-initializer
+        // defaults keeps the tray functional. The valid-value set is
+        // duplicated from the doc comment at TrayClickConfig.SingleClick;
+        // bump both together if a new action lands.
+        // v3.22.53 post-round-5 fix (T2 Opus IMPORTANT): added LoginAll5 +
+        // LoginAll6. ExecuteTrayAction in TrayManager handles those cases
+        // and the AutoLoginTeams dialog binds them, so they're real,
+        // user-reachable actions. The TrayClickConfig.SingleClick XML-doc
+        // comment said "Teams 5/6 are tray-right-click-only by design — not
+        // exposed as click bindings" — that intent is now obsolete (the
+        // dialog exposes them), and with the round-4 mutated=true behavior
+        // a hand-edited config assigning Team 5/6 to a click slot would
+        // silently reset to "None"/"LaunchOne" AND persist the reset on
+        // next save. Allowlist must match dispatch reality.
+        const string TrayClickValid = "None|AutoLogin1|AutoLogin2|AutoLogin3|AutoLogin4|LoginAll|LoginAll2|LoginAll3|LoginAll4|LoginAll5|LoginAll6|FixWindows|SwapWindows|TogglePiP|LaunchOne|LaunchAll|Settings|ShowHelp";
+        static bool IsTrayAction(string? s) => s is not null && ("|" + TrayClickValid + "|").Contains("|" + s + "|", StringComparison.Ordinal);
+        // v3.22.53 post-round-4 fix (T2 Opus IMPORTANT): set mutated=true
+        // when the fallback fires so the normalized value persists to disk
+        // on the next ConfigManager.Save instead of re-falling-back every
+        // load. Same pattern as the round-2 Launch.DefaultLaunchOneAccount
+        // Trim normalization.
+        if (!IsTrayAction(TrayClick.SingleClick))       { TrayClick.SingleClick       = "None";      mutated = true; }
+        if (!IsTrayAction(TrayClick.DoubleClick))       { TrayClick.DoubleClick       = "LaunchOne"; mutated = true; }
+        if (!IsTrayAction(TrayClick.TripleClick))       { TrayClick.TripleClick       = "None";      mutated = true; }
+        if (!IsTrayAction(TrayClick.MiddleClick))       { TrayClick.MiddleClick       = "TogglePiP"; mutated = true; }
+        if (!IsTrayAction(TrayClick.MiddleDoubleClick)) { TrayClick.MiddleDoubleClick = "Settings";  mutated = true; }
 
         // Array shape validation
         if (SettingsWindowPos is { Length: not (0 or 2) }) SettingsWindowPos = Array.Empty<int>();
@@ -502,11 +557,26 @@ public class WindowLayout
     public bool SlimTitlebarSecondary { get; set; } = true;
 
     /// <summary>
-    /// How many pixels of the titlebar to hide above the monitor edge (default 18).
-    /// A standard Windows titlebar is ~30px. Hiding 18px leaves ~12px visible.
-    /// Set to 0 for full titlebar, or up to 30 to hide it completely.
+    /// How many pixels of the titlebar to LEAVE VISIBLE inside the monitor.
+    /// A standard Windows titlebar is ~31px on Win11. Default 18 reveals the
+    /// title text and a sliver of the minimize/X buttons (WinEQ2-style look).
+    /// Clamped to [0, 40] in Validate. Set to 0 to hide the caption completely
+    /// (max game area, no drag target); raise to ~22–26 to expose more of the
+    /// buttons. Bumped from 13 in v3.22.53 — at 13 the title text and buttons
+    /// were both invisible.
     /// </summary>
-    public int TitlebarOffset { get; set; } = 13;
+    public int TitlebarOffset { get; set; } = 18;
+
+    /// <summary>
+    /// v3.22.53 — when true, request the dark-mode immersive titlebar from DWM
+    /// (DWMWA_USE_IMMERSIVE_DARK_MODE, attribute 20). Cross-process: the call
+    /// targets eqgame.exe's HWND but DWM is system-wide so the attribute is
+    /// honored regardless of which process makes the call. Useful when slim
+    /// titlebar exposes the caption inside the monitor — the dark caption sits
+    /// less obtrusively over the dark fantasy chrome of EQ than the default
+    /// white Windows caption. Defaults off so existing users see no change.
+    /// </summary>
+    public bool DarkTitlebar { get; set; } = false;
 
     /// <summary>
     /// How many pixels to subtract from the bottom of the game window height.
@@ -660,6 +730,23 @@ public class LaunchConfig
 
     /// <summary>Command-line arguments for the EQ client (e.g. "patchme").</summary>
     public string Arguments { get; set; } = "patchme";
+
+    /// <summary>
+    /// v3.22.53 — when set to a configured account Name, the LaunchOne path
+    /// (tray single-click or LaunchOne hotkey) routes through AutoLoginManager
+    /// using that account's stored DPAPI credentials, bypassing the manual
+    /// login + server-select screens that LaunchOne otherwise shows. Empty
+    /// (default) preserves the historical behavior: plain process start, user
+    /// completes login themselves.
+    ///
+    /// **Why an opt-in:** an empty default keeps existing users' first-click
+    /// experience unchanged. Once set, LaunchOne feels like team1 — same auto-
+    /// dismiss of EULA, same window-position settle, no manual typing. The
+    /// account Name must match an entry in <see cref="AppConfig.Accounts"/>;
+    /// if the name no longer resolves we fall back to plain launch and log a
+    /// warning so the user notices.
+    /// </summary>
+    public string DefaultLaunchOneAccount { get; set; } = "";
 
     /// <summary>Number of clients to launch with "Launch All" (1-6).</summary>
     public int NumClients { get; set; } = 2;
@@ -958,17 +1045,17 @@ public class TrayClickConfig
 {
     /// <summary>
     /// Action for single left-click on tray icon.
-    /// Values: "None", "AutoLogin1", "AutoLogin2", "AutoLogin3", "AutoLogin4",
-    /// "LoginAll", "LoginAll2", "LoginAll3", "LoginAll4",
-    /// "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp"
-    /// (Teams 5/6 are tray-right-click-only by design — not exposed as click bindings.)
+    /// Values: "None", "AutoLogin1"–"AutoLogin4",
+    /// "LoginAll", "LoginAll2"–"LoginAll6" (Teams 5/6 added in v3.22.53),
+    /// "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp".
+    /// Source of truth: <c>TrayClickValid</c> in <see cref="AppConfig.Validate"/>.
     /// </summary>
-    public string SingleClick { get; set; } = "LaunchOne";
+    public string SingleClick { get; set; } = "None";
 
     /// <summary>
     /// Action for double left-click on tray icon.
     /// </summary>
-    public string DoubleClick { get; set; } = "None";
+    public string DoubleClick { get; set; } = "LaunchOne";
 
     /// <summary>
     /// Action for triple left-click on tray icon.

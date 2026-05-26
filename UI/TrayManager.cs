@@ -43,6 +43,18 @@ public class TrayManager : IDisposable
     // / Settings — meaning the new opt-in eject path was effectively
     // unreachable from the tray menu right after launching clients.
     private ToolStripMenuItem? _detachItem;
+    // v3.22.53: cache the Force-Kill submenu so UpdateClientMenu can rebuild
+    // the per-client items below it without disposing it (would orphan the
+    // DropDownOpening handler and the cached reference).
+    private ToolStripMenuItem? _forceKillMenu;
+    // v3.22.53: cache the separator that sits between admin items (Force-kill,
+    // Detach) and the per-client list so we don't have to recompute its slot
+    // on every rebuild.
+    private ToolStripSeparator? _clientsAdminSeparator;
+    // v3.22.53: count of admin items at the top of the Clients submenu that
+    // UpdateClientMenu must preserve (do NOT dispose). Currently: forceKill +
+    // detach + separator = 3. Bump if you add more pre-list items.
+    private const int ClientsMenuAdminItemCount = 3;
     private Font? _boldMenuFont;
 
     // Hidden window to receive TaskbarCreated message (explorer.exe restart recovery)
@@ -1690,9 +1702,49 @@ public class TrayManager : IDisposable
 
     /// <summary>
     /// Launch one EQ client.
+    /// <para>
+    /// v3.22.53: If <see cref="LaunchConfig.DefaultLaunchOneAccount"/> resolves
+    /// to an Account in the user's <see cref="AppConfig.Accounts"/> list, route
+    /// through AutoLoginManager so the single-click LaunchOne path matches the
+    /// team1 launch path — EULA auto-dismissed, credentials typed via
+    /// dinput8 SHM, window arranged after the login screen settles. Without
+    /// that opt-in, falls back to the historical plain-launch behavior:
+    /// process start with <c>Launch.Arguments</c> ("patchme" by default), no
+    /// input automation. The user has to type their own password at the login
+    /// screen.
+    /// </para>
+    /// <para>
+    /// **Why patchme alone isn't enough to bypass EULA/Sony screens:** Dalaya's
+    /// dinput8.dll patcher ("Edge") explicitly disables the patchme arg shortly
+    /// after process start (string <c>"disabling patchme"</c> at VA
+    /// <c>0x100f7fc0</c>, confirmed in the 2026-05-21 Edge audit). The
+    /// autologin path side-steps this because Edge's MQ2-derived connection
+    /// management is compatible with concurrent multi-client launches when
+    /// each client uses unique credentials — but it requires credentials.
+    /// </para>
     /// </summary>
     private void OnLaunchOne()
     {
+        var defaultAccountName = _config.Launch.DefaultLaunchOneAccount?.Trim();
+        if (!string.IsNullOrEmpty(defaultAccountName))
+        {
+            Account? account;
+            lock (ConfigManager.ConfigMutationLock)
+            {
+                account = _config.FindAccountByName(defaultAccountName);
+            }
+            if (account != null)
+            {
+                FileLogger.Info($"OnLaunchOne: routing via AutoLoginManager (account '{account.EffectiveLabel}')");
+                FireAccountLogin(account);
+                return;
+            }
+            // Fall through to plain launch. Logged at Warn so the user sees a
+            // hint if their named account got renamed/deleted out from under
+            // them.
+            FileLogger.Warn($"OnLaunchOne: configured DefaultLaunchOneAccount='{defaultAccountName}' did not resolve to an Account — falling back to plain launch");
+            ShowBalloon($"LaunchOne default account '{defaultAccountName}' not found — launching without autologin");
+        }
         _launchManager.LaunchOne();
     }
 
@@ -2104,25 +2156,29 @@ public class TrayManager : IDisposable
         _contextMenu.Items.Add(new ToolStripSeparator());
 
         _clientsMenu = new ToolStripMenuItem("\uD83D\uDC64  Clients");
-        _clientsMenu.DropDownItems.Add("(scanning...)");
-        _contextMenu.Items.Add(_clientsMenu);
 
-        _contextMenu.Items.Add(new ToolStripSeparator());
-
-        _contextMenu.Items.Add("\u26A1  Process Manager", null, (_, _) => ShowProcessManager());
+        // v3.22.53: Force-Kill + Detach Hooks moved INTO the Clients submenu
+        // at the top (with a separator under them) per Nate 2026-05-26 \u2014
+        // they were previously top-level peers of Clients/Process Manager and
+        // crowded the right-click menu. Both items target the same set of
+        // running eqgame.exe processes the Clients submenu lists, so this
+        // groups them logically. Constructed as fields so UpdateClientMenu
+        // can rebuild the per-client list below them without disposing
+        // them (would orphan the DropDownOpening handler on Force-Kill and
+        // the _detachItem reference used by RefreshDetachMenuState).
 
         // Force-Kill Stuck Client \u2014 Task Manager fallback for hung eqgame.exe
         // (DX reset deadlock, WndProc loop). Submenu lazily populates on open
         // so it always reflects the current eqgame.exe set.
-        var forceKillMenu = new ToolStripMenuItem("\uD83D\uDC80  Force-Kill Stuck Client")
+        _forceKillMenu = new ToolStripMenuItem("\uD83D\uDC80  Force-Kill Stuck Client")
         {
             DropDownDirection = ToolStripDropDownDirection.Right
         };
-        forceKillMenu.DropDownOpening += (_, _) => PopulateForceKillMenu(forceKillMenu);
+        _forceKillMenu.DropDownOpening += (_, _) => PopulateForceKillMenu(_forceKillMenu);
         // Seed with one item so the chevron renders; PopulateForceKillMenu
         // replaces it the moment the submenu opens.
-        forceKillMenu.DropDownItems.Add("(scanning...)").Enabled = false;
-        _contextMenu.Items.Add(forceKillMenu);
+        _forceKillMenu.DropDownItems.Add("(scanning...)").Enabled = false;
+        _clientsMenu.DropDownItems.Add(_forceKillMenu);
 
         // v3.22.44 Gate #1 — explicit "Detach hooks from running clients" entry
         // point. Eject path is no longer the Dispose default (see
@@ -2132,18 +2188,44 @@ public class TrayManager : IDisposable
         // section — surface the risk in the label + confirmation prompt so the
         // user knows what they're consenting to. Only enabled when at least
         // one process is currently tracked as injected.
+        // v3.22.53: clearer label + tooltip per Nate 2026-05-26 — he ran it
+        // once and the popup didn't make the purpose obvious. It's a
+        // clean-exit tool, not a crash-prevention tool: if eqgame is already
+        // corrupting itself (DX deadlock, zone-load OOM) detaching hooks
+        // won't save the client.
         bool anyInjected = _injectedPids.Count > 0 || _di8InjectedPids.Count > 0;
-        var detachItem = new ToolStripMenuItem("🔌  Detach Hooks from Running Clients")
+        _detachItem = new ToolStripMenuItem("🔌  Detach EQSwitch from Running Clients")
         {
             Enabled = anyInjected,
             ToolTipText = anyInjected
-                ? "Removes the EQSwitch window/input hooks from every running eqgame.exe. May briefly stutter or crash a client if EQ is mid-render through one of our hooked functions."
+                ? "Lets EQSwitch fully release its window/input hooks from every running eqgame.exe so you can close EQSwitch without also closing the game.\nNote: this is a clean-exit tool, not a crash-prevention tool. If EQ is mid-render through one of our hooks the client may briefly stutter."
                 : "No injected eqgame.exe processes."
         };
-        detachItem.Click += (_, _) => OnDetachHooksMenuItem();
-        _contextMenu.Items.Add(detachItem);
-        // v3.22.44 r2: cache so UpdateClientMenu can refresh Enabled state.
-        _detachItem = detachItem;
+        _detachItem.Click += (_, _) => OnDetachHooksMenuItem();
+        _clientsMenu.DropDownItems.Add(_detachItem);
+
+        // Separator under the two admin items. Cached so UpdateClientMenu
+        // can find/skip it during the rebuild.
+        _clientsAdminSeparator = new ToolStripSeparator();
+        _clientsMenu.DropDownItems.Add(_clientsAdminSeparator);
+
+        // Placeholder seeded below the admin items so the submenu renders a
+        // chevron even before the first UpdateClientMenu pass. UpdateClientMenu
+        // replaces everything from index ClientsMenuAdminItemCount onward.
+        _clientsMenu.DropDownItems.Add("(scanning...)");
+
+        // v3.22.53: when the Clients submenu opens, default keyboard focus
+        // should land on the FIRST CLIENT entry (or the Refresh row if no
+        // clients), NOT on the Force-Kill item at the top. Force-Kill is
+        // recovery, not the routine action — Nate wants the routine action
+        // pre-selected so up/down keys traverse clients immediately.
+        _clientsMenu.DropDownOpened += (_, _) => SelectClientsMenuDefault();
+
+        _contextMenu.Items.Add(_clientsMenu);
+
+        _contextMenu.Items.Add(new ToolStripSeparator());
+
+        _contextMenu.Items.Add("⚡  Process Manager", null, (_, _) => ShowProcessManager());
 
         // Video Settings submenu
         var videoMenu = new ToolStripMenuItem("\uD83D\uDCFA  Video Settings") { DropDownDirection = ToolStripDropDownDirection.Right };
@@ -2256,8 +2338,14 @@ public class TrayManager : IDisposable
         }
         _clientMenuDirty = false;
 
-        // Dispose old menu items to prevent GDI/memory leaks (called on every client change)
-        for (int i = _clientsMenu.DropDownItems.Count - 1; i >= 0; i--)
+        // v3.22.53: PRESERVE the admin items at the top (Force-Kill submenu,
+        // Detach item, separator). They're cached fields whose handlers (and
+        // _detachItem reference used by RefreshDetachMenuState) must outlive
+        // the rebuild. Only dispose entries below ClientsMenuAdminItemCount.
+        //
+        // Dispose old per-client items to prevent GDI/memory leaks
+        // (called on every client change).
+        for (int i = _clientsMenu.DropDownItems.Count - 1; i >= ClientsMenuAdminItemCount; i--)
         {
             var item = _clientsMenu.DropDownItems[i];
             _clientsMenu.DropDownItems.RemoveAt(i);
@@ -2299,6 +2387,37 @@ public class TrayManager : IDisposable
         if (_trayIcon == null) return;
         int count = _processManager.ClientCount;
         _trayIcon.Text = $"EQSwitch - {count} client{(count != 1 ? "s" : "")}";
+    }
+
+    /// <summary>
+    /// v3.22.53 — When the Clients submenu opens, pre-select the first
+    /// per-client entry (or the Refresh row if no clients) instead of the
+    /// Force-Kill admin item at the top. Force-Kill is recovery; the routine
+    /// action is "pick a client" — so up/down keys should traverse clients
+    /// immediately and Enter should fire SwitchToClient by default.
+    ///
+    /// Fires from <c>_clientsMenu.DropDownOpened</c>. We use DropDownOpened
+    /// (not DropDownOpening) so the items have actually been laid out and
+    /// are selectable. Items below <see cref="ClientsMenuAdminItemCount"/>
+    /// are skipped — that's where the admin items sit.
+    /// </summary>
+    private void SelectClientsMenuDefault()
+    {
+        if (_clientsMenu == null) return;
+        var items = _clientsMenu.DropDownItems;
+        for (int i = ClientsMenuAdminItemCount; i < items.Count; i++)
+        {
+            // First selectable, non-separator, enabled item wins. The
+            // "(no clients detected)" placeholder is a plain ToolStripMenuItem
+            // and IS selectable — that's fine; selecting it puts focus in the
+            // right region of the submenu and the user can arrow down to
+            // Refresh which is what they want next.
+            if (items[i] is ToolStripMenuItem mi && mi.Enabled && mi.CanSelect)
+            {
+                mi.Select();
+                return;
+            }
+        }
     }
 
     /// <summary>
@@ -3482,6 +3601,14 @@ public class TrayManager : IDisposable
         // take effect until restart. Mirror the SlimTitlebar copy.
         _config.Layout.SlimTitlebarSecondary = newConfig.Layout.SlimTitlebarSecondary;
         _config.Layout.TitlebarOffset = newConfig.Layout.TitlebarOffset;
+        // v3.22.53: dark titlebar opt-in. Propagated here so a Settings →
+        // Apply round-trip reflects without restart. The slim-titlebar guard
+        // timer fires every 500–2000 ms so live clients pick it up on the
+        // next tick via ApplySlimTitlebarToAll → ApplySlimTitlebar →
+        // ApplyDarkTitlebarIfRequested. See [[reference_settings_apply_dual_propagation_bug]]
+        // for why all three sites (AppConfig field, BuildAppConfig pickup,
+        // this ReloadConfigCore propagation) are required.
+        _config.Layout.DarkTitlebar = newConfig.Layout.DarkTitlebar;
         _config.Layout.BottomOffset = newConfig.Layout.BottomOffset;
         _config.Layout.WindowTitleTemplate = newConfig.Layout.WindowTitleTemplate;
         _config.Layout.Mode = newConfig.Layout.Mode;
@@ -3523,6 +3650,9 @@ public class TrayManager : IDisposable
         _config.Hotkeys.TeamLogin4 = newConfig.Hotkeys.TeamLogin4;
         _config.Launch.ExeName = newConfig.Launch.ExeName;
         _config.Launch.Arguments = newConfig.Launch.Arguments;
+        // v3.22.53: propagate the new LaunchOne autologin opt-in so Settings →
+        // Apply takes effect without restart.
+        _config.Launch.DefaultLaunchOneAccount = newConfig.Launch.DefaultLaunchOneAccount;
         _config.Launch.NumClients = newConfig.Launch.NumClients;
         _config.Launch.LaunchDelayMs = newConfig.Launch.LaunchDelayMs;
         _config.Launch.FixDelayMs = newConfig.Launch.FixDelayMs;
@@ -4380,8 +4510,10 @@ public class TrayManager : IDisposable
         if (_detachItem == null) return;
         bool anyInjected = _injectedPids.Count > 0 || _di8InjectedPids.Count > 0;
         _detachItem.Enabled = anyInjected;
+        // v3.22.53: match BuildContextMenu's new clean-exit wording so the
+        // refresh path can't desync the tooltip with the active label.
         _detachItem.ToolTipText = anyInjected
-            ? "Removes the EQSwitch window/input hooks from every running eqgame.exe. May briefly stutter or crash a client if EQ is mid-render through one of our hooked functions."
+            ? "Lets EQSwitch fully release its window/input hooks from every running eqgame.exe so you can close EQSwitch without also closing the game.\nNote: this is a clean-exit tool, not a crash-prevention tool. If EQ is mid-render through one of our hooks the client may briefly stutter."
             : "No injected eqgame.exe processes.";
     }
 
@@ -4395,12 +4527,24 @@ public class TrayManager : IDisposable
             return;
         }
 
+        // v3.22.53: rewritten per Nate 2026-05-26 — old copy led with
+        // "Eject" + FreeLibrary jargon, which didn't explain why you'd want
+        // this. Make the intent loud: this is a clean-exit hatch so you can
+        // close EQSwitch without taking eqgame down with it. NOT a crash
+        // prevention tool (if eqgame is already corrupting itself, detaching
+        // won't save it).
         var result = MessageBox.Show(
-            $"Eject EQSwitch hooks from {hookCount} hook-injected + {di8Count} di8-injected eqgame.exe process(es)?\n\n" +
-            "This calls FreeLibrary inside each client. If any EQ thread is currently executing inside one of our hooked Win32 functions, the client will crash. " +
-            "Normal exit doesn't do this — the hooks stay resident and clean up when eqgame itself closes.\n\n" +
-            "Use this only if you need EQSwitch's window control removed from running clients without closing them.",
-            "Detach EQSwitch Hooks?",
+            $"Release EQSwitch from {hookCount + di8Count} running eqgame.exe process(es)?\n\n" +
+            "WHAT THIS DOES\n" +
+            "• Removes EQSwitch's window-manager + input hooks from each client.\n" +
+            "• After this, you can close EQSwitch and your clients keep running on their own.\n" +
+            "• Slim titlebar / multi-monitor positioning will stop being maintained.\n\n" +
+            "WHAT THIS DOES NOT DO\n" +
+            "• It does NOT prevent eqgame crashes. If a client is already hung or mid-crash, detaching won't save it.\n" +
+            "• It does NOT close eqgame. To kill a stuck client, use Force-Kill Stuck Client instead.\n\n" +
+            "RISK\n" +
+            "If EQ is mid-render through one of our hooked Win32 calls at the moment we eject, the client may stutter briefly or (rarely) crash. The normal Exit path avoids this by leaving hooks resident until eqgame itself closes — so only use Detach when you specifically need EQSwitch out of the picture before closing it.",
+            "Detach EQSwitch from running clients?",
             MessageBoxButtons.YesNo,
             MessageBoxIcon.Warning,
             MessageBoxDefaultButton.Button2);

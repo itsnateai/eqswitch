@@ -67,6 +67,10 @@ public class SettingsForm : Form
 
     // ─── Window Style controls (on Video tab)
     private CheckBox _chkSlimTitlebar = null!;
+    // v3.22.53: dark immersive titlebar (DWMWA_USE_IMMERSIVE_DARK_MODE).
+    // Lives in the Wrapper Settings dialog alongside the other slim-titlebar
+    // knobs since it's only meaningful when SlimTitlebar exposes caption pixels.
+    private CheckBox _chkDarkTitlebar = null!;
     private NumericUpDown _nudTitlebarOffset = null!;
     private NumericUpDown _nudBottomOffset = null!;
     private CheckBox _chkUseHook = null!;
@@ -503,7 +507,14 @@ public class SettingsForm : Form
         y += 46;
 
         // ─── Tray Click Actions card ─────────────────────────────
-        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam1", "TogglePiP", "LaunchOne", "LaunchAll", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4" };
+        // v3.22.53 post-round-6 fix (T2 Opus IMPORTANT): include
+        // AutoLoginTeam5/6 in the dropdown to match the round-5 allowlist
+        // widening. Without this, a hand-edited config binding Team 5/6 to a
+        // tray click slot opens to a blank dropdown — the BuildAppConfig
+        // fallback preserves the value but the user has no in-UI way to
+        // change it. Completing the round-trip here means hand-edit + UI
+        // both work.
+        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam1", "TogglePiP", "LaunchOne", "LaunchAll", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4", "AutoLoginTeam5", "AutoLoginTeam6" };
         const int cboW = 140;
 
         var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 131);
@@ -1510,6 +1521,7 @@ public class SettingsForm : Form
 
         // Layout
         _chkSlimTitlebar.Checked = _config.Layout.SlimTitlebar;
+        _chkDarkTitlebar.Checked = _config.Layout.DarkTitlebar;
         _nudTitlebarOffset.Value = DarkTheme.ClampNud(_nudTitlebarOffset, _config.Layout.TitlebarOffset);
         _nudBottomOffset.Value = DarkTheme.ClampNud(_nudBottomOffset, _config.Layout.BottomOffset);
         _chkUseHook.Checked = _config.Layout.UseHook;
@@ -1773,6 +1785,7 @@ public class SettingsForm : Form
                 SecondaryMonitor = _cboVideoSecondaryMon.SelectedIndex <= 0 ? -1 : _cboVideoSecondaryMon.SelectedIndex - 1,
                 TopOffset = (int)_nudVideoTopOffset.Value,
                 SlimTitlebar = _chkSlimTitlebar.Checked,
+                DarkTitlebar = _chkDarkTitlebar.Checked,
                 TitlebarOffset = (int)_nudTitlebarOffset.Value,
                 BottomOffset = (int)_nudBottomOffset.Value,
                 UseHook = _chkUseHook.Checked,
@@ -1816,6 +1829,12 @@ public class SettingsForm : Form
             {
                 ExeName = _txtExeName.Text.Trim(),
                 Arguments = _txtArgs.Text.Trim(),
+                // v3.22.53: pass-through for the LaunchOne autologin opt-in.
+                // No Settings UI control today — JSON-edit-only. Without this
+                // round-trip, every Settings → Apply would clobber the user's
+                // hand-edited value with the LaunchConfig class-initializer
+                // default ("").
+                DefaultLaunchOneAccount = _config.Launch.DefaultLaunchOneAccount,
                 NumClients = _config.Launch.NumClients,
                 LaunchDelayMs = (int)_nudLaunchDelay.Value * 1000,
                 FixDelayMs = _config.Launch.FixDelayMs,
@@ -3183,6 +3202,10 @@ public class SettingsForm : Form
         _nudTitlebarOffset = new NumericUpDown { Value = 22, Minimum = 0, Maximum = 40 };
         _nudBottomOffset = new NumericUpDown { Value = 22, Minimum = 0, Maximum = 100 };
         _chkUseHook = new CheckBox();
+        // v3.22.53: detached storage checkbox — actual UI lives inside
+        // ShowWrapperDialog (chkDark below). Stored here so PopulateFromConfig
+        // / BuildAppConfig have a stable target between dialog opens.
+        _chkDarkTitlebar = new CheckBox();
         btnWrapper.Click += (_, _) => ShowWrapperDialog();
 
         _chkSlimTitlebar.CheckedChanged += (_, _) =>
@@ -3304,7 +3327,7 @@ public class SettingsForm : Form
         DarkTheme.AddLabel(dlg, "Titlebar hidden (px):", L, y + 2);
         var nudTitle = DarkTheme.AddNumeric(dlg, I, y, 60, _nudTitlebarOffset.Value, 0, 40);
         y += 24;
-        DarkTheme.AddHint(dlg, "22 = thin strip, 30 = fully hidden", L, y);
+        DarkTheme.AddHint(dlg, "0 = caption hidden, 18 = title+sliver of buttons, 26 = full buttons", L, y);
         y += 18;
 
         DarkTheme.AddLabel(dlg, "Bottom margin (px):", L, y + 2);
@@ -3313,22 +3336,35 @@ public class SettingsForm : Form
         DarkTheme.AddHint(dlg, "Game render height reduction", L, y);
         y += 18;
 
-        DarkTheme.AddHint(dlg, "Defaults: titlebar 13, margin 21. Keep margin > titlebar.", L, y);
+        DarkTheme.AddHint(dlg, "Defaults: titlebar 18, margin 21. Keep margin > titlebar.", L, y);
         y += 22;
 
         var chkHook = DarkTheme.AddCheckBox(dlg, "DLL Hook (zero flicker)", L, y);
         chkHook.Checked = _chkUseHook.Checked;
         y += 20;
         DarkTheme.AddHint(dlg, "Hooks SetWindowPos inside EQ", L, y);
+        y += 22;
+
+        // v3.22.53: dark immersive titlebar (DWMWA_USE_IMMERSIVE_DARK_MODE)
+        var chkDark = DarkTheme.AddCheckBox(dlg, "Dark Titlebar", L, y);
+        chkDark.Checked = _chkDarkTitlebar.Checked;
+        y += 20;
+        DarkTheme.AddHint(dlg, "Win10 1809+/Win11 only — DWM dark caption", L, y);
         y += 28;
+
+        // Grow the dialog so the new control fits the existing layout.
+        dlg.Size = new Size(dlg.Width, dlg.Height + 42);
 
         var btnReset = DarkTheme.MakeButton("Reset Defaults", DarkTheme.BgMedium, L, y);
         btnReset.Width = 110;
         btnReset.Click += (_, _) =>
         {
-            nudTitle.Value = 13;
+            // Defaults track AppConfig.WindowLayout (v3.22.53):
+            //   TitlebarOffset = 18, BottomOffset = 21, UseHook = true, DarkTitlebar = false.
+            nudTitle.Value = 18;
             nudBottom.Value = 21;
             chkHook.Checked = true;
+            chkDark.Checked = false;
         };
         dlg.Controls.Add(btnReset);
         y += 36;
@@ -3340,6 +3376,7 @@ public class SettingsForm : Form
             _nudTitlebarOffset.Value = nudTitle.Value;
             _nudBottomOffset.Value = nudBottom.Value;
             _chkUseHook.Checked = chkHook.Checked;
+            _chkDarkTitlebar.Checked = chkDark.Checked;
             dlg.DialogResult = DialogResult.OK;
         };
         dlg.Controls.Add(btnOK);
@@ -3755,12 +3792,17 @@ public class SettingsForm : Form
 
     // ─── Tray Action Display ↔ Config Mapping ───────────────────
 
+    // v3.22.53 post-round-6 fix: Team 5/6 entries match the clickActions
+    // array + the TrayClickValid allowlist in AppConfig.Validate. Round-trip
+    // intact across config-write/read, JSON hand-edit, and Settings dropdown.
     private static readonly Dictionary<string, string> _trayActionDisplayMap = new()
     {
-        ["LoginAll"] = "AutoLoginTeam1",
+        ["LoginAll"]  = "AutoLoginTeam1",
         ["LoginAll2"] = "AutoLoginTeam2",
         ["LoginAll3"] = "AutoLoginTeam3",
-        ["LoginAll4"] = "AutoLoginTeam4"
+        ["LoginAll4"] = "AutoLoginTeam4",
+        ["LoginAll5"] = "AutoLoginTeam5",
+        ["LoginAll6"] = "AutoLoginTeam6"
     };
 
     private static readonly Dictionary<string, string> _trayDisplayActionMap = new()
@@ -3768,7 +3810,9 @@ public class SettingsForm : Form
         ["AutoLoginTeam1"] = "LoginAll",
         ["AutoLoginTeam2"] = "LoginAll2",
         ["AutoLoginTeam3"] = "LoginAll3",
-        ["AutoLoginTeam4"] = "LoginAll4"
+        ["AutoLoginTeam4"] = "LoginAll4",
+        ["AutoLoginTeam5"] = "LoginAll5",
+        ["AutoLoginTeam6"] = "LoginAll6"
     };
 
     /// <summary>Convert config action name to dropdown display name.</summary>

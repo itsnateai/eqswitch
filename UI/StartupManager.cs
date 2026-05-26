@@ -19,6 +19,28 @@ public static class StartupManager
         Path.Combine(StartupFolder, "EQSwitch.lnk");
 
     /// <summary>
+    /// Desktop shortcut name. Matches the DalayaPatcher-style "looks like
+    /// a Dalaya launcher" convention so users with both shortcuts see a
+    /// consistent naming pattern. Windows hides the .lnk in Explorer, so
+    /// users see "Dalaya.exe" — the .exe is part of the visible name, not
+    /// the target. Target still points at EQSwitch.exe.
+    /// </summary>
+    internal const string DesktopShortcutName = "Dalaya.exe.lnk";
+
+    /// <summary>
+    /// Legacy desktop shortcut filenames swept up on every create so users
+    /// don't end up with two side-by-side shortcuts after upgrading. Order
+    /// matters only for log clarity. Update when adding new variants —
+    /// keep older entries forever (anyone who never re-clicks Create still
+    /// gets a clean rename on uninstall via UninstallHelper).
+    /// </summary>
+    private static readonly string[] LegacyDesktopShortcutNames =
+    {
+        "EQSwitch.lnk",
+        "EQSwitch.exe.lnk",
+    };
+
+    /// <summary>
     /// If run-at-startup is enabled, ensure the shortcut target matches the current exe location.
     /// </summary>
     public static void ValidateStartupPath(AppConfig config)
@@ -124,18 +146,47 @@ public static class StartupManager
         try
         {
             var desktopPath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-            var shortcutPath = Path.Combine(desktopPath, "EQSwitch.lnk");
+            var shortcutPath = Path.Combine(desktopPath, DesktopShortcutName);
+
+            // Sweep legacy shortcut names. Done unconditionally so the user
+            // sees a single Dalaya.exe.lnk even if they had an older
+            // EQSwitch.lnk/EQSwitch.exe.lnk lying around from a prior install.
+            int swept = 0;
+            foreach (var legacy in LegacyDesktopShortcutNames)
+            {
+                var legacyPath = Path.Combine(desktopPath, legacy);
+                if (File.Exists(legacyPath))
+                {
+                    try
+                    {
+                        File.Delete(legacyPath);
+                        swept++;
+                        FileLogger.Info($"CreateDesktopShortcut: removed legacy '{legacy}'");
+                    }
+                    catch (Exception sweepEx)
+                    {
+                        // Non-fatal — log and keep going. The new shortcut
+                        // still lands; the user may need to manually delete
+                        // the legacy one (e.g. read-only attribute, AV lock).
+                        FileLogger.Warn($"CreateDesktopShortcut: failed to remove legacy '{legacy}': {sweepEx.Message}");
+                    }
+                }
+            }
 
             if (File.Exists(shortcutPath))
             {
-                showBalloon("Desktop shortcut already exists");
+                showBalloon(swept > 0
+                    ? $"Desktop shortcut already exists (removed {swept} legacy)"
+                    : "Desktop shortcut already exists");
                 return;
             }
 
-            CreateShortcut(shortcutPath, "EQSwitch — EverQuest Window Manager");
+            CreateShortcut(shortcutPath, "Dalaya — EQSwitch EverQuest Window Manager");
 
-            FileLogger.Info($"Desktop shortcut created: {shortcutPath}");
-            showBalloon("Desktop shortcut created");
+            FileLogger.Info($"Desktop shortcut created: {shortcutPath} (swept {swept} legacy)");
+            showBalloon(swept > 0
+                ? $"Desktop shortcut created (replaced {swept} legacy)"
+                : "Desktop shortcut created");
         }
         catch (Exception ex)
         {
