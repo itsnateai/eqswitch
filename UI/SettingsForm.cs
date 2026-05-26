@@ -71,7 +71,14 @@ public class SettingsForm : Form
     // v3.22.54: promoted from the Wrapper Settings dialog to the main Video
     // tab Window Style card so the toggle is discoverable rather than buried
     // two clicks deep. Still only meaningful when SlimTitlebar exposes caption
-    // pixels — but with DarkTitlebar default-off the user opts in deliberately.
+    // pixels.
+    // v3.22.56: default flipped to ON (Nate's 2026-05-26 visual review after
+    // the v3.22.54 promotion — "make dark titlebar enabled by default, it
+    // looks good"). Users who saved Settings on v3.22.53+ keep their explicit
+    // value via STJ deserialization; users without the JSON key (pre-v3.22.53
+    // or never-opened-Settings cohort) silently adopt the new ON default on
+    // next launch (intended behavior — directive was "default ON"). See
+    // AppConfig.WindowLayout.DarkTitlebar for the full migration story.
     private CheckBox _chkDarkTitlebar = null!;
     private NumericUpDown _nudTitlebarOffset = null!;
     private NumericUpDown _nudBottomOffset = null!;

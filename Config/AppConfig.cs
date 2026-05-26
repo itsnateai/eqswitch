@@ -589,9 +589,26 @@ public class WindowLayout
     /// honored regardless of which process makes the call. Useful when slim
     /// titlebar exposes the caption inside the monitor — the dark caption sits
     /// less obtrusively over the dark fantasy chrome of EQ than the default
-    /// white Windows caption. Defaults off so existing users see no change.
+    /// white Windows caption.
+    /// <para>
+    /// v3.22.56 — default flipped from <c>false</c> to <c>true</c>. Nate's
+    /// 2026-05-26 visual review after the v3.22.54 promotion to the Video
+    /// tab: "make dark titlebar enabled by default, it looks good."
+    /// Upgrade behavior: users whose config JSON has an explicit
+    /// <c>darkTitlebar</c> key (anyone who opened Settings → Apply on
+    /// v3.22.53 or later) keep their saved value via STJ deserialization.
+    /// Users upgrading from v3.22.52 or earlier — OR v3.22.53+ users who
+    /// never opened Settings — have no <c>darkTitlebar</c> key on disk;
+    /// STJ fills the missing property with the new C# default
+    /// (<c>true</c>), so they silently adopt the dark caption on next
+    /// launch. This is the intended behavior (the directive was "default
+    /// ON"), but documented here so the migration story is loud rather
+    /// than implicit. No <c>MigrateV5ToV6</c> step is needed because the
+    /// field's absence is semantically equivalent to "accept whatever the
+    /// current default is."
+    /// </para>
     /// </summary>
-    public bool DarkTitlebar { get; set; } = false;
+    public bool DarkTitlebar { get; set; } = true;
 
     /// <summary>
     /// How many pixels to subtract from the bottom of the game window height.

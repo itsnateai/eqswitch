@@ -625,22 +625,53 @@ public class TrayManager : IDisposable
             // v3.22.55: the rest of this handler (hook-config refresh, manual
             // hook injection for externally-launched eqgame, fallback title
             // setter) was previously gated by the unconditional autologin
-            // early-return. The hook-config refresh is internally gated by
-            // IsLoginActive (TrayManager.UpdateHookConfig L1107) so running
-            // it here is a no-op for autologin clients — but the call still
-            // populates per-PID shared memory for non-autologin paths that
-            // race ClientDiscovered with launch-time HookConfigWriter writes.
-            // The InjectHookDll branch only fires for externally-launched
-            // eqgame.exe (not in _injectedPids), which the autologin path
-            // doesn't produce, so the conditional is still correct.
+            // early-return.
+            //
+            // v3.22.56 (post-v3.22.55 verifier swarm CRITICAL — T2 Sonnet +
+            // T2 Opus convergent REJECT): the bulk wrapper `UpdateHookConfig()`
+            // (no-arg) has an internal IsLoginActive gate that filters autologin
+            // PIDs out of its iteration — but the call site BELOW invokes
+            // `UpdateHookConfigForPid(pid)` DIRECTLY (per-PID worker, no internal
+            // gate). v3.22.55's CHANGELOG + the pre-v3.22.56 version of this
+            // comment falsely claimed the call was "internally gated" — it was
+            // not. Pre-v3.22.55 the call was unreachable for autologin clients
+            // via the early-return; v3.22.55 removed that and (incorrectly)
+            // relied on a non-existent internal gate. The smoke for v3.22.55
+            // didn't trigger an observable race (shared-memory writes are fast
+            // and the eqswitch-hook.dll vs eqswitch-di8.dll surfaces are
+            // independent memory-mapped files for different hook classes), but
+            // the unguarded call site at T+~1.5 s during DI cooperative-level
+            // handoff has no proven-safe history — restore the gate explicitly
+            // to match the original pre-v3.22.55 behavior for this specific
+            // call. The InjectHookDll branch below still only fires for
+            // externally-launched eqgame (not in `_injectedPids`), which the
+            // autologin path doesn't produce, so that conditional needs no
+            // autologin gate.
+            //
+            // Note on line-number citations: by-symbol refs are used instead of
+            // by-line refs (file growth shifts numbers). See `UpdateHookConfig()`
+            // and `UpdateHookConfigForPid(int)` declarations later in this file.
 
             // For EQSwitch-launched clients, both DLLs are already injected pre-resume.
             // For manually-launched clients (detected by ProcessManager poll), inject
             // eqswitch-hook.dll only — DirectInput hooking requires pre-resume injection.
             if (_injectedPids.Contains(c.ProcessId))
             {
-                // Already injected pre-resume — just refresh config
-                UpdateHookConfigForPid(c.ProcessId);
+                // v3.22.56: skip refresh when autologin is active. Matches
+                // pre-v3.22.55 behavior for this specific call (the only call
+                // path that was actually proven safe). `UpdateHookConfigForPid`
+                // (the per-PID worker, by symbol) has no internal IsLoginActive
+                // gate — only the bulk `UpdateHookConfig()` wrapper does, and
+                // we don't call the wrapper here.
+                if (autologinActive)
+                {
+                    FileLogger.Info($"ClientDiscovered: PID {c.ProcessId} autologin active — UpdateHookConfigForPid deferred (gates DI cooperative-level handoff at T+~1.5s; ApplyDeferredCosmetics at T+~7s will refresh) (v3.22.56)");
+                }
+                else
+                {
+                    // Already injected pre-resume — just refresh config
+                    UpdateHookConfigForPid(c.ProcessId);
+                }
             }
             else if (ShouldInjectHook())
             {
@@ -4082,10 +4113,31 @@ public class TrayManager : IDisposable
     /// gate is symmetrical with `OnArrangeWindows`'s per-client filter.
     /// </para>
     /// <para>
-    /// Note: callers of `UpdateHookConfigForPid(pid)` directly (e.g. the
-    /// `LoginCredentialsSent` handler in `ApplyDeferredCosmetics`) bypass
-    /// this gate intentionally — they fire AFTER credentials are sent
-    /// (T+~7s) when a hook config refresh is the explicit goal.
+    /// Note: callers of `UpdateHookConfigForPid(pid)` directly bypass this
+    /// gate. The gate is an *autologin-contract* concern — direct callers
+    /// only need to satisfy the contract if autologin is in flight for the
+    /// target PID. Three categories of direct callers exist:
+    /// (1) Pre-resume autologin — `InjectPreResume` writes the initial hook
+    ///     config while the process is still CREATE_SUSPENDED. EQ's main
+    ///     thread hasn't started executing, so there is no DI cooperative-
+    ///     level handoff in flight and no `SetWindowPos`/`MoveWindow` for
+    ///     the hook to intercept yet. Safe by architecture (process inert).
+    /// (2) Post-credentials autologin — `LoginCredentialsSent`/`LoginComplete`
+    ///     handlers in `ApplyDeferredCosmetics` fire AFTER credentials are
+    ///     sent, when a hook config refresh is the explicit goal and DI
+    ///     cred-typing is complete (T+~7 s for LoginCredentialsSent or
+    ///     T+~22 s for the 15 s-deferred LoginComplete fire).
+    /// (3) Non-autologin (manual launch / externally-launched eqgame) —
+    ///     `InjectHookDll` fires from `ClientDiscovered`'s `ShouldInjectHook()`
+    ///     branch for eqgame processes EQSwitch didn't launch. Autologin
+    ///     isn't running for these PIDs (not in `_activeLoginPids`), so the
+    ///     contract is vacuously satisfied — there's no DI sequence to race.
+    /// Autologin direct callers OUTSIDE patterns (1) and (2) — i.e. mid-
+    /// execution, mid-cred-typing, T+~1.5 s into ClientDiscovered — violate
+    /// the contract. v3.22.55 inadvertently added one such caller at
+    /// `ClientDiscovered`; v3.22.56 gated it with an explicit
+    /// `if (autologinActive)` check at the call site. Verified by post-
+    /// v3.22.56 verifier swarm (T2-Opus + T2-Sonnet convergent REJECT).
     /// </para>
     /// </summary>
     private void UpdateHookConfig()

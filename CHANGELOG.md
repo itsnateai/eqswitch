@@ -1,5 +1,49 @@
 # Changelog
 
+## v3.22.56 — Gate UpdateHookConfigForPid + DarkTitlebar default ON (2026-05-26)
+
+Two unrelated changes bundled into the same patch — both shipped same session.
+
+### 1. DarkTitlebar default flipped ON
+
+Nate's 2026-05-26 visual review after the v3.22.54 promotion to the Video tab: *"make dark titlebar enabled by default, it looks good."* The DWM immersive dark caption (`DWMWA_USE_IMMERSIVE_DARK_MODE`) sits less obtrusively over EQ's dark fantasy chrome than the default white Windows caption, especially in slim-titlebar mode where the caption is exposed inside the monitor.
+
+- `Config/AppConfig.cs` — `WindowLayout.DarkTitlebar` default `false` → `true`.
+- `UI/SettingsForm.cs` — checkbox-declaration comment updated to reflect the new default.
+- Upgrade behavior (made loud in the docstring): users who saved Settings → Apply on v3.22.53 or later keep their explicit value via STJ deserialization. Users without the `darkTitlebar` JSON key on disk (upgrading from v3.22.52 or earlier, OR v3.22.53+ users who never opened Settings) silently adopt the new ON default on next launch — this is the intended behavior since the directive was "default ON," but no `MigrateV5ToV6` step is needed because field-absence is semantically equivalent to "accept the current default."
+
+### 2. Gate UpdateHookConfigForPid behind autologin check (v3.22.55 verifier-driven follow-up)
+
+UI-only release; Native DLLs unchanged. Post-v3.22.55 6-agent verifier swarm caught a documentation lie that was hiding a real architectural-intent violation.
+
+### What changed
+
+v3.22.55's CHANGELOG + inline comment claimed: *"the hook-config refresh is internally gated by IsLoginActive so running it here is a no-op for autologin clients."* T2 Sonnet + T2 Opus convergent CRITICAL/REJECT finding: **that claim is false at this call site.**
+
+The internal `IsLoginActive` gate lives inside the bulk wrapper `UpdateHookConfig()` (no-arg, iterates `_injectedPids`). v3.22.55's ClientDiscovered handler calls `UpdateHookConfigForPid(c.ProcessId)` *directly* — the per-PID worker has no internal gate. The pre-existing docstring on `UpdateHookConfig()` explicitly states direct callers (like `ApplyDeferredCosmetics`) bypass the gate intentionally *because they fire AFTER credentials are sent (T+~7 s)*. v3.22.55 introduced a NEW direct caller that fires *BEFORE* credentials are sent (T+~1.5 s), violating the documented contract.
+
+The v3.22.55 smoke didn't trigger an observable race (shared-memory writes are fast; eqswitch-hook.dll and eqswitch-di8.dll operate on independent memory-mapped files for different hook classes), but the unguarded T+~1.5 s call had no proven-safe history.
+
+v3.22.56 adds an explicit `if (autologinActive)` gate around the `UpdateHookConfigForPid(c.ProcessId)` call in `ClientDiscovered`. Matches the original pre-v3.22.55 behavior for this specific call. `ApplyDeferredCosmetics` at LoginCredentialsSent (T+~7 s) still refreshes the hook config — that path was always the proven-safe one.
+
+The post-v3.22.56 verifier swarm (T2-Sonnet + T2-Opus) flagged a pre-existing direct caller in `InjectPreResume` (called from `PreResumeCallback`). That caller fires while the process is still CREATE_SUSPENDED — EQ's main thread hasn't executed yet, so there's no DI cooperative-level handoff in flight to race. The `UpdateHookConfig()` docstring is updated to acknowledge both architecturally-safe direct-caller patterns (pre-resume + post-credentials) so future auditors don't have to re-derive the safety reasoning.
+
+### Why this matters even though the smoke passed
+
+The gate restores the contract documented on `UpdateHookConfig()`. Direct callers of `UpdateHookConfigForPid` must be either pre-resume (process inert) or post-credentials (T+~7 s, DI cred-typing complete) — full stop. v3.22.55 inadvertently added a mid-cred-typing direct caller and papered over it with a false "internally gated" claim. The v3.22.56 fix makes the code match the architecture the docstring describes.
+
+### Note on line-number citations
+
+This CHANGELOG entry uses *symbol references* (e.g. `UpdateHookConfig()`, `UpdateHookConfigForPid(int)`) instead of `LXXXX` line numbers. v3.22.55's CHANGELOG hard-coded `L1107` for the supposed gate site; that line was wrong even at write-time and would have rotted on any subsequent file growth anyway. Symbol references survive refactors.
+
+### Files
+
+- `UI/TrayManager.cs` — explicit `autologinActive` gate around the `UpdateHookConfigForPid(c.ProcessId)` call in the `_processManager.ClientDiscovered` handler's `if (_injectedPids.Contains(...))` branch; replaced justification comments documenting the verifier finding (symbol references throughout, no line numbers).
+- `EQSwitch.csproj` — version 3.22.55 → 3.22.56.
+- `CHANGELOG.md` — this entry.
+
+---
+
 ## v3.22.55 — Apply slim-titlebar during autologin (login-screen offset fix) (2026-05-26)
 
 UI-only release; Native DLLs unchanged. Field-tested response to Nate's v3.22.54 right-click → Launch client screenshot.
