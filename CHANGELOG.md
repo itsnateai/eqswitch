@@ -1,5 +1,28 @@
 # Changelog
 
+## v3.22.57 — Reset Defaults restores ALL Video-tab controls (v3.22.56 verifier follow-up) (2026-05-26)
+
+Post-v3.22.56 6-agent verifier swarm T2-Sonnet + T2-Opus convergent MEDIUM: `VideoResetDefaults()` on the Video tab silently skipped the Window Style card controls. Reset Defaults restored Video-Resolution + Window-Offsets but left Slim Titlebar, Dark Titlebar, Titlebar Offset, Bottom Offset, Use Hook, and Maximize-on-Launch at whatever the user had toggled — half the tab unchanged. With v3.22.56 flipping the DarkTitlebar default to ON, the gap became visible: a user who unchecked Dark Titlebar and clicked Reset Defaults expected to re-land on the new ON default, but stayed unchecked.
+
+v3.22.57 extends `VideoResetDefaults()` to restore the Window Style card controls to their `AppConfig.WindowLayout` / `EQClientIniConfig` defaults:
+
+- `SlimTitlebar` → `true`
+- `DarkTitlebar` → `true` (v3.22.56 default)
+- `TitlebarOffset` → `18`
+- `BottomOffset` → `21`
+- `UseHook` → `true`
+- `MaximizeWindow` → `false`
+
+Defaults mirror the C# initializers. Comment in `VideoResetDefaults()` flags the parallel-maintenance contract: if either default changes, update both.
+
+### Files
+
+- `UI/SettingsForm.cs` — `VideoResetDefaults()` extended.
+- `EQSwitch.csproj` — version 3.22.56 → 3.22.57.
+- `CHANGELOG.md` — this entry.
+
+---
+
 ## v3.22.56 — Gate UpdateHookConfigForPid + DarkTitlebar default ON (2026-05-26)
 
 Two unrelated changes bundled into the same patch — both shipped same session.

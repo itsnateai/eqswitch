@@ -3722,6 +3722,23 @@ public class SettingsForm : Form
         // same class of per-layout offset as TopOffset — must reset along
         // with the other three or Reset Defaults silently keeps the nudge.
         _nudHorizontalNudge.Value = 0;
+
+        // v3.22.57 (post-v3.22.56 verifier swarm T2-Sonnet + T2-Opus
+        // convergent MEDIUM): Reset Defaults previously only touched the
+        // Video Resolution + Window Offsets controls; the Window Style card
+        // (slim/dark/maximize/use-hook/titlebar+bottom offsets) was silently
+        // untouched, so the button restored "defaults" while leaving half
+        // the Video tab's user-tweaked values in place. Hard contract:
+        // Reset Defaults on the Video tab restores ALL Video-tab controls
+        // to AppConfig.WindowLayout / EQClientIniConfig defaults. Values
+        // mirror the C# initializers in those classes — keep in sync if
+        // either default changes.
+        _chkSlimTitlebar.Checked = true;        // WindowLayout.SlimTitlebar
+        _chkDarkTitlebar.Checked = true;        // WindowLayout.DarkTitlebar (v3.22.56)
+        _nudTitlebarOffset.Value = DarkTheme.ClampNud(_nudTitlebarOffset, 18);  // WindowLayout.TitlebarOffset
+        _nudBottomOffset.Value   = DarkTheme.ClampNud(_nudBottomOffset, 21);    // WindowLayout.BottomOffset
+        _chkUseHook.Checked = true;             // WindowLayout.UseHook
+        _chkMaximizeWindow.Checked = false;     // EQClientIniConfig.MaximizeWindow
     }
 
     private void PopulateVideoPresets()
