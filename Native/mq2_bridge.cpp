@@ -277,6 +277,15 @@ static volatile uint32_t g_consecutiveNullPolls = 0;
 // fired before the user ESC'd the client.
 static volatile bool g_pollBailEngaged = false;
 
+// v3.22.66 (T2 Sonnet finding): promoted from function-local static inside
+// the bail block to file scope so it can be reset on Shutdown() and on
+// latch disarm (gameState==5). Function-local-static initializes once per
+// DLL load — if the latch engages, disarms, and re-engages later, the
+// previous "logged" value would prevent the 100-poll cap marker from
+// re-firing. Same anti-pattern previously fixed at v3.22.33 for
+// g_lastPumpProbeWarnMs.
+static uint32_t g_lastLoggedBailPolls = 0;
+
 // ─── Heap scan for character name array ───────────────────────
 // Dalaya ROF2 stores char names in a heap-allocated array of 0x160-byte structs.
 // Standard MQ2 charSelectPlayerArray offset doesn't exist. We scan committed pages
@@ -4084,16 +4093,26 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     // to fire 3 more times before the user ESC'd the client. The sticky latch
     // closes that window: once bailed, only an actual in-world transition
     // (which only happens through charselect) un-bails.
-    if (g_consecutiveNullPolls >= 30 || g_pollBailEngaged) {
-        static uint32_t lastLoggedBailPolls = 0;
+    //
+    // v3.22.66 (T2/T3 Sonnet REJECT + T4 Sonnet CONCERN convergent):
+    // gate the bail on `gameState != 5`. Pre-this-fix, the bail's `return`
+    // fired before the gameState==5 disarm block below — meaning a same-PID
+    // user who quit to login (latch armed), reconnected to charselect (pinst
+    // non-null → counter reset to 0, but latch persisted), then entered world
+    // (gameState=5) would have the bail re-fire on the in-world tick and
+    // skip the disarm at line ~4150. Latch stuck forever in that PID; all
+    // future Path A/B publishes blocked → camp-from-in-world charselect
+    // republish impossible. Fix: skip the bail when gameState==5 so
+    // execution falls through to the reset block that disarms the latch.
+    if (gameState != 5 && (g_consecutiveNullPolls >= 30 || g_pollBailEngaged)) {
         if (!g_pollBailEngaged) {
             g_pollBailEngaged = true;
             DI8Log("mq2_bridge: Poll bail engaged (pinst null %u polls ~ %ums) — sticky until gameState==5",
                    g_consecutiveNullPolls, g_consecutiveNullPolls * 500);
-            lastLoggedBailPolls = g_consecutiveNullPolls;
-        } else if (g_consecutiveNullPolls != lastLoggedBailPolls && g_consecutiveNullPolls == 100) {
+            g_lastLoggedBailPolls = g_consecutiveNullPolls;
+        } else if (g_consecutiveNullPolls != g_lastLoggedBailPolls && g_consecutiveNullPolls == 100) {
             DI8Log("mq2_bridge: Poll bail still engaged (pinst counter hit cap at 100 polls ~ 50s)");
-            lastLoggedBailPolls = g_consecutiveNullPolls;
+            g_lastLoggedBailPolls = g_consecutiveNullPolls;
         }
         shm->charCount       = 0;
         shm->selectedIndex   = -1;
@@ -4142,9 +4161,15 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         // path into in-world), so any prior bail decision is moot. The next
         // backout-to-login cycle starts fresh with the counter climbing from
         // 0 toward 30 again.
+        //
+        // v3.22.66 (T2 Sonnet finding): also reset g_lastLoggedBailPolls so
+        // a future re-engage logs its markers fresh. The function-local-static
+        // pattern this replaced was a recurrence of the v3.22.33
+        // g_lastPumpProbeWarnMs anti-pattern.
         if (g_pollBailEngaged) {
             DI8Log("mq2_bridge: Poll bail disarmed (gameState==5, in-world reached)");
             g_pollBailEngaged = false;
+            g_lastLoggedBailPolls = 0;
         }
         return;
     }
@@ -5147,6 +5172,17 @@ void MQ2Bridge::PollRequestsOnly(volatile CharSelectShm *shm) {
 
 void MQ2Bridge::Shutdown() {
     DI8Log("mq2_bridge: Shutdown -- nullifying pointers");
+
+    // v3.22.66 (T2 Sonnet + T4 Sonnet convergent): reset the sticky bail
+    // latch + its diagnostic counter alongside the existing pointer cleanup.
+    // The latch was added in v3.22.65 but the original commit missed adding
+    // it to Shutdown(), which is the mid-process MQ2 re-init path (sibling
+    // counters like g_consecutiveNullPolls at line ~5234 are reset here for
+    // the same reason). Without this, a Shutdown→Init cycle inside a single
+    // eqgame.exe PID (rare but possible — eqswitch-di8.cpp's mq2InitRetry
+    // logic) would carry the latch into the new init session.
+    g_pollBailEngaged = false;
+    g_lastLoggedBailPolls = 0;
 
     g_pGameState       = nullptr;
     g_ppEverQuest      = nullptr;

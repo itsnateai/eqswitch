@@ -1,5 +1,47 @@
 # Changelog
 
+## v3.22.66 — v3.22.65 verifier follow-ups: disarm reachability + Shutdown reset (2026-05-27)
+
+8-agent verifier round on v3.22.65 surfaced a critical convergent flaw (2 REJECTs + 2 CONCERNS across T2/T3/T4) that the same-process smoke didn't expose because Nate ESC-killed the eqgame process between scenarios (fresh BSS = fresh latch).
+
+### Critical — gameState==5 disarm was unreachable (T2-Sonnet REJECT + T3-Sonnet REJECT + T3-Opus CONCERN + T4-Sonnet CONCERN convergent)
+
+v3.22.65's bail check was `if (counter >= 30 || latch)`. The `return` fired before the `gameState == 5` reset block where the disarm lived. Walk the same-PID camp-back scenario:
+
+1. User quits to login → counter climbs to 30 → latch arms → bail fires.
+2. User reconnects → reaches charselect → `pinstCCharacterSelect` non-null → counter resets to 0 → **but latch persists**.
+3. Bail check `(0 >= 30 || true) = true` → still bails. Path A/B never run → `charSelectReady` never republishes.
+4. User picks character → enters world → gameState=5 → bail still fires before disarm → **latch stuck for PID lifetime**.
+
+Real-world impact: rare today because most re-fires spawn a new eqgame.exe PID (file-scope statics get fresh BSS), but a same-PID autologin retry would be permanently broken.
+
+**Fix:** gate the bail on `gameState != 5`. In-world ticks now skip the bail entirely and fall through to the existing `gameState == 5` reset block, which disarms the latch as part of full session-state cleanup.
+
+### Important — Shutdown() missing latch reset (T2-Sonnet + T4-Sonnet convergent)
+
+v3.22.65 added `g_pollBailEngaged` at file scope but didn't add it to `MQ2Bridge::Shutdown()` where sibling state (`g_consecutiveNullPolls`, the heap-scan flags, the chunked-resume cursors) is reset. Mid-process Shutdown→Init cycles (`eqswitch-di8.cpp`'s mq2InitRetry path) would carry stale latch state into the new init session.
+
+**Fix:** added `g_pollBailEngaged = false; g_lastLoggedBailPolls = 0;` to `Shutdown()` alongside the existing resets.
+
+### Minor — `lastLoggedBailPolls` was function-local-static (T2-Sonnet finding)
+
+The diagnostic-log dedup variable was a function-local static inside the bail block — same anti-pattern v3.22.33 fixed for `g_lastPumpProbeWarnMs`. After a disarm+re-engage cycle, the previous "logged" value would suppress the 100-poll cap marker.
+
+**Fix:** promoted to file scope as `g_lastLoggedBailPolls`. Reset on disarm and on Shutdown.
+
+### Verifier disagreement worth surfacing
+
+T3-Opus flagged a `volatile bool` vs `std::atomic<bool>` thread-safety concern. T4-Opus disagreed, noting the `PollReentryGuard` in `eqswitch-di8.cpp:287` already serializes all `Poll` entry via `InterlockedCompareExchange`. The serialization holds — `volatile` here is byte-store-on-x86 + memory-ordering hint, not the load-bearing thread-safety. Not addressed; documenting the pin.
+
+### Files
+
+- `EQSwitch.csproj` — version 3.22.65 → 3.22.66.
+- `Native/mq2_bridge.cpp` — bail gated on `gameState != 5`; `g_lastLoggedBailPolls` promoted to file scope; `Shutdown()` resets both new statics.
+- `CHANGELOG.md` — this entry.
+- `_.releases/eqswitch/` — synced to v3.22.66.
+
+---
+
 ## v3.22.65 — Sticky bail latch: survive eqmain.dll reload transient (2026-05-27)
 
 ### Bug
