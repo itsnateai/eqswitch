@@ -716,15 +716,21 @@ static void DiscoverDialogWidgets() {
 
     g_pOkButton = EQMainWidgetsMQ2::RecurseAndFindName(pOkDialogScreen, "OK_OKButton", 0x400);
     // YESNO_YesButton is the "kick existing session" confirm button.
-    // EQSwitch launches eqgame.exe with `patchme` (LaunchManager), which
-    // bypasses the kick-session flow on Dalaya entirely — no YESNO dialog
-    // is ever displayed. Resolving the widget name here anyway pulled a
-    // stale CXMLDataPtr *definition* pointer (always present in eqmain's
+    // No YESNO dialog ever fires in practice on Dalaya patchme flow
+    // (confirmed live 2026-04-23 via Nate). The mechanism is NOT that
+    // patchme bypasses kick-session — Dalaya's DINPUT8.dll patcher
+    // ("Edge") actively disables the `patchme` arg shortly after process
+    // start (see 2026-05-21 audit at
+    // `_.eqswitch-re/audit-2026-05-21/dalaya-dinput8-audit.md`, string
+    // "disabling patchme" at VA 0x100f7fc0). Kick-session simply doesn't
+    // fire because Edge's MQ2-derived connection management is compatible
+    // with concurrent multi-client launches when each client uses unique
+    // credentials. Resolving the widget name here anyway pulled a stale
+    // CXMLDataPtr *definition* pointer (always present in eqmain's
     // memory) which caused PHASE_WAIT_CONNECT_RESP to loop-click a
-    // phantom button for 20 attempts before SetError'ing out.
-    // Confirmed live 2026-04-23 via Nate — no YES button on his patchme
-    // login flow. Leaving the phase-4 `if (g_pYesButton)` check wired:
-    // if a future non-patchme flow needs it, re-enable resolution here.
+    // phantom button for 20 attempts before SetError'ing out. Leaving
+    // the phase-4 `if (g_pYesButton)` check wired in case a future
+    // non-Edge flow needs it.
     g_pYesButton = nullptr;
 }
 
