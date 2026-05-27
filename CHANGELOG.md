@@ -1,5 +1,34 @@
 # Changelog
 
+## v3.22.63 — Fix game-thread starvation after quit-back-from-charselect (2026-05-27)
+
+### Bug
+
+Reported live by Nate: ran team3 (accounts that stop at char select), pressed Quit on `gotquiz` at charselect. Client returned to the login/server-select screen, became laggy and unclickable, eventually timed out at server select. `gotquiz1` (in-game on the same launch) was fine.
+
+### Root cause
+
+`MQ2Bridge::Poll` in `Native/mq2_bridge.cpp:3941` only bails on `gameState == 5` (in-world). On Dalaya, `gameState` stays `0` for **both** login AND charselect — `pinstCCharacterSelect` is the only discriminator. The function tracks `g_consecutiveNullPolls` and clears the `charSelectReady` latch at poll 30 (~15s), but then falls through:
+
+- Path A reads `charSelectPlayerArray` and gets garbage (zero count).
+- Path B falls into `FindWindowByName("Character_List")` → `HeapScanForWidget("Character_List")` which always hits its 1500ms time budget without finding the widget, AND `g_widgetScanBudgetAborted` blocks caching the negative result.
+
+Result: every 500ms poll burned 1.5s on the EQ game thread — ~95% starvation. Buttons unresponsive, network heartbeats starved, loginserver dropped the idle session.
+
+Live evidence from PID 26360's native log (`eqswitch-dinput8-26360.log`): ~190 `HeapScanForWidget('Character_List') — time budget exceeded (1500ms, ~1580 pages, ~3430 regions)` lines across the 5 minutes between Quit-from-charselect and the user's ESC kill.
+
+### Fix
+
+Five-line early-bail in `Native/mq2_bridge.cpp:Poll` after the existing `pinstNull` / `g_consecutiveNullPolls` block. Once we've observed ≥30 consecutive NULL polls (latch already cleared), we're definitely not at charselect — return early. In-flight `HandleEnterWorldRequest` / `HandleSelectionRequest` were already serviced above the bail. Camp-from-in-world later still works because `gameState==5` resets `g_consecutiveNullPolls = 0` first, then a new charselect cycle re-arms cleanly.
+
+### Files
+
+- `EQSwitch.csproj` — version 3.22.62 → 3.22.63.
+- `Native/mq2_bridge.cpp` — 5-line gate at `Poll` after the `pinstNull` block.
+- `CHANGELOG.md` — this entry.
+
+---
+
 ## v3.22.62 — Pre-commit verifier convergence fixes (2026-05-27)
 
 Final verifier round on the cumulative v3.22.58→61 diff caught three convergent issues across Sonnet/Opus pairs:

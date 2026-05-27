@@ -4027,6 +4027,27 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         }
     }
 
+    // v3.22.63 — bail out when pinstCCharacterSelect has been NULL past the
+    // latch-clear threshold. Dalaya keeps gameState=0 at both login AND
+    // charselect (see ~line 3973), so pinstCCharacterSelect is the only
+    // discriminator. Pre-this-fix, if the user pressed Quit at charselect
+    // and returned to the login/server-select screen, Path A returned
+    // garbage and Path B fell through to FindWindowByName("Character_List")
+    // → HeapScanForWidget("Character_List") which always hit its 1500ms
+    // budget without finding the widget AND didn't cache the negative
+    // (g_widgetScanBudgetAborted blocks caching). Result: every 500ms
+    // poll burned 1.5s on the EQ game thread (~95% starvation) until the
+    // process exited or re-entered charselect — confirmed PID 26360
+    // 2026-05-27, 5min stuck-at-server-select with ~190 budget-exceeded
+    // log lines + loginserver session timeout. The latch was already
+    // cleared above; HandleEnterWorldRequest / HandleSelectionRequest also
+    // already ran (above this block) so in-flight requests are serviced.
+    // Camp-from-in-world later still works: gameState=5 below resets
+    // g_consecutiveNullPolls=0, then re-arms cleanly on the next charselect.
+    if (g_consecutiveNullPolls >= 30) {
+        return;
+    }
+
     if (gameState == 5) {
         // gameState 5 = in-game on Dalaya. Clear char data + reset all charselect caches.
         shm->charCount = 0;
