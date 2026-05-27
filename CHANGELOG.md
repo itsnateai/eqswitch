@@ -1,5 +1,42 @@
 # Changelog
 
+## v3.22.65 — Sticky bail latch: survive eqmain.dll reload transient (2026-05-27)
+
+### Bug
+
+v3.22.64 smoke (PID 26532, 12:34 local) confirmed the primary fix worked: bail engaged at +15s post-quit, `Character_List` heap-scan spam dropped from ~190 to 14 over the same window. But the native log showed **3 additional `HeapScanForWidget('Character_List')` scans** firing ~20s after the bail engaged, exactly when the Dalaya loginserver dropped the idle session:
+
+```
+[19206015] socket closed by loginserver
+[19206468] dll_notify: eqmain.dll LOADED at 0x70FA0000  ← EQ re-loaded eqmain
+[19207046] HeapScanForWidget('Character_List') — starting scan
+[19209921] HeapScanForWidget('Character_List') — starting scan
+[19212453] HeapScanForWidget('Character_List') — starting scan
+```
+
+### Root cause
+
+`g_consecutiveNullPolls` lives in eqgame.exe address space (survives eqmain unload). When eqmain reloads, the deref chain `*g_pinstCharSelect` → `*(void**)storage` transiently reads non-null for at least one tick (either stale heap memory or EQ pre-allocating a `CCharacterSelectWnd` during eqmain init). That single non-null read trips the `else { g_consecutiveNullPolls = 0; }` branch at line 4026, resetting the counter to 0 — and the v3.22.63 bail check (`if (g_consecutiveNullPolls >= 30)`) re-evaluates against the fresh counter every tick, so it stops firing. Path B then runs `FindWindowByName("Character_List")` → heap-scan for ~3-5s before the user ESC-kills the client.
+
+Real-world impact: low (the window happens at end-of-life when the user has already quit). But the asymmetry was real — the bail decision shouldn't be undone by a transient that bears no relation to the user's actual screen state.
+
+### Fix
+
+Added `g_pollBailEngaged` sticky latch (file-scope, volatile bool). The bail check is now `if (g_consecutiveNullPolls >= 30 || g_pollBailEngaged)`. Once the counter trips the 30-poll threshold, the latch flips true and stays true until the `gameState == 5` reset block (in-world transition) explicitly disarms it. The pinst-non-null reset at line 4026 still clears the counter — keeps counter semantics intact for any future reader — but the bail decision survives pinst flutter.
+
+Disarm path: only `gameState == 5` clears the latch. Since the only path to in-world goes through a successful charselect (with `pinstCCharacterSelect` non-null and `g_consecutiveNullPolls` reset to 0 on every poll), the disarm condition is equivalent to "we actually got the user past the screens that need polling."
+
+Two new edge-only `DI8Log` markers: one on initial engage ("sticky until gameState==5"), one on disarm ("in-world reached"). Plus the existing 100-poll counter-cap marker.
+
+### Files
+
+- `EQSwitch.csproj` — version 3.22.64 → 3.22.65.
+- `Native/mq2_bridge.cpp` — `g_pollBailEngaged` static, sticky check in Poll bail block, disarm in `gameState==5` reset.
+- `CHANGELOG.md` — this entry.
+- `_.releases/eqswitch/` — sync continues per v3.22.64's habit.
+
+---
+
 ## v3.22.64 — v3.22.63 verifier follow-ups: SHM cleanup + bail log (2026-05-27)
 
 8-agent post-ship verifier round on v3.22.63 surfaced two convergent concerns (Sonnet+Opus agreement is the load-bearing signal here, not either alone):

@@ -262,6 +262,21 @@ static int               g_standaloneDelay   = 0;    // delay standalone heap sc
 // (one-shot log per session), idempotent re-clears below the cap.
 static volatile uint32_t g_consecutiveNullPolls = 0;
 
+// v3.22.65 — sticky-bail latch for Poll. Set TRUE once g_consecutiveNullPolls
+// reaches 30 (Poll's early-return engages). Cleared ONLY by the gameState==5
+// block when the user goes in-world, which guarantees we passed through a
+// successful charselect cycle. Required because the eqmain.dll reload path
+// (loginserver-disconnect → eqmain unload/reload) transiently makes the
+// pinstCCharacterSelect deref chain read non-null for at least one tick —
+// which resets g_consecutiveNullPolls = 0 (line 4026) and lets Path B's
+// FindWindowByName("Character_List") heap scans resume for another 15s before
+// the counter re-climbs to 30. With the sticky latch, the bail decision
+// survives pinst flutter; only an actual in-world transition disarms it.
+// PID 26532 v3.22.64 smoke confirmed: bail engaged once at +15s post-quit,
+// then eqmain reloaded on loginserver-kick and 3 more Character_List scans
+// fired before the user ESC'd the client.
+static volatile bool g_pollBailEngaged = false;
+
 // ─── Heap scan for character name array ───────────────────────
 // Dalaya ROF2 stores char names in a heap-allocated array of 0x160-byte structs.
 // Standard MQ2 charSelectPlayerArray offset doesn't exist. We scan committed pages
@@ -4056,11 +4071,28 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     // because the latch-clear log at line 4022 only fires if charSelectReady
     // was set, which a stop-at-charselect session that never advanced past
     // login wouldn't satisfy.
-    if (g_consecutiveNullPolls >= 30) {
+    //
+    // v3.22.65 (sticky-bail latch — fixes residual eqmain-reload scan window):
+    // Once the counter reaches 30, set g_pollBailEngaged = true and stay bailed
+    // until gameState==5 below explicitly disarms it. The pinst-non-null reset
+    // at line 4026 still clears g_consecutiveNullPolls (preserves counter
+    // semantics for any future caller that reads it), but the bail decision
+    // now persists across eqmain.dll reload transients. PID 26532 smoke
+    // 2026-05-27 v3.22.64 showed eqmain reload at +20s post-quit (triggered by
+    // loginserver session-timeout kick) briefly resetting the counter to 0,
+    // allowing Path B's FindWindowByName("Character_List") → HeapScanForWidget
+    // to fire 3 more times before the user ESC'd the client. The sticky latch
+    // closes that window: once bailed, only an actual in-world transition
+    // (which only happens through charselect) un-bails.
+    if (g_consecutiveNullPolls >= 30 || g_pollBailEngaged) {
         static uint32_t lastLoggedBailPolls = 0;
-        if (g_consecutiveNullPolls != lastLoggedBailPolls && (g_consecutiveNullPolls == 30 || g_consecutiveNullPolls == 100)) {
-            DI8Log("mq2_bridge: Poll bail (pinst null %u polls ~ %ums) — skipping Path A/B heap scans",
+        if (!g_pollBailEngaged) {
+            g_pollBailEngaged = true;
+            DI8Log("mq2_bridge: Poll bail engaged (pinst null %u polls ~ %ums) — sticky until gameState==5",
                    g_consecutiveNullPolls, g_consecutiveNullPolls * 500);
+            lastLoggedBailPolls = g_consecutiveNullPolls;
+        } else if (g_consecutiveNullPolls != lastLoggedBailPolls && g_consecutiveNullPolls == 100) {
+            DI8Log("mq2_bridge: Poll bail still engaged (pinst counter hit cap at 100 polls ~ 50s)");
             lastLoggedBailPolls = g_consecutiveNullPolls;
         }
         shm->charCount       = 0;
@@ -4105,6 +4137,15 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         // it mid-count would carry that count into the NEXT charselect cycle
         // and could spuriously trip the 30-poll threshold there.
         g_consecutiveNullPolls = 0;
+        // v3.22.65 — disarm the sticky bail latch. Reaching gameState==5
+        // means the user successfully passed through charselect (the only
+        // path into in-world), so any prior bail decision is moot. The next
+        // backout-to-login cycle starts fresh with the counter climbing from
+        // 0 toward 30 again.
+        if (g_pollBailEngaged) {
+            DI8Log("mq2_bridge: Poll bail disarmed (gameState==5, in-world reached)");
+            g_pollBailEngaged = false;
+        }
         return;
     }
 
