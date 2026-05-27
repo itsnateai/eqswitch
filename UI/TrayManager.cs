@@ -33,6 +33,16 @@ public class TrayManager : IDisposable
     private SynchronizationContext? _uiContext;
 
     private NotifyIcon? _trayIcon;
+
+    // v3.22.61: cached eqgame.exe icon for posting WM_SETICON to each
+    // discovered EQ window. Dalaya's eqgame.exe ships with a valid 32x32
+    // icon resource but never calls SetClassLong(GCLP_HICON) or sends
+    // WM_SETICON to its own windows, so Windows falls back to a generic
+    // placeholder in the taskbar / alt-tab / window menu (visible as a
+    // blank white square in the taskbar preview). Extracted once on first
+    // ClientDiscovered, reused for every subsequent discovery. Disposed
+    // in TrayManager.Dispose() to release the GDI HICON.
+    private System.Drawing.Icon? _eqgameWindowIcon;
     private ContextMenuStrip? _contextMenu;
     private ToolStripMenuItem? _clientsMenu;
     // v3.22.44 r2 (T3-Sonnet F7 / T3-Opus #5 MEDIUM): cache the Detach Hooks
@@ -250,18 +260,42 @@ public class TrayManager : IDisposable
             deferTimer.Tick += (s, e) =>
             {
                 // v3.22.22 round-5 (R4 T3-Sonnet SEV-1): Stop+Dispose BEFORE
-                // the try so a throw inside ApplyDeferredCosmetics can't leave
-                // the timer running and re-fire forever. Stop() is idempotent
-                // and never throws under normal conditions; same for Dispose.
+                // the try so a throw inside the body can't leave the timer
+                // running and re-fire forever. Stop() is idempotent and never
+                // throws under normal conditions; same for Dispose.
                 deferTimer.Stop();
                 deferTimer.Dispose();
                 try
                 {
-                    ApplyDeferredCosmetics(capturedPid);
+                    // v3.22.60 (2026-05-27 smoke "phantom swap" 14-15s after
+                    // autologin complete): was ApplyDeferredCosmetics(capturedPid).
+                    // That call ran ArrangeWindows (MM mode) → ApplySlimTitlebar
+                    // on EVERY client including the foreground one →
+                    // SetWindowLongPtr + SetWindowPos(SWP_FRAMECHANGED) → brief
+                    // frame redraw the user perceives as a swap, even though
+                    // nothing actually changes (style/position already match).
+                    //
+                    // The slim-titlebar guard timer (resumed on LoginComplete,
+                    // fires every 500ms-5s) already keeps slim-titlebar applied
+                    // against EQ fighting back during charselect-load — making
+                    // the deferred ApplySlimTitlebar redundant by T+45s. The
+                    // RaiseClientsAboveTaskbar dance is already deduped per-PID
+                    // (v3.22.46) so it would no-op here anyway.
+                    //
+                    // Keep only UpdateHookConfigForPid — the hook DLL's shared-
+                    // memory config refresh is visually no-op (the DLL only
+                    // reads SM when EQ calls SetWindowPos) and covers the
+                    // potential edge case where EQ recreated its main HWND
+                    // during world-entry.
+                    if (_injectedPids.Contains(capturedPid))
+                    {
+                        FileLogger.Info($"AutoLogin: deferred hook-config refresh PID {capturedPid} (cosmetic re-apply skipped — v3.22.60 phantom-swap fix)");
+                        UpdateHookConfigForPid(capturedPid);
+                    }
                 }
                 catch (Exception ex)
                 {
-                    FileLogger.Error($"AutoLogin: deferred LoginComplete cosmetic re-apply failed (PID {capturedPid})", ex);
+                    FileLogger.Error($"AutoLogin: deferred hook-config refresh failed (PID {capturedPid})", ex);
                 }
             };
             deferTimer.Start();
@@ -523,6 +557,11 @@ public class TrayManager : IDisposable
             // positional LegacyAccounts[i] indexing for accurate team-slot rendering.
             if (AutoLoginManager.TryGetBoundName(c.ProcessId, out var bound))
                 c.BoundCharacterName = bound;
+
+            // v3.22.61: post eqgame.exe's embedded icon to the discovered window
+            // so Windows has something to render in the taskbar + alt-tab +
+            // window-menu surfaces. See _eqgameWindowIcon field comment for why.
+            ApplyEqgameWindowIcon(c.WindowHandle);
 
             // v3.22.20: assign initial monitor slot if unmapped. v3.22.21:
             // free-slot scan (was `_monitorSlotByPid.Count`) — fixes the
@@ -959,6 +998,10 @@ public class TrayManager : IDisposable
     /// </summary>
     private void OnSwitchKey()
     {
+        // v3.22.59: entry-point diagnostic for phantom-swap investigation
+        // (2026-05-27 smoke: `\` swap fired ~8s after last keypress). Pair with
+        // KeyboardHook POSTED/INVOKED logs to identify the trigger source.
+        FileLogger.Info("OnSwitchKey: ENTRY");
         var current = _processManager.GetActiveClient();
         var clients = _processManager.Clients;
         if (clients.Count == 0)
@@ -1059,6 +1102,8 @@ public class TrayManager : IDisposable
     /// </summary>
     private void OnGlobalSwitchKey()
     {
+        // v3.22.59: entry-point diagnostic — see OnSwitchKey for context.
+        FileLogger.Info("OnGlobalSwitchKey: ENTRY");
         var current = _processManager.GetActiveClient();
         var clients = _processManager.Clients;
 
@@ -2097,8 +2142,9 @@ public class TrayManager : IDisposable
     /// <summary>
     /// Phase 3 Teams submenu: parent item with populated team rows and "Manage Teams..." footer.
     /// Teams are populated if either slot string is non-empty. Empty-state row renders
-    /// when all six teams are unpopulated. Click fires ExecuteTrayAction("LoginAll[N]")
-    /// → FireTeam → LoginAndEnterWorld/LoginToCharselect per slot kind.
+    /// when all twelve teams are unpopulated (v3.22.58 grew from 6 → 12). Click fires
+    /// ExecuteTrayAction("LoginAll[N]") → FireTeam → LoginAndEnterWorld/LoginToCharselect
+    /// per slot kind.
     /// </summary>
     private ToolStripMenuItem BuildTeamsSubmenu(AppConfig cfg, LegacyHotkeyLookup hkLookup)
     {
@@ -2118,6 +2164,15 @@ public class TrayManager : IDisposable
             // launch surface; Combo is empty so ShortcutKeyDisplayString stays blank.
             (Num: 5, Slot1: cfg.Team5Account1, Slot2: cfg.Team5Account2, Combo: "", Action: "LoginAll5"),
             (Num: 6, Slot1: cfg.Team6Account1, Slot2: cfg.Team6Account2, Combo: "", Action: "LoginAll6"),
+            // v3.22.58: Teams 7-12 added. No hotkey binding (TeamHotkeysDialog
+            // stays at 4 rows by design) and no trayclick action dropdown entry
+            // — the tray right-click submenu is the only launch surface.
+            (Num:  7, Slot1: cfg.Team7Account1,  Slot2: cfg.Team7Account2,  Combo: "", Action: "LoginAll7"),
+            (Num:  8, Slot1: cfg.Team8Account1,  Slot2: cfg.Team8Account2,  Combo: "", Action: "LoginAll8"),
+            (Num:  9, Slot1: cfg.Team9Account1,  Slot2: cfg.Team9Account2,  Combo: "", Action: "LoginAll9"),
+            (Num: 10, Slot1: cfg.Team10Account1, Slot2: cfg.Team10Account2, Combo: "", Action: "LoginAll10"),
+            (Num: 11, Slot1: cfg.Team11Account1, Slot2: cfg.Team11Account2, Combo: "", Action: "LoginAll11"),
+            (Num: 12, Slot1: cfg.Team12Account1, Slot2: cfg.Team12Account2, Combo: "", Action: "LoginAll12"),
         };
         var populated = teams.Where(t => !string.IsNullOrEmpty(t.Slot1) || !string.IsNullOrEmpty(t.Slot2)).ToList();
 
@@ -2786,12 +2841,18 @@ public class TrayManager : IDisposable
         "TogglePiP" => "Toggle PiP",
         "LaunchOne" => "Launch one",
         "LaunchAll" => "Launch all clients",
-        "LoginAll" => "Auto-login Team 1",
-        "LoginAll2" => "Auto-login Team 2",
-        "LoginAll3" => "Auto-login Team 3",
-        "LoginAll4" => "Auto-login Team 4",
-        "LoginAll5" => "Auto-login Team 5",
-        "LoginAll6" => "Auto-login Team 6",
+        "LoginAll"   => "Auto-login Team 1",
+        "LoginAll2"  => "Auto-login Team 2",
+        "LoginAll3"  => "Auto-login Team 3",
+        "LoginAll4"  => "Auto-login Team 4",
+        "LoginAll5"  => "Auto-login Team 5",
+        "LoginAll6"  => "Auto-login Team 6",
+        "LoginAll7"  => "Auto-login Team 7",
+        "LoginAll8"  => "Auto-login Team 8",
+        "LoginAll9"  => "Auto-login Team 9",
+        "LoginAll10" => "Auto-login Team 10",
+        "LoginAll11" => "Auto-login Team 11",
+        "LoginAll12" => "Auto-login Team 12",
         "AutoLogin1" => "Quick Login 1",
         "AutoLogin2" => "Quick Login 2",
         "AutoLogin3" => "Quick Login 3",
@@ -2949,12 +3010,18 @@ public class TrayManager : IDisposable
             case "AutoLogin2": FireLegacyQuickLoginSlot(2); break;
             case "AutoLogin3": FireLegacyQuickLoginSlot(3); break;
             case "AutoLogin4": FireLegacyQuickLoginSlot(4); break;
-            case "LoginAll":  FireTeam(1); break;
-            case "LoginAll2": FireTeam(2); break;
-            case "LoginAll3": FireTeam(3); break;
-            case "LoginAll4": FireTeam(4); break;
-            case "LoginAll5": FireTeam(5); break;
-            case "LoginAll6": FireTeam(6); break;
+            case "LoginAll":   FireTeam(1);  break;
+            case "LoginAll2":  FireTeam(2);  break;
+            case "LoginAll3":  FireTeam(3);  break;
+            case "LoginAll4":  FireTeam(4);  break;
+            case "LoginAll5":  FireTeam(5);  break;
+            case "LoginAll6":  FireTeam(6);  break;
+            case "LoginAll7":  FireTeam(7);  break;
+            case "LoginAll8":  FireTeam(8);  break;
+            case "LoginAll9":  FireTeam(9);  break;
+            case "LoginAll10": FireTeam(10); break;
+            case "LoginAll11": FireTeam(11); break;
+            case "LoginAll12": FireTeam(12); break;
             case "Settings":
                 ShowSettings();
                 break;
@@ -3426,19 +3493,25 @@ public class TrayManager : IDisposable
     private (IReadOnlyList<(string user, string slotLabel)> slots, string teamName)
         ResolveTeamConfig(int teamIndex)
     {
-        if (teamIndex < 1 || teamIndex > 6)
+        if (teamIndex < 1 || teamIndex > 12)
         {
-            FileLogger.Warn($"ResolveTeamConfig: teamIndex {teamIndex} out of range (expected 1-6)");
+            FileLogger.Warn($"ResolveTeamConfig: teamIndex {teamIndex} out of range (expected 1-12)");
             return (Array.Empty<(string, string)>(), $"Team {teamIndex}");
         }
         return teamIndex switch
         {
-            1 => (new[] { (_config.Team1Account1, "Team 1 Slot 1"), (_config.Team1Account2, "Team 1 Slot 2") }, "Team 1"),
-            2 => (new[] { (_config.Team2Account1, "Team 2 Slot 1"), (_config.Team2Account2, "Team 2 Slot 2") }, "Team 2"),
-            3 => (new[] { (_config.Team3Account1, "Team 3 Slot 1"), (_config.Team3Account2, "Team 3 Slot 2") }, "Team 3"),
-            4 => (new[] { (_config.Team4Account1, "Team 4 Slot 1"), (_config.Team4Account2, "Team 4 Slot 2") }, "Team 4"),
-            5 => (new[] { (_config.Team5Account1, "Team 5 Slot 1"), (_config.Team5Account2, "Team 5 Slot 2") }, "Team 5"),
-            6 => (new[] { (_config.Team6Account1, "Team 6 Slot 1"), (_config.Team6Account2, "Team 6 Slot 2") }, "Team 6"),
+            1  => (new[] { (_config.Team1Account1,  "Team 1 Slot 1"),  (_config.Team1Account2,  "Team 1 Slot 2")  }, "Team 1"),
+            2  => (new[] { (_config.Team2Account1,  "Team 2 Slot 1"),  (_config.Team2Account2,  "Team 2 Slot 2")  }, "Team 2"),
+            3  => (new[] { (_config.Team3Account1,  "Team 3 Slot 1"),  (_config.Team3Account2,  "Team 3 Slot 2")  }, "Team 3"),
+            4  => (new[] { (_config.Team4Account1,  "Team 4 Slot 1"),  (_config.Team4Account2,  "Team 4 Slot 2")  }, "Team 4"),
+            5  => (new[] { (_config.Team5Account1,  "Team 5 Slot 1"),  (_config.Team5Account2,  "Team 5 Slot 2")  }, "Team 5"),
+            6  => (new[] { (_config.Team6Account1,  "Team 6 Slot 1"),  (_config.Team6Account2,  "Team 6 Slot 2")  }, "Team 6"),
+            7  => (new[] { (_config.Team7Account1,  "Team 7 Slot 1"),  (_config.Team7Account2,  "Team 7 Slot 2")  }, "Team 7"),
+            8  => (new[] { (_config.Team8Account1,  "Team 8 Slot 1"),  (_config.Team8Account2,  "Team 8 Slot 2")  }, "Team 8"),
+            9  => (new[] { (_config.Team9Account1,  "Team 9 Slot 1"),  (_config.Team9Account2,  "Team 9 Slot 2")  }, "Team 9"),
+            10 => (new[] { (_config.Team10Account1, "Team 10 Slot 1"), (_config.Team10Account2, "Team 10 Slot 2") }, "Team 10"),
+            11 => (new[] { (_config.Team11Account1, "Team 11 Slot 1"), (_config.Team11Account2, "Team 11 Slot 2") }, "Team 11"),
+            12 => (new[] { (_config.Team12Account1, "Team 12 Slot 1"), (_config.Team12Account2, "Team 12 Slot 2") }, "Team 12"),
             _ => throw new UnreachableException($"teamIndex {teamIndex} passed guard but hit switch default")
         };
     }
@@ -3789,18 +3862,30 @@ public class TrayManager : IDisposable
         _config.QuickLogin2 = newConfig.QuickLogin2;
         _config.QuickLogin3 = newConfig.QuickLogin3;
         _config.QuickLogin4 = newConfig.QuickLogin4;
-        _config.Team1Account1 = newConfig.Team1Account1;
-        _config.Team1Account2 = newConfig.Team1Account2;
-        _config.Team2Account1 = newConfig.Team2Account1;
-        _config.Team2Account2 = newConfig.Team2Account2;
-        _config.Team3Account1 = newConfig.Team3Account1;
-        _config.Team3Account2 = newConfig.Team3Account2;
-        _config.Team4Account1 = newConfig.Team4Account1;
-        _config.Team4Account2 = newConfig.Team4Account2;
-        _config.Team5Account1 = newConfig.Team5Account1;
-        _config.Team5Account2 = newConfig.Team5Account2;
-        _config.Team6Account1 = newConfig.Team6Account1;
-        _config.Team6Account2 = newConfig.Team6Account2;
+        _config.Team1Account1  = newConfig.Team1Account1;
+        _config.Team1Account2  = newConfig.Team1Account2;
+        _config.Team2Account1  = newConfig.Team2Account1;
+        _config.Team2Account2  = newConfig.Team2Account2;
+        _config.Team3Account1  = newConfig.Team3Account1;
+        _config.Team3Account2  = newConfig.Team3Account2;
+        _config.Team4Account1  = newConfig.Team4Account1;
+        _config.Team4Account2  = newConfig.Team4Account2;
+        _config.Team5Account1  = newConfig.Team5Account1;
+        _config.Team5Account2  = newConfig.Team5Account2;
+        _config.Team6Account1  = newConfig.Team6Account1;
+        _config.Team6Account2  = newConfig.Team6Account2;
+        _config.Team7Account1  = newConfig.Team7Account1;
+        _config.Team7Account2  = newConfig.Team7Account2;
+        _config.Team8Account1  = newConfig.Team8Account1;
+        _config.Team8Account2  = newConfig.Team8Account2;
+        _config.Team9Account1  = newConfig.Team9Account1;
+        _config.Team9Account2  = newConfig.Team9Account2;
+        _config.Team10Account1 = newConfig.Team10Account1;
+        _config.Team10Account2 = newConfig.Team10Account2;
+        _config.Team11Account1 = newConfig.Team11Account1;
+        _config.Team11Account2 = newConfig.Team11Account2;
+        _config.Team12Account1 = newConfig.Team12Account1;
+        _config.Team12Account2 = newConfig.Team12Account2;
         // Team{N}AutoEnter removed — destination dictated by slot kind (Character → enter world,
         // Account → charselect). No per-team override anymore.
         _config.AutoEnterWorld = newConfig.AutoEnterWorld;
@@ -4174,6 +4259,66 @@ public class TrayManager : IDisposable
         if (!string.IsNullOrEmpty(_config.Layout.WindowTitleTemplate)) return true;
         if (_config.EQClientIni.MaximizeWindow) return true;
         return false;
+    }
+
+    /// <summary>
+    /// <summary>
+    /// v3.22.61: post eqgame.exe's embedded icon to a discovered EQ window
+    /// via WM_SETICON. Cached on first call (process-lifetime).
+    /// See <see cref="_eqgameWindowIcon"/> for the rationale.
+    /// </summary>
+    private void ApplyEqgameWindowIcon(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero) return;
+        try
+        {
+            if (_eqgameWindowIcon == null)
+            {
+                var eqPath = _config.EQPath ?? string.Empty;
+                if (string.IsNullOrEmpty(eqPath))
+                {
+                    FileLogger.Warn("ApplyEqgameWindowIcon: _config.EQPath is empty — cannot locate eqgame.exe; skipping");
+                    return;
+                }
+                var exePath = System.IO.Path.Combine(eqPath, "eqgame.exe");
+                if (!System.IO.File.Exists(exePath))
+                {
+                    FileLogger.Warn($"ApplyEqgameWindowIcon: eqgame.exe not found at '{exePath}' — skipping");
+                    return;
+                }
+                _eqgameWindowIcon = System.Drawing.Icon.ExtractAssociatedIcon(exePath);
+                if (_eqgameWindowIcon == null)
+                {
+                    FileLogger.Warn($"ApplyEqgameWindowIcon: ExtractAssociatedIcon returned null for '{exePath}' — skipping");
+                    return;
+                }
+                FileLogger.Info($"ApplyEqgameWindowIcon: cached eqgame.exe icon ({_eqgameWindowIcon.Width}x{_eqgameWindowIcon.Height}) from '{exePath}'");
+            }
+
+            // WM_SETICON message constants — not in NativeMethods.cs as none of
+            // the other Win32 paths in eqswitch send this message.
+            const uint WM_SETICON = 0x0080;
+            const int ICON_SMALL = 0; // 16x16 — caption/alt-tab
+            const int ICON_BIG   = 1; // 32x32 — taskbar
+            // v3.22.62 (verifier T3-Opus HIGH + T2-Sonnet MEDIUM convergent): use
+            // SendMessageTimeout with SMTO_ABORTIFHUNG, NOT bare SendMessage.
+            // ClientDiscovered can fire while EQ's window message pump is still
+            // asleep during DirectX init — bare SendMessage would block the
+            // EQSwitch UI thread for the full pump-wakeup interval (up to
+            // ~14s observed elsewhere). 500ms timeout is generous for an
+            // already-pumping window and short enough that a hung window only
+            // burns 1s of UI time (2 messages × 500ms). Same pattern as
+            // NativeMethods.cs:143 IsClientResponsive probe. Return value
+            // unused — WM_SETICON returns previous HICON which we discard.
+            const uint SMTO_ABORTIFHUNG = 0x0002;
+            NativeMethods.SendMessageTimeout(hwnd, WM_SETICON, (IntPtr)ICON_BIG,   _eqgameWindowIcon.Handle, SMTO_ABORTIFHUNG, 500, out _);
+            NativeMethods.SendMessageTimeout(hwnd, WM_SETICON, (IntPtr)ICON_SMALL, _eqgameWindowIcon.Handle, SMTO_ABORTIFHUNG, 500, out _);
+            FileLogger.Info($"ApplyEqgameWindowIcon: posted WM_SETICON to hwnd 0x{hwnd.ToInt64():X}");
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Warn($"ApplyEqgameWindowIcon: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -4758,6 +4903,17 @@ public class TrayManager : IDisposable
         _taskbarMessageWindow?.DestroyHandle();
         _trayIcon?.Dispose();
         _contextMenu?.Dispose();
+        // v3.22.62 (verifier T2-Opus + T3-Opus convergent CRITICAL): do NOT
+        // Dispose _eqgameWindowIcon. Per MSDN, WM_SETICON does NOT take
+        // ownership — the receiving eqgame window stores the raw HICON value
+        // (not a duplicate), so DestroyIcon (which Icon.Dispose calls) would
+        // invalidate eqgame's still-live handle. The icon is bounded by
+        // EQSwitch's process lifetime; Windows reclaims the GDI handle on
+        // process exit. Leaving the Icon undisposed is a process-lifetime
+        // "leak" of one GDI handle, which is correct vs. dangling-handle
+        // corruption in eqgame.
+        // (Original Icon ref intentionally kept alive — held by _eqgameWindowIcon
+        // field for the EQSwitch process duration.)
         _processManager.Dispose();
     }
 

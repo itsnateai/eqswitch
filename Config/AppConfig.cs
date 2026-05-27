@@ -110,7 +110,9 @@ public class AppConfig
     /// <summary>Username of the account bound to Quick Login slot 4 (empty = unbound).</summary>
     public string QuickLogin4 { get; set; } = "";
 
-    // Autologin Teams
+    // Autologin Teams — 12 teams × 2 slots. Teams 1-4 are bindable to global hotkeys
+    // (Hotkeys.TeamLogin1-4) and Teams 1-6 are exposed in the trayclick action dropdown;
+    // Teams 7-12 are tray-right-click-submenu only by design (v3.22.58, 2026-05-27).
     public string Team1Account1 { get; set; } = "";
     public string Team1Account2 { get; set; } = "";
     public string Team2Account1 { get; set; } = "";
@@ -123,6 +125,18 @@ public class AppConfig
     public string Team5Account2 { get; set; } = "";
     public string Team6Account1 { get; set; } = "";
     public string Team6Account2 { get; set; } = "";
+    public string Team7Account1 { get; set; } = "";
+    public string Team7Account2 { get; set; } = "";
+    public string Team8Account1 { get; set; } = "";
+    public string Team8Account2 { get; set; } = "";
+    public string Team9Account1 { get; set; } = "";
+    public string Team9Account2 { get; set; } = "";
+    public string Team10Account1 { get; set; } = "";
+    public string Team10Account2 { get; set; } = "";
+    public string Team11Account1 { get; set; } = "";
+    public string Team11Account2 { get; set; } = "";
+    public string Team12Account1 { get; set; } = "";
+    public string Team12Account2 { get; set; } = "";
 
     // Per-team Enter World toggle — BINARY interpretation per user 2026-04-15:
     //   true  = team enters world on launch (default, for Character teams)
@@ -1078,7 +1092,9 @@ public class TrayClickConfig
     /// <summary>
     /// Action for single left-click on tray icon.
     /// Values: "None", "AutoLogin1"–"AutoLogin4",
-    /// "LoginAll", "LoginAll2"–"LoginAll6" (Teams 5/6 added in v3.22.53),
+    /// "LoginAll", "LoginAll2"–"LoginAll6" (Teams 5/6 added in v3.22.53; Teams 7-12
+    /// added in v3.22.58 are DELIBERATELY NOT in this allowlist — they're tray-
+    /// right-click-submenu only by design, no trayclick action surface).
     /// "FixWindows", "SwapWindows", "TogglePiP", "LaunchOne", "LaunchAll", "Settings", "ShowHelp".
     /// Source of truth: <c>TrayClickValid</c> in <see cref="AppConfig.Validate"/>.
     /// </summary>

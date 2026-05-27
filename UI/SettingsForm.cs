@@ -157,6 +157,18 @@ public class SettingsForm : Form
     private string _pendingTeam5B = "";
     private string _pendingTeam6A = "";
     private string _pendingTeam6B = "";
+    private string _pendingTeam7A = "";
+    private string _pendingTeam7B = "";
+    private string _pendingTeam8A = "";
+    private string _pendingTeam8B = "";
+    private string _pendingTeam9A = "";
+    private string _pendingTeam9B = "";
+    private string _pendingTeam10A = "";
+    private string _pendingTeam10B = "";
+    private string _pendingTeam11A = "";
+    private string _pendingTeam11B = "";
+    private string _pendingTeam12A = "";
+    private string _pendingTeam12B = "";
     // _pendingTeam{N}AutoEnter removed alongside the per-team Enter World toggle.
     // _chkAutoEnterWorld removed — see Phase 5b note in BuildAccountsTab.
 
@@ -348,18 +360,30 @@ public class SettingsForm : Form
         _pendingAccounts = snapshotAccounts;
         _pendingCharacters = snapshotCharacters;
 
-        _pendingTeam1A = _config.Team1Account1;
-        _pendingTeam1B = _config.Team1Account2;
-        _pendingTeam2A = _config.Team2Account1;
-        _pendingTeam2B = _config.Team2Account2;
-        _pendingTeam3A = _config.Team3Account1;
-        _pendingTeam3B = _config.Team3Account2;
-        _pendingTeam4A = _config.Team4Account1;
-        _pendingTeam4B = _config.Team4Account2;
-        _pendingTeam5A = _config.Team5Account1;
-        _pendingTeam5B = _config.Team5Account2;
-        _pendingTeam6A = _config.Team6Account1;
-        _pendingTeam6B = _config.Team6Account2;
+        _pendingTeam1A  = _config.Team1Account1;
+        _pendingTeam1B  = _config.Team1Account2;
+        _pendingTeam2A  = _config.Team2Account1;
+        _pendingTeam2B  = _config.Team2Account2;
+        _pendingTeam3A  = _config.Team3Account1;
+        _pendingTeam3B  = _config.Team3Account2;
+        _pendingTeam4A  = _config.Team4Account1;
+        _pendingTeam4B  = _config.Team4Account2;
+        _pendingTeam5A  = _config.Team5Account1;
+        _pendingTeam5B  = _config.Team5Account2;
+        _pendingTeam6A  = _config.Team6Account1;
+        _pendingTeam6B  = _config.Team6Account2;
+        _pendingTeam7A  = _config.Team7Account1;
+        _pendingTeam7B  = _config.Team7Account2;
+        _pendingTeam8A  = _config.Team8Account1;
+        _pendingTeam8B  = _config.Team8Account2;
+        _pendingTeam9A  = _config.Team9Account1;
+        _pendingTeam9B  = _config.Team9Account2;
+        _pendingTeam10A = _config.Team10Account1;
+        _pendingTeam10B = _config.Team10Account2;
+        _pendingTeam11A = _config.Team11Account1;
+        _pendingTeam11B = _config.Team11Account2;
+        _pendingTeam12A = _config.Team12Account1;
+        _pendingTeam12B = _config.Team12Account2;
 
         // Team{N}AutoEnter removed — kind alone dictates destination.
 
@@ -654,6 +678,11 @@ public class SettingsForm : Form
         btnConfigureChars.Click += (_, _) => OpenCharacterHotkeysDialog();
         cy += 28;
 
+        // Counts ONLY teams 1-4 by design — only Hotkeys.TeamLogin1-4 exist
+        // as global hotkey slots. Teams 5-12 (added in v3.22.53 / v3.22.58)
+        // have no hotkey binding and are tray-submenu-only, so "X / 4" is the
+        // correct denominator for the hotkey-bound badge. Do NOT extend this
+        // counter to 12 without also growing HotkeyConfig.TeamLoginN.
         int liveT = (string.IsNullOrEmpty(_pendingTeamLogin1) ? 0 : 1)
                   + (string.IsNullOrEmpty(_pendingTeamLogin2) ? 0 : 1)
                   + (string.IsNullOrEmpty(_pendingTeamLogin3) ? 0 : 1)
@@ -2014,18 +2043,30 @@ public class SettingsForm : Form
             QuickLogin4 = _cboQuickLogin4 != null ? GetQuickLoginUsername(_cboQuickLogin4) : _config.QuickLogin4,
             AutoEnterWorld = _config.AutoEnterWorld,   // pass-through (UI checkbox removed; one-shot v3→v4 migration trigger lives in AppConfig.Validate)
             LogTrimThresholdMB = (int)_nudLogTrimThreshold.Value,
-            Team1Account1 = _pendingTeam1A,
-            Team1Account2 = _pendingTeam1B,
-            Team2Account1 = _pendingTeam2A,
-            Team2Account2 = _pendingTeam2B,
-            Team3Account1 = _pendingTeam3A,
-            Team3Account2 = _pendingTeam3B,
-            Team4Account1 = _pendingTeam4A,
-            Team4Account2 = _pendingTeam4B,
-            Team5Account1 = _pendingTeam5A,
-            Team5Account2 = _pendingTeam5B,
-            Team6Account1 = _pendingTeam6A,
-            Team6Account2 = _pendingTeam6B,
+            Team1Account1  = _pendingTeam1A,
+            Team1Account2  = _pendingTeam1B,
+            Team2Account1  = _pendingTeam2A,
+            Team2Account2  = _pendingTeam2B,
+            Team3Account1  = _pendingTeam3A,
+            Team3Account2  = _pendingTeam3B,
+            Team4Account1  = _pendingTeam4A,
+            Team4Account2  = _pendingTeam4B,
+            Team5Account1  = _pendingTeam5A,
+            Team5Account2  = _pendingTeam5B,
+            Team6Account1  = _pendingTeam6A,
+            Team6Account2  = _pendingTeam6B,
+            Team7Account1  = _pendingTeam7A,
+            Team7Account2  = _pendingTeam7B,
+            Team8Account1  = _pendingTeam8A,
+            Team8Account2  = _pendingTeam8B,
+            Team9Account1  = _pendingTeam9A,
+            Team9Account2  = _pendingTeam9B,
+            Team10Account1 = _pendingTeam10A,
+            Team10Account2 = _pendingTeam10B,
+            Team11Account1 = _pendingTeam11A,
+            Team11Account2 = _pendingTeam11B,
+            Team12Account1 = _pendingTeam12A,
+            Team12Account2 = _pendingTeam12B,
         };
 
         // Apply startup registry change
@@ -2292,11 +2333,40 @@ public class SettingsForm : Form
         y += 204;
 
         // ─── Autologin Teams ─────────────────────────────────────────
-        var teamsCard = DarkTheme.MakeCard(page, "\uD83D\uDC65", "Autologin Teams", DarkTheme.CardGold, 10, y, 480, 84);
+        // v3.22.58: card height grew 84\u2192174 to fit 6-row \u00D7 2-col summary
+        // for 12 teams (2-col gives each cell ~159px \u2014 wide enough for
+        // typical "T3: raistlin + Natedogg" without wrapping). Hint text
+        // moved out of AddCardHint (FgDimGray on medium-gray card bg \u2014
+        // low contrast) into a BgDark inset panel with FgWhite text \u2014
+        // the "black box" treatment Nate requested for at-a-glance readability.
+        // v3.22.60: font bumped 7.5pt \u2192 9pt to fill the panel width (the 7.5pt
+        // text only used ~70% of available horizontal space \u2014 the empty band
+        // looked unfinished). Panel + label heights grown ~10px each for 9pt
+        // line-height headroom. TextAlign=MiddleLeft centers the row block
+        // vertically inside the taller label.
+        var teamsCard = DarkTheme.MakeCard(page, "\uD83D\uDC65", "Autologin Teams", DarkTheme.CardGold, 10, y, 480, 174);
         var btnTeams = DarkTheme.AddCardButton(teamsCard, "Configure Teams...", 10, 32, 120);
         btnTeams.Click += (_, _) => ShowTeamsDialog();
-        _lblTeamSummary = DarkTheme.AddCardHint(teamsCard, BuildTeamSummary(), 140, 32);
-        _lblTeamSummary.Size = new Size(330, 46);
+        var summaryPanel = new Panel
+        {
+            Location = new Point(140, 28),
+            Size = new Size(330, 134),
+            BackColor = DarkTheme.BgDark,
+            BorderStyle = BorderStyle.FixedSingle,
+        };
+        teamsCard.Controls.Add(summaryPanel);
+        _lblTeamSummary = new Label
+        {
+            Location = new Point(6, 4),
+            Size = new Size(318, 124),
+            Text = BuildTeamSummary(),
+            ForeColor = DarkTheme.FgWhite,
+            Font = DarkTheme.FontUI9,
+            BackColor = Color.Transparent,
+            AutoSize = false,
+            TextAlign = ContentAlignment.MiddleLeft,
+        };
+        summaryPanel.Controls.Add(_lblTeamSummary);
 
         // Phase 5b: removed "Auto Enter World (legacy default)" checkbox.
         // It was a one-shot v3→v4 migration trigger consumed by AppConfig.Validate
@@ -2782,13 +2852,29 @@ public class SettingsForm : Form
                 .ToList();
             return names.Count > 0 ? string.Join(" + ", names) : "(none)";
         }
-        var t1 = $"T1: {Fmt(_pendingTeam1A, _pendingTeam1B)}";
-        var t2 = $"T2: {Fmt(_pendingTeam2A, _pendingTeam2B)}";
-        var t3 = $"T3: {Fmt(_pendingTeam3A, _pendingTeam3B)}";
-        var t4 = $"T4: {Fmt(_pendingTeam4A, _pendingTeam4B)}";
-        var t5 = $"T5: {Fmt(_pendingTeam5A, _pendingTeam5B)}";
-        var t6 = $"T6: {Fmt(_pendingTeam6A, _pendingTeam6B)}";
-        return $"{t1}  |  {t2}\n{t3}  |  {t4}\n{t5}  |  {t6}";
+        // v3.22.58: 12 teams in 6 rows × 2 cols (was 4×3 — wider names like
+        // "raistlin + Natedogg" wrapped inside the 106px-per-cell budget).
+        // 2-col layout gives ~159px per cell, comfortably fits typical name pairs.
+        var cells = new string[12];
+        cells[0]  = $"T1: {Fmt(_pendingTeam1A,   _pendingTeam1B)}";
+        cells[1]  = $"T2: {Fmt(_pendingTeam2A,   _pendingTeam2B)}";
+        cells[2]  = $"T3: {Fmt(_pendingTeam3A,   _pendingTeam3B)}";
+        cells[3]  = $"T4: {Fmt(_pendingTeam4A,   _pendingTeam4B)}";
+        cells[4]  = $"T5: {Fmt(_pendingTeam5A,   _pendingTeam5B)}";
+        cells[5]  = $"T6: {Fmt(_pendingTeam6A,   _pendingTeam6B)}";
+        cells[6]  = $"T7: {Fmt(_pendingTeam7A,   _pendingTeam7B)}";
+        cells[7]  = $"T8: {Fmt(_pendingTeam8A,   _pendingTeam8B)}";
+        cells[8]  = $"T9: {Fmt(_pendingTeam9A,   _pendingTeam9B)}";
+        cells[9]  = $"T10: {Fmt(_pendingTeam10A, _pendingTeam10B)}";
+        cells[10] = $"T11: {Fmt(_pendingTeam11A, _pendingTeam11B)}";
+        cells[11] = $"T12: {Fmt(_pendingTeam12A, _pendingTeam12B)}";
+        var row1 = $"{cells[0]}   |   {cells[1]}";
+        var row2 = $"{cells[2]}   |   {cells[3]}";
+        var row3 = $"{cells[4]}   |   {cells[5]}";
+        var row4 = $"{cells[6]}   |   {cells[7]}";
+        var row5 = $"{cells[8]}   |   {cells[9]}";
+        var row6 = $"{cells[10]}  |   {cells[11]}";
+        return $"{row1}\n{row2}\n{row3}\n{row4}\n{row5}\n{row6}";
     }
 
     /// <summary>
@@ -2859,28 +2945,46 @@ public class SettingsForm : Form
         var dlg = new AutoLoginTeamsDialog(
             _pendingAccounts,
             _pendingCharacters,
-            _pendingTeam1A, _pendingTeam1B,
-            _pendingTeam2A, _pendingTeam2B,
-            _pendingTeam3A, _pendingTeam3B,
-            _pendingTeam4A, _pendingTeam4B,
-            _pendingTeam5A, _pendingTeam5B,
-            _pendingTeam6A, _pendingTeam6B);
+            _pendingTeam1A,  _pendingTeam1B,
+            _pendingTeam2A,  _pendingTeam2B,
+            _pendingTeam3A,  _pendingTeam3B,
+            _pendingTeam4A,  _pendingTeam4B,
+            _pendingTeam5A,  _pendingTeam5B,
+            _pendingTeam6A,  _pendingTeam6B,
+            _pendingTeam7A,  _pendingTeam7B,
+            _pendingTeam8A,  _pendingTeam8B,
+            _pendingTeam9A,  _pendingTeam9B,
+            _pendingTeam10A, _pendingTeam10B,
+            _pendingTeam11A, _pendingTeam11B,
+            _pendingTeam12A, _pendingTeam12B);
         dlg.FormClosed += (_, _) =>
         {
             if (dlg.DialogResult == DialogResult.OK)
             {
-                _pendingTeam1A = dlg.Team1Account1;
-                _pendingTeam1B = dlg.Team1Account2;
-                _pendingTeam2A = dlg.Team2Account1;
-                _pendingTeam2B = dlg.Team2Account2;
-                _pendingTeam3A = dlg.Team3Account1;
-                _pendingTeam3B = dlg.Team3Account2;
-                _pendingTeam4A = dlg.Team4Account1;
-                _pendingTeam4B = dlg.Team4Account2;
-                _pendingTeam5A = dlg.Team5Account1;
-                _pendingTeam5B = dlg.Team5Account2;
-                _pendingTeam6A = dlg.Team6Account1;
-                _pendingTeam6B = dlg.Team6Account2;
+                _pendingTeam1A  = dlg.Team1Account1;
+                _pendingTeam1B  = dlg.Team1Account2;
+                _pendingTeam2A  = dlg.Team2Account1;
+                _pendingTeam2B  = dlg.Team2Account2;
+                _pendingTeam3A  = dlg.Team3Account1;
+                _pendingTeam3B  = dlg.Team3Account2;
+                _pendingTeam4A  = dlg.Team4Account1;
+                _pendingTeam4B  = dlg.Team4Account2;
+                _pendingTeam5A  = dlg.Team5Account1;
+                _pendingTeam5B  = dlg.Team5Account2;
+                _pendingTeam6A  = dlg.Team6Account1;
+                _pendingTeam6B  = dlg.Team6Account2;
+                _pendingTeam7A  = dlg.Team7Account1;
+                _pendingTeam7B  = dlg.Team7Account2;
+                _pendingTeam8A  = dlg.Team8Account1;
+                _pendingTeam8B  = dlg.Team8Account2;
+                _pendingTeam9A  = dlg.Team9Account1;
+                _pendingTeam9B  = dlg.Team9Account2;
+                _pendingTeam10A = dlg.Team10Account1;
+                _pendingTeam10B = dlg.Team10Account2;
+                _pendingTeam11A = dlg.Team11Account1;
+                _pendingTeam11B = dlg.Team11Account2;
+                _pendingTeam12A = dlg.Team12Account1;
+                _pendingTeam12B = dlg.Team12Account2;
                 _lblTeamSummary.Text = BuildTeamSummary();
             }
             _openTeamsDialog = null;
@@ -2893,36 +2997,60 @@ public class SettingsForm : Form
     private void ClearStaleTeamSlots(string username)
     {
         bool changed = false;
-        if (_pendingTeam1A == username) { _pendingTeam1A = ""; changed = true; }
-        if (_pendingTeam1B == username) { _pendingTeam1B = ""; changed = true; }
-        if (_pendingTeam2A == username) { _pendingTeam2A = ""; changed = true; }
-        if (_pendingTeam2B == username) { _pendingTeam2B = ""; changed = true; }
-        if (_pendingTeam3A == username) { _pendingTeam3A = ""; changed = true; }
-        if (_pendingTeam3B == username) { _pendingTeam3B = ""; changed = true; }
-        if (_pendingTeam4A == username) { _pendingTeam4A = ""; changed = true; }
-        if (_pendingTeam4B == username) { _pendingTeam4B = ""; changed = true; }
-        if (_pendingTeam5A == username) { _pendingTeam5A = ""; changed = true; }
-        if (_pendingTeam5B == username) { _pendingTeam5B = ""; changed = true; }
-        if (_pendingTeam6A == username) { _pendingTeam6A = ""; changed = true; }
-        if (_pendingTeam6B == username) { _pendingTeam6B = ""; changed = true; }
+        if (_pendingTeam1A  == username) { _pendingTeam1A  = ""; changed = true; }
+        if (_pendingTeam1B  == username) { _pendingTeam1B  = ""; changed = true; }
+        if (_pendingTeam2A  == username) { _pendingTeam2A  = ""; changed = true; }
+        if (_pendingTeam2B  == username) { _pendingTeam2B  = ""; changed = true; }
+        if (_pendingTeam3A  == username) { _pendingTeam3A  = ""; changed = true; }
+        if (_pendingTeam3B  == username) { _pendingTeam3B  = ""; changed = true; }
+        if (_pendingTeam4A  == username) { _pendingTeam4A  = ""; changed = true; }
+        if (_pendingTeam4B  == username) { _pendingTeam4B  = ""; changed = true; }
+        if (_pendingTeam5A  == username) { _pendingTeam5A  = ""; changed = true; }
+        if (_pendingTeam5B  == username) { _pendingTeam5B  = ""; changed = true; }
+        if (_pendingTeam6A  == username) { _pendingTeam6A  = ""; changed = true; }
+        if (_pendingTeam6B  == username) { _pendingTeam6B  = ""; changed = true; }
+        if (_pendingTeam7A  == username) { _pendingTeam7A  = ""; changed = true; }
+        if (_pendingTeam7B  == username) { _pendingTeam7B  = ""; changed = true; }
+        if (_pendingTeam8A  == username) { _pendingTeam8A  = ""; changed = true; }
+        if (_pendingTeam8B  == username) { _pendingTeam8B  = ""; changed = true; }
+        if (_pendingTeam9A  == username) { _pendingTeam9A  = ""; changed = true; }
+        if (_pendingTeam9B  == username) { _pendingTeam9B  = ""; changed = true; }
+        if (_pendingTeam10A == username) { _pendingTeam10A = ""; changed = true; }
+        if (_pendingTeam10B == username) { _pendingTeam10B = ""; changed = true; }
+        if (_pendingTeam11A == username) { _pendingTeam11A = ""; changed = true; }
+        if (_pendingTeam11B == username) { _pendingTeam11B = ""; changed = true; }
+        if (_pendingTeam12A == username) { _pendingTeam12A = ""; changed = true; }
+        if (_pendingTeam12B == username) { _pendingTeam12B = ""; changed = true; }
         if (changed) _lblTeamSummary.Text = BuildTeamSummary();
     }
 
     private void UpdateTeamSlotUsername(string oldUsername, string newUsername)
     {
         bool changed = false;
-        if (_pendingTeam1A == oldUsername) { _pendingTeam1A = newUsername; changed = true; }
-        if (_pendingTeam1B == oldUsername) { _pendingTeam1B = newUsername; changed = true; }
-        if (_pendingTeam2A == oldUsername) { _pendingTeam2A = newUsername; changed = true; }
-        if (_pendingTeam2B == oldUsername) { _pendingTeam2B = newUsername; changed = true; }
-        if (_pendingTeam3A == oldUsername) { _pendingTeam3A = newUsername; changed = true; }
-        if (_pendingTeam3B == oldUsername) { _pendingTeam3B = newUsername; changed = true; }
-        if (_pendingTeam4A == oldUsername) { _pendingTeam4A = newUsername; changed = true; }
-        if (_pendingTeam4B == oldUsername) { _pendingTeam4B = newUsername; changed = true; }
-        if (_pendingTeam5A == oldUsername) { _pendingTeam5A = newUsername; changed = true; }
-        if (_pendingTeam5B == oldUsername) { _pendingTeam5B = newUsername; changed = true; }
-        if (_pendingTeam6A == oldUsername) { _pendingTeam6A = newUsername; changed = true; }
-        if (_pendingTeam6B == oldUsername) { _pendingTeam6B = newUsername; changed = true; }
+        if (_pendingTeam1A  == oldUsername) { _pendingTeam1A  = newUsername; changed = true; }
+        if (_pendingTeam1B  == oldUsername) { _pendingTeam1B  = newUsername; changed = true; }
+        if (_pendingTeam2A  == oldUsername) { _pendingTeam2A  = newUsername; changed = true; }
+        if (_pendingTeam2B  == oldUsername) { _pendingTeam2B  = newUsername; changed = true; }
+        if (_pendingTeam3A  == oldUsername) { _pendingTeam3A  = newUsername; changed = true; }
+        if (_pendingTeam3B  == oldUsername) { _pendingTeam3B  = newUsername; changed = true; }
+        if (_pendingTeam4A  == oldUsername) { _pendingTeam4A  = newUsername; changed = true; }
+        if (_pendingTeam4B  == oldUsername) { _pendingTeam4B  = newUsername; changed = true; }
+        if (_pendingTeam5A  == oldUsername) { _pendingTeam5A  = newUsername; changed = true; }
+        if (_pendingTeam5B  == oldUsername) { _pendingTeam5B  = newUsername; changed = true; }
+        if (_pendingTeam6A  == oldUsername) { _pendingTeam6A  = newUsername; changed = true; }
+        if (_pendingTeam6B  == oldUsername) { _pendingTeam6B  = newUsername; changed = true; }
+        if (_pendingTeam7A  == oldUsername) { _pendingTeam7A  = newUsername; changed = true; }
+        if (_pendingTeam7B  == oldUsername) { _pendingTeam7B  = newUsername; changed = true; }
+        if (_pendingTeam8A  == oldUsername) { _pendingTeam8A  = newUsername; changed = true; }
+        if (_pendingTeam8B  == oldUsername) { _pendingTeam8B  = newUsername; changed = true; }
+        if (_pendingTeam9A  == oldUsername) { _pendingTeam9A  = newUsername; changed = true; }
+        if (_pendingTeam9B  == oldUsername) { _pendingTeam9B  = newUsername; changed = true; }
+        if (_pendingTeam10A == oldUsername) { _pendingTeam10A = newUsername; changed = true; }
+        if (_pendingTeam10B == oldUsername) { _pendingTeam10B = newUsername; changed = true; }
+        if (_pendingTeam11A == oldUsername) { _pendingTeam11A = newUsername; changed = true; }
+        if (_pendingTeam11B == oldUsername) { _pendingTeam11B = newUsername; changed = true; }
+        if (_pendingTeam12A == oldUsername) { _pendingTeam12A = newUsername; changed = true; }
+        if (_pendingTeam12B == oldUsername) { _pendingTeam12B = newUsername; changed = true; }
         if (changed) _lblTeamSummary.Text = BuildTeamSummary();
     }
 

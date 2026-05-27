@@ -1,5 +1,187 @@
 # Changelog
 
+## v3.22.62 — Pre-commit verifier convergence fixes (2026-05-27)
+
+Final verifier round on the cumulative v3.22.58→61 diff caught three convergent issues across Sonnet/Opus pairs:
+
+### 1. `SendMessage(WM_SETICON)` → `SendMessageTimeout` (verifier T3-Opus HIGH + T2-Sonnet MEDIUM)
+
+`TrayManager.ApplyEqgameWindowIcon` originally called bare `NativeMethods.SendMessage` for `WM_SETICON`. `ClientDiscovered` can fire while EQ's message pump is still asleep during DirectX init — bare `SendMessage` would block the EQSwitch UI thread for the full pump-wakeup interval (up to ~14s observed elsewhere in the codebase). Switched to `SendMessageTimeout` with `SMTO_ABORTIFHUNG` + 500ms (matches the existing `IsClientResponsive` pattern at `NativeMethods.cs:143`). Caps worst-case stall at 1s (2 messages × 500ms).
+
+### 2. Remove `_eqgameWindowIcon?.Dispose()` (verifier T2-Opus + T3-Opus convergent CRITICAL)
+
+Per MSDN, `WM_SETICON` does NOT take ownership of the `HICON` — eqgame's window stores the raw handle value, not a duplicate. v3.22.61's `Dispose()` call invoked `DestroyIcon` which would invalidate eqgame's still-live reference. Removed the dispose; the icon is process-lifetime-bound (one GDI handle, reclaimed by Windows on EQSwitch exit). One-handle "leak" is correct vs. dangling-handle corruption in eqgame.
+
+### 3. `HelpForm.cs:110-111` — accurate firewall description (verifier T2-Opus CRITICAL)
+
+v3.22.61's text said "Teams 5-12 fire via tray right-click → Teams submenu only" — but Teams 5-6 are in the trayclick action dropdown (added in v3.22.53). Re-split into three tiers for accuracy:
+- Teams 1-4: hotkey OR tray menu OR tray-click action
+- Teams 5-6: tray menu OR tray-click action
+- Teams 7-12: tray right-click submenu only
+
+### Known limit (deferred — verifier T2-Opus noted)
+
+`ApplyEqgameWindowIcon` does NOT re-fire when `ProcessManager` refreshes a stale `WindowHandle` (EQ recreating its HWND on zone change). The icon would visually revert to placeholder until the next ClientDiscovered. Low-impact corner case; deferred to a future iteration that exposes a `HandleRefreshed` event.
+
+### Files
+
+- `EQSwitch.csproj` — version 3.22.61 → 3.22.62.
+- `UI/TrayManager.cs` — `SendMessageTimeout` switch, dispose-call removal + MSDN-correct comment.
+- `UI/HelpForm.cs` — 3-tier firewall description.
+- `CHANGELOG.md` — this entry.
+
+---
+
+## v3.22.61 — eqgame.exe taskbar icon + verifier doc polish (2026-05-27)
+
+### 1. eqgame.exe taskbar icon (UX polish)
+
+Screenshot from Nate's smoke after v3.22.60 deploy: taskbar preview for eqgame shows a generic placeholder square instead of EQ's icon. Investigation:
+
+- `eqgame.exe` ships with a valid 32×32 icon resource (confirmed via `[System.Drawing.Icon]::ExtractAssociatedIcon`).
+- Dalaya's `eqgame.exe` never calls `SetClassLong(GCLP_HICON)` or sends `WM_SETICON` to its own windows on startup, so Windows has nothing to render on the per-window surfaces (taskbar, alt-tab, window menu) and falls back to a generic placeholder.
+- EQSwitch's slim-titlebar style strip touches `WS_THICKFRAME` only — `WS_SYSMENU` is preserved, so the icon area on the caption exists.
+
+Fix: after `ProcessManager.ClientDiscovered` fires for an EQ client, `TrayManager.ApplyEqgameWindowIcon(hwnd)` extracts the icon from `<EQPath>/eqgame.exe` once (cached for the EQSwitch process lifetime) and posts `WM_SETICON(ICON_BIG, hIcon)` + `WM_SETICON(ICON_SMALL, hIcon)`. Windows then has a real icon to render. HICON is released in `TrayManager.Dispose()`.
+
+### 2. Verifier MINOR doc polish
+
+Two doc-only items the v3.22.58 verifier swarm flagged that didn't ride in v3.22.60:
+
+- `Config/AppConfig.cs:1095` — `TrayClickConfig.SingleClick` xmldoc now explicitly states Teams 7-12 are DELIBERATELY NOT in the trayclick allowlist (per the v3.22.58 firewall design). Prevents future maintainers from "completing" the dropdown.
+- `UI/SettingsForm.cs:680` — Added intent comment above `liveT` (the "X / 4 hotkey-bound" badge counter) clarifying that the 4-cap is by design (only `HotkeyConfig.TeamLoginN` for N∈1..4 exist) and any future extension to 12 requires growing both surfaces together.
+
+### Files
+
+- `EQSwitch.csproj` — version 3.22.60 → 3.22.61.
+- `UI/TrayManager.cs` — `_eqgameWindowIcon` field, `ApplyEqgameWindowIcon` method, `ClientDiscovered` wire-up, `Dispose` cleanup.
+- `Config/AppConfig.cs:1095` — xmldoc updated for v3.22.58 firewall.
+- `UI/SettingsForm.cs:680` — intent comment on `liveT` 4-cap.
+- `CHANGELOG.md` — this entry.
+
+---
+
+## v3.22.60 — Phantom-swap root cause fix + team summary font fill (2026-05-27)
+
+### 1. Phantom-swap root cause — CONFIRMED + FIXED
+
+v3.22.59 diagnostic logging proved the "phantom swap" at 08:49:49 was NOT keyboard-triggered (zero `KeyboardHook: callback POSTED` + zero `OnSwitchKey: ENTRY` in the log window). The actual cause: the LoginComplete-deferred 15s timer in `TrayManager.cs:248` calls `ApplyDeferredCosmetics(pid)` which in multimonitor mode runs `ArrangeWindows` on EVERY client → `ApplySlimTitlebar` on the foreground client → `SetWindowLongPtr` + `SetWindowPos(SWP_FRAMECHANGED)` → brief frame redraw the user perceives as a swap, even though the window style and position already match (the call is a no-op semantically but `SWP_FRAMECHANGED` still triggers WM_NCCALCSIZE redraw).
+
+Timing in Nate's smoke log:
+- `08:49:33.711` AutoLogin complete (both clients in-game)
+- `08:49:35.014` AutoLogin: resumed slim titlebar guard timer
+- `08:49:49.090` ApplyDeferredCosmetics fires for PID 16948 (15s defer post-LoginComplete)
+- `08:49:50.091` ApplyDeferredCosmetics fires for PID 11880 (foreground) → user sees the artifact
+
+Fix: replaced the deferred `ApplyDeferredCosmetics(capturedPid)` call with just `UpdateHookConfigForPid(capturedPid)` — the hook DLL's shared-memory config refresh is visually no-op. The slim-titlebar guard timer (running since LoginComplete every 500ms-5s) already covers cosmetic drift, and the RaiseClientsAboveTaskbar dance was already deduped per-PID in v3.22.46 so it would no-op here regardless.
+
+### 2. Team summary font fill (from earlier in this session)
+
+Screenshot showed 2×6 layout only used ~70% of each row width at 7.5pt. Bumped to 9pt regular, grew panel/label/card heights for line-height headroom (panel 118→134, label 108→124, card 158→174), added `TextAlign = MiddleLeft` to center the row block vertically.
+
+### Files
+
+- `EQSwitch.csproj` — version 3.22.59 → 3.22.60.
+- `UI/TrayManager.cs:248-267` — deferred `ApplyDeferredCosmetics` → narrow `UpdateHookConfigForPid` only.
+- `UI/SettingsForm.cs` — `FontUI75` → `FontUI9`, panel/label/card height bumps, MiddleLeft alignment.
+- `CHANGELOG.md` — this entry.
+
+---
+
+## v3.22.60-pre — Team summary font fill (superseded by combined entry above)
+
+Post-v3.22.59 smoke screenshot: 2×6 grid reads clean but only ~70% of each row width is used — the 7.5pt font left the right side of every row visibly empty against the dark panel surface. Bumping font to 9pt fills the panel without wrapping (longest row "T1: Natedogg + Backup | T2: Flotte + Natedogg" is ~45 chars; 9pt ≈ 270px, comfortably under the 318px label width).
+
+Companion changes:
+- Panel height 118 → 134, label height 108 → 124, card height 158 → 174 — gives the 9pt line height (≈17px) breathing room across 6 rows.
+- `TextAlign = ContentAlignment.MiddleLeft` centers the row block vertically inside the slightly-oversized label so empty space splits top/bottom instead of pooling at the bottom.
+
+Content-aware sizing principle applied (see `_templates/lessons-learned/principles/content-aware-dialog-sizing.md`): when content under-fills a panel, the font is too small for the available space, not the panel that's too big.
+
+### Files
+
+- `EQSwitch.csproj` — version 3.22.59 → 3.22.60.
+- `UI/SettingsForm.cs` — `FontUI75` → `FontUI9`, panel/label/card height bumps, MiddleLeft alignment.
+- `CHANGELOG.md` — this entry.
+
+---
+
+## v3.22.59 — Layout reflow + verifier-flagged fixes + phantom-swap diagnostics (2026-05-27)
+
+Post-v3.22.58 smoke surfaced two items + a verifier critical:
+
+### 1. Hint summary reflow — 2 columns × 6 rows (was 3×4)
+
+Screenshot evidence: the 3-col layout was wrapping cells like `"T3: raistlin + Natedogg"` because each cell only got ~106px of width. 2-col gives ~159px per cell — comfortable fit for typical name pairs. Card height grew 130 → 158, inset panel 92 → 118, label 84 → 108 to host 6 line-rows cleanly.
+
+### 2. HelpForm "up to 4 teams" stale text (verifier CRITICAL)
+
+`UI/HelpForm.cs:109` still read `"Autologin Teams: configure up to 4 teams of 2 accounts each."` after the 6 → 12 expansion. Updated to 12 + explicit note that Teams 1-4 are hotkey-bindable and 5-12 are tray-submenu only — keeps the firewall design visible to first-time users reading the in-app Help.
+
+### 3. BuildTeamsSubmenu xmldoc stale (verifier MINOR)
+
+`UI/TrayManager.cs:2099-2100` xmldoc said `"when all six teams are unpopulated"` — runtime code already handles 12 (line 2131 `populated.Count == 0` is array-length-agnostic). Doc-only correction to "all twelve teams".
+
+### 4. Phantom backslash swap — diagnostic instrumentation (NOT a fix)
+
+Nate's 2026-05-27 smoke after the v3.22.58 deploy reported a `\` swap firing ~8 seconds after his last keypress (after Team 12 launch + several manual swaps + idle). The v3.22.58 changes do NOT touch any input-handling code (FireTeam(N) is team-number-generic, was already shipping for Teams 1-6), so this is likely a pre-existing issue surfaced by the smoke, not a v3.22.58 regression.
+
+The log at deploy time has no per-hook-fire instrumentation, so the trigger source (kbd hook vs tray menu vs programmatic) cannot be identified from the existing `"SwitchKey: swapped..."` log line. v3.22.59 adds:
+
+- `Core/KeyboardHookManager.cs` HookCallback — logs `"KeyboardHook: callback POSTED VK 0x{vk:X2} (tick={t})"` immediately before `_syncContext?.Post(...)` queues the callback, and logs `"KeyboardHook: callback INVOKED VK 0x{vk:X2} (post→invoke delta={d}ms)"` at the start of the queued lambda. A high delta = UI thread queue backup; a missing POSTED line followed by an `OnSwitchKey: ENTRY` = the swap fired from a non-hook source.
+- `UI/TrayManager.cs` OnSwitchKey / OnGlobalSwitchKey — both now log `"<HandlerName>: ENTRY"` at the first line. Distinguishes which of the two hooks (VK 0xDC `\` vs 0xDD `]`) actually fired.
+
+On next phantom-swap repro, the log triplet `POSTED → INVOKED → ENTRY` will pin the trigger source. If `ENTRY` appears with NO preceding `POSTED`, the swap came from somewhere other than the kbd hook (the OnShowTrayMenu path, a Settings → Apply rebuild, or the tray-menu SwapWindows item).
+
+### Files
+
+- `EQSwitch.csproj` — version 3.22.58 → 3.22.59.
+- `UI/SettingsForm.cs` — BuildTeamSummary 4×3 → 6×2; teamsCard 130→158, summaryPanel 92→118, label 84→108.
+- `UI/HelpForm.cs:109` — "4 teams" → "12 teams" with firewall note.
+- `UI/TrayManager.cs:2099` — xmldoc "six" → "twelve". Plus OnSwitchKey/OnGlobalSwitchKey ENTRY diagnostics.
+- `Core/KeyboardHookManager.cs` — HookCallback POSTED + INVOKED diagnostics.
+- `CHANGELOG.md` — this entry.
+
+---
+
+## v3.22.58 — Configure Teams expanded 6 → 12 + hint contrast upgrade (2026-05-27)
+
+Autologin Teams subwindow now exposes 12 teams instead of 6. Teams 7-12 are deliberately tray-right-click-submenu only — they intentionally do NOT appear in the `Hotkeys.TeamLoginN` global-hotkey set (still bounded at 4) and do NOT appear in the General-tab trayclick action dropdown (still bounded at 6, per the v3.22.53 round-5/post-round-6 hand-edit-config fixup). The single launch surface for the new teams is the tray menu's Teams submenu, which now lists any populated team 1-12.
+
+### What grew
+
+- `Config/AppConfig.cs` — 12 new `Team7Account1..Team12Account2` string fields, defaulting to empty.
+- `UI/AutoLoginTeamsDialog.cs` — full refactor. Internal storage is now 4 parallel arrays of length 12 (`_cboA`/`_cboB` combos + `_pillA`/`_pillB` pills) keyed by zero-based team index, replacing 48 named fields. 24 named public property getters (`Team1Account1..Team12Account2`) are preserved for `SettingsForm` name-based readback. Ctor takes 24 string params (was 12). Form height grew 332 → 560 to fit 12 rows × 36px + chrome.
+- `UI/SettingsForm.cs` — 12 new `_pendingTeamNX` fields, `PopulateFromConfig` / `BuildAppConfig` / `ShowTeamsDialog` ctor+readback / `ClearStaleTeamSlots` / `UpdateTeamSlotUsername` / `BuildTeamSummary` all extended through team 12. `BuildTeamSummary` now formats as 4 rows × 3 cols (T1|T2|T3 / T4|T5|T6 / T7|T8|T9 / T10|T11|T12) instead of 3 rows × 2 cols.
+- `UI/TrayManager.cs` — `BuildTeamsSubmenu` teams[] array grew 6 → 12 entries (Teams 7-12 carry empty Combo strings — no hotkey display). `DescribeAction` labels for `LoginAll7..LoginAll12`. `ExecuteTrayAction` switch arms `case "LoginAll7..12": FireTeam(N)`. `ResolveTeamConfig` range guard widened `1..6` → `1..12` plus 6 new switch arms. `ApplyConfigToLive` copy block grew 12 → 24 lines.
+- `EQSwitch.csproj` — version 3.22.57 → 3.22.58.
+- `CHANGELOG.md` — this entry.
+
+### Hint visibility upgrade (Accounts tab "Autologin Teams" card)
+
+Per screenshot feedback — the team-summary hint was `FgDimGray` on the card's medium-purple interior, which made the per-team text hard to read at glance. With 12 teams that's worse, so the upgrade is two-part:
+
+- Card height grew `84 → 130` to fit 4 lines.
+- Hint text moved out of `DarkTheme.AddCardHint` (FgDimGray + italic) into a `BgDark` (32,28,42) inset `Panel` with `FixedSingle` border, holding a label with `FgWhite` (235,232,240) text. Reads as a high-contrast "black box" surface against the card — Nate's term from the marked-up screenshot.
+
+### What stayed bounded (anti-scope-creep firewall)
+
+- `TeamHotkeysDialog.cs` — untouched. Still 4 rows for Teams 1-4.
+- `AppConfig.HotkeyConfig.TeamLogin{1..4}` — unchanged.
+- Settings General-tab `clickActions[]` dropdown — unchanged at `Team{1..6}`. Hand-edited configs binding 7-12 to a trayclick would render blank in the dropdown by design, same gap that exists for 5/6 today.
+- `TrayManager.RegisterHotkeys` `TeamLogin1..4` registration loop — unchanged.
+
+### Files
+
+- `Config/AppConfig.cs`
+- `UI/AutoLoginTeamsDialog.cs`
+- `UI/SettingsForm.cs`
+- `UI/TrayManager.cs`
+- `EQSwitch.csproj`
+- `CHANGELOG.md`
+
+---
+
 ## v3.22.57 — Reset Defaults restores ALL Video-tab controls (v3.22.56 verifier follow-up) (2026-05-26)
 
 Post-v3.22.56 6-agent verifier swarm T2-Sonnet + T2-Opus convergent MEDIUM: `VideoResetDefaults()` on the Video tab silently skipped the Window Style card controls. Reset Defaults restored Video-Resolution + Window-Offsets but left Slim Titlebar, Dark Titlebar, Titlebar Offset, Bottom Offset, Use Hook, and Maximize-on-Launch at whatever the user had toggled — half the tab unchanged. With v3.22.56 flipping the DarkTitlebar default to ON, the gap became visible: a user who unchecked Dark Titlebar and clicked Reset Defaults expected to re-land on the new ON default, but stayed unchecked.

@@ -6,16 +6,23 @@ using EQSwitch.Models;
 namespace EQSwitch.UI;
 
 /// <summary>
-/// Dialog for configuring Autologin Teams 1-6 (v4: accepts Account + Character lists).
+/// Dialog for configuring Autologin Teams 1-12 (v3.22.58, 2026-05-27 — extended from 6 to 12).
 /// Each team has 2 slots. Slot dropdowns list Characters (enter-world targets, preferred)
 /// followed by Accounts (charselect-only fallback). A colored status pill next to each
-/// slot indicates resolution: green = Character, amber = Account-only, red = unresolved.
+/// slot indicates resolution: blue 'C' = Character, purple 'A' = Account-only, red ✗ = unresolved.
 ///
-/// Team{N}AutoEnter checkbox overrides: Phase 3 binary semantics — true forces Enter
-/// World on every slot regardless of target type; false stops every slot at charselect.
+/// Teams 7-12 are tray-right-click-submenu only (no global hotkey binding, no trayclick
+/// action dropdown entry) — by design per Nate 2026-05-27. The hotkey/trayclick firewall
+/// keeps the General-tab dropdown bounded and the TeamHotkeysDialog rows fixed at 4.
+///
+/// Internal storage uses 4 parallel arrays of length 12 (combos A/B + pills A/B) keyed
+/// by zero-based team index. Public property getters Team1Account1..Team12Account2 are
+/// preserved for SettingsForm name-based consumption.
 /// </summary>
 internal sealed class AutoLoginTeamsDialog : Form
 {
+    private const int TeamCount = 12;
+
     // Remembers last-open location across opens within a session. Static so
     // all instances share it; falls back to CenterParent on first open.
     // Process lifetime only; cross-session persistence would need config.
@@ -40,34 +47,40 @@ internal sealed class AutoLoginTeamsDialog : Form
     private readonly IReadOnlyList<Account> _accounts;
     private readonly IReadOnlyList<Character> _characters;
 
-    private readonly ComboBox _cboTeam1A, _cboTeam1B;
-    private readonly ComboBox _cboTeam2A, _cboTeam2B;
-    private readonly ComboBox _cboTeam3A, _cboTeam3B;
-    private readonly ComboBox _cboTeam4A, _cboTeam4B;
-    private readonly ComboBox _cboTeam5A, _cboTeam5B;
-    private readonly ComboBox _cboTeam6A, _cboTeam6B;
-    private readonly Label _pillTeam1A, _pillTeam1B;
-    private readonly Label _pillTeam2A, _pillTeam2B;
-    private readonly Label _pillTeam3A, _pillTeam3B;
-    private readonly Label _pillTeam4A, _pillTeam4B;
-    private readonly Label _pillTeam5A, _pillTeam5B;
-    private readonly Label _pillTeam6A, _pillTeam6B;
+    private readonly ComboBox[] _cboA = new ComboBox[TeamCount];
+    private readonly ComboBox[] _cboB = new ComboBox[TeamCount];
+    private readonly Label[] _pillA = new Label[TeamCount];
+    private readonly Label[] _pillB = new Label[TeamCount];
     private readonly System.Windows.Forms.ToolTip _tooltip = new();
 
-    public string Team1Account1 => GetValue(_cboTeam1A);
-    public string Team1Account2 => GetValue(_cboTeam1B);
-    public string Team2Account1 => GetValue(_cboTeam2A);
-    public string Team2Account2 => GetValue(_cboTeam2B);
-    public string Team3Account1 => GetValue(_cboTeam3A);
-    public string Team3Account2 => GetValue(_cboTeam3B);
-    public string Team4Account1 => GetValue(_cboTeam4A);
-    public string Team4Account2 => GetValue(_cboTeam4B);
-    public string Team5Account1 => GetValue(_cboTeam5A);
-    public string Team5Account2 => GetValue(_cboTeam5B);
-    public string Team6Account1 => GetValue(_cboTeam6A);
-    public string Team6Account2 => GetValue(_cboTeam6B);
-    // v3.22.10: hoisted from MakeCombo (which rebuilt them 12× per ctor).
-    // Built once in ctor, used by every MakeCombo call. Saves 11 × (list build
+    // Public per-team getters preserved for SettingsForm name-based readback.
+    public string Team1Account1  => GetValue(_cboA[0]);
+    public string Team1Account2  => GetValue(_cboB[0]);
+    public string Team2Account1  => GetValue(_cboA[1]);
+    public string Team2Account2  => GetValue(_cboB[1]);
+    public string Team3Account1  => GetValue(_cboA[2]);
+    public string Team3Account2  => GetValue(_cboB[2]);
+    public string Team4Account1  => GetValue(_cboA[3]);
+    public string Team4Account2  => GetValue(_cboB[3]);
+    public string Team5Account1  => GetValue(_cboA[4]);
+    public string Team5Account2  => GetValue(_cboB[4]);
+    public string Team6Account1  => GetValue(_cboA[5]);
+    public string Team6Account2  => GetValue(_cboB[5]);
+    public string Team7Account1  => GetValue(_cboA[6]);
+    public string Team7Account2  => GetValue(_cboB[6]);
+    public string Team8Account1  => GetValue(_cboA[7]);
+    public string Team8Account2  => GetValue(_cboB[7]);
+    public string Team9Account1  => GetValue(_cboA[8]);
+    public string Team9Account2  => GetValue(_cboB[8]);
+    public string Team10Account1 => GetValue(_cboA[9]);
+    public string Team10Account2 => GetValue(_cboB[9]);
+    public string Team11Account1 => GetValue(_cboA[10]);
+    public string Team11Account2 => GetValue(_cboB[10]);
+    public string Team12Account1 => GetValue(_cboA[11]);
+    public string Team12Account2 => GetValue(_cboB[11]);
+
+    // v3.22.10: hoisted from MakeCombo (which rebuilt them N× per ctor).
+    // Built once in ctor, used by every MakeCombo call. Saves N × (list build
     // + 5-6 TextRenderer.MeasureText calls) on a typical config.
     private List<SlotOption> _comboItems = null!;
     private int _comboMaxW;
@@ -75,19 +88,25 @@ internal sealed class AutoLoginTeamsDialog : Form
     public AutoLoginTeamsDialog(
         IReadOnlyList<Account> accounts,
         IReadOnlyList<Character> characters,
-        string team1A, string team1B,
-        string team2A, string team2B,
-        string team3A, string team3B,
-        string team4A, string team4B,
-        string team5A, string team5B,
-        string team6A, string team6B)
+        string team1A,  string team1B,
+        string team2A,  string team2B,
+        string team3A,  string team3B,
+        string team4A,  string team4B,
+        string team5A,  string team5B,
+        string team6A,  string team6B,
+        string team7A,  string team7B,
+        string team8A,  string team8B,
+        string team9A,  string team9B,
+        string team10A, string team10B,
+        string team11A, string team11B,
+        string team12A, string team12B)
     {
         _accounts = accounts;
         _characters = characters;
 
         // v3.22.10: SuspendLayout for the whole ctor. WinForms invalidates the
         // form on every control Add; without suspension the layout engine
-        // re-runs 38+ times (12 combos + 12 pills + 6 row labels + legend +
+        // re-runs 60+ times (24 combos + 24 pills + 12 row labels + legend +
         // hint + warn + 2 buttons). Combined with the items-list hoist below,
         // this cuts the perceived "loading Teams" freeze meaningfully.
         SuspendLayout();
@@ -103,16 +122,16 @@ internal sealed class AutoLoginTeamsDialog : Form
             StartPosition = FormStartPosition.CenterParent;
         }
         FormClosing += (_, _) => _lastLocation = Location;
-        // Width 480 (was 560) — Enter World column removed; rightmost element
-        // is now the second pill ending at ~x=444. Height 332 fits 6 team
-        // rows + legend + behavior-hint row + warn row + button row.
-        DarkTheme.StyleForm(this, "Autologin Teams", new Size(480, 332));
+        // Width 480 (unchanged from 6-team layout). Height 560 fits 12 team
+        // rows (12 × 36 = 432) + legend (18) + behavior hint (18) + warn (14)
+        // + button row (~30) + top/bottom padding (~48).
+        DarkTheme.StyleForm(this, "Autologin Teams", new Size(480, 560));
         MinimizeBox = false;
 
         // v3.22.10: build the combo items list ONCE here. Every ComboBox in
-        // this dialog displays the same options (12 of them); rebuilding the
-        // list per MakeCombo call was pure waste. MeasureText runs once over
-        // the unified list and the result is reused for every combo's
+        // this dialog displays the same options (24 of them now); rebuilding
+        // the list per MakeCombo call was pure waste. MeasureText runs once
+        // over the unified list and the result is reused for every combo's
         // DropDownWidth.
         _comboItems = BuildComboItems();
         using (var probeFont = new Font(Font.FontFamily, Font.Size))
@@ -126,30 +145,25 @@ internal sealed class AutoLoginTeamsDialog : Form
         // No "Enter World" column anymore — destination is per-slot, dictated by
         // kind (Character → enters world, Account → charselect). Always.
 
-        // Team rows
-        (_cboTeam1A, _pillTeam1A, _cboTeam1B, _pillTeam1B) = AddTeamRow("Team 1:", L, I, CW, gap, PILLW, ref y);
-        (_cboTeam2A, _pillTeam2A, _cboTeam2B, _pillTeam2B) = AddTeamRow("Team 2:", L, I, CW, gap, PILLW, ref y);
-        (_cboTeam3A, _pillTeam3A, _cboTeam3B, _pillTeam3B) = AddTeamRow("Team 3:", L, I, CW, gap, PILLW, ref y);
-        (_cboTeam4A, _pillTeam4A, _cboTeam4B, _pillTeam4B) = AddTeamRow("Team 4:", L, I, CW, gap, PILLW, ref y);
-        (_cboTeam5A, _pillTeam5A, _cboTeam5B, _pillTeam5B) = AddTeamRow("Team 5:", L, I, CW, gap, PILLW, ref y);
-        (_cboTeam6A, _pillTeam6A, _cboTeam6B, _pillTeam6B) = AddTeamRow("Team 6:", L, I, CW, gap, PILLW, ref y);
+        // Team rows — 12 of them.
+        for (int i = 0; i < TeamCount; i++)
+        {
+            var (a, pa, b, pb) = AddTeamRow($"Team {i + 1}:", L, I, CW, gap, PILLW, ref y);
+            _cboA[i] = a; _pillA[i] = pa;
+            _cboB[i] = b; _pillB[i] = pb;
+        }
 
-        // Legend \u2014 describes slot KIND only. Destination is the team's call,
-        // controlled by the Enter World column header (with its own tooltip).
-        // Kind + destination are independent dimensions; conflating them in
-        // the legend was the source of confusion ("\u2713 = Character (enter world)"
-        // wasn't always true when the team's Enter World was off).
+        // Legend — describes slot KIND only. Destination is dictated by kind
+        // (Character → enter world, Account → charselect).
         var legend = DarkTheme.AddLabel(this,
-            "C = Character    A = Account    \u2717 = unresolved",
+            "C = Character    A = Account    ✗ = unresolved",
             L, y + 2);
         legend.ForeColor = DarkTheme.FgDimGray;
         legend.Font = DarkTheme.FontUI75;
         legend.AutoSize = true;
         y += 18;
 
-        // Behavior hint \u2014 explains the kind\u2192destination rule users see in pills above.
-        // Sits directly under the legend so the legend's "C/A/\u2717" symbols and the
-        // sentence describing what they DO read as one paragraph.
+        // Behavior hint — explains the kind→destination rule users see in pills above.
         var behaviorHint = DarkTheme.AddLabel(this,
             "Characters enter world; Accounts stop at charselect. Orphan chars (no Account) render '(unassigned)'.",
             L, y);
@@ -159,9 +173,8 @@ internal sealed class AutoLoginTeamsDialog : Form
         y += 18;
 
         // Warning / contextual-hint label — gets its own row above the buttons
-        // so it never overlaps Save/Cancel (was sharing y with buttons before).
-        // Used for: same-login collision blocker, unresolved-slot blocker on
-        // Save, and the descriptive "Account-only — character select" hint.
+        // so it never overlaps Save/Cancel. Used for same-login collision blocker
+        // and unresolved-slot blocker on Save.
         var lblWarn = DarkTheme.AddLabel(this, "", L, y);
         lblWarn.ForeColor = DarkTheme.FgWarn;
         lblWarn.Font = DarkTheme.FontUI75;
@@ -175,48 +188,34 @@ internal sealed class AutoLoginTeamsDialog : Form
         {
             // Block unresolved slots — persisting a stale reference through Save would
             // leave the user stuck in the red-pill loop with no feedback at Save time.
-            var slots = new[]
+            var unresolved = new List<string>();
+            for (int i = 0; i < TeamCount; i++)
             {
-                (_cboTeam1A, "Team 1 Slot 1"), (_cboTeam1B, "Team 1 Slot 2"),
-                (_cboTeam2A, "Team 2 Slot 1"), (_cboTeam2B, "Team 2 Slot 2"),
-                (_cboTeam3A, "Team 3 Slot 1"), (_cboTeam3B, "Team 3 Slot 2"),
-                (_cboTeam4A, "Team 4 Slot 1"), (_cboTeam4B, "Team 4 Slot 2"),
-                (_cboTeam5A, "Team 5 Slot 1"), (_cboTeam5B, "Team 5 Slot 2"),
-                (_cboTeam6A, "Team 6 Slot 1"), (_cboTeam6B, "Team 6 Slot 2"),
-            };
-            var unresolved = slots
-                .Where(s => s.Item1.Tag is string tag && !string.IsNullOrEmpty(tag))
-                .Select(s => $"{s.Item2}: '{(s.Item1.Tag as string)}'")
-                .ToList();
+                if (_cboA[i].Tag is string ta && !string.IsNullOrEmpty(ta))
+                    unresolved.Add($"Team {i + 1} Slot 1: '{ta}'");
+                if (_cboB[i].Tag is string tb && !string.IsNullOrEmpty(tb))
+                    unresolved.Add($"Team {i + 1} Slot 2: '{tb}'");
+            }
             if (unresolved.Count > 0)
             {
-                lblWarn.Text = "\u26a0 Unresolved: " + string.Join("; ", unresolved) + " — clear (none) or pick a valid target";
+                lblWarn.Text = "⚠ Unresolved: " + string.Join("; ", unresolved) + " — clear (none) or pick a valid target";
                 lblWarn.Visible = true;
                 return;
             }
 
             // Block same Account (Username, Server) in both slots of the same team —
             // EQ kicks duplicate logins.
-            var teams = new[]
+            for (int i = 0; i < TeamCount; i++)
             {
-                (_cboTeam1A, _cboTeam1B, "Team 1"),
-                (_cboTeam2A, _cboTeam2B, "Team 2"),
-                (_cboTeam3A, _cboTeam3B, "Team 3"),
-                (_cboTeam4A, _cboTeam4B, "Team 4"),
-                (_cboTeam5A, _cboTeam5B, "Team 5"),
-                (_cboTeam6A, _cboTeam6B, "Team 6"),
-            };
-            foreach (var (a, b, name) in teams)
-            {
-                var accA = ResolveAccountForSlot(a);
-                var accB = ResolveAccountForSlot(b);
+                var accA = ResolveAccountForSlot(_cboA[i]);
+                var accB = ResolveAccountForSlot(_cboB[i]);
                 if (accA == null || accB == null) continue;
                 // Case-insensitive: EQ usernames are server-side case-insensitive,
                 // so EQ kicks even if the user typed different cases per slot.
                 if (accA.Username.Equals(accB.Username, StringComparison.OrdinalIgnoreCase) &&
                     accA.Server.Equals(accB.Server, StringComparison.OrdinalIgnoreCase))
                 {
-                    lblWarn.Text = $"\u26a0 {name}: both slots share login '{accA.Username}' — EQ will kick one";
+                    lblWarn.Text = $"⚠ Team {i + 1}: both slots share login '{accA.Username}' — EQ will kick one";
                     lblWarn.Visible = true;
                     return;
                 }
@@ -239,15 +238,20 @@ internal sealed class AutoLoginTeamsDialog : Form
         Controls.Add(btnCancel);
 
         // Select saved values (after event subscription so pills refresh).
-        SelectByValue(_cboTeam1A, team1A);  SelectByValue(_cboTeam1B, team1B);
-        SelectByValue(_cboTeam2A, team2A);  SelectByValue(_cboTeam2B, team2B);
-        SelectByValue(_cboTeam3A, team3A);  SelectByValue(_cboTeam3B, team3B);
-        SelectByValue(_cboTeam4A, team4A);  SelectByValue(_cboTeam4B, team4B);
-        SelectByValue(_cboTeam5A, team5A);  SelectByValue(_cboTeam5B, team5B);
-        SelectByValue(_cboTeam6A, team6A);  SelectByValue(_cboTeam6B, team6B);
+        var saved = new[]
+        {
+            (team1A,  team1B),  (team2A,  team2B),  (team3A,  team3B),  (team4A,  team4B),
+            (team5A,  team5B),  (team6A,  team6B),  (team7A,  team7B),  (team8A,  team8B),
+            (team9A,  team9B),  (team10A, team10B), (team11A, team11B), (team12A, team12B),
+        };
+        for (int i = 0; i < TeamCount; i++)
+        {
+            SelectByValue(_cboA[i], saved[i].Item1);
+            SelectByValue(_cboB[i], saved[i].Item2);
+        }
 
         // v3.22.10: pair with SuspendLayout at top of ctor. performLayout: true
-        // forces a single layout pass at the end rather than 38+ incremental
+        // forces a single layout pass at the end rather than 60+ incremental
         // ones across the ctor body.
         ResumeLayout(performLayout: true);
     }
@@ -255,7 +259,7 @@ internal sealed class AutoLoginTeamsDialog : Form
     /// <summary>
     /// v3.22.10: builds the SlotOption list used by every ComboBox in this dialog.
     /// Hoisted out of MakeCombo so the (none) + Characters + Accounts iteration
-    /// runs once per ctor instead of 12× (one per combo).
+    /// runs once per ctor instead of 24× (one per combo).
     /// </summary>
     private List<SlotOption> BuildComboItems()
     {
@@ -319,7 +323,7 @@ internal sealed class AutoLoginTeamsDialog : Form
             DropDownStyle = ComboBoxStyle.DropDownList,
             FlatStyle = FlatStyle.Flat,
         };
-        // v3.22.10: use AddRange (single layout invalidation) instead of N\u00D7Add
+        // v3.22.10: use AddRange (single layout invalidation) instead of N×Add
         // (one per item). Items themselves are hoisted to _comboItems built
         // once per ctor.
         cb.Items.AddRange(_comboItems.Cast<object>().ToArray());
@@ -358,23 +362,11 @@ internal sealed class AutoLoginTeamsDialog : Form
 
     private void RefreshPillForCombo(ComboBox cbo)
     {
-        Label? pill = cbo switch
+        for (int i = 0; i < TeamCount; i++)
         {
-            _ when cbo == _cboTeam1A => _pillTeam1A,
-            _ when cbo == _cboTeam1B => _pillTeam1B,
-            _ when cbo == _cboTeam2A => _pillTeam2A,
-            _ when cbo == _cboTeam2B => _pillTeam2B,
-            _ when cbo == _cboTeam3A => _pillTeam3A,
-            _ when cbo == _cboTeam3B => _pillTeam3B,
-            _ when cbo == _cboTeam4A => _pillTeam4A,
-            _ when cbo == _cboTeam4B => _pillTeam4B,
-            _ when cbo == _cboTeam5A => _pillTeam5A,
-            _ when cbo == _cboTeam5B => _pillTeam5B,
-            _ when cbo == _cboTeam6A => _pillTeam6A,
-            _ when cbo == _cboTeam6B => _pillTeam6B,
-            _ => null,
-        };
-        if (pill != null) RefreshPill(cbo, pill);
+            if (cbo == _cboA[i]) { RefreshPill(cbo, _pillA[i]); return; }
+            if (cbo == _cboB[i]) { RefreshPill(cbo, _pillB[i]); return; }
+        }
     }
 
     private void RefreshPill(ComboBox cbo, Label pill)
@@ -387,7 +379,7 @@ internal sealed class AutoLoginTeamsDialog : Form
             var tagValue = cbo.Tag as string;
             if (!string.IsNullOrEmpty(tagValue))
             {
-                pill.Text = "\u2717";
+                pill.Text = "✗";
                 pill.BackColor = DarkTheme.StatusFail;
                 pill.ForeColor = Color.White;
                 _tooltip.SetToolTip(pill,
@@ -407,27 +399,17 @@ internal sealed class AutoLoginTeamsDialog : Form
 
         if (opt.Kind == SlotKind.Character)
         {
-            // Neutral kind indicator \u2014 was \u2713-green which read as "correct";
-            // changed to C-on-blue so neither pill carries a value judgment.
             pill.Text = "C";
             pill.BackColor = DarkTheme.CardBlue;
             pill.ForeColor = Color.White;
-            // Descriptive: pill describes KIND only. Destination depends on the
-            // team's Enter World toggle (covered by its own header tooltip).
             _tooltip.SetToolTip(pill,
                 "Resolves to Character — enters world when Enter World is on.");
         }
         else // Account
         {
-            // Neutral kind indicator — was !-yellow which read as "warning";
-            // changed to A-on-purple so accounts look like a valid type, not
-            // an error state. Accounts working as intended ≠ warning.
             pill.Text = "A";
             pill.BackColor = DarkTheme.CardPurple;
             pill.ForeColor = Color.White;
-            // Descriptive: states the constraint, doesn't push the user to
-            // change their config (was "Pick a Character to enter world instead"
-            // which contradicted users who deliberately set up account-only teams).
             _tooltip.SetToolTip(pill,
                 "Resolves to Account — charselect only (Accounts cannot enter world).");
         }

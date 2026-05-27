@@ -227,10 +227,21 @@ public class KeyboardHookManager : IDisposable
                 _lastFireTickByVk[hookStruct.vkCode] = nowTicks;
                 _downSwallowedByVk[hookStruct.vkCode] = true;
 
+                // v3.22.59: trigger-source diagnostic for phantom-swap investigation
+                // (Nate's 2026-05-27 smoke after v3.22.58 saw a `\` swap fire ~8s
+                // after his last keypress). Log POSTED timestamp so we can compare
+                // against the OnSwitchKey/OnGlobalSwitchKey "INVOKED" log line —
+                // a long delta = UI thread queue backup; missing POSTED + present
+                // INVOKED = the swap came from somewhere other than the kbd hook.
+                long postedAt = Environment.TickCount64;
+                FileLogger.Info($"KeyboardHook: callback POSTED VK 0x{hookStruct.vkCode:X2} (tick={postedAt})");
+
                 // Post callback to UI thread asynchronously — return immediately
                 // to avoid blocking the hook (Windows kills hooks that take >300ms)
                 _syncContext?.Post(_ =>
                 {
+                    long invokedAt = Environment.TickCount64;
+                    FileLogger.Info($"KeyboardHook: callback INVOKED VK 0x{hookStruct.vkCode:X2} (post→invoke delta={invokedAt - postedAt}ms)");
                     try { binding.Callback.Invoke(); }
                     catch (Exception ex)
                     {

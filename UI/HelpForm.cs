@@ -106,8 +106,10 @@ AUTO-LOGIN:
   (no focus stealing — all clients stay in background)
   Injected into EQ at launch — no files placed in game folder.
 
-  Autologin Teams: configure up to 4 teams of 2 accounts each.
-  Teams launch accounts sequentially via tray menu or hotkey.
+  Autologin Teams: configure up to 12 teams of 2 accounts each.
+  Teams 1-4 fire via global hotkey OR tray menu OR tray-click action;
+  Teams 5-6 fire via tray menu OR tray-click action;
+  Teams 7-12 fire via tray right-click → Teams submenu only.
   Accounts can appear in multiple teams (overlap OK).
   Configure in Settings → Accounts tab.
 
