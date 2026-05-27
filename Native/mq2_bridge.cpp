@@ -4044,7 +4044,30 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     // already ran (above this block) so in-flight requests are serviced.
     // Camp-from-in-world later still works: gameState=5 below resets
     // g_consecutiveNullPolls=0, then re-arms cleanly on the next charselect.
+    //
+    // v3.22.64 (T2-Sonnet+Opus convergent verifier CONCERN): mirror the
+    // gameState==5 reset block's SHM cleanup for `charCount`, `selectedIndex`,
+    // and the enterWorld request/ack/result triplet. Pre-this-amendment,
+    // bailing left stale char-list data visible to any C# reader that didn't
+    // gate on `charSelectReady` — defense-in-depth, not a working regression
+    // (HandleSelectionRequest's safety mesh holds because FindWindowByName
+    // would fail post-quit too). Plus one-shot DI8Log on the edge transition
+    // (T3-Opus minor) so the bail leaves a diagnostic marker — important
+    // because the latch-clear log at line 4022 only fires if charSelectReady
+    // was set, which a stop-at-charselect session that never advanced past
+    // login wouldn't satisfy.
     if (g_consecutiveNullPolls >= 30) {
+        static uint32_t lastLoggedBailPolls = 0;
+        if (g_consecutiveNullPolls != lastLoggedBailPolls && (g_consecutiveNullPolls == 30 || g_consecutiveNullPolls == 100)) {
+            DI8Log("mq2_bridge: Poll bail (pinst null %u polls ~ %ums) — skipping Path A/B heap scans",
+                   g_consecutiveNullPolls, g_consecutiveNullPolls * 500);
+            lastLoggedBailPolls = g_consecutiveNullPolls;
+        }
+        shm->charCount       = 0;
+        shm->selectedIndex   = -1;
+        shm->enterWorldReq   = 0;
+        shm->enterWorldAck   = 0;
+        shm->enterWorldResult = 0;
         return;
     }
 

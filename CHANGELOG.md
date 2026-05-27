@@ -1,5 +1,30 @@
 # Changelog
 
+## v3.22.64 — v3.22.63 verifier follow-ups: SHM cleanup + bail log (2026-05-27)
+
+8-agent post-ship verifier round on v3.22.63 surfaced two convergent concerns (Sonnet+Opus agreement is the load-bearing signal here, not either alone):
+
+### 1. T2 Gap-audit convergence — stale SHM on the new bail path
+
+Both T2 verifiers flagged that the v3.22.63 bail returned without zeroing `shm->charCount`, `shm->selectedIndex`, or the `enterWorld{Req,Ack,Result}` triplet. The latch-clear at the same threshold zeros only `shm->charSelectReady`. Any C# reader that consumed `charCount`/`names[]` without first checking `charSelectReady` would see whatever the prior charselect cycle published — most likely a benign defense-in-depth gap (`HandleSelectionRequest` at line 3770 reads `shm->charCount` but its real safety mesh is `FindWindowByName("Character_List")` failing post-quit, which would defer the request, not act on stale data), but the asymmetry with the `gameState==5` reset block at line 4051 was real. Fix: mirror the gameState==5 cleanup inside the bail block (5 stores).
+
+### 2. T3-Opus + T1 minor — no diagnostic log on the bail
+
+Pre-this-amendment, the bail was silent. The latch-clear log at line 4022 only fires if `charSelectReady` was set first — but a stop-at-charselect session that hit a quit-back-to-login pattern might not satisfy that, so the bail would leave zero trace. Added an edge-only `DI8Log` at the 30-poll and 100-poll boundaries (`lastLoggedBailPolls` static prevents per-tick spam, ~15s and ~50s markers cover the diagnostic window).
+
+### 3. T4 convergence — pre-existing `_.releases/eqswitch/` drift
+
+Both T4 verifiers (Sonnet + Opus) flagged that `X:/_Projects/_.releases/eqswitch/VERSION` reads `v3.22.52` — 11 versions stale (53→63 all shipped without bumping it). T4-Opus correctly noted this is pre-existing drift, not introduced by v3.22.63. Sync-as-side-effect: `_.releases/eqswitch/` updated to v3.22.64 with fresh `VERSION` + `SHA256SUMS` + `EQSwitch.exe` + dll set.
+
+### Files
+
+- `EQSwitch.csproj` — version 3.22.63 → 3.22.64.
+- `Native/mq2_bridge.cpp` — SHM zeroing + edge-only `DI8Log` added inside the bail block.
+- `CHANGELOG.md` — this entry.
+- `_.releases/eqswitch/` — synced `VERSION`, `SHA256SUMS`, `EQSwitch.exe`, `eqswitch-di8.dll`, `eqswitch-hook.dll` to v3.22.64.
+
+---
+
 ## v3.22.63 — Fix game-thread starvation after quit-back-from-charselect (2026-05-27)
 
 ### Bug
