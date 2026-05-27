@@ -284,7 +284,27 @@ static volatile bool g_pollBailEngaged = false;
 // previous "logged" value would prevent the 100-poll cap marker from
 // re-firing. Same anti-pattern previously fixed at v3.22.33 for
 // g_lastPumpProbeWarnMs.
+//
+// v3.22.66 round-2 verifier note (T3-Sonnet/T3-Opus convergent): not
+// declared `volatile` like its siblings. PollReentryGuard at
+// eqswitch-di8.cpp:287 serializes Poll entry via InterlockedCompareExchange,
+// and this counter is only ever touched from Poll (read/write) and
+// Shutdown (write). The serialization holds. Documenting the pin.
 static uint32_t g_lastLoggedBailPolls = 0;
+
+// v3.22.67 (T2 Sonnet+Opus + T3 Opus convergent CRITICAL): companion to
+// g_consecutiveNullPolls. Tracks consecutive polls where the pinstCharSelect
+// deref chain returned non-null. When it reaches kNonNullPollsToDisarm (3
+// polls ~ 1.5s), the sticky bail latch disarms — this is "we've sustainably
+// returned to charselect, not a single-tick eqmain-reload flutter." Closes
+// the v3.22.66 gap where same-PID quit→login→reconnect→charselect would
+// stay bailed because Dalaya's gameState stays 0 at both login AND
+// charselect; the gameState==5 disarm was unreachable until the user
+// manually clicked their way to in-world (which itself required Path A/B
+// to publish charSelectReady, which the bail was suppressing). Resets to 0
+// in the pinstNull branch (every null-poll erases progress toward disarm).
+// Reset on Shutdown alongside the latch.
+static volatile uint32_t g_consecutiveNonNullPolls = 0;
 
 // ─── Heap scan for character name array ───────────────────────
 // Dalaya ROF2 stores char names in a heap-allocated array of 0x160-byte structs.
@@ -4046,8 +4066,29 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
                 DI8Log("mq2_bridge: charSelectReady latch cleared (pinst null %u polls ~ %ums)",
                        g_consecutiveNullPolls, g_consecutiveNullPolls * 500);
             }
+            // v3.22.67: every null-poll erases progress toward sustained-non-null
+            // disarm. An eqmain-reload flutter (1-tick non-null then null again)
+            // never accumulates enough consecutive non-null reads to disarm.
+            g_consecutiveNonNullPolls = 0;
         } else {
             g_consecutiveNullPolls = 0;
+            // v3.22.67 (T2/T3 convergent CRITICAL): sustained pinst non-null
+            // means we're legitimately at charselect, not flutter. After 3
+            // consecutive non-null polls (~1.5s), disarm the sticky bail so
+            // Path A/B can republish char-list data on a same-PID quit→
+            // reconnect cycle. Threshold balances flutter-tolerance (single-
+            // tick non-null reads during eqmain reload don't disarm) against
+            // latency (Path A/B starts publishing ~1.5s after charselect
+            // re-arrival, which Path B's own 1.5s heap-scan budget already
+            // dominates — net latency identical to the cold-charselect case).
+            if (g_consecutiveNonNullPolls < 100) g_consecutiveNonNullPolls++;
+            static constexpr uint32_t kNonNullPollsToDisarm = 3;
+            if (g_consecutiveNonNullPolls >= kNonNullPollsToDisarm && g_pollBailEngaged) {
+                DI8Log("mq2_bridge: Poll bail disarmed (pinst non-null %u polls ~ %ums = sustained charselect, not flutter)",
+                       g_consecutiveNonNullPolls, g_consecutiveNonNullPolls * 500);
+                g_pollBailEngaged = false;
+                g_lastLoggedBailPolls = 0;
+            }
         }
     }
 
@@ -5173,16 +5214,26 @@ void MQ2Bridge::PollRequestsOnly(volatile CharSelectShm *shm) {
 void MQ2Bridge::Shutdown() {
     DI8Log("mq2_bridge: Shutdown -- nullifying pointers");
 
-    // v3.22.66 (T2 Sonnet + T4 Sonnet convergent): reset the sticky bail
-    // latch + its diagnostic counter alongside the existing pointer cleanup.
-    // The latch was added in v3.22.65 but the original commit missed adding
-    // it to Shutdown(), which is the mid-process MQ2 re-init path (sibling
-    // counters like g_consecutiveNullPolls at line ~5234 are reset here for
-    // the same reason). Without this, a Shutdown→Init cycle inside a single
-    // eqgame.exe PID (rare but possible — eqswitch-di8.cpp's mq2InitRetry
-    // logic) would carry the latch into the new init session.
+    // v3.22.66 (T2 + T4 Sonnet convergent): reset the sticky bail latch +
+    // its diagnostic counter alongside the existing pointer cleanup.
+    //
+    // v3.22.67 (T3-Opus REJECT + T4-Opus CONCERN correction): the original
+    // v3.22.66 comment claimed mq2InitRetry triggered Shutdown→Init cycles.
+    // Verifier-corrected: eqswitch-di8.cpp's mq2InitRetry path only re-calls
+    // Init() on failure, never Shutdown(). The only Shutdown() call site is
+    // Cleanup() at eqswitch-di8.cpp:767, which fires on DLL_PROCESS_DETACH.
+    // This reset is therefore defense-in-depth on process exit, not active
+    // protection for the eqmain-reload scenario this fix train targets. Kept
+    // because (a) it costs nothing, (b) any future code path that adds a
+    // legitimate Shutdown→re-Init flow inherits correct state automatically,
+    // and (c) the alternative (omitting the reset) creates a latent footgun
+    // for the same future maintainer.
+    //
+    // v3.22.67 adds g_consecutiveNonNullPolls reset for the same defense-
+    // in-depth reasoning.
     g_pollBailEngaged = false;
     g_lastLoggedBailPolls = 0;
+    g_consecutiveNonNullPolls = 0;
 
     g_pGameState       = nullptr;
     g_ppEverQuest      = nullptr;

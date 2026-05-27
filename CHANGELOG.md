@@ -1,5 +1,43 @@
 # Changelog
 
+## v3.22.67 — v3.22.66 verifier follow-ups: sustained-pinst-non-null disarm + Shutdown comment correction (2026-05-27)
+
+The v3.22.66 verifier round caught two convergent issues that the prior round's `gameState != 5` gate didn't address:
+
+### Critical — same-PID charselect deadlock still present (T2 Sonnet+Opus + T3 Opus convergent)
+
+v3.22.66's `gameState != 5` gate fixed the in-world disarm path but didn't fix the same-PID quit→reconnect→charselect path. Walk on Dalaya (where gameState stays 0 at BOTH login and charselect):
+
+1. User quits to login → counter to 30 → latch arms → bail fires
+2. User reconnects → reaches charselect → `pinstCharSelect` non-null → counter resets to 0
+3. At charselect: `gameState=0` (Dalaya invariant) and latch still true
+4. Bail check `(0 != 5) && (0 >= 30 || true)` = `true && true` → **still bails**
+5. Path A/B blocked → `charSelectReady` never republishes → C# can't read char list
+6. User must MANUALLY click their way to in-world for the latch to disarm (which itself requires charselect to work, creating a circular block)
+
+**Fix:** new `g_consecutiveNonNullPolls` counter (companion to `g_consecutiveNullPolls`). Increments in the pinst-non-null branch, resets to 0 in the pinst-null branch. When it reaches 3 (~1.5s sustained non-null), the sticky bail latch disarms. This closes the same-PID charselect deadlock while still rejecting the 1-tick eqmain-reload flutter that v3.22.65 was designed to handle. The flutter never accumulates enough consecutive non-null reads to trigger disarm.
+
+Net latency: Path A/B starts publishing ~1.5s after re-arrival at charselect — identical to Path B's own 1.5s heap-scan budget, so no user-visible regression.
+
+### Documentation correction — Shutdown→Init claim was false (T3 Opus REJECT + T4 Opus CONCERN convergent)
+
+The v3.22.66 CHANGELOG entry and the inline `Shutdown()` code comment both claimed: *"Mid-process Shutdown→Init cycles (eqswitch-di8.cpp's mq2InitRetry path) would carry stale latch state."* Verifier audit confirmed this is **false** — `mq2InitRetry` only re-invokes `Init()` on failure, never calls `Shutdown()` between attempts. `Shutdown()` has exactly one call site: `Cleanup()` at `eqswitch-di8.cpp:767`, which fires on `DLL_PROCESS_DETACH` (process exit).
+
+The Shutdown reset itself is kept (cheap defense-in-depth — any future code path that adds a legitimate mid-process Shutdown→re-Init flow inherits correct state automatically). The rationale comment is corrected to match reality.
+
+### Minor — v3.22.65 entry annotated as superseded (T4 Sonnet hygiene)
+
+The v3.22.65 entry's "Disarm path" section described a fix that turned out to have an unreachable disarm. Annotated below with a forward-pointer note so future readers see the supersession chain.
+
+### Files
+
+- `EQSwitch.csproj` — version 3.22.66 → 3.22.67.
+- `Native/mq2_bridge.cpp` — `g_consecutiveNonNullPolls` counter added with disarm-on-3 logic; Shutdown comment corrected; Shutdown adds counter reset.
+- `CHANGELOG.md` — this entry; v3.22.66 Shutdown rationale superseded; v3.22.65 entry annotated.
+- `_.releases/eqswitch/` — synced to v3.22.67.
+
+---
+
 ## v3.22.66 — v3.22.65 verifier follow-ups: disarm reachability + Shutdown reset (2026-05-27)
 
 8-agent verifier round on v3.22.65 surfaced a critical convergent flaw (2 REJECTs + 2 CONCERNS across T2/T3/T4) that the same-process smoke didn't expose because Nate ESC-killed the eqgame process between scenarios (fresh BSS = fresh latch).
