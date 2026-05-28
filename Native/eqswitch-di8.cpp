@@ -248,6 +248,58 @@ static void CloseLoginShm() {
     if (g_loginShmMap) { CloseHandle(g_loginShmMap); g_loginShmMap = nullptr; }
 }
 
+// v3.22.69 (T4-Sonnet + T4-Opus R2 convergent MEDIUM): SEH-protected read
+// of `g_loginShm->autoLoginActive`. Mirrors the sibling patterns at
+// `mq2_bridge.cpp:4181-4193` / `:4782-4795` / `:5146-5158`. The pointer
+// can be non-null with the underlying MMF unmapped during a DLL detach
+// race; without SEH an AV here would take down the EQ client.
+//
+// Lives as a free function (not inline in MQ2BridgePollTick) because that
+// function holds a `PollReentryGuard` C++ object with a destructor — MSVC
+// C2712 forbids `__try`/`__except` in any function that requires object
+// unwinding. Extracting to this helper sidesteps the conflict cleanly:
+// this function has no destructor-bearing locals.
+//
+// Magic check inside `__try` gates both the magic read AND the
+// autoLoginActive field read — both share the same unmap hazard. On
+// exception, returns false (safe default — caller treats as "autologin
+// not active" and proceeds with normal bare-launch dismiss behaviour).
+static bool ReadAutoLoginActiveSafe() {
+    if (g_loginShm == nullptr) return false;
+    __try {
+        if (g_loginShm->magic == LOGIN_SHM_MAGIC && g_loginShm->autoLoginActive != 0) {
+            return true;
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return false;
+}
+
+// v3.22.69 R3 follow-up (T2-Sonnet/Opus + T3-Opus + T4-Opus R3 convergent
+// HIGH): SEH-protected magic check for the LoginStateMachine::Tick gate
+// at MQ2BridgePollTick. Same C2712-driven extraction pattern as
+// ReadAutoLoginActiveSafe above. Pre-this-helper, MQ2BridgePollTick:380
+// read `g_loginShm->magic` bare — same MMF-unmap-during-detach hazard
+// the R3 fix codified for the autoLoginActive site at :467.
+//
+// Caveat: this helper protects the magic check at the GATE. The body of
+// LoginStateMachine::Tick has ~30 further `loginShm->...` dereferences
+// (login_state_machine.cpp:767+) that are also unprotected. Wrapping
+// those is deferred to a v3.22.70 audit pass — scope creep risk into
+// the very autologin path v3.22.69 was meant to stabilize. The gate
+// catches the most likely race window (between TryOpenLoginShm() and
+// the gate's magic check); Tick interior is exposed only during a much
+// narrower window after the gate has already passed.
+static bool IsLoginShmReady() {
+    if (g_loginShm == nullptr) return false;
+    __try {
+        return g_loginShm->magic == LOGIN_SHM_MAGIC;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 // Called from device_proxy.cpp's ActivateThread (~60Hz, throttled to ~500ms internally)
 static bool g_mq2Initialized = false;
 static uint32_t g_mq2InitRetry = 0;
@@ -349,7 +401,15 @@ void MQ2BridgePollTick() {
     if (!g_loginShm) {
         TryOpenLoginShm();
     }
-    if (g_loginShm && g_loginShm->magic == LOGIN_SHM_MAGIC) {
+    // v3.22.69 R3 follow-up (4-verifier convergent — T2 Sonnet+Opus, T3-Opus,
+    // T4-Opus): SEH-protected gate via IsLoginShmReady() helper. The prior
+    // bare `g_loginShm->magic` read here was vulnerable to the same
+    // MMF-unmap-during-detach race that R3 wrapped at line 467 — and sits
+    // in the SAME function, three frames below. C2712 (MQ2BridgePollTick
+    // holds PollReentryGuard RAII) blocks an inline __try; the helper
+    // sidesteps that. Tick interior still has unprotected derefs deferred
+    // to v3.22.70 — see comment on IsLoginShmReady().
+    if (IsLoginShmReady()) {
         LoginStateMachine::Tick(g_loginShm, g_charSelShm);
     }
 
@@ -426,7 +486,17 @@ void MQ2BridgePollTick() {
         // Bare-launch path (no autologin) still hits the dismiss as designed —
         // autoLoginActive defaults to 0 in that case, so EULA + main-menu
         // auto-click continues to work for the v3.15.5 use case.
-        bool suppressDismiss = (g_loginShm != nullptr && g_loginShm->autoLoginActive != 0);
+        //
+        // v3.22.69 (T4-Sonnet + T4-Opus R2 convergent MEDIUM): SEH-protected
+        // helper (defined above MQ2BridgePollTick because this function holds
+        // a PollReentryGuard local whose destructor requires C++ object
+        // unwinding — MSVC C2712 forbids __try in such functions). Mirrors
+        // the new gate in mq2_bridge.cpp:4181-4193 plus the existing sibling
+        // patterns at mq2_bridge.cpp:4782-4795 / :5146-5158. On AV (MMF
+        // unmapped while pointer non-null during DLL detach race), the
+        // helper returns false — restores the bare-launch dismiss behaviour
+        // (safe default).
+        bool suppressDismiss = ReadAutoLoginActiveSafe();
         if (suppressDismiss) {
             // AutoLoginManager owns the keystroke flow for this PID. Skip the
             // entire prompt-dismiss block; the rest of the poll tick (gameState

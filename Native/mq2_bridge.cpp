@@ -306,6 +306,15 @@ static uint32_t g_lastLoggedBailPolls = 0;
 // Reset on Shutdown alongside the latch.
 static volatile uint32_t g_consecutiveNonNullPolls = 0;
 
+// v3.22.69: rising-edge tracker for autoLoginActive. Promoted to file-scope
+// (was function-static `s_prevAutologinActive` in the prior edit) so
+// MQ2Bridge::Shutdown() can reset it on Init/re-Init cycles — without
+// the reset, a Shutdown→re-Init cycle where the prior session ended with
+// autologin active would leave `g_prevAutologinActive=true`, suppressing
+// the rising-edge latch-clear logic for the entire new session.
+// T2-Sonnet R2 + T2-Opus R2 convergent IMPORTANT finding.
+static bool g_prevAutologinActive = false;
+
 // ─── Heap scan for character name array ───────────────────────
 // Dalaya ROF2 stores char names in a heap-allocated array of 0x160-byte structs.
 // Standard MQ2 charSelectPlayerArray offset doesn't exist. We scan committed pages
@@ -2775,6 +2784,19 @@ MQ2Bridge_GetJoinServerDirectAnchor() {
 bool MQ2Bridge::Init() {
     DI8Log("mq2_bridge: Init -- resolving MQ2 exports from dinput8.dll");
 
+    // v3.22.69 R3 follow-up (T3-Opus R3 LOW): symmetric Init/Shutdown reset
+    // of the sticky-bail-train tracker. Shutdown() already resets these,
+    // but the documented eqswitch-di8.cpp mq2InitRetry path re-calls Init()
+    // on failure WITHOUT a preceding Shutdown — meaning a failed-then-retry
+    // Init cycle inherits whatever the prior partial Init left in these
+    // globals. Static BSS-zero covers fresh DLL load; this covers the
+    // retry-without-shutdown case. Costs zero, matches defense-in-depth
+    // rationale documented for the sibling Shutdown reset block.
+    g_pollBailEngaged = false;
+    g_lastLoggedBailPolls = 0;
+    g_consecutiveNonNullPolls = 0;
+    g_prevAutologinActive = false;
+
     g_hMQ2 = GetModuleHandleA("dinput8.dll");
     if (!g_hMQ2) {
         DI8Log("mq2_bridge: dinput8.dll not loaded -- MQ2 bridge unavailable");
@@ -4145,7 +4167,82 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
     // future Path A/B publishes blocked → camp-from-in-world charselect
     // republish impossible. Fix: skip the bail when gameState==5 so
     // execution falls through to the reset block that disarms the latch.
-    if (gameState != 5 && (g_consecutiveNullPolls >= 30 || g_pollBailEngaged)) {
+    //
+    // v3.22.69 (autologin-regression fix — diagnosed 2026-05-27 post-v3.22.67
+    // smoke: team2 solo gotquiz typed only 2-of-7 password chars, team1
+    // background got 0 chars / foreground got 2 chars, matching the classic
+    // dual-box keystroke-truncation signature documented at
+    // AutoLoginManager.cs:649-657 from 2026-04-25):
+    //
+    // ALSO gate the bail on `g_loginShm->autoLoginActive == 0`. During
+    // autologin, pinstCCharacterSelect is NULL by design (the client is at
+    // the login screen, not charselect), so `g_consecutiveNullPolls` ramps
+    // toward 30 — the bail engages right around T+15s, which is exactly
+    // BURST 1 of the password keystroke phase. The bail's per-tick body
+    // (5 SHM stores + DI8Log on edge transitions) runs on the EQ game
+    // thread inside MQ2BridgePollTick (called from ActivateThread + the
+    // DI8 TIMERPROC), contending with the keystroke pump and truncating
+    // the WM_CHAR queue mid-burst. The bail's REASON-TO-EXIST is solving
+    // a same-PID quit→charselect-republish edge case — that path can't
+    // fire during autologin anyway (no in-world transition yet, no quit
+    // to come back from). Disabling the bail when C# is actively driving
+    // login is safe and surgical. Mirrors the kPromptWindows suppress
+    // pattern at eqswitch-di8.cpp:429. Once autoLoginActive flips back to 0
+    // (LoginShmWriter's finally block at the end of the autologin run),
+    // the bail re-enables and the v3.22.63-67 charselect-republish
+    // protection resumes for camp-from-in-world cycles.
+    // v3.22.69 follow-up (T2-Sonnet/T3-Opus convergent CRITICAL): SEH-wrap the
+    // autologin-active read. The sibling `g_loginShm->magic` read at lines
+    // 4740-4752 already wraps the dereference in __try/__except because the
+    // pointer can be non-null with the underlying MMF unmapped during a DLL
+    // detach race — same hazard applies here. AV during this read would take
+    // down the EQ client; an exception falls back to `autologinActive=false`
+    // which restores the v3.22.67 behaviour (bail can engage). The same
+    // pattern: gate on non-null pointer, then magic check inside __try, then
+    // field read. `LOGIN_SHM_MAGIC` confirms the mapping is still ours.
+    bool autologinActive = false;
+    if (g_loginShm) {
+        __try {
+            if (g_loginShm->magic == LOGIN_SHM_MAGIC && g_loginShm->autoLoginActive != 0) {
+                autologinActive = true;
+            }
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            autologinActive = false;
+        }
+    }
+
+    // v3.22.69 follow-up (T3-Opus IMPORTANT): reset the sticky bail latch on
+    // the autoLoginActive rising edge (false→true). Without this, a latch
+    // armed in a prior logical session (e.g. user bare-launched, sat at
+    // login screen long enough to arm the bail, then started autologin)
+    // would re-engage the moment autoLoginActive flips back to 0 in the
+    // C# finally block, even though the new session never accumulated its
+    // own 30 fresh null polls. Detected by tracking the previous tick's
+    // autologinActive snapshot in g_prevAutologinActive (file-scope so
+    // Shutdown() can reset it on Init/re-Init cycles — see T2-Sonnet/Opus
+    // R2 convergent IMPORTANT finding).
+    //
+    // v3.22.69 follow-up #2 (T2-Opus R2 NEW REGRESSION): the rising edge
+    // ONLY resets g_pollBailEngaged + g_lastLoggedBailPolls — it does NOT
+    // reset g_consecutiveNullPolls. Earlier R2 draft cleared the counter
+    // too, which clobbered legitimate pre-autologin accumulation (bare-
+    // launch → sit at login 10s → counter at 20 → trigger autologin →
+    // counter wiped to 0 → autologin completes → bail's 15s budget
+    // restarts from 0 instead of from the ~5 remaining polls). The
+    // legitimate counter accumulation continues; only the latch is reset.
+    // Per-PID scope is automatic because eqswitch-di8.dll is injected once
+    // per eqgame.exe process — each PID has its own DLL instance and its
+    // own g_prevAutologinActive.
+    if (autologinActive && !g_prevAutologinActive) {
+        if (g_pollBailEngaged) {
+            DI8Log("mq2_bridge: Poll bail latch reset on autoLoginActive rising edge (was engaged from prior session)");
+            g_pollBailEngaged = false;
+            g_lastLoggedBailPolls = 0;
+        }
+    }
+    g_prevAutologinActive = autologinActive;
+
+    if (gameState != 5 && !autologinActive && (g_consecutiveNullPolls >= 30 || g_pollBailEngaged)) {
         if (!g_pollBailEngaged) {
             g_pollBailEngaged = true;
             DI8Log("mq2_bridge: Poll bail engaged (pinst null %u polls ~ %ums) — sticky until gameState==5",
@@ -5231,9 +5328,16 @@ void MQ2Bridge::Shutdown() {
     //
     // v3.22.67 adds g_consecutiveNonNullPolls reset for the same defense-
     // in-depth reasoning.
+    // v3.22.69 (T2-Sonnet R2 + T2-Opus R2 convergent IMPORTANT): also reset
+    // g_prevAutologinActive — sibling sticky-bail-train state that was
+    // promoted from function-static to file-scope in this release. Without
+    // this reset, a Shutdown→re-Init cycle ending with prior session's
+    // autologin active leaves the rising-edge tracker true, which would
+    // suppress the latch-clear logic for the entire new session.
     g_pollBailEngaged = false;
     g_lastLoggedBailPolls = 0;
     g_consecutiveNonNullPolls = 0;
+    g_prevAutologinActive = false;
 
     g_pGameState       = nullptr;
     g_ppEverQuest      = nullptr;
