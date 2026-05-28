@@ -545,8 +545,10 @@ public class WindowManager
                 // (symmetry), eliminates real WM_NCCALCSIZE traffic on a
                 // cross-process window (non-free even when invisible).
                 // Round-5 T3-Opus verdict: defensible standalone.
+                // v3.22.76 WinEQ2 -frame none parity — strip caption+sysmenu + set WS_POPUP.
                 long currentStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64();
-                long desiredStyle = currentStyle & ~NativeMethods.WS_THICKFRAME;
+                const long mmStripMask = NativeMethods.WS_THICKFRAME | NativeMethods.WS_CAPTION | NativeMethods.WS_SYSMENU;
+                long desiredStyle = (currentStyle & ~mmStripMask) | NativeMethods.WS_POPUP;
                 if (currentStyle != desiredStyle)
                 {
                     _api.SetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE, (IntPtr)desiredStyle);
@@ -570,7 +572,7 @@ public class WindowManager
                 // of both monitors, AND DX swap-chain stretch artifacts
                 // would appear on every client — exactly the same bug class
                 // the lock-to-primary-dims was added to suppress on swap.
-                long currentSlimStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64() & ~NativeMethods.WS_THICKFRAME;
+                long currentSlimStyle = (_api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64() & ~mmStripMask) | NativeMethods.WS_POPUP;
                 long currentExStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_EXSTYLE).ToInt64();
                 (x, y, w, h) = ComputeSlimTitlebarOuterRect(effectiveBounds, titlebarOffset, currentSlimStyle, currentExStyle);
                 swpFlags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE;
@@ -582,11 +584,14 @@ public class WindowManager
                 // arrangement stripped it — eqswitch-hook.cpp only ever
                 // STRIPS the flag (one-way), so C# has to restore it here
                 // when transitioning slim → non-slim.
+                // v3.22.76: restore WS_THICKFRAME + WS_CAPTION + WS_SYSMENU
+                // and clear WS_POPUP when transitioning slim → non-slim.
                 long style = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64();
-                if ((style & NativeMethods.WS_THICKFRAME) == 0)
+                const long restoreMask = NativeMethods.WS_THICKFRAME | NativeMethods.WS_CAPTION | NativeMethods.WS_SYSMENU;
+                long desiredRestore = (style & ~NativeMethods.WS_POPUP) | restoreMask;
+                if (style != desiredRestore)
                 {
-                    style |= NativeMethods.WS_THICKFRAME;
-                    _api.SetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE, (IntPtr)style);
+                    _api.SetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE, (IntPtr)desiredRestore);
                     // SWP_FRAMECHANGED in the pass-2 batched move picks up
                     // the style change.
                 }
@@ -1021,9 +1026,32 @@ public class WindowManager
             // → ApplySlimTitlebar re-fires every 500 ms cross-process. Per-
             // client probe is ~one kernel call per client per tick (~8 for
             // a 6-client setup) — negligible vs. the storm risk.
-            long liveStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64() & ~NativeMethods.WS_THICKFRAME;
+            // v3.22.76: project liveStyle through the same strip+set
+            // ApplySlimTitlebar will apply so the bleed probe matches.
+            const long driftStripMask = NativeMethods.WS_THICKFRAME | NativeMethods.WS_CAPTION | NativeMethods.WS_SYSMENU;
+            long liveStyle = (_api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64() & ~driftStripMask) | NativeMethods.WS_POPUP;
             long liveExStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_EXSTYLE).ToInt64();
             _api.GetWindowRect(client.WindowHandle, out var rect);
+
+            // v3.22.76 take-2 — SURGICAL STORM FIX. If the window's center is
+            // OUTSIDE the configured monitor's bounds, the user (or EQ) moved
+            // it to a different display. Forcing it back to (0,0,1920,1080)
+            // every 500 ms produces a 2 Hz full-window SWP_FRAMECHANGED flash
+            // (visible because WS_POPUP redraws the entire non-client surface,
+            // not just the 18 px caption strip as WS_CAPTION did pre-v3.22.76).
+            // The bug existed pre-v3.22.76 too — the WS_CAPTION caption-strip
+            // redraw masked it. Smoke 2026-05-28 15:39 caught this storming for
+            // ~3+ min until process kill. Skip the guard for off-monitor windows;
+            // ApplyDarkTitlebar still fires per ApplySlimTitlebar's own path.
+            int cx = rect.Left + (rect.Right - rect.Left) / 2;
+            int cy = rect.Top + (rect.Bottom - rect.Top) / 2;
+            bool centerOnConfiguredMonitor = cx >= monitor.Left && cx < monitor.Right
+                                          && cy >= monitor.Top && cy < monitor.Bottom;
+            if (!centerOnConfiguredMonitor)
+            {
+                continue;
+            }
+
             var (expectedX, expectedY, expectedW, expectedH) = ComputeSlimTitlebarOuterRect(monitor, offset, liveStyle, liveExStyle);
             if (rect.Left == expectedX
                 && rect.Top == expectedY
@@ -1080,18 +1108,27 @@ public class WindowManager
             return;
         }
 
-        // Strip WS_THICKFRAME for thin border, KEEP WS_CAPTION for draggable titlebar
+        // v3.22.76 — WinEQ2 -frame none parity. Strip WS_THICKFRAME (resize
+        // border) AND WS_CAPTION|WS_SYSMENU (caption + sys-menu), set WS_POPUP.
+        // AdjustWindowRectEx on WS_POPUP returns 0/0/0/0 — eliminates the Win11
+        // 8/31/8/8 DWM frame zone that motivated v3.22.45 onwards. Gated on
+        // "actually needed" so steady-state guard-timer ticks no-op.
         long style = _api.GetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE).ToInt64();
-        style &= ~NativeMethods.WS_THICKFRAME;
-        _api.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, (IntPtr)style);
+        const long stripMask = NativeMethods.WS_THICKFRAME | NativeMethods.WS_CAPTION | NativeMethods.WS_SYSMENU;
+        long desired = (style & ~stripMask) | NativeMethods.WS_POPUP;
+        if (style != desired)
+        {
+            _api.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, (IntPtr)desired);
 
-        // Step 1: Apply style change only (no move, no resize).
-        // Use NOACTIVATE instead of SHOWWINDOW — SHOWWINDOW triggers EQ's
-        // focus-loss handler during initialization, causing the game to minimize.
-        _api.SetWindowPos(
-            hwnd, IntPtr.Zero, 0, 0, 0, 0,
-            NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER |
-            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_FRAMECHANGED);
+            // Step 1: Apply style change only (no move, no resize).
+            // Use NOACTIVATE instead of SHOWWINDOW — SHOWWINDOW triggers EQ's
+            // focus-loss handler during initialization, causing the game to minimize.
+            _api.SetWindowPos(
+                hwnd, IntPtr.Zero, 0, 0, 0, 0,
+                NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER |
+                NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_FRAMECHANGED);
+        }
+        style = desired;
 
         // Step 2: Position and size the window so the VISIBLE client area
         // covers the full monitor edge-to-edge. v3.22.45 fix — see
@@ -1113,7 +1150,7 @@ public class WindowManager
         // next ApplySlimTitlebarToAll pass restores it.
         ApplyDarkTitlebarIfRequested(hwnd);
 
-        FileLogger.Info($"ApplySlimTitlebar: hwnd={hwnd} → ({x},{y}) {w}x{h}, offset={titlebarOffset}px caption visible");
+        FileLogger.Info($"ApplySlimTitlebar: hwnd={hwnd} → ({x},{y}) {w}x{h}, offset={titlebarOffset}px requested → WS_POPUP slim (0px caption visible)");
     }
 
     /// <summary>
@@ -1179,9 +1216,15 @@ public class WindowManager
     /// AdjustWindowRectEx output depends only on style bits, not which
     /// exact window we're sizing.
     /// </summary>
+    // v3.22.76 — WinEQ2 -frame none parity. Pre-v3.22.76 kept WS_CAPTION |
+    // WS_SYSMENU for a thin draggable caption; WS_CAPTION on Win11 triggers
+    // the 8/31/8/8 DWM bleed that motivated v3.22.45 / .46 / .54. Switching
+    // to WS_POPUP eliminates the bleed at the source (0/0/0/0). Loss: no
+    // native click-and-drag — multimonitor auto-positions via SetWindowPos
+    // (style-agnostic) and the slim-guard re-positions every 500 ms anyway,
+    // so click-drag was a no-op in normal multibox use.
     internal const long SLIM_TITLEBAR_STYLE =
-        NativeMethods.WS_CAPTION
-        | NativeMethods.WS_SYSMENU
+        NativeMethods.WS_POPUP
         | NativeMethods.WS_CLIPSIBLINGS
         | NativeMethods.WS_CLIPCHILDREN
         | NativeMethods.WS_VISIBLE;
@@ -1270,13 +1313,16 @@ public class WindowManager
             // sliver" the fallback comment warns about, so dropping the
             // nudge here is exactly the wrong place to drop it. Loud-fail
             // contract per [[reference_loud_runtime_silent_rest]].
-            int fallbackNudge = _config.Layout.HorizontalNudgePx;
-            FileLogger.Warn($"ComputeSlimTitlebarOuterRect: AdjustWindowRectEx returned false — falling back to pre-v3.22.45 math (may leave Win11 desktop sliver). HorizontalNudgePx={fallbackNudge} applied to fallback rect.");
+            // v3.22.76 — fallback returns plain monitor edges. WS_POPUP slim has
+            // no caption to hang above-monitor; the pre-v3.22.45 trick
+            // (`monitor.Top - titlebarOffset` + height extension) would push
+            // the window off-screen with nothing to render.
+            FileLogger.Warn($"ComputeSlimTitlebarOuterRect: AdjustWindowRectEx returned false — falling back to monitor edges (WS_POPUP slim)");
             return (
-                monitor.Left + fallbackNudge,
-                monitor.Top - titlebarOffset,
+                monitor.Left,
+                monitor.Top,
                 monitor.Right - monitor.Left,
-                (monitor.Bottom - monitor.Top) + titlebarOffset);
+                monitor.Bottom - monitor.Top);
         }
 
         int leftBleed   = -probe.Left;
@@ -1326,7 +1372,14 @@ public class WindowManager
         int nudge = _config.Layout.HorizontalNudgePx;
         bool leftClipped  = effLeftBleed  != leftBleed;  // ClampBleedsForAdjacency zeroed it
         bool rightClipped = effRightBleed != rightBleed;
-        if (nudge > 0 && rightClipped)
+        // v3.22.76 — under WS_POPUP all bleeds are 0; the existing `else` branch
+        // would translate `x += nudge` with no compensation, pushing the window
+        // off-monitor. Suppress nudge entirely when there's no bleed to absorb it.
+        if (leftBleed == 0 && topBleed == 0 && rightBleed == 0 && bottomBleed == 0)
+        {
+            // No-op — zero-bleed style → nudge has no meaningful target.
+        }
+        else if (nudge > 0 && rightClipped)
         {
             // Right adjacency: outer.Right is pinned at monitor.Right. Shift x
             // right by nudge AND narrow w by the same amount so outer.Right

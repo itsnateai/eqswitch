@@ -625,12 +625,10 @@ public class EQClientSettingsForm : Form
     /// </summary>
     internal static int SlimTitlebarCaptionVisible(int titlebarOffset)
     {
-        const long WS_CAPTION = 0x00C00000;
-        const long WS_SYSMENU = 0x00080000;
-        const long WS_CLIPSIBLINGS = 0x04000000;
-        const long WS_CLIPCHILDREN = 0x02000000;
-        const long WS_VISIBLE = 0x10000000;
-        long slimStyle = WS_CAPTION | WS_SYSMENU | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_VISIBLE;
+        // v3.22.76 — WinEQ2 -frame none parity. Slim style is now WS_POPUP
+        // (no caption), so AdjustWindowRectEx returns 0/0/0/0 and the clamp
+        // collapses captionVisible to 0 regardless of titlebarOffset.
+        long slimStyle = Core.WindowManager.SLIM_TITLEBAR_STYLE;
 
         var probe = new Core.NativeMethods.RECT { Left = 0, Top = 0, Right = 100, Bottom = 100 };
         if (!Core.NativeMethods.AdjustWindowRectEx(ref probe, (uint)slimStyle, false, 0))
@@ -655,12 +653,11 @@ public class EQClientSettingsForm : Form
     internal static (int width, int height) SlimTitlebarVisibleClientSize(
         System.Drawing.Rectangle monitorBounds, int titlebarOffset)
     {
-        const long WS_CAPTION = 0x00C00000;
-        const long WS_SYSMENU = 0x00080000;
-        const long WS_CLIPSIBLINGS = 0x04000000;
-        const long WS_CLIPCHILDREN = 0x02000000;
-        const long WS_VISIBLE = 0x10000000;
-        long slimStyle = WS_CAPTION | WS_SYSMENU | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_VISIBLE;
+        // v3.22.76 — WS_POPUP → bleed 0/0/0/0 → width = monW, height = monH.
+        // EnforceOverrides writes WindowedWidth=monW + WindowedHeight=monH to
+        // eqclient.ini so EQ's DX swap chain renders at native resolution
+        // (no bilinear stretch → no font distortion).
+        long slimStyle = Core.WindowManager.SLIM_TITLEBAR_STYLE;
 
         var probe = new Core.NativeMethods.RECT { Left = 0, Top = 0, Right = 100, Bottom = 100 };
         if (!Core.NativeMethods.AdjustWindowRectEx(ref probe, (uint)slimStyle, false, 0))

@@ -1,5 +1,45 @@
 # Changelog
 
+## v3.22.76 — WinEQ2 `-frame none` parity (WS_POPUP) + surgical guard-storm fix (2026-05-28)
+
+UI-only release; Native DLLs unchanged. Two coupled changes:
+
+### 1. WS_POPUP slim mode — kills the font-distortion root cause
+
+Switches slim-titlebar mode from `WS_CAPTION | WS_SYSMENU` to `WS_POPUP`. On Win11, `AdjustWindowRectEx` returns:
+
+| Slim style | L bleed | T bleed | R bleed |
+|---|---|---|---|
+| `WS_CAPTION` (v3.22.75) | **8** | **31** | **8** |
+| `WS_POPUP` (v3.22.76) | **0** | **0** | **0** |
+
+The 8/31/8/8 DWM frame zone is bound to `WS_CAPTION`, not `WS_THICKFRAME`. With WS_POPUP, outer rect = client rect = monitor edges → INI writes `WindowedWidth=monW`, `WindowedHeight=monH` → EQ's DX swap chain renders at **native resolution** → bitmap fonts pixel-perfect (the 1912 × 1062 non-standard resolution under WS_CAPTION was the cause of the vertical glyph-distortion seam).
+
+### 2. Surgical guard-storm fix — accept user-moved windows
+
+Take-1 of v3.22.76 shipped #1 alone and caused a 2 Hz full-window flash when eisley got moved to the 2nd monitor: `ApplySlimTitlebarToAll` fired every 500 ms computing `expected = (0,0,1920,1080)` for primary while actual rect was on the 2nd monitor → mismatch → `SetWindowPos` snapped back → loop. Pre-v3.22.76 the WS_CAPTION caption-strip-only repaint masked it; WS_POPUP's full-window non-client recompute made it impossible to ignore.
+
+Take-2 (this ship) adds a surgical early-exit in `ApplySlimTitlebarToAll`: if the window's center is outside the configured monitor's bounds, skip that client. User-initiated cross-monitor moves stick instead of bouncing back.
+
+### Files
+
+- `Core/NativeMethods.cs` — added `WS_POPUP`.
+- `Core/WindowManager.cs`:
+  - `SLIM_TITLEBAR_STYLE` constant: WS_POPUP.
+  - `ApplySlimTitlebar` + `ArrangeMultiMonitor` slim branch: strip `WS_THICKFRAME | WS_CAPTION | WS_SYSMENU` + set WS_POPUP.
+  - `ArrangeMultiMonitor` non-slim restore: restore caption+sysmenu, clear WS_POPUP.
+  - `ApplySlimTitlebarToAll`: **NEW center-on-configured-monitor early-exit** (the surgical storm fix).
+  - `ComputeSlimTitlebarOuterRect` fallback: plain monitor edges (was pre-v3.22.45 caption-hangs-above math).
+  - `ComputeSlimTitlebarOuterRect` nudge guard: zero-bleed early-exit so `HorizontalNudgePx` is inert under WS_POPUP.
+- `UI/EQClientSettingsForm.cs`: helpers consume `Core.WindowManager.SLIM_TITLEBAR_STYLE`.
+- `EQSwitch.csproj`: 3.22.75 → 3.22.76.
+
+### What you lose
+
+- Click-and-drag-by-caption — `WS_POPUP` has no native caption. Multimonitor mode auto-positions regardless.
+- Native `[X]` close — close via tray menu or in-game.
+- `Layout.TitlebarOffset` and `Layout.HorizontalNudgePx` are now no-ops in slim mode.
+
 ## v3.22.75 — verifier-pass-2 follow-ups: deadlock fix + hard queue cap + case-insensitive validator (2026-05-28)
 
 Closes convergent CRITICAL findings from the SECOND 8-agent verifier pass on the v3.22.74 ship. Three real CRITICAL fixes + symbol-named doc references + corrected v3.22.74 CHANGELOG bug scope.

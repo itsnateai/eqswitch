@@ -185,6 +185,9 @@ internal static class NativeMethods
     public const long WS_VISIBLE = 0x10000000L;
     public const long WS_CLIPSIBLINGS = 0x04000000L;
     public const long WS_CLIPCHILDREN = 0x02000000L;
+    // v3.22.76 — WinEQ2-parity slim mode uses WS_POPUP so Win11 grants zero
+    // DWM non-client bleed (vs WS_CAPTION's 8/31/8/8). Probed live 2026-05-28.
+    public const long WS_POPUP = unchecked((long)0x80000000L);
 
     // Extended styles for borderless fullscreen
     public const long WS_EX_DLGMODALFRAME = 0x00000001L;
