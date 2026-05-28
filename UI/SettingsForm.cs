@@ -203,6 +203,18 @@ public class SettingsForm : Form
     private Label? _lblVideoLoadError; // warning label shown when ini load fails
 
     // Resolution presets for Video tab
+    // v3.22.69: added 4 multibox-tile presets inspired by WinEQ2's resolution set
+    // (per Lavish Software wiki — WinEQ2 ships ~17 resolutions including half-screen
+    // variants tuned for tiled multibox layouts). EQ historically hides resolutions
+    // with any dimension < 512, so half-screen presets only render on desktops
+    // ≥ 1280×1024 — a non-issue on any modern setup.
+    //
+    // Half-width presets give side-by-side 2-box; half-height give stacked 2-box.
+    // EQSwitch's grid-arrange + slim-titlebar already achieves the same tiling
+    // outcome via window-resize, but the in-game-resolution path lets the user
+    // bypass EQSwitch and have EQ render at the tile size natively (sharper text,
+    // lower GPU bandwidth, and survives the rare case where window-resize fights
+    // EQ's own DirectX backbuffer).
     private static readonly (string Name, int W, int H)[] VideoPresets =
     {
         ("1920x1080", 1920, 1080),
@@ -213,6 +225,11 @@ public class SettingsForm : Form
         ("1280x720", 1280, 720),
         ("1600x900", 1600, 900),
         ("1366x768", 1366, 768),
+        // ─── WinEQ2-style multibox tiles (v3.22.69) ───
+        ("960x1080 (2-up side, 1080p)", 960, 1080),
+        ("1920x540 (2-up stack, 1080p)", 1920, 540),
+        ("1280x1440 (2-up side, 1440p)", 1280, 1440),
+        ("2560x720 (2-up stack, 1440p)", 2560, 720),
         ("Custom", 0, 0)
     };
 
@@ -2364,7 +2381,20 @@ public class SettingsForm : Form
             Font = DarkTheme.FontUI9,
             BackColor = Color.Transparent,
             AutoSize = false,
-            TextAlign = ContentAlignment.MiddleLeft,
+            // v3.22.68: was MiddleLeft. 6 rows at 9pt ≈ 96px inside a 124px label
+            // — vertical centering produced a ~14px blank band above T1 that
+            // looked like awkward unowned padding. TopLeft anchors the row block
+            // to the panel's top edge so T1 sits right under the inset border;
+            // remaining headroom collects at the bottom where it reads as
+            // intentional breathing room instead of dead space.
+            TextAlign = ContentAlignment.TopLeft,
+            // v3.22.69: enable AutoEllipsis — T2 verifiers (Sonnet+Opus convergent)
+            // flagged that long Account usernames + (C)/(A) markers can exceed
+            // the 318px label width and silently clip with no indication. The
+            // builder also truncates per-cell (see BuildTeamSummary), but
+            // AutoEllipsis is a belt-and-suspenders fallback for the multi-line
+            // overflow path where per-line render still overshoots.
+            AutoEllipsis = true,
         };
         summaryPanel.Controls.Add(_lblTeamSummary);
 
@@ -2835,13 +2865,40 @@ public class SettingsForm : Form
 
     private string BuildTeamSummary()
     {
+        // v3.22.68: name now carries a (C) / (A) kind marker so the summary
+        // mirrors the pills in the Configure Teams dialog — a slot's destination
+        // (enter-world vs charselect-only) is determined by kind, and surfacing
+        // it here means users can verify a team's makeup without opening the
+        // dialog. Unresolved targets still get a trailing '?'.
+        // v3.22.69: names are clipped to MaxNameLen with ellipsis to prevent
+        // T2-flagged overflow (long usernames like "reallylongusernameXYZ" +
+        // (A) marker on both slots exceeded the 318px label width and clipped
+        // silently). Per-cell budget here, AutoEllipsis on the label as
+        // belt-and-suspenders.
+        // v3.22.69 follow-up (T2 Sonnet+Opus convergent MINOR): unresolved
+        // suffix accounting. Pre-this-fix, `Clip(name) + "?"` could produce
+        // 13-char cells for exactly-12-char unresolved names (Clip returned
+        // them unchanged, then "?" was appended). Reserve 1 char for the
+        // suffix via an overloaded Clip so the total never exceeds MaxNameLen.
+        const int MaxNameLen = 12; // accommodates typical EQ char + Dalaya account names
+        string Clip(string s, int budget = MaxNameLen) =>
+            s.Length > budget ? s.Substring(0, budget - 1) + "…" : s;
         string Resolve(string targetName)
         {
             if (string.IsNullOrEmpty(targetName)) return "";
+            // v3.22.69 follow-up (T2-Opus + T3-Sonnet + T3-Opus R2 convergent
+            // MINOR): the resolved paths also need budget for their 4-char
+            // " (C)" / " (A)" suffix — pre-this-fix `Clip(ch.Name) + " (C)"`
+            // could produce 16-char cells (12-char name + 4-char suffix),
+            // overshooting MaxNameLen=12. Reserve 4 chars for the suffix in
+            // resolved paths (mirrors the unresolved path's 1-char reservation
+            // for "?"). 8 char budget keeps cells at ≤ MaxNameLen total.
             var ch = _pendingCharacters.FirstOrDefault(c => c.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
-            if (ch != null) return ch.Name;
+            if (ch != null) return $"{Clip(ch.Name, MaxNameLen - 4)} (C)";
             var ac = _pendingAccounts.FirstOrDefault(a => a.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
-            return ac != null ? ac.Name : targetName + "?";   // trailing '?' flags unresolved
+            return ac != null
+                ? $"{Clip(ac.Name, MaxNameLen - 4)} (A)"
+                : Clip(targetName, MaxNameLen - 1) + "?";   // trailing '?' flags unresolved; budget reserves 1 char
         }
 
         string Fmt(string u1, string u2)
@@ -2868,12 +2925,19 @@ public class SettingsForm : Form
         cells[9]  = $"T10: {Fmt(_pendingTeam10A, _pendingTeam10B)}";
         cells[10] = $"T11: {Fmt(_pendingTeam11A, _pendingTeam11B)}";
         cells[11] = $"T12: {Fmt(_pendingTeam12A, _pendingTeam12B)}";
-        var row1 = $"{cells[0]}   |   {cells[1]}";
-        var row2 = $"{cells[2]}   |   {cells[3]}";
-        var row3 = $"{cells[4]}   |   {cells[5]}";
-        var row4 = $"{cells[6]}   |   {cells[7]}";
-        var row5 = $"{cells[8]}   |   {cells[9]}";
-        var row6 = $"{cells[10]}  |   {cells[11]}";
+        // v3.22.68: separator tightened from "   |   " (7 chars) to "  |  "
+        // (5 chars) to reclaim budget for new (C)/(A) markers.
+        // v3.22.69: tightened further to " | " (3 chars). Combined with the
+        // Clip(MaxNameLen=12) per-name truncation in Resolve, this keeps the
+        // worst-case row "T11: 12char...(A) | 12char...(C)" comfortably under
+        // the 318px label width even on names longer than the historical
+        // "raistlin + Natedogg" test case the v3.22.58 layout was sized for.
+        var row1 = $"{cells[0]} | {cells[1]}";
+        var row2 = $"{cells[2]} | {cells[3]}";
+        var row3 = $"{cells[4]} | {cells[5]}";
+        var row4 = $"{cells[6]} | {cells[7]}";
+        var row5 = $"{cells[8]} | {cells[9]}";
+        var row6 = $"{cells[10]} | {cells[11]}";
         return $"{row1}\n{row2}\n{row3}\n{row4}\n{row5}\n{row6}";
     }
 
@@ -3270,7 +3334,13 @@ public class SettingsForm : Form
         DarkTheme.WrapWithBorder(_cboVideoPrimaryMon);
 
         var secItems = new string[screens.Length + 1];
-        secItems[0] = "Auto (first non-primary)";
+        // v3.22.68: was "Auto (first non-primary)" — stale label. The smart-pick
+        // logic at WindowManager.ResolveSecondaryMonitorIdx (v3.22.19) walks all
+        // non-primary monitors and picks the widest landscape one that's wide
+        // enough for EQ, skipping tiny / portrait panels. The literal "first
+        // non-primary" rule only fires as a last-resort fallback when no
+        // monitor meets the suitability bar.
+        secItems[0] = "Auto (best size)";
         for (int i = 0; i < monItems.Length; i++) secItems[i + 1] = monItems[i];
 
         DarkTheme.AddLabel(cardMon, "Secondary:", 250, cy + 2);

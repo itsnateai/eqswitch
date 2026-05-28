@@ -83,6 +83,11 @@ internal sealed class AutoLoginTeamsDialog : Form
     // Built once in ctor, used by every MakeCombo call. Saves N × (list build
     // + 5-6 TextRenderer.MeasureText calls) on a typical config.
     private List<SlotOption> _comboItems = null!;
+    // v3.22.68: cached object[] for ComboBox.Items.AddRange. The list itself is
+    // hoisted but each MakeCombo call previously did .Cast<object>().ToArray(),
+    // allocating a fresh array per combo — 23 redundant array allocations across
+    // 24 combos. Allocate once, reuse N times.
+    private object[] _comboItemsArray = null!;
     private int _comboMaxW;
 
     public AutoLoginTeamsDialog(
@@ -111,6 +116,26 @@ internal sealed class AutoLoginTeamsDialog : Form
         // this cuts the perceived "loading Teams" freeze meaningfully.
         SuspendLayout();
 
+        // v3.22.68: opt this form into double-buffered painting at the Control
+        // level. Reduces the visible flicker as ~65 child controls (24 combos,
+        // 24 pills, 12 row labels, legend, hint, warn, 2 buttons) draw their
+        // initial paint after the ctor's SuspendLayout/ResumeLayout window
+        // releases on first Show.
+        // v3.22.69: dropped the WS_EX_COMPOSITED CreateParams override — T2
+        // verifiers (Sonnet+Opus convergent) flagged it as known to produce
+        // stale/black combo dropdowns on pre-Win11 / Win10 < 21H2 DWM,
+        // exacerbated by FlatStyle.Flat ComboBoxes (which use their own
+        // layered render path). With 24 dropdowns in this dialog and the
+        // bottom-of-form combos opening upward over the composited region,
+        // the worst-case is "user clicks Configure Teams, opens Team 12
+        // dropdown, sees black rectangle" — strictly worse than the
+        // pre-v3.22.68 flicker. SetStyle alone (form-background DBO)
+        // remains as the safer, ComboBox-compatible flicker reducer.
+        SetStyle(ControlStyles.OptimizedDoubleBuffer
+               | ControlStyles.AllPaintingInWmPaint
+               | ControlStyles.UserPaint, true);
+        UpdateStyles();
+
         // Restore last-open position if available; otherwise center on parent.
         if (_lastLocation.HasValue)
         {
@@ -134,6 +159,7 @@ internal sealed class AutoLoginTeamsDialog : Form
         // over the unified list and the result is reused for every combo's
         // DropDownWidth.
         _comboItems = BuildComboItems();
+        _comboItemsArray = _comboItems.Cast<object>().ToArray();
         using (var probeFont = new Font(Font.FontFamily, Font.Size))
         {
             _comboMaxW = _comboItems.Max(i => TextRenderer.MeasureText(i.Display, probeFont).Width) + 16;
@@ -325,8 +351,10 @@ internal sealed class AutoLoginTeamsDialog : Form
         };
         // v3.22.10: use AddRange (single layout invalidation) instead of N×Add
         // (one per item). Items themselves are hoisted to _comboItems built
-        // once per ctor.
-        cb.Items.AddRange(_comboItems.Cast<object>().ToArray());
+        // once per ctor. v3.22.68: array is now also cached (was allocated
+        // per-call via .Cast<object>().ToArray()) — saves 23 array allocations
+        // across the 24-combo ctor.
+        cb.Items.AddRange(_comboItemsArray);
         cb.SelectedIndex = 0;
 
         if (_comboMaxW > width) cb.DropDownWidth = _comboMaxW;
@@ -446,4 +474,13 @@ internal sealed class AutoLoginTeamsDialog : Form
         }
         base.Dispose(disposing);
     }
+
+    // v3.22.68: WS_EX_COMPOSITED CreateParams override removed in v3.22.69
+    // — T2 verifiers (Sonnet+Opus convergent) flagged stale/black ComboBox
+    // dropdown rendering on pre-Win11 / Win10 < 21H2 DWM, especially with
+    // FlatStyle.Flat combos opening upward over the composited region. Form
+    // base CreateParams is fine without it; SetStyle in the ctor still gives
+    // form-background DBO. The flicker reduction is partial vs the original
+    // v3.22.68 design, but the regression risk on combo dropdowns is
+    // unacceptable for the 24-combo layout this dialog uses.
 }

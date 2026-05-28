@@ -2490,7 +2490,13 @@ public class TrayManager : IDisposable
         foreach (var client in clients)
         {
             var c = client; // capture for closure
-            var item = new ToolStripMenuItem($"[{client.SlotIndex + 1}] {client}");
+            // v3.22.68: was `{client}` → ToString() → "Client N (PID: X)". Now
+            // surfaces the resolved character name (EQClient.DisplayName parses
+            // "EverQuest - <Name>" out of OriginalTitle, falls back to the
+            // autologin BoundCharacterName, then to the placeholder). PID kept
+            // alongside the name so the submenu remains useful for picking the
+            // right client to switch to when two share a character name.
+            var item = new ToolStripMenuItem($"[{client.SlotIndex + 1}] {client.DisplayName}  (PID {client.ProcessId})");
             item.Click += (_, _) => _windowManager.SwitchToClient(c, _autoLoginManager.IsLoginActive);
             _clientsMenu.DropDownItems.Add(item);
         }

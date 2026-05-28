@@ -435,7 +435,11 @@ public class ProcessManagerForm : Form
                 var rawPriority = AffinityManager.GetProcessPriorityName(client.ProcessId);
                 // Clamp to known values so the combo cell doesn't crash on edit
                 var priority = Priorities.Contains(rawPriority) ? rawPriority : "Normal";
-                var name = $"Client {client.SlotIndex + 1}";
+                // v3.22.68: use EQClient.DisplayName instead of hardcoded
+                // "Client N". Resolves to the actual character once the EQ
+                // title carries "EverQuest - <Name>", then to the autologin
+                // BoundCharacterName pre-charselect, finally to the placeholder.
+                var name = client.DisplayName;
 
                 int rowIdx = _grid.Rows.Add(
                     (client.SlotIndex + 1).ToString(),

@@ -22,7 +22,19 @@ namespace EQSwitch.UI;
 public class PipOverlay : Form
 {
     private const int RefreshIntervalMs = 500;
-    private const int ResizeZone = 8; // pixels from edge for resize detection
+    // v3.22.68: ctrl-state polled on a separate, much faster timer so the
+    // click-through-toggle latency drops from up-to-500ms (long enough to
+    // misroute the first Ctrl+click through to eqgame) to ~33ms (below
+    // human perceptual threshold). 33ms ≈ 30 Hz; GetAsyncKeyState is a
+    // cheap syscall so the higher rate is essentially free.
+    private const int CtrlPollIntervalMs = 33;
+    // v3.22.68: bumped 8→12. The visible PIP has a 16px corner radius
+    // applied via region clip, so the bottom 4-5px of an 8-zone corner is
+    // outside the actual hit area — feels like the grip "passes through"
+    // because cursors register on rounded-off pixels that route to the
+    // window underneath. 12 gives a usable grip without eating much
+    // of the move-zone middle on small (128x72) PIPs (~25% per edge).
+    private const int ResizeZone = 12;
     private const double AspectRatio = 16.0 / 9.0;
     private const int MinThumbnailWidth = 128;
 
@@ -30,6 +42,7 @@ public class PipOverlay : Form
     private readonly List<IntPtr> _thumbnailIds = new();
     private readonly List<IntPtr> _sourceWindows = new();
     private readonly System.Windows.Forms.Timer _refreshTimer;
+    private readonly System.Windows.Forms.Timer _ctrlPollTimer;
 
     // Border rendering — paint border color only in padding area, keep black behind thumbnails
     private readonly Color _borderColor;
@@ -107,6 +120,29 @@ public class PipOverlay : Form
         _refreshTimer = new System.Windows.Forms.Timer { Interval = RefreshIntervalMs };
         _refreshTimer.Tick += (_, _) => RefreshIfNeeded();
         _refreshTimer.Start();
+
+        // v3.22.68: dedicated high-rate timer for Ctrl-state polling. Previously
+        // the Ctrl check piggy-backed on _refreshTimer (500ms), so pressing Ctrl
+        // and immediately Ctrl+clicking the PIP edge had up to a half-second
+        // window where WS_EX_TRANSPARENT was still set — the click misrouted to
+        // eqgame underneath. 33ms is below the perceptual lag threshold, and
+        // GetAsyncKeyState is a cheap syscall so the higher rate is essentially
+        // free. Kept on a separate timer (not just by lowering RefreshIntervalMs)
+        // so the heavier thumbnail-liveness sweep still runs at 500ms.
+        _ctrlPollTimer = new System.Windows.Forms.Timer { Interval = CtrlPollIntervalMs };
+        _ctrlPollTimer.Tick += (_, _) => PollCtrlState();
+        _ctrlPollTimer.Start();
+
+        // v3.22.69: force-restore click-through when the overlay loses activation
+        // (alt-tab away, Win+L lock, RDP disconnect, foreground switch). T2
+        // verifiers flagged that the Ctrl-poll path can desync from real Ctrl
+        // state across activation boundaries — GetAsyncKeyState may not see the
+        // logical Ctrl-up that happens during a session lock, so without this
+        // the overlay can stay non-click-through indefinitely after the user
+        // alt-tabs while holding Ctrl. Deactivate fires on every foreground
+        // change away from the overlay (which is non-activating, so it almost
+        // never holds foreground anyway — this is a defensive belt).
+        Deactivate += (_, _) => ForceRestoreClickThrough();
     }
 
     private const int CornerRadius = 16;
@@ -289,23 +325,63 @@ public class PipOverlay : Form
 
     private bool _ctrlHeld;
 
+    /// <summary>
+    /// v3.22.68: high-rate Ctrl-state poll. Toggles WS_EX_TRANSPARENT off
+    /// while Ctrl is held so the overlay accepts mouse input for Ctrl+drag
+    /// repositioning and Ctrl+edge resizing; restores click-through when
+    /// released. Skips the toggle while a drag or resize is in progress —
+    /// otherwise releasing Ctrl mid-gesture would re-arm click-through and
+    /// break the drag (mouse-up would never reach the overlay).
+    /// </summary>
+    private void PollCtrlState()
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        if (_dragging || _resizing) return;
+
+        bool ctrlNow = (NativeMethods.GetAsyncKeyState(NativeMethods.VK_CONTROL) & 0x8000) != 0;
+        if (ctrlNow == _ctrlHeld) return;
+
+        _ctrlHeld = ctrlNow;
+        long exStyle = NativeMethods.GetWindowLongPtr(Handle, NativeMethods.GWL_EXSTYLE).ToInt64();
+        if (ctrlNow)
+            exStyle &= ~(long)NativeMethods.WS_EX_TRANSPARENT;
+        else
+            exStyle |= NativeMethods.WS_EX_TRANSPARENT;
+        NativeMethods.SetWindowLongPtr(Handle, NativeMethods.GWL_EXSTYLE, (IntPtr)exStyle);
+    }
+
+    /// <summary>
+    /// v3.22.69: hard-restore the click-through bit and clear any cached
+    /// "Ctrl is held" / drag-gesture state. Bound to Deactivate so that
+    /// alt-tab / Win+L / RDP-disconnect / app-focus-loss can never leave
+    /// the overlay stuck in grip mode — even if a drag was in progress
+    /// and the corresponding WM_LBUTTONUP never arrives (the documented
+    /// stuck-gesture failure mode that T2 verifiers Sonnet+Opus both
+    /// flagged). Worst case: a legitimate drag mid-deactivate gets
+    /// cancelled — which is exactly what the user expects when they
+    /// alt-tab away anyway.
+    /// </summary>
+    private void ForceRestoreClickThrough()
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        _ctrlHeld = false;
+        _dragging = false;
+        _resizing = false;
+        _resizeEdge = ResizeEdge.None;
+        long exStyle = NativeMethods.GetWindowLongPtr(Handle, NativeMethods.GWL_EXSTYLE).ToInt64();
+        if ((exStyle & NativeMethods.WS_EX_TRANSPARENT) == 0)
+        {
+            exStyle |= NativeMethods.WS_EX_TRANSPARENT;
+            NativeMethods.SetWindowLongPtr(Handle, NativeMethods.GWL_EXSTYLE, (IntPtr)exStyle);
+        }
+    }
+
     private void RefreshIfNeeded()
     {
         if (IsDisposed || !IsHandleCreated) return;
 
-        // Dynamic click-through toggle: remove WS_EX_TRANSPARENT when Ctrl is held
-        // so the overlay accepts mouse input for drag repositioning
-        bool ctrlNow = (NativeMethods.GetAsyncKeyState(NativeMethods.VK_CONTROL) & 0x8000) != 0;
-        if (ctrlNow != _ctrlHeld)
-        {
-            _ctrlHeld = ctrlNow;
-            long exStyle = NativeMethods.GetWindowLongPtr(Handle, NativeMethods.GWL_EXSTYLE).ToInt64();
-            if (ctrlNow)
-                exStyle &= ~(long)NativeMethods.WS_EX_TRANSPARENT;
-            else
-                exStyle |= NativeMethods.WS_EX_TRANSPARENT;
-            NativeMethods.SetWindowLongPtr(Handle, NativeMethods.GWL_EXSTYLE, (IntPtr)exStyle);
-        }
+        // v3.22.68: Ctrl-state polling moved to its own 33ms timer (PollCtrlState).
+        // This refresh timer stays at 500ms for the heavier thumbnail-liveness sweep.
 
         // Check if any source windows are gone
         int beforeCount = _sourceWindows.Count;
@@ -678,6 +754,8 @@ public class PipOverlay : Form
         {
             _refreshTimer.Stop();
             _refreshTimer.Dispose();
+            _ctrlPollTimer.Stop();
+            _ctrlPollTimer.Dispose();
             UnregisterAll();
         }
         base.Dispose(disposing);

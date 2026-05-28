@@ -112,6 +112,16 @@ public sealed class AccountEditDialog : Form
         DarkTheme.AddCardLabel(card, "Password:", L, cy + 4);
         _txtPassword = DarkTheme.AddCardTextBox(card, I, cy, 145);
         _txtPassword.PasswordChar = '*';
+        // In edit mode with an existing password, render a masked placeholder so
+        // the field visually signals "a password is set" rather than looking empty.
+        // PlaceholderText is rendered literally (not masked by PasswordChar) and is
+        // not part of .Text, so the existing "blank = keep existing" save logic at
+        // OnSaveClicked still triggers correctly when the user leaves the field alone.
+        bool hasExistingPassword = _isEdit && !string.IsNullOrEmpty(_existingEncryptedPassword);
+        if (hasExistingPassword)
+        {
+            _txtPassword.PlaceholderText = "********";
+        }
         _btnRevealPassword = DarkTheme.AddCardButton(card, "Show", I + 150, cy - 1, 55);
         _btnRevealPassword.TabStop = false;
         _btnRevealPassword.Click += (_, _) =>
@@ -119,6 +129,17 @@ public sealed class AccountEditDialog : Form
             _passwordRevealed = !_passwordRevealed;
             _txtPassword.PasswordChar = _passwordRevealed ? '\0' : '*';
             _btnRevealPassword.Text = _passwordRevealed ? "Hide" : "Show";
+            // v3.22.69: clear the placeholder while Show is active. PlaceholderText
+            // renders unmasked regardless of PasswordChar (that's WinForms 5+ design)
+            // so leaving "********" visible while in reveal mode would falsely
+            // imply the real password IS "********" — a UX/security-tinted bug
+            // T2 verifiers (Sonnet+Opus convergent) flagged. Restore on Hide
+            // so the "password is set" signal returns when the field is masked
+            // again.
+            if (hasExistingPassword)
+            {
+                _txtPassword.PlaceholderText = _passwordRevealed ? "" : "********";
+            }
         };
         cy += 30;
 
