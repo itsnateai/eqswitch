@@ -45,6 +45,20 @@ public class TrayManager : IDisposable
     private System.Drawing.Icon? _eqgameWindowIcon;
     private ContextMenuStrip? _contextMenu;
     private ToolStripMenuItem? _clientsMenu;
+
+    // ── v3.22.72 "Lost client" balloon coalesce + menu-aware suppression ────
+    // Pre-v3.22.72: ClientLost fired ShowBalloon immediately. FloatingTooltip
+    // creates a WS_EX_NOACTIVATE | WS_EX_TOPMOST window, but ContextMenuStrip's
+    // modal pump treats ANY new top-level window appearing in its z-band as a
+    // menu-cancel trigger (regardless of NOACTIVATE). Result: closing both EQ
+    // clients then right-clicking the tray menu got the menu closed by the
+    // first balloon, then closed again by the second balloon on the next menu
+    // open. Reported by Nate 2026-05-28: "the tooltips depop the right click
+    // menu". Fix: queue lost-client labels in a list + 1.5s coalesce timer
+    // (rapid co-exits collapse to one balloon), defer firing while the menu
+    // is open, drain the queue on _contextMenu.Closed.
+    private readonly List<string> _pendingLostClients = new();
+    private System.Windows.Forms.Timer? _lostClientsCoalesceTimer;
     // v3.22.44 r2 (T3-Sonnet F7 / T3-Opus #5 MEDIUM): cache the Detach Hooks
     // item so UpdateClientMenu can refresh its Enabled state on every
     // ClientListChanged event. Round-1 only computed Enabled at
@@ -726,8 +740,17 @@ public class TrayManager : IDisposable
         };
         _processManager.ClientLost += (_, c) =>
         {
-            if (_contextMenu?.Visible != true)
-                ShowBalloon($"Lost: {c}");
+            // v3.22.72: queue + coalesce instead of firing immediately. See
+            // _pendingLostClients field-block above for rationale. Replaces
+            // the v3.22.46-era "_contextMenu?.Visible != true" guard which
+            // only caught the case where menu was open at event-fire time —
+            // ProcessManager polls at 10s, so the common race was "client
+            // closed → poll → ClientLost handler runs → balloon queued via
+            // DeferToNextTick → user opens menu → tooltip materializes →
+            // menu cancels". Coalescing handles the "2 clients exit at the
+            // same poll" case; Closed-handler drain handles the "menu
+            // opened between queue and dispatch" case.
+            QueueLostClientBalloon(c.ToString() ?? "?");
             _affinityManager.CancelRetry(c.ProcessId);
 
             // Clean up injection tracking and per-process shared memory
@@ -2230,6 +2253,10 @@ public class TrayManager : IDisposable
         _contextMenu.Closed += (_, _) =>
         {
             if (_clientMenuDirty) UpdateClientMenu();
+            // v3.22.72: drain any lost-client balloons that the coalesce timer
+            // deferred while the menu was open. Now safe to surface the toast
+            // without cancelling a menu the user is actively interacting with.
+            TryDispatchLostClientBalloon();
         };
 
         // v3.22.27 Item 1: BuildContextMenu is reached from non-ReloadConfigCore
@@ -2773,6 +2800,60 @@ public class TrayManager : IDisposable
         // Defer to next message loop iteration so context menu handlers
         // fully complete before we create the tooltip window.
         DeferToNextTick(() => FloatingTooltip.Show(message, _config.TooltipDurationMs));
+    }
+
+    /// <summary>
+    /// Adds a client label to the deferred "Lost:" balloon queue and (re)starts
+    /// a 1.5s coalesce timer. Burst exits (e.g. user closes both EQ windows in
+    /// the same poll cycle, or autologin error path drops two clients) collapse
+    /// into a single balloon instead of N separate FloatingTooltip pops that
+    /// would each cancel an open ContextMenuStrip. v3.22.72 — replaces the
+    /// pre-v3.22.72 immediate ShowBalloon($"Lost: {c}") call site.
+    /// </summary>
+    private void QueueLostClientBalloon(string clientLabel)
+    {
+        if (_disposed) return;
+        _pendingLostClients.Add(clientLabel);
+
+        // First-use lazy init. UI-thread-only by contract: ClientLost fires
+        // from ProcessManager's WinForms.Timer.Tick which is UI-thread, so a
+        // single static timer is race-free against itself.
+        if (_lostClientsCoalesceTimer == null)
+        {
+            _lostClientsCoalesceTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+            _lostClientsCoalesceTimer.Tick += (_, _) => TryDispatchLostClientBalloon();
+        }
+        // Stop+Start resets the elapsed window — the timer fires 1.5s after
+        // the LAST queued client, not 1.5s after the first. Lets a 2-client
+        // exit pair (typically 50-300ms apart from the ProcessManager poll's
+        // sequential ClientLost invocations) coalesce reliably.
+        _lostClientsCoalesceTimer.Stop();
+        _lostClientsCoalesceTimer.Start();
+    }
+
+    /// <summary>
+    /// If the context menu is open, no-ops (the menu's Closed handler will
+    /// re-call us). Otherwise drains _pendingLostClients into a single
+    /// "Lost: a, b, c" balloon. Called from the coalesce timer tick AND from
+    /// the _contextMenu.Closed handler — the two-source dispatch ensures the
+    /// balloon eventually surfaces even if the menu was open across the
+    /// coalesce window.
+    /// </summary>
+    private void TryDispatchLostClientBalloon()
+    {
+        _lostClientsCoalesceTimer?.Stop();
+        if (_disposed) return;
+        if (_pendingLostClients.Count == 0) return;
+        // Menu still open: defer. The _contextMenu.Closed handler will retry.
+        // No need to restart the timer here — Closed is guaranteed to fire
+        // (ContextMenuStrip lifecycle invariant) and will drain us then.
+        if (_contextMenu?.Visible == true) return;
+
+        string msg = _pendingLostClients.Count == 1
+            ? $"Lost: {_pendingLostClients[0]}"
+            : $"Lost {_pendingLostClients.Count} clients: {string.Join(", ", _pendingLostClients)}";
+        _pendingLostClients.Clear();
+        ShowBalloon(msg);
     }
 
     /// <summary>Show a warning tooltip that stays visible longer (5s) regardless of user tooltip setting.</summary>
@@ -4900,6 +4981,12 @@ public class TrayManager : IDisposable
         _middleClickTimer?.Dispose();
         _deferTimer?.Stop();
         _deferTimer?.Dispose();
+        // v3.22.72: drop any pending "Lost:" balloon at shutdown — the user
+        // is exiting EQSwitch, surfacing a balloon now would race the tray
+        // icon's own destruction and risk an orphan FloatingTooltip window.
+        _lostClientsCoalesceTimer?.Stop();
+        _lostClientsCoalesceTimer?.Dispose();
+        _pendingLostClients.Clear();
         // _foregroundDebounceTimer already disposed by StopForegroundHook() above
         _foregroundHookProc = null; // safe to release now — message pump fully drained at shutdown
         _boldMenuFont?.Dispose();

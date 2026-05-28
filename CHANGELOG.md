@@ -1,5 +1,37 @@
 # Changelog
 
+## v3.22.72 — "Lost:" balloon coalesce + menu-aware suppression (2026-05-28)
+
+Closes the 2026-05-28 UX bug Nate reported: *"when I close both clients and then go to use the right-click menu, the next pid eqgame-was-terminated tooltip depops the right click menu, if two clients were closed and two popups happen then we had the right click menu depop twice on me when I was trying to use it."*
+
+### Root cause
+
+`UI/TrayManager.cs` ClientLost handler was firing `ShowBalloon($"Lost: {c}")` directly per dead client. `ShowBalloon` routes through `FloatingTooltip.Show` which creates a `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST` window via `ShowWindow(SW_SHOWNOACTIVATE)`. The no-activate flag prevents focus theft, but `ContextMenuStrip`'s internal modal pump treats *any* new top-level window appearing in its z-band as a menu-cancel trigger regardless of activation state — the menu's filter sees the new HWND in the z-order shuffle and dismisses itself.
+
+The pre-v3.22.72 v3.22.46-era guard `if (_contextMenu?.Visible != true)` only catches the case where the menu was already open at *event-fire time*. It misses the common race:
+
+1. User closes both EQ windows.
+2. `ProcessManager` polls 10s later, detects two exits.
+3. Two `ClientLost` events fire sequentially — `_contextMenu.Visible == false` for both → both balloons queued via `DeferToNextTick`.
+4. User right-clicks tray; menu opens.
+5. Deferred tooltip materializes via `DeferToNextTick` → ContextMenuStrip filter sees the new top-level window → menu cancels.
+6. User right-clicks again; menu opens. Second deferred tooltip materializes → menu cancels again.
+
+### Fix
+
+`UI/TrayManager.cs`:
+
+- **Queue + coalesce.** New `_pendingLostClients` list + `_lostClientsCoalesceTimer` (1.5s). `ClientLost` now calls `QueueLostClientBalloon` which appends the client label and resets the coalesce timer. Burst exits (the typical "2 clients dying in the same poll tick" case, but also "autologin error path drops two clients") collapse into one balloon: `Lost 2 clients: gotquiz1, eisley` instead of two separate tooltip pops.
+- **Menu-aware dispatch.** `TryDispatchLostClientBalloon` checks `_contextMenu?.Visible == true` at *fire time*, not at queue time. If the menu is open when the coalesce timer fires, the dispatch no-ops without restarting the timer — there's no race because `ContextMenuStrip.Closed` is guaranteed to fire (lifecycle invariant), and the `Closed` handler now calls `TryDispatchLostClientBalloon` to drain the queue. Single source of truth for "is it safe to fire", checked at the right moment.
+- **Disposal symmetry.** Timer disposed + queue cleared in `TrayManager.Dispose()` next to the other one-shot-timer cleanups, with a `_disposed` short-circuit in both `QueueLostClientBalloon` and `TryDispatchLostClientBalloon` so any in-flight tick that fires after disposal bails cleanly (same pattern as the v3.22.33 T2 Opus Gap 5 fix for the post-ClientLost taskbar-recovery timer).
+
+### Why coalesce + dispatch-time check (not other approaches considered)
+
+- *"Just remove the balloon entirely"* — no. The Lost notification is informational for users not actively watching the EQ windows (e.g., user is in a different app and a client crashed). Silencing it loses real signal.
+- *"Use NotifyIcon.ShowBalloonTip instead of FloatingTooltip"* — Windows shell balloons go through the same z-order shuffle and have the same menu-cancel effect on ContextMenuStrip. Worse: the shell balloon is non-dismissable mid-display.
+- *"Reactivate the menu after balloon shows"* — fragile; `ContextMenuStrip.Show` would re-pop the menu at a new position (cursor has moved) and lose any submenu nav state the user was in.
+- *"Subscribe to ContextMenuStrip.Opening and pre-cancel timer"* — half-measure; balloons could still fire BETWEEN closes and opens. The fire-time visibility check + drain-on-close pattern handles every menu-state ordering cleanly.
+
 ## v3.22.71 — UseStateMachine source-default flip + ConfigWrite audit log (2026-05-28)
 
 Closes the 2026-05-28 misdiagnosis loop: a silent autonomous flip of `Launch.UseStateMachine` from `true` → `false` at some point during 2026-05-27 16:27 routed autologin through the legacy `RunLoginSequence` → BURST 1 → `CombinedTypeString` per-char WM_CHAR pump. Every subsequent smoke (including swap-tests of v3.22.47 / v3.22.55 / v3.22.57 / v3.22.70 binaries) failed identically with 2–5 password chars landing in the EQ widget — presenting as a Windows env regression (Defender signature 1.451.144, CodeIntegrity policy refresh, HVCI, Power Throttling were all chased and ruled out across multiple sessions). Root cause was the config flag, not the OS; the binary swap test couldn't have found it because `Launch.UseStateMachine` lives on disk in `eqswitch-config.json`, not in any binary.
