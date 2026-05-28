@@ -1,5 +1,180 @@
 # Changelog
 
+## v3.22.70 — v3.22.69 deferred items: full login_state_machine SEH coverage + build.cmd parity (2026-05-27)
+
+Closes both items v3.22.69 explicitly deferred ("Findings explicitly deferred to v3.22.70" section in the v3.22.69 entry).
+
+### `login_state_machine.cpp` — full SEH coverage of all 41 `loginShm->` deref sites
+
+The v3.22.69 R3 verification rounds (T2-Sonnet, T2-Opus, T3-Opus, T4-Opus convergent) flagged that `LoginStateMachine::Tick` had 41 unprotected `loginShm->...` dereferences in its ~800-line body — same MMF-unmap-during-DLL-detach hazard the R3 helpers (`ReadAutoLoginActiveSafe`, `IsLoginShmReady`) protect against at the entry gates. Wrapping the entire surface in a single release was deferred to avoid scope-creep into the autologin path mid-stabilization.
+
+**Approach:** thin wrapper extraction instead of 41 separate `__try` frames. The public `LoginStateMachine::Tick(loginShm, charSelShm)` now delegates to a `static void TickImpl(...)` helper holding the existing body verbatim. The wrapper:
+
+1. Null-checks `loginShm` outside SEH (a deliberate null pointer is a logic bug, not an unmap race).
+2. Magic-checks `loginShm->magic == LOGIN_SHM_MAGIC` inside `__try` (the magic read itself is in the unmap hazard zone — same pattern as `mq2_bridge.cpp:4181`).
+3. Calls `TickImpl(loginShm, charSelShm)` inside the same `__try`.
+4. `__except(EXCEPTION_EXECUTE_HANDLER)` catches AV from any deref inside the entire TickImpl body and returns silently. The next tick (~16ms) retries; if the DLL really is mid-detach, the next attempt will fail at the null-check and bail clean.
+
+One SEH frame, 41 sites covered, zero changes to the existing state-machine logic. C2712 is not triggered because the wrapper itself has no destructor-bearing locals — only pointer parameters and the call-through. The `TickImpl` interior can use any C++ RAII it likes (it doesn't currently, but the architectural constraint is removed).
+
+Logging from inside the `__except` handler was intentionally omitted: `DI8Log` itself dereferences state (`g_di8LogFile`, format buffers) that could also be in the unmap window. Surfacing the exception via logging would risk recursive AV inside the handler. Silent recovery is the safe default.
+
+### `Native/build.cmd` — now builds both DLLs (parity with `build-di8-inject.sh`)
+
+Pre-this-fix, `build.cmd` (the MSVC-direct path documented in `CLAUDE.md` "Build Commands") only compiled `eqswitch-hook.dll`. `eqswitch-di8.dll` was exclusively built by `build-di8-inject.sh` (bash). T4 verifiers flagged that MSVC-only contributors on Windows without bash got a silent partial build — the autologin-critical di8 DLL never updated.
+
+`build.cmd` now contains two sequential builds:
+
+1. **Build 1: `eqswitch-hook.dll`** — unchanged compile line from prior versions.
+2. **Build 2: `eqswitch-di8.dll`** — mirrors `build-di8-inject.sh:38-45` exactly: 13 C++ TUs (`eqswitch-di8.cpp`, `di8_proxy.cpp`, `device_proxy.cpp`, `key_shm.cpp`, `iat_hook.cpp`, `pattern_scan.cpp`, `net_debug.cpp`, `mq2_bridge.cpp`, `login_state_machine.cpp`, `login_givetime_detour.cpp`, `eqmain_offsets.cpp`, `eqmain_cxstr.cpp`, `eqmain_widgets.cpp`, `eqmain_widgets_mq2style.cpp`) + 4 MinHook C TUs, `/EHsc` for C++ exception handling (compatible with the SEH `__try`/`__except` patterns in `mq2_bridge.cpp` and `eqswitch-di8.cpp`), `kernel32.lib user32.lib /MACHINE:X86 /DLL` link line.
+
+OBJ files are cleaned between builds so hook OBJs don't relink into di8. The first build's failure aborts the script (`if errorlevel 1 exit /b 1`) before the second build attempts; a clean run prints `ALL BUILDS SUCCESSFUL` on the final line.
+
+**Maintenance note added inline:** if a contributor adds a `.cpp` to the di8 DLL, BOTH `build.cmd` line 79 AND `build-di8-inject.sh:38` need the same update, or bash users will silently miss the new TU. Documented in the source-list comment block in `build.cmd`.
+
+### v3.22.69 final state
+
+All v3.22.69 R1/R2/R3 fixes ship as-built — the v3.22.70 release inherits them. See the v3.22.69 entry below for the full narrative of the autologin regression fix + 8-agent × 3-round verification arc.
+
+## v3.22.69 — CRITICAL autologin regression fix + v3.22.68 verifier follow-ups + WinEQ2 multibox-tile resolutions (2026-05-27)
+
+### R3 follow-up fixes (4-verifier convergence on residual SEH gap + Init symmetry)
+
+The R2 fixes went through a third high-stakes 8-agent verification pass. T2-Sonnet/Opus + T3-Opus + T4-Opus all convergent (4 verifiers) on a residual SEH gap, plus T3-Opus LOW finding on Init/Shutdown symmetry:
+
+- **`eqswitch-di8.cpp` — `IsLoginShmReady()` helper + SEH-protected gate at the `LoginStateMachine::Tick` call site.** The R2 fix wrapped the autologin-active read at `MQ2BridgePollTick:467` (via `ReadAutoLoginActiveSafe()`), but the adjacent magic-check gate at `:380` (three frames above, same function) still read `g_loginShm->magic` bare — same MMF-unmap-during-detach hazard, same C2712 constraint blocking inline `__try`. Added `IsLoginShmReady()` helper using the same extracted-free-function pattern; gate at `:380` now calls it. **Caveat:** the body of `LoginStateMachine::Tick` itself (`login_state_machine.cpp:767+`, ~30 further `loginShm->...` derefs) is also unprotected — wrapping those is deferred to **v3.22.70** as a focused audit pass on the entire `g_loginShm->` deref surface. The gate catches the most likely race window; Tick interior is exposed only during a much narrower post-gate window.
+- **`mq2_bridge.cpp` — `MQ2Bridge::Init()` now also resets the sticky-bail-train globals.** T3-Opus R3 LOW: the documented `mq2InitRetry` path re-calls `Init()` on failure without a preceding `Shutdown()`. The R2 fix added `g_prevAutologinActive` to the Shutdown reset block, but failed-then-retry-Init cycles inherit whatever the partial Init left in the globals. Added a 4-line reset at the top of `Init()` that mirrors the Shutdown block: `g_pollBailEngaged = false; g_lastLoggedBailPolls = 0; g_consecutiveNonNullPolls = 0; g_prevAutologinActive = false;`. Costs zero; matches the defense-in-depth rationale already documented for Shutdown.
+
+### Findings explicitly deferred to v3.22.70
+
+These items surfaced during the R3 verification rounds but are deferred to avoid scope-creep on the v3.22.69 autologin-stabilization release:
+
+- **`login_state_machine.cpp` ~30 unprotected `loginShm->...` derefs** — same MMF-unmap-during-detach hazard the R3 helpers protect against. Wrapping all sites in a single release would touch the very autologin path v3.22.69 was meant to stabilize. v3.22.70 will do a focused audit pass on the entire deref surface.
+- **`Native/build.cmd` parity gap** — `build.cmd` only compiles `eqswitch-hook.dll`; `eqswitch-di8.dll` requires `build-di8-inject.sh` (bash). Documented in `CLAUDE.md` as the MSVC build path without mentioning the limitation. Pre-existing, not introduced by this release.
+- **Memory / vault hygiene** — the v3.22.63-69 sticky-bail-train + autologin-gate arc has no dedicated memory note yet. Logged for a `/integrate` follow-up.
+
+### Verifier-pass follow-up fixes (R2 — convergent across 8-agent high-stakes verification)
+
+The R1 v3.22.69 changes (autologin gate + 5 verifier-driven fixes) themselves went through an 8-agent high-stakes verification pass. T2 + T4 pair-sets converged on 4 additional issues, all addressed below:
+
+- **`mq2_bridge.cpp` — SEH-wrap the autologin gate read.** T2-Sonnet R2 + T3-Opus R2 convergent CRITICAL: the new `g_loginShm->autoLoginActive` read at line 4172 had no `__try` wrapper, unlike sibling reads at lines 4782 / 5148 that already SEH-wrap `g_loginShm->magic`. Same MMF-unmap-during-DLL-detach hazard. Now wrapped: `__try { if (magic == LOGIN_SHM_MAGIC && autoLoginActive != 0) ... } __except(EXCEPTION_EXECUTE_HANDLER) { autologinActive = false; }`. On AV, falls back to false — restores v3.22.67 bail behaviour.
+- **`mq2_bridge.cpp` — `s_prevAutologinActive` promoted to file-scope global `g_prevAutologinActive` + reset in `Shutdown()`.** T2-Sonnet R2 + T2-Opus R2 convergent IMPORTANT: the rising-edge tracker for the latch reset was a function-local static, so it couldn't be reset from `Shutdown()` — a Shutdown→re-Init cycle ending with prior session's autologin active would carry stale tracker state into the new session and suppress the rising-edge latch-clear logic. Promoted to file-scope alongside the existing sticky-bail-train globals and added to the Shutdown reset block.
+- **`mq2_bridge.cpp` — removed `g_consecutiveNullPolls = 0` from the rising-edge reset.** T2-Opus R2 NEW REGRESSION finding: the R1 draft cleared the counter on every `false→true` autologin transition, but that clobbered legitimate pre-autologin accumulation (bare-launch → sit at login for 10s → counter at 20 → trigger autologin → counter wiped → autologin completes → bail's 15s budget restarts from 0 instead of from the ~5 remaining polls — net effect was a ~10s latency increase before bail re-engagement). Now the rising edge resets ONLY `g_pollBailEngaged` + `g_lastLoggedBailPolls`; legitimate counter accumulation continues.
+- **`SettingsForm.cs` — `Clip(name, MaxNameLen - 4)` for resolved `(C)` / `(A)` branches.** T2-Opus R2 + T3-Sonnet R2 + T3-Opus R2 convergent MINOR: only the unresolved `?` path reserved budget for its suffix; the resolved branches used default `Clip(name) = budget(12)` then appended 4-char `" (C)"` / `" (A)"`, producing 16-char cells for max-length names. Now reserves 4 chars for the suffix; total cell width stays ≤ MaxNameLen for all three paths.
+- **`eqswitch-di8.cpp` — `ReadAutoLoginActiveSafe()` helper + SEH wrap at `suppressDismiss` site.** T4-Sonnet R2 + T4-Opus R2 convergent MEDIUM: the sibling site at line 429 read `g_loginShm->autoLoginActive` without SEH despite the same MMF-unmap hazard the round-1 fix codified in `mq2_bridge.cpp`. Could not inline `__try` here because `MQ2BridgePollTick` holds a `PollReentryGuard` RAII object with a destructor (MSVC C2712 forbids SEH in functions requiring object unwinding). Extracted into a free function `ReadAutoLoginActiveSafe()` above `MQ2BridgePollTick` with no destructor-bearing locals; mirrors the magic-check-inside-`__try` pattern of `mq2_bridge.cpp:4181-4193` and `:4782-4795`. On AV, returns false → bare-launch dismiss behaviour resumes.
+
+
+
+### 🚨 CRITICAL — autologin password truncation (regression in v3.22.63-67)
+
+Smoke test post-v3.22.67 install reproduced a critical autologin regression:
+- **Team2 solo gotquiz launch**: only 2 of 7 password chars typed before the keystroke stream stopped.
+- **Team1 dual-box**: background client got 0 chars, foreground got 2 chars — matching the classic dual-box truncation signature documented in `Core/AutoLoginManager.cs:649-657` from 2026-04-25 (`4-of-6 chars on client 1, 0-of-6 on client 2`).
+
+**Root cause** (medium-high confidence, traced via background diagnostic agent on the post-smoke `eqswitch.log` lines 740-741, 836-837, 998-999, 1009-1010 — all show C# claiming `typed=7 skipped=0` while the visible field has 2 chars): the v3.22.63-67 charselect-republish sticky-bail train added per-Poll-tick work in `Native/mq2_bridge.cpp` that runs on the **EQ game thread** inside `MQ2BridgePollTick` (called from `ActivateThread` + the DI8 TIMERPROC). During autologin, `pinstCCharacterSelect` is NULL by design — the client is at the login screen, not charselect — so `g_consecutiveNullPolls` ramps toward 30 and the bail engages right around T+15s. That's *exactly* BURST 1 of the password-typing window (PID 29152 smoke: created 16:27:00, BURST 1 at 16:27:13, password call at 16:27:14). The bail body runs 5 SHM stores + DI8Log edge logging per tick on the same thread that's supposed to be pumping `WM_CHAR` messages into the EQ login widget — keystroke queue truncates mid-burst.
+
+The pre-BURST cancel in `AutoLoginManager.cs:660` was supposed to silence the DLL before typing, but it only sends `LOGIN_CMD_CANCEL` to the **LoginStateMachine** (`g_loginShm`) — it does NOT pause `MQ2Bridge::Poll` on `g_charSelShm`. The v3.22.63-67 fix train made that path heavier without the cancel covering it.
+
+**Fix** (surgical, mirrors the kPromptWindows suppress pattern at `eqswitch-di8.cpp:429-434`): gate the bail entry on `g_loginShm->autoLoginActive == 0` in addition to the existing `gameState != 5` gate. The bail's *reason to exist* is solving a same-PID quit→charselect republish — that path can't fire during autologin anyway (no in-world transition has happened yet, no quit to come back from). Once `autoLoginActive` flips back to 0 in `LoginShmWriter`'s `finally` block, the bail re-enables and the v3.22.63-67 charselect-republish protection resumes for camp-from-in-world cycles. Single condition added at `Native/mq2_bridge.cpp:4172-4173`:
+
+```cpp
+bool autologinActive = (g_loginShm != nullptr && g_loginShm->autoLoginActive != 0);
+if (gameState != 5 && !autologinActive && (g_consecutiveNullPolls >= 30 || g_pollBailEngaged)) { ... bail ... }
+```
+
+No revert of the v3.22.63-67 fix train needed — those fixes remain load-bearing for the camp-from-in-world charselect republish path; they just had an undeclared interaction with the autologin keystroke window. The autologin spec at `CLAUDE.md` lines 1-100+ remains unchanged.
+
+**Smoke-test next-occurrence diagnosis aid**: per-PID DLL log (`Eqfresh/eqswitch-dinput8-*.log`) was destroyed by the v3.22.67 uninstaller's log-cleanup step before this regression was diagnosed (`eqswitch.log` line 643 at 16:33:19). Definitive confirmation of the DLL-side keystroke-consume gap requires a fresh smoke with logs preserved — if the fix above doesn't resolve, the per-PID log will show whether keystrokes are being lost in WM_CHAR dispatch or DI8 device consumption.
+
+### v3.22.68 verifier follow-ups
+
+The v3.22.68 verifier pair-set (T2 Gap-audit Sonnet+Opus) converged on 5 CRITICAL findings. T3 Code-review (Opus) approved with only MINOR notes; T3 Code-review (Sonnet) surfaced 1 IMPORTANT pre-existing issue (ProcessManagerForm "None" priority not persisted to config — out of changeset scope, logged for separate fix). Per the verify-spec rule "trust the one that flags," the convergent T2 findings are addressed below.
+
+### CRITICAL fixes (T2 convergent)
+
+1. **`EQClient.DisplayName` parse leak** — Sonnet + Opus both flagged that `src.Substring("EverQuest - ".Length).Trim()` admits any suffix after the dash, leaking strings like `"Bob - Test Server [GM]"`, `"Loading - Please Wait"`, or `"Patcher Splash"` into the menu and grid. Added `IsValidEqCharName` post-filter: the extracted name must be ≤15 chars, letters and digits only (EQ server rules). Anything failing the filter falls through to `BoundCharacterName` → `"Client N"` placeholder.
+
+2. **`BuildTeamSummary` overflow** — both flagged that long usernames + `(C)`/`(A)` markers exceed the 318px label width and clip silently. Three layered defenses: (a) per-name `Clip(MaxNameLen=12)` truncation with `…` suffix in `Resolve()`, (b) separator tightened further from `"  |  "` (5) → `" | "` (3) — combined with (a) keeps the worst case `"T11: 12char...(A) | 12char...(C)"` comfortably under 318px, (c) `_lblTeamSummary.AutoEllipsis = true` as a multi-line belt-and-suspenders for any case the per-cell budget still overshoots.
+
+3. **`PipOverlay.PollCtrlState` state desync** — flagged scenarios: Win+L lock, RDP disconnect, alt-tab while holding Ctrl, `ModifierKeys`-vs-`GetAsyncKeyState` divergence after focus changes. Added `ForceRestoreClickThrough()` bound to `Form.Deactivate`: clears `_ctrlHeld` / `_dragging` / `_resizing` and unconditionally re-arms `WS_EX_TRANSPARENT`. Worst case is "a legitimate drag mid-deactivate gets cancelled" — which is the expected behaviour when the user alt-tabs away.
+
+4. **`WS_EX_COMPOSITED` + FlatStyle ComboBox** — both flagged the well-documented WinForms incompatibility: stale/black dropdown rendering on pre-Win11 / Win10 < 21H2 DWM, exacerbated by FlatStyle.Flat combos and worst with bottom-of-form (Team 12) dropdowns that open upward over the composited region. **Reverted** the `WS_EX_COMPOSITED` `CreateParams` override; kept `SetStyle(OptimizedDoubleBuffer | AllPaintingInWmPaint | UserPaint)` which provides form-background double-buffering without the combo risk. Flicker reduction is partial vs the v3.22.68 design but the dropdown-rendering regression is unacceptable for the 24-combo layout.
+
+5. **`AccountEditDialog` PlaceholderText reveal-mode bug** — flagged that `PlaceholderText` renders unmasked regardless of `PasswordChar`, so clicking **Show** on an empty field with the `********` watermark visible shows the literal asterisks — falsely implying the real password IS `********`. The Show click handler now clears `PlaceholderText = ""` while reveal mode is active, restores `"********"` on Hide. Save logic still keys off `_txtPassword.Text` (unaffected by placeholder state).
+
+### MINOR/preexisting (not addressed this release)
+
+- T1-Opus noted `DisplayName` falls back to `WindowTitle` if `OriginalTitle` is empty — strictly more permissive than the spec's `OriginalTitle`-only path, no regression risk. Kept as-is.
+- T3-Sonnet flagged `ProcessManagerForm.cs` "None" priority not persisted (existed in v3.22.67 already). Logged for separate fix.
+- T2-Opus flagged stale `BoundCharacterName` on PID-recycle, bare `catch` in `IsProcessAlive`, `MouseWheel` cast assumption in `AutoLoginTeamsDialog:356`, and `OriginalTitle` first-set race in `ProcessManager`. All pre-existing and outside this changeset's scope.
+
+### New — WinEQ2-style multibox-tile resolutions (per Nate's research request)
+
+Added 4 half-screen presets to the Video tab resolution dropdown, sourced from WinEQ2's preset set ([Lavish Software wiki — WinEQ2:Presets](https://www.lavishsoft.com/wiki/index.php/WinEQ2:Presets)). WinEQ2's distinguishing value-add was tile-optimized resolutions for side-by-side / stacked multibox; EQSwitch's grid-arrange + slim-titlebar already achieves the same tiling outcome via window-resize, but rendering EQ natively at the tile size gives sharper text, lower GPU bandwidth, and survives the rare case where window-resize fights EQ's own DirectX backbuffer:
+
+- `960x1080 (2-up side, 1080p)` — half-width side-by-side 2-box on a 1920×1080 desktop
+- `1920x540 (2-up stack, 1080p)` — half-height stacked 2-box on a 1920×1080 desktop
+- `1280x1440 (2-up side, 1440p)` — half-width side-by-side 2-box on a 2560×1440 desktop
+- `2560x720 (2-up stack, 1440p)` — half-height stacked 2-box on a 2560×1440 desktop
+
+EQ historically hides resolutions with any dimension < 512 — a non-issue on any modern multibox-capable rig.
+
+## v3.22.68 — Accounts-tab UX: masked-password placeholder + summary kind markers + Configure Teams paint smoothing (2026-05-27)
+
+### UX — Edit Account: password field now signals "a password is set" instead of looking empty
+
+Previously, opening **Settings → Accounts → Edit Account** on an existing account showed an empty password textbox plus the hint *"Leave blank to keep existing password."* For a user only trying to update the Note or Server, the empty field was misleading — it looked like Save would clear the stored credential. (It wouldn't: `OnSaveClicked` already preserves `_existingEncryptedPassword` when the field is blank, but the UI didn't say so visually.)
+
+**Fix:** in edit mode with a non-empty `_existingEncryptedPassword`, the password textbox now renders `********` as `TextBox.PlaceholderText`. PlaceholderText is drawn literally in the placeholder color (not masked by `PasswordChar`), so the field visually matches what a freshly-typed 8-char password would look like, while still being semantically empty.
+
+**Why PlaceholderText vs. pre-filled sentinel text:** PlaceholderText is not part of `.Text`, so the existing "blank field = keep existing password" save logic at `AccountEditDialog.cs:209` needs zero changes. Filling `.Text = "********"` instead would require a sentinel-detection branch on save (and would break if a user ever typed literal asterisks). The placeholder disappears the moment the user starts typing — standard WinForms behaviour — and reappears if they clear the field, so the "leave blank to keep" affordance still works.
+
+### UX — Autologin Teams summary: top padding removed + (C)/(A) kind markers added
+
+The Accounts-tab "Autologin Teams" summary panel had two readability issues:
+
+1. **Phantom top padding above T1.** The 6-row team summary (~96px at 9pt) lived inside a 124px-tall label with `TextAlign = MiddleLeft`, so vertical centering produced ~14px of blank band above T1 that read as awkward unowned padding. Switched to `TopLeft`: T1 now sits right under the inset border; remaining headroom collects at the bottom where it reads as intentional breathing room.
+
+2. **Slot kind wasn't visible without opening the dialog.** A team slot's destination (enter-world vs charselect-only) is determined by whether the target resolves to a Character or an Account — visible as the C/A pill in the Configure Teams dialog, but invisible in the summary. Names now carry a `(C)` or `(A)` marker so the summary mirrors the pills: e.g. `T1: Natedogg (C) + Eisley (C)  |  T2: gotquiz (A) + Natedogg (C)`. Row separator tightened from `"   |   "` (7 chars) to `"  |  "` (5 chars) to reclaim ~12px per row — the markers add ~24px per cell at 9pt, so the trim keeps long-name rows like `raistlin + Natedogg` from clipping at the right edge of the inset panel. Row6's previously-inconsistent `"  |   "` also normalized.
+
+### Perf — Configure Teams dialog: form-level composited painting + items-array caching
+
+The Configure Teams dialog ctor builds ~65 controls (24 combos, 24 pills, 12 row labels, legend, hint, warn, 2 buttons). Two flicker / lag sources addressed:
+
+1. **N redundant array allocations.** `MakeCombo` called `_comboItems.Cast<object>().ToArray()` per combo on `ComboBox.Items.AddRange`, allocating a fresh array per combo — 23 redundant allocations across 24 combos. The list itself was already hoisted (v3.22.10); now the `object[]` is too, allocated once per ctor and reused for every combo.
+
+2. **Per-child paint flicker on initial Show.** The form had no explicit double-buffering, so when `ResumeLayout(performLayout: true)` released and the form was Shown, each of the 60+ children painted straight to the screen surface one at a time — visible as a quick "fill-in" flicker. Added `SetStyle(OptimizedDoubleBuffer | AllPaintingInWmPaint | UserPaint, true)` plus a `CreateParams` override that sets `WS_EX_COMPOSITED` (0x02000000) on the form's extended style. Together these tell Windows to composite all child windows into one offscreen buffer and BitBlt the result, so the dialog appears in one go instead of painting in. The documented downside of `WS_EX_COMPOSITED` — slower repaints during continuous scroll/resize — doesn't apply: this dialog isn't user-sized and has no scroll.
+
+### UX — PIP overlay: Ctrl-grip responsiveness on edge/corner resize
+
+Holding **Ctrl** is meant to flip the PIP overlay from click-through (so keyboard / mouse input passes to eqgame underneath) to mouse-grippable (so the user can drag-reposition or drag-resize). Two issues made the corner/edge grip feel unreliable when eqgame was the window directly underneath:
+
+1. **Up-to-500ms latency window between pressing Ctrl and the PIP actually accepting clicks.** The Ctrl-state poll piggy-backed on the 500ms thumbnail-refresh timer, so a user who pressed Ctrl and immediately clicked the PIP edge would land in a window where `WS_EX_TRANSPARENT` was still set — the click misrouted to eqgame behind. Split into a dedicated `_ctrlPollTimer` at 33ms (~30Hz, below human perceptual threshold for input lag). `GetAsyncKeyState` is a cheap syscall, so the higher rate is essentially free, and the heavier thumbnail-liveness sweep still runs at 500ms.
+
+2. **8-pixel resize zone vs. 16-pixel rounded corner.** The overlay applies a 16px corner radius via region clip (`ApplyRoundedRegion`), so the outer ~4-5 pixels of each corner are *outside* the actual hit-testable region — clicks on those pixels route to the window beneath. With the resize zone at only 8px, that left an unusable strip of the visible grip corner. Bumped `ResizeZone` from 8 to 12, which keeps the grippable area inside the rounded clip on every PIP size without eating too much of the move-zone middle (still ~75% middle on a 128×72 PIP).
+
+Also added a guard in `PollCtrlState`: skip the WS_EX_TRANSPARENT toggle while a drag or resize is in progress. Without it, releasing Ctrl mid-gesture would re-arm click-through and the in-flight drag would break (mouse-up would never reach the overlay).
+
+### UX — Video tab monitor selection: stale "first non-primary" label corrected
+
+The Multi-Monitor Mode → Secondary dropdown's auto-pick option still said `"Auto (first non-primary)"`. That label has been stale since v3.22.19 added the smart-pick path at `WindowManager.ResolveSecondaryMonitorIdx`: the resolver walks all non-primary monitors, scores them by width + landscape suitability, and picks the best match — skipping tiny or portrait panels that the user wouldn't want EQ on. The literal "first non-primary" rule only fires as a last-resort fallback when no monitor meets the suitability bar. Label updated to `"Auto (best size)"` to match what actually happens.
+
+### UX — Process Manager grid + tray Clients submenu: real character names
+
+The Process Manager grid's Character column and the tray right-click → Clients submenu both displayed the same placeholder pattern: `"Client 1"`, `"Client 2"`, etc. (via `EQClient.ToString()`). Useful for slot identification but not the information the user wants when picking which client to switch to or kill.
+
+Added an `EQClient.DisplayName` computed property with a three-tier resolver:
+
+1. **Parse `"EverQuest - <Name>"` out of `OriginalTitle`** — the last EQ-native title we observed. Set once the client reaches char-select; survives a user-applied custom title because `OriginalTitle` is preserved alongside `WindowTitle`.
+2. **Fall back to `BoundCharacterName`** — the slot the autologin manager committed to. Populated on `ClientDiscovered` via `AutoLoginManager.TryGetBoundName`. Useful pre-charselect when EQ's title is still the bare `"EverQuest"`.
+3. **Last resort: `"Client {SlotIndex + 1}"`** — never empty.
+
+Wired into:
+- `ProcessManagerForm.RefreshList` — Character column now shows the resolved name.
+- `TrayManager.UpdateClientMenu` — submenu entries are now `"[1] <Name>  (PID 12345)"` instead of `"[1] Client 1 (PID: 12345)"`. PID preserved alongside the name so the menu remains useful for disambiguating two clients that briefly share a name (e.g. mid-relog).
+
+The Force-Kill submenu under Clients pulls live `MainWindowTitle` directly from each process and is already accurate — left unchanged. The new `DisplayName` is for the *EQSwitch-tracked* `EQClient` list, which caches the title across ticks.
+
 ## v3.22.67 — v3.22.66 verifier follow-ups: sustained-pinst-non-null disarm + Shutdown comment correction (2026-05-27)
 
 The v3.22.66 verifier round caught two convergent issues that the prior round's `gameState != 5` gate didn't address:
@@ -6180,7 +6355,7 @@ In-process `MQ2Bridge::JoinServerDirect(int serverID, unsigned int *outResult)` 
 **Verifier findings NOT addressed in v3.18.0 (deferred to v3.18.1+):**
 
 - **Snapshot read once per retry-loop iteration, not refreshed mid-iteration (T2-S M1 + T2-O #3).** If EQ dismisses a Fatal dialog DURING the retry's recovery-sleep + BURST re-fire, the iteration's snapshot stays Fatal and breaks the loop on a now-gone dialog. Probability low (Fatal dialogs typically persist). Filed as v3.18.1 architectural-improvement candidate.
-- **`g_pYesButton = nullptr` reset every Poll tick (T3-O P1 #2).** `DiscoverDialogWidgets` unconditionally nullifies `g_pYesButton`. With Poll firing every tick from PHASE_IDLE onward, the YESNO retry-counter logic at `login_state_machine.cpp:~700` never sees a non-null pointer. Currently moot (patchme bypasses kick-session per `feedback_eqswitch_no_yesno_in_patchme.md`); becomes load-bearing if a future non-patchme flow needs YESNO resolution. Filed as v3.18.1.
+- **`g_pYesButton = nullptr` reset every Poll tick (T3-O P1 #2).** `DiscoverDialogWidgets` unconditionally nullifies `g_pYesButton`. With Poll firing every tick from PHASE_IDLE onward, the YESNO retry-counter logic at `login_state_machine.cpp:~700` never sees a non-null pointer. Currently moot (Edge's MQ2-derived connection management is multi-client compatible with unique credentials, so no YESNO kick-session ever fires — per `feedback_eqswitch_no_yesno_in_patchme.md` + 2026-05-21 Edge audit at `_.eqswitch-re/audit-2026-05-21/dalaya-dinput8-audit.md`); becomes load-bearing if a future Edge-bypass flow exposes YESNO again. Filed as v3.18.1.
 - **`ReadUInt32` not wrapped in try/catch on torn process death (T3-O P2).** `MemoryMappedViewAccessor` IO exception during a process-death race could propagate through the retry loop. Symmetric exposure with `ReadPhase`/`ReadError` — pre-existing, not introduced by v3.18.0. Filed as v3.18.1+.
 - **Fatal/Recoverable pattern empirical expansion** — see "Known deferred" above.
 - **`ShmLayoutTests.cs LoginShm assertions** — see "Known deferred" above.

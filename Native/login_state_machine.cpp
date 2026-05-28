@@ -763,8 +763,39 @@ static void RunDiagnostic(int gameState) {
 
 namespace LoginStateMachine {
 
+// Forward declaration — TickImpl holds the ~800-line state-machine body
+// (~41 `loginShm->` deref sites). v3.22.70 wraps the entire body in a
+// single SEH frame at the public `Tick()` entry point below so any
+// MMF-unmap-during-detach AV at any deref site is caught safely.
+static void TickImpl(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm);
+
+// v3.22.70 (deferred from v3.22.69 R3 — 4-verifier convergent T2/T3/T4):
+// SEH-protected entry point. The 41 `loginShm->` deref sites inside
+// TickImpl were unprotected pre-this-wrap; the same MMF-unmap-during-
+// DLL-detach hazard the R3 helpers cover at the gate (eqswitch-di8.cpp
+// `IsLoginShmReady` / `ReadAutoLoginActiveSafe`) was wide open inside
+// the Tick body. Wrapping every deref individually would have meant
+// ~41 separate __try frames; wrapping the body via a thin call-through
+// wrapper costs one frame, catches every site, and keeps TickImpl free
+// of SEH constraints (RAII / unwinding semantics OK in TickImpl since
+// this outer wrapper has no destructor-bearing locals — C2712 not
+// triggered). On exception, returns silently — next tick (~16ms) will
+// retry; the DLL is presumably mid-detach anyway.
 void Tick(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
-    if (!loginShm || loginShm->magic != LOGIN_SHM_MAGIC) return;
+    if (!loginShm) return;
+    __try {
+        if (loginShm->magic != LOGIN_SHM_MAGIC) return;
+        TickImpl(loginShm, charSelShm);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        // MMF unmapped mid-tick. Silent recovery — the next poll will retry
+        // via TryOpenLoginShm. Logging here is omitted because DI8Log itself
+        // can dereference state that may also be in the unmap window.
+    }
+}
+
+static void TickImpl(volatile LoginShm *loginShm, volatile CharSelectShm *charSelShm) {
+    // Magic check moved to the SEH wrapper above; loginShm is non-null
+    // and magic was validated by the caller before reaching this body.
 
     // Read game state
     int gameState = MQ2Bridge::ReadGameState();
