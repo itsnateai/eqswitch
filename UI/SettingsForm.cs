@@ -1933,15 +1933,18 @@ public class SettingsForm : Form
                 SkipNativeWarmup             = _config.Launch.SkipNativeWarmup,
                 JoinServerId                 = _config.Launch.JoinServerId,
                 // v3.22.26: UseStateMachine has no Settings UI control — it's
-                // a JSON-only flag (default false; deployed installs set it
-                // true). Without this pass-through, every Settings → Apply
-                // silently clobbered it to the LaunchConfig default, persisting
-                // false to disk. The session-live value stayed correct because
-                // ReloadConfigCore (pre-v3.22.26) didn't propagate it either,
-                // but the persisted file got the wrong value — next launch
-                // would load the clobbered value and disable the SM path
-                // entirely. v3.22.26 fix is symmetric: pass-through here +
-                // propagate in ReloadConfigCore (TrayManager.cs).
+                // a JSON-only flag. v3.22.71 flipped the source default from
+                // false → true (was: "deployed installs set it true"; now: the
+                // source default IS true, so fresh installs / fresh configs
+                // start working without manual JSON edits). Without this
+                // pass-through, every Settings → Apply silently clobbered it
+                // to the LaunchConfig default, persisting the default to disk.
+                // Pre-v3.22.71 that default was false, so the clobber broke
+                // the SM path. Post-v3.22.71 it's true, so the clobber would
+                // turn a user's intentional false (power-user opt-out) back
+                // to true — STILL A REGRESSION. Keep the pass-through. The
+                // v3.22.26 fix is symmetric: pass-through here + propagate
+                // in ReloadConfigCore (TrayManager.cs).
                 UseStateMachine              = _config.Launch.UseStateMachine,
             },
             Pip = new PipConfig

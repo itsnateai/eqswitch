@@ -1,5 +1,47 @@
 # Changelog
 
+## v3.22.73 — verifier-pass follow-ups: audit lock + queue cap + doc honesty (2026-05-28)
+
+Closes the convergent CRITICAL findings from the 8-agent verifier pass (T2 Sonnet + Opus, T3 Sonnet + Opus) on the v3.22.71/72 ship.
+
+### `ConfigManager.cs::LogConfigWriteAudit` — wrap disk read in `_saveLock` (CRITICAL)
+
+T2-Sonnet, T2-Opus, T3-Opus convergent: the v3.22.71 audit read sat OUTSIDE any lock. `FlushSave` releases `_saveLock` BEFORE calling `WriteToDisk`, so a UI-thread `FlushSave`'s audit-read could overlap a background `SaveImmediate`'s `File.Move`. Failure path: `File.ReadAllText` throws `IOException: file in use` → inner catch logs "prior config unreadable" → treats as first-write → **the audit silently drops the actual delta the audit was built to catch**. The blind spot is structural — exactly the silent-flip class v3.22.71 was meant to surface.
+
+Fix: wrap the audit's read + deserialize in `lock (_saveLock)`. Acquisition is uncontended on the common path (single-threaded coalesced save). On the SaveImmediate → WriteToDisk → LogConfigWriteAudit chain the lock is recursive on the same thread (no-op per C# `lock` semantics). After the lock, the inner catch's "prior config unreadable" branch should only fire for genuinely-external causes (non-EQSwitch process holding the file, ACL flip mid-write) — not for in-process races.
+
+### `UI/TrayManager.cs::QueueLostClientBalloon` — `LostClientsQueueCap = 20` hard cap (IMPORTANT)
+
+T2-Sonnet + T2-Opus: `_pendingLostClients` was unbounded. `Launch.NumClients` clamps to 6 in normal use so the realistic ceiling is small, but a flapping `ProcessManager` (rapid spawn/die loop, externally-launched eqgame stragglers, or a `ProcessManager` re-fire bug) could grow the list across many polls — the 1.5s coalesce window restarts on every queue, so a continuous stream of events would never drain.
+
+Fix: cap at 20 (generous vs the realistic 6-NumClients × multiple-poll ceiling). At-cap, `QueueLostClientBalloon` calls `TryDispatchLostClientBalloon` directly instead of restarting the coalesce timer, surfacing the toast sooner AND draining the list so the next add starts from zero. The cap doesn't bypass the menu-visibility check — the in-line dispatch goes through the same `_contextMenu?.Visible == true` guard at `TryDispatchLostClientBalloon`, so a menu open during the cap-hit still defers.
+
+### CHANGELOG honesty corrections (IMPORTANT)
+
+T3-Opus + T3-Sonnet: two factual claims in the v3.22.71 entry were either overstated or wrong.
+
+**Cost claim correction.** v3.22.71 line documented audit overhead as "~1–5ms on a ~10KB config". T3-Opus correctly notes the v3.22.26 honesty correction already documented that the same-graph `JsonSerializer.Serialize` walk can reach tens of milliseconds with `WriteIndented = true` and a fully-populated AppConfig. The audit's `Deserialize` walks the same graph. The cost is order-of-magnitude higher than the original v3.22.71 claim under sustained save bursts (PiP drag, autologin LastLoginAt updates). Accepted tradeoff — the audit is observability and the cost still amortizes well across 250ms-coalesced saves — but the v3.22.71 cost number was wrong as stated. Retroactively corrected.
+
+**Upgrade-from-old-config behavior.** v3.22.71 line claimed "Existing configs preserve their stored useStateMachine value; only fresh installs / fresh configs / first-run defaults get the new behavior." T2-Opus + T3-Opus convergent: this is wrong for configs that PREDATE the `useStateMachine` field entirely (any user who never opened Settings on v3.22.0+). `System.Text.Json.Deserialize` fills missing keys with the C# property default, so those configs DO get `true` on upgrade — they were never in the bad-combo, so the flip is desirable. The actual behavior matrix:
+
+| Config state on upgrade | Resulting `useStateMachine` post-v3.22.71 |
+|---|---|
+| Key present, value `true` | `true` (preserved) |
+| Key present, value `false` (the bad-combo) | `false` (preserved — user must edit JSON to opt back into working default) |
+| Key absent (predates v3.22.0 or never opened Settings) | `true` (gets the new default — working autologin) |
+
+The "key absent" cohort was incorrectly described as "preserves stored value" — there IS no stored value to preserve. The corrected narrative: bad-combo users (key=false) keep their state until they edit the JSON; everyone else gets the working default.
+
+### `UI/SettingsForm.cs:1935` — stale comment refresh (MINOR)
+
+T2-Sonnet: comment block at `SettingsForm.cs:1935-1944` carried the pre-v3.22.71 line "default false; deployed installs set it true". Refreshed to reflect the v3.22.71 default flip + the still-valid rationale that the pass-through is symmetric (protects user opt-outs in either direction — pre-v3.22.71 a missing pass-through clobbered `true` → `false`; post-v3.22.71 it would clobber `false` → `true`; either is a silent regression of user intent).
+
+### Not addressed (deferred / out of scope)
+
+- **`AppConfig.Validate` SizePreset allowlist mismatch** (T3-Sonnet IMPORTANT): pre-existing bug — `Validate()` only allows `"Small|Medium|Large|Custom"` but `GetSize()` handles `"XL|XXL|XXXL"`. User-set XL via JSON gets reset to Large. Not introduced by v3.22.71/72, not in the audit-driven scope. Logged for a future cleanup pass.
+- **`AuditFlags` field-set exhaustiveness** (T2-Opus CRITICAL): no compile-time link between `AuditFlags` and `LaunchConfig`, so a future load-bearing flag added to `LaunchConfig` won't auto-extend the audit set. Considered reflection-based enumeration; rejected for now — Run-time enum + nameof-based discovery would add reflection cost on every save and obscure WHICH flags are audited at the code-grep level (the explicit 6-field struct IS the documentation). Maintenance contract is now documented in the field comment + memory file `feedback_eqswitch_audit_flag_exhaustiveness.md`.
+- **`CaptureCallerStack` under R2R / tiered compilation** (T2-Opus MINOR): inlined Save / SaveImmediate callers may produce `<unknown>` frames in Release builds. Accepted — even degraded caller info is more useful than zero caller info, and the audit's `ConfigWrite:` line still names the field + old→new value (the load-bearing signal).
+
 ## v3.22.72 — "Lost:" balloon coalesce + menu-aware suppression (2026-05-28)
 
 Closes the 2026-05-28 UX bug Nate reported: *"when I close both clients and then go to use the right-click menu, the next pid eqgame-was-terminated tooltip depops the right click menu, if two clients were closed and two popups happen then we had the right click menu depop twice on me when I was trying to use it."*

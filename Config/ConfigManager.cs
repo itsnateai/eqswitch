@@ -535,18 +535,40 @@ public static class ConfigManager
             AuditFlags? oldFlags = null;
             if (File.Exists(ConfigPath))
             {
-                try
+                // v3.22.73 (verifier convergent CRITICAL): take _saveLock around
+                // the disk read + deserialize so the audit can't race a sibling
+                // WriteToDisk's File.Move. Pre-v3.22.73, the audit lived OUTSIDE
+                // any lock — FlushSave releases _saveLock at line 269 BEFORE
+                // calling WriteToDisk, so a UI-thread FlushSave's audit-read
+                // could overlap a background SaveImmediate's File.Move. That
+                // surfaced as IOException → catch → log "prior config unreadable"
+                // → treat as first-write → audit SILENTLY DROPS the actual
+                // delta. Failure mode the audit was built to catch (a silent
+                // flip during a concurrent autologin SaveImmediate) had a
+                // structural blind spot. Lock acquisition is uncontended on
+                // the common path (single-threaded saves); recursive on the
+                // SaveImmediate→WriteToDisk→LogConfigWriteAudit chain
+                // (same-thread re-acquire is a no-op per C# lock semantics).
+                lock (_saveLock)
                 {
-                    var oldJson = File.ReadAllText(ConfigPath);
-                    var (migratedJson, _) = ConfigVersionMigrator.MigrateIfNeeded(oldJson);
-                    var oldConfig = JsonSerializer.Deserialize<AppConfig>(migratedJson, JsonOptions);
-                    if (oldConfig != null) oldFlags = AuditFlags.From(oldConfig);
-                }
-                catch (Exception ex)
-                {
-                    // Prior config unreadable — corrupt, mid-write race, ACL flip.
-                    // Treat as first-write so the new values get anchored.
-                    FileLogger.Info($"ConfigWrite: prior config unreadable ({ex.GetType().Name}: {ex.Message}) — treating as first-write");
+                    try
+                    {
+                        var oldJson = File.ReadAllText(ConfigPath);
+                        var (migratedJson, _) = ConfigVersionMigrator.MigrateIfNeeded(oldJson);
+                        var oldConfig = JsonSerializer.Deserialize<AppConfig>(migratedJson, JsonOptions);
+                        if (oldConfig != null) oldFlags = AuditFlags.From(oldConfig);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Prior config genuinely unreadable — corrupt JSON, ACL
+                        // flip, transient sharing violation that survived the
+                        // lock (e.g. a non-EQSwitch process holding the file).
+                        // Treat as first-write so new values still get anchored.
+                        // With the v3.22.73 lock, this branch SHOULD NOT fire
+                        // for in-process races — if it does, something
+                        // external is the culprit.
+                        FileLogger.Info($"ConfigWrite: prior config unreadable ({ex.GetType().Name}: {ex.Message}) — treating as first-write");
+                    }
                 }
             }
 

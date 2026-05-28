@@ -2810,6 +2810,16 @@ public class TrayManager : IDisposable
     /// would each cancel an open ContextMenuStrip. v3.22.72 — replaces the
     /// pre-v3.22.72 immediate ShowBalloon($"Lost: {c}") call site.
     /// </summary>
+    // v3.22.73 (T2-Sonnet + T2-Opus convergent gap): hard cap on the queue
+    // so a flapping ProcessManager detector (rapid spawn/die loop) can't grow
+    // _pendingLostClients without bound. NumClients clamps to 6 in normal use
+    // so 20 is generous — picks up the worst-case "user launches a team,
+    // closes them all, launches another team, closes those" inside one
+    // coalesce window. At-cap, we dispatch immediately instead of waiting
+    // for the timer, which surfaces the toast sooner AND empties the list
+    // before the next add can push past the cap.
+    private const int LostClientsQueueCap = 20;
+
     private void QueueLostClientBalloon(string clientLabel)
     {
         if (_disposed) return;
@@ -2823,6 +2833,17 @@ public class TrayManager : IDisposable
             _lostClientsCoalesceTimer = new System.Windows.Forms.Timer { Interval = 1500 };
             _lostClientsCoalesceTimer.Tick += (_, _) => TryDispatchLostClientBalloon();
         }
+
+        // v3.22.73: if we hit the cap, dispatch immediately (subject to the
+        // same menu-visibility check). Bypasses the 1.5s coalesce window —
+        // the user sees the balloon sooner AND we don't risk growing past
+        // the cap on the next event.
+        if (_pendingLostClients.Count >= LostClientsQueueCap)
+        {
+            TryDispatchLostClientBalloon();
+            return;
+        }
+
         // Stop+Start resets the elapsed window — the timer fires 1.5s after
         // the LAST queued client, not 1.5s after the first. Lets a 2-client
         // exit pair (typically 50-300ms apart from the ProcessManager poll's
