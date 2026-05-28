@@ -1,5 +1,27 @@
 # Changelog
 
+## v3.22.74 — SizePreset validator allowlist alignment (2026-05-28)
+
+Closes T3-Sonnet's verifier finding from the v3.22.73 pass (originally logged as deferred to a future cleanup — addressed in-session).
+
+### `Config/AppConfig.cs::Validate` — extend `Pip.SizePreset` allowlist
+
+Pre-fix: `Validate` (line 445) allowlisted only `"Small" | "Medium" | "Large" | "Custom"`. But the `SizePreset` field doc comment lists 7 valid values (`"Small", "Medium", "Large", "XL", "XXL", "XXXL", "Custom"`) and `PipConfig.GetSize()` (lines 1086-1095) handles all 7 as first-class presets with concrete pixel dimensions:
+
+```csharp
+"XL"   => (768, 432),
+"XXL"  => (1024, 576),
+"XXXL" => (1600, 900),
+```
+
+A user who set `"SizePreset": "XL"` via hand-edited JSON (or via a future Settings UI exposing the new presets) had their value silently reset to `"Large"` on every `AppConfig.Load()`. Worse, the v3.15.4 `mutated` flag triggers a backup-and-save cycle on every load that mutates fields — so the spurious reset wrote a backup AND persisted the clobbered value on every startup.
+
+Fix: extend the allowlist to `"Small" or "Medium" or "Large" or "XL" or "XXL" or "XXXL" or "Custom"`. Validation now matches the documented field surface AND the runtime switch. Comment block above the line documents the invariant for future maintainers: if a new preset is added, BOTH `GetSize()` and this allowlist need the new value.
+
+### Why this surfaced now
+
+The v3.22.73 verifier pass (T3-Sonnet whole-file review) flagged this as IMPORTANT during the adversarial-review check on `AppConfig.cs`. It was deferred at the time because it's pre-existing (not introduced by v3.22.71/72) and out of the audit-driven scope. Addressed in-session per user request after the v3.22.73 ship — the context was still loaded.
+
 ## v3.22.73 — verifier-pass follow-ups: audit lock + queue cap + doc honesty (2026-05-28)
 
 Closes the convergent CRITICAL findings from the 8-agent verifier pass (T2 Sonnet + Opus, T3 Sonnet + Opus) on the v3.22.71/72 ship.

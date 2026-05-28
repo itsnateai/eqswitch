@@ -442,7 +442,16 @@ public class AppConfig
 
         // String-enum validation — fall back to defaults on garbage values from hand-edited JSON
         if (Layout.Mode is not ("single" or "multimonitor")) Layout.Mode = "single";
-        if (Pip.SizePreset is not ("Small" or "Medium" or "Large" or "Custom")) Pip.SizePreset = "Large";
+        // v3.22.74 (T3-Sonnet verifier carry-over from v3.22.73 pass): allowlist
+        // now matches the SizePreset field doc + the PipConfig.GetSize() switch
+        // (lines 1086-1095) which handle XL / XXL / XXXL as first-class presets.
+        // Pre-fix, a hand-edited "XL" got silently reset to "Large" on every
+        // load via this validator + the v3.15.4 mutated-flag triggers a backup
+        // write on every startup (spurious churn + lost user intent). Verified
+        // against doc comment at line ~1038: "Small, Medium, Large, XL, XXL,
+        // XXXL, Custom". If a future Custom-with-named-preset is added, both
+        // GetSize() AND this allowlist need the new value.
+        if (Pip.SizePreset is not ("Small" or "Medium" or "Large" or "XL" or "XXL" or "XXXL" or "Custom")) Pip.SizePreset = "Large";
         if (Pip.Orientation is not ("Horizontal" or "Vertical")) Pip.Orientation = "Vertical";
         if (Affinity.ActivePriority is not ("Normal" or "AboveNormal" or "High" or "BelowNormal"))
             Affinity.ActivePriority = "AboveNormal";
