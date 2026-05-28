@@ -1,5 +1,58 @@
 # Changelog
 
+## v3.22.71 — UseStateMachine source-default flip + ConfigWrite audit log (2026-05-28)
+
+Closes the 2026-05-28 misdiagnosis loop: a silent autonomous flip of `Launch.UseStateMachine` from `true` → `false` at some point during 2026-05-27 16:27 routed autologin through the legacy `RunLoginSequence` → BURST 1 → `CombinedTypeString` per-char WM_CHAR pump. Every subsequent smoke (including swap-tests of v3.22.47 / v3.22.55 / v3.22.57 / v3.22.70 binaries) failed identically with 2–5 password chars landing in the EQ widget — presenting as a Windows env regression (Defender signature 1.451.144, CodeIntegrity policy refresh, HVCI, Power Throttling were all chased and ruled out across multiple sessions). Root cause was the config flag, not the OS; the binary swap test couldn't have found it because `Launch.UseStateMachine` lives on disk in `eqswitch-config.json`, not in any binary.
+
+Two changes ship to make this misdiagnosis class non-recurring:
+
+### `Config/AppConfig.cs` — `LaunchConfig.UseStateMachine` source default flipped to `true`
+
+Prior default (`false`) was a v3.22.0-era safety baseline carried forward by inertia. The bad-combo with `SkipNativeWarmup=true` (the de-facto production setting per `feedback_eqswitch_no_yesno_in_patchme.md` + every CHANGELOG smoke since v3.22.0) makes the legacy `RunLoginSequence` path nonviable on Dalaya — the C# per-char WM_CHAR pump is subject to:
+
+1. Game-thread contention from Native polling (`mq2_bridge.cpp` sticky-bail train, partially mitigated by v3.22.69's `autoLoginActive` gate but still present).
+2. OS-side WM_CHAR throttling under UIPI / process integrity / Power Throttling (visible 2026-05-28: admin elevation lifted 2→5 chars but couldn't push past 5).
+
+The SM path bypasses both: Native fires `EQMainCXStr::WriteEditTextDirect` (atomic CXStr write to `CEditBaseWnd::InputText +0x1A8`, ScreenMode=3 swap per the MQ2 `MQ2AutoLogin/StateMachine.cpp:265` pattern) — one structural write, zero PostMessage, no per-char throttling surface. Confirmed working 2026-05-28 by flipping the user's config from `false` → `true` and re-running smoke unchanged: full password landed, LoginServerAPI ready well under 5s, both clients in-world.
+
+The legacy `RunLoginSequence` remains as a runtime escape hatch for environments where the SM path's SHM/widget dependencies aren't satisfied (e.g., non-Dalaya emu servers where the `CEditBaseWnd::InputText` offset hasn't been validated). Power-user opt-out by setting `Launch.UseStateMachine: false` in `eqswitch-config.json` directly — not exposed in the Settings UI.
+
+**Impact on existing installs:** none. Existing configs preserve their stored `useStateMachine` value; only fresh installs / fresh configs / first-run defaults get the new behavior. Users currently running `useStateMachine: false` who want to adopt the working default need to either delete `eqswitch-config.json` (loses other settings) or edit the file directly.
+
+### `Config/ConfigManager.cs` — `ConfigWrite:` audit log at `WriteToDisk` chokepoint
+
+Every save now snapshots the prior on-disk values of six load-bearing flags before writing, compares to the incoming config, and writes a greppable `ConfigWrite:` line to `eqswitch.log` for every delta. The line names the field, old→new value, and the C# caller stack (top 5 non-`ConfigManager` frames) at the save site.
+
+Audited fields:
+
+- `Launch.UseStateMachine` — the 2026-05-28 silent-flip culprit.
+- `Launch.SkipNativeWarmup` — the other half of the bad-combo.
+- `Launch.SkipShmEnterWorldOnDalaya` — enter-world fast-path; flip would change post-charselect behavior.
+- `AutoEnterWorld` — top-level autologin opt-out.
+- `Layout.UseHook` — DLL injection opt-out; flip disables window management.
+- `Launch.JoinServerId` — JoinServerDirect server ID (Dalaya = 1).
+
+Scope decision: only the 6 fields above, not the 50+ in AppConfig. Diffing the entire config would flood the log on routine saves (PiP drag updates `SavedPositions` every drag-end, `LastLoginAt` updates every login). The set above is "if this changes, autologin behavior changes" — anything else would be noise.
+
+Implementation lives at `Config/ConfigManager.cs::WriteToDisk` (called from `Save` / `FlushSave` / `SaveImmediate` — all save paths funnel through it). Fail-open: any exception during audit short-circuits to a `Warn` line and the real save proceeds. Performance: adds one `JsonSerializer.Deserialize<AppConfig>` on the prior file (~1–5ms on a ~10KB config) per save. Save coalesces at 250ms, so the audit overhead is negligible.
+
+**Example log lines (what a future silent-flip would surface):**
+
+```
+[2026-05-29 14:32:17.842] [INFO] ConfigWrite: Launch.UseStateMachine True->False | caller=SettingsForm.ApplySettings<-TrayManager.OnSettingsApply<-EventHandler.Invoke
+[2026-05-29 14:32:17.844] [INFO] ConfigWrite: Launch.SkipNativeWarmup False->True | caller=SettingsForm.ApplySettings<-TrayManager.OnSettingsApply<-EventHandler.Invoke
+```
+
+A `grep ConfigWrite eqswitch.log` next session would show exactly which code path flipped what, with no need to reproduce under a debugger. Closes the gap that drove the multi-hour 2026-05-28 misdiagnosis.
+
+### Code-side cleanup
+
+- `AppConfig.cs:1018-1051` — XML doc on `UseStateMachine` rewritten to describe v3.22.71 default + the bad-combo + the 2026-05-28 misdiagnosis as the load-bearing rationale.
+
+### Not included
+
+- Native-side readback for `CombinedTypeString` (typewriter path) was considered: post-BURST-1 read of `CEditBaseWnd::InputText` length+first-byte, surfaced in eqswitch.log as paired `typed=N delivered=M`. **Deferred** because the source-default flip retires the typewriter path as the production code path — Native readback for a now-vestigial path is the wrong place to spend cycles. Revisit if a future need surfaces (e.g., a power-user actively running `useStateMachine: false` for a non-Dalaya server and hitting a different truncation class).
+
 ## v3.22.70 — v3.22.69 deferred items: full login_state_machine SEH coverage + build.cmd parity (2026-05-27)
 
 Closes both items v3.22.69 explicitly deferred ("Findings explicitly deferred to v3.22.70" section in the v3.22.69 entry).

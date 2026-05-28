@@ -1020,15 +1020,33 @@ public class LaunchConfig
     /// (<c>AutoLoginManager.RunLoginStateMachine</c>) instead of the linear
     /// <c>RunLoginSequence</c>. The state machine reads the v3.21.0 widget probes +
     /// Native phase + gameState every 250ms and dispatches via state transitions
-    /// rather than time-budgeted sleeps.
+    /// rather than time-budgeted sleeps. Native owns the password write
+    /// (<c>EQMainCXStr::WriteEditTextDirect</c> CXStr paste at
+    /// <c>CEditBaseWnd::InputText +0x1A8</c>) — atomic, MQ2-style, no per-char
+    /// WM_CHAR loop, no OS-side keystroke throttling surface.
     ///
-    /// AppConfig default is <c>false</c>; deployed installs flip it to <c>true</c>
-    /// via per-install <c>eqswitch-config.json</c>. The legacy <c>RunLoginSequence</c>
-    /// remains as a runtime escape hatch for environments where the SM path's
-    /// SHM/widget dependencies aren't satisfied. Not exposed in the Settings UI:
-    /// it's a power-user diagnostic flag, not a feature.
+    /// <para>v3.22.71 — AppConfig default flipped to <c>true</c>. Prior default
+    /// (<c>false</c>) was a v3.22.0-era safety baseline carried forward by
+    /// inertia; the bad-combo with <c>SkipNativeWarmup=true</c> (the de-facto
+    /// production setting) makes the legacy <c>RunLoginSequence</c> path
+    /// nonviable on Dalaya because the C# per-char WM_CHAR pump is subject to
+    /// game-thread contention from Native polling and to OS-side WM_CHAR
+    /// throttling that the SM path's atomic CXStr paste bypasses entirely.
+    /// Drove the 2026-05-28 misdiagnosis: a silent autonomous flip of this
+    /// flag to <c>false</c> on 5/27 16:27 reproduced the v3.22.10-era "5/7
+    /// password chars landing" symptom on every smoke regardless of which
+    /// EQSwitch binary was installed, presenting as an OS env-shift across
+    /// 4 release versions. With the default flipped, fresh downloads and
+    /// fresh configs both start in the working state.</para>
+    ///
+    /// <para>The legacy <c>RunLoginSequence</c> remains as a runtime escape
+    /// hatch for environments where the SM path's SHM/widget dependencies
+    /// aren't satisfied (e.g., non-Dalaya emu servers where the
+    /// <c>CEditBaseWnd::InputText</c> offset hasn't been validated). Not
+    /// exposed in the Settings UI: it's a power-user diagnostic flag, not a
+    /// feature.</para>
     /// </summary>
-    public bool UseStateMachine { get; set; } = false;
+    public bool UseStateMachine { get; set; } = true;
 }
 
 public class PipConfig

@@ -361,6 +361,15 @@ public static class ConfigManager
         // which would silently drift if the suffix is ever refactored (e.g.
         // .tmp → .new, or per-PID .tmp.{pid}).
         var tempPath = ConfigPath + ".tmp";
+
+        // v3.22.71: load-bearing-flag audit BEFORE the write, so a flip leaves
+        // a greppable trace in eqswitch.log with the caller stack that drove it.
+        // Drove a multi-hour 2026-05-28 misdiagnosis (env-shift phantom — actually
+        // a silent autonomous flip of UseStateMachine→false on 5/27 16:27 that
+        // no log captured). Fail-open: any audit failure logs a warn and the
+        // real save continues.
+        LogConfigWriteAudit(config);
+
         try
         {
             if (File.Exists(ConfigPath))
@@ -446,6 +455,146 @@ public static class ConfigManager
 
     /// <summary>Raised when FlushSave fails. Subscribers can show user-facing warnings.</summary>
     public static event Action<string>? SaveFailed;
+
+    // ── v3.22.71 load-bearing-flag audit ────────────────────────────────────
+    // Tracks the subset of config flags whose silent flip can break autologin
+    // end-to-end. When any of these change between the on-disk file and the
+    // incoming config, eqswitch.log gets a "ConfigWrite:" line naming the field,
+    // old→new value, and the C# caller stack at the Save site. The 2026-05-28
+    // env-shift phantom (multi-hour misdiagnosis) was caused by a silent
+    // UseStateMachine→false flip on 5/27 16:27 from an autonomous run; no log
+    // captured which caller did it. This audit closes that gap going forward.
+    //
+    // Scope decision: only the 6 fields below — not the 50+ in AppConfig.
+    // Diffing the entire config on every save would flood the log on routine
+    // saves (PiP drag updates SavedPositions every drag-end, LastLoginAt
+    // updates every login). The set below is "if this changes, autologin
+    // behavior changes" — the bad-combo from the misdiagnosis was specifically
+    // UseStateMachine + SkipNativeWarmup.
+    private readonly struct AuditFlags
+    {
+        public bool UseStateMachine { get; init; }
+        public bool SkipNativeWarmup { get; init; }
+        public bool SkipShmEnterWorldOnDalaya { get; init; }
+        public bool AutoEnterWorld { get; init; }
+        public bool UseHook { get; init; }
+        public int JoinServerId { get; init; }
+
+        public static AuditFlags From(AppConfig cfg) => new()
+        {
+            UseStateMachine = cfg.Launch.UseStateMachine,
+            SkipNativeWarmup = cfg.Launch.SkipNativeWarmup,
+            SkipShmEnterWorldOnDalaya = cfg.Launch.SkipShmEnterWorldOnDalaya,
+            AutoEnterWorld = cfg.AutoEnterWorld,
+            UseHook = cfg.Layout.UseHook,
+            JoinServerId = cfg.Launch.JoinServerId,
+        };
+
+        public static List<string> DiffLines(AuditFlags? old, AuditFlags @new)
+        {
+            var lines = new List<string>();
+            if (old is null)
+            {
+                // First write — anchor the baseline so subsequent flip-diffs
+                // have something to compare against in this process's logs.
+                lines.Add($"first-write Launch.UseStateMachine={@new.UseStateMachine}");
+                lines.Add($"first-write Launch.SkipNativeWarmup={@new.SkipNativeWarmup}");
+                lines.Add($"first-write Launch.SkipShmEnterWorldOnDalaya={@new.SkipShmEnterWorldOnDalaya}");
+                lines.Add($"first-write AutoEnterWorld={@new.AutoEnterWorld}");
+                lines.Add($"first-write Layout.UseHook={@new.UseHook}");
+                lines.Add($"first-write Launch.JoinServerId={@new.JoinServerId}");
+                return lines;
+            }
+            var o = old.Value;
+            if (o.UseStateMachine != @new.UseStateMachine)
+                lines.Add($"Launch.UseStateMachine {o.UseStateMachine}->{@new.UseStateMachine}");
+            if (o.SkipNativeWarmup != @new.SkipNativeWarmup)
+                lines.Add($"Launch.SkipNativeWarmup {o.SkipNativeWarmup}->{@new.SkipNativeWarmup}");
+            if (o.SkipShmEnterWorldOnDalaya != @new.SkipShmEnterWorldOnDalaya)
+                lines.Add($"Launch.SkipShmEnterWorldOnDalaya {o.SkipShmEnterWorldOnDalaya}->{@new.SkipShmEnterWorldOnDalaya}");
+            if (o.AutoEnterWorld != @new.AutoEnterWorld)
+                lines.Add($"AutoEnterWorld {o.AutoEnterWorld}->{@new.AutoEnterWorld}");
+            if (o.UseHook != @new.UseHook)
+                lines.Add($"Layout.UseHook {o.UseHook}->{@new.UseHook}");
+            if (o.JoinServerId != @new.JoinServerId)
+                lines.Add($"Launch.JoinServerId {o.JoinServerId}->{@new.JoinServerId}");
+            return lines;
+        }
+    }
+
+    /// <summary>
+    /// Snapshot the prior on-disk values of audit-tracked flags, compare to the
+    /// incoming config, log any deltas with the caller stack. Fail-open by
+    /// design: ANY exception in audit short-circuits to a Warn line so the real
+    /// save proceeds unaffected. Audit is observability — not a precondition.
+    /// </summary>
+    private static void LogConfigWriteAudit(AppConfig newConfig)
+    {
+        try
+        {
+            AuditFlags? oldFlags = null;
+            if (File.Exists(ConfigPath))
+            {
+                try
+                {
+                    var oldJson = File.ReadAllText(ConfigPath);
+                    var (migratedJson, _) = ConfigVersionMigrator.MigrateIfNeeded(oldJson);
+                    var oldConfig = JsonSerializer.Deserialize<AppConfig>(migratedJson, JsonOptions);
+                    if (oldConfig != null) oldFlags = AuditFlags.From(oldConfig);
+                }
+                catch (Exception ex)
+                {
+                    // Prior config unreadable — corrupt, mid-write race, ACL flip.
+                    // Treat as first-write so the new values get anchored.
+                    FileLogger.Info($"ConfigWrite: prior config unreadable ({ex.GetType().Name}: {ex.Message}) — treating as first-write");
+                }
+            }
+
+            var newFlags = AuditFlags.From(newConfig);
+            var deltas = AuditFlags.DiffLines(oldFlags, newFlags);
+            if (deltas.Count == 0) return;
+
+            string caller = CaptureCallerStack();
+            foreach (var line in deltas)
+                FileLogger.Info($"ConfigWrite: {line} | caller={caller}");
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Warn($"ConfigWrite: audit failed (save continuing): {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Walks the call stack and returns the top non-ConfigManager frames as a
+    /// "Caller.Method&lt;-Caller.Method" string. Used by the audit log so a future
+    /// session can see which code path triggered a flag flip without having to
+    /// reproduce the run under a debugger. Limited to 5 frames to keep log lines
+    /// readable; stops at the first non-ConfigManager frame chain.
+    /// </summary>
+    private static string CaptureCallerStack()
+    {
+        try
+        {
+            var st = new System.Diagnostics.StackTrace(skipFrames: 1, fNeedFileInfo: false);
+            var frames = new List<string>();
+            for (int i = 0; i < st.FrameCount && frames.Count < 5; i++)
+            {
+                var f = st.GetFrame(i);
+                var m = f?.GetMethod();
+                if (m == null) continue;
+                var typeName = m.DeclaringType?.Name ?? "?";
+                // Skip our own ConfigManager frames so the chain starts at the
+                // actual save originator (autologin / settings / tray / etc.).
+                if (typeName == nameof(ConfigManager)) continue;
+                frames.Add($"{typeName}.{m.Name}");
+            }
+            return frames.Count > 0 ? string.Join("<-", frames) : "<unknown>";
+        }
+        catch
+        {
+            return "<stack-capture-failed>";
+        }
+    }
 
     /// <summary>
     /// Create a timestamped backup of the current config.
