@@ -1,5 +1,54 @@
 # Changelog
 
+## v3.22.75 — verifier-pass-2 follow-ups: deadlock fix + hard queue cap + case-insensitive validator (2026-05-28)
+
+Closes convergent CRITICAL findings from the SECOND 8-agent verifier pass on the v3.22.74 ship. Three real CRITICAL fixes + symbol-named doc references + corrected v3.22.74 CHANGELOG bug scope.
+
+### `Config/ConfigManager.cs::LogConfigWriteAudit` — REVERT v3.22.73 `_saveLock` acquisition (CRITICAL DEADLOCK)
+
+T3-Opus convergent CRITICAL with explicit AB-BA deadlock construction. The v3.22.73 fix introduced a violation of the v3.22.26 lock-ordering invariant (`ConfigMutationLock` outer, `_saveLock` inner):
+
+- T1 (UI thread, `FlushSave`): enters `LogConfigWriteAudit`, holds `_saveLock`.
+- T2 (background thread, SM-finally): holds `ConfigMutationLock` from its outer scope, calls `SaveImmediate` → blocks acquiring `_saveLock` (held by T1).
+- T1: releases `_saveLock` after audit completes, advances to `WriteToDisk`'s `ConfigMutationLock` acquisition → blocks (held by T2).
+- **AB-BA deadlock.**
+
+T3-Sonnet ruled the same concern CLEAN with a careful analysis — Opus/Sonnet disagreement on the same prompt. Per verifier-spec.md synthesis rule 5: "trust the one that flags." Opus's construction is concrete and valid; Sonnet's APPROVE missed the cross-thread interleaving.
+
+Resolution: revert to the v3.22.71 unlocked audit-read. The race the v3.22.73 fix was trying to close (concurrent `FlushSave` + `SaveImmediate` causing audit to miss a delta when `File.ReadAllText` hits IOException mid-`File.Move`) is a *less-severe observability gap* than a real deadlock. The inner catch already handles IOException gracefully — best-effort audit is the accepted tradeoff. The v3.22.73 cost-claim correction in CHANGELOG also no longer applies (no lock-contention cost).
+
+A tighter fix would either hoist the audit OUT of `WriteToDisk` (call it from `Save` / `SaveImmediate` / `FlushSave` BEFORE any lock acquisitions) or use a dedicated `_auditLock` that's never held when `ConfigMutationLock` is taken. Both are larger refactors deferred to a future cleanup pass — the v3.22.71 observability gap is documented and acceptable.
+
+### `UI/TrayManager.cs::QueueLostClientBalloon` — HARD cap via in-place trim (CRITICAL)
+
+T2-Opus + T3-Opus convergent CRITICAL: the v3.22.73 `LostClientsQueueCap = 20` was a *soft* cap. At cap-hit, `QueueLostClientBalloon` called `TryDispatchLostClientBalloon` which checks `_contextMenu?.Visible == true` and no-ops when menu is open — leaving the list intact for the `Closed` handler to drain. During a sustained menu-open + flapping-ProcessManager scenario, the queue could grow past 20 unbounded: each subsequent add re-hit the cap-check, re-called dispatch, re-no-op'd. The cap only fired when the menu was closed at the moment of overflow.
+
+Fix: at cap-hit, trim in-place by dropping the oldest half (`RemoveRange(0, count - halfCap)`) BEFORE calling dispatch. If dispatch fires (menu closed), the queue clears. If dispatch defers (menu open), the queue is at least bounded to ~`LostClientsQueueCap` entries. The oldest ~10 labels are lost — acceptable: they coalesce into a single "N clients lost" balloon anyway, label accuracy matters less than not growing unbounded. The cap is now a hard ceiling, not a dispatch trigger.
+
+### `Config/AppConfig.cs::Validate` — case-insensitive `SizePreset` normalization (CRITICAL)
+
+T2-Sonnet + T2-Opus convergent CRITICAL: C# pattern-match `is not (... or ...)` uses **ordinal case-sensitive** equality. Pre-fix, a hand-edited `SizePreset: "xl"` (lowercase) failed the v3.22.74 allowlist match and silently reset to `"Large"` — the same bug class v3.22.74 was meant to close, just with case as the discriminator instead of value-completeness.
+
+Fix: normalize `SizePreset` to its canonical PascalCase form via a `string.Equals(s, ..., OrdinalIgnoreCase)` switch BEFORE the equality check. `"xl"`, `"XL"`, and `"Xl"` all settle on `"XL"`. If the input doesn't match any canonical name (case-insensitive), falls back to `"Large"` (the prior default). Sets `mutated = true` on case-only mismatches so the canonical-case value gets persisted to disk — one-time backup-and-save cost on the first load after a hand-edit; persistent disk value is the correctness primary.
+
+The broader pattern (other string-enum allowlists in `Validate`: `Layout.Mode`, `Pip.Orientation`, `Affinity.ActivePriority/BackgroundPriority`, `Hotkeys.SwitchKeyMode`) has the same case-sensitivity issue but is deferred to a future cleanup pass — none of the convergent verifier findings called those out specifically, and the surface area for hand-edited typos is much narrower for those fields (most are UI-driven, not JSON-editable in practice).
+
+### CHANGELOG v3.22.74 bug-scope correction (T3-Opus IMPORTANT)
+
+The v3.22.74 entry claimed the SizePreset bug bit users "via hand-edited JSON (or via a future Settings UI exposing the new presets)" — implying XL/XXL/XXXL were not yet UI-reachable. **False.** `UI/SettingsForm.cs::BuildPipTab` already exposes `XL (768x432)`, `XXL (1024x576)`, `XXXL (1600x900)` in the PiP size dropdown — has shipped that way since the presets were added. The bug bit any user who selected XL/XXL/XXXL in Settings → Apply, then reopened the dialog (or the next load) → silently reset. Scope was Settings-UI-reachable, not "JSON hand-editors only" as claimed. Retroactively corrected. (Note kept here because it changes the user-visible severity assessment of v3.22.74 — broader cohort affected than originally documented.)
+
+### Symbol-named doc references (T2-Sonnet + T2-Opus + T3-Opus convergent MINOR)
+
+Multiple verifiers flagged stale `AppConfig.cs:1049` references in CLAUDE.md, the bug memory file, and the v3.22.71 CHANGELOG entry. Real location had drifted to `:1058` then `:1083` across v3.22.71/74/75 edits. Resolution: replace line-number references with symbol-named ones (`Config/AppConfig.cs::LaunchConfig.UseStateMachine`) so future code shifts don't rot the docs. Pattern matches CLAUDE.md's own warning at the top about csproj `<Version>` rotting if hardcoded — applied here to symbol references too.
+
+### Not addressed (deferred / out of scope)
+
+- **CLAUDE.md File Layout line counts** (T3-Opus MINOR): claims `AppConfig.cs (509 lines)` / `TrayManager.cs (1549 lines)` / `SettingsForm.cs (~1780 lines)` — actual is `1549` / `5197` / `4099`. Same rot class as the line-number drift. Decided not to fix in this ship because (a) line counts are advisory not load-bearing, (b) any non-trivial code change would re-rot them, (c) the doc's own warning about `<Version>` should be extended to file layout in a separate doc-cleanup pass.
+- **MEMORY.md doesn't list v3.22.74/v3.22.75** (T1-Sonnet MINOR): MEMORY.md index entry says "v3.22.71→73". Decided not to bump every patch ship — the index entry's role is "latest cluster" pointer, not patch-level changelog. Will update on the next significant ship.
+- **`feedback_eqswitch_check_config_before_env_theories.md` grep recipe portability** (T2-Sonnet + T2-Opus MINOR): minor wording cleanup deferred.
+- **Audit log scope doesn't cover `SizePreset`** (T2-Opus MINOR): SizePreset is not autologin-critical; expanding the audit set on every UI-driven enum was already considered and rejected in v3.22.71 (the explicit 6-field struct IS the documentation).
+- **Broader case-insensitive `Validate` cleanup** (covered above in SizePreset fix): the same pattern applies to other string-enum allowlists but is deferred.
+
 ## v3.22.74 — SizePreset validator allowlist alignment (2026-05-28)
 
 Closes T3-Sonnet's verifier finding from the v3.22.73 pass (originally logged as deferred to a future cleanup — addressed in-session).

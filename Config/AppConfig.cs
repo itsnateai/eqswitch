@@ -442,16 +442,41 @@ public class AppConfig
 
         // String-enum validation — fall back to defaults on garbage values from hand-edited JSON
         if (Layout.Mode is not ("single" or "multimonitor")) Layout.Mode = "single";
-        // v3.22.74 (T3-Sonnet verifier carry-over from v3.22.73 pass): allowlist
-        // now matches the SizePreset field doc + the PipConfig.GetSize() switch
-        // (lines 1086-1095) which handle XL / XXL / XXXL as first-class presets.
-        // Pre-fix, a hand-edited "XL" got silently reset to "Large" on every
-        // load via this validator + the v3.15.4 mutated-flag triggers a backup
-        // write on every startup (spurious churn + lost user intent). Verified
-        // against doc comment at line ~1038: "Small, Medium, Large, XL, XXL,
-        // XXXL, Custom". If a future Custom-with-named-preset is added, both
-        // GetSize() AND this allowlist need the new value.
-        if (Pip.SizePreset is not ("Small" or "Medium" or "Large" or "XL" or "XXL" or "XXXL" or "Custom")) Pip.SizePreset = "Large";
+        // v3.22.74 + v3.22.75 (verifier convergent across passes): allowlist
+        // matches the SizePreset field doc + PipConfig.GetSize() switch (which
+        // handles XL=768x432, XXL=1024x576, XXXL=1600x900 as first-class
+        // presets) AND normalizes case before comparison. v3.22.74 closed
+        // the missing-XL/XXL/XXXL value gap; v3.22.75 closed the
+        // case-sensitivity gap (T2-Sonnet + T2-Opus convergent CRITICAL):
+        // pre-v3.22.75 a hand-edited "xl" or "large" got silently reset to
+        // "Large" + triggered the v3.15.4 mutated-flag → spurious backup
+        // write on every startup. Now: normalize to canonical PascalCase via
+        // a case-insensitive map before the allowlist check, so "xl", "XL",
+        // and "Xl" all settle on "XL" without firing the mutated flag.
+        // Maintenance contract: if a new preset is added (e.g. XS, 4K), BOTH
+        // GetSize() AND this map need the new value.
+        var canonSizePreset = Pip.SizePreset switch
+        {
+            { } s when string.Equals(s, "Small",  StringComparison.OrdinalIgnoreCase) => "Small",
+            { } s when string.Equals(s, "Medium", StringComparison.OrdinalIgnoreCase) => "Medium",
+            { } s when string.Equals(s, "Large",  StringComparison.OrdinalIgnoreCase) => "Large",
+            { } s when string.Equals(s, "XL",     StringComparison.OrdinalIgnoreCase) => "XL",
+            { } s when string.Equals(s, "XXL",    StringComparison.OrdinalIgnoreCase) => "XXL",
+            { } s when string.Equals(s, "XXXL",   StringComparison.OrdinalIgnoreCase) => "XXXL",
+            { } s when string.Equals(s, "Custom", StringComparison.OrdinalIgnoreCase) => "Custom",
+            _ => "Large",
+        };
+        if (!string.Equals(Pip.SizePreset, canonSizePreset, StringComparison.Ordinal))
+        {
+            Pip.SizePreset = canonSizePreset;
+            // Set mutated=true so the canonical-case value gets persisted to
+            // disk. Without this, next load re-reads the non-canonical form
+            // (e.g. "xl") and re-normalizes in memory — but disk stays bad,
+            // so the cycle repeats. One-time backup-and-save cost on the
+            // first load after a hand-edit is acceptable; the persistent
+            // disk value is the correctness primary.
+            mutated = true;
+        }
         if (Pip.Orientation is not ("Horizontal" or "Vertical")) Pip.Orientation = "Vertical";
         if (Affinity.ActivePriority is not ("Normal" or "AboveNormal" or "High" or "BelowNormal"))
             Affinity.ActivePriority = "AboveNormal";

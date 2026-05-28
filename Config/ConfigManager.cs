@@ -535,40 +535,48 @@ public static class ConfigManager
             AuditFlags? oldFlags = null;
             if (File.Exists(ConfigPath))
             {
-                // v3.22.73 (verifier convergent CRITICAL): take _saveLock around
-                // the disk read + deserialize so the audit can't race a sibling
-                // WriteToDisk's File.Move. Pre-v3.22.73, the audit lived OUTSIDE
-                // any lock — FlushSave releases _saveLock at line 269 BEFORE
-                // calling WriteToDisk, so a UI-thread FlushSave's audit-read
-                // could overlap a background SaveImmediate's File.Move. That
-                // surfaced as IOException → catch → log "prior config unreadable"
-                // → treat as first-write → audit SILENTLY DROPS the actual
-                // delta. Failure mode the audit was built to catch (a silent
-                // flip during a concurrent autologin SaveImmediate) had a
-                // structural blind spot. Lock acquisition is uncontended on
-                // the common path (single-threaded saves); recursive on the
-                // SaveImmediate→WriteToDisk→LogConfigWriteAudit chain
-                // (same-thread re-acquire is a no-op per C# lock semantics).
-                lock (_saveLock)
+                // v3.22.75 (T3-Opus CRITICAL verifier finding): the v3.22.73
+                // _saveLock acquisition here INTRODUCED a deadlock risk that
+                // violated the v3.22.26 lock-ordering invariant
+                // ("ConfigMutationLock first, then _saveLock"). AB-BA scenario:
+                //   T1 (UI/FlushSave): in LogConfigWriteAudit holding _saveLock
+                //   T2 (SM-finally): holds ConfigMutationLock outer, calls
+                //     SaveImmediate → blocks acquiring _saveLock
+                //   T1 releases _saveLock post-audit, advances to WriteToDisk's
+                //     ConfigMutationLock acquisition → blocks → DEADLOCK
+                // The lock the v3.22.73 fix introduced was inside WriteToDisk
+                // (downstream of ConfigMutationLock's planned acquisition on
+                // the SAME WriteToDisk call), which structurally violates
+                // outer→inner ordering from any code path that doesn't enter
+                // WriteToDisk already holding ConfigMutationLock.
+                //
+                // Resolution: revert to v3.22.71 unlocked audit-read. The
+                // race the v3.22.73 fix was trying to close (concurrent
+                // FlushSave + SaveImmediate causing audit to miss a delta)
+                // is a less-severe observability gap than a real deadlock.
+                // The catch below already handles IOException gracefully —
+                // best-effort audit is the accepted tradeoff. A future
+                // tighter fix would either hoist the audit OUT of
+                // WriteToDisk entirely (call it from Save/SaveImmediate/
+                // FlushSave BEFORE any lock acquisitions) or use a dedicated
+                // _auditLock that's never held when ConfigMutationLock is
+                // taken — but those are larger refactors deferred for now.
+                try
                 {
-                    try
-                    {
-                        var oldJson = File.ReadAllText(ConfigPath);
-                        var (migratedJson, _) = ConfigVersionMigrator.MigrateIfNeeded(oldJson);
-                        var oldConfig = JsonSerializer.Deserialize<AppConfig>(migratedJson, JsonOptions);
-                        if (oldConfig != null) oldFlags = AuditFlags.From(oldConfig);
-                    }
-                    catch (Exception ex)
-                    {
-                        // Prior config genuinely unreadable — corrupt JSON, ACL
-                        // flip, transient sharing violation that survived the
-                        // lock (e.g. a non-EQSwitch process holding the file).
-                        // Treat as first-write so new values still get anchored.
-                        // With the v3.22.73 lock, this branch SHOULD NOT fire
-                        // for in-process races — if it does, something
-                        // external is the culprit.
-                        FileLogger.Info($"ConfigWrite: prior config unreadable ({ex.GetType().Name}: {ex.Message}) — treating as first-write");
-                    }
+                    var oldJson = File.ReadAllText(ConfigPath);
+                    var (migratedJson, _) = ConfigVersionMigrator.MigrateIfNeeded(oldJson);
+                    var oldConfig = JsonSerializer.Deserialize<AppConfig>(migratedJson, JsonOptions);
+                    if (oldConfig != null) oldFlags = AuditFlags.From(oldConfig);
+                }
+                catch (Exception ex)
+                {
+                    // Prior config genuinely unreadable (corrupt JSON, ACL
+                    // change, in-flight race with a sibling WriteToDisk's
+                    // File.Move, non-EQSwitch process holding the file).
+                    // Treat as first-write so new values still get anchored.
+                    // Best-effort — audit is observability, not a save
+                    // precondition.
+                    FileLogger.Info($"ConfigWrite: prior config unreadable ({ex.GetType().Name}: {ex.Message}) — treating as first-write");
                 }
             }
 

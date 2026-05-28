@@ -2834,12 +2834,23 @@ public class TrayManager : IDisposable
             _lostClientsCoalesceTimer.Tick += (_, _) => TryDispatchLostClientBalloon();
         }
 
-        // v3.22.73: if we hit the cap, dispatch immediately (subject to the
-        // same menu-visibility check). Bypasses the 1.5s coalesce window —
-        // the user sees the balloon sooner AND we don't risk growing past
-        // the cap on the next event.
+        // v3.22.75 (T2-Opus + T3-Opus convergent CRITICAL): at hard cap,
+        // trim the queue IN-PLACE before dispatching. The v3.22.73 fix
+        // called TryDispatchLostClientBalloon which returns without clearing
+        // when the menu is open — so during a sustained menu-open + flapping-
+        // ProcessManager scenario, the queue would grow past 20 unbounded
+        // (cap is "soft" while menu open, real cap is dispatch's clear).
+        // v3.22.75 fix: drop the oldest half on cap-hit and TRY dispatch.
+        // If dispatch fires (menu closed), great — queue clears. If dispatch
+        // defers (menu open), the queue is at least bounded to ~LostClientsQueueCap
+        // entries — we lost the oldest 10 labels (acceptable: they coalesce
+        // into a single "N clients lost" balloon anyway, label accuracy
+        // matters less than not growing unbounded). The cap is now a hard
+        // ceiling, not a dispatch trigger.
         if (_pendingLostClients.Count >= LostClientsQueueCap)
         {
+            int halfCap = LostClientsQueueCap / 2;
+            _pendingLostClients.RemoveRange(0, _pendingLostClients.Count - halfCap);
             TryDispatchLostClientBalloon();
             return;
         }
