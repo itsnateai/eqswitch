@@ -1588,7 +1588,10 @@ public class SettingsForm : Form
         if (_cardDirectBindings != null) RefreshDirectBindingsCard();
 
         // Layout
-        _chkSlimTitlebar.Checked = _config.Layout.SlimTitlebar;
+        // v3.22.80: checkbox states derive from WindowMode (the source of truth).
+        _chkSlimTitlebar.Checked = _config.Layout.WindowMode == WindowMode.Fullscreen;
+        _chkWindowedMode.Checked = _config.Layout.WindowMode == WindowMode.Windowed;
+        _chkWindowedMode.Enabled = false;   // Phase 2 enables this
         _chkDarkTitlebar.Checked = _config.Layout.DarkTitlebar;
         _nudTitlebarOffset.Value = DarkTheme.ClampNud(_nudTitlebarOffset, _config.Layout.TitlebarOffset);
         _nudBottomOffset.Value = DarkTheme.ClampNud(_nudBottomOffset, _config.Layout.BottomOffset);
@@ -1864,7 +1867,8 @@ public class SettingsForm : Form
                 SecondaryMonitor = _cboVideoSecondaryMon.SelectedIndex <= 0 ? -1 : _cboVideoSecondaryMon.SelectedIndex - 1,
                 TopOffset = (int)_nudVideoTopOffset.Value,
                 HorizontalNudgePx = (int)_nudHorizontalNudge.Value,
-                SlimTitlebar = _chkSlimTitlebar.Checked,
+                WindowMode = _chkWindowedMode.Checked ? WindowMode.Windowed : WindowMode.Fullscreen,
+                SlimTitlebar = _chkSlimTitlebar.Checked || _chkWindowedMode.Checked,
                 DarkTitlebar = _chkDarkTitlebar.Checked,
                 TitlebarOffset = (int)_nudTitlebarOffset.Value,
                 BottomOffset = (int)_nudBottomOffset.Value,
@@ -3929,7 +3933,8 @@ public class SettingsForm : Form
         // to AppConfig.WindowLayout / EQClientIniConfig defaults. Values
         // mirror the C# initializers in those classes — keep in sync if
         // either default changes.
-        _chkSlimTitlebar.Checked = true;        // WindowLayout.SlimTitlebar
+        _chkSlimTitlebar.Checked = true;        // WindowMode = Fullscreen
+        _chkWindowedMode.Checked = false;       // WindowLayout.WindowMode = Fullscreen
         _chkDarkTitlebar.Checked = true;        // WindowLayout.DarkTitlebar (v3.22.56)
         _nudTitlebarOffset.Value = DarkTheme.ClampNud(_nudTitlebarOffset, 18);  // WindowLayout.TitlebarOffset
         _nudBottomOffset.Value   = DarkTheme.ClampNud(_nudBottomOffset, 21);    // WindowLayout.BottomOffset
