@@ -465,12 +465,13 @@ public static class ConfigManager
     // UseStateMachine→false flip on 5/27 16:27 from an autonomous run; no log
     // captured which caller did it. This audit closes that gap going forward.
     //
-    // Scope decision: only the 6 fields below — not the 50+ in AppConfig.
+    // Scope decision: only the 7 fields below — not the 50+ in AppConfig.
     // Diffing the entire config on every save would flood the log on routine
     // saves (PiP drag updates SavedPositions every drag-end, LastLoginAt
     // updates every login). The set below is "if this changes, autologin
     // behavior changes" — the bad-combo from the misdiagnosis was specifically
-    // UseStateMachine + SkipNativeWarmup.
+    // UseStateMachine + SkipNativeWarmup. WindowMode (v3.22.80) joins because a
+    // silent flip changes the rendered window style + eqclient.ini resolution.
     private readonly struct AuditFlags
     {
         public bool UseStateMachine { get; init; }
@@ -479,6 +480,7 @@ public static class ConfigManager
         public bool AutoEnterWorld { get; init; }
         public bool UseHook { get; init; }
         public int JoinServerId { get; init; }
+        public WindowMode WindowMode { get; init; }
 
         public static AuditFlags From(AppConfig cfg) => new()
         {
@@ -488,6 +490,7 @@ public static class ConfigManager
             AutoEnterWorld = cfg.AutoEnterWorld,
             UseHook = cfg.Layout.UseHook,
             JoinServerId = cfg.Launch.JoinServerId,
+            WindowMode = cfg.Layout.WindowMode,
         };
 
         public static List<string> DiffLines(AuditFlags? old, AuditFlags @new)
@@ -503,6 +506,7 @@ public static class ConfigManager
                 lines.Add($"first-write AutoEnterWorld={@new.AutoEnterWorld}");
                 lines.Add($"first-write Layout.UseHook={@new.UseHook}");
                 lines.Add($"first-write Launch.JoinServerId={@new.JoinServerId}");
+                lines.Add($"first-write Layout.WindowMode={@new.WindowMode}");
                 return lines;
             }
             var o = old.Value;
@@ -518,6 +522,8 @@ public static class ConfigManager
                 lines.Add($"Layout.UseHook {o.UseHook}->{@new.UseHook}");
             if (o.JoinServerId != @new.JoinServerId)
                 lines.Add($"Launch.JoinServerId {o.JoinServerId}->{@new.JoinServerId}");
+            if (o.WindowMode != @new.WindowMode)
+                lines.Add($"Layout.WindowMode {o.WindowMode}->{@new.WindowMode}");
             return lines;
         }
     }
