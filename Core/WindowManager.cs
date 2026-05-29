@@ -1524,7 +1524,15 @@ public class WindowManager
         int x = monitor.Left - leftBleed;
         int y = monitor.Top - topBleed + captionVisible;
         int w = (monitor.Right - monitor.Left) + leftBleed + rightBleed;
-        int h = (monitor.Bottom - monitor.Top) + topBleed + bottomBleed - captionVisible;
+        // v3.22.81 — client height = NATIVE monitor height (no `- captionVisible`).
+        // The caption peeks `captionVisible` px at the top AND the client overflows
+        // the bottom edge by the same amount (the WinEQ2 method). Keeping the client
+        // at native monH means EQ's DX swap chain renders 1:1 at native resolution
+        // → crisp bitmap fonts. Pre-v3.22.81 this subtracted captionVisible,
+        // shrinking the client to a non-native height — the font seam that drove
+        // the v3.22.76 WS_POPUP swap. Fullscreen (WS_POPUP) has captionVisible==0,
+        // so its geometry is unchanged.
+        int h = (monitor.Bottom - monitor.Top) + topBleed + bottomBleed;
         return (x, y, w, h);
     }
 

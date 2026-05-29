@@ -838,8 +838,26 @@ public class EQClientSettingsForm : Form
                 // adjacency clipping in WindowManager, the outer no longer
                 // extends past on adjacent sides, so the INI dims must
                 // follow or DX will smear the rendered frame.
+                // v3.22.81 — both modes render at NATIVE resolution. Fullscreen
+                // (WS_POPUP) fills the monitor exactly. Windowed (WS_CAPTION)
+                // peeks the caption at the top and OVERFLOWS the bottom edge, so
+                // the client is still monW×monH → EQ's DX swap chain renders 1:1
+                // → crisp bitmap fonts (the v3.22.76 font-seam fix, now kept WITH
+                // a visible titlebar). Fullscreen path is unchanged
+                // (SlimTitlebarVisibleClientSize returns native for WS_POPUP).
+                // (Single-monitor overflows freely; multi-monitor side-adjacency
+                // may clip a side — tune in smoke, see spec §7.4.)
                 int captionVisible = SlimTitlebarCaptionVisible(offset);
-                var (gameW, gameH) = SlimTitlebarVisibleClientSize(screen.Bounds, offset);
+                int gameW, gameH;
+                if (config.Layout.WindowMode == WindowMode.Windowed)
+                {
+                    gameW = monW;
+                    gameH = monH;
+                }
+                else
+                {
+                    (gameW, gameH) = SlimTitlebarVisibleClientSize(screen.Bounds, offset);
+                }
 
                 SetIniValue(lines, "Defaults", "WindowedMode", "TRUE");
                 SetIniValue(lines, "VideoMode", "WindowedMode", "TRUE");
@@ -859,7 +877,7 @@ public class EQClientSettingsForm : Form
                 // our multi-monitor toggle hotkey. 0 = unbound.
                 SetIniValue(lines, "Defaults", "KEYMAPPING_TOGGLE_STORYWIN_1", "0");
                 SetIniValue(lines, "Defaults", "KEYMAPPING_TOGGLE_STORYWIN_2", "0");
-                FileLogger.Info($"EnforceOverrides: SlimTitlebar ON → forced {gameW}x{gameH} (monitor {monW}x{monH} - captionVisible {captionVisible}px - adjacency-clipped bleeds), Maximized=0, WindowedMode=TRUE, Story Window unbound");
+                FileLogger.Info($"EnforceOverrides: SlimTitlebar ON (mode={config.Layout.WindowMode}) → WindowedWidth/Height {gameW}x{gameH} (monitor {monW}x{monH}, captionVisible {captionVisible}px), Maximized=0, WindowedMode=TRUE, Story Window unbound");
             }
 
             if (config.EQClientIni.MaxFPS > 0)
