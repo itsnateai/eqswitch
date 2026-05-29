@@ -32,6 +32,21 @@ public static class WindowModeStyleTests
         failures += Assert("win no WS_THICKFRAME", (w & NativeMethods.WS_THICKFRAME) != 0, false);
         failures += Assert("win no WS_POPUP", (w & NativeMethods.WS_POPUP) != 0, false);
 
+        // Transition FS→Win: a window currently in Fullscreen (WS_POPUP, caption
+        // stripped) switched to Windowed must RESTORE the caption and clear WS_POPUP.
+        long fsState = WindowManager.DesiredSlimStyle(baseStyle, WindowMode.Fullscreen);
+        long backToWin = WindowManager.DesiredSlimStyle(fsState, WindowMode.Windowed);
+        failures += Assert("FS→Win restores caption", (backToWin & NativeMethods.WS_CAPTION) == NativeMethods.WS_CAPTION, true);
+        failures += Assert("FS→Win restores sysmenu", (backToWin & NativeMethods.WS_SYSMENU) != 0, true);
+        failures += Assert("FS→Win clears WS_POPUP", (backToWin & NativeMethods.WS_POPUP) != 0, false);
+
+        // Transition Win→FS: a Windowed window switched to Fullscreen sets WS_POPUP
+        // and clears the caption.
+        long winState = WindowManager.DesiredSlimStyle(baseStyle, WindowMode.Windowed);
+        long backToFs = WindowManager.DesiredSlimStyle(winState, WindowMode.Fullscreen);
+        failures += Assert("Win→FS sets WS_POPUP", (backToFs & NativeMethods.WS_POPUP) != 0, true);
+        failures += Assert("Win→FS clears WS_CAPTION", (backToFs & NativeMethods.WS_CAPTION) == NativeMethods.WS_CAPTION, false);
+
         // ProbeStyleFor returns the right canonical style per mode.
         failures += Assert("probe windowed has caption",
             (WindowManager.ProbeStyleFor(WindowMode.Windowed) & NativeMethods.WS_CAPTION) == NativeMethods.WS_CAPTION, true);

@@ -545,10 +545,9 @@ public class WindowManager
                 // (symmetry), eliminates real WM_NCCALCSIZE traffic on a
                 // cross-process window (non-free even when invisible).
                 // Round-5 T3-Opus verdict: defensible standalone.
-                // v3.22.76 WinEQ2 -frame none parity — strip caption+sysmenu + set WS_POPUP.
+                // v3.22.81 — style per WindowMode (Fullscreen=WS_POPUP, Windowed=WS_CAPTION).
                 long currentStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64();
-                const long mmStripMask = NativeMethods.WS_THICKFRAME | NativeMethods.WS_CAPTION | NativeMethods.WS_SYSMENU;
-                long desiredStyle = (currentStyle & ~mmStripMask) | NativeMethods.WS_POPUP;
+                long desiredStyle = DesiredSlimStyle(currentStyle, _config.Layout.WindowMode);
                 if (currentStyle != desiredStyle)
                 {
                     _api.SetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE, (IntPtr)desiredStyle);
@@ -572,7 +571,7 @@ public class WindowManager
                 // of both monitors, AND DX swap-chain stretch artifacts
                 // would appear on every client — exactly the same bug class
                 // the lock-to-primary-dims was added to suppress on swap.
-                long currentSlimStyle = (_api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64() & ~mmStripMask) | NativeMethods.WS_POPUP;
+                long currentSlimStyle = DesiredSlimStyle(_api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64(), _config.Layout.WindowMode);
                 long currentExStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_EXSTYLE).ToInt64();
                 (x, y, w, h) = ComputeSlimTitlebarOuterRect(effectiveBounds, titlebarOffset, currentSlimStyle, currentExStyle);
                 swpFlags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE;
@@ -1026,10 +1025,9 @@ public class WindowManager
             // → ApplySlimTitlebar re-fires every 500 ms cross-process. Per-
             // client probe is ~one kernel call per client per tick (~8 for
             // a 6-client setup) — negligible vs. the storm risk.
-            // v3.22.76: project liveStyle through the same strip+set
+            // v3.22.81: project liveStyle through the same per-WindowMode strip+set
             // ApplySlimTitlebar will apply so the bleed probe matches.
-            const long driftStripMask = NativeMethods.WS_THICKFRAME | NativeMethods.WS_CAPTION | NativeMethods.WS_SYSMENU;
-            long liveStyle = (_api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64() & ~driftStripMask) | NativeMethods.WS_POPUP;
+            long liveStyle = DesiredSlimStyle(_api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64(), _config.Layout.WindowMode);
             long liveExStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_EXSTYLE).ToInt64();
             _api.GetWindowRect(client.WindowHandle, out var rect);
 
@@ -1108,14 +1106,13 @@ public class WindowManager
             return;
         }
 
-        // v3.22.76 — WinEQ2 -frame none parity. Strip WS_THICKFRAME (resize
-        // border) AND WS_CAPTION|WS_SYSMENU (caption + sys-menu), set WS_POPUP.
-        // AdjustWindowRectEx on WS_POPUP returns 0/0/0/0 — eliminates the Win11
-        // 8/31/8/8 DWM frame zone that motivated v3.22.45 onwards. Gated on
-        // "actually needed" so steady-state guard-timer ticks no-op.
+        // v3.22.81 — style per WindowMode. Fullscreen = WS_POPUP (0/0/0/0 bleed,
+        // fills monitor). Windowed = keep WS_CAPTION|WS_SYSMENU, strip the resize
+        // border (8/31/8 bleed → caption peeks, WinEQ2 look). DesiredSlimStyle is
+        // symmetric so a live mode switch restyles correctly either direction.
+        // Gated on "actually needed" so steady-state guard-timer ticks no-op.
         long style = _api.GetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE).ToInt64();
-        const long stripMask = NativeMethods.WS_THICKFRAME | NativeMethods.WS_CAPTION | NativeMethods.WS_SYSMENU;
-        long desired = (style & ~stripMask) | NativeMethods.WS_POPUP;
+        long desired = DesiredSlimStyle(style, _config.Layout.WindowMode);
         if (style != desired)
         {
             _api.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, (IntPtr)desired);
@@ -1248,10 +1245,16 @@ public class WindowManager
     /// </summary>
     public static long DesiredSlimStyle(long currentStyle, Config.WindowMode mode)
     {
+        // Symmetric so live mode switches restyle correctly in BOTH directions
+        // (a Fullscreen WS_POPUP window switched to Windowed must regain its
+        // caption; a Windowed window switched to Fullscreen must lose it).
         if (mode == Config.WindowMode.Windowed)
-            return currentStyle & ~NativeMethods.WS_THICKFRAME;   // keep caption + sysmenu
+            // strip resize border + popup, restore caption + sysmenu
+            return (currentStyle & ~(NativeMethods.WS_THICKFRAME | NativeMethods.WS_POPUP))
+                   | NativeMethods.WS_CAPTION | NativeMethods.WS_SYSMENU;
+        // Fullscreen: strip caption+sysmenu+resize border, set popup
         const long stripMask = NativeMethods.WS_THICKFRAME | NativeMethods.WS_CAPTION | NativeMethods.WS_SYSMENU;
-        return (currentStyle & ~stripMask) | NativeMethods.WS_POPUP;  // Fullscreen
+        return (currentStyle & ~stripMask) | NativeMethods.WS_POPUP;
     }
 
     /// <summary>
