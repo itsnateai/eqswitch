@@ -336,8 +336,27 @@ public static class AppConfigValidateTests
             failures += Assert("windowMode default", cfg.Layout.WindowMode, WindowMode.Fullscreen);
         }
 
+        // v3.22.80 Case: out-of-range WindowMode (corrupt/hand-edited JSON) → Fullscreen.
+        {
+            var cfg = new AppConfig();
+            cfg.Layout.WindowMode = (WindowMode)99;
+            cfg.Validate();
+            failures += Assert("windowMode invalid clamps", cfg.Layout.WindowMode, WindowMode.Fullscreen);
+        }
+
+        // v3.22.80 Case: a main-card WindowMode forces SlimTitlebar true (legacy
+        // non-slim config migrates to the WindowMode look; card never lies about
+        // the rendered window).
+        {
+            var cfg = new AppConfig();
+            cfg.Layout.WindowMode = WindowMode.Fullscreen;
+            cfg.Layout.SlimTitlebar = false;
+            cfg.Validate();
+            failures += Assert("slim resync from windowMode", cfg.Layout.SlimTitlebar, true);
+        }
+
         Console.WriteLine(failures == 0
-            ? "AppConfigValidateTests: all 11 cases PASSED"
+            ? "AppConfigValidateTests: all 13 cases PASSED"
             : $"AppConfigValidateTests: {failures} assertion failure(s)");
         return failures == 0 ? 0 : 1;
     }

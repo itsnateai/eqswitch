@@ -358,6 +358,28 @@ public class AppConfig
         // Win11-DPI-sliver fix is ±1.
         Layout.HorizontalNudgePx = Math.Clamp(Layout.HorizontalNudgePx, -10, 10);
 
+        // v3.22.80: WindowMode is the user-facing window-style selector
+        // (Fullscreen=WS_POPUP borderless, Windowed=WS_CAPTION slim). Clamp
+        // out-of-range enum values from corrupt / hand-edited JSON.
+        if (!Enum.IsDefined(typeof(WindowMode), Layout.WindowMode))
+        {
+            FileLogger.Warn($"AppConfig.Validate: WindowMode out of range ({(int)Layout.WindowMode}) — reset to Fullscreen");
+            Layout.WindowMode = WindowMode.Fullscreen;
+            mutated = true;
+        }
+        // Both main-card modes are slim-managed; SlimTitlebar is the internal
+        // signal the styling code reads. Force it true so a legacy non-slim or
+        // hand-edited config can't desync the card from the rendered window.
+        // (Loud per Rule 12 — this is a one-time look change for the rare
+        // legacy non-slim user, who can re-enable the normal frame via the
+        // Advanced override.)
+        if (!Layout.SlimTitlebar)
+        {
+            FileLogger.Warn($"AppConfig.Validate: WindowMode={Layout.WindowMode} requires SlimTitlebar — forced true (legacy non-slim migrated to {Layout.WindowMode} look)");
+            Layout.SlimTitlebar = true;
+            mutated = true;
+        }
+
         Affinity.LaunchRetryCount = Math.Clamp(Affinity.LaunchRetryCount, 0, 20);
         Affinity.LaunchRetryDelayMs = Math.Clamp(Affinity.LaunchRetryDelayMs, 500, 30000);
 
