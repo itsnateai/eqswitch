@@ -1229,6 +1229,39 @@ public class WindowManager
         | NativeMethods.WS_CLIPCHILDREN
         | NativeMethods.WS_VISIBLE;
 
+    // v3.22.81 — Windowed-mode probe style: pre-v3.22.76 thin draggable caption
+    // (the WinEQ2 look — real titlebar + buttons, resize border stripped). On
+    // Win11 AdjustWindowRectEx gives ~8/31/8/8 bleed → caption peeks at the top.
+    internal const long WINDOWED_TITLEBAR_STYLE =
+        NativeMethods.WS_CAPTION
+        | NativeMethods.WS_SYSMENU
+        | NativeMethods.WS_CLIPSIBLINGS
+        | NativeMethods.WS_CLIPCHILDREN
+        | NativeMethods.WS_VISIBLE;
+
+    /// <summary>
+    /// v3.22.81 — target GWL_STYLE for a client's current style under the given
+    /// window mode. Fullscreen = WinEQ2 -frame none (WS_POPUP, no caption, fills
+    /// monitor). Windowed = thin draggable caption (keep WS_CAPTION|WS_SYSMENU,
+    /// strip the resize border). BOTH strip WS_THICKFRAME. The hook
+    /// (eqswitch-hook.cpp) also strips WS_THICKFRAME, which is correct for both.
+    /// </summary>
+    public static long DesiredSlimStyle(long currentStyle, Config.WindowMode mode)
+    {
+        if (mode == Config.WindowMode.Windowed)
+            return currentStyle & ~NativeMethods.WS_THICKFRAME;   // keep caption + sysmenu
+        const long stripMask = NativeMethods.WS_THICKFRAME | NativeMethods.WS_CAPTION | NativeMethods.WS_SYSMENU;
+        return (currentStyle & ~stripMask) | NativeMethods.WS_POPUP;  // Fullscreen
+    }
+
+    /// <summary>
+    /// Probe style (fed to AdjustWindowRectEx for the non-client bleed) for the
+    /// given mode: WS_POPUP (0 bleed → fill) for Fullscreen, WS_CAPTION (8/31/8
+    /// → caption peek) for Windowed.
+    /// </summary>
+    public static long ProbeStyleFor(Config.WindowMode mode)
+        => mode == Config.WindowMode.Windowed ? WINDOWED_TITLEBAR_STYLE : SLIM_TITLEBAR_STYLE;
+
     /// <summary>
     /// Overload for callers that don't hold a live HWND (TrayManager hook-config
     /// builder, ArrangeMultiMonitor lock-to-primary-dims policy). Uses the

@@ -168,6 +168,26 @@ static class Program
             return;
         }
 
+        // --test-window-mode-style — run Core/WindowModeStyleTests.RunAll() and
+        // exit with its return code. Guards the WindowMode → GWL_STYLE mapping
+        // (Fullscreen=WS_POPUP, Windowed=WS_CAPTION) added in v3.22.81 Phase 2.
+        if (args.Length >= 1 && args[0] == "--test-window-mode-style")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.WindowModeStyleTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"WindowModeStyleTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
         // --test-key-input-writer — run Core/KeyInputWriterTests.RunAll() and
         // exit with its return code. Guards the hotfix v3 MMF write-order contract.
         if (args.Length >= 1 && args[0] == "--test-key-input-writer")
