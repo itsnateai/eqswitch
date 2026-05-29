@@ -103,16 +103,14 @@ public class SettingsForm : Form
     // ─── Accounts tab controls (Phase 4: v4 Account + Character as first-class)
     private List<Account> _pendingAccounts = new();
     private List<Character> _pendingCharacters = new();
-    private int? _lastNameCollisionHash;
 
-    /// <summary>
-    /// Phase 4: raised after a successful ApplySettings when at least one Account.Name
-    /// collides with a Character.Name. Payload is a comma-separated list of the
-    /// colliding names. TrayManager subscribes + surfaces as a non-blocking balloon.
-    /// Fires only when the collision set changes across saves (hash-deduped; nullable
-    /// sentinel so a legitimate 0 hash doesn't masquerade as "no prior collision").
-    /// </summary>
-    public event Action<string>? OnSameNameCollision;
+    // v3.22.78: OnSameNameCollision event + _lastNameCollisionHash field
+    // removed. The "tray-menu clarity" balloon they powered is obsolete now
+    // that the tray context menu colors Account-resolved rows orange and
+    // Character-resolved rows white — kind is structurally visible, not
+    // ambiguous, even when an Account and a Character share names
+    // case-insensitively. See DarkMenuRenderer.OnRenderItemText / Build*Submenu.
+
     private DataGridView _dgvAccounts = null!;
     private DataGridView _dgvCharacters = null!;
     private NumericUpDown _nudLoginScreenDelay = null!;
@@ -144,7 +142,7 @@ public class SettingsForm : Form
     private string _pendingTeamLogin3 = "";
     private string _pendingTeamLogin4 = "";
     private Label _lblSlotDuplicateWarn = null!;
-    private Label _lblTeamSummary = null!;
+    private TeamSummaryLabel _lblTeamSummary = null!;
     private string _pendingTeam1A = "";
     private string _pendingTeam1B = "";
     private string _pendingTeam2A = "";
@@ -2107,28 +2105,9 @@ public class SettingsForm : Form
         VideoSaveToIni();
         FileLogger.Info("Settings applied");
 
-        // Phase 4: same-name nudge — non-blocking, hash-deduped per collision set so the
-        // balloon doesn't spam every Apply when the collision set is unchanged.
-        var collisions = _pendingAccounts
-            .Where(a => _pendingCharacters.Any(c => c.Name.Equals(a.Name, StringComparison.OrdinalIgnoreCase)))
-            .Select(a => a.Name)
-            .OrderBy(n => n, StringComparer.Ordinal)
-            .ToList();
-
-        if (collisions.Count > 0)
-        {
-            var details = string.Join(", ", collisions);
-            var hash = details.GetHashCode();
-            if (_lastNameCollisionHash != hash)
-            {
-                _lastNameCollisionHash = hash;
-                OnSameNameCollision?.Invoke(details);
-            }
-        }
-        else
-        {
-            _lastNameCollisionHash = null;
-        }
+        // v3.22.78: same-name "consider renaming" balloon removed. Tray menu
+        // now colors Account-resolved rows orange and Character-resolved rows
+        // white, so case-insensitive name collisions render unambiguously.
 
         return true;
     }
@@ -2375,11 +2354,10 @@ public class SettingsForm : Form
             BorderStyle = BorderStyle.FixedSingle,
         };
         teamsCard.Controls.Add(summaryPanel);
-        _lblTeamSummary = new Label
+        _lblTeamSummary = new TeamSummaryLabel
         {
             Location = new Point(6, 4),
             Size = new Size(318, 124),
-            Text = BuildTeamSummary(),
             ForeColor = DarkTheme.FgWhite,
             Font = DarkTheme.FontUI9,
             BackColor = Color.Transparent,
@@ -2391,14 +2369,12 @@ public class SettingsForm : Form
             // remaining headroom collects at the bottom where it reads as
             // intentional breathing room instead of dead space.
             TextAlign = ContentAlignment.TopLeft,
-            // v3.22.69: enable AutoEllipsis — T2 verifiers (Sonnet+Opus convergent)
-            // flagged that long Account usernames + (C)/(A) markers can exceed
-            // the 318px label width and silently clip with no indication. The
-            // builder also truncates per-cell (see BuildTeamSummary), but
-            // AutoEllipsis is a belt-and-suspenders fallback for the multi-line
-            // overflow path where per-line render still overshoots.
+            // AutoEllipsis applies only to the mirrored base Text used by
+            // Narrator / fallback; owner-paint controls visible truncation
+            // via Clip(MaxNameLen) in BuildTeamSummaryRows.
             AutoEllipsis = true,
         };
+        _lblTeamSummary.Rows = BuildTeamSummaryRows();
         summaryPanel.Controls.Add(_lblTeamSummary);
 
         // Phase 5b: removed "Auto Enter World (legacy default)" checkbox.
@@ -2719,7 +2695,7 @@ public class SettingsForm : Form
             _pendingAccounts.Add(dlg.Result);
             RefreshAccountsGrid();
             RefreshCharactersGrid();   // new Account may resolve previously-orphaned chars
-            _lblTeamSummary.Text = BuildTeamSummary();
+            _lblTeamSummary.Rows = BuildTeamSummaryRows();
         }
     }
 
@@ -2743,7 +2719,7 @@ public class SettingsForm : Form
             }
             RefreshAccountsGrid();
             RefreshCharactersGrid();
-            _lblTeamSummary.Text = BuildTeamSummary();
+            _lblTeamSummary.Rows = BuildTeamSummaryRows();
         }
     }
 
@@ -2795,7 +2771,7 @@ public class SettingsForm : Form
         }
         RefreshAccountsGrid();
         RefreshCharactersGrid();
-        _lblTeamSummary.Text = BuildTeamSummary();
+        _lblTeamSummary.Rows = BuildTeamSummaryRows();
     }
 
     private void OnAddCharacter()
@@ -2805,7 +2781,7 @@ public class SettingsForm : Form
         {
             _pendingCharacters.Add(dlg.Result);
             RefreshCharactersGrid();
-            _lblTeamSummary.Text = BuildTeamSummary();
+            _lblTeamSummary.Rows = BuildTeamSummaryRows();
         }
     }
 
@@ -2825,7 +2801,7 @@ public class SettingsForm : Form
                 PropagateNameChangeToQuickLogins(oldName, newName);
             }
             RefreshCharactersGrid();
-            _lblTeamSummary.Text = BuildTeamSummary();
+            _lblTeamSummary.Rows = BuildTeamSummaryRows();
         }
     }
 
@@ -2863,85 +2839,81 @@ public class SettingsForm : Form
         _pendingCharacters.RemoveAt(idx);
         ClearStaleTeamSlots(c.Name);
         RefreshCharactersGrid();
-        _lblTeamSummary.Text = BuildTeamSummary();
+        _lblTeamSummary.Rows = BuildTeamSummaryRows();
     }
 
-    private string BuildTeamSummary()
+    private IReadOnlyList<TeamSummaryRow> BuildTeamSummaryRows()
     {
-        // v3.22.68: name now carries a (C) / (A) kind marker so the summary
-        // mirrors the pills in the Configure Teams dialog — a slot's destination
-        // (enter-world vs charselect-only) is determined by kind, and surfacing
-        // it here means users can verify a team's makeup without opening the
-        // dialog. Unresolved targets still get a trailing '?'.
-        // v3.22.69: names are clipped to MaxNameLen with ellipsis to prevent
-        // T2-flagged overflow (long usernames like "reallylongusernameXYZ" +
-        // (A) marker on both slots exceeded the 318px label width and clipped
-        // silently). Per-cell budget here, AutoEllipsis on the label as
-        // belt-and-suspenders.
-        // v3.22.69 follow-up (T2 Sonnet+Opus convergent MINOR): unresolved
-        // suffix accounting. Pre-this-fix, `Clip(name) + "?"` could produce
-        // 13-char cells for exactly-12-char unresolved names (Clip returned
-        // them unchanged, then "?" was appended). Reserve 1 char for the
-        // suffix via an overloaded Clip so the total never exceeds MaxNameLen.
+        // Per-segment kinds replace the prior " (C)" / " (A)" trailing
+        // markers — TeamSummaryLabel paints Account names orange,
+        // Character names white, and the " | " team boundary red.
+        //
+        // v3.22.69's clip budget reserved 4 chars for the suffix and 1 char
+        // for the unresolved "?" sentinel. With the suffix gone, resolved
+        // names reclaim those 4 chars (12-char headroom instead of 8) so
+        // longer Account / Character names render unclipped. The unresolved
+        // path still reserves 1 char for the trailing "?" sentinel.
         const int MaxNameLen = 12; // accommodates typical EQ char + Dalaya account names
         string Clip(string s, int budget = MaxNameLen) =>
             s.Length > budget ? s.Substring(0, budget - 1) + "…" : s;
-        string Resolve(string targetName)
+
+        TeamSummarySegment ResolveSegment(string targetName)
         {
-            if (string.IsNullOrEmpty(targetName)) return "";
-            // v3.22.69 follow-up (T2-Opus + T3-Sonnet + T3-Opus R2 convergent
-            // MINOR): the resolved paths also need budget for their 4-char
-            // " (C)" / " (A)" suffix — pre-this-fix `Clip(ch.Name) + " (C)"`
-            // could produce 16-char cells (12-char name + 4-char suffix),
-            // overshooting MaxNameLen=12. Reserve 4 chars for the suffix in
-            // resolved paths (mirrors the unresolved path's 1-char reservation
-            // for "?"). 8 char budget keeps cells at ≤ MaxNameLen total.
-            var ch = _pendingCharacters.FirstOrDefault(c => c.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
-            if (ch != null) return $"{Clip(ch.Name, MaxNameLen - 4)} (C)";
-            var ac = _pendingAccounts.FirstOrDefault(a => a.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
-            return ac != null
-                ? $"{Clip(ac.Name, MaxNameLen - 4)} (A)"
-                : Clip(targetName, MaxNameLen - 1) + "?";   // trailing '?' flags unresolved; budget reserves 1 char
+            if (string.IsNullOrEmpty(targetName))
+                return new TeamSummarySegment("", SummarySegmentKind.Plain);
+            var ch = _pendingCharacters.FirstOrDefault(c =>
+                c.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
+            if (ch != null)
+                return new TeamSummarySegment(Clip(ch.Name), SummarySegmentKind.CharacterName);
+            var ac = _pendingAccounts.FirstOrDefault(a =>
+                a.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
+            if (ac != null)
+                return new TeamSummarySegment(Clip(ac.Name), SummarySegmentKind.AccountName);
+            // FK drift — render the raw string with a trailing "?" sentinel
+            // and route to Unresolved so the kind is explicit even though
+            // the visible color matches CharacterName for now.
+            return new TeamSummarySegment(Clip(targetName, MaxNameLen - 1) + "?", SummarySegmentKind.Unresolved);
         }
 
-        string Fmt(string u1, string u2)
+        void AppendTeamCell(List<TeamSummarySegment> segs, int teamNum, string u1, string u2)
         {
-            var names = new[] { u1, u2 }
-                .Select(Resolve)
-                .Where(s => !string.IsNullOrEmpty(s))
-                .ToList();
-            return names.Count > 0 ? string.Join(" + ", names) : "(none)";
+            segs.Add(new TeamSummarySegment($"T{teamNum}: ", SummarySegmentKind.Plain));
+            var s1 = ResolveSegment(u1);
+            var s2 = ResolveSegment(u2);
+            bool hasS1 = !string.IsNullOrEmpty(s1.Text);
+            bool hasS2 = !string.IsNullOrEmpty(s2.Text);
+            if (hasS1 && hasS2)
+            {
+                segs.Add(s1);
+                segs.Add(new TeamSummarySegment(" + ", SummarySegmentKind.Plain));
+                segs.Add(s2);
+            }
+            else if (hasS1) segs.Add(s1);
+            else if (hasS2) segs.Add(s2);
+            else segs.Add(new TeamSummarySegment("(none)", SummarySegmentKind.Plain));
         }
-        // v3.22.58: 12 teams in 6 rows × 2 cols (was 4×3 — wider names like
-        // "raistlin + Natedogg" wrapped inside the 106px-per-cell budget).
-        // 2-col layout gives ~159px per cell, comfortably fits typical name pairs.
-        var cells = new string[12];
-        cells[0]  = $"T1: {Fmt(_pendingTeam1A,   _pendingTeam1B)}";
-        cells[1]  = $"T2: {Fmt(_pendingTeam2A,   _pendingTeam2B)}";
-        cells[2]  = $"T3: {Fmt(_pendingTeam3A,   _pendingTeam3B)}";
-        cells[3]  = $"T4: {Fmt(_pendingTeam4A,   _pendingTeam4B)}";
-        cells[4]  = $"T5: {Fmt(_pendingTeam5A,   _pendingTeam5B)}";
-        cells[5]  = $"T6: {Fmt(_pendingTeam6A,   _pendingTeam6B)}";
-        cells[6]  = $"T7: {Fmt(_pendingTeam7A,   _pendingTeam7B)}";
-        cells[7]  = $"T8: {Fmt(_pendingTeam8A,   _pendingTeam8B)}";
-        cells[8]  = $"T9: {Fmt(_pendingTeam9A,   _pendingTeam9B)}";
-        cells[9]  = $"T10: {Fmt(_pendingTeam10A, _pendingTeam10B)}";
-        cells[10] = $"T11: {Fmt(_pendingTeam11A, _pendingTeam11B)}";
-        cells[11] = $"T12: {Fmt(_pendingTeam12A, _pendingTeam12B)}";
-        // v3.22.68: separator tightened from "   |   " (7 chars) to "  |  "
-        // (5 chars) to reclaim budget for new (C)/(A) markers.
-        // v3.22.69: tightened further to " | " (3 chars). Combined with the
-        // Clip(MaxNameLen=12) per-name truncation in Resolve, this keeps the
-        // worst-case row "T11: 12char...(A) | 12char...(C)" comfortably under
-        // the 318px label width even on names longer than the historical
-        // "raistlin + Natedogg" test case the v3.22.58 layout was sized for.
-        var row1 = $"{cells[0]} | {cells[1]}";
-        var row2 = $"{cells[2]} | {cells[3]}";
-        var row3 = $"{cells[4]} | {cells[5]}";
-        var row4 = $"{cells[6]} | {cells[7]}";
-        var row5 = $"{cells[8]} | {cells[9]}";
-        var row6 = $"{cells[10]} | {cells[11]}";
-        return $"{row1}\n{row2}\n{row3}\n{row4}\n{row5}\n{row6}";
+
+        TeamSummaryRow Pair(int leftNum, string lU1, string lU2,
+                            int rightNum, string rU1, string rU2)
+        {
+            var segs = new List<TeamSummarySegment>(16);
+            AppendTeamCell(segs, leftNum, lU1, lU2);
+            segs.Add(new TeamSummarySegment(" | ", SummarySegmentKind.TeamSeparator));
+            AppendTeamCell(segs, rightNum, rU1, rU2);
+            return new TeamSummaryRow(segs);
+        }
+
+        // 12 teams laid out as 6 rows × 2 cols (matches v3.22.58 layout
+        // budget: ~159px per cell at 318px label width).
+        return new[]
+        {
+            Pair( 1, _pendingTeam1A,  _pendingTeam1B,   2, _pendingTeam2A,  _pendingTeam2B),
+            Pair( 3, _pendingTeam3A,  _pendingTeam3B,   4, _pendingTeam4A,  _pendingTeam4B),
+            Pair( 5, _pendingTeam5A,  _pendingTeam5B,   6, _pendingTeam6A,  _pendingTeam6B),
+            Pair( 7, _pendingTeam7A,  _pendingTeam7B,   8, _pendingTeam8A,  _pendingTeam8B),
+            Pair( 9, _pendingTeam9A,  _pendingTeam9B,  10, _pendingTeam10A, _pendingTeam10B),
+            Pair(11, _pendingTeam11A, _pendingTeam11B, 12, _pendingTeam12A, _pendingTeam12B),
+        };
     }
 
     /// <summary>
@@ -3052,7 +3024,7 @@ public class SettingsForm : Form
                 _pendingTeam11B = dlg.Team11Account2;
                 _pendingTeam12A = dlg.Team12Account1;
                 _pendingTeam12B = dlg.Team12Account2;
-                _lblTeamSummary.Text = BuildTeamSummary();
+                _lblTeamSummary.Rows = BuildTeamSummaryRows();
             }
             _openTeamsDialog = null;
             dlg.Dispose();
@@ -3088,7 +3060,7 @@ public class SettingsForm : Form
         if (_pendingTeam11B == username) { _pendingTeam11B = ""; changed = true; }
         if (_pendingTeam12A == username) { _pendingTeam12A = ""; changed = true; }
         if (_pendingTeam12B == username) { _pendingTeam12B = ""; changed = true; }
-        if (changed) _lblTeamSummary.Text = BuildTeamSummary();
+        if (changed) _lblTeamSummary.Rows = BuildTeamSummaryRows();
     }
 
     private void UpdateTeamSlotUsername(string oldUsername, string newUsername)
@@ -3118,7 +3090,7 @@ public class SettingsForm : Form
         if (_pendingTeam11B == oldUsername) { _pendingTeam11B = newUsername; changed = true; }
         if (_pendingTeam12A == oldUsername) { _pendingTeam12A = newUsername; changed = true; }
         if (_pendingTeam12B == oldUsername) { _pendingTeam12B = newUsername; changed = true; }
-        if (changed) _lblTeamSummary.Text = BuildTeamSummary();
+        if (changed) _lblTeamSummary.Rows = BuildTeamSummaryRows();
     }
 
     // ─── Account Export/Import ────────────────────────────────────────
@@ -3369,7 +3341,11 @@ public class SettingsForm : Form
         // ─── Window Style card ───────────────────────────────────
         // v3.22.54: card height bumped 112 → 138 to fit the new Dark Titlebar
         // row below Maximize on Launch.
-        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 138);
+        // v3.22.78: bumped 138 → 152 — the conditional _lblStyleDisabledHint
+        // below the 4th checkbox started at cy=132 and clipped 6px against
+        // the FixedSingle bottom border when visible. +14 gives the ~12px
+        // hint a ~6px breathing margin above the card edge.
+        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 152);
         cy = 32;
 
         const int hintX = 260;
@@ -3465,7 +3441,9 @@ public class SettingsForm : Form
         // advance was left at +120 → Preferences card overlapped Window
         // Style by 18 px, painting over the Dark Titlebar checkbox + hint.
         // Bumped to +146 to preserve the 8 px historical gap (138 + 8).
-        y += 146;
+        // v3.22.78: card grew 138 → 152 for the hint label fit; advance
+        // tracked +14 → 160 to keep the same 8 px gap to Preferences.
+        y += 160;
 
         // ─── Preferences card ────────────────────────────────────
         // Left: Show Tooltips toggle (moved from Paths → Startup card — pairs
@@ -4096,4 +4074,117 @@ public class SettingsForm : Form
     /// <summary>Convert dropdown display name back to config action name.</summary>
     private static string TrayDisplayToAction(string display) =>
         _trayDisplayActionMap.TryGetValue(display, out var action) ? action : display;
+}
+
+/// <summary>
+/// Owner-painted Label that renders multi-colored team-summary rows. Set
+/// <see cref="Rows"/> to drive paint; segments are colored by their
+/// <see cref="SummarySegmentKind"/> (Account → orange, Character → white,
+/// TeamSeparator → red, Plain → ForeColor). Mirror text is published to the
+/// base <c>Label.Text</c> property so AutoEllipsis fallback + Narrator can
+/// still see the row content if owner-paint somehow doesn't fire.
+/// </summary>
+internal sealed class TeamSummaryLabel : Label
+{
+    private IReadOnlyList<TeamSummaryRow> _rows = Array.Empty<TeamSummaryRow>();
+
+    public IReadOnlyList<TeamSummaryRow> Rows
+    {
+        get => _rows;
+        set
+        {
+            _rows = value ?? Array.Empty<TeamSummaryRow>();
+            // Mirror to base Text for accessibility + AutoEllipsis fallback.
+            // SuspendLayout coalesces the two Invalidate signals (Text-set + our explicit) into one paint.
+            SuspendLayout();
+            base.Text = string.Join("\n", _rows.Select(r => string.Concat(r.Segments.Select(s => s.Text))));
+            ResumeLayout(performLayout: false);
+            Invalidate();
+        }
+    }
+
+    public TeamSummaryLabel()
+    {
+        SetStyle(ControlStyles.OptimizedDoubleBuffer
+               | ControlStyles.AllPaintingInWmPaint
+               | ControlStyles.UserPaint
+               | ControlStyles.SupportsTransparentBackColor, true);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        // Honor transparent BackColor by painting the parent's surface under
+        // us first; otherwise fill with our own BackColor. The existing
+        // call-site sets BackColor = Color.Transparent so the card's
+        // BgPanel surface needs to bleed through.
+        if (BackColor == Color.Transparent && Parent != null)
+        {
+            ButtonRenderer.DrawParentBackground(e.Graphics, ClientRectangle, this);
+        }
+        else
+        {
+            using var bg = new SolidBrush(BackColor);
+            e.Graphics.FillRectangle(bg, ClientRectangle);
+        }
+
+        if (_rows.Count == 0)
+        {
+            // Defensive: no segments → fall back to standard Label render so
+            // the control isn't permanently blank if a caller forgets Rows.
+            base.OnPaint(e);
+            return;
+        }
+
+        int lineH = Font.Height;
+        int y = ClientRectangle.Y;
+        // NoPadding makes inter-segment joins pixel-accurate (TextRenderer
+        // otherwise injects ~3-6px GlyphOverhang between draws). Side-effect:
+        // each row starts ~3px left of where a standard Label would draw —
+        // acceptable here since the whole owner-paint surface is consistent.
+        const TextFormatFlags format = TextFormatFlags.NoPadding;
+        foreach (var row in _rows)
+        {
+            int x = ClientRectangle.X;
+            int remaining = ClientRectangle.Width;
+            foreach (var seg in row.Segments)
+            {
+                if (string.IsNullOrEmpty(seg.Text) || remaining <= 0) continue;
+                var color = seg.Kind switch
+                {
+                    SummarySegmentKind.AccountName    => DarkTheme.FgAccountOrange,
+                    SummarySegmentKind.TeamSeparator  => DarkTheme.FgTeamSeparatorRed,
+                    _                                 => ForeColor,
+                };
+                var size = TextRenderer.MeasureText(
+                    e.Graphics, seg.Text, Font, new Size(remaining, lineH), format);
+                int drawWidth = Math.Min(size.Width, remaining);
+                TextRenderer.DrawText(e.Graphics, seg.Text, Font,
+                    new Rectangle(x, y, drawWidth, lineH), color, format);
+                x += drawWidth;
+                remaining -= drawWidth;
+            }
+            y += lineH;
+        }
+    }
+}
+
+/// <summary>One visible row of the team summary (e.g. "T1: …  |  T2: …").</summary>
+internal sealed record TeamSummaryRow(IReadOnlyList<TeamSummarySegment> Segments);
+
+/// <summary>One color-tinted segment of a team-summary row.</summary>
+internal sealed record TeamSummarySegment(string Text, SummarySegmentKind Kind);
+
+/// <summary>Color routing for team-summary segments. Drives TeamSummaryLabel.OnPaint.</summary>
+internal enum SummarySegmentKind
+{
+    /// <summary>Default (white via Label.ForeColor): row label "Tn: ", " + ", "(none)".</summary>
+    Plain,
+    /// <summary>Orange (FgAccountOrange): an Account-resolved slot name.</summary>
+    AccountName,
+    /// <summary>White (Label.ForeColor): a Character-resolved slot name.</summary>
+    CharacterName,
+    /// <summary>Red (FgTeamSeparatorRed): the " | " boundary between two teams on the same row.</summary>
+    TeamSeparator,
+    /// <summary>White + trailing "?": an unresolved slot name (FK drift).</summary>
+    Unresolved,
 }

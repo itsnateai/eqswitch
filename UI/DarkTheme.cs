@@ -468,6 +468,19 @@ public static class DarkTheme
     public static readonly Color GridSelection = Color.FromArgb(50, 44, 70);
     public static readonly Color ActiveRowBg = Color.FromArgb(20, 80, 50);
 
+    // Tray context-menu accent for login-identity rows (Accounts submenu, and
+    // Account-resolved slots inside Teams rows). Matches EQ's classic /ooc
+    // chat orange — thematic recognition + reads cleanly on BgDark and BgHover.
+    public static readonly Color FgAccountOrange = Color.FromArgb(255, 159, 0);
+
+    // Team-boundary separator in the Settings → Autologin Teams summary card.
+    // Mid-saturation red — pure (255,0,0) would clash with FgAccountOrange on
+    // the same row; (220, 80, 80) reads as clearly red on BgDark without the
+    // visual burn of pure red. Sits between StatusFail (180,40,40) and pure
+    // red so it's distinct from both the validation-error pill and a literal
+    // alarm color.
+    public static readonly Color FgTeamSeparatorRed = Color.FromArgb(220, 80, 80);
+
     /// <summary>Add a label inside a card panel at relative position.</summary>
     public static Label AddCardLabel(Panel card, string text, int x, int y)
     {

@@ -1,5 +1,39 @@
 # Changelog
 
+## v3.22.78 — tray menu color coding + Settings summary polish (2026-05-28)
+
+UI-only release: the tray context menu and the Settings → Autologin Teams summary card now color-code Account vs Character rows so login identity is visually distinguishable at a glance. A stale post-Save "consider renaming" balloon is removed (the new colors fix the problem the warning was nudging users toward), and a clipped hint on the Video tab's Window Style card is unblocked.
+
+### Tray context menu — Tag-routed coloring
+
+`DarkMenuRenderer` (in `UI/TrayManager.cs`) gains two singleton Tag markers (`AccountItemMarker`, `OrphanItemMarker`) and a `TeamRowSegments` record for per-segment row rendering. `OnRenderMenuItemBackground` now routes `ForeColor` based on `Item.Tag`:
+
+- **Accounts submenu** rows render in EQ-classic `/ooc` orange (`FgAccountOrange = (255, 159, 0)`).
+- **Characters submenu** rows render in standard white. Orphan characters (no linked Account) render dim gray — fixes a latent bug where the prior `item.ForeColor = FgDimGray` assignment was silently overwritten on every repaint by the renderer's unconditional ForeColor reset, leaving orphan rows visually identical to live rows.
+- **Teams submenu** rows render per-segment via a new `OnRenderItemText` override: Account-resolved slot names in orange, Character-resolved in white, separators (` / `, emoji prefix) in white. The shortcut-key column stays uniformly white across all rows regardless of the row's body color, with the orphan exception (those rows keep dim gray end-to-end).
+
+`ResolveTeamSlotDisplayName` is renamed `ResolveTeamSlotDisplay` and now returns `(string Name, SlotSource Source)` so the Teams submenu builder can carry source kind through to the renderer.
+
+### Settings → Autologin Teams summary — per-segment colors
+
+The summary card on the Configure Teams pane is now an owner-painted `TeamSummaryLabel` (subclass of `Label`) that renders typed `TeamSummaryRow`/`TeamSummarySegment` lists instead of a string. The previously-trailing `" (C)"` and `" (A)"` markers (added in v3.22.68 to disambiguate slot kind in the absence of color) are gone; the same information is now conveyed by Account=orange / Character=white. The ` | ` team boundary between two teams on a row is colored `FgTeamSeparatorRed = (220, 80, 80)` for visual punch.
+
+Side benefit: the per-cell name-clip budget reclaims the 4 chars previously reserved for the `" (C)"`/`" (A)"` suffix, so resolved names render up to 12 characters before truncation instead of 8.
+
+### Video tab — Window Style card height
+
+`_lblStyleDisabledHint` (the conditional "⚠ Fullscreen Window requires Windowed Mode to be enabled" / "If disabled, set EQ video resolution to fit above the taskbar" hint at the bottom of the Window Style card) was clipping ~6 px against the card's `FixedSingle` bottom border when visible. The card height was sized in v3.22.54 for the 4 checkbox rows without budgeting for the hint label. Card height bumped 138 → 152 px, post-card `y +=` advance bumped 146 → 160 px to preserve the historical 8 px gap to the Preferences card below.
+
+### Removed: "Account share names with Characters" post-Save balloon
+
+`SettingsForm.OnSameNameCollision` event + `_lastNameCollisionHash` field + the case-insensitive collision check in `ApplySettings` + the matching `ShowBalloon` subscription in `TrayManager.ShowSettings` — all deleted. The "consider renaming for tray-menu clarity" nudge existed because the tray menu couldn't distinguish Account from Character on case-only name collisions; the new orange/white coloring is the structural fix, so the warning is now noise. Saving Settings on a config like `Account "eisley"` + `Character "Eisley"` no longer surfaces a balloon.
+
+### Files
+
+- `UI/DarkTheme.cs` — `FgAccountOrange`, `FgTeamSeparatorRed` added to the Semantic Colors block.
+- `UI/TrayManager.cs` — `DarkMenuRenderer` extended (markers + records + `OnRenderItemText` + `DrawTeamRowSegments`); Accounts / Characters / Teams submenu builders updated to tag rows; `ResolveTeamSlotDisplay` returns source kind; `ShowSettings` no longer subscribes to `OnSameNameCollision`.
+- `UI/SettingsForm.cs` — `TeamSummaryLabel`/`TeamSummaryRow`/`TeamSummarySegment`/`SummarySegmentKind` added at file level; `_lblTeamSummary` retyped + retargeted; `BuildTeamSummary` replaced by `BuildTeamSummaryRows`; Window Style card height 138 → 152, advance 146 → 160; `OnSameNameCollision` event + `_lastNameCollisionHash` field + post-Save collision detection block removed.
+
 ## v3.22.77 — phantom-key retry loop + DI8 log persistence (2026-05-28)
 
 Native-only release; C# untouched except for the version bump. Closes a long-standing latent bug that v3.22.76's WS_POPUP timing change made more visible.
