@@ -109,9 +109,13 @@ changes at all, Phase 1 has a bug.
 - Add `WindowLayout.WindowMode` enum `{ Fullscreen, Windowed }`, default
   `Fullscreen`.
 - **Migration** (`ConfigVersionMigrator` / `Validate`): a config with no
-  `WindowMode` key maps from the existing `SlimTitlebar` bool —
-  `SlimTitlebar=true → Fullscreen`, `SlimTitlebar=false → ` (legacy non-slim;
-  see note). Persist the canonical enum on first load.
+  `WindowMode` key maps from the existing `SlimTitlebar` bool. Both
+  `SlimTitlebar=true` and `SlimTitlebar=false` migrate to `Fullscreen` (the new
+  default and the only safe main-card mode at Phase 1), so the upgrade is a
+  no-op for the overwhelming-majority slim users and a one-time look change only
+  for the rare legacy non-slim user, who can restore the old frame via the
+  Advanced plumbing override. Persist the canonical enum on first load and emit
+  a `ConfigWrite:` audit line for the transition.
 - `SlimTitlebar` is retained as the internal "EQSwitch manages the window style"
   signal and kept in sync with `WindowMode` (both Fullscreen and Windowed are
   slim-managed styles). The styling branch selects `WS_POPUP` vs `WS_CAPTION`
