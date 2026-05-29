@@ -3918,6 +3918,14 @@ public class TrayManager : IDisposable
         _config.Layout.TargetMonitor = newConfig.Layout.TargetMonitor;
         _config.Layout.SecondaryMonitor = newConfig.Layout.SecondaryMonitor;
         _config.Layout.TopOffset = newConfig.Layout.TopOffset;
+        // v3.22.80: WindowMode is the user-facing window-style source of truth
+        // (SlimTitlebar is derived from it). Propagate it here too — the third
+        // of the three required sites (AppConfig field + BuildAppConfig pickup +
+        // this ReloadConfigCore propagation) per the dual-propagation bug class.
+        // In Phase 1 it's always Fullscreen (Validate clamps Windowed), so this
+        // is a no-op today; it's load-bearing the moment Phase 2 wires WindowMode
+        // to rendering. See [[reference_settings_apply_dual_propagation_bug]].
+        _config.Layout.WindowMode = newConfig.Layout.WindowMode;
         _config.Layout.SlimTitlebar = newConfig.Layout.SlimTitlebar;
         // v3.22.19 BUGFIX (verifier T3 Sonnet): without this, changes to
         // the per-monitor secondary override via Settings → Apply would not

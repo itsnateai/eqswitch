@@ -366,8 +366,21 @@ public static class AppConfigValidateTests
             failures += Assert("slim resync from windowMode", cfg.Layout.SlimTitlebar, true);
         }
 
+        // v3.22.80 Case (round-2): the round-1 bug's actual trigger — a
+        // hand-edited Windowed + SlimTitlebar=false config must exit Validate
+        // with BOTH mutations applied: WindowMode pinned Fullscreen AND
+        // SlimTitlebar forced true (exercises both clamp blocks in one pass).
+        {
+            var cfg = new AppConfig();
+            cfg.Layout.WindowMode = WindowMode.Windowed;
+            cfg.Layout.SlimTitlebar = false;
+            cfg.Validate();
+            failures += Assert("Windowed+nonSlim → Fullscreen", cfg.Layout.WindowMode, WindowMode.Fullscreen);
+            failures += Assert("Windowed+nonSlim → slim true", cfg.Layout.SlimTitlebar, true);
+        }
+
         Console.WriteLine(failures == 0
-            ? "AppConfigValidateTests: all 14 cases PASSED"
+            ? "AppConfigValidateTests: all 15 cases PASSED"
             : $"AppConfigValidateTests: {failures} assertion failure(s)");
         return failures == 0 ? 0 : 1;
     }

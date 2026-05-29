@@ -3359,7 +3359,7 @@ public class SettingsForm : Form
         // v3.22.80: two-mode model. Card holds Windowed Mode (disabled until
         // Phase 2), Fullscreen mode (the current WS_POPUP borderless look), and
         // Dark Titlebar. The WindowedMode=TRUE plumbing + Maximize on Launch
-        // moved to the ⚙ Advanced dialog. 3 rows + conditional hint → height 130.
+        // moved to the ⚙ Advanced dialog. 3 checkbox rows → height 130.
         var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 130);
         cy = 32;
 
