@@ -67,6 +67,9 @@ public class SettingsForm : Form
 
     // ─── Window Style controls (on Video tab)
     private CheckBox _chkSlimTitlebar = null!;
+    // v3.22.80: the new user-facing "Windowed Mode" (WS_CAPTION slim) toggle.
+    // Disabled in Phase 1 — behavior lands in Phase 2.
+    private CheckBox _chkWindowedMode = null!;
     // v3.22.53: dark immersive titlebar (DWMWA_USE_IMMERSIVE_DARK_MODE).
     // v3.22.54: promoted from the Wrapper Settings dialog to the main Video
     // tab Window Style card so the toggle is discoverable rather than buried
@@ -3349,13 +3352,11 @@ public class SettingsForm : Form
         y += 136;
 
         // ─── Window Style card ───────────────────────────────────
-        // v3.22.54: card height bumped 112 → 138 to fit the new Dark Titlebar
-        // row below Maximize on Launch.
-        // v3.22.78: bumped 138 → 152 — the conditional _lblStyleDisabledHint
-        // below the 4th checkbox started at cy=132 and clipped 6px against
-        // the FixedSingle bottom border when visible. +14 gives the ~12px
-        // hint a ~6px breathing margin above the card edge.
-        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 152);
+        // v3.22.80: two-mode model. Card holds Windowed Mode (disabled until
+        // Phase 2), Fullscreen mode (the current WS_POPUP borderless look), and
+        // Dark Titlebar. The WindowedMode=TRUE plumbing + Maximize on Launch
+        // moved to the ⚙ Advanced dialog. 3 rows + conditional hint → height 130.
+        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 130);
         cy = 32;
 
         const int hintX = 260;
@@ -3365,16 +3366,13 @@ public class SettingsForm : Form
         btnWrapper.Font = DarkTheme.FontUI85;
         cardStyle.Controls.Add(btnWrapper);
 
-        _chkVideoWindowed = DarkTheme.AddCardCheckBox(cardStyle, "Windowed Mode", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "Required for window switching", hintX, cy + 2);
+        _chkWindowedMode = DarkTheme.AddCardCheckBox(cardStyle, "Windowed Mode", L, cy);
+        DarkTheme.AddCardHint(cardStyle, "slim titlebar, draggable  (next version)", hintX, cy + 2);
+        _chkWindowedMode.Enabled = false;   // Phase 2 enables this
         cy += 26;
 
-        _chkSlimTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Fullscreen Window (WinEQ2 mode)", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "Sets res + hides titlebar", hintX, cy + 2);
-        cy += 26;
-
-        _chkMaximizeWindow = DarkTheme.AddCardCheckBox(cardStyle, "Maximize on Launch", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "Sets Maximized=1 in eqclient.ini", hintX, cy + 2);
+        _chkSlimTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Fullscreen mode", L, cy);
+        DarkTheme.AddCardHint(cardStyle, "borderless, flush all sides", hintX, cy + 2);
         cy += 26;
 
         // v3.22.54: DarkTitlebar promoted from the Advanced wrapper dialog up
@@ -3395,65 +3393,55 @@ public class SettingsForm : Form
         };
         cardStyle.Controls.Add(_lblStyleDisabledHint);
 
-        // Unified style hint — shows conflict warning or general hint as needed
+        // v3.22.80: in the two-mode model there's no conflict to surface — the
+        // hint label stays for layout/back-compat but is always hidden.
         void UpdateStyleHint()
         {
-            if (_chkSlimTitlebar.Checked && !_chkVideoWindowed.Checked)
-            {
-                _lblStyleDisabledHint.Text = "⚠ Fullscreen Window requires Windowed Mode to be enabled";
-                _lblStyleDisabledHint.ForeColor = DarkTheme.FgWarn;
-                _lblStyleDisabledHint.Visible = true;
-            }
-            else if (!_chkSlimTitlebar.Checked && !_chkMaximizeWindow.Checked)
-            {
-                _lblStyleDisabledHint.Text = "If disabled, set EQ video resolution to fit above the taskbar";
-                _lblStyleDisabledHint.ForeColor = DarkTheme.FgDimGray;
-                _lblStyleDisabledHint.Visible = true;
-            }
-            else
-            {
-                _lblStyleDisabledHint.Visible = false;
-            }
+            _lblStyleDisabledHint.Visible = false;
         }
-        _chkVideoWindowed.CheckedChanged += (_, _) => UpdateStyleHint();
 
-        // Wrapper dialog — titlebar offset, bottom margin, DLL hook
-        // These are advanced settings that most users don't need to touch.
+        // Wrapper dialog backing fields — titlebar offset, bottom margin, DLL
+        // hook. Advanced settings most users don't touch. v3.22.80: Maximize on
+        // Launch + Force-Windowed (ForceWindowedMode plumbing) join these as
+        // detached fields, surfaced only in the ⚙ Advanced dialog.
         _nudTitlebarOffset = new NumericUpDown { Value = 22, Minimum = 0, Maximum = 40 };
         _nudBottomOffset = new NumericUpDown { Value = 22, Minimum = 0, Maximum = 100 };
         _chkUseHook = new CheckBox();
-        // v3.22.54: _chkDarkTitlebar is now a real Window Style card child
-        // (constructed above near _chkMaximizeWindow), not detached storage.
+        _chkMaximizeWindow = new CheckBox();   // v3.22.80: Advanced-only
+        _chkVideoWindowed = new CheckBox();     // v3.22.80: ForceWindowedMode plumbing, Advanced-only
+        btnWrapper.Enabled = true;              // Advanced is always reachable now
         btnWrapper.Click += (_, _) => ShowWrapperDialog();
 
+        // v3.22.80: Fullscreen and Windowed are mutually exclusive; exactly one
+        // is always selected. Windowed is disabled in Phase 1, so Fullscreen is
+        // effectively pinned on.
+        bool syncingModes = false;
         _chkSlimTitlebar.CheckedChanged += (_, _) =>
         {
-            bool slim = _chkSlimTitlebar.Checked;
-            btnWrapper.Enabled = slim;
-            _chkUseHook.Enabled = slim;
-            if (slim)
-            {
-                _chkUseHook.Checked = true;  // DLL hook recommended with Fullscreen Window
-                _chkMaximizeWindow.Checked = false;
-                _chkMaximizeWindow.Enabled = false;
-            }
-            else
-            {
-                _chkMaximizeWindow.Enabled = true;
-            }
+            if (syncingModes) return;
+            syncingModes = true;
+            if (_chkSlimTitlebar.Checked)
+                _chkWindowedMode.Checked = false;
+            else if (!_chkWindowedMode.Enabled || !_chkWindowedMode.Checked)
+                _chkSlimTitlebar.Checked = true;   // can't have neither mode on
+            syncingModes = false;
             UpdateStyleHint();
         };
 
-        _chkMaximizeWindow.CheckedChanged += (_, _) => UpdateStyleHint();
+        _chkWindowedMode.CheckedChanged += (_, _) =>
+        {
+            if (syncingModes) return;
+            syncingModes = true;
+            if (_chkWindowedMode.Checked) _chkSlimTitlebar.Checked = false;
+            else if (!_chkSlimTitlebar.Checked) _chkSlimTitlebar.Checked = true;
+            syncingModes = false;
+            UpdateStyleHint();
+        };
 
-        // v3.22.54 round-1 fix (T3 Sonnet CRITICAL): card height bumped
-        // 112 → 138 for the new Dark Titlebar row, but the post-card
-        // advance was left at +120 → Preferences card overlapped Window
-        // Style by 18 px, painting over the Dark Titlebar checkbox + hint.
-        // Bumped to +146 to preserve the 8 px historical gap (138 + 8).
-        // v3.22.78: card grew 138 → 152 for the hint label fit; advance
-        // tracked +14 → 160 to keep the same 8 px gap to Preferences.
-        y += 160;
+        // v3.22.80: card shrank 152 → 130 (4 rows → 3 rows after Maximize on
+        // Launch moved to the Advanced dialog). Advance tracked 160 → 138 to
+        // keep the historical 8 px gap to the Preferences card below (130 + 8).
+        y += 138;
 
         // ─── Preferences card ────────────────────────────────────
         // Left: Show Tooltips toggle (moved from Paths → Startup card — pairs
