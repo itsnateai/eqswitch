@@ -3548,7 +3548,7 @@ public class SettingsForm : Form
         using var dlg = new Form
         {
             Text = "Wrapper Settings",
-            Size = new Size(340, 280),
+            Size = new Size(340, 400),
             FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition = FormStartPosition.CenterParent,
             MaximizeBox = false,
@@ -3581,6 +3581,21 @@ public class SettingsForm : Form
         DarkTheme.AddHint(dlg, "Hooks SetWindowPos inside EQ", L, y);
         y += 28;
 
+        // v3.22.80: relocated from the Window Style card. ForceWindowedMode is
+        // required plumbing (WindowedMode=TRUE) — leave on. Maximize on Launch
+        // is parked here while its usefulness is evaluated.
+        var chkForceWindowed = DarkTheme.AddCheckBox(dlg, "Force Windowed Mode (eqclient.ini)", L, y);
+        chkForceWindowed.Checked = _chkVideoWindowed.Checked;
+        y += 20;
+        DarkTheme.AddHint(dlg, "WindowedMode=TRUE — required for window management; leave on", L, y);
+        y += 26;
+
+        var chkMaximize = DarkTheme.AddCheckBox(dlg, "Maximize on Launch", L, y);
+        chkMaximize.Checked = _chkMaximizeWindow.Checked;
+        y += 20;
+        DarkTheme.AddHint(dlg, "Maximized=1 in eqclient.ini (parked — usefulness under review)", L, y);
+        y += 28;
+
         // v3.22.54: Dark Titlebar moved out of this dialog up to the main
         // Window Style card on the Video tab. Removed the local chkDark, the
         // dialog growth, the reset entry, and the OK write-back.
@@ -3595,6 +3610,8 @@ public class SettingsForm : Form
             nudTitle.Value = 18;
             nudBottom.Value = 21;
             chkHook.Checked = true;
+            chkForceWindowed.Checked = true;   // ForceWindowedMode default
+            chkMaximize.Checked = false;       // MaximizeWindow default
         };
         dlg.Controls.Add(btnReset);
         y += 36;
@@ -3606,6 +3623,8 @@ public class SettingsForm : Form
             _nudTitlebarOffset.Value = nudTitle.Value;
             _nudBottomOffset.Value = nudBottom.Value;
             _chkUseHook.Checked = chkHook.Checked;
+            _chkVideoWindowed.Checked = chkForceWindowed.Checked;
+            _chkMaximizeWindow.Checked = chkMaximize.Checked;
             dlg.DialogResult = DialogResult.OK;
         };
         dlg.Controls.Add(btnOK);
