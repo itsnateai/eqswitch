@@ -344,15 +344,13 @@ public static class AppConfigValidateTests
             failures += Assert("windowMode invalid clamps", cfg.Layout.WindowMode, WindowMode.Fullscreen);
         }
 
-        // v3.22.80 Case (Phase 1): WindowMode.Windowed is a DEFINED enum value
-        // (Enum.IsDefined passes) but is not implemented yet, so Validate must
-        // pin it back to Fullscreen. Only reachable via hand-edited config in
-        // Phase 1. REMOVE/flip this expectation in Phase 2 when Windowed ships.
+        // v3.22.81 Case (Phase 2): WindowMode.Windowed is now IMPLEMENTED — the
+        // Phase-1 pin-to-Fullscreen clamp is removed, so Validate preserves it.
         {
             var cfg = new AppConfig();
             cfg.Layout.WindowMode = WindowMode.Windowed;
             cfg.Validate();
-            failures += Assert("windowMode Windowed pinned to Fullscreen (Phase 1)", cfg.Layout.WindowMode, WindowMode.Fullscreen);
+            failures += Assert("windowMode Windowed preserved (Phase 2)", cfg.Layout.WindowMode, WindowMode.Windowed);
         }
 
         // v3.22.80 Case: a main-card WindowMode forces SlimTitlebar true (legacy
@@ -366,16 +364,15 @@ public static class AppConfigValidateTests
             failures += Assert("slim resync from windowMode", cfg.Layout.SlimTitlebar, true);
         }
 
-        // v3.22.80 Case (round-2): the round-1 bug's actual trigger — a
-        // hand-edited Windowed + SlimTitlebar=false config must exit Validate
-        // with BOTH mutations applied: WindowMode pinned Fullscreen AND
-        // SlimTitlebar forced true (exercises both clamp blocks in one pass).
+        // v3.22.81 Case (Phase 2): a hand-edited Windowed + SlimTitlebar=false
+        // config preserves Windowed AND forces SlimTitlebar true (both modes are
+        // slim-managed; only the resync block fires now — the clamp is gone).
         {
             var cfg = new AppConfig();
             cfg.Layout.WindowMode = WindowMode.Windowed;
             cfg.Layout.SlimTitlebar = false;
             cfg.Validate();
-            failures += Assert("Windowed+nonSlim → Fullscreen", cfg.Layout.WindowMode, WindowMode.Fullscreen);
+            failures += Assert("Windowed+nonSlim → Windowed preserved", cfg.Layout.WindowMode, WindowMode.Windowed);
             failures += Assert("Windowed+nonSlim → slim true", cfg.Layout.SlimTitlebar, true);
         }
 
