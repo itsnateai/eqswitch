@@ -24,18 +24,54 @@ public static class DarkTheme
     /// </summary>
     public static void RepairDefaultFont()
     {
+        // v3.22.79: three-state diagnostic surface — distinguish healthy /
+        // unreachable-via-reflection / replacement-failed so a silent regression
+        // can be diagnosed from the log. Prior code caught every exception and
+        // logged "replaced invalidated Control.DefaultFont" even when the
+        // s_defaultFontField reflection target was null (a likely future-.NET
+        // failure mode) — the SetValue silently no-op'd through `?.`, then we
+        // lied to the log.
         try
         {
             _ = Control.DefaultFont.GetHeight();
+            return; // font is healthy; no repair needed
         }
-        catch
+        catch (Exception probeEx)
         {
-            var old = s_defaultFontField?.GetValue(null) as Font;
+            // Log the probe failure so the "why are we repairing?" trail isn't
+            // lost. Common cause: GDI+ handle invalidated by display change /
+            // DPI event / scaling teardown.
+            FileLogger.Info($"RepairDefaultFont: Control.DefaultFont probe failed ({probeEx.GetType().Name}: {probeEx.Message}) — attempting repair");
+        }
+
+        if (s_defaultFontField == null)
+        {
+            // Reflection target was never resolved (typeof(Control).GetField
+            // returned null at static-init). .NET internals must have renamed
+            // or removed s_defaultFont. We can't repair — log loud and bail
+            // so the next "Parameter is not valid" crash has a paper trail.
+            FileLogger.Error("RepairDefaultFont: Control.s_defaultFont field not found via reflection — cannot repair; UI may fail on next control construction");
+            return;
+        }
+
+        try
+        {
+            var old = s_defaultFontField.GetValue(null) as Font;
             var fresh = new Font("Segoe UI", 9f);
-            s_defaultFontField?.SetValue(null, fresh);
+            s_defaultFontField.SetValue(null, fresh);
             if (old != null && !SharedFonts.Contains(old))
+            {
                 try { old.Dispose(); } catch { /* already invalidated */ }
+            }
             FileLogger.Warn("RepairDefaultFont: replaced invalidated Control.DefaultFont");
+        }
+        catch (Exception ex)
+        {
+            // Reflection SetValue or new Font construction failed (GDI handle
+            // exhaustion, etc.). Loud surface — the next control construction
+            // will likely crash and a silent failure here would make it
+            // impossible to correlate.
+            FileLogger.Error($"RepairDefaultFont: replacement failed ({ex.GetType().Name}: {ex.Message}) — UI may fail on next control construction");
         }
     }
 
@@ -631,6 +667,14 @@ public static class DarkTheme
         var parent = control.Parent;
         if (parent == null) return;
 
+        // v3.22.79: capture original index BEFORE Remove so the wrapper takes
+        // the wrapped control's z-order / tab-order slot. Prior code called
+        // parent.Controls.Add(wrapper) which appends at the end of the
+        // collection — any sibling added after the wrapped control would be
+        // out of order, causing tab-cycle drift and visual paint-order bugs
+        // on manual-layout cards. SetChildIndex restores parity.
+        int originalIndex = parent.Controls.GetChildIndex(control, throwException: false);
+
         var wrapper = new Panel
         {
             Location = new Point(control.Left - 1, control.Top - 1),
@@ -648,6 +692,10 @@ public static class DarkTheme
         parent.Controls.Remove(control);
         wrapper.Controls.Add(control);
         parent.Controls.Add(wrapper);
+        if (originalIndex >= 0)
+        {
+            parent.Controls.SetChildIndex(wrapper, originalIndex);
+        }
     }
 
     // ─── Helpers ─────────────────────────────────────────────────

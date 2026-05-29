@@ -1751,9 +1751,19 @@ public class SettingsForm : Form
             return false;
         }
 
-        // 1. Account names unique (Ordinal).
+        // 1. Account names unique (case-insensitive).
+        //
+        // v3.22.79: switched from StringComparer.Ordinal to OrdinalIgnoreCase
+        // here AND below (Account creds + Character names) to match the
+        // case-folding boundary used everywhere else in the codebase:
+        // AccountKey.Matches, FindAccountByName, FindCharacterByName, the FK
+        // resolve at line ~1801, CharacterSelector's name match all use
+        // OrdinalIgnoreCase. Pre-fix, dedup-by-Ordinal would let a hand-edited
+        // config with ("foo","bar") and ("FOO","BAR") slip past validation;
+        // downstream FK lookups would then match the wrong one. Surface
+        // conflicts at validation time, not silently downstream.
         var acctNameDupes = _pendingAccounts
-            .GroupBy(a => a.Name, StringComparer.Ordinal)
+            .GroupBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
             .Where(g => g.Count() > 1)
             .ToList();
         if (acctNameDupes.Any())
@@ -1766,7 +1776,7 @@ public class SettingsForm : Form
 
         // 2. Account (Username, Server) unique.
         var acctCredDupes = _pendingAccounts
-            .GroupBy(a => $"{a.Username}\u0001{a.Server}", StringComparer.Ordinal)
+            .GroupBy(a => $"{a.Username}\u0001{a.Server}", StringComparer.OrdinalIgnoreCase)
             .Where(g => g.Count() > 1)
             .ToList();
         if (acctCredDupes.Any())
@@ -1779,7 +1789,7 @@ public class SettingsForm : Form
 
         // 3. Character names unique.
         var charNameDupes = _pendingCharacters
-            .GroupBy(c => c.Name, StringComparer.Ordinal)
+            .GroupBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
             .Where(g => g.Count() > 1)
             .ToList();
         if (charNameDupes.Any())

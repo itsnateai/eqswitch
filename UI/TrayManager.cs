@@ -3898,6 +3898,17 @@ public class TrayManager : IDisposable
         // foreground-debounce timer tick (line 1146 guard) and freezing the
         // app's responsiveness to focus changes until restart.
         _reloading = true;
+
+        // v3.22.79: stop+dispose the lost-client coalesce timer at the top of
+        // every reload so any pending balloon doesn't fire mid-reload against
+        // a partially-reinitialized manager. The timer is lazily recreated by
+        // QueueLostClientBalloon on the next client-loss event. Symmetric with
+        // Dispose() at the file foot.
+        _lostClientsCoalesceTimer?.Stop();
+        _lostClientsCoalesceTimer?.Dispose();
+        _lostClientsCoalesceTimer = null;
+        _pendingLostClients.Clear();
+
         try
         {
         // Update the config reference (AppConfig is a class, so updating fields in-place)

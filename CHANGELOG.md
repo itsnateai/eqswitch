@@ -1,5 +1,46 @@
 # Changelog
 
+## v3.22.79 — verifier-harvested fixes from v3.22.78 audit (2026-05-28)
+
+Four targeted fixes for pre-existing whole-file findings surfaced by the v3.22.78 6-verifier audit (T2 Gap-audit + T3 Code-review, Sonnet + Opus). None of these were introduced by v3.22.78 — they're latent bugs already in the codebase whose context the v3.22.78 audit happened to load. Capturing them now while the context is hot.
+
+### Fix 1 — `RepairDefaultFont` silent-failure path (`UI/DarkTheme.cs:25-40`)
+
+Prior code: `try { Control.DefaultFont.GetHeight(); } catch { ... s_defaultFontField?.SetValue(...); FileLogger.Warn("replaced ..."); }`. Two failure modes leaked:
+
+1. **Reflection-target-missing.** If `typeof(Control).GetField("s_defaultFont", ...)` returned null at static init (a likely outcome on a future .NET that renames or removes the private field), the `?.SetValue` silently no-op'd through the null reference — but we still logged `"replaced invalidated Control.DefaultFont"`. The log lied; the next control construction crashed with "Parameter is not valid" anyway, with no diagnostic trail.
+2. **Catch-everything inside the repair body.** A failure in `new Font("Segoe UI", 9f)` (GDI handle exhaustion) or in `SetValue` itself was swallowed entirely; the user saw the crash with no log to correlate.
+
+Fix: three-state diagnostic surface. (a) Healthy probe → `return`. (b) Probe failure → log `Info` with exception type + message, fall through to repair. (c) Reflection field null → `Error` log + bail (no false `"replaced"` claim). (d) Replacement failure → `Error` log with the underlying exception type + message. Aligns with workspace Rule 12 — fail loud, proactively.
+
+### Fix 2 — Account dedup case-folding alignment (`UI/SettingsForm.cs:1754-1791`)
+
+Prior code: `_pendingAccounts.GroupBy(a => a.Name, StringComparer.Ordinal)` for both Account.Name dedup AND Account (Username, Server) dedup AND Character.Name dedup. The rest of the codebase — `AccountKey.Matches`, `FindAccountByName`, `FindCharacterByName`, the FK resolve at line ~1801, `CharacterSelector`'s name match — all use `OrdinalIgnoreCase`. The seam: a hand-edited config with `("foo","bar")` and `("FOO","BAR")` passed the dedup, then `FirstOrDefault(...OrdinalIgnoreCase)` matched the wrong one downstream. Same gap for Character names — EQ server treats them case-insensitively per Dalaya's character roster.
+
+Fix: all three `StringComparer.Ordinal` → `StringComparer.OrdinalIgnoreCase`. Surface conflicts at validation time, not silently downstream. Documented with an inline comment so the change is grep-discoverable for future readers.
+
+### Fix 3 — `_lostClientsCoalesceTimer` lifecycle gap in `ReloadConfig` (`UI/TrayManager.cs::ReloadConfigCore`)
+
+Prior code: the lost-client balloon coalesce timer is lazily created on the first `QueueLostClientBalloon` call (line ~2876) and only stopped/disposed in `Dispose()` (line ~5072). `ReloadConfigCore` stopped/disposed every other managed timer at the top of the reload but skipped this one — if a client disconnected, then the user saved Settings, the old timer kept firing across the reload against a partially-reinitialized manager.
+
+Fix: stop+dispose+null the timer at the top of `ReloadConfigCore` (and clear `_pendingLostClients`). Symmetric with the `Dispose()` pattern at the file foot. Timer is lazily recreated by the next `QueueLostClientBalloon` call. Mirrors v3.22.25's verifier-round fix that wrapped the whole reload in try/finally to clear `_reloading` even on throw.
+
+### Fix 4 — `WrapWithBorder` z-order break (`UI/DarkTheme.cs:629-651`)
+
+Prior code: `parent.Controls.Remove(control); wrapper.Controls.Add(control); parent.Controls.Add(wrapper);` — the `Add(wrapper)` appended the wrapper to the end of `parent.Controls`, breaking the wrapped control's original z-order and tab-order if siblings followed it. On manual-layout cards (the Window Style card uses absolute positioning), paint order is z-order, so the wrapper could render above siblings it should render below.
+
+Fix: capture `originalIndex = parent.Controls.GetChildIndex(control, throwException: false)` BEFORE the Remove, then `parent.Controls.SetChildIndex(wrapper, originalIndex)` after the Add to restore parity. No-op when `originalIndex < 0` (defensive).
+
+### Why this is a separate version
+
+Each fix is a bounded latent-bug repair that touches a specific code path. None changes user-visible behavior on the happy path; all change behavior on the failure paths that v3.22.78's audit catalogued. Splitting them into v3.22.79 keeps the v3.22.78 release-note semantic clean (color-coding feature) and produces a clean git tag for the audit-driven follow-up. The audit-find-then-fix loop is recorded in `memory/project_eqswitch_v3_22_79_shipped.md`.
+
+### Files
+
+- `UI/DarkTheme.cs` — `RepairDefaultFont` rewritten (three-state log surface); `WrapWithBorder` z-order preservation.
+- `UI/TrayManager.cs` — `ReloadConfigCore` lost-clients timer stop/dispose at top of reload.
+- `UI/SettingsForm.cs` — three `StringComparer.Ordinal` → `OrdinalIgnoreCase` in ApplySettings validation gates.
+
 ## v3.22.78 — tray menu color coding + Settings summary polish (2026-05-28)
 
 UI-only release: the tray context menu and the Settings → Autologin Teams summary card now color-code Account vs Character rows so login identity is visually distinguishable at a glance. A stale post-Save "consider renaming" balloon is removed (the new colors fix the problem the warning was nudging users toward), and a clipped hint on the Video tab's Window Style card is unblocked.
