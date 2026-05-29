@@ -4648,6 +4648,17 @@ public class TrayManager : IDisposable
         // ─── Minimize blocking ───
         bool blockMin = _config.EQClientIni.MaximizeWindow;
 
+        // ─── v3.22.81 Windowed-mode geometry pin ───
+        // In Windowed mode the hook DLL installs an in-process WndProc subclass
+        // (GeoWndProc) that pins the window synchronously per WM message —
+        // replacing the C# guard timer's read-modify-write reposition, which
+        // raced DWM into runaway growth on a 2nd-monitor boundary + a sliver.
+        // Gated on `stripFrame` so only slim-managed windows are pinned (a MM
+        // non-slim secondary keeps its normal frame and is NOT subclassed).
+        // Fullscreen leaves this 0 → the legacy hook + C# guard path is untouched.
+        bool pinGeometry = stripFrame
+            && _config.Layout.WindowMode == EQSwitch.Config.WindowMode.Windowed;
+
         // v3.22.19 BUGFIX (verifier T1+T3 Opus + T3 Sonnet convergence):
         // pre-this-fix the call was `stripThickFrame: posEnabled` which
         // always set the hook's strip-flag true in multi-monitor mode,
@@ -4663,11 +4674,13 @@ public class TrayManager : IDisposable
         // per-monitor slim flag) instead of `posEnabled`.
         _hookConfig.WriteConfig(pid, x, y, w, h,
             enabled: posEnabled, stripThickFrame: stripFrame,
-            blockMinimize: blockMin, windowTitle: title);
+            blockMinimize: blockMin, windowTitle: title,
+            pinGeometry: pinGeometry);
 
         var features = new System.Collections.Generic.List<string>();
         if (posEnabled) features.Add($"pos=({x},{y}) {w}x{h}");
         features.Add(stripFrame ? "stripFrame=1" : "stripFrame=0");
+        if (pinGeometry) features.Add("pinGeometry=1(Windowed subclass)");
         if (!string.IsNullOrEmpty(title)) features.Add($"title=\"{title}\"");
         if (blockMin) features.Add("blockMin");
         FileLogger.Info($"UpdateHookConfig: PID {pid} → {string.Join(", ", features)}");

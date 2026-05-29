@@ -16,6 +16,9 @@ namespace EQSwitch.Core;
 ///   enabled + position/size + stripThickFrame  — slim titlebar enforcement
 ///   blockMinimize                              — prevent EQ self-minimize on focus loss
 ///   windowTitle                                — override EQ's SetWindowTextA calls
+///   pinGeometry                                — Windowed mode: install the in-process
+///                                                GeoWndProc subclass that pins geometry
+///                                                per WM message (v3.22.81)
 /// </summary>
 public class HookConfigWriter : IDisposable
 {
@@ -32,6 +35,10 @@ public class HookConfigWriter : IDisposable
         public int TargetH;         // 0 = don't override
         public int StripThickFrame; // 1 = remove WS_THICKFRAME
         public int BlockMinimize;   // 1 = prevent EQ from minimizing itself
+        public int PinGeometry;     // v3.22.81: 1 = Windowed mode — hook DLL installs
+                                    // the GeoWndProc subclass and pins geometry per
+                                    // WM message (replaces the C# guard timer). 0 =
+                                    // Fullscreen (legacy SetWindowPos-hook + C# guard).
 
         // Fixed-size 256-byte title buffer — null-terminated ASCII.
         // Using a fixed array in a struct requires unsafe, so we use
@@ -41,15 +48,18 @@ public class HookConfigWriter : IDisposable
     // Total shared memory size: HookConfig fields + 256 bytes for title
     private static readonly int StructSize = Marshal.SizeOf<HookConfig>() + 256;
 
-    // Verify struct size matches C++ side (7 ints * 4 bytes + 256 byte title = 284 total).
-    // Runtime check — not Debug.Assert which is stripped in Release builds.
+    // Verify struct size matches C++ side (v3.22.81: 8 ints * 4 bytes + 256 byte
+    // title = 288 total — was 284 before pinGeometry was added). Runtime check —
+    // not Debug.Assert which is stripped in Release builds. A mismatch here is a
+    // LOUD fail-fast tripwire: it means this struct and the C++ HookConfig drifted
+    // out of byte-parity, which would otherwise silently corrupt the hook config.
     private static readonly bool _structSizeVerified = VerifyStructSize();
     private static bool VerifyStructSize()
     {
-        if (StructSize != 284)
+        if (StructSize != 288)
         {
-            FileLogger.Error($"HookConfig struct size mismatch: expected 284, got {StructSize}");
-            throw new InvalidOperationException($"HookConfig struct size mismatch: expected 284, got {StructSize}");
+            FileLogger.Error($"HookConfig struct size mismatch: expected 288, got {StructSize}");
+            throw new InvalidOperationException($"HookConfig struct size mismatch: expected 288, got {StructSize}");
         }
         return true;
     }
@@ -121,7 +131,8 @@ public class HookConfigWriter : IDisposable
     /// </summary>
     public bool WriteConfig(int pid, int x, int y, int w, int h,
         bool enabled, bool stripThickFrame = true,
-        bool blockMinimize = false, string windowTitle = "")
+        bool blockMinimize = false, string windowTitle = "",
+        bool pinGeometry = false)
     {
         if (!_mappings.TryGetValue(pid, out var entry))
         {
@@ -137,7 +148,10 @@ public class HookConfigWriter : IDisposable
             TargetW = w,
             TargetH = h,
             StripThickFrame = stripThickFrame ? 1 : 0,
-            BlockMinimize = blockMinimize ? 1 : 0
+            BlockMinimize = blockMinimize ? 1 : 0,
+            // v3.22.81 — Windowed mode tells the hook DLL to install the
+            // per-message GeoWndProc geometry subclass for this PID.
+            PinGeometry = pinGeometry ? 1 : 0
         };
 
         try

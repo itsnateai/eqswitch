@@ -960,6 +960,31 @@ public class WindowManager
 
         if (!_config.Layout.SlimTitlebar) return;
 
+        // v3.22.81 — this guard runs for BOTH window modes (Fullscreen AND
+        // Windowed). An interim build briefly early-returned here for Windowed
+        // on the theory that the hook DLL's GeoWndProc subclass fully replaced
+        // it — WRONG, and reverted: the guard has TWO jobs, only one of which
+        // GeoWndProc took over.
+        //   1. Anti-growth (GeoWndProc's job now): the v3.22.80 growth came from
+        //      this timer's read-modify-write reposition racing DWM with nothing
+        //      clamping the result. GeoWndProc now forces wp->cx/cy to the fixed
+        //      SHM size on EVERY WM_WINDOWPOSCHANGING, so the window is
+        //      mechanically size-clamped — it CANNOT grow regardless of what this
+        //      guard does. That removed the growth, not the guard-skip.
+        //   2. Recreation recovery (still THIS guard's job): EQ destroys+recreates
+        //      its top-level window at charselect→in-world as a NORMAL window
+        //      (WS_THICKFRAME, work-area). ProcessManager doesn't re-fire
+        //      ClientDiscovered (same PID), and GeoWndProc/the in-process hook
+        //      don't reliably re-slim it until EQ happens to call SetWindowPos.
+        //      Skipping this guard for Windowed left the in-world window stuck
+        //      NORMAL (taskbar showing, full titlebar) until a manual titlebar
+        //      double-click — Nate's 2026-05-29 smoke. This guard re-applies the
+        //      slim style+position within a tick; GeoWndProc keeps it pinned.
+        // So both modes use this guard for recovery; GeoWndProc makes the
+        // Windowed re-applies growth-safe. (Making the in-world re-slim INSTANT
+        // rather than within-a-tick is a tracked v3.22.82 follow-up — an
+        // in-process re-slim on EQ's window-show.)
+
         // v3.22.47 post-T2/T3 verifier: bail in multimonitor mode. This helper
         // sizes EVERY passed client to GetTargetMonitor(true) (the SINGLE
         // primary-or-configured target monitor), which is correct for
@@ -1266,14 +1291,26 @@ public class WindowManager
         => mode == Config.WindowMode.Windowed ? WINDOWED_TITLEBAR_STYLE : SLIM_TITLEBAR_STYLE;
 
     /// <summary>
-    /// Overload for callers that don't hold a live HWND (TrayManager hook-config
-    /// builder, ArrangeMultiMonitor lock-to-primary-dims policy). Uses the
-    /// canonical slim style — produces the same bleed values as the HWND-aware
-    /// overload because AdjustWindowRectEx output depends only on style bits.
+    /// Overload for callers that don't hold a live HWND: the TrayManager
+    /// hook-config builder (which writes the SHM rect GeoWndProc pins to in
+    /// Windowed mode), ArrangeMultiMonitor's lock-to-primary-dims policy, and
+    /// ResizeToCurrentMonitors.
+    /// <para>
+    /// v3.22.81 — picks the probe style from the LIVE <see cref="WindowMode"/>:
+    /// WS_POPUP (0/0/0/0 bleed → monitor-exact) for Fullscreen, WS_CAPTION
+    /// (~8/31/8/8 bleed → caption-peek overflow rect) for Windowed. Pre-v3.22.81
+    /// this hardcoded <c>SLIM_TITLEBAR_STYLE</c> (WS_POPUP) — correct when WS_POPUP
+    /// was the only slim style, but for Windowed it yielded a monitor-exact rect
+    /// (0 bleed) that, once written to SHM and pinned by the hook DLL's GeoWndProc
+    /// subclass, re-introduced the right-edge sliver AND put the caption fully
+    /// on-screen instead of peeking off the top. Now produces the same rect as
+    /// the HWND-aware overload (which reads the live WS_CAPTION style), so the
+    /// pinned SHM rect matches what ApplySlimTitlebar applies.
+    /// </para>
     /// </summary>
     internal (int x, int y, int w, int h) ComputeSlimTitlebarOuterRect(
         WinRect monitor, int titlebarOffset)
-        => ComputeSlimTitlebarOuterRect(monitor, titlebarOffset, SLIM_TITLEBAR_STYLE, 0);
+        => ComputeSlimTitlebarOuterRect(monitor, titlebarOffset, ProbeStyleFor(_config.Layout.WindowMode), 0);
 
     /// <summary>
     /// v3.22.45 — compute the OUTER-window rect for a slim-titlebar window so
@@ -1379,9 +1416,27 @@ public class WindowManager
         // monitor. WindowedWidth/Height in eqclient.ini compensates so the DX
         // swap chain stays 1:1 with the new visible client size — no text
         // smear returns. See ClampBleedsForAdjacency for the per-edge logic.
+        // v3.22.81 — Windowed mode: DROP the adjacency clamp so the WS_CAPTION
+        // frame bleed hangs off ALL edges (flush sides). ClampBleedsForAdjacency
+        // zeroed the bleed on an edge abutting a 2nd monitor (to avoid an ~8px
+        // shadow strip painting onto the neighbor), but that left the client 8px
+        // short on that edge → the reported right-edge desktop sliver. WinEQ2
+        // does NOT clamp — its anti-growth is the WndProc subclass (now ours:
+        // GeoWndProc in the hook DLL), not bleed-avoidance. Tradeoff (accepted
+        // per the WinEQ2 recipe + design-spec §7.4): an ~8px shadow strip may
+        // paint onto an abutting neighbor monitor in Windowed mode. Fullscreen
+        // (WS_POPUP, 0/0/0/0 bleed) is unaffected — the clamp is a no-op there.
         var allMonitors = _api.GetAllMonitorBounds();
-        var (effLeftBleed, effRightBleed, effBottomBleed) = ClampBleedsForAdjacency(
-            monitor, allMonitors, leftBleed, rightBleed, bottomBleed);
+        int effLeftBleed, effRightBleed, effBottomBleed;
+        if (_config.Layout.WindowMode == Config.WindowMode.Windowed)
+        {
+            (effLeftBleed, effRightBleed, effBottomBleed) = (leftBleed, rightBleed, bottomBleed);
+        }
+        else
+        {
+            (effLeftBleed, effRightBleed, effBottomBleed) = ClampBleedsForAdjacency(
+                monitor, allMonitors, leftBleed, rightBleed, bottomBleed);
+        }
 
         var (x, y, w, h) = ComputeOuterRectFromBleeds(monitor, titlebarOffset, effLeftBleed, topBleed, effRightBleed, effBottomBleed);
 

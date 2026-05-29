@@ -1,5 +1,81 @@
 # Changelog
 
+## v3.22.81 — Window mode toggles, Phase 2: "Windowed mode" pinned by an in-process WndProc subclass (2026-05-29)
+
+Ships the **Windowed mode** the Phase-1 placeholder promised: a `WS_CAPTION`
+titlebar with **flush sides** and a **native-resolution client so bitmap fonts
+stay crisp** (the bug that killed the old WS_CAPTION slim mode in v3.22.76),
+covering the taskbar. The C# styling + native-res-overflow geometry landed
+earlier on this branch; this release fixes the **two remaining Windowed-only
+bugs** — and the fix is architectural. Live-confirmed on Dalaya (Characters→
+in-world and Launch Client paths): the multi-monitor growth is gone, the
+right-edge sliver is gone, and fonts are crisp.
+
+**Architecture — guard + subclass are complementary** (`WindowManager.ApplySlimTitlebarToAll`
++ `GeoWndProc`): the 500ms guard keeps its recreation-recovery job (re-slimming
+EQ's window after it's destroyed+recreated at charselect→in-world as a normal
+window) for **both** modes; `GeoWndProc` takes over only the anti-growth job,
+forcing the fixed SHM size on every `WM_WINDOWPOSCHANGING` so the guard's
+re-applies can never runaway. (An interim build skipped the guard for Windowed —
+that left the in-world window stuck normal until a manual titlebar double-click;
+reverted.)
+
+> **Known follow-ups (tracked for v3.22.82):** (1) the in-world re-slim is automatic
+> but happens within a guard tick rather than instantly — an in-process re-slim on
+> EQ's window-show would make it instant (no brief normal-window flash on world
+> entry); (2) `TitlebarOffset` (default 18) leaves the caption on-screen, which on a
+> same-height monitor pushes the native client's bottom edge below the screen — for
+> a flush bottom the caption needs to sit fully off-screen (offset→0, screenshot-tuned
+> on the live client). Sides/fonts/growth — the load-bearing fixes — are done and
+> live-confirmed.
+
+**The bugs:** in Windowed mode the window (1) grew without bound when it touched a
+2nd monitor, and (2) left an ~8px desktop sliver on the right edge. Both traced to
+EQSwitch's **external ~500ms geometry guard timer** (`WindowManager.ApplySlimTitlebarToAll`):
+a read-modify-write loop that read the already-DWM-bled window rect and re-applied
+a larger one, racing DWM into runaway growth at a monitor boundary; and the
+adjacency clamp that zeroed the right-edge frame bleed (to avoid painting a shadow
+strip onto the neighbor) which is what produced the sliver.
+
+**The fix (ported from a WinEQ2 reverse-engineering pass, not invented):** WinEQ2 —
+the competitor that has neither bug — pins its slim window by **subclassing
+eqgame's WndProc** and forcing geometry synchronously per window message, not via
+an external timer. We replicate that **for Windowed mode only**, inside the
+injected hook DLL (`eqswitch-hook.dll`):
+
+- **`GeoWndProc` subclass** installed in-process by the hook DLL. It owns the rect
+  *before* DWM/EQ/a drag can see it, so size can never accumulate:
+  - `WM_WINDOWPOSCHANGING` → force the authoritative outer rect (the one C# already
+    computes and writes to shared memory), return without chaining. **This kills the growth.**
+  - `WM_GETMINMAXINFO` → lock `ptMin/MaxTrackSize` to the pinned W×H (fixed-size).
+  - `WM_MOVING` → pin the proposed rect back to current (no drag-off).
+  - `WM_SYSCOMMAND` → swallow `SC_MAXIMIZE`.
+- The C# guard timer **no longer repositions Windowed clients** (it raced DWM); it
+  still runs for Fullscreen, where WS_POPUP has zero frame bleed and never grew.
+- The **single-mode adjacency clamp is dropped for Windowed** → the frame bleed now
+  hangs off all edges (flush sides, no sliver). Tradeoff per the WinEQ2 recipe: an
+  ~8px shadow strip may paint onto an abutting monitor — acceptable because the
+  anti-growth defense is now the subclass, not bleed-avoidance.
+
+**Fullscreen mode is byte-for-byte unchanged** — `pinGeometry` is 0 there, so the
+subclass is never installed and the legacy SetWindowPos-hook + guard-timer path is
+untouched. The subclass coexists safely with the di8 autologin activation subclass
+(that one is lifecycle-scoped to login and gone during normal Windowed gameplay).
+
+The hook-config shared-memory struct gained one int (`pinGeometry`); the C# side
+hard-asserts the new 288-byte size at startup so the C++/C# layouts can't drift
+silently.
+
+Spec: `docs/specs/2026-05-29-window-mode-toggles-design.md` §7. RE recipe:
+`memory/reference_wineq2_window_pin_technique.md`.
+
+### Files
+- `Native/eqswitch-hook.cpp` — `HookConfig.pinGeometry`; `GeoWndProc` subclass + `EnsureGeoSubclass`/`RemoveGeoSubclass`; lazy install from the SetWindowPos/MoveWindow detours; teardown in `Cleanup`.
+- `Core/HookConfigWriter.cs` — `HookConfig.PinGeometry`; struct-size guard 284 → 288; `WriteConfig(pinGeometry:)`.
+- `UI/TrayManager.cs` — `UpdateHookConfigForPid` sets `pinGeometry = stripFrame && WindowMode==Windowed`.
+- `Core/WindowManager.cs` — `ApplySlimTitlebarToAll` skips reposition for Windowed; `ComputeSlimTitlebarOuterRect` drops the adjacency clamp for Windowed (flush edges).
+- `EQSwitch.csproj` — 3.22.80 → 3.22.81.
+
 ## v3.22.80 — Window mode toggles, Phase 1: pin "Fullscreen mode" (2026-05-29)
 
 UI + config only; no rendering change. Renames the borderless WS_POPUP look to an
