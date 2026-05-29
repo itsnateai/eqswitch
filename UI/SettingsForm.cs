@@ -87,7 +87,6 @@ public class SettingsForm : Form
     private NumericUpDown _nudBottomOffset = null!;
     private CheckBox _chkUseHook = null!;
     private CheckBox _chkMaximizeWindow = null!;
-    private Label _lblStyleDisabledHint = null!;
     private TextBox _txtWindowTitleTemplate = null!;
 
 
@@ -1601,7 +1600,8 @@ public class SettingsForm : Form
         _txtWindowTitleTemplate.Text = _config.Layout.WindowTitleTemplate;
         _nudTitlebarOffset.Enabled = _config.Layout.SlimTitlebar;
         _nudBottomOffset.Enabled = _config.Layout.SlimTitlebar;
-        _chkMaximizeWindow.Enabled = !_config.Layout.SlimTitlebar;
+        // v3.22.80: _chkMaximizeWindow is now an Advanced-only detached control;
+        // its .Enabled is read nowhere, so the old slim-gated enable is removed.
 
         // Performance
 
@@ -3386,24 +3386,6 @@ public class SettingsForm : Form
         DarkTheme.AddCardHint(cardStyle, "DWM immersive dark caption (Win10 1809+/11)", hintX, cy + 2);
         cy += 22;
 
-        _lblStyleDisabledHint = new Label
-        {
-            Text = "",
-            Location = new Point(L, cy),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgWarn,
-            Font = DarkTheme.FontUI75,
-            Visible = false,
-        };
-        cardStyle.Controls.Add(_lblStyleDisabledHint);
-
-        // v3.22.80: in the two-mode model there's no conflict to surface — the
-        // hint label stays for layout/back-compat but is always hidden.
-        void UpdateStyleHint()
-        {
-            _lblStyleDisabledHint.Visible = false;
-        }
-
         // Wrapper dialog backing fields — titlebar offset, bottom margin, DLL
         // hook. Advanced settings most users don't touch. v3.22.80: Maximize on
         // Launch + Force-Windowed (ForceWindowedMode plumbing) join these as
@@ -3429,7 +3411,6 @@ public class SettingsForm : Form
             else if (!_chkWindowedMode.Enabled || !_chkWindowedMode.Checked)
                 _chkSlimTitlebar.Checked = true;   // can't have neither mode on
             syncingModes = false;
-            UpdateStyleHint();
         };
 
         _chkWindowedMode.CheckedChanged += (_, _) =>
@@ -3439,7 +3420,6 @@ public class SettingsForm : Form
             if (_chkWindowedMode.Checked) _chkSlimTitlebar.Checked = false;
             else if (!_chkSlimTitlebar.Checked) _chkSlimTitlebar.Checked = true;
             syncingModes = false;
-            UpdateStyleHint();
         };
 
         // v3.22.80: card shrank 152 → 130 (4 rows → 3 rows after Maximize on
@@ -3471,10 +3451,10 @@ public class SettingsForm : Form
     private void ShowOffsetsDialog()
     {
         // v3.22.54: dialog reorganized into two sections.
-        //   Slim-mode (Fullscreen Window ON, default): only Horizontal Nudge
+        //   Slim-mode (Fullscreen mode ON, default): only Horizontal Nudge
         //     applies — our hook DLL + slim-titlebar math override the
         //     eqclient.ini X/Y positions immediately on launch.
-        //   Non-slim mode (Fullscreen Window OFF): Offset X/Y/Top Offset
+        //   Non-slim mode (Fullscreen mode OFF): Offset X/Y/Top Offset
         //     take effect — they write to eqclient.ini, which EQ honors
         //     when SlimTitlebar isn't enforcing its own position.
         // Hints now make the mode-gating explicit so users don't tweak
@@ -3495,8 +3475,8 @@ public class SettingsForm : Form
         const int L = 15, I = 140;
 
         bool slim = _chkSlimTitlebar.Checked;
-        string slimNote = slim ? " (Fullscreen Window ON — this one)" : "";
-        string nonSlimNote = slim ? "" : " (Fullscreen Window OFF — these)";
+        string slimNote = slim ? " (Fullscreen mode ON — this one)" : "";
+        string nonSlimNote = slim ? "" : " (Fullscreen mode OFF — these)";
 
         DarkTheme.AddHint(dlg, $"Slim-titlebar mode{slimNote}:", L, y);
         y += 18;

@@ -344,6 +344,17 @@ public static class AppConfigValidateTests
             failures += Assert("windowMode invalid clamps", cfg.Layout.WindowMode, WindowMode.Fullscreen);
         }
 
+        // v3.22.80 Case (Phase 1): WindowMode.Windowed is a DEFINED enum value
+        // (Enum.IsDefined passes) but is not implemented yet, so Validate must
+        // pin it back to Fullscreen. Only reachable via hand-edited config in
+        // Phase 1. REMOVE/flip this expectation in Phase 2 when Windowed ships.
+        {
+            var cfg = new AppConfig();
+            cfg.Layout.WindowMode = WindowMode.Windowed;
+            cfg.Validate();
+            failures += Assert("windowMode Windowed pinned to Fullscreen (Phase 1)", cfg.Layout.WindowMode, WindowMode.Fullscreen);
+        }
+
         // v3.22.80 Case: a main-card WindowMode forces SlimTitlebar true (legacy
         // non-slim config migrates to the WindowMode look; card never lies about
         // the rendered window).
@@ -356,7 +367,7 @@ public static class AppConfigValidateTests
         }
 
         Console.WriteLine(failures == 0
-            ? "AppConfigValidateTests: all 13 cases PASSED"
+            ? "AppConfigValidateTests: all 14 cases PASSED"
             : $"AppConfigValidateTests: {failures} assertion failure(s)");
         return failures == 0 ? 0 : 1;
     }

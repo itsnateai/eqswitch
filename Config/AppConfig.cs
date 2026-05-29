@@ -367,6 +367,20 @@ public class AppConfig
             Layout.WindowMode = WindowMode.Fullscreen;
             mutated = true;
         }
+        // PHASE 1 (v3.22.80): Windowed mode is not implemented yet — its card
+        // checkbox is disabled. `Windowed` is a defined enum value, so the
+        // Enum.IsDefined guard above does NOT catch it; only a hand-edited
+        // config can reach it. Pin it back to Fullscreen so the UI never has to
+        // represent an unsupported state (the mutual-exclusivity handlers would
+        // otherwise leave BOTH checkboxes checked at load) and no stale Windowed
+        // value lurks for Phase 2 to silently activate.
+        // REMOVE THIS BLOCK in Phase 2 when WS_CAPTION slim ships.
+        if (Layout.WindowMode == WindowMode.Windowed)
+        {
+            FileLogger.Warn("AppConfig.Validate: WindowMode=Windowed not yet supported (Phase 1) — pinned to Fullscreen");
+            Layout.WindowMode = WindowMode.Fullscreen;
+            mutated = true;
+        }
         // Both main-card modes are slim-managed; SlimTitlebar is the internal
         // signal the styling code reads. Force it true so a legacy non-slim or
         // hand-edited config can't desync the card from the rendered window.
