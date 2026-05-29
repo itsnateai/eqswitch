@@ -1,5 +1,35 @@
 # Changelog
 
+## v3.22.80 — Window mode toggles, Phase 1: pin "Fullscreen mode" (2026-05-29)
+
+UI + config only; no rendering change. Renames the borderless WS_POPUP look to an
+honest **Fullscreen mode** control and introduces `Layout.WindowMode`
+(`Fullscreen` | `Windowed`, default `Fullscreen`) as the user-facing window-style
+selector. A disabled **Windowed Mode** placeholder lands on the Window Style card
+(behavior ships in Phase 2 — a WS_CAPTION slim titlebar with native-resolution
+overflow so fonts stay crisp). The `WindowedMode=TRUE` plumbing and `Maximize on
+Launch` move into the ⚙ Advanced dialog. `SlimTitlebar` is retained as the
+internal styling signal (true for both modes), so every existing styling path —
+and all 5 launch routes (Launch Client / Launch Team / Accounts / Characters /
+Team submenu) — render identically to v3.22.79. `WindowMode` is now tracked in the
+ConfigWrite audit so a silent flip leaves a trace. Stale `SlimTitlebar` docstring
+(it still described the pre-v3.22.76 caption behavior) corrected.
+
+**Upgraders:** if you had explicitly *unchecked* the old "Fullscreen Window" box
+(rare — it shipped on by default), your client now renders in Fullscreen (slim)
+mode on first launch. `Validate` force-migrates legacy non-slim configs and logs
+it loudly in `eqswitch.log`; the normal-frame look remains reachable via the
+⚙ Advanced override.
+
+Spec: `docs/specs/2026-05-29-window-mode-toggles-design.md`.
+
+### Files
+- `Config/AppConfig.cs` — `WindowMode` enum + `WindowLayout.WindowMode`; Validate clamp + SlimTitlebar resync; docstring fix.
+- `Config/ConfigManager.cs` — `AuditFlags` tracks `WindowMode`.
+- `Core/AppConfigValidateTests.cs` — default / clamp / resync / Windowed-pin / combined cases (11 → 15 total).
+- `UI/SettingsForm.cs` — card rename + disabled Windowed checkbox + mutual-exclusivity; Maximize + Force-Windowed relocated to Advanced; load/build/reset wiring; card height 152 → 130.
+- `EQSwitch.csproj` — 3.22.79 → 3.22.80.
+
 ## v3.22.79 — verifier-harvested fixes from v3.22.78 audit (2026-05-28)
 
 Four targeted fixes for pre-existing whole-file findings surfaced by the v3.22.78 6-verifier audit (T2 Gap-audit + T3 Code-review, Sonnet + Opus). None of these were introduced by v3.22.78 — they're latent bugs already in the codebase whose context the v3.22.78 audit happened to load. Capturing them now while the context is hot.
