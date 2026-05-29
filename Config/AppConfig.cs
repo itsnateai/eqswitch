@@ -557,6 +557,18 @@ public class AppConfig
         string.IsNullOrEmpty(name) ? null : Characters.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase));
 }
 
+/// <summary>
+/// User-facing window-style selector (v3.22.80). Fullscreen = borderless
+/// WS_POPUP covering the monitor (the look shipped since v3.22.76). Windowed =
+/// WS_CAPTION slim titlebar (re-introduced in Phase 2). Both are slim-managed
+/// styles, so <see cref="WindowLayout.SlimTitlebar"/> stays true for either.
+/// </summary>
+public enum WindowMode
+{
+    Fullscreen = 0,
+    Windowed = 1,
+}
+
 public class WindowLayout
 {
     public bool SnapToMonitor { get; set; } = true;
@@ -590,12 +602,20 @@ public class WindowLayout
     public string Mode { get; set; } = "single";
 
     /// <summary>
-    /// Slim titlebar mode: keeps WS_CAPTION but positions the window with a negative Y offset
-    /// so the titlebar is partially hidden above the monitor edge. The game window is oversized
-    /// by the offset amount so the visible game area fills the full monitor height.
-    /// This is the WinEQ2 method for covering the taskbar while keeping a draggable titlebar.
+    /// Internal "EQSwitch styles this window" signal read by WindowManager and
+    /// EnforceOverrides. TRUE for both Fullscreen and Windowed window modes;
+    /// the concrete style (WS_POPUP vs WS_CAPTION) is selected by
+    /// <see cref="WindowMode"/>. Kept in sync by AppConfig.Validate. Legacy
+    /// non-slim (false) is no longer reachable from the main card as of
+    /// v3.22.80 — Validate migrates it to the WindowMode look.
     /// </summary>
     public bool SlimTitlebar { get; set; } = true;
+
+    /// <summary>
+    /// v3.22.80: the user-facing window-mode selector that drives the Window
+    /// Style card. Default Fullscreen preserves the v3.22.76+ borderless look.
+    /// </summary>
+    public WindowMode WindowMode { get; set; } = WindowMode.Fullscreen;
 
     /// <summary>
     /// v3.22.19 (2026-05-18): per-monitor slim override for multi-monitor mode.

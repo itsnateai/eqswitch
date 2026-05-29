@@ -330,8 +330,14 @@ public static class AppConfigValidateTests
                 inRangeCfg.WarmupDwellMs, 8000);
         }
 
+        // v3.22.80 Case: WindowMode default is Fullscreen on a fresh config.
+        {
+            var cfg = new AppConfig();
+            failures += Assert("windowMode default", cfg.Layout.WindowMode, WindowMode.Fullscreen);
+        }
+
         Console.WriteLine(failures == 0
-            ? "AppConfigValidateTests: all 10 cases PASSED"
+            ? "AppConfigValidateTests: all 11 cases PASSED"
             : $"AppConfigValidateTests: {failures} assertion failure(s)");
         return failures == 0 ? 0 : 1;
     }
