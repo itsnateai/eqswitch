@@ -633,8 +633,20 @@ static void EnsureLogOpen() {
     if (g_logFile) return;
     // Atomic CAS — only one thread opens the file
     if (InterlockedCompareExchange(&g_logInitAttempted, 1, 0) != 0) return;
-    if (g_logPath[0])
-        g_logFile = fopen(g_logPath, "w");
+    if (g_logPath[0]) {
+        // v3.22.77: "a" (append) instead of "w" (truncate). Per-PID logs
+        // used to be wiped on every process start, which made phantom-key
+        // diagnosis impossible after eqgame.exe exited — we could see the
+        // bug live but couldn't read evidence post-mortem. Banner divides
+        // sessions visually so a stale file from a prior PID is obviously
+        // distinguishable from the current run.
+        g_logFile = fopen(g_logPath, "a");
+        if (g_logFile) {
+            fprintf(g_logFile, "\n========== Session PID=%lu started (tick=%lu) ==========\n",
+                    (unsigned long)GetCurrentProcessId(), (unsigned long)GetTickCount());
+            fflush(g_logFile);
+        }
+    }
 }
 
 void DI8Log(const char *fmt, ...) {

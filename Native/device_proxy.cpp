@@ -136,6 +136,15 @@ static DWORD WINAPI ActivateThread(LPVOID) {
     int ticksSinceRepost = 0;
     int initDelay = 0; // delay subclass install for EQ to finish init
 
+    // v3.22.77 phantom-key retry state. The falling-edge restore branch fires
+    // ONCE per autologin cycle; if SetCoopLevel(FOREGROUND|EXCLUSIVE) fails
+    // there, g_coopSwitched stays true and EQ keeps reading global keyboard
+    // state via DI8 BACKGROUND|NONEXCLUSIVE mode forever — every key the user
+    // presses in any foreground app leaks into EQ. This counter drives the
+    // standalone retry block below at ~1Hz, capped at 60 attempts (~60s).
+    int retryTickCounter = 0;
+    int retryAttempts = 0;
+
     while (!g_shutdown) {
         Sleep(16); // ~60Hz
 
@@ -205,6 +214,32 @@ static DWORD WINAPI ActivateThread(LPVOID) {
                 // internal activation flag goes to 0. We must blast ALL activation
                 // messages to reset EQ's state.
 
+                // v3.22.77 (R1 form, R2 reverted by R3-verifier post-mortem):
+                // reset retry counters unconditionally on rising-edge / freshInstall,
+                // before the !g_coopSwitched gate below. The earlier R1 placement
+                // inside the SUCCEEDED(hr) branch had a counter-leak hole — a
+                // post-tombstone autologin would skip the entire inner block
+                // (g_coopSwitched=true blocks the gate) and never reset the
+                // counter, so the next failed-restore would tombstone immediately
+                // with zero retries. Unconditional reset means each autologin
+                // cycle gets a fresh 60-attempt budget for the standalone retry
+                // block on the falling edge.
+                //
+                // We do NOT force-clear g_coopSwitched here (R2 attempted this,
+                // R3 verifier round flagged it as a regression). Per DI8 docs,
+                // SetCooperativeLevel failure preserves the prior cooperative
+                // level — so after a tombstone, the device is still in BACKGROUND
+                // mode (the failed restore-to-FOREGROUND didn't take effect).
+                // The inner `!g_coopSwitched` gate below correctly SKIPS the
+                // re-switch (device is already in BACKGROUND), autologin keys
+                // are delivered in BACKGROUND mode as expected, and the falling
+                // edge re-tries restore with a fresh 60-attempt budget from this
+                // counter reset. R2's force-clear created a device/flag desync
+                // window and conflicted with the alternate g_coopSwitched
+                // writer at the SetCooperativeLevel intercept (other thread).
+                retryTickCounter = 0;
+                retryAttempts = 0;
+
                 if (!wasActive && !g_coopSwitched && g_realKeyboardDevice) {
                     g_realKeyboardDevice->Unacquire();
                     DWORD bgFlags = (g_originalCoopFlags & ~(DISCL_EXCLUSIVE | DISCL_FOREGROUND))
@@ -272,10 +307,16 @@ static DWORD WINAPI ActivateThread(LPVOID) {
                 // next cycle retries; log loudly because phantom-keys will fire.
                 if (SUCCEEDED(hr)) {
                     g_coopSwitched = false;
+                    // v3.22.77: clean restore — no retry needed
+                    retryTickCounter = 0;
+                    retryAttempts = 0;
                     DI8Log("wm_activate: restored coop level (orig=0x%X SetCoop=0x%08X Acquire=0x%08X)",
                            (unsigned)g_originalCoopFlags, (unsigned)hr, (unsigned)acqHr);
                 } else {
-                    DI8Log("wm_activate: RESTORE FAILED (orig=0x%X SetCoop=0x%08X Acquire=0x%08X) — leaving g_coopSwitched=true for retry; phantom-keys risk",
+                    // v3.22.77: the standalone retry block below picks up
+                    // from here, retrying SetCoopLevel at ~1Hz until it
+                    // succeeds or hits the 60-attempt cap.
+                    DI8Log("wm_activate: RESTORE FAILED (orig=0x%X SetCoop=0x%08X Acquire=0x%08X) — standalone retry block will retry at ~1Hz; phantom-keys risk until retry succeeds",
                            (unsigned)g_originalCoopFlags, (unsigned)hr, (unsigned)acqHr);
                 }
             }
@@ -288,6 +329,44 @@ static DWORD WINAPI ActivateThread(LPVOID) {
                 DI8Log("wm_activate: deactivated — restored natural state");
             }
             ticksSinceRepost = 0;
+        }
+        // v3.22.77: standalone retry block. The falling-edge branch above
+        // (!active && wasActive) only fires ONCE per autologin cycle, so a
+        // single SetCoopLevel(FOREGROUND|EXCLUSIVE) failure used to leave
+        // EQ in BACKGROUND|NONEXCLUSIVE indefinitely — keys pressed in any
+        // other foreground app would leak into EQ via DI8's global keyboard
+        // polling pipeline (a different pipeline from the WM_KEYDOWN
+        // window-message queue, so LL keyboard hooks can't see the leak).
+        // This block retries SetCoopLevel at ~1Hz (60 ticks at 60Hz) and
+        // caps at 60 attempts so a fundamentally broken state doesn't loop
+        // forever burning CPU. The cap is a tombstone — we log loudly and
+        // give up; user can recover by restarting EQSwitch.
+        else if (!active && g_coopSwitched && g_realKeyboardDevice && hwnd) {
+            retryTickCounter++;
+            if (retryTickCounter >= 60 && retryAttempts < 60) {
+                retryTickCounter = 0;
+                retryAttempts++;
+                g_realKeyboardDevice->Unacquire();
+                HRESULT hr = g_realKeyboardDevice->SetCooperativeLevel(hwnd, g_originalCoopFlags);
+                // Acquire failure here is OK (typically E_ACCESSDENIED when EQ
+                // lacks focus); the device is in the right MODE, EQ will
+                // reacquire on focus regain. Same rationale as the falling-
+                // edge restore branch above. Only SetCoop's hr matters.
+                HRESULT acqHr = g_realKeyboardDevice->Acquire();
+                if (SUCCEEDED(hr)) {
+                    g_coopSwitched = false;
+                    DI8Log("wm_activate: RESTORE RETRY #%d succeeded after ~%ds — phantom-key window closed (SetCoop=0x%08X Acquire=0x%08X)",
+                           retryAttempts, retryAttempts, (unsigned)hr, (unsigned)acqHr);
+                    retryAttempts = 0;
+                } else if (retryAttempts <= 5 || retryAttempts == 60) {
+                    // Log first 5 attempts to confirm the loop is firing,
+                    // then go quiet until the cap to avoid log spam over
+                    // 60 seconds of repeated failure.
+                    DI8Log("wm_activate: RESTORE RETRY #%d failed (SetCoop=0x%08X Acquire=0x%08X)%s",
+                           retryAttempts, (unsigned)hr, (unsigned)acqHr,
+                           retryAttempts == 60 ? " — GIVING UP; phantom keys persist until next autologin or EQSwitch restart" : "");
+                }
+            }
         }
         wasActive = active;
     }

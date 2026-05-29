@@ -1,5 +1,52 @@
 # Changelog
 
+## v3.22.77 — phantom-key retry loop + DI8 log persistence (2026-05-28)
+
+Native-only release; C# untouched except for the version bump. Closes a long-standing latent bug that v3.22.76's WS_POPUP timing change made more visible.
+
+### The bug
+
+`Native/device_proxy.cpp::ActivateThread`'s SHM-falling-edge branch (`!active && wasActive`) restores DI8 cooperative level from `BACKGROUND|NONEXCLUSIVE` (set during autologin so EQ can receive credential keystrokes when unfocused) back to `FOREGROUND|EXCLUSIVE` (so EQ only reads keys when focused). If that single `SetCoopLevel` call fails — observed at least once in the 2026-05-28 PM v3.22.76 take-2 smoke — `g_coopSwitched` stays true, but `wasActive` flips false the same tick, so the restore branch never fires again. EQ stays in BACKGROUND mode for the remainder of the process lifetime; **any key pressed in any foreground app on the system leaks into EQ via DI8's global keyboard polling pipeline** (a different pipeline from the WM_KEYDOWN window-message queue, so LL keyboard hooks can't see the leak — making this nearly impossible to diagnose from C# logs alone).
+
+User-visible symptom: a spacebar or hotbar number pressed in a browser / terminal / chat app silently fires the same action in EQ once, with no obvious trigger or correlation in the C# log. The `Native/device_proxy.cpp:219, 278` comments have flagged this as a "phantom-keys risk" for several versions but the catch-up retry mechanism was missing.
+
+### Why v3.22.76 may have unmasked it
+
+The WS_POPUP restyle fires ~625 ms after `AutoLogin-SM: terminal state Complete` (16:07:00.673 resume guard timer → 16:07:01.298 first `ApplySlimTitlebar`). `SetWindowPos(SWP_FRAMECHANGED)` tears the DI8 WndProc subclass, which trips the `freshInstall` branch and exercises the same coop-level swap code more frequently than the pre-v3.22.76 caption-strip redraw did. WS_POPUP's instant focus transitions (no DWM caption animation) shrink the timing window for the OS to finish the BACKGROUND-to-FOREGROUND device transition cleanly.
+
+### Fix 1 — standalone retry block in `ActivateThread`
+
+New `else if (!active && g_coopSwitched && g_realKeyboardDevice && hwnd)` branch runs after the existing two SHM-state branches. Counter increments at 60 Hz tick rate; every 60 ticks (~1 Hz) it retries `SetCoopLevel(g_originalCoopFlags)`. First 5 failures log at INFO so we can confirm the loop is alive; subsequent failures stay quiet until the 60-attempt cap (~60 s), at which point it logs a loud "GIVING UP" message and stops. Cap is a tombstone — if SetCoopLevel still fails after 60 s, something deeper is broken and a process restart is the cleaner recovery than burning CPU forever. Counter resets to 0 on the next SHM rising-edge (clean state for a future autologin cycle) and on first-try restore success.
+
+The retry rate (1 Hz) is the sweet spot: faster than human reaction time so any phantom keys get at most 1 second of exposure window, and SetCoopLevel is a cheap COM call so per-second cost is negligible. Aggressive 60 Hz looping risked API thrashing if DI8 is in a fundamentally bad state.
+
+### Fix 2 — DI8 log file opens append (was truncate)
+
+`Native/eqswitch-di8.cpp::EnsureLogOpen` now opens `eqswitch-dinput8-{pid}.log` with mode `"a"` instead of `"w"`. Per-PID logs used to be wiped on every process start, which made post-mortem phantom-key diagnosis impossible: we could see the bug live but couldn't read evidence after eqgame.exe exited. A session banner (`========== Session PID=N started (tick=T) ==========`) is written on first open so a stale file from a prior PID is visually distinguishable from the current run.
+
+The path stays next-to-eqgame.exe (in `Eqfresh/` for current installs). Promoting to a stable EQSwitch-owned log directory is a larger change involving path discovery from C# side and is deferred.
+
+### Files
+
+- `Native/device_proxy.cpp` — surgical edits to `ActivateThread`: add `retryTickCounter`/`retryAttempts` locals; unconditionally reset both counters at the top of `if (!wasActive || freshInstall)` (R1 form — verifier-fix R1 closed the original counter-leak hole where the reset was inside `if (SUCCEEDED(hr))` of the rising-edge BACKGROUND-switch gate, which a post-tombstone autologin would skip entirely → next failed-restore tombstoned with zero retries). Falling-edge restore-success branch retains its own counter reset. New standalone retry `else if` branch + `acqHr`-ignore rationale comment in the retry block.
+  - **R2 reverted by R3-verifier post-mortem**: R2 tried to additionally force-clear `g_coopSwitched=false` on rising-edge to "recover from tombstone." R2-verifier round CRITICAL claim was that post-tombstone autologin's BACKGROUND switch would be skipped → keys typed into FOREGROUND device. R3 verifier (T3-Sonnet + T3-Opus REJECT + T2-Opus CRITICAL) walked the MSDN `SetCooperativeLevel` semantics and identified the R2 premise as wrong: SetCoop failure preserves prior cooperative level, so after a tombstone the device is still in BACKGROUND. The pre-R2 BACKGROUND-switch skip was correct; autologin keys WERE being delivered in BACKGROUND mode. R2's force-clear instead created a device/flag desync window AND conflicted with the alternate `g_coopSwitched` writer at the `SetCooperativeLevel` intercept (other thread). R3 instruction: revert to R1 form. The standalone retry block remains the recovery mechanism — it fires on every subsequent autologin cycle's falling edge with a fresh 60-attempt budget from the R1 counter reset.
+- `Native/eqswitch-di8.cpp` — `EnsureLogOpen` opens with `"a"` + writes session banner.
+- `EQSwitch.csproj` — 3.22.76 → 3.22.77.
+- `tools/capture-native-debug.py` + `tools/README.md` — docstring/README updated to reflect `"a"`-mode contract; size-shrink-rewind logic kept for pre-v3.22.77 backward-compat + external-rotation defense (becomes dead-but-harmless under v3.22.77+).
+
+### Known minor gaps (deferred to v3.22.78+)
+
+- **Magic-number collision** — `device_proxy.cpp` retry block uses literal `60` twice with different semantics: tick threshold (60 ticks at 60 Hz = ~1 s cadence) and attempt cap (60 attempts = ~60 s total). A future refactor of the `Sleep(16)` cadence would silently change one without the other. Named constants `kRetryIntervalTicks` / `kMaxRetryAttempts` are a follow-up cleanup.
+- **Append log has no rotation guard** — `eqswitch-dinput8-{pid}.log` grows unbounded across long-uptime eqgame.exe sessions. Disk-full silently swallows further `DI8Log` writes (`fprintf`/`fflush` return values ignored). Promoting to an EQSwitch-owned log directory with size-based rotation is deferred.
+- **No user-visible tombstone signal** — when the retry block gives up at attempt 60, the only signal is a `DI8Log` line in the per-PID file. C# has no SHM/IPC channel to surface a tray balloon. Adding a tombstone flag to `g_loginShm` so C# can show "DI8 cooperative level stuck — restart EQSwitch" is deferred.
+- **`g_realKeyboardDevice` UAF window during eqgame.exe shutdown** — `DeviceProxy_Shutdown`'s `WaitForSingleObject(handle, 100)` is best-effort. If `ActivateThread` is mid-`Unacquire()`/`SetCooperativeLevel()` at the 100 ms mark, `CloseHandle` proceeds and the thread may dereference a freed COM vtable. This window predates v3.22.77 (the same falling-edge restore code at lines 277-287 has it); the retry block marginally widens exposure by adding more 1 Hz COM calls. Hardening with `IsWindow(hwnd)` + try/`__except` is deferred.
+
+### What you don't lose
+
+- No behavior change in the happy path (clean restore on first try → same path as v3.22.76).
+- No new threads, no new global state outside `ActivateThread`'s local scope, no new dependencies, no IPC changes.
+- Retry block runs at 60 Hz tick rate but does NOTHING (just `retryTickCounter++`) unless we're stuck in the failed-restore state — zero cost in normal operation.
+
 ## v3.22.76 — WinEQ2 `-frame none` parity (WS_POPUP) + surgical guard-storm fix (2026-05-28)
 
 UI-only release; Native DLLs unchanged. Two coupled changes:
