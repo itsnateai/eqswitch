@@ -1590,7 +1590,6 @@ public class SettingsForm : Form
         // v3.22.80: checkbox states derive from WindowMode (the source of truth).
         _chkSlimTitlebar.Checked = _config.Layout.WindowMode == WindowMode.Fullscreen;
         _chkWindowedMode.Checked = _config.Layout.WindowMode == WindowMode.Windowed;
-        _chkWindowedMode.Enabled = false;   // Phase 2 enables this
         _chkDarkTitlebar.Checked = _config.Layout.DarkTitlebar;
         _nudTitlebarOffset.Value = DarkTheme.ClampNud(_nudTitlebarOffset, _config.Layout.TitlebarOffset);
         _nudBottomOffset.Value = DarkTheme.ClampNud(_nudBottomOffset, _config.Layout.BottomOffset);
@@ -3371,8 +3370,7 @@ public class SettingsForm : Form
         cardStyle.Controls.Add(btnWrapper);
 
         _chkWindowedMode = DarkTheme.AddCardCheckBox(cardStyle, "Windowed Mode", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "slim titlebar, draggable  (next version)", hintX, cy + 2);
-        _chkWindowedMode.Enabled = false;   // Phase 2 enables this
+        DarkTheme.AddCardHint(cardStyle, "slim titlebar, draggable (WinEQ2-style)", hintX, cy + 2);
         cy += 26;
 
         _chkSlimTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Fullscreen mode", L, cy);
