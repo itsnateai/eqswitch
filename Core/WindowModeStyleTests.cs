@@ -53,6 +53,25 @@ public static class WindowModeStyleTests
         failures += Assert("probe fullscreen has popup",
             (WindowManager.ProbeStyleFor(WindowMode.Fullscreen) & NativeMethods.WS_POPUP) != 0, true);
 
+        // v3.22.81 re-verify — Windowed guard STYLE-GATE no-storm invariant. The
+        // Windowed guard (ApplySlimTitlebarToAll) re-applies iff
+        // rawStyle != DesiredSlimStyle(rawStyle, Windowed) — i.e. the style regressed
+        // (EQ recreated the window NORMAL). For that gate to NOT 2 Hz-storm on an
+        // already-slim window, DesiredSlimStyle MUST be IDEMPOTENT on a slim style
+        // (apply-twice == apply-once ⇒ gate skips, GeoWndProc keeps the size).
+        // A NORMAL (WS_THICKFRAME) window MUST differ ⇒ gate recovers it. These two
+        // properties are what make the style-gate fix correct (no storm + recovery).
+        failures += Assert("gate idempotent on canonical slim (no storm)",
+            WindowManager.DesiredSlimStyle(WindowManager.WINDOWED_TITLEBAR_STYLE, WindowMode.Windowed)
+                == WindowManager.WINDOWED_TITLEBAR_STYLE, true);
+        long winSlim = WindowManager.DesiredSlimStyle(baseStyle, WindowMode.Windowed);
+        failures += Assert("gate idempotent on derived slim (no storm)",
+            WindowManager.DesiredSlimStyle(winSlim, WindowMode.Windowed) == winSlim, true);
+        long normalRecreated = NativeMethods.WS_VISIBLE | NativeMethods.WS_CAPTION
+            | NativeMethods.WS_THICKFRAME | NativeMethods.WS_SYSMENU;
+        failures += Assert("gate: NORMAL (WS_THICKFRAME) window differs → recovery re-apply",
+            WindowManager.DesiredSlimStyle(normalRecreated, WindowMode.Windowed) != normalRecreated, true);
+
         Console.WriteLine(failures == 0
             ? "WindowModeStyleTests: all PASSED"
             : $"WindowModeStyleTests: {failures} assertion failure(s)");

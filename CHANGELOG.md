@@ -73,7 +73,7 @@ Spec: `docs/specs/2026-05-29-window-mode-toggles-design.md` §7. RE recipe:
 - `Native/eqswitch-hook.cpp` — `HookConfig.pinGeometry`; `GeoWndProc` subclass + `EnsureGeoSubclass`/`RemoveGeoSubclass`; lazy install from the SetWindowPos/MoveWindow detours; teardown in `Cleanup`.
 - `Core/HookConfigWriter.cs` — `HookConfig.PinGeometry`; struct-size guard 284 → 288; `WriteConfig(pinGeometry:)`.
 - `UI/TrayManager.cs` — `UpdateHookConfigForPid` sets `pinGeometry = stripFrame && WindowMode==Windowed`.
-- `Core/WindowManager.cs` — `ApplySlimTitlebarToAll` skips reposition for Windowed; `ComputeSlimTitlebarOuterRect` drops the adjacency clamp for Windowed (flush edges).
+- `Core/WindowManager.cs` — `ApplySlimTitlebarToAll` runs for BOTH modes (the interim Windowed-skip was reverted); for Windowed it gates re-apply on STYLE-regression (recreation recovery) rather than an exact-rect compare, so it can't 2 Hz-storm against GeoWndProc's pin while AdjustWindowRectEx's predicted rect differs from the real Win11 metrics. `ComputeSlimTitlebarOuterRect` drops the adjacency clamp for Windowed (flush edges) and its no-HWND overload uses `ProbeStyleFor(WindowMode)` (the verifier-caught sliver fix). `ApplySlimTitlebar` log reports the actual WS_CAPTION/WS_POPUP mode.
 - `EQSwitch.csproj` — 3.22.80 → 3.22.81.
 
 ## v3.22.80 — Window mode toggles, Phase 1: pin "Fullscreen mode" (2026-05-29)

@@ -1052,8 +1052,8 @@ public class WindowManager
             // a 6-client setup) — negligible vs. the storm risk.
             // v3.22.81: project liveStyle through the same per-WindowMode strip+set
             // ApplySlimTitlebar will apply so the bleed probe matches.
-            long liveStyle = DesiredSlimStyle(_api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64(), _config.Layout.WindowMode);
-            long liveExStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_EXSTYLE).ToInt64();
+            long rawStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64();
+            long liveStyle = DesiredSlimStyle(rawStyle, _config.Layout.WindowMode);
             _api.GetWindowRect(client.WindowHandle, out var rect);
 
             // v3.22.76 take-2 — SURGICAL STORM FIX. If the window's center is
@@ -1075,6 +1075,35 @@ public class WindowManager
                 continue;
             }
 
+            // v3.22.81 re-verify fix (convergent swarm T2-Opus / T2-Sonnet / T3): for
+            // Windowed mode the hook DLL's GeoWndProc subclass OWNS size + position
+            // (it forces the SHM rect on every WM_WINDOWPOSCHANGING). This guard's
+            // ONLY remaining Windowed job is recreation-recovery — re-slim EQ's window
+            // after it's recreated NORMAL at charselect→in-world. Gate that on
+            // STYLE-regression, NOT an exact 4-way rect compare: AdjustWindowRectEx
+            // PREDICTS the outer rect (e.g. 1936×1119) but a WS_CAPTION-no-WS_THICKFRAME
+            // window's real Win11 metrics can settle a few px smaller (~1926×1109), so
+            // an exact compare would read rect != expected FOREVER while GeoWndProc
+            // holds the size → a 2 Hz re-apply storm (same class as the v3.22.76
+            // off-monitor storm above). Style-gating also moots the live-exStyle-vs-
+            // SHM-exStyle=0 asymmetry — no rect is computed for the Windowed gate.
+            if (_config.Layout.WindowMode == Config.WindowMode.Windowed)
+            {
+                // rawStyle == DesiredSlimStyle(rawStyle) ⇔ already slim (the projection
+                // is idempotent) → GeoWndProc holds geometry, nothing to do. Re-apply
+                // only when the style regressed to NORMAL (WS_THICKFRAME back / caption
+                // lost) — i.e. EQ recreated the window; ApplySlimTitlebar restyles AND
+                // repositions, then GeoWndProc resumes pinning.
+                if (rawStyle == liveStyle) continue;
+                ApplySlimTitlebar(client.WindowHandle, monitor, offset);
+                continue;
+            }
+
+            // Fullscreen: WS_POPUP has 0 frame bleed so AdjustWindowRectEx is exact,
+            // and there is NO subclass pin — keep the precise 4-way rect compare (the
+            // v3.22.45 / v3.22.76 logic) that owns Fullscreen geometry. Live exStyle is
+            // fetched here (Fullscreen-only) to match what ApplySlimTitlebar applies.
+            long liveExStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_EXSTYLE).ToInt64();
             var (expectedX, expectedY, expectedW, expectedH) = ComputeSlimTitlebarOuterRect(monitor, offset, liveStyle, liveExStyle);
             if (rect.Left == expectedX
                 && rect.Top == expectedY
@@ -1172,7 +1201,13 @@ public class WindowManager
         // next ApplySlimTitlebarToAll pass restores it.
         ApplyDarkTitlebarIfRequested(hwnd);
 
-        FileLogger.Info($"ApplySlimTitlebar: hwnd={hwnd} → ({x},{y}) {w}x{h}, offset={titlebarOffset}px requested → WS_POPUP slim (0px caption visible)");
+        // v3.22.81 — report the actual mode (was hardcoded "WS_POPUP slim" which
+        // misdescribed Windowed-mode applies once the guard re-enable made this
+        // path reachable for Windowed).
+        string styleLabel = _config.Layout.WindowMode == Config.WindowMode.Windowed
+            ? $"WS_CAPTION slim ({Math.Clamp(titlebarOffset, 0, 40)}px caption peek)"
+            : "WS_POPUP slim (0px caption visible)";
+        FileLogger.Info($"ApplySlimTitlebar: hwnd={hwnd} → ({x},{y}) {w}x{h}, offset={titlebarOffset}px requested → {styleLabel}");
     }
 
     /// <summary>
