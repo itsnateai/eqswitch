@@ -688,7 +688,7 @@ public class WindowLayout
     /// Offsets dialog) hardcodes this default — keep them in sync.
     /// </para>
     /// </summary>
-    public int TitlebarOffset { get; set; } = 18;
+    public int TitlebarOffset { get; set; } = 13;  // v3.22.86 — was 18; 13 peeks ~half the maximize button (the WinEQ2 look Nate prefers), client stays flush via the v3.22.84 read-back correction
 
     /// <summary>
     /// v3.22.53 — when true, request the dark-mode immersive titlebar from DWM

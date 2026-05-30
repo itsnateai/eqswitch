@@ -3388,7 +3388,7 @@ public class SettingsForm : Form
         // hook. Advanced settings most users don't touch. v3.22.80: Maximize on
         // Launch + Force-Windowed (ForceWindowedMode plumbing) join these as
         // detached fields, surfaced only in the ⚙ Advanced dialog.
-        _nudTitlebarOffset = new NumericUpDown { Value = 18, Minimum = 0, Maximum = 40 };  // transient; overwritten by PopulateFromConfig
+        _nudTitlebarOffset = new NumericUpDown { Value = 13, Minimum = 0, Maximum = 40 };  // transient; overwritten by PopulateFromConfig (default 13 — v3.22.86)
         _nudBottomOffset = new NumericUpDown { Value = 22, Minimum = 0, Maximum = 100 };
         _chkUseHook = new CheckBox();
         _chkMaximizeWindow = new CheckBox();   // v3.22.80: Advanced-only
@@ -3587,10 +3587,11 @@ public class SettingsForm : Form
         btnReset.Click += (_, _) =>
         {
             // Defaults track AppConfig.WindowLayout:
-            //   TitlebarOffset = 18 (peeks; bottom kept flush by v3.22.82
-            //   render-height fix), BottomOffset = 21, UseHook = true.
+            //   TitlebarOffset = 13 (peeks ~half the maximize button — the WinEQ2
+            //   look; bottom kept flush by the v3.22.82 render-height fix + v3.22.84
+            //   read-back correction), BottomOffset = 21, UseHook = true.
             //   DarkTitlebar default lives on the Window Style card now.
-            nudTitle.Value = 18;
+            nudTitle.Value = 13;
             nudBottom.Value = 21;
             chkHook.Checked = true;
             chkForceWindowed.Checked = true;   // ForceWindowedMode default
@@ -3915,7 +3916,7 @@ public class SettingsForm : Form
         _chkSlimTitlebar.Checked = true;        // WindowMode = Fullscreen
         _chkWindowedMode.Checked = false;       // WindowLayout.WindowMode = Fullscreen
         _chkDarkTitlebar.Checked = true;        // WindowLayout.DarkTitlebar (v3.22.56)
-        _nudTitlebarOffset.Value = DarkTheme.ClampNud(_nudTitlebarOffset, 18);  // WindowLayout.TitlebarOffset (18 peek; bottom flush via v3.22.82 render-height)
+        _nudTitlebarOffset.Value = DarkTheme.ClampNud(_nudTitlebarOffset, 13);  // WindowLayout.TitlebarOffset (13 peek ~half maximize button; bottom flush via v3.22.84 read-back)
         _nudBottomOffset.Value   = DarkTheme.ClampNud(_nudBottomOffset, 21);    // WindowLayout.BottomOffset
         _chkUseHook.Checked = true;             // WindowLayout.UseHook
         _chkMaximizeWindow.Checked = false;     // EQClientIniConfig.MaximizeWindow

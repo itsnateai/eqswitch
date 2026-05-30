@@ -1,5 +1,18 @@
 # Changelog
 
+## v3.22.86 — Default TitlebarOffset 18 → 13 (less caption peek) (2026-05-30)
+
+Lowers the default Windowed caption peek from 18px to **13px** — ~half the maximize button
+visible (the WinEQ2 look), titlebar text still readable. Pure default change, no logic change.
+
+Context: pre-v3.22.84 a geometry bug *under-rendered* the configured 18px to ~13px, so users
+had been seeing 13px and liked it. v3.22.84 fixed the rendering, which (correctly) showed the
+full 18px — "more titlebar than before." Rather than keep 18, the default is now 13 so the
+out-of-box look matches what people were used to. The v3.22.84 read-back correction lands the
+client flush at whatever value is set, so 13 renders crisp + flush. Existing configs keep their
+own value (change it in Settings → Window Style → Titlebar Offset, or reset-to-defaults now
+gives 13). Range remains 0–40 (0 = borderless/no peek).
+
 ## v3.22.85 — Read-back correction: liveness/iconic safety gate (2026-05-30)
 
 Hardens the v3.22.84 Windowed read-back correction. The completion-checkpoint verifier
