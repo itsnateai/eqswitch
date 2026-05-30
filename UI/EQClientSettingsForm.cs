@@ -623,16 +623,31 @@ public class EQClientSettingsForm : Form
     /// WindowManager.ComputeSlimTitlebarOuterRect's fallback path.
     /// </para>
     /// </summary>
-    internal static int SlimTitlebarCaptionVisible(int titlebarOffset)
+    internal static int SlimTitlebarCaptionVisible(int titlebarOffset, WindowMode mode = WindowMode.Fullscreen)
     {
-        // v3.22.76 — WinEQ2 -frame none parity. Slim style is now WS_POPUP
-        // (no caption), so AdjustWindowRectEx returns 0/0/0/0 and the clamp
-        // collapses captionVisible to 0 regardless of titlebarOffset.
-        long slimStyle = Core.WindowManager.SLIM_TITLEBAR_STYLE;
+        // v3.22.82 — probe the style for the ACTUAL mode. Fullscreen = WS_POPUP
+        // (no caption → AdjustWindowRectEx 0/0/0/0 → captionVisible always 0).
+        // Windowed = WS_CAPTION (~31px Win11 caption → captionVisible =
+        // clamp(offset, 0, 31)). Pre-v3.22.82 this hardcoded WS_POPUP, so it
+        // returned 0 even in Windowed mode — which is exactly why the Windowed INI
+        // path rendered at full monH and pushed the bottom off-screen. ProbeStyleFor
+        // routes the right style so the INI WindowedHeight (monH - captionVisible)
+        // matches the reduced Windowed client area 1:1 (crisp, no stretch seam).
+        long slimStyle = Core.WindowManager.ProbeStyleFor(mode);
 
         var probe = new Core.NativeMethods.RECT { Left = 0, Top = 0, Right = 100, Bottom = 100 };
         if (!Core.NativeMethods.AdjustWindowRectEx(ref probe, (uint)slimStyle, false, 0))
-            return Math.Max(0, titlebarOffset);
+            // v3.22.82 — probe failed: degrade to 0 (no caption peek). This MUST
+            // match WindowManager.ComputeSlimTitlebarOuterRect's own fallback,
+            // which returns plain monitor edges with captionVisible NOT applied
+            // (client ≈ monH). Returning `titlebarOffset` here instead would write
+            // INI WindowedHeight = monH-offset while the client stays ~monH — an
+            // offset-px backbuffer/client mismatch → the exact stretch seam this
+            // feature exists to prevent. Both fall back to "fill monitor, no peek"
+            // so backbuffer and client stay matched. (Verifier-swarm convergent
+            // finding, 2026-05-30 — never-hit for valid WS_CAPTION styles, but a
+            // graceful fallback must degrade consistently to be graceful.)
+            return 0;
 
         int topBleed = -probe.Top;
         return Math.Clamp(titlebarOffset, 0, topBleed);
@@ -847,12 +862,19 @@ public class EQClientSettingsForm : Form
                 // (SlimTitlebarVisibleClientSize returns native for WS_POPUP).
                 // (Single-monitor overflows freely; multi-monitor side-adjacency
                 // may clip a side — tune in smoke, see spec §7.4.)
-                int captionVisible = SlimTitlebarCaptionVisible(offset);
+                int captionVisible = SlimTitlebarCaptionVisible(offset, config.Layout.WindowMode);
                 int gameW, gameH;
                 if (config.Layout.WindowMode == WindowMode.Windowed)
                 {
+                    // v3.22.82 — render height = monH - caption peek so EQ's DX
+                    // backbuffer matches the (reduced) Windowed client area 1:1
+                    // (crisp) AND the window's bottom stays flush (WinEQ2 method;
+                    // see WindowManager.ComputeOuterRectFromBleeds). Width fills the
+                    // monitor (flush sides via the GeoWndProc subclass). Was monH
+                    // (v3.22.81 native) which forced the bottom captionVisible px
+                    // off-screen — the regression Nate caught 2026-05-30.
                     gameW = monW;
-                    gameH = monH;
+                    gameH = monH - captionVisible;
                 }
                 else
                 {

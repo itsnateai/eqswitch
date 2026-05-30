@@ -333,8 +333,10 @@ static LRESULT CALLBACK GeoWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
     return CallWindowProcW(g_origGeoWndProc, hWnd, msg, wParam, lParam);
 }
 
-// Install (or re-install after EQ recreated its window / overwrote its proc).
-// Called from the position detours on the EQ UI thread, under g_detourCs.
+// Install (or re-install after EQ recreated its window / overwrote its proc),
+// then apply the slim transform in-process so the window is slim immediately.
+// Called from the position detours AND HookedShowWindow on the EQ UI thread,
+// under the recursive g_detourCs.
 static void EnsureGeoSubclass(HWND hWnd) {
     WNDPROC current = (WNDPROC)GetWindowLongPtrW(hWnd, GWLP_WNDPROC);
     if (current == GeoWndProc) return;  // already ours on this window
@@ -347,6 +349,52 @@ static void EnsureGeoSubclass(HWND hWnd) {
         LogMessage("GeoWndProc: installed Windowed geometry subclass (hwnd=0x%p orig=0x%p)", (void*)hWnd, (void*)current);
     else
         LogMessage("GeoWndProc: RE-installed subclass (EQ recreated window / overwrote proc; hwnd=0x%p orig=0x%p)", (void*)hWnd, (void*)current);
+
+    // v3.22.82 — INSTANT in-process slim transform. Runs on every actual
+    // (re)install (we only reach here past the `current == GeoWndProc` early
+    // return) — most importantly the charselect→in-world recreation, where EQ's
+    // new top-level window arrives NORMAL (WS_THICKFRAME, work-area sized,
+    // taskbar visible). Applying the slim style + SHM target rect HERE — driven
+    // earliest from HookedShowWindow — makes the window slim before its first
+    // paint, instead of waiting up to a full C# guard tick (the "dance once
+    // ingame" Nate flagged). GeoWndProc (installed just above) then pins the
+    // rect per-message; the C# guard (ApplySlimTitlebarToAll) stays as pure
+    // belt-and-suspenders recovery.
+    //
+    // Reads the LIVE SHM rect (monitor-relative geometry — already current for
+    // this PID's monitor + mode; C# rewrites it only on a config/monitor
+    // change). Uses the trampoline g_origSetWindowPos to bypass our own
+    // SetWindowPos hook (no recursive detour body); the subclass still pins
+    // synchronously via the WM_WINDOWPOSCHANGING this reposition dispatches to
+    // GeoWndProc. The enclosing detour holds the recursive g_detourCs and
+    // GeoWndProc itself takes no lock, so there is no reentrancy hazard.
+    const volatile HookConfig* cfg = g_pConfig;
+    if (!cfg) return;
+    int enabled = cfg->enabled;
+    int pin     = cfg->pinGeometry;
+    int strip   = cfg->stripThickFrame;
+    int tx = cfg->targetX, ty = cfg->targetY;
+    int tw = cfg->targetW, th = cfg->targetH;
+    if (!(enabled && pin && tw > 0 && th > 0)) return;
+
+    if (strip) {
+        LONG_PTR style = GetWindowLongPtr(hWnd, GWL_STYLE);
+        if (style & WS_THICKFRAME) {
+            style &= ~WS_THICKFRAME;
+            SetWindowLongPtr(hWnd, GWL_STYLE, style);
+        }
+    }
+    // SWP_FRAMECHANGED so the WS_THICKFRAME strip recalculates the non-client
+    // area; SWP_NOZORDER | SWP_NOACTIVATE so a background re-slim never steals
+    // focus / z-order from the user's active client. g_origSetWindowPos is
+    // always non-NULL when reached from a detour (hooks installed first); the
+    // guard degrades to "subclass installed, C# guard recovers position" only
+    // in the impossible pre-install case.
+    if (g_origSetWindowPos) {
+        g_origSetWindowPos(hWnd, NULL, tx, ty, tw, th,
+                           SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        LogMessage("GeoWndProc: applied instant slim transform (pos=(%d,%d) %dx%d strip=%d)", tx, ty, tw, th, strip);
+    }
 }
 
 // Restore EQ's proc before the DLL unmaps. Only restore if we're STILL the
@@ -487,6 +535,23 @@ static BOOL WINAPI HookedShowWindow(HWND hWnd, int nCmdShow)
     }
 
     BOOL r = g_origShowWindow(hWnd, nCmdShow);
+
+    // v3.22.82 — INSTANT in-world re-slim. EQ reliably calls ShowWindow on the
+    // top-level window it recreates at charselect→in-world (this hook already
+    // exists to block EQ's self-minimize during that window's DX init). After
+    // the real ShowWindow the new window is now visible, so IsEqWindow qualifies
+    // it; EnsureGeoSubclass installs the GeoWndProc subclass AND applies the
+    // slim style+rect in-process (see EnsureGeoSubclass). This is the earliest
+    // reliable trigger — earlier than the SetWindowPos/MoveWindow detours and
+    // far earlier than the C# guard tick — so the recreated window is slim
+    // before its first paint (no guard-tick flash, no "dance once ingame").
+    // No message pump runs between g_origShowWindow and here (same detour frame
+    // on the EQ UI thread), so the NORMAL window never composites. Gated on the
+    // live SHM pinGeometry flag so Fullscreen is completely unaffected.
+    if (IsEqWindow(hWnd) && ReadConfig(&cfg) && cfg.enabled && cfg.pinGeometry) {
+        EnsureGeoSubclass(hWnd);
+    }
+
     LeaveCriticalSection(&g_detourCs);  // v3.22.44 r2
     return r;
 }

@@ -665,13 +665,28 @@ public class WindowLayout
     public bool SlimTitlebarSecondary { get; set; } = true;
 
     /// <summary>
-    /// How many pixels of the titlebar to LEAVE VISIBLE inside the monitor.
-    /// A standard Windows titlebar is ~31px on Win11. Default 18 reveals the
-    /// title text and a sliver of the minimize/X buttons (WinEQ2-style look).
-    /// Clamped to [0, 40] in Validate. Set to 0 to hide the caption completely
-    /// (max game area, no drag target); raise to ~22–26 to expose more of the
-    /// buttons. Bumped from 13 in v3.22.53 — at 13 the title text and buttons
-    /// were both invisible.
+    /// How many pixels of the titlebar to LEAVE VISIBLE (peeking) inside the
+    /// monitor at the top. A standard Windows titlebar is ~31px on Win11. Clamped
+    /// to [0, 40] in Validate.
+    /// <para>
+    /// Default 18 — the WinEQ2 "slim peek" look: title text + a sliver of the
+    /// min/close buttons visible at the top. As of v3.22.82 a visible peek and a
+    /// flush bottom COEXIST: the Windowed client is rendered at
+    /// <c>monitorHeight - captionVisible</c> (EQ's DX backbuffer matches → crisp;
+    /// see <c>WindowManager.ComputeOuterRectFromBleeds</c> +
+    /// <c>EQClientSettingsForm.EnforceOverrides</c>), so the caption peeks
+    /// <c>captionVisible</c> px at the top and the client fills the rest with its
+    /// bottom flush against the monitor edge. (v3.22.81 wrongly rendered at native
+    /// monH, forcing the bottom <c>captionVisible</c> px off-screen — that's why
+    /// 18 looked broken until v3.22.82's render-height fix.) Set to 0 to hide the
+    /// caption entirely (borderless, looks like Fullscreen); raise to ~22–26 for a
+    /// taller peek. Fullscreen (WS_POPUP, topBleed=0) clamps captionVisible to 0
+    /// regardless — this value is inert there. Was 18 (v3.22.53), 13 before that.
+    /// </para>
+    /// <para>
+    /// Mirror contract: SettingsForm.cs "Reset Defaults" (Video tab + Window
+    /// Offsets dialog) hardcodes this default — keep them in sync.
+    /// </para>
     /// </summary>
     public int TitlebarOffset { get; set; } = 18;
 

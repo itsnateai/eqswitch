@@ -162,6 +162,11 @@ changes at all, Phase 1 has a bug.
 
 ## 7. Phase 2 — Build "Windowed mode" (native work; the "no font issues" part)
 
+> **STATUS: SHIPPED in v3.22.81 (architecture) + v3.22.82 (polish: instant in-world re-slim via
+> `EnsureGeoSubclass` in `HookedShowWindow`; `TitlebarOffset` default→0 bottom-flush). §7 below is the
+> as-designed plan, retained for provenance. The `ApplySlimTitlebarToAll` guard is KEPT for Windowed
+> (recreation-recovery) — do not re-remove it.**
+
 ### 7.1 Window styling (`Core/WindowManager.cs`)
 - Add a `WS_CAPTION` slim branch alongside the `WS_POPUP` branch in both
   `ApplySlimTitlebar` and `ArrangeMultiMonitor` (`~548-578`): strip

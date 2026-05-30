@@ -3388,7 +3388,7 @@ public class SettingsForm : Form
         // hook. Advanced settings most users don't touch. v3.22.80: Maximize on
         // Launch + Force-Windowed (ForceWindowedMode plumbing) join these as
         // detached fields, surfaced only in the ⚙ Advanced dialog.
-        _nudTitlebarOffset = new NumericUpDown { Value = 22, Minimum = 0, Maximum = 40 };
+        _nudTitlebarOffset = new NumericUpDown { Value = 18, Minimum = 0, Maximum = 40 };  // transient; overwritten by PopulateFromConfig
         _nudBottomOffset = new NumericUpDown { Value = 22, Minimum = 0, Maximum = 100 };
         _chkUseHook = new CheckBox();
         _chkMaximizeWindow = new CheckBox();   // v3.22.80: Advanced-only
@@ -3545,7 +3545,7 @@ public class SettingsForm : Form
         DarkTheme.AddLabel(dlg, "Titlebar hidden (px):", L, y + 2);
         var nudTitle = DarkTheme.AddNumeric(dlg, I, y, 60, _nudTitlebarOffset.Value, 0, 40);
         y += 24;
-        DarkTheme.AddHint(dlg, "0 = caption hidden, 18 = title+sliver of buttons, 26 = full buttons", L, y);
+        DarkTheme.AddHint(dlg, "0 = caption hidden, 18 = title+sliver of buttons (default), 26 = full buttons", L, y);
         y += 18;
 
         DarkTheme.AddLabel(dlg, "Bottom margin (px):", L, y + 2);
@@ -3554,7 +3554,7 @@ public class SettingsForm : Form
         DarkTheme.AddHint(dlg, "Game render height reduction", L, y);
         y += 18;
 
-        DarkTheme.AddHint(dlg, "Defaults: titlebar 18, margin 21. Keep margin > titlebar.", L, y);
+        DarkTheme.AddHint(dlg, "Defaults: titlebar 18 (peeks, bottom flush), margin 21. Keep margin ≥ titlebar.", L, y);
         y += 22;
 
         var chkHook = DarkTheme.AddCheckBox(dlg, "DLL Hook (zero flicker)", L, y);
@@ -3587,7 +3587,8 @@ public class SettingsForm : Form
         btnReset.Click += (_, _) =>
         {
             // Defaults track AppConfig.WindowLayout:
-            //   TitlebarOffset = 18, BottomOffset = 21, UseHook = true.
+            //   TitlebarOffset = 18 (peeks; bottom kept flush by v3.22.82
+            //   render-height fix), BottomOffset = 21, UseHook = true.
             //   DarkTitlebar default lives on the Window Style card now.
             nudTitle.Value = 18;
             nudBottom.Value = 21;
@@ -3914,7 +3915,7 @@ public class SettingsForm : Form
         _chkSlimTitlebar.Checked = true;        // WindowMode = Fullscreen
         _chkWindowedMode.Checked = false;       // WindowLayout.WindowMode = Fullscreen
         _chkDarkTitlebar.Checked = true;        // WindowLayout.DarkTitlebar (v3.22.56)
-        _nudTitlebarOffset.Value = DarkTheme.ClampNud(_nudTitlebarOffset, 18);  // WindowLayout.TitlebarOffset
+        _nudTitlebarOffset.Value = DarkTheme.ClampNud(_nudTitlebarOffset, 18);  // WindowLayout.TitlebarOffset (18 peek; bottom flush via v3.22.82 render-height)
         _nudBottomOffset.Value   = DarkTheme.ClampNud(_nudBottomOffset, 21);    // WindowLayout.BottomOffset
         _chkUseHook.Checked = true;             // WindowLayout.UseHook
         _chkMaximizeWindow.Checked = false;     // EQClientIniConfig.MaximizeWindow

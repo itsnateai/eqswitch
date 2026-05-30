@@ -1,5 +1,74 @@
 # Changelog
 
+## v3.22.82 — Windowed mode polish: instant in-world re-slim + caption-peek WITH a flush bottom (2026-05-29)
+
+Closes the two screenshot-gated follow-ups tracked at the end of v3.22.81: world-entry
+is now **instant** (no guard-tick "dance"), and the slim titlebar **peeks at the top
+while the bottom stays flush** — the WinEQ2 look we had before, now with the v3.22.81
+flush-sides / no-growth subclass on top.
+
+**1 — Instant in-world re-slim (`Native/eqswitch-hook.cpp`).** EQ destroys+recreates
+its top-level window at charselect→in-world as a *normal* window (WS_THICKFRAME,
+work-area sized, taskbar visible). v3.22.81 recovered it automatically but **within a
+C# guard tick** — up to a few seconds during zone-load, the worst possible moment for
+a visible "dance" (Nate: *"load right off the bat… once-ingame is the worst time for a
+dance, player's watching"*). v3.22.82 re-slims the recreated window **in-process,
+before its first paint**:
+
+- `HookedShowWindow` — EQ reliably calls `ShowWindow` on the window it recreates (this
+  hook already existed to block self-minimize during DX init). After the real
+  `ShowWindow`, the new window is visible so `IsEqWindow` qualifies it, and we call
+  `EnsureGeoSubclass`. This is the earliest reliable trigger — earlier than the
+  `SetWindowPos`/`MoveWindow` detours, far earlier than the guard.
+- `EnsureGeoSubclass` now, on every actual (re)install, **applies the slim transform
+  in-process**: strip `WS_THICKFRAME`, then `SetWindowPos` to the SHM target rect (the
+  same outer rect C# already computes for the pin). `GeoWndProc` — installed in the same
+  call — then pins it per `WM_WINDOWPOSCHANGING`.
+- **Flash-free by construction:** the transform runs in the *same detour stack frame* as
+  `g_origShowWindow` on the EQ UI thread, with no message pump in between, so the NORMAL
+  window's pixels never composite. Uses the trampoline `g_origSetWindowPos` (no recursive
+  detour body); `GeoWndProc` still pins synchronously because the hook intercepts the
+  *function*, not the dispatched *message*. The recursive `g_detourCs` covers the rest.
+
+The C# guard (`ApplySlimTitlebarToAll`) stays enabled for Windowed as **pure
+belt-and-suspenders recovery** — *not* removed (that was the v3.22.81 regression Nate
+caught). The SHM struct is unchanged (288 bytes, `pinGeometry` already present) — this
+is a behavior-only Native change; `HookConfigWriter.cs` is untouched.
+
+**2 — Caption peek + flush bottom (render at `monH − captionVisible`).** v3.22.81
+rendered the Windowed client at **full native monitor height** and labeled it "the
+font-seam fix," so any visible caption peek pushed the client's bottom off-screen — the
+bug Nate caught: an 18px peek cut 18px of bottom UI, and the interim "fix" of dropping
+the peek to 0 made Windowed mode look identical to borderless Fullscreen (no titlebar).
+**Both were wrong.** The real font seam was always a *width* mismatch (client 1904 vs
+backbuffer 1920), fixed separately by the flush-sides math + the GeoWndProc subclass;
+the height never needed to be native. A matched backbuffer↔client blit is crisp at *any*
+height.
+
+v3.22.82 restores **WinEQ2's actual method** (= our own pre-v3.22.81 v3.22.45 geometry):
+render the Windowed client at `monitorHeight − captionVisible`, so the caption peeks
+`captionVisible` px at the top and the client fills the rest with its **bottom flush**
+against the monitor edge. Crisp because EQ's DX backbuffer (`eqclient.ini
+WindowedHeight`) is written to match the reduced client 1:1.
+
+- `WindowManager.ComputeOuterRectFromBleeds` — client height back to
+  `monH − captionVisible` (was `monH`, v3.22.81).
+- `EQClientSettingsForm.EnforceOverrides` — Windowed `WindowedHeight = monH −
+  captionVisible` (was `monH`), matching the client so there's no stretch seam.
+- `EQClientSettingsForm.SlimTitlebarCaptionVisible(offset, mode)` — now mode-aware: it
+  hardcoded the `WS_POPUP` probe (always returned 0), so the Windowed INI path could
+  never subtract the caption. Routes `ProbeStyleFor(mode)` → real `WS_CAPTION` caption.
+- `TitlebarOffset` default stays **18** (the WinEQ2 peek) — peek and flush now coexist.
+
+**Fullscreen mode is byte-for-byte unchanged** — `pinGeometry` is 0 there (no subclass,
+no instant transform), and `captionVisible` is 0 there (WS_POPUP probe → `monH −
+0 = monH`), so its geometry and render size are identical to v3.22.81.
+
+*Known residual (live-tune):* on Win11 the no-`WS_THICKFRAME`
+`AdjustWindowRectEx`-vs-DWM-metrics gap (~10px) sizes the outer rect a few px large, so
+the client can overshoot each edge ~5px (measured: client 1930×1090 on a 1920×1080
+monitor). Bounded and the same on Fullscreen; tuned/measured on the live client.
+
 ## v3.22.81 — Window mode toggles, Phase 2: "Windowed mode" pinned by an in-process WndProc subclass (2026-05-29)
 
 Ships the **Windowed mode** the Phase-1 placeholder promised: a `WS_CAPTION`

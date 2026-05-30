@@ -981,9 +981,11 @@ public class WindowManager
         //      double-click — Nate's 2026-05-29 smoke. This guard re-applies the
         //      slim style+position within a tick; GeoWndProc keeps it pinned.
         // So both modes use this guard for recovery; GeoWndProc makes the
-        // Windowed re-applies growth-safe. (Making the in-world re-slim INSTANT
-        // rather than within-a-tick is a tracked v3.22.82 follow-up — an
-        // in-process re-slim on EQ's window-show.)
+        // Windowed re-applies growth-safe. v3.22.82 made the in-world re-slim
+        // INSTANT (in-process, on EQ's window-show — eqswitch-hook.cpp
+        // HookedShowWindow → EnsureGeoSubclass applies the slim style+rect
+        // before the first paint), so for Windowed this guard is now pure
+        // belt-and-suspenders recovery rather than the primary re-slim path.
 
         // v3.22.47 post-T2/T3 verifier: bail in multimonitor mode. This helper
         // sizes EVERY passed client to GetTargetMonitor(true) (the SINGLE
@@ -1382,9 +1384,11 @@ public class WindowManager
     /// <c>titlebarOffset</c> semantics preserved exactly: <i>"pixels of caption
     /// to leave VISIBLE inside the monitor for dragging"</i>. With
     /// <c>titlebarOffset=0</c> the caption is fully off-screen (max game area,
-    /// no drag target); with <c>titlebarOffset=13</c> (default) 13 px of
-    /// caption sit inside the top of the monitor and the playable client area
-    /// loses 13 px at the top — historical Win10 behaviour. The arg is
+    /// no peek — looks borderless); with <c>titlebarOffset=18</c> (the v3.22.82
+    /// default) 18 px of caption peek at the top and the client is rendered 18 px
+    /// shorter so the bottom stays FLUSH against the monitor edge (the WinEQ2
+    /// method — crisp because EQ's DX backbuffer matches the reduced client). The
+    /// arg is
     /// clamped to <c>[0, topBleed]</c> so a misconfigured value can never
     /// push the whole caption off-screen unintentionally.
     /// </para>
@@ -1425,7 +1429,7 @@ public class WindowManager
             // no caption to hang above-monitor; the pre-v3.22.45 trick
             // (`monitor.Top - titlebarOffset` + height extension) would push
             // the window off-screen with nothing to render.
-            FileLogger.Warn($"ComputeSlimTitlebarOuterRect: AdjustWindowRectEx returned false — falling back to monitor edges (WS_POPUP slim)");
+            FileLogger.Warn($"ComputeSlimTitlebarOuterRect: AdjustWindowRectEx returned false — falling back to monitor edges (no caption peek; matches EQClientSettingsForm.SlimTitlebarCaptionVisible fallback=0)");
             return (
                 monitor.Left,
                 monitor.Top,
@@ -1614,15 +1618,23 @@ public class WindowManager
         int x = monitor.Left - leftBleed;
         int y = monitor.Top - topBleed + captionVisible;
         int w = (monitor.Right - monitor.Left) + leftBleed + rightBleed;
-        // v3.22.81 — client height = NATIVE monitor height (no `- captionVisible`).
-        // The caption peeks `captionVisible` px at the top AND the client overflows
-        // the bottom edge by the same amount (the WinEQ2 method). Keeping the client
-        // at native monH means EQ's DX swap chain renders 1:1 at native resolution
-        // → crisp bitmap fonts. Pre-v3.22.81 this subtracted captionVisible,
-        // shrinking the client to a non-native height — the font seam that drove
-        // the v3.22.76 WS_POPUP swap. Fullscreen (WS_POPUP) has captionVisible==0,
-        // so its geometry is unchanged.
-        int h = (monitor.Bottom - monitor.Top) + topBleed + bottomBleed;
+        // v3.22.82 — client height = monitor height MINUS the visible caption peek
+        // (restores WinEQ2's actual method / our pre-v3.22.81 v3.22.45 geometry).
+        // The caption peeks `captionVisible` px at the top and the client fills the
+        // REST, so the bottom is FLUSH: client.Top = monTop + captionVisible, client
+        // height = monH - captionVisible → client.Bottom = monBottom exactly.
+        //
+        // Crisp fonts come from EQ's DX backbuffer (eqclient.ini WindowedHeight,
+        // written = monH - captionVisible in EQClientSettingsForm.EnforceOverrides)
+        // matching THIS client height 1:1 — NOT from rendering at native monH. The
+        // v3.22.81 "native height for crisp fonts" change was a misdiagnosis: the
+        // real font seam was a WIDTH mismatch (client 1904 vs backbuffer 1920),
+        // fixed separately by the flush-sides math + the GeoWndProc subclass; the
+        // height never needed to be native, and forcing it there is what pushed the
+        // bottom off-screen (the regression Nate caught 2026-05-30). A matched
+        // backbuffer/client blit is crisp at ANY height. Fullscreen (WS_POPUP) has
+        // captionVisible==0 → monH - 0 = monH, so its geometry is unchanged.
+        int h = (monitor.Bottom - monitor.Top - captionVisible) + topBleed + bottomBleed;
         return (x, y, w, h);
     }
 
