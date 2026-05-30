@@ -1,5 +1,28 @@
 # Changelog
 
+## v3.22.85 — Read-back correction: liveness/iconic safety gate (2026-05-30)
+
+Hardens the v3.22.84 Windowed read-back correction. The completion-checkpoint verifier
+swarm (T2-Opus + T4-Opus, convergent) flagged that the new cross-process `SetWindowPos`
+(`WindowManager.RepositionWindow`, fired when `TryComputeReadbackCorrection` returns true)
+omitted the `IsClientResponsive` + `IsIconic` guards that **every other** cross-process
+`SetWindowPos` site carries (`ApplySlimTitlebar`, WindowManager.cs:1139/1159). Two reachable
+crash paths: (1) a **minimized** client's `GetClientRect` collapses to `0/0/0/0` → passed
+`FrameSane` → fired a bogus full-monitor move on a window whose D3D9 device is released; (2) a
+client **mid-zone-load DX reset** (UI thread blocked 5-15s) would stall EQSwitch on the
+cross-process call — the documented 14.5s pump-stall → crash class (PID 24672, 2026-05-20).
+
+**Fix:** `TryComputeReadbackCorrection` now returns false (skips both the measurement and the
+downstream reposition) when `IsIconic(hwnd)` or `!IsClientResponsive(hwnd)` — identical to
+`ApplySlimTitlebar`'s gates. The next guard tick retries once the client is live and restored.
+The happy path is unchanged (a live, non-iconic, in-world client still corrects). Two unit cases
+added (iconic → no-op, non-responsive → no-op).
+
+Known minor limitation (unchanged, non-default only): with `TitlebarOffset` set above eqgame's
+measured top frame (~26px; default is 18), the corrected client height (clamped to the measured
+top) can differ a few px from the eqclient.ini backbuffer (clamped to the predicted ~31px),
+re-introducing a small stretch — still strictly better than the pre-v3.22.84 overshoot.
+
 ## v3.22.84 — Windowed client lands flush (frame-measure read-back) (2026-05-30)
 
 Builds the fix that v3.22.83 §2 tracked as "not yet built": the live ~5px Windowed-mode

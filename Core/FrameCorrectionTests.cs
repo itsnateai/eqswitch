@@ -86,18 +86,39 @@ public static class FrameCorrectionTests
             failures += AssertTrue("insane frame → rejected (no correction)", !hit);
         }
 
+        // ── Case 5 — minimized (iconic) client: no correction (v3.22.85 safety gate) ──
+        // A cross-process SetWindowPos on a minimized client (released D3D9 device) is
+        // the documented crash class; also its GetClientRect collapses to 0/0/0/0.
+        {
+            var win = new WinRect { Left = -8, Top = -13, Right = 1928, Bottom = 1088 };
+            var cli = new WinRect { Left = -5, Top = 13, Right = 1925, Bottom = 1085 };
+            var wm = MakeWm(WindowMode.Windowed, win, cli, iconic: true);
+            failures += AssertTrue("iconic window → no correction (skip SetWindowPos)",
+                !wm.TryComputeReadbackCorrection(IntPtr.Zero, monitor, offset, out _));
+        }
+
+        // ── Case 6 — non-responsive (mid-zone-load DX reset) client: no correction ──
+        // SetWindowPos on a hung client is the 14.5s pump-stall → crash class.
+        {
+            var win = new WinRect { Left = -8, Top = -13, Right = 1928, Bottom = 1088 };
+            var cli = new WinRect { Left = -5, Top = 13, Right = 1925, Bottom = 1085 };
+            var wm = MakeWm(WindowMode.Windowed, win, cli, responsive: false);
+            failures += AssertTrue("non-responsive window → no correction (skip SetWindowPos)",
+                !wm.TryComputeReadbackCorrection(IntPtr.Zero, monitor, offset, out _));
+        }
+
         Console.WriteLine(failures == 0
             ? "FrameCorrectionTests: ALL PASS"
             : $"FrameCorrectionTests: {failures} FAILURE(S)");
         return failures == 0 ? 0 : 1;
     }
 
-    private static WindowManager MakeWm(WindowMode mode, WinRect win, WinRect cli)
+    private static WindowManager MakeWm(WindowMode mode, WinRect win, WinRect cli, bool iconic = false, bool responsive = true)
     {
         var cfg = new AppConfig();
         cfg.Layout.WindowMode = mode;
         cfg.Layout.Mode = "single";  // single-screen path → GetTargetMonitorBounds unused here
-        return new WindowManager(cfg, new FakeApi(win, cli));
+        return new WindowManager(cfg, new FakeApi(win, cli, iconic, responsive));
     }
 
     private static int Assert(string name, int actual, int expected)
@@ -122,16 +143,18 @@ public static class FrameCorrectionTests
     private sealed class FakeApi : IWindowsApi
     {
         private readonly WinRect _win, _cli;
-        public FakeApi(WinRect win, WinRect cli) { _win = win; _cli = cli; }
+        private readonly bool _iconic, _responsive;
+        public FakeApi(WinRect win, WinRect cli, bool iconic = false, bool responsive = true)
+        { _win = win; _cli = cli; _iconic = iconic; _responsive = responsive; }
 
         public bool GetWindowRect(IntPtr h, out WinRect r) { r = _win; return true; }
         public bool GetClientScreenRect(IntPtr h, out WinRect r) { r = _cli; return true; }
+        public bool IsIconic(IntPtr h) => _iconic;
+        public bool IsClientResponsive(IntPtr h, out int lastErr) { lastErr = 0; return _responsive; }
 
         // ─── benign stubs (not exercised by TryComputeReadbackCorrection) ───
         public bool IsWindow(IntPtr h) => true;
-        public bool IsIconic(IntPtr h) => false;
         public bool IsHungAppWindow(IntPtr h) => false;
-        public bool IsClientResponsive(IntPtr h, out int lastErr) { lastErr = 0; return true; }
         public bool ShowWindow(IntPtr h, int n) => true;
         public bool SetForegroundWindow(IntPtr h) => true;
         public bool BringWindowToTop(IntPtr h) => true;

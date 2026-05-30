@@ -1700,6 +1700,17 @@ public class WindowManager
     {
         corrected = default;
         if (_config.Layout.WindowMode != Config.WindowMode.Windowed) return false;
+
+        // v3.22.85 — same liveness/iconic gates ApplySlimTitlebar uses (this is paid
+        // for: a cross-process SetWindowPos via RepositionWindow fires only when this
+        // returns true, and SetWindowPos on a HUNG client mid-zone-load DX reset is the
+        // documented 14.5s pump-stall → crash class; on a MINIMIZED client the D3D9
+        // device is released — same crash class). A minimized window's GetClientRect
+        // also collapses to 0/0/0/0, which would otherwise pass FrameSane and fire a
+        // bogus full-monitor move. Skip both — the next guard tick retries when live.
+        if (_api.IsIconic(hwnd)) return false;
+        if (!_api.IsClientResponsive(hwnd, out _)) return false;
+
         if (!_api.GetWindowRect(hwnd, out var win)) return false;
         if (!_api.GetClientScreenRect(hwnd, out var cli)) return false;
 
