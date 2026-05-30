@@ -1657,6 +1657,44 @@ public class WindowManager
     }
 
     /// <summary>
+    /// v3.22.84 — max per-edge frame correction (px). Bounds a bad GetWindowInfo
+    /// read so a garbage measurement can't fling the window. Mirrored as
+    /// kMaxFrameCorrectionPx in Native/eqswitch-hook.cpp.
+    /// </summary>
+    internal const int MaxFrameCorrectionPx = 20;
+
+    /// <summary>
+    /// v3.22.84 — WinEQ2 "measure, don't predict" frame correction. TEST-ONLY MIRROR
+    /// of the C++ ComputeCorrectedGeoRect in Native/eqswitch-hook.cpp (the production
+    /// correction runs in the injected hook; this exists to unit-test the formula via
+    /// --test-frame-correction). KEEP THE TWO IN SYNC — the .cpp cross-references here.
+    /// <para>
+    /// C# predicts eqgame's WS_CAPTION frame as ~8/31/8/8 (AdjustWindowRectEx) and
+    /// writes the resulting outer rect to SHM, but eqgame's REAL frame is ~3/26/3/3,
+    /// so the client overshoots ~5px/edge. This shifts each edge of the SHM rect by
+    /// the per-edge prediction error (predicted − measured), clamped to
+    /// ±<see cref="MaxFrameCorrectionPx"/>, so the visible client lands flush.
+    /// </para>
+    /// <para>
+    /// FIXED POINT: computed from (shm, predicted, measured) — all constant for a
+    /// window/monitor/style — NEVER from the live outer rect, so re-applying it every
+    /// message cannot accumulate (unlike the reverted v3.22.81 C# guard, which read
+    /// the DWM-bled outer rect and grew it). Error == 0 → corrected == shm (no-op).
+    /// </para>
+    /// </summary>
+    internal static (int x, int y, int w, int h) ComputeFrameCorrectedRect(
+        (int x, int y, int w, int h) shm,
+        (int l, int t, int r, int b) predicted,
+        (int l, int t, int r, int b) measured)
+    {
+        int eL = Math.Clamp(predicted.l - measured.l, -MaxFrameCorrectionPx, MaxFrameCorrectionPx);
+        int eT = Math.Clamp(predicted.t - measured.t, -MaxFrameCorrectionPx, MaxFrameCorrectionPx);
+        int eR = Math.Clamp(predicted.r - measured.r, -MaxFrameCorrectionPx, MaxFrameCorrectionPx);
+        int eB = Math.Clamp(predicted.b - measured.b, -MaxFrameCorrectionPx, MaxFrameCorrectionPx);
+        return (shm.x + eL, shm.y + eT, shm.w - eL - eR, shm.h - eT - eB);
+    }
+
+    /// <summary>
     /// Set a custom window title using the template from config.
     /// Supports placeholders: {CHAR} = character name, {SLOT} = slot number, {PID} = process ID.
     /// </summary>

@@ -287,6 +287,27 @@ static class Program
             Environment.Exit(exitCode);
             return;
         }
+
+        // --test-frame-correction — run Core/FrameCorrectionTests.RunAll() and exit.
+        // Guards the v3.22.84 WinEQ2 measure-don't-predict frame correction formula
+        // (mirror of Native/eqswitch-hook.cpp ComputeCorrectedGeoRect) so a refactor
+        // of either side that drifts the math is caught before ship.
+        if (args.Length >= 1 && args[0] == "--test-frame-correction")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.FrameCorrectionTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"FrameCorrectionTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
 #endif
 
         // Enforce single instance

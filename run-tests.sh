@@ -32,6 +32,7 @@ SUITES=(
   --test-charselect-reader
   --test-outer-rect-math
   --test-window-clamp
+  --test-frame-correction
 )
 
 fail=0
