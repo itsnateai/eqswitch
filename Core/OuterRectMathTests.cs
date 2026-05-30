@@ -20,9 +20,12 @@ namespace EQSwitch.Core;
 /// fix correct:
 ///   1. client.Left  == monitor.Left  (sides flush)
 ///   2. client.Right == monitor.Right (sides flush)
-///   3. client renders at NATIVE monH — caption peeks at top, bottom overflows
-///      off-screen by captionVisible (the WinEQ2 method, v3.22.81)
-///   4. client.Top   == monitor.Top + captionVisible
+///   3. client.Bottom == monitor.Bottom (bottom FLUSH; client height =
+///      monH − captionVisible) — the v3.22.82 flush-bottom contract. v3.22.81
+///      briefly rendered at native monH with the bottom overflowing off-screen;
+///      that pushed captionVisible px of bottom UI off the monitor (the
+///      regression Nate caught 2026-05-30), so v3.22.82 reverted to flush-bottom.
+///   4. client.Top   == monitor.Top + captionVisible (caption peeks at top)
 /// Plus titlebarOffset clamping to [0, topBleed].
 ///
 /// Invoked via the --test-outer-rect-math CLI flag from Program.cs.
@@ -49,11 +52,12 @@ public static class OuterRectMathTests
             failures += Assert("win10 x", x, 0);
             failures += Assert("win10 y", y, 0);  // -22 + 22 = 0
             failures += Assert("win10 w", w, 1920);
-            failures += Assert("win10 h", h, 1102);  // v3.22.81: 1080 + 22 + 0 = 1102 (native client + bottom overflow)
+            failures += Assert("win10 h", h, 1080);  // v3.22.82 flush-bottom: (1080-22) + 22 + 0 = 1080
 
-            // v3.22.81 invariants — client renders at NATIVE size; the caption
-            // peeks captionVisible px at the top and the client overflows the
-            // bottom edge by the same amount (WinEQ2 method) so EQ renders 1:1.
+            // v3.22.82 invariants — sides flush, caption peeks captionVisible px
+            // at the top, and the client BOTTOM is flush with the monitor (client
+            // height = monH − captionVisible). EQ's DX backbuffer (eqclient.ini
+            // WindowedHeight, written = monH − captionVisible) matches 1:1 → crisp.
             int clientLeft = x + lB;
             int clientRight = x + w - rB;
             int clientTop = y + tB;
@@ -61,8 +65,8 @@ public static class OuterRectMathTests
             failures += Assert("win10 client.Left == monitor.Left", clientLeft, monitor.Left);
             failures += Assert("win10 client.Right == monitor.Right", clientRight, monitor.Right);
             failures += Assert("win10 client.Top == monitor.Top + captionVisible", clientTop, monitor.Top + 22);
-            failures += Assert("win10 client.Bottom overflows by captionVisible", clientBottom, monitor.Bottom + 22);
-            failures += Assert("win10 client height == native monH", clientBottom - clientTop, monitor.Bottom - monitor.Top);
+            failures += Assert("win10 client.Bottom == monitor.Bottom (flush)", clientBottom, monitor.Bottom);
+            failures += Assert("win10 client height == monH - captionVisible", clientBottom - clientTop, monitor.Bottom - monitor.Top - 22);
         }
 
         // Case 2 — Win11 actual: 8 px frame bleed each side, ~31 px caption.
@@ -81,15 +85,15 @@ public static class OuterRectMathTests
             // x = 0 - 8 = -8 (left bleed off-screen)
             // y = 0 - 31 + 13 = -18 (18 px of caption above screen, 13 visible)
             // w = 1920 + 8 + 8 = 1936
-            // h = 1080 + 31 + 8 = 1119 (v3.22.81: native client + bottom overflow)
+            // h = (1080 - 13) + 31 + 8 = 1106 (v3.22.82 flush-bottom: monH - captionVisible)
             failures += Assert("win11 x", x, -8);
             failures += Assert("win11 y", y, -18);
             failures += Assert("win11 w", w, 1936);
-            failures += Assert("win11 h", h, 1119);
+            failures += Assert("win11 h", h, 1106);
 
-            // v3.22.81 invariants: sides flush, caption peeks 13px at top, client
-            // renders at NATIVE size (overflows the bottom by captionVisible) so
-            // EQ's DX swap chain is 1:1 → crisp fonts.
+            // v3.22.82 invariants: sides flush, caption peeks 13px at top, client
+            // BOTTOM flush with the monitor (height = monH − captionVisible). EQ's
+            // DX backbuffer (WindowedHeight = monH − captionVisible) matches 1:1.
             int clientLeft = x + lB;
             int clientRight = x + w - rB;
             int clientTop = y + tB;
@@ -97,8 +101,8 @@ public static class OuterRectMathTests
             failures += Assert("win11 client.Left == monitor.Left (no left sliver)", clientLeft, monitor.Left);
             failures += Assert("win11 client.Right == monitor.Right (no right sliver)", clientRight, monitor.Right);
             failures += Assert("win11 client.Top == monitor.Top + captionVisible(13)", clientTop, monitor.Top + 13);
-            failures += Assert("win11 client.Bottom overflows by captionVisible(13)", clientBottom, monitor.Bottom + 13);
-            failures += Assert("win11 client height == native monH", clientBottom - clientTop, monitor.Bottom - monitor.Top);
+            failures += Assert("win11 client.Bottom == monitor.Bottom (flush)", clientBottom, monitor.Bottom);
+            failures += Assert("win11 client height == monH - captionVisible(13)", clientBottom - clientTop, monitor.Bottom - monitor.Top - 13);
         }
 
         // Case 3 — titlebarOffset == 0 (user wants max game area, no drag
@@ -167,11 +171,11 @@ public static class OuterRectMathTests
             // x = 100 - 3 = 97
             // y = 200 - 28 + 5 = 177
             // w = 1200 + 3 + 11 = 1214
-            // h = 800 + 28 + 7 = 835 (v3.22.81: native client + bottom overflow)
+            // h = (800 - 5) + 28 + 7 = 830 (v3.22.82 flush-bottom: monH - captionVisible)
             failures += Assert("asym x", x, 97);
             failures += Assert("asym y", y, 177);
             failures += Assert("asym w", w, 1214);
-            failures += Assert("asym h", h, 835);
+            failures += Assert("asym h", h, 830);
 
             // Invariants on non-origin monitor with asymmetric bleeds.
             int clientLeft = x + lB;
@@ -181,8 +185,8 @@ public static class OuterRectMathTests
             failures += Assert("asym client.Left == monitor.Left", clientLeft, monitor.Left);
             failures += Assert("asym client.Right == monitor.Right", clientRight, monitor.Right);
             failures += Assert("asym client.Top == monitor.Top + 5", clientTop, monitor.Top + 5);
-            failures += Assert("asym client.Bottom overflows by captionVisible(5)", clientBottom, monitor.Bottom + 5);
-            failures += Assert("asym client height == native monH", clientBottom - clientTop, monitor.Bottom - monitor.Top);
+            failures += Assert("asym client.Bottom == monitor.Bottom (flush)", clientBottom, monitor.Bottom);
+            failures += Assert("asym client height == monH - captionVisible(5)", clientBottom - clientTop, monitor.Bottom - monitor.Top - 5);
         }
 
         // Case 8 — high-DPI scenario (200% scaling simulation). On a Win11
@@ -208,8 +212,8 @@ public static class OuterRectMathTests
             failures += Assert("hidpi client.Left == monitor.Left", clientLeft, monitor.Left);
             failures += Assert("hidpi client.Right == monitor.Right", clientRight, monitor.Right);
             failures += Assert("hidpi client.Top == monitor.Top + 26", clientTop, monitor.Top + 26);
-            failures += Assert("hidpi client.Bottom overflows by captionVisible(26)", clientBottom, monitor.Bottom + 26);
-            failures += Assert("hidpi client.Height == native monH", clientBottom - clientTop, monitor.Bottom - monitor.Top);
+            failures += Assert("hidpi client.Bottom == monitor.Bottom (flush)", clientBottom, monitor.Bottom);
+            failures += Assert("hidpi client.Height == monH - captionVisible(26)", clientBottom - clientTop, monitor.Bottom - monitor.Top - 26);
         }
 
         // Case 9 — WS_EX_CLIENTEDGE bleed scenario (live Win11 probe shows
@@ -230,7 +234,7 @@ public static class OuterRectMathTests
             int clientBottom = y + h - bB;
             failures += Assert("clientedge client.Left == monitor.Left", clientLeft, monitor.Left);
             failures += Assert("clientedge client.Right == monitor.Right", clientRight, monitor.Right);
-            failures += Assert("clientedge client.Bottom overflows by captionVisible(13)", clientBottom, monitor.Bottom + 13);
+            failures += Assert("clientedge client.Bottom == monitor.Bottom (flush)", clientBottom, monitor.Bottom);
         }
 
         // Case 7 — negative-origin monitor (secondary monitor positioned to
@@ -249,7 +253,7 @@ public static class OuterRectMathTests
             int clientBottom = y + h - bB;
             failures += Assert("neg-origin client.Left == -1920", clientLeft, -1920);
             failures += Assert("neg-origin client.Right == 0", clientRight, 0);
-            failures += Assert("neg-origin client.Bottom overflows by captionVisible(13)", clientBottom, 1080 + 13);
+            failures += Assert("neg-origin client.Bottom == monitor.Bottom (flush)", clientBottom, 1080);
         }
 
         // v3.22.46 — ClampBleedsForAdjacency: bleed extension goes to 0 on
@@ -366,7 +370,7 @@ public static class OuterRectMathTests
             failures += Assert("compose right-neighbor x", x, -8);
             failures += Assert("compose right-neighbor y", y, -18);
             failures += Assert("compose right-neighbor w (no right extension)", w, 1928);
-            failures += Assert("compose right-neighbor h", h, 1119);  // v3.22.81: native client + bottom overflow
+            failures += Assert("compose right-neighbor h", h, 1106);  // v3.22.82 flush-bottom: (1080-13) + 31 + 8
 
             // Visible client edges: left at monitor.Left, right is 8 px INSIDE
             // monitor (the desktop gap that replaces what would've been a

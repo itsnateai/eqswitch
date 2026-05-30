@@ -1,5 +1,45 @@
 # Changelog
 
+## v3.22.83 — Release-prep: fullscreen/windowed geometry verified + the regression-guard re-armed (2026-05-30)
+
+**No runtime/behavior change from v3.22.82** — a release-prep hardening pass on the
+fullscreen/windowed-mode geometry. Three loose ends closed before the long-term release:
+
+**1 — The geometry regression-guard was RED and silently skipped.** `Core/OuterRectMathTests.cs`
+still asserted the v3.22.81 contract (client renders at native monH, bottom overflows
+off-screen) while shipped v3.22.82 does **flush-bottom** (`client.Bottom == monitor.Bottom`,
+client height = `monH − captionVisible`). 14 assertions were failing — but the `--test-*`
+flags are `#if DEBUG` AND `Core/**/*Tests.cs` is `Compile Remove`'d in Release
+(`EQSwitch.csproj`), so the Release ship path never ran them. That's how v3.22.82 shipped with
+a red guard for its own geometry. Fixed all 14 assertions to the flush-bottom contract (the
+code was already correct — the tests lied). Added **`run-tests.sh`**: builds Debug and runs all
+7 `--test-*` suites, non-zero on any failure — the documented pre-ship gate. Keeps tests out
+of the shipped binary (the existing design) while guaranteeing they actually run.
+
+**2 — Corrected a false diagnosis in the v3.22.82 notes.** The "`AdjustWindowRectEx`-vs-DWM
+overshoot (~5px/edge, client 1930×1090), true fix = measure the live frame from inside the
+hook" residual was a **misdiagnosis**. An empirical probe reproducing the exact
+`ComputeOuterRectFromBleeds` math on a real window at 100% DPI landed the client
+**pixel-perfect** (Windowed `1920×1062` flush, Fullscreen `1920×1080` exact, **zero overshoot**) —
+prediction and OS layout agree to the pixel at uniform DPI. Confirmed against the live
+`eqclient.ini` (Fullscreen mode → `WindowedHeight=1080`, correct). There is no hook-side fix to
+build.
+
+**3 — Documented the one real, bounded limitation.** `ComputeSlimTitlebarOuterRect` now carries
+a `DPI-INVARIANT` comment: correct on ANY *uniform* DPI (SystemAware feeds `AdjustWindowRectEx`
+the matching system-DPI metrics) and any resolution; the only gap is **mixed-DPI multimon** (a
+secondary at a different scale → bounded few-px sliver on that one monitor), deliberately
+deferred (the PerMonitorV2 fix regressed single-screen team-launch, reverted v3.22.19).
+
+Native DLLs unchanged from v3.22.82.
+
+### Files
+- `Core/OuterRectMathTests.cs` — 14 assertions corrected to the v3.22.82 flush-bottom contract.
+- `run-tests.sh` — new pre-ship test gate (builds Debug, runs all 7 `--test-*` suites).
+- `Core/WindowManager.cs` — `DPI-INVARIANT` documented-limitation comment (no code change).
+- `CHANGELOG.md` — v3.22.82 "Known residual" note corrected to the measured truth.
+- `EQSwitch.csproj` — 3.22.82 → 3.22.83.
+
 ## v3.22.82 — Windowed mode polish: instant in-world re-slim + caption-peek WITH a flush bottom (2026-05-29)
 
 Closes the two screenshot-gated follow-ups tracked at the end of v3.22.81: world-entry
@@ -64,10 +104,23 @@ WindowedHeight`) is written to match the reduced client 1:1.
 no instant transform), and `captionVisible` is 0 there (WS_POPUP probe → `monH −
 0 = monH`), so its geometry and render size are identical to v3.22.81.
 
-*Known residual (live-tune):* on Win11 the no-`WS_THICKFRAME`
-`AdjustWindowRectEx`-vs-DWM-metrics gap (~10px) sizes the outer rect a few px large, so
-the client can overshoot each edge ~5px (measured: client 1930×1090 on a 1920×1080
-monitor). Bounded and the same on Fullscreen; tuned/measured on the live client.
+*Geometry verified (2026-05-30):* an empirical probe reproducing this exact
+`ComputeOuterRectFromBleeds` math on a real window at 100% DPI landed the client
+**pixel-perfect** — Windowed `1920×1062` flush at `(0,18)→(1920,1080)`, Fullscreen
+`1920×1080` exact, **zero overshoot on every edge**. The earlier "`AdjustWindowRectEx`-vs-DWM
+overshoot (~5px/edge, client 1930×1090)" note was a **misdiagnosis**: at uniform DPI,
+`AdjustWindowRectEx`'s prediction and the OS's actual window layout agree to the pixel
+(the DWM *visible* side border is only ~1px; the other ~7px is off-screen invisible
+allowance — so even the "~8px shadow onto a neighbor monitor" tradeoff is really ~1px).
+There is **no** hook-side "measure the live frame" fix to build — that was a phantom.
+The math is resolution-independent and correct at any **uniform** DPI (SystemAware feeds
+`AdjustWindowRectEx` the matching system-DPI metrics; verified scaling 8→13 / 31→58 px
+across 100→200%). The ONE real, bounded gap is **mixed-DPI multimon** (a secondary at a
+different scale gets the primary's frame metrics → a few-px sliver on that one monitor) —
+accepted, not fixed (the PerMonitorV2 fix regressed single-screen team-launch and was
+reverted in v3.22.19). See the `WindowManager.ComputeSlimTitlebarOuterRect` DPI-INVARIANT
+comment, `Core/OuterRectMathTests.cs` (now asserting the flush-bottom contract), and
+`run-tests.sh` (the pre-ship gate that runs it).
 
 ## v3.22.81 — Window mode toggles, Phase 2: "Windowed mode" pinned by an in-process WndProc subclass (2026-05-29)
 

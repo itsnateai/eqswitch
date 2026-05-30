@@ -1402,6 +1402,19 @@ public class WindowManager
     internal (int x, int y, int w, int h) ComputeSlimTitlebarOuterRect(
         WinRect monitor, int titlebarOffset, long style, long exStyle)
     {
+        // DPI INVARIANT — REQUIRES HighDpiMode.SystemAware (Program.cs). Under
+        // SystemAware, AdjustWindowRectEx returns SYSTEM-DPI frame metrics, which
+        // match the OS's actual window layout on ANY uniform-DPI setup (single
+        // monitor OR same-DPI multimon), at any resolution. Verified pixel-perfect
+        // at 100% DPI 2026-05-30 (client lands exactly edge-to-edge; the v3.22.82
+        // CHANGELOG "AdjustWindowRectEx-vs-DWM overshoot" was a misdiagnosis — at
+        // uniform DPI prediction and layout agree to the pixel). KNOWN, ACCEPTED
+        // LIMITATION: on MIXED-DPI multimon, a secondary at a different scale gets
+        // the primary's frame metrics → a bounded few-px sliver/overshoot on that
+        // one monitor. Not fixed: the per-monitor fix (AdjustWindowRectExForDpi +
+        // PerMonitorV2) regressed single-screen team-launch and was reverted in
+        // v3.22.19. Revisit only if mixed-DPI becomes a real user complaint.
+        //
         // v3.22.45 post-T3-Opus MEDIUM: exStyle is now a real arg. If the live
         // EQ window has WS_EX_CLIENTEDGE (live Win11 probe: shifts bleed from
         // 8/31/8/8 to 10/33/10/10), passing exStyle=0 under-sizes the outer
