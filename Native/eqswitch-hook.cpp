@@ -260,72 +260,6 @@ static WNDPROC g_origGeoWndProc = NULL;       // proc present when we subclassed
 static HWND    g_geoSubclassHwnd = NULL;      // the window we subclassed (EQ's single main window)
 static volatile LONG g_geoSubclassInstalled = 0;
 
-// v3.22.84 — WinEQ2 "measure, don't predict" frame correction. C# computes the
-// slim outer rect with AdjustWindowRectEx, which PREDICTS eqgame's WS_CAPTION frame
-// as ~8/31/8/8 — but eqgame's REAL frame is ~3/26/3/3, so the predicted outer rect
-// (written to SHM, pinned by GeoWndProc) leaves the visible client ~5px too wide per
-// edge (live-measured 2026-05-30, char natedogg: client 1930x1072 on a 1920x1080
-// monitor, overshoot 5px L/R/B). This recomputes the predicted bleed (same
-// AdjustWindowRectEx call C# made, live style) and the MEASURED frame (GetWindowInfo)
-// and shifts each edge of the SHM rect by the per-edge prediction error so the client
-// lands flush. Result for the live case: (-8,-13) 1936x1101 -> (-3,-8) 1926x1091 ->
-// client (0,18)-(1920,1080).
-//
-// MIRROR of WindowManager.ComputeFrameCorrectedRect (Core/WindowManager.cs), unit-
-// tested via --test-frame-correction. KEEP THE TWO IN SYNC.
-//
-// FIXED-POINT / NO-GROWTH: derived from (SHM rect, predicted bleed, measured frame)
-// — all CONSTANT for a given window/monitor/style — NEVER from the live outer rect.
-// So re-forcing it every WM_WINDOWPOSCHANGING re-applies the SAME rect; it cannot
-// accumulate (the reverted v3.22.81 C# guard grew because it read the DWM-bled OUTER
-// rect and re-applied a bigger one). Correct prediction (Win10, or frame==predicted)
-// → every error 0 → corrected == raw SHM rect → exact no-op.
-static const int kMaxFrameCorrectionPx = 20;  // bound a bad GetWindowInfo read
-
-static void ComputeCorrectedGeoRect(HWND hWnd, int sx, int sy, int sw, int sh,
-                                    int* ox, int* oy, int* ow, int* oh) {
-    // Identity fallback if either probe fails — degrade to the raw SHM rect
-    // (today's behavior) rather than fling the window.
-    *ox = sx; *oy = sy; *ow = sw; *oh = sh;
-
-    WINDOWINFO wi;
-    wi.cbSize = sizeof(WINDOWINFO);
-    if (!GetWindowInfo(hWnd, &wi)) return;
-    int actL = wi.rcClient.left   - wi.rcWindow.left;
-    int actT = wi.rcClient.top    - wi.rcWindow.top;
-    int actR = wi.rcWindow.right  - wi.rcClient.right;
-    int actB = wi.rcWindow.bottom - wi.rcClient.bottom;
-
-    // Predicted bleed — same AdjustWindowRectEx C# used, with the window's LIVE
-    // style/exstyle. Only WS_CAPTION/WS_THICKFRAME/exStyle affect the result, and
-    // those match C#'s WINDOWED_TITLEBAR_STYLE, so the predicted bleed matches at
-    // uniform DPI (the differing WS_* bits — MIN/MAXBOX, CLIPCHILDREN — don't change
-    // AdjustWindowRectEx output; verified live 2026-05-30, style 0x14CB0000).
-    LONG_PTR style   = GetWindowLongPtr(hWnd, GWL_STYLE);
-    LONG_PTR exStyle = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
-    RECT probe = { 0, 0, 100, 100 };
-    if (!AdjustWindowRectEx(&probe, (DWORD)style, FALSE, (DWORD)exStyle)) return;
-    int predL = -probe.left;
-    int predT = -probe.top;
-    int predR = probe.right  - 100;
-    int predB = probe.bottom - 100;
-
-    int eL = predL - actL, eT = predT - actT, eR = predR - actR, eB = predB - actB;
-    if (eL >  kMaxFrameCorrectionPx) eL =  kMaxFrameCorrectionPx;
-    if (eL < -kMaxFrameCorrectionPx) eL = -kMaxFrameCorrectionPx;
-    if (eT >  kMaxFrameCorrectionPx) eT =  kMaxFrameCorrectionPx;
-    if (eT < -kMaxFrameCorrectionPx) eT = -kMaxFrameCorrectionPx;
-    if (eR >  kMaxFrameCorrectionPx) eR =  kMaxFrameCorrectionPx;
-    if (eR < -kMaxFrameCorrectionPx) eR = -kMaxFrameCorrectionPx;
-    if (eB >  kMaxFrameCorrectionPx) eB =  kMaxFrameCorrectionPx;
-    if (eB < -kMaxFrameCorrectionPx) eB = -kMaxFrameCorrectionPx;
-
-    *ox = sx + eL;
-    *oy = sy + eT;
-    *ow = sw - eL - eR;
-    *oh = sh - eT - eB;
-}
-
 static LRESULT CALLBACK GeoWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     // Defensive: GeoWndProc can only be the window proc if EnsureGeoSubclass set
     // g_origGeoWndProc first, so this is never NULL in practice — but never
@@ -348,21 +282,18 @@ static LRESULT CALLBACK GeoWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         if (enabled && pin && tw > 0 && th > 0) {
             switch (msg) {
             case WM_WINDOWPOSCHANGING: {
-                // THE growth-killer. v3.22.84: force the frame-CORRECTED outer rect
-                // (the C#-predicted SHM rect shifted by eqgame's measured-frame error
-                // so the client lands flush — WinEQ2 measure-don't-predict). Returns
-                // WITHOUT chaining — the system then applies the modified WINDOWPOS,
-                // so EQ's / DWM's own re-expansion never runs.
+                // THE growth-killer. Force the authoritative outer rect (computed
+                // once by C# ComputeSlimTitlebarOuterRect, written to SHM) and
+                // return WITHOUT chaining — the system then applies the modified
+                // WINDOWPOS, so EQ's / DWM's own re-expansion never runs.
                 WINDOWPOS* wp = (WINDOWPOS*)lParam;
                 // Don't fight legitimate minimize/maximize/show-state changes:
                 // forcing the restored rect there would cancel a minimize. Pin
                 // only steady-state moves/sizes of a normal (restored) window.
                 if (!IsIconic(hWnd) && !IsZoomed(hWnd) &&
                     !(wp->flags & (SWP_HIDEWINDOW | SWP_SHOWWINDOW))) {
-                    int cx, cy, cw, ch;
-                    ComputeCorrectedGeoRect(hWnd, tx, ty, tw, th, &cx, &cy, &cw, &ch);
-                    wp->x  = cx;  wp->y  = cy;
-                    wp->cx = cw;  wp->cy = ch;
+                    wp->x  = tx;  wp->y  = ty;
+                    wp->cx = tw;  wp->cy = th;
                     wp->flags &= ~(SWP_NOSIZE | SWP_NOMOVE);
                     return 0;
                 }
@@ -371,28 +302,20 @@ static LRESULT CALLBACK GeoWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             case WM_GETMINMAXINFO: {
                 // Belt-and-suspenders fixed-size lock: clamp track size to the
                 // pinned WxH so a stray resize-drag or maximize can't exceed it.
-                // Chain first for sane defaults, then override. v3.22.84: clamp to
-                // the frame-CORRECTED dims so the size lock agrees with the corrected
-                // WM_WINDOWPOSCHANGING rect.
+                // Chain first for sane defaults, then override.
                 LRESULT r = CallWindowProcW(g_origGeoWndProc, hWnd, msg, wParam, lParam);
-                int cx, cy, cw, ch;
-                ComputeCorrectedGeoRect(hWnd, tx, ty, tw, th, &cx, &cy, &cw, &ch);
                 MINMAXINFO* mmi = (MINMAXINFO*)lParam;
-                mmi->ptMinTrackSize.x = mmi->ptMaxTrackSize.x = cw;
-                mmi->ptMinTrackSize.y = mmi->ptMaxTrackSize.y = ch;
+                mmi->ptMinTrackSize.x = mmi->ptMaxTrackSize.x = tw;
+                mmi->ptMinTrackSize.y = mmi->ptMaxTrackSize.y = th;
                 return r;
             }
             case WM_MOVING: {
                 // Pin position — overwrite the proposed drag rect with the
                 // authoritative outer rect so the window can't be dragged off
-                // ("we don't need draggable" — Nate). v3.22.84: pin to the frame-
-                // CORRECTED rect so a drag attempt doesn't momentarily snap to the
-                // predicted (overshooting) rect before WM_WINDOWPOSCHANGING corrects it.
-                int cx, cy, cw, ch;
-                ComputeCorrectedGeoRect(hWnd, tx, ty, tw, th, &cx, &cy, &cw, &ch);
+                // ("we don't need draggable" — Nate).
                 RECT* r = (RECT*)lParam;
-                r->left  = cx;       r->top    = cy;
-                r->right = cx + cw;  r->bottom = cy + ch;
+                r->left  = tx;       r->top    = ty;
+                r->right = tx + tw;  r->bottom = ty + th;
                 return TRUE;
             }
             case WM_SYSCOMMAND: {
@@ -468,23 +391,9 @@ static void EnsureGeoSubclass(HWND hWnd) {
     // guard degrades to "subclass installed, C# guard recovers position" only
     // in the impossible pre-install case.
     if (g_origSetWindowPos) {
-        // First apply: raw SHM rect with SWP_FRAMECHANGED so stripping WS_THICKFRAME
-        // recalculates the non-client area to the slim frame. GetWindowInfo isn't
-        // trustworthy until this settles (WM_NCCALCSIZE runs during this call).
         g_origSetWindowPos(hWnd, NULL, tx, ty, tw, th,
                            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-        // v3.22.84 — second apply: the slim frame is now laid out, so measure it and
-        // correct (WinEQ2 measure-don't-predict) → the FIRST in-world paint is flush
-        // without waiting for a natural reposition. GeoWndProc re-corrects every
-        // subsequent WM_WINDOWPOSCHANGING; this is a fixed point (no growth).
-        int cx, cy, cw, ch;
-        ComputeCorrectedGeoRect(hWnd, tx, ty, tw, th, &cx, &cy, &cw, &ch);
-        if (cx != tx || cy != ty || cw != tw || ch != th) {
-            g_origSetWindowPos(hWnd, NULL, cx, cy, cw, ch, SWP_NOZORDER | SWP_NOACTIVATE);
-            LogMessage("GeoWndProc: instant slim + frame correction (raw=(%d,%d) %dx%d -> (%d,%d) %dx%d strip=%d)", tx, ty, tw, th, cx, cy, cw, ch, strip);
-        } else {
-            LogMessage("GeoWndProc: applied instant slim transform (pos=(%d,%d) %dx%d strip=%d) [frame matched prediction]", tx, ty, tw, th, strip);
-        }
+        LogMessage("GeoWndProc: applied instant slim transform (pos=(%d,%d) %dx%d strip=%d)", tx, ty, tw, th, strip);
     }
 }
 
