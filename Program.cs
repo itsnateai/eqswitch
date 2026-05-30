@@ -266,6 +266,27 @@ static class Program
             Environment.Exit(exitCode);
             return;
         }
+
+        // --test-window-clamp — run Core/WindowManagerClampTests.RunAll() and exit
+        // with its return code. Guards the mode-dependent adjacency-clamp branch
+        // (Windowed SKIPS ClampBleedsForAdjacency / Fullscreen APPLIES it) that the
+        // pure-static OuterRectMathTests cannot reach. Added v3.22.83 follow-up.
+        if (args.Length >= 1 && args[0] == "--test-window-clamp")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.WindowManagerClampTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"WindowManagerClampTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
 #endif
 
         // Enforce single instance
