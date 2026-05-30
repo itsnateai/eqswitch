@@ -1,5 +1,16 @@
 # Changelog
 
+## v3.22.87 — Wrapper Settings dialog: hint text + fit-to-content layout (2026-05-30)
+
+Follow-up to the v3.22.86 default change. The "Wrapper Settings" dialog (Video → Window
+Style → advanced) still said the old default in its hint ("18 = title+sliver of buttons
+(default)") and its AutoSize hint labels overflowed the fixed-width dialog, clipping words at
+the right edge. Fixed: hints now read the correct default ("13 = title + half buttons (default)",
+"Defaults: titlebar 13, margin 21"), the verbose hints are tightened to concise help text, and
+the dialog is now **measure-to-fit** — its client area is sized to the actual content (widest +
+lowest control) + a uniform margin just before it's shown, so it fits exactly at any font/DPI:
+no clipping and no dead padding. UI-only, no logic change.
+
 ## v3.22.86 — Default TitlebarOffset 18 → 13 (less caption peek) (2026-05-30)
 
 Lowers the default Windowed caption peek from 18px to **13px** — ~half the maximize button

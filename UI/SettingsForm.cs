@@ -3530,7 +3530,7 @@ public class SettingsForm : Form
         using var dlg = new Form
         {
             Text = "Wrapper Settings",
-            Size = new Size(340, 400),
+            Size = new Size(360, 400),  // v3.22.87 — transient; the real ClientSize is fit to content just before ShowDialog (see measure-to-fit below)
             FormBorderStyle = FormBorderStyle.FixedDialog,
             StartPosition = FormStartPosition.CenterParent,
             MaximizeBox = false,
@@ -3545,7 +3545,7 @@ public class SettingsForm : Form
         DarkTheme.AddLabel(dlg, "Titlebar hidden (px):", L, y + 2);
         var nudTitle = DarkTheme.AddNumeric(dlg, I, y, 60, _nudTitlebarOffset.Value, 0, 40);
         y += 24;
-        DarkTheme.AddHint(dlg, "0 = caption hidden, 18 = title+sliver of buttons (default), 26 = full buttons", L, y);
+        DarkTheme.AddHint(dlg, "0 = hidden · 13 = title + half buttons (default) · 26 = full", L, y);
         y += 18;
 
         DarkTheme.AddLabel(dlg, "Bottom margin (px):", L, y + 2);
@@ -3554,7 +3554,7 @@ public class SettingsForm : Form
         DarkTheme.AddHint(dlg, "Game render height reduction", L, y);
         y += 18;
 
-        DarkTheme.AddHint(dlg, "Defaults: titlebar 18 (peeks, bottom flush), margin 21. Keep margin ≥ titlebar.", L, y);
+        DarkTheme.AddHint(dlg, "Defaults: titlebar 13, margin 21 · keep margin ≥ titlebar", L, y);
         y += 22;
 
         var chkHook = DarkTheme.AddCheckBox(dlg, "DLL Hook (zero flicker)", L, y);
@@ -3569,13 +3569,13 @@ public class SettingsForm : Form
         var chkForceWindowed = DarkTheme.AddCheckBox(dlg, "Force Windowed Mode (eqclient.ini)", L, y);
         chkForceWindowed.Checked = _chkVideoWindowed.Checked;
         y += 20;
-        DarkTheme.AddHint(dlg, "WindowedMode=TRUE — required for window management; leave on", L, y);
+        DarkTheme.AddHint(dlg, "WindowedMode=TRUE — required; leave on", L, y);
         y += 26;
 
         var chkMaximize = DarkTheme.AddCheckBox(dlg, "Maximize on Launch", L, y);
         chkMaximize.Checked = _chkMaximizeWindow.Checked;
         y += 20;
-        DarkTheme.AddHint(dlg, "Maximized=1 in eqclient.ini (parked — usefulness under review)", L, y);
+        DarkTheme.AddHint(dlg, "Maximized=1 in eqclient.ini (parked — under review)", L, y);
         y += 28;
 
         // v3.22.54: Dark Titlebar moved out of this dialog up to the main
@@ -3620,6 +3620,22 @@ public class SettingsForm : Form
 
         dlg.AcceptButton = (IButtonControl)btnOK;
         dlg.CancelButton = (IButtonControl)btnCancel;
+
+        // v3.22.87 — measure-to-fit: size the client area to the actual content
+        // (widest + lowest control) + a uniform L-px margin, instead of a guessed
+        // fixed width. AutoSize labels report their true width once laid out, so the
+        // dialog ends up exactly as wide as its longest hint — no dead padding, no
+        // clipping, correct at any font/DPI. Min width keeps the title bar + buttons
+        // from cramping if every line is short.
+        dlg.PerformLayout();
+        int contentRight = 0, contentBottom = 0;
+        foreach (Control c in dlg.Controls)
+        {
+            contentRight = Math.Max(contentRight, c.Right);
+            contentBottom = Math.Max(contentBottom, c.Bottom);
+        }
+        dlg.ClientSize = new Size(Math.Max(contentRight + L, 300), contentBottom + L);
+
         dlg.ShowDialog(this);
     }
 
