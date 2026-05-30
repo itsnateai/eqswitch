@@ -1,5 +1,33 @@
 # Changelog
 
+## v3.22.84 — Windowed client lands flush (hook-side frame-measure correction) (2026-05-30)
+
+Builds the fix that v3.22.83 §2 tracked as "not yet built": the live ~5px Windowed-mode
+client overshoot (left/right/bottom). EQSwitch sizes the slim window with
+`AdjustWindowRectEx`, which **predicts** an 8/31/8/8 WS_CAPTION frame, but eqgame's **real**
+frame is only ~3/26/3/3 — so the predicted outer rect left the client ~5px too wide per edge
+(live-measured 2026-05-30, char natedogg @ 100% DPI: window `(-8,-13) 1936×1101` → client
+`(-5,13)-(1925,1085)` = **1930×1072** on a 1920×1080 monitor) and the DX backbuffer (1920×1062)
+was slightly stretched into it.
+
+**Fix — the WinEQ2 "measure, don't predict" port, finished.** v3.22.81 already moved the
+per-message geometry pin into an in-process WndProc subclass (`GeoWndProc` in
+`eqswitch-hook.dll`); v3.22.84 makes that subclass **measure** eqgame's real non-client frame
+via `GetWindowInfo` and shift each edge of the predicted SHM rect by the per-edge prediction
+error (`AdjustWindowRectEx` − measured), so the client lands flush: `(-3,-8) 1926×1091` →
+client **`(0,18)-(1920,1080)` = 1920×1062**, matching the DX backbuffer 1:1 (crisp). This is
+exactly where WinEQ2 does it (synchronously in the subclass via live-frame deltas), not on an
+external guard timer. The correction is **bounded** (±20px, so a bad read can't fling the
+window) and a **fixed point** — derived from `(SHM rect, predicted bleed, measured frame)`,
+all constants, never from the live outer rect — so the v3.22.81 growth/sliver class cannot
+recur. On a correct prediction (Win10, or frame == predicted) every error is 0 → no-op.
+
+**Fullscreen is byte-for-byte unchanged** — WS_POPUP has a 0 frame and `pinGeometry=0`, so the
+correction is never reached (and would be a no-op if it were). **C# is unchanged** (still writes
+the predicted rect to SHM; the hook corrects it) — no SHM struct/byte-parity change. New
+`--test-frame-correction` unit suite (mirror of the hook formula, live natedogg case +
+idempotency + ±20 clamp + Fullscreen no-op) added to the `run-tests.sh` pre-ship gate.
+
 ## v3.22.83 — Release-prep: fullscreen/windowed geometry verified + the regression-guard re-armed (2026-05-30)
 
 **No runtime/behavior change from v3.22.82** — a release-prep hardening pass on the
