@@ -1402,18 +1402,23 @@ public class WindowManager
     internal (int x, int y, int w, int h) ComputeSlimTitlebarOuterRect(
         WinRect monitor, int titlebarOffset, long style, long exStyle)
     {
-        // DPI INVARIANT — REQUIRES HighDpiMode.SystemAware (Program.cs). Under
-        // SystemAware, AdjustWindowRectEx returns SYSTEM-DPI frame metrics, which
-        // match the OS's actual window layout on ANY uniform-DPI setup (single
-        // monitor OR same-DPI multimon), at any resolution. Verified pixel-perfect
-        // at 100% DPI 2026-05-30 (client lands exactly edge-to-edge; the v3.22.82
-        // CHANGELOG "AdjustWindowRectEx-vs-DWM overshoot" was a misdiagnosis — at
-        // uniform DPI prediction and layout agree to the pixel). KNOWN, ACCEPTED
-        // LIMITATION: on MIXED-DPI multimon, a secondary at a different scale gets
-        // the primary's frame metrics → a bounded few-px sliver/overshoot on that
-        // one monitor. Not fixed: the per-monitor fix (AdjustWindowRectExForDpi +
-        // PerMonitorV2) regressed single-screen team-launch and was reverted in
-        // v3.22.19. Revisit only if mixed-DPI becomes a real user complaint.
+        // FRAME NOTE — two distinct geometry caveats, both confirmed by live
+        // eqgame measurement (do NOT "verify" these with a synthetic WinForms
+        // probe — a WinForms client inset matches AdjustWindowRectEx; eqgame's
+        // does NOT, so a proxy window hides caveat (1)):
+        //  (1) eqgame's REAL non-client frame is ~3px/side, but AdjustWindowRectEx
+        //      predicts ~8px for WS_CAPTION — so this outer rect (sized for 8px)
+        //      leaves eqgame's CLIENT ~5px too wide on each edge. Live-measured
+        //      2026-05-30: Windowed client 1930×1072 on a 1920×1080 monitor,
+        //      ~5px overshoot L/R/B at 100% DPI. Real but cosmetically benign
+        //      (extreme edge off-screen, sub-0.5% stretch). The genuine fix is a
+        //      READ-BACK: after SetWindowPos, GetClientRect the live eqgame window
+        //      and correct the outer rect (WinEQ2 "measure, don't predict"). TODO.
+        //  (2) REQUIRES HighDpiMode.SystemAware (Program.cs): AdjustWindowRectEx
+        //      returns SYSTEM-DPI metrics — fine on uniform DPI; on MIXED-DPI
+        //      multimon a secondary at a different scale gets the primary's metrics
+        //      → extra sliver on that monitor. Deferred (PerMonitorV2 regressed
+        //      single-screen team-launch, reverted v3.22.19).
         //
         // v3.22.45 post-T3-Opus MEDIUM: exStyle is now a real arg. If the live
         // EQ window has WS_EX_CLIENTEDGE (live Win11 probe: shifts bleed from

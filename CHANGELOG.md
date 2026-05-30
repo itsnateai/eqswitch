@@ -16,14 +16,19 @@ code was already correct — the tests lied). Added **`run-tests.sh`**: builds D
 7 `--test-*` suites, non-zero on any failure — the documented pre-ship gate. Keeps tests out
 of the shipped binary (the existing design) while guaranteeing they actually run.
 
-**2 — Corrected a false diagnosis in the v3.22.82 notes.** The "`AdjustWindowRectEx`-vs-DWM
-overshoot (~5px/edge, client 1930×1090), true fix = measure the live frame from inside the
-hook" residual was a **misdiagnosis**. An empirical probe reproducing the exact
-`ComputeOuterRectFromBleeds` math on a real window at 100% DPI landed the client
-**pixel-perfect** (Windowed `1920×1062` flush, Fullscreen `1920×1080` exact, **zero overshoot**) —
-prediction and OS layout agree to the pixel at uniform DPI. Confirmed against the live
-`eqclient.ini` (Fullscreen mode → `WindowedHeight=1080`, correct). There is no hook-side fix to
-build.
+**2 — The ~5px overshoot residual is REAL (corrected 2026-05-30 post-live-smoke).**
+An interim claim in this section called it a misdiagnosis based on a synthetic-WinForms
+probe (which landed pixel-perfect). **That was wrong** — a live measurement of the running
+eqgame Windowed client (100% DPI, single monitor) shows `Client->screen (-5,13)-(1925,1085)`
+= **1930×1072, overshooting the monitor by ~5px on left/right/bottom**, confirming the
+original v3.22.82 note. Root cause: `AdjustWindowRectEx(WS_CAPTION)` predicts an 8px side
+frame, but eqgame's actual non-client frame is only ~3px/side, so the outer rect (sized for
+8px) leaves the client ~5px too wide on each edge. The WinForms probe misled because its
+client inset DOES match `AdjustWindowRectEx`; eqgame's does not. **Cosmetically benign**
+(5px of extreme edge off-screen — EQ UI has margins; sub-0.5% stretch, imperceptible; same
+as Fullscreen looking "perfect"). The genuine fix is the original instinct: **measure the
+live eqgame client after applying and correct the outer rect** (GetClientRect read-back /
+DWM frame, the WinEQ2 "trust the live window" approach). Tracked, not yet built.
 
 **3 — Documented the one real, bounded limitation.** `ComputeSlimTitlebarOuterRect` now carries
 a `DPI-INVARIANT` comment: correct on ANY *uniform* DPI (SystemAware feeds `AdjustWindowRectEx`
@@ -104,15 +109,17 @@ WindowedHeight`) is written to match the reduced client 1:1.
 no instant transform), and `captionVisible` is 0 there (WS_POPUP probe → `monH −
 0 = monH`), so its geometry and render size are identical to v3.22.81.
 
-*Geometry verified (2026-05-30):* an empirical probe reproducing this exact
-`ComputeOuterRectFromBleeds` math on a real window at 100% DPI landed the client
-**pixel-perfect** — Windowed `1920×1062` flush at `(0,18)→(1920,1080)`, Fullscreen
-`1920×1080` exact, **zero overshoot on every edge**. The earlier "`AdjustWindowRectEx`-vs-DWM
-overshoot (~5px/edge, client 1930×1090)" note was a **misdiagnosis**: at uniform DPI,
-`AdjustWindowRectEx`'s prediction and the OS's actual window layout agree to the pixel
-(the DWM *visible* side border is only ~1px; the other ~7px is off-screen invisible
-allowance — so even the "~8px shadow onto a neighbor monitor" tradeoff is really ~1px).
-There is **no** hook-side "measure the live frame" fix to build — that was a phantom.
+*Geometry note (corrected 2026-05-30 post-live-smoke — see v3.22.83 §2):* an interim claim
+here said a synthetic-WinForms probe proved the client pixel-perfect and the overshoot was a
+misdiagnosis. **That was wrong.** A live measurement of the running eqgame Windowed client
+(100% DPI, single monitor) shows `Client->screen (-5,13)-(1925,1085)` = **1930×1072,
+overshooting the monitor ~5px on left/right/bottom** — the original residual note was
+ACCURATE. The WinForms probe misled because a WinForms client inset matches
+`AdjustWindowRectEx`'s 8px prediction, but eqgame's actual non-client frame is only ~3px/side,
+so the outer rect (sized for 8px) leaves eqgame's client ~5px too wide each edge. Real but
+cosmetically benign (5px of extreme edge off-screen; imperceptible stretch). The genuine fix
+is the original instinct — measure the live eqgame client after applying and correct the
+outer rect (GetClientRect read-back / DWM frame). Tracked, not yet built.
 The math is resolution-independent and correct at any **uniform** DPI (SystemAware feeds
 `AdjustWindowRectEx` the matching system-DPI metrics; verified scaling 8→13 / 31→58 px
 across 100→200%). The ONE real, bounded gap is **mixed-DPI multimon** (a secondary at a
