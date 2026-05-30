@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-ship regression gate — runs every inline --test-* suite against a Debug build.
+# Pre-ship regression gate — runs the 7 headless unit --test-* suites against a Debug build.
 #
 # Why a script and not the shipped exe: the inline test classes (Core/**/*Tests.cs)
 # are deliberately excluded from Release builds (see EQSwitch.csproj:39-41 — they
@@ -19,6 +19,10 @@ dotnet build -c Debug -v quiet || { echo "BUILD FAILED"; exit 99; }
 EXE="bin/Debug/net8.0-windows/win-x64/EQSwitch.exe"
 [ -f "$EXE" ] || { echo "Debug exe not found at $EXE"; exit 98; }
 
+# The 7 headless, zero-arg RunAll() suites. Program.cs defines 4 more --test-*
+# flags intentionally NOT run here: --test-autologin (needs a live eqgame),
+# --test-migrate / --test-split (need a JSON fixture arg), --test-update
+# (simulates the self-update flow — side-effecting). Run those manually.
 SUITES=(
   --test-character-selector
   --test-config-validate

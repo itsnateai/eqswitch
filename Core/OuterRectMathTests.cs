@@ -141,6 +141,26 @@ public static class OuterRectMathTests
             failures += Assert("clamp client.Top == monitor.Top + 31 (clamped, not +50)", clientTop, monitor.Top + 31);
         }
 
+        // Case 4b — titlebarOffset EXACTLY == topBleed (clamp boundary). Added
+        // 2026-05-30 (post-v3.22.83 verifier gap-audit): Case 4 tests >topBleed
+        // and Cases 1/2 test <topBleed, but the equality boundary was unguarded.
+        // captionVisible clamps to topBleed → caption peeks its full height, bottom
+        // stays flush (flush-bottom contract holds at the boundary).
+        {
+            var monitor = new WinRect { Left = 0, Top = 0, Right = 1920, Bottom = 1080 };
+            int titlebarOffset = 31;  // == topBleed
+            int lB = 8, tB = 31, rB = 8, bB = 8;
+
+            var (x, y, w, h) = WindowManager.ComputeOuterRectFromBleeds(
+                monitor, titlebarOffset, lB, tB, rB, bB);
+
+            int clientTop = y + tB;
+            int clientBottom = y + h - bB;
+            failures += Assert("boundary client.Top == monitor.Top + 31 (full caption peek)", clientTop, monitor.Top + 31);
+            failures += Assert("boundary client.Bottom == monitor.Bottom (flush)", clientBottom, monitor.Bottom);
+            failures += Assert("boundary client height == monH - topBleed", clientBottom - clientTop, monitor.Bottom - monitor.Top - 31);
+        }
+
         // Case 5 — titlebarOffset < 0: clamp to 0 (negative would push outer
         // upward + grow height past monitor bottom). Defends against config
         // corruption / hand-edited JSON.
@@ -381,6 +401,15 @@ public static class OuterRectMathTests
             failures += Assert("compose right-neighbor client.Right == monitor.Right - 8", clientRight, 1912);
         }
 
+        // KNOWN COVERAGE GAP (tracked 2026-05-30, post-v3.22.83 gap-audit): the
+        // Windowed-mode adjacency-clamp SKIP is not directly guarded here.
+        // ComputeSlimTitlebarOuterRect drops ClampBleedsForAdjacency for
+        // WindowMode.Windowed (flush sides, anti-growth handled by the GeoWndProc
+        // subclass) — but Cases A–H exercise the static clamp helper (Fullscreen
+        // path) only. A refactor that re-applied the clamp in Windowed would
+        // silently restore the right-edge sliver and still pass every test here.
+        // Guarding it needs a mocked-IWindowsApi WindowManager instance (this file
+        // is pure-static by design). Follow-up: reference_eqswitch_window_geometry_dpi_verified.
         Console.WriteLine(failures == 0
             ? $"OuterRectMathTests: ALL PASS"
             : $"OuterRectMathTests: {failures} FAILURE(S)");
