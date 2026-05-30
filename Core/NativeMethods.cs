@@ -53,6 +53,17 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
+    // v3.22.84: needed for the Windowed-mode frame-measure correction. The
+    // CLIENT rect is window-relative (0,0)-(w,h); ClientToScreen maps a point
+    // to screen coords so we can compare eqgame's REAL non-client frame against
+    // AdjustWindowRectEx's prediction and correct the outer rect so the visible
+    // client lands flush on the monitor (WinEQ2 "measure, don't predict").
+    [DllImport("user32.dll")]
+    public static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    public static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+
     // v3.22.45: needed to compute the OUTER-window dims that produce a
     // CLIENT area covering the full monitor on Win11. Win11 DWM keeps
     // ~8 px of invisible frame on each side (rounded-corner / shadow
@@ -259,6 +270,13 @@ internal static class NativeMethods
         public int Left, Top, Right, Bottom;
         public int Width => Right - Left;
         public int Height => Bottom - Top;
+    }
+
+    // v3.22.84: for ClientToScreen in the Windowed frame-measure correction.
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT
+    {
+        public int X, Y;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]

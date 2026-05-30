@@ -1657,42 +1657,80 @@ public class WindowManager
     }
 
     /// <summary>
-    /// v3.22.84 — max per-edge frame correction (px). Bounds a bad GetWindowInfo
-    /// read so a garbage measurement can't fling the window. Mirrored as
-    /// kMaxFrameCorrectionPx in Native/eqswitch-hook.cpp.
+    /// v3.22.84 — generous upper bound on any single-edge non-client frame (px).
+    /// A measured inset outside [0, this] is a torn / mid-transition / minimized
+    /// read and is rejected so the correction can't fling the window.
     /// </summary>
-    internal const int MaxFrameCorrectionPx = 20;
+    internal const int MaxMeasuredFramePx = 80;
+    private static bool FrameSane(int f) => f >= 0 && f <= MaxMeasuredFramePx;
 
     /// <summary>
-    /// v3.22.84 — WinEQ2 "measure, don't predict" frame correction. TEST-ONLY MIRROR
-    /// of the C++ ComputeCorrectedGeoRect in Native/eqswitch-hook.cpp (the production
-    /// correction runs in the injected hook; this exists to unit-test the formula via
-    /// --test-frame-correction). KEEP THE TWO IN SYNC — the .cpp cross-references here.
-    /// <para>
-    /// C# predicts eqgame's WS_CAPTION frame as ~8/31/8/8 (AdjustWindowRectEx) and
-    /// writes the resulting outer rect to SHM, but eqgame's REAL frame is ~3/26/3/3,
-    /// so the client overshoots ~5px/edge. This shifts each edge of the SHM rect by
-    /// the per-edge prediction error (predicted − measured), clamped to
-    /// ±<see cref="MaxFrameCorrectionPx"/>, so the visible client lands flush.
-    /// </para>
-    /// <para>
-    /// FIXED POINT: computed from (shm, predicted, measured) — all constant for a
-    /// window/monitor/style — NEVER from the live outer rect, so re-applying it every
-    /// message cannot accumulate (unlike the reverted v3.22.81 C# guard, which read
-    /// the DWM-bled outer rect and grew it). Error == 0 → corrected == shm (no-op).
-    /// </para>
+    /// v3.22.84 — WinEQ2 "measure, don't predict" read-back correction for Windowed
+    /// mode. EQSwitch sizes the slim window with <see cref="ComputeSlimTitlebarOuterRect(WinRect,int,long,long)"/>,
+    /// which PREDICTS eqgame's WS_CAPTION frame (~8/31/8/8 on Win11) via
+    /// <c>AdjustWindowRectEx</c>; eqgame's REAL frame is only ~3/26/3/3, so the
+    /// predicted outer rect leaves the visible client ~5px too wide per edge
+    /// (live-measured 2026-05-30, char natedogg @ 100% DPI: client 1930×1072 on a
+    /// 1920×1080 monitor). This MEASURES the live window's actual frame
+    /// (<see cref="IWindowsApi.GetWindowRect"/> vs <see cref="IWindowsApi.GetClientScreenRect"/>)
+    /// and recomputes the outer rect from the monitor + the MEASURED frame via the
+    /// same <see cref="ComputeOuterRectFromBleeds"/> helper, so the client lands flush.
     /// </summary>
-    internal static (int x, int y, int w, int h) ComputeFrameCorrectedRect(
-        (int x, int y, int w, int h) shm,
-        (int l, int t, int r, int b) predicted,
-        (int l, int t, int r, int b) measured)
+    /// <remarks>
+    /// <para>
+    /// Returns <c>true</c> with the corrected outer rect ONLY when a correction is
+    /// warranted; <c>false</c> = leave the window alone. Gates (all required):
+    /// Windowed mode (Fullscreen WS_POPUP has a 0 frame → nothing to correct, and
+    /// the read-back is a structural no-op there); both rect reads succeed (window
+    /// alive); the measured frame is sane (rejects torn/minimized reads); and the
+    /// corrected rect differs from the CURRENT outer rect by &gt;1px on some edge.
+    /// </para>
+    /// <para>
+    /// FIXED POINT / NO GROWTH: the corrected rect is derived from the MONITOR (fixed
+    /// target) + the measured FRAME (constant for a given window/style) — NEVER from
+    /// the live outer SIZE. So re-applying it converges in one pass and cannot
+    /// accumulate. This is the structural difference from the reverted v3.22.81 C#
+    /// guard, which read the DWM-bled OUTER rect and re-applied a bigger one. A
+    /// window already flush re-measures to the same frame → same rect → returns false.
+    /// </para>
+    /// </remarks>
+    internal bool TryComputeReadbackCorrection(
+        IntPtr hwnd, WinRect monitor, int titlebarOffset,
+        out (int x, int y, int w, int h) corrected)
     {
-        int eL = Math.Clamp(predicted.l - measured.l, -MaxFrameCorrectionPx, MaxFrameCorrectionPx);
-        int eT = Math.Clamp(predicted.t - measured.t, -MaxFrameCorrectionPx, MaxFrameCorrectionPx);
-        int eR = Math.Clamp(predicted.r - measured.r, -MaxFrameCorrectionPx, MaxFrameCorrectionPx);
-        int eB = Math.Clamp(predicted.b - measured.b, -MaxFrameCorrectionPx, MaxFrameCorrectionPx);
-        return (shm.x + eL, shm.y + eT, shm.w - eL - eR, shm.h - eT - eB);
+        corrected = default;
+        if (_config.Layout.WindowMode != Config.WindowMode.Windowed) return false;
+        if (!_api.GetWindowRect(hwnd, out var win)) return false;
+        if (!_api.GetClientScreenRect(hwnd, out var cli)) return false;
+
+        int actL = cli.Left - win.Left;
+        int actT = cli.Top - win.Top;
+        int actR = win.Right - cli.Right;
+        int actB = win.Bottom - cli.Bottom;
+        if (!FrameSane(actL) || !FrameSane(actT) || !FrameSane(actR) || !FrameSane(actB))
+            return false;
+
+        var (cx, cy, cw, ch) = ComputeOuterRectFromBleeds(monitor, titlebarOffset, actL, actT, actR, actB);
+
+        // Idempotent: only correct when the current outer rect is off by >1px on
+        // some edge. An already-flush window yields cx/cy/cw/ch == current → no-op.
+        if (Math.Abs(cx - win.Left) <= 1 && Math.Abs(cy - win.Top) <= 1 &&
+            Math.Abs((cx + cw) - win.Right) <= 1 && Math.Abs((cy + ch) - win.Bottom) <= 1)
+            return false;
+
+        corrected = (cx, cy, cw, ch);
+        return true;
     }
+
+    /// <summary>
+    /// v3.22.84 — thin SetWindowPos wrapper (no z-order / no activate change) used
+    /// by the Windowed read-back correction to snap a static injected client to the
+    /// flush-corrected rect AFTER its SHM rect has been updated. Goes through
+    /// <see cref="IWindowsApi"/> so it stays test-mockable and doesn't scatter Win32.
+    /// </summary>
+    public void RepositionWindow(IntPtr hwnd, int x, int y, int w, int h)
+        => _api.SetWindowPos(hwnd, IntPtr.Zero, x, y, w, h,
+            NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
 
     /// <summary>
     /// Set a custom window title using the template from config.

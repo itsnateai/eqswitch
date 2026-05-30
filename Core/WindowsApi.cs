@@ -73,6 +73,21 @@ public class WindowsApi : IWindowsApi
         return result;
     }
 
+    public bool GetClientScreenRect(IntPtr hwnd, out WinRect rect)
+    {
+        rect = default;
+        if (!NativeMethods.GetClientRect(hwnd, out var cr)) return false;
+        // GetClientRect is window-relative (0,0)-(w,h). Map the top-left and
+        // bottom-right corners to screen coords so the result is directly
+        // comparable to GetWindowRect (also screen coords).
+        var tl = new NativeMethods.POINT { X = cr.Left, Y = cr.Top };
+        var br = new NativeMethods.POINT { X = cr.Right, Y = cr.Bottom };
+        if (!NativeMethods.ClientToScreen(hwnd, ref tl)) return false;
+        if (!NativeMethods.ClientToScreen(hwnd, ref br)) return false;
+        rect = new WinRect { Left = tl.X, Top = tl.Y, Right = br.X, Bottom = br.Y };
+        return true;
+    }
+
     public bool AdjustWindowRectEx(ref WinRect rect, uint style, bool hasMenu, uint exStyle)
     {
         var nativeRect = new NativeMethods.RECT

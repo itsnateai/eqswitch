@@ -289,9 +289,10 @@ static class Program
         }
 
         // --test-frame-correction — run Core/FrameCorrectionTests.RunAll() and exit.
-        // Guards the v3.22.84 WinEQ2 measure-don't-predict frame correction formula
-        // (mirror of Native/eqswitch-hook.cpp ComputeCorrectedGeoRect) so a refactor
-        // of either side that drifts the math is caught before ship.
+        // Guards the v3.22.84 WinEQ2 measure-don't-predict read-back correction
+        // (WindowManager.TryComputeReadbackCorrection) via a fake IWindowsApi: a live
+        // client overshooting the monitor must be corrected to land flush, and an
+        // already-flush / Fullscreen / garbage-read window must be a no-op.
         if (args.Length >= 1 && args[0] == "--test-frame-correction")
         {
             int exitCode;

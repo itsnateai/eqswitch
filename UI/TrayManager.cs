@@ -531,8 +531,7 @@ public class TrayManager : IDisposable
                 if (_slimTitlebarGuard == null)
                 {
                     _slimTitlebarGuard = new System.Windows.Forms.Timer { Interval = guardInterval };
-                    _slimTitlebarGuard.Tick += (_, _) =>
-                        _windowManager.ApplySlimTitlebarToAll(_processManager.Clients, _injectedPids);
+                    _slimTitlebarGuard.Tick += (_, _) => SlimTitlebarGuardTick();
                     // Don't start if a login is in progress — LoginComplete handler will resume it
                     if (!_processManager.Clients.Any(c => _autoLoginManager.IsLoginActive(c.ProcessId)))
                         _slimTitlebarGuard.Start();
@@ -4163,8 +4162,7 @@ public class TrayManager : IDisposable
             // EQ's window via APIs the hook DLL misses; C# safety net at 500 ms catches
             // it within one tick instead of waiting on foreground event).
             _slimTitlebarGuard = new System.Windows.Forms.Timer { Interval = 500 };
-            _slimTitlebarGuard.Tick += (_, _) =>
-                _windowManager.ApplySlimTitlebarToAll(_processManager.Clients, _injectedPids);
+            _slimTitlebarGuard.Tick += (_, _) => SlimTitlebarGuardTick();
             if (!_processManager.Clients.Any(c => _autoLoginManager.IsLoginActive(c.ProcessId)))
                 _slimTitlebarGuard.Start();
         }
@@ -4684,6 +4682,80 @@ public class TrayManager : IDisposable
         if (!string.IsNullOrEmpty(title)) features.Add($"title=\"{title}\"");
         if (blockMin) features.Add("blockMin");
         FileLogger.Info($"UpdateHookConfig: PID {pid} → {string.Join(", ", features)}");
+    }
+
+    /// <summary>
+    /// v3.22.84 — slim-titlebar guard tick. Re-applies slim style/position to
+    /// NON-injected clients via <see cref="WindowManager.ApplySlimTitlebarToAll"/>
+    /// (a no-op for injected clients, whose geometry the hook owns) AND runs the
+    /// Windowed frame-measure read-back correction for injected clients
+    /// (<see cref="CorrectInjectedWindowedGeometry"/>). Shared by both guard-timer
+    /// wiring sites so they stay in lockstep.
+    /// </summary>
+    private void SlimTitlebarGuardTick()
+    {
+        _windowManager.ApplySlimTitlebarToAll(_processManager.Clients, _injectedPids);
+        CorrectInjectedWindowedGeometry();
+    }
+
+    /// <summary>
+    /// v3.22.84 — WinEQ2 "measure, don't predict" read-back correction for injected
+    /// Windowed clients. The hook applies EQSwitch's per-PID SHM rect VERBATIM, but
+    /// that rect is <c>AdjustWindowRectEx</c>-PREDICTED (~8/31/8/8 on Win11) while
+    /// eqgame's REAL non-client frame is only ~3/26/3/3 — so the visible client
+    /// overshoots the monitor ~5px/edge (live-measured 2026-05-30, char natedogg).
+    /// <para>
+    /// ApplySlimTitlebarToAll SKIPS injected clients (the hook owns their geometry),
+    /// and a static in-world window never repositions itself — so the predicted,
+    /// overshooting rect just sits there with nothing to correct it. This measures
+    /// each injected Windowed slim client's LIVE frame; when the client overshoots,
+    /// it rewrites the SHM rect to the flush-corrected value FIRST (so the hook's
+    /// verbatim enforcement / GeoWndProc pin agree) and THEN repositions the window
+    /// so it lands on the monitor. Idempotent — a flush window re-measures to the
+    /// same constant frame → same rect → no-op (no SetWindowPos). Fullscreen
+    /// (WS_POPUP, 0 frame) is gated out inside TryComputeReadbackCorrection.
+    /// </para>
+    /// </summary>
+    private void CorrectInjectedWindowedGeometry()
+    {
+        if (_hookConfig == null) return;
+        if (_config.Layout.WindowMode != EQSwitch.Config.WindowMode.Windowed) return;
+
+        int offset = _config.Layout.TitlebarOffset;
+        bool isMM = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+        var clients = _processManager.Clients;
+        for (int i = 0; i < clients.Count; i++)
+        {
+            var c = clients[i];
+            if (!_injectedPids.Contains(c.ProcessId)) continue;  // hook-managed clients only
+            if (!_hookConfig.IsOpen(c.ProcessId)) continue;
+
+            // Resolve the per-PID slim flag + target monitor exactly as
+            // UpdateHookConfigForPid does, so we only touch slim-managed windows.
+            WinRect monitor;
+            if (isMM)
+            {
+                int slot = _monitorSlotByPid.TryGetValue(c.ProcessId, out int s) ? s : (i % 2);
+                bool slim = (slot == 0) ? _config.Layout.SlimTitlebar : _config.Layout.SlimTitlebarSecondary;
+                if (!slim) continue;  // non-slim secondary keeps its normal frame — leave it
+                monitor = GetMonitorForPid(c.ProcessId, i);
+            }
+            else
+            {
+                if (!_config.Layout.SlimTitlebar) continue;
+                monitor = _windowManager.GetTargetMonitorBounds();
+            }
+
+            if (_windowManager.TryComputeReadbackCorrection(c.WindowHandle, monitor, offset, out var r))
+            {
+                // SHM FIRST — the hook applies the SHM rect verbatim, so it must hold
+                // the corrected value before we move the window, else the hook/GeoWndProc
+                // would re-pin the overshooting rect and fight the correction.
+                _hookConfig.UpdateRect(c.ProcessId, r.x, r.y, r.w, r.h);
+                _windowManager.RepositionWindow(c.WindowHandle, r.x, r.y, r.w, r.h);
+                FileLogger.Info($"ReadbackCorrect: PID {c.ProcessId} → flush ({r.x},{r.y}) {r.w}x{r.h} (corrected predicted-frame overshoot)");
+            }
+        }
     }
 
     /// <summary>

@@ -153,6 +153,7 @@ public static class WindowManagerClampTests
         public void ForceForegroundWindow(IntPtr hwnd) { }
         public bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags) => true;
         public bool GetWindowRect(IntPtr hwnd, out WinRect rect) { rect = default; return false; }
+        public bool GetClientScreenRect(IntPtr hwnd, out WinRect rect) { rect = default; return false; }
         public IntPtr GetWindowLongPtr(IntPtr hwnd, int nIndex) => IntPtr.Zero;
         public IntPtr SetWindowLongPtr(IntPtr hwnd, int nIndex, IntPtr dwNewLong) => IntPtr.Zero;
         public bool SetWindowText(IntPtr hwnd, string text) => true;

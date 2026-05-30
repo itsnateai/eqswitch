@@ -2,16 +2,23 @@
 // © itsnateai
 
 using System;
+using System.Collections.Generic;
+using EQSwitch.Config;
 
 namespace EQSwitch.Core;
 
 /// <summary>
-/// v3.22.84 — unit tests for the WinEQ2 "measure, don't predict" frame correction.
-/// Mirror of the C++ correction in Native/eqswitch-hook.cpp (ComputeCorrectedGeoRect):
-/// the hook measures eqgame's REAL non-client frame and shifts each edge of the
-/// C#-predicted SHM outer rect by the per-edge prediction error so the visible
-/// client lands flush on the monitor. This suite is the testable SPEC of that
-/// math (the C++ side can't run in the C# harness). KEEP IN SYNC with the .cpp.
+/// v3.22.84 — unit tests for the WinEQ2 "measure, don't predict" read-back
+/// correction (<see cref="WindowManager.TryComputeReadbackCorrection"/>). Drives a
+/// fake <see cref="IWindowsApi"/> whose GetWindowRect / GetClientScreenRect describe
+/// a live eqgame window whose REAL frame (~3/26/3/3) is smaller than the predicted
+/// frame the outer rect was sized for — so the client overshoots the monitor ~5px/edge.
+/// Asserts the correction shrinks the outer rect so the (faked) client lands flush.
+///
+/// Numbers are the live measurement (char natedogg, 100% DPI, 1920×1080, 2026-05-30):
+///   predicted outer (overshoot): window (-8,-13)-(1928,1088) = (-8,-13) 1936×1101
+///   real client (overshoots):    client (-5,13)-(1925,1085) = 1930×1072
+///   corrected outer:             (-3,-8) 1926×1091 → client (0,18)-(1920,1080) flush
 ///
 /// Invoked via --test-frame-correction from Program.cs. 0 = all pass, 1 = failure.
 /// </summary>
@@ -20,69 +27,63 @@ public static class FrameCorrectionTests
     public static int RunAll()
     {
         int failures = 0;
+        var monitor = new WinRect { Left = 0, Top = 0, Right = 1920, Bottom = 1080 };
+        const int offset = 18;
 
-        // ── Case 1 — the live bug (char natedogg, 100% DPI, 1920×1080, 2026-05-30) ──
-        // C# predicted 8/31/8/8 and wrote outer (-8,-13) 1936×1101 to SHM; eqgame's
-        // real frame is 3/26/3/3 → client overshot to 1930×1072. The correction must
-        // shrink the outer rect 5px/edge so the client lands flush (0,18)-(1920,1080).
+        // ── Case 1 — the live bug: overshoot → corrected flush ──
         {
-            var (x, y, w, h) = WindowManager.ComputeFrameCorrectedRect(
-                shm: (-8, -13, 1936, 1101),
-                predicted: (8, 31, 8, 8),
-                measured: (3, 26, 3, 3));
-            failures += Assert("natedogg corrected x", x, -3);
-            failures += Assert("natedogg corrected y", y, -8);
-            failures += Assert("natedogg corrected w", w, 1926);
-            failures += Assert("natedogg corrected h", h, 1091);
+            // Window sized for the PREDICTED 8/31/8/8 frame; real frame is 3/26/3/3,
+            // so the live client overshoots the monitor by 5px on L/R/B.
+            var win = new WinRect { Left = -8, Top = -13, Right = 1928, Bottom = 1088 };
+            var cli = new WinRect { Left = -5, Top = 13, Right = 1925, Bottom = 1085 };
+            var wm = MakeWm(WindowMode.Windowed, win, cli);
 
-            // The invariant that matters: apply the MEASURED frame to the corrected
-            // outer rect → client must be exactly the monitor (flush L/R/B, peek 18).
+            bool hit = wm.TryComputeReadbackCorrection(IntPtr.Zero, monitor, offset, out var c);
+            failures += AssertTrue("overshoot: correction warranted", hit);
+            failures += Assert("corrected x", c.x, -3);
+            failures += Assert("corrected y", c.y, -8);
+            failures += Assert("corrected w", c.w, 1926);
+            failures += Assert("corrected h", c.h, 1091);
+
+            // The invariant that matters: applying the MEASURED frame (3/26/3/3) to the
+            // corrected outer rect lands the client exactly on the monitor (peek 18).
             int mL = 3, mT = 26, mR = 3, mB = 3;
-            failures += Assert("natedogg client.Left == monitor.Left", x + mL, 0);
-            failures += Assert("natedogg client.Right == monitor.Right", x + w - mR, 1920);
-            failures += Assert("natedogg client.Top == monitor.Top + captionVisible(18)", y + mT, 18);
-            failures += Assert("natedogg client.Bottom == monitor.Bottom (flush)", y + h - mB, 1080);
+            failures += Assert("client.Left == monitor.Left", c.x + mL, 0);
+            failures += Assert("client.Right == monitor.Right", c.x + c.w - mR, 1920);
+            failures += Assert("client.Top == monitor.Top + captionVisible(18)", c.y + mT, 18);
+            failures += Assert("client.Bottom == monitor.Bottom (flush)", c.y + c.h - mB, 1080);
         }
 
-        // ── Case 2 — prediction correct (Win10 / frame == predicted): exact no-op ──
-        // Idempotency: when there's no prediction error, the corrected rect must equal
-        // the SHM rect so re-applying every message can't drift.
+        // ── Case 2 — already flush: idempotent no-op ──
+        // Re-measuring a corrected window yields the same constant frame → same rect.
         {
-            var (x, y, w, h) = WindowManager.ComputeFrameCorrectedRect(
-                shm: (0, 0, 1920, 1080),
-                predicted: (8, 31, 8, 8),
-                measured: (8, 31, 8, 8));
-            failures += Assert("noop x", x, 0);
-            failures += Assert("noop y", y, 0);
-            failures += Assert("noop w", w, 1920);
-            failures += Assert("noop h", h, 1080);
+            var win = new WinRect { Left = -3, Top = -8, Right = 1923, Bottom = 1083 }; // (-3,-8) 1926×1091
+            var cli = new WinRect { Left = 0, Top = 18, Right = 1920, Bottom = 1080 };  // flush
+            var wm = MakeWm(WindowMode.Windowed, win, cli);
+
+            bool hit = wm.TryComputeReadbackCorrection(IntPtr.Zero, monitor, offset, out _);
+            failures += AssertTrue("already-flush window → no correction (idempotent)", !hit);
         }
 
-        // ── Case 3 — bad measurement is bounded (±MaxFrameCorrectionPx) ──
-        // A garbage GetWindowInfo read (frame huge → large negative error) must NOT
-        // fling the window; each edge correction clamps to ±20px.
+        // ── Case 3 — Fullscreen: structural no-op ──
         {
-            var (x, y, w, h) = WindowManager.ComputeFrameCorrectedRect(
-                shm: (-8, -13, 1936, 1101),
-                predicted: (8, 31, 8, 8),
-                measured: (100, 100, 100, 100));  // raw errors -92/-69/-92/-92 → clamp -20
-            failures += Assert("clamp x (=-8 + -20)", x, -28);
-            failures += Assert("clamp y (=-13 + -20)", y, -33);
-            failures += Assert("clamp w (=1936 - (-20) - (-20))", w, 1976);
-            failures += Assert("clamp h (=1101 - (-20) - (-20))", h, 1141);
+            var win = new WinRect { Left = -8, Top = -13, Right = 1928, Bottom = 1088 };
+            var cli = new WinRect { Left = -5, Top = 13, Right = 1925, Bottom = 1085 };
+            var wm = MakeWm(WindowMode.Fullscreen, win, cli);
+
+            bool hit = wm.TryComputeReadbackCorrection(IntPtr.Zero, monitor, offset, out _);
+            failures += AssertTrue("Fullscreen → no correction (gated out)", !hit);
         }
 
-        // ── Case 4 — Fullscreen (WS_POPUP, 0 frame): exact no-op ──
-        // Defense-in-depth: even if the correction were reached in Fullscreen, a
-        // 0/0/0/0 predicted bleed and 0/0/0/0 measured frame → no change.
+        // ── Case 4 — garbage measurement is rejected (not flung) ──
+        // A torn / mid-transition read with an insane frame must be ignored.
         {
-            var (x, y, w, h) = WindowManager.ComputeFrameCorrectedRect(
-                shm: (0, 0, 1920, 1080),
-                predicted: (0, 0, 0, 0),
-                measured: (0, 0, 0, 0));
-            failures += Assert("fullscreen noop x", x, 0);
-            failures += Assert("fullscreen noop w", w, 1920);
-            failures += Assert("fullscreen noop h", h, 1080);
+            var win = new WinRect { Left = 0, Top = 0, Right = 1920, Bottom = 1080 };
+            var cli = new WinRect { Left = 100, Top = 100, Right = 1820, Bottom = 980 }; // frame 100 each
+            var wm = MakeWm(WindowMode.Windowed, win, cli);
+
+            bool hit = wm.TryComputeReadbackCorrection(IntPtr.Zero, monitor, offset, out _);
+            failures += AssertTrue("insane frame → rejected (no correction)", !hit);
         }
 
         Console.WriteLine(failures == 0
@@ -91,10 +92,62 @@ public static class FrameCorrectionTests
         return failures == 0 ? 0 : 1;
     }
 
+    private static WindowManager MakeWm(WindowMode mode, WinRect win, WinRect cli)
+    {
+        var cfg = new AppConfig();
+        cfg.Layout.WindowMode = mode;
+        cfg.Layout.Mode = "single";  // single-screen path → GetTargetMonitorBounds unused here
+        return new WindowManager(cfg, new FakeApi(win, cli));
+    }
+
     private static int Assert(string name, int actual, int expected)
     {
         if (actual == expected) { Console.WriteLine($"    ok: {name}"); return 0; }
         Console.WriteLine($"    FAIL: {name} (expected '{expected}', got '{actual}')");
         return 1;
+    }
+
+    private static int AssertTrue(string name, bool cond)
+    {
+        if (cond) { Console.WriteLine($"    ok: {name}"); return 0; }
+        Console.WriteLine($"    FAIL: {name}");
+        return 1;
+    }
+
+    /// <summary>
+    /// Minimal IWindowsApi fake — only GetWindowRect + GetClientScreenRect carry
+    /// behavior (the two reads TryComputeReadbackCorrection makes); the rest are
+    /// benign stubs.
+    /// </summary>
+    private sealed class FakeApi : IWindowsApi
+    {
+        private readonly WinRect _win, _cli;
+        public FakeApi(WinRect win, WinRect cli) { _win = win; _cli = cli; }
+
+        public bool GetWindowRect(IntPtr h, out WinRect r) { r = _win; return true; }
+        public bool GetClientScreenRect(IntPtr h, out WinRect r) { r = _cli; return true; }
+
+        // ─── benign stubs (not exercised by TryComputeReadbackCorrection) ───
+        public bool IsWindow(IntPtr h) => true;
+        public bool IsIconic(IntPtr h) => false;
+        public bool IsHungAppWindow(IntPtr h) => false;
+        public bool IsClientResponsive(IntPtr h, out int lastErr) { lastErr = 0; return true; }
+        public bool ShowWindow(IntPtr h, int n) => true;
+        public bool SetForegroundWindow(IntPtr h) => true;
+        public bool BringWindowToTop(IntPtr h) => true;
+        public void ForceForegroundWindow(IntPtr h) { }
+        public bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f) => true;
+        public bool AdjustWindowRectEx(ref WinRect rect, uint style, bool hasMenu, uint exStyle) => true;
+        public IntPtr GetWindowLongPtr(IntPtr h, int i) => IntPtr.Zero;
+        public IntPtr SetWindowLongPtr(IntPtr h, int i, IntPtr v) => IntPtr.Zero;
+        public bool SetWindowText(IntPtr h, string t) => true;
+        public IntPtr BeginDeferWindowPos(int n) => IntPtr.Zero;
+        public IntPtr DeferWindowPos(IntPtr a, IntPtr b, IntPtr c, int x, int y, int cx, int cy, uint f) => IntPtr.Zero;
+        public bool EndDeferWindowPos(IntPtr h) => true;
+        public List<WinRect> GetAllMonitorWorkAreas() => new();
+        public List<WinRect> GetAllMonitorBounds() => new();
+        public bool SetProcessPriority(int p, uint c) => true;
+        public (long processMask, long systemMask) GetProcessAffinity(int p) => (0, 0);
+        public uint GetProcessPriorityClass(int p) => 0;
     }
 }

@@ -44,6 +44,15 @@ public interface IWindowsApi
     bool GetWindowRect(IntPtr hwnd, out WinRect rect);
 
     /// <summary>
+    /// v3.22.84 — the window's CLIENT area in SCREEN coordinates (GetClientRect
+    /// + ClientToScreen). Paired with <see cref="GetWindowRect"/>, the per-edge
+    /// deltas give eqgame's REAL non-client frame, which the Windowed frame-measure
+    /// correction uses to land the visible client flush on the monitor (WinEQ2
+    /// "measure, don't predict"). Returns false if the window is gone.
+    /// </summary>
+    bool GetClientScreenRect(IntPtr hwnd, out WinRect rect);
+
+    /// <summary>
     /// v3.22.45 — given a desired CLIENT-area rect + window style, returns the
     /// OUTER-window rect that wraps it. Used by ComputeSlimTitlebarOuterRect
     /// to size the slim-titlebar window so its visible client area covers the

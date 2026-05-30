@@ -180,6 +180,38 @@ public class HookConfigWriter : IDisposable
         }
     }
 
+    /// <summary>
+    /// v3.22.84 — update ONLY the target rect (x,y,w,h) for a process, preserving
+    /// every other field (enabled, strip, pinGeometry, title, blockMinimize).
+    /// Used by the Windowed frame-measure read-back correction (TrayManager) to
+    /// write the flush-corrected geometry without re-resolving the title/flags that
+    /// UpdateHookConfigForPid computed. Read-modify-write, mirroring <see cref="Disable"/>.
+    /// Returns false if no mapping exists or the write fails.
+    /// </summary>
+    public bool UpdateRect(int pid, int x, int y, int w, int h)
+    {
+        if (!_mappings.TryGetValue(pid, out var entry))
+        {
+            FileLogger.Warn($"HookConfigWriter.UpdateRect: no mapping for PID {pid}");
+            return false;
+        }
+        try
+        {
+            entry.Accessor.Read(0, out HookConfig config);
+            config.TargetX = x;
+            config.TargetY = y;
+            config.TargetW = w;
+            config.TargetH = h;
+            entry.Accessor.Write(0, ref config);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            FileLogger.Error($"HookConfigWriter.UpdateRect: write failed for PID {pid}", ex);
+            return false;
+        }
+    }
+
     /// <summary>Disable the hook for a specific process (passthrough mode).
     /// Only flips the Enabled flag — preserves geometry so re-enable doesn't need a full rewrite.</summary>
     public void Disable(int pid)
