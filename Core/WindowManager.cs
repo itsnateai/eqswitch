@@ -1196,7 +1196,17 @@ public class WindowManager
         // EQ window get reflected in the bleed calculation. Skipping this
         // step reintroduces a 4-px-per-side sliver if EQ ever has CLIENTEDGE.
         long exStyle = _api.GetWindowLongPtr(hwnd, NativeMethods.GWL_EXSTYLE).ToInt64();
-        var (x, y, w, h) = ComputeSlimTitlebarOuterRect(monitor, titlebarOffset, style, exStyle);
+        // v3.22.88 — prefer the cached MEASURED frame so THIS first visible reposition lands
+        // flush (no read-back snap). ApplySlimTitlebar is the guard-tick positioner that sets
+        // the visible window during autologin while UpdateHookConfigForPid's SHM rect is still
+        // deferred (~7s) — so THIS is the path that actually eliminates the snap (the first
+        // v3.22.88 wired only the no-HWND SHM overload and missed this, which the live warm
+        // smoke caught). On a cache miss / Fullscreen / wrong-DPI / insane / null cache it
+        // falls back to the live-style AdjustWindowRectEx prediction (today's behavior), and
+        // the read-back then self-corrects + populates the cache so the NEXT launch is flush.
+        var (x, y, w, h) = TryCachedOuterRect(monitor, titlebarOffset, out var cachedRect)
+            ? cachedRect
+            : ComputeSlimTitlebarOuterRect(monitor, titlebarOffset, style, exStyle);
         _api.SetWindowPos(
             hwnd, IntPtr.Zero, x, y, w, h,
             NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
@@ -1350,33 +1360,54 @@ public class WindowManager
     /// pinned SHM rect matches what ApplySlimTitlebar applies.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// v3.22.88 — shared cache-read decision used by BOTH the no-HWND SHM-rect overload
+    /// (<see cref="ComputeSlimTitlebarOuterRect(WinRect,int)"/>) AND the live-window
+    /// positioner (<see cref="ApplySlimTitlebar"/>). When Windowed and a sane MEASURED
+    /// frame is cached for the current DPI, build the outer rect from that measured frame
+    /// via the existing <see cref="ComputeOuterRectFromBleeds"/> — identical to what
+    /// <see cref="TryComputeReadbackCorrection"/> converges to (same helper, no nudge) —
+    /// so the window lands flush on FIRST paint with NO read-back snap.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// THE LIVE-SMOKE LESSON (2026-05-30): the first v3.22.88 wired the cache ONLY into the
+    /// no-HWND overload (TrayManager.UpdateHookConfigForPid's SHM rect). But for autologin
+    /// clients UpdateHookConfigForPid is DEFERRED ~7s, so the VISIBLE window during login is
+    /// positioned by <see cref="ApplySlimTitlebar"/> (the ~500 ms guard tick), which used the
+    /// AdjustWindowRectEx PREDICTION — so the window still appeared at the overshoot and the
+    /// read-back still snapped it. The warm smoke showed ZERO snap-elimination (ReadbackCorrect
+    /// still fired). Routing ApplySlimTitlebar through this SAME helper is what actually kills
+    /// the snap: the first visible SetWindowPos lands flush → read-back measures flush → no-op.
+    /// </para>
+    /// <para>
+    /// Returns false (caller falls back to the AdjustWindowRectEx prediction = today's exact
+    /// behavior) on: non-Windowed (Fullscreen WS_POPUP 0-frame), null cache, cache miss,
+    /// wrong-DPI, or an insane cached frame (FrameCache.TryGet self-validates). So the cache
+    /// can only improve (flush from first paint) or be neutral.
+    /// </para>
+    /// </remarks>
+    private bool TryCachedOuterRect(WinRect monitor, int titlebarOffset, out (int x, int y, int w, int h) rect)
+    {
+        rect = default;
+        if (_config.Layout.WindowMode != Config.WindowMode.Windowed) return false;
+        if (_frameCache == null) return false;
+        if (!_frameCache.TryGet((int)_api.GetSystemDpi(), out var f)) return false;
+        rect = ComputeOuterRectFromBleeds(monitor, titlebarOffset, f.Left, f.Top, f.Right, f.Bottom);
+        return true;
+    }
+
     internal (int x, int y, int w, int h) ComputeSlimTitlebarOuterRect(
         WinRect monitor, int titlebarOffset)
     {
-        // v3.22.88 — warm frame-cache fast path. This no-HWND overload is what
-        // TrayManager.UpdateHookConfigForPid uses to build the FIRST-PAINT SHM rect
-        // (the hook DLL applies it verbatim at the earliest ShowWindow). If we're
-        // Windowed and a sane MEASURED frame is cached for the current DPI, build the
-        // outer rect from that measured frame — identical to what
-        // TryComputeReadbackCorrection would converge to (same ComputeOuterRectFromBleeds,
-        // no nudge) — so the client lands flush on FIRST paint with NO snap (eliminates
-        // the caption peek 31 → 13 zone-in snap).
-        //
-        // The nudge is intentionally skipped on this cached path for the same reason the
-        // read-back skips it: a MEASURED frame needs no prediction-error correction, and
-        // the read-back already overrides any nudged first-paint rect on the guard tick,
-        // so the cached path mirrors the value the user actually ends up at — no new
-        // inconsistency. (Default HorizontalNudgePx is 0 regardless.)
-        //
-        // A cache miss / Fullscreen (WS_POPUP, 0 frame) / insane / wrong-DPI / null cache
-        // all fall through to the AdjustWindowRectEx prediction path below → today's exact
-        // behavior (snap-once-then-flush). So the cache can only improve or be neutral.
-        if (_config.Layout.WindowMode == Config.WindowMode.Windowed
-            && _frameCache != null
-            && _frameCache.TryGet((int)_api.GetSystemDpi(), out var f))
-        {
-            return ComputeOuterRectFromBleeds(monitor, titlebarOffset, f.Left, f.Top, f.Right, f.Bottom);
-        }
+        // v3.22.88 — warm frame-cache fast path for the FIRST-PAINT SHM rect
+        // (TrayManager.UpdateHookConfigForPid). On a cache hit the client lands flush on
+        // first paint with no read-back snap; any miss / Fullscreen / insane / wrong-DPI /
+        // null cache falls through to the AdjustWindowRectEx prediction = today's behavior.
+        // The nudge is intentionally skipped on the cached path (a MEASURED frame needs no
+        // prediction-error correction; default HorizontalNudgePx is 0 anyway).
+        if (TryCachedOuterRect(monitor, titlebarOffset, out var cached))
+            return cached;
         return ComputeSlimTitlebarOuterRect(monitor, titlebarOffset, ProbeStyleFor(_config.Layout.WindowMode), 0);
     }
 

@@ -42,6 +42,8 @@ public static class FrameCacheTests
         failures += Test_NullCache_UsesPrediction();
         failures += Test_Write_OnSaneMeasurement();
         failures += Test_NoWrite_OnInsaneMeasurement();
+        failures += Test_ApplySlimTitlebar_UsesCachedFrame_NotPrediction();
+        failures += Test_ApplySlimTitlebar_ColdCache_UsesPrediction();
         failures += Test_Set_WriteOnChange();
         failures += Test_Set_RejectsInsane();
         failures += Test_DiskRoundTrip();
@@ -163,6 +165,50 @@ public static class FrameCacheTests
         f += AssertTrue("insane frame → no correction", !hit);
         f += AssertTrue("insane frame → nothing cached", !cache.TryGet(Dpi, out _));
         f += AssertEq("cache empty after insane measurement", cache.Count, 0);
+        return f;
+    }
+
+    // ── ApplySlimTitlebar (the VISIBLE-window positioner) uses the cache, NOT the prediction. ──
+    // Regression guard for the 2026-05-30 live-smoke miss: the first v3.22.88 cached ONLY the
+    // deferred SHM path (UpdateHookConfigForPid), so ApplySlimTitlebar — the ~500ms guard-tick
+    // positioner that sets the VISIBLE autologin window before the SHM refresh — still used the
+    // AdjustWindowRectEx prediction, the window appeared at the overshoot, and the read-back still
+    // snapped it (warm smoke showed ZERO snap-elimination). This asserts the ACTUAL SetWindowPos
+    // rect ApplySlimTitlebar issues is the cached FLUSH rect, not the overshoot. Would have failed
+    // on the original v3.22.88; passes after routing ApplySlimTitlebar through TryCachedOuterRect.
+    private static int Test_ApplySlimTitlebar_UsesCachedFrame_NotPrediction()
+    {
+        int f = 0;
+        var cache = new FrameCache(null);
+        cache.Set(Dpi, MeasuredFrame);                  // warm: 3/26/3/3 @ DPI 96
+        var api = new FakeApi();                          // IsWindow=true, !iconic, responsive
+        var wm = new WindowManager(MakeConfig(WindowMode.Windowed), api, cache);
+
+        wm.ApplySlimTitlebar(IntPtr.Zero, Monitor, Offset);
+
+        var flush = WindowManager.ComputeOuterRectFromBleeds(Monitor, Offset, 3, 26, 3, 3);   // (-3,-13) 1926x1096
+        var predicted = WindowManager.ComputeOuterRectFromBleeds(Monitor, Offset, 8, 31, 8, 8); // (-8,-18) 1936x1106
+        f += AssertTrue("ApplySlimTitlebar issued a SetWindowPos", api.LastSetWindowPos.HasValue);
+        if (api.LastSetWindowPos is { } got)
+        {
+            f += AssertRect("ApplySlimTitlebar uses CACHED flush rect (no snap)", got, flush);
+            f += AssertTrue("ApplySlimTitlebar does NOT use the prediction overshoot",
+                !(got.x == predicted.x && got.y == predicted.y && got.w == predicted.w && got.h == predicted.h));
+        }
+        return f;
+    }
+
+    // ── Cold cache: ApplySlimTitlebar falls back to the prediction (today's behavior preserved). ──
+    private static int Test_ApplySlimTitlebar_ColdCache_UsesPrediction()
+    {
+        int f = 0;
+        var api = new FakeApi();
+        var wm = new WindowManager(MakeConfig(WindowMode.Windowed), api, new FrameCache(null)); // empty cache
+        wm.ApplySlimTitlebar(IntPtr.Zero, Monitor, Offset);
+        var predicted = WindowManager.ComputeOuterRectFromBleeds(Monitor, Offset, 8, 31, 8, 8);
+        f += AssertTrue("cold ApplySlimTitlebar issued a SetWindowPos", api.LastSetWindowPos.HasValue);
+        if (api.LastSetWindowPos is { } got)
+            f += AssertRect("cold ApplySlimTitlebar falls back to prediction (overshoot)", got, predicted);
         return f;
     }
 
@@ -291,6 +337,10 @@ public static class FrameCacheTests
             return true;
         }
 
+        // Captures the last SetWindowPos rect so the ApplySlimTitlebar tests can assert
+        // the VISIBLE-window position uses the cached flush rect, not the prediction.
+        public (int x, int y, int w, int h)? LastSetWindowPos;
+
         public bool GetWindowRect(IntPtr h, out WinRect r) { r = Win; return true; }
         public bool GetClientScreenRect(IntPtr h, out WinRect r) { r = Cli; return true; }
         public bool IsIconic(IntPtr h) => false;
@@ -305,7 +355,7 @@ public static class FrameCacheTests
         public bool SetForegroundWindow(IntPtr h) => true;
         public bool BringWindowToTop(IntPtr h) => true;
         public void ForceForegroundWindow(IntPtr h) { }
-        public bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f) => true;
+        public bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f) { LastSetWindowPos = (x, y, cx, cy); return true; }
         public IntPtr GetWindowLongPtr(IntPtr h, int i) => IntPtr.Zero;
         public IntPtr SetWindowLongPtr(IntPtr h, int i, IntPtr v) => IntPtr.Zero;
         public bool SetWindowText(IntPtr h, string t) => true;
