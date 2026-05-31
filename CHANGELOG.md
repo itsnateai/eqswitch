@@ -1,5 +1,16 @@
 # Changelog
 
+## v3.22.90 — Window-mode toggle in the tray menu (2026-05-31)
+
+Added **Fullscreen mode** / **Windowed mode** radio items to the tray's **Video
+Settings** submenu, mirroring the Settings → Video "Window Style" checkboxes.
+Both share one source of truth (`Layout.WindowMode`), so the tray and the
+Settings dialog stay in sync automatically. Toggling from the tray restyles
+running clients live — both modes render at native resolution, so only the window
+frame changes and no relaunch is needed. Implemented as `TrayManager.SetWindowMode`,
+modeled on the existing `OnToggleMultiMonitor` idiom (mutate config → save →
+re-apply → rebuild menu).
+
 ## v3.22.89 — Multi-monitor INI smush + char-select ack-starvation (2026-05-31)
 
 Two independent fixes surfaced by a windowed `characters-natedogg` smoke that stalled at char

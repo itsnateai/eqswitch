@@ -1765,6 +1765,44 @@ public class TrayManager : IDisposable
     }
 
     /// <summary>
+    /// v3.22.90: set the window mode from the tray's Video Settings submenu,
+    /// mirroring the Settings → Video "Window Style" checkboxes (shared source of
+    /// truth: <see cref="WindowLayout.WindowMode"/>). Restyles running clients live
+    /// just as Settings → Apply does — both modes render at native resolution, so
+    /// only the frame differs and no relaunch is needed. Mirrors
+    /// <see cref="OnToggleMultiMonitor"/>: mutate _config → Save → re-apply → rebuild.
+    /// </summary>
+    private void SetWindowMode(EQSwitch.Config.WindowMode mode)
+    {
+        if (_config.Layout.WindowMode == mode) return; // no-op if already set
+
+        // Write the invariant before the mode so a concurrent AutoLogin
+        // SaveImmediate serialize never sees WindowMode flipped while
+        // SlimTitlebar lags (both modes are slim-managed; AppConfig.Validate
+        // enforces this too).
+        _config.Layout.SlimTitlebar = true;
+        _config.Layout.WindowMode = mode;
+
+        string label = mode == EQSwitch.Config.WindowMode.Windowed ? "Windowed" : "Fullscreen";
+        FileLogger.Info($"SetWindowMode: switched to {label}");
+        ShowBalloon($"Window mode: {label}");
+
+        ConfigManager.Save(_config);
+        BuildContextMenu(); // refresh the ●/○ markers
+
+        // Live restyle — the subset ReloadConfigCore runs on Settings → Apply:
+        // ApplySlimTitlebarToAll restyles non-injected clients per WindowMode;
+        // UpdateHookConfig pushes the new style to injected (autologin) clients.
+        var clients = _processManager.Clients;
+        if (clients.Count > 0)
+        {
+            _windowManager.ApplySlimTitlebarToAll(clients, _injectedPids);
+            UpdateHookConfig();
+            RaiseClientsAboveTaskbar(clients, foregroundActive: _processManager.GetActiveClient() != null);
+        }
+    }
+
+    /// <summary>
     /// Pop the tray context menu above the system clock on the primary monitor —
     /// or dismiss it if it's already open (toggle). Bypasses the Win11 z-band
     /// ceiling that lets Start cover normal tray UI by stealing foreground
@@ -2429,6 +2467,20 @@ public class TrayManager : IDisposable
             ShowSettings(1); // Video tab
         });
         videoMenu.DropDownItems.Add(new ToolStripSeparator());
+
+        // Window-mode radio (v3.22.90) \u2014 two views of one field
+        // (_config.Layout.WindowMode); mirrors the Settings \u2192 Video "Window
+        // Style" checkboxes. \u25CF = active, \u25CB = inactive.
+        ToolStripMenuItem WindowModeRadio(EQSwitch.Config.WindowMode m, string text)
+        {
+            var item = new ToolStripMenuItem($"{(_config.Layout.WindowMode == m ? "\u25CF" : "\u25CB")}  {text}");
+            item.Click += (_, _) => SetWindowMode(m);
+            return item;
+        }
+        videoMenu.DropDownItems.Add(WindowModeRadio(EQSwitch.Config.WindowMode.Fullscreen, "Fullscreen mode"));
+        videoMenu.DropDownItems.Add(WindowModeRadio(EQSwitch.Config.WindowMode.Windowed, "Windowed mode"));
+        videoMenu.DropDownItems.Add(new ToolStripSeparator());
+
         var pipItem = new ToolStripMenuItem(
             $"{(_config.Pip.Enabled ? "\u2705" : "\u2B1C")}  Picture in Picture");
         if (!string.IsNullOrEmpty(hk.TogglePip))
