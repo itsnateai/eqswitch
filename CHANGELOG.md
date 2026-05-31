@@ -1,5 +1,32 @@
 # Changelog
 
+## v3.22.89 — Multi-monitor INI smush + char-select ack-starvation (2026-05-31)
+
+Two independent fixes surfaced by a windowed `characters-natedogg` smoke that stalled at char
+select and rendered slightly squished. **Neither was caused by the v3.22.84–88 window work** —
+the diagnosis corrected that initial assumption.
+
+**1. Distortion (smush + frame seam) — multi-monitor target mismatch.** `EnforceOverrides`
+resolved `Layout.TargetMonitor` against `Screen.AllScreens` (unsorted), but the window positioner
+(`WindowManager.GetTargetMonitor`) resolves it against `WindowsApi.GetAllMonitorBounds()`, which
+sorts monitors **left-to-right by `.Left`**. On a 3-monitor desktop where the two enumerations
+disagree, index `0` meant different physical screens: EnforceOverrides wrote `WindowedHeight=1187`
+for a 1920×1200 screen while the window opened on the 1920×1080 primary → EQ's DX backbuffer
+(1920×1187) was bilinearly stretched into the ~1080 client. Fix: `EnforceOverrides` now resolves
+the target monitor through the **same** `GetAllMonitorBounds()` list + ordering as the positioner,
+so the INI backbuffer always matches the screen the window actually uses (crisp). `EnforceOverrides`
+runs before each launch, so the stale INI self-corrects on the next start — no manual edit needed.
+
+**2. Char-select stall — ack-budget too short for game-thread starvation.** The DLL performs
+`SetCurSel` on eqgame's game thread via TIMERPROC. During char-select scene load that thread can
+stay busy >10s, starving the TIMERPROC so the selection ack lands late. The smoke showed the bridge
+poll going quiet at the selection point with the game thread not freeing until ~13s later
+(`ApplySlimTitlebar` succeeded at T+13s, proving the window was responsive — busy, not hung), but
+C# had already given up at its 10s budget and dead-stopped at char select "to avoid wrong-character
+enter-world." The selection request persists in SHM, so the ack wait is extended from **10s → 24s**
+(`maxAckIters` 200 → 480) to let the DLL ack once the game thread frees. Still ack-gated — no
+wrong-character enter-world risk. `Native/` untouched.
+
 ## v3.22.88 — Windowed Flush on First Paint (frame cache) (2026-05-30)
 
 Windowed slim clients now land flush on the FIRST in-world paint — eliminating the brief

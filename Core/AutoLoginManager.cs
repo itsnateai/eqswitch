@@ -1863,7 +1863,17 @@ public class AutoLoginManager
         int totalIters = 1;
         if (!acked)
         {
-            for (int ack = 0; ack < 200; ack++)
+            // v3.22.89 — was 200 iters (10s). The DLL runs SetCurSel on the GAME
+            // thread via TIMERPROC; during char-select scene load that thread can stay
+            // busy >10s, starving the TIMERPROC so the ack lands late. 2026-05-31
+            // natedogg smoke: the bridge poll went quiet at the selection point and the
+            // game thread didn't free until ~13s later (ApplySlimTitlebar succeeded at
+            // T+13s → the window was responsive, i.e. busy not hung), but C# had already
+            // given up at 10s and dead-stopped at char select. The request persists in
+            // SHM, so a longer budget lets the DLL ack once the thread frees. Still
+            // ack-gated → no wrong-character enter-world risk.
+            const int maxAckIters = 480;   // 480 × 50ms = 24s (was 200 = 10s)
+            for (int ack = 0; ack < maxAckIters; ack++)
             {
                 // Iter-3 fix-round-2 (T2-Opus C2): cancellation check at every ack-poll iter.
                 if (ct.IsCancellationRequested)

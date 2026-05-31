@@ -830,11 +830,30 @@ public class EQClientSettingsForm : Form
             // extends below the screen edge (WinEQ2 method).
             if (config.Layout.SlimTitlebar)
             {
-                var targetIdx = Math.Clamp(config.Layout.TargetMonitor, 0,
-                    Math.Max(0, Screen.AllScreens.Length - 1));
-                var screen = Screen.AllScreens[targetIdx];
-                int monW = screen.Bounds.Width;
-                int monH = screen.Bounds.Height;
+                // v3.22.89 — resolve TargetMonitor against the SAME monitor list +
+                // ordering the window positioner uses (WindowsApi.GetAllMonitorBounds,
+                // sorted left-to-right by .Left). Screen.AllScreens is NOT sorted, so on
+                // a multi-monitor desktop index N pointed at a DIFFERENT physical monitor
+                // here than in WindowManager.GetTargetMonitor: EnforceOverrides wrote
+                // WindowedHeight for one screen while the window actually opened on
+                // another, stretching EQ's DX backbuffer into a mismatched client
+                // (2026-05-31 natedogg smush — INI WindowedHeight 1187 for the 1920×1200
+                // screen vs the 1920×1080 primary the window used). Sharing the source
+                // keeps backbuffer == visible client → crisp.
+                var monitorBounds = new WindowsApi().GetAllMonitorBounds();
+                System.Drawing.Rectangle screenBounds;
+                if (monitorBounds.Count > 0)
+                {
+                    int targetIdx = Math.Clamp(config.Layout.TargetMonitor, 0, monitorBounds.Count - 1);
+                    var m = monitorBounds[targetIdx];
+                    screenBounds = new System.Drawing.Rectangle(m.Left, m.Top, m.Width, m.Height);
+                }
+                else
+                {
+                    screenBounds = (Screen.PrimaryScreen ?? Screen.AllScreens[0]).Bounds;
+                }
+                int monW = screenBounds.Width;
+                int monH = screenBounds.Height;
                 int offset = config.Layout.TitlebarOffset;
 
                 // v3.22.46: WindowedWidth / WindowedHeight must match the
@@ -878,7 +897,7 @@ public class EQClientSettingsForm : Form
                 }
                 else
                 {
-                    (gameW, gameH) = SlimTitlebarVisibleClientSize(screen.Bounds, offset);
+                    (gameW, gameH) = SlimTitlebarVisibleClientSize(screenBounds, offset);
                 }
 
                 SetIniValue(lines, "Defaults", "WindowedMode", "TRUE");
