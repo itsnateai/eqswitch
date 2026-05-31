@@ -79,4 +79,12 @@ public interface IWindowsApi
     bool SetProcessPriority(int processId, uint priorityClass);
     (long processMask, long systemMask) GetProcessAffinity(int processId);
     uint GetProcessPriorityClass(int processId);
+
+    // ─── DPI ─────────────────────────────────────────────────────────
+    /// <summary>
+    /// v3.22.88 — current system DPI (96 = 100%, 144 = 150%, 192 = 200%). Used as
+    /// the key for the measured-frame cache (eqgame's non-client frame scales with
+    /// DPI). Through the seam so tests can pin a deterministic DPI.
+    /// </summary>
+    uint GetSystemDpi();
 }

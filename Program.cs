@@ -309,6 +309,29 @@ static class Program
             Environment.Exit(exitCode);
             return;
         }
+
+        // --test-frame-cache — run Core/FrameCacheTests.RunAll() and exit. Guards the
+        // v3.22.88 measured-frame cache: a warm cache builds the first-paint SHM rect from
+        // the MEASURED frame (flush, no zone-in snap); a miss / wrong-DPI / Fullscreen /
+        // insane / null cache falls back to the AdjustWindowRectEx prediction (today's
+        // behavior); a sane read-back measurement is persisted (write-on-change), an insane
+        // one is not; the on-disk cache round-trips and drops corrupt entries on load.
+        if (args.Length >= 1 && args[0] == "--test-frame-cache")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.FrameCacheTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"FrameCacheTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
 #endif
 
         // Enforce single instance

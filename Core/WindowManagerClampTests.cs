@@ -163,5 +163,6 @@ public static class WindowManagerClampTests
         public bool SetProcessPriority(int processId, uint priorityClass) => true;
         public (long processMask, long systemMask) GetProcessAffinity(int processId) => (0, 0);
         public uint GetProcessPriorityClass(int processId) => 0;
+        public uint GetSystemDpi() => 96;
     }
 }

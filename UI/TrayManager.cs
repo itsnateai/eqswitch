@@ -219,7 +219,11 @@ public class TrayManager : IDisposable
         _config = config;
         _processManager = processManager;
         _uiContext = SynchronizationContext.Current;
-        _windowManager = new WindowManager(config);
+        // v3.22.88 — inject the measured-frame cache so the first-paint SHM rect is
+        // built from a prior run's MEASURED frame (flush on first paint, no zone-in snap).
+        // FrameCache.Default loads eqswitch-frame-cache.json next to the exe; the live
+        // read-back stays the self-healing source of truth if the cache is cold/stale.
+        _windowManager = new WindowManager(config, frameCache: FrameCache.Default);
         _hotkeyManager = new HotkeyManager();
         _keyboardHook = new KeyboardHookManager();
         _affinityManager = new AffinityManager(config);

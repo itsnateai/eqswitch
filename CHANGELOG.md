@@ -1,5 +1,21 @@
 # Changelog
 
+## v3.22.88 — Windowed Flush on First Paint (frame cache) (2026-05-30)
+
+Windowed slim clients now land flush on the FIRST in-world paint — eliminating the brief
+caption-peek snap (31 → 13 during zone-in) the v3.22.84 read-back left behind. A new
+machine-local cache (`eqswitch-frame-cache.json`, next to the exe, keyed by system DPI)
+persists eqgame's MEASURED non-client frame (≈3/26/3/3) so the first-paint SHM rect is built
+from the measured frame instead of the `AdjustWindowRectEx` prediction (8/31/8/8).
+
+Purely additive — a cold / wrong-DPI / corrupt / Fullscreen cache falls back to today's exact
+behavior (snap once, then flush), and the live read-back (`TryComputeReadbackCorrection`) stays
+the self-healing source of truth: a stale frame is re-measured and overwritten on the next guard
+tick. This cache is the persistence layer that substitutes for WinEQ2's free synchronous
+in-process re-measure — which EQSwitch can't do for autologin clients, whose in-process subclass
+never installs. Fullscreen geometry and autologin wall-clock are unchanged; `Native/` untouched.
+New `--test-frame-cache` unit suite (in the pre-ship gate).
+
 ## v3.22.87 — Wrapper Settings dialog: hint text + fit-to-content layout (2026-05-30)
 
 Follow-up to the v3.22.86 default change. The "Wrapper Settings" dialog (Video → Window

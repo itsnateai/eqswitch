@@ -72,6 +72,16 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool AdjustWindowRectEx(ref RECT lpRect, uint dwStyle, bool bMenu, uint dwExStyle);
 
+    // v3.22.88: system DPI for the measured-frame cache key. eqgame's real
+    // non-client frame scales with DPI (3/26/3/3 @ 100% → larger at 150/200%),
+    // so the frame cache is keyed by this value. The process is
+    // HighDpiMode.SystemAware (Program.cs), so AdjustWindowRectEx returns
+    // system-DPI metrics too — using the SAME DPI here keeps the cached path and
+    // the prediction fallback in the same DPI regime. GetDpiForSystem is
+    // available on Windows 10 1607+ (well below the .NET 8 / Win10 floor).
+    [DllImport("user32.dll")]
+    public static extern uint GetDpiForSystem();
+
     // ─── Deferred Window Positioning (atomic batch moves) ───────────
 
     [DllImport("user32.dll", SetLastError = true)]

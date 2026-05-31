@@ -28,12 +28,17 @@ public class WindowManager
 {
     private readonly AppConfig _config;
     private readonly IWindowsApi _api;
+    // v3.22.88 — measured-frame cache. null = no cache → the prediction path runs
+    // (today's behavior). Production (TrayManager) injects a real one; the 2-arg
+    // test ctor leaves it null so existing geometry tests stay on the prediction path.
+    private readonly FrameCache? _frameCache;
     [ThreadStatic] private static System.Text.StringBuilder? _titleSb;
 
-    public WindowManager(AppConfig config, IWindowsApi? api = null)
+    public WindowManager(AppConfig config, IWindowsApi? api = null, FrameCache? frameCache = null)
     {
         _config = config;
         _api = api ?? new WindowsApi();
+        _frameCache = frameCache;
     }
 
     // ─── Focus Switching ──────────────────────────────────────────
@@ -1347,7 +1352,33 @@ public class WindowManager
     /// </summary>
     internal (int x, int y, int w, int h) ComputeSlimTitlebarOuterRect(
         WinRect monitor, int titlebarOffset)
-        => ComputeSlimTitlebarOuterRect(monitor, titlebarOffset, ProbeStyleFor(_config.Layout.WindowMode), 0);
+    {
+        // v3.22.88 — warm frame-cache fast path. This no-HWND overload is what
+        // TrayManager.UpdateHookConfigForPid uses to build the FIRST-PAINT SHM rect
+        // (the hook DLL applies it verbatim at the earliest ShowWindow). If we're
+        // Windowed and a sane MEASURED frame is cached for the current DPI, build the
+        // outer rect from that measured frame — identical to what
+        // TryComputeReadbackCorrection would converge to (same ComputeOuterRectFromBleeds,
+        // no nudge) — so the client lands flush on FIRST paint with NO snap (eliminates
+        // the caption peek 31 → 13 zone-in snap).
+        //
+        // The nudge is intentionally skipped on this cached path for the same reason the
+        // read-back skips it: a MEASURED frame needs no prediction-error correction, and
+        // the read-back already overrides any nudged first-paint rect on the guard tick,
+        // so the cached path mirrors the value the user actually ends up at — no new
+        // inconsistency. (Default HorizontalNudgePx is 0 regardless.)
+        //
+        // A cache miss / Fullscreen (WS_POPUP, 0 frame) / insane / wrong-DPI / null cache
+        // all fall through to the AdjustWindowRectEx prediction path below → today's exact
+        // behavior (snap-once-then-flush). So the cache can only improve or be neutral.
+        if (_config.Layout.WindowMode == Config.WindowMode.Windowed
+            && _frameCache != null
+            && _frameCache.TryGet((int)_api.GetSystemDpi(), out var f))
+        {
+            return ComputeOuterRectFromBleeds(monitor, titlebarOffset, f.Left, f.Top, f.Right, f.Bottom);
+        }
+        return ComputeSlimTitlebarOuterRect(monitor, titlebarOffset, ProbeStyleFor(_config.Layout.WindowMode), 0);
+    }
 
     /// <summary>
     /// v3.22.45 — compute the OUTER-window rect for a slim-titlebar window so
@@ -1720,6 +1751,16 @@ public class WindowManager
         int actB = win.Bottom - cli.Bottom;
         if (!FrameSane(actL) || !FrameSane(actT) || !FrameSane(actR) || !FrameSane(actB))
             return false;
+
+        // v3.22.88 — CACHE WRITE rides the existing measurement. The measured frame is a
+        // stable per-DPI constant; persist it (write-on-change) so the NEXT launch's
+        // first-paint SHM rect (the no-HWND ComputeSlimTitlebarOuterRect overload) is
+        // built from the MEASURED frame → flush on first paint, no snap. Placed BEFORE the
+        // idempotent early-return below so the COLD path (overshoot → correction) still
+        // populates the cache. Only a frame that passed ALL the read-back gates above
+        // (Windowed + !IsIconic + IsClientResponsive + FrameSane) is ever cached; the
+        // ~500 ms guard tick re-measuring the same constant is a no-op (write-on-change).
+        _frameCache?.Set((int)_api.GetSystemDpi(), new FrameCache.Frame(actL, actT, actR, actB));
 
         var (cx, cy, cw, ch) = ComputeOuterRectFromBleeds(monitor, titlebarOffset, actL, actT, actR, actB);
 

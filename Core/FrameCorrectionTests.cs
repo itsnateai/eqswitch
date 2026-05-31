@@ -172,5 +172,6 @@ public static class FrameCorrectionTests
         public bool SetProcessPriority(int p, uint c) => true;
         public (long processMask, long systemMask) GetProcessAffinity(int p) => (0, 0);
         public uint GetProcessPriorityClass(int p) => 0;
+        public uint GetSystemDpi() => 96;
     }
 }

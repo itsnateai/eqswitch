@@ -224,4 +224,6 @@ public class WindowsApi : IWindowsApi
                 NativeMethods.CloseHandle(hProcess);
         }
     }
+
+    public uint GetSystemDpi() => NativeMethods.GetDpiForSystem();
 }
