@@ -1793,7 +1793,7 @@ public class TrayManager : IDisposable
         ShowBalloon($"Window mode: {label}");
 
         ConfigManager.Save(_config);
-        BuildContextMenu(); // refresh the ●/○ markers
+        BuildContextMenu(); // refresh the ◉/○ radio markers
 
         // Live restyle — the subset ReloadConfigCore runs on Settings → Apply:
         // ApplySlimTitlebarToAll restyles non-injected clients per WindowMode;
@@ -2475,11 +2475,14 @@ public class TrayManager : IDisposable
 
         // Window-mode radio (v3.22.90) \u2014 two views of one field
         // (_config.Layout.WindowMode); mirrors the Settings \u2192 Video "Window
-        // Style" checkboxes. \u25CF = active, \u25CB = inactive.
+        // Style" checkboxes. \u25C9 = active, \u25CB = inactive.
         ToolStripMenuItem WindowModeRadio(EQSwitch.Config.WindowMode m, string text)
         {
             bool active = _config.Layout.WindowMode == m;
-            string bullet = active ? "\u25CF" : "\u25CB";
+            // U+25C9 fisheye selected (size-matches the U+25CB ring) / U+25CB unselected.
+            // U+25CF black-circle was smaller than U+25CB in Segoe UI, so the empty
+            // ring looked heavier than the selected dot (Nate, 2026-06-01).
+            string bullet = active ? "\u25C9" : "\u25CB";
             var item = new ToolStripMenuItem($"{bullet}  {text}");
             // v3.22.91 (Nate): ONLY the radio glyph is orange; the label stays white.
             // ForeColor colors the whole row (and the renderer clobbers it anyway), so
@@ -2487,7 +2490,7 @@ public class TrayManager : IDisposable
             // label segment that concatenate back to Item.Text for layout sizing.
             item.Tag = new DarkMenuRenderer.TeamRowSegments(new[]
             {
-                new DarkMenuRenderer.TeamRowSegment($"{bullet}  ", IsAccount: true),
+                new DarkMenuRenderer.TeamRowSegment($"{bullet}  ", IsAccount: active),
                 new DarkMenuRenderer.TeamRowSegment(text, IsAccount: false),
             });
             item.Click += (_, _) => SetWindowMode(m);
@@ -2497,8 +2500,18 @@ public class TrayManager : IDisposable
         videoMenu.DropDownItems.Add(WindowModeRadio(EQSwitch.Config.WindowMode.Windowed, "Windowed mode"));
         videoMenu.DropDownItems.Add(new ToolStripSeparator());
 
-        var pipItem = new ToolStripMenuItem(
-            $"{(_config.Pip.Enabled ? "\u2705" : "\u2B1C")}  Picture in Picture");
+        bool pipOn = _config.Pip.Enabled;
+        // Box glyph is orange ONLY when enabled; label stays white. Monochrome box
+        // (U+25A3 filled / U+25A1 empty) -- NOT the check/blank emoji, which carry their
+        // own color palette and ignore the renderer's ForeColor (can't be tinted orange).
+        // Same per-segment path as WindowModeRadio.
+        string pipBox = pipOn ? "\u25A3" : "\u25A1";
+        var pipItem = new ToolStripMenuItem($"{pipBox}  Picture in Picture");
+        pipItem.Tag = new DarkMenuRenderer.TeamRowSegments(new[]
+        {
+            new DarkMenuRenderer.TeamRowSegment($"{pipBox}  ", IsAccount: pipOn),
+            new DarkMenuRenderer.TeamRowSegment("Picture in Picture", IsAccount: false),
+        });
         if (!string.IsNullOrEmpty(hk.TogglePip))
             pipItem.ShortcutKeyDisplayString = hk.TogglePip;
         pipItem.Click += (_, _) => TogglePip();  // TogglePip rebuilds the context menu internally
@@ -2512,11 +2525,17 @@ public class TrayManager : IDisposable
         videoMenu.DropDownItems.Add(fixWindowsItem);
         videoMenu.DropDownItems.Add("Swap Windows  \uD83D\uDD00", null, (_, _) => ExecuteTrayAction("SwapWindows"));
         bool isMultiMon = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
-        var multiMonItem = new ToolStripMenuItem(
-            $"{(isMultiMon ? "\u2705" : "\u2B1C")}  Multi-Monitor Mode")
+        // Box glyph orange ONLY when enabled; label stays white (matches PiP + radios).
+        string mmBox = isMultiMon ? "\u25A3" : "\u25A1";
+        var multiMonItem = new ToolStripMenuItem($"{mmBox}  Multi-Monitor Mode")
         {
             ShortcutKeyDisplayString = hk.ToggleMultiMonitor
         };
+        multiMonItem.Tag = new DarkMenuRenderer.TeamRowSegments(new[]
+        {
+            new DarkMenuRenderer.TeamRowSegment($"{mmBox}  ", IsAccount: isMultiMon),
+            new DarkMenuRenderer.TeamRowSegment("Multi-Monitor Mode", IsAccount: false),
+        });
         multiMonItem.Click += (_, _) =>
         {
             _config.Hotkeys.MultiMonitorEnabled = true; // ensure toggle works from menu
@@ -2868,7 +2887,7 @@ public class TrayManager : IDisposable
             ShowBalloon("PiP overlay enabled");
         }
 
-        // Refresh tray menu so the Picture-in-Picture item's checkbox emoji (\u2705 vs \u2B1C)
+        // Refresh tray menu so the Picture-in-Picture item's checkbox glyph (\u25A3 vs \u25A1)
         // reflects the new state. All call paths benefit: hotkey (ExecuteTrayAction), middle-click
         // (TrayClick.TogglePiP), menu click, and the auto-show path on client list change.
         BuildContextMenu();
