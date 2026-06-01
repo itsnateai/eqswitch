@@ -105,6 +105,11 @@ public class TrayManager : IDisposable
     // position (happens on screen transitions like login → char select)
     private System.Windows.Forms.Timer? _slimTitlebarGuard;
 
+    // Deferred DX-reset for instant-live Window-Mode toggle (Windowed target). Instance field
+    // (not a local) so a rapid re-toggle stops the prior pending reset instead of stacking a
+    // second ForceDxReinit pass (v3.23.7 review). Disposed in StopForegroundHook.
+    private System.Windows.Forms.Timer? _dxReinitTimer;
+
     // Debounce timestamp for multi-monitor toggle (500ms)
     private long _lastMultiMonToggle;
 
@@ -1833,11 +1838,18 @@ public class TrayManager : IDisposable
             // separate, MQ2-researched effort. Do NOT re-add a ScreenMode reset for the Fullscreen path.
             if (mode == EQSwitch.Config.WindowMode.Windowed)
             {
+                // Stop any prior pending reset so a rapid Windowed→Fullscreen→Windowed cycle (<1.5s)
+                // doesn't stack a second ForceDxReinit pass (would double the toggle → black flash).
+                _dxReinitTimer?.Stop();
+                _dxReinitTimer?.Dispose();
                 var reinitTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+                _dxReinitTimer = reinitTimer;
                 reinitTimer.Tick += (_, _) =>
                 {
+                    if (_disposed) return; // queued Ticks can fire after Dispose (v3.22.33 pattern)
                     reinitTimer.Stop();
                     reinitTimer.Dispose();
+                    if (ReferenceEquals(_dxReinitTimer, reinitTimer)) _dxReinitTimer = null;
                     foreach (var c in _processManager.Clients)
                     {
                         if (_autoLoginManager.IsLoginActive(c.ProcessId)) continue;
@@ -5195,6 +5207,9 @@ public class TrayManager : IDisposable
         _slimTitlebarGuard?.Stop();
         _slimTitlebarGuard?.Dispose();
         _slimTitlebarGuard = null;
+        _dxReinitTimer?.Stop();
+        _dxReinitTimer?.Dispose();
+        _dxReinitTimer = null;
         _affinityFallbackTimer?.Stop();
         _affinityFallbackTimer?.Dispose();
         _affinityFallbackTimer = null;
