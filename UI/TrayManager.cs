@@ -1793,6 +1793,18 @@ public class TrayManager : IDisposable
         ShowBalloon($"Window mode: {label}");
 
         ConfigManager.Save(_config);
+
+        // v3.23.7 smush fix (part 1/2: persistent) — rewrite eqclient.ini WindowedWidth/Height for
+        // the NEW mode (Windowed = monH - captionVisible; Fullscreen = native) so EQ's DX backbuffer
+        // target matches the slim client. The runtime toggle previously left WindowedHeight at the
+        // PRIOR mode's value → backbuffer/client mismatch → vertical font smush. EnforceOverrides is
+        // the launch-time INI writer (LaunchManager/AutoLoginManager callback), so calling it here is
+        // consistent and runs even with no live clients. This fixes the PERSISTENT case: the next
+        // launch AND EQ's next natural DX reset (e.g. a zone change, which rebuilds the swap chain to
+        // the live client size) both render crisp. The instant-live half (part 2/2) is the gated DX
+        // reset below — see that block for the Windowed-only rationale + the Native follow-up.
+        EQClientSettingsForm.EnforceOverrides(_config);
+
         BuildContextMenu(); // refresh the ◉/○ radio markers
 
         // Live restyle — the subset ReloadConfigCore runs on Settings → Apply:
@@ -1804,6 +1816,36 @@ public class TrayManager : IDisposable
             _windowManager.ApplySlimTitlebarToAll(clients, _injectedPids);
             UpdateHookConfig();
             RaiseClientsAboveTaskbar(clients, foregroundActive: _processManager.GetActiveClient() != null);
+
+            // v3.23.7 smush fix (part 2/2: instant-live) — WINDOWED target ONLY. ForceDxReinit resets
+            // EQ's DX device by toggling its internal ScreenMode (windowed↔windowed-fullscreen),
+            // ENDING in EQ-windowed state. That matches our WS_CAPTION Windowed styling (live-verified
+            // crisp, no artifacts), so it cleanly resolves the Fullscreen→Windowed smush the instant
+            // you toggle. It is deliberately NOT applied for the Fullscreen target: there EQ's
+            // windowed end-state fights our WS_POPUP styling — it draws a titlebar, double-repaints,
+            // and repeated toggles black-screen-glitch (v3.23.7 live repro). Deferred ~1.5s so the
+            // restyle settles first (a synchronous fire raced the guard timer + GeoWndProc subclass
+            // into runaway window growth). The Fullscreen target relies on the part-1 INI fix + EQ's
+            // next natural DX reset (zone) — at most a transient ~1.2% stretch until then. Skip
+            // autologin-active clients (a mid-login ScreenMode toggle disrupts the login SM).
+            // FULL symmetric instant-crisp (both directions, no transient) needs a Native in-process
+            // CResolutionHandler backbuffer resize that doesn't touch ScreenMode — tracked as a
+            // separate, MQ2-researched effort. Do NOT re-add a ScreenMode reset for the Fullscreen path.
+            if (mode == EQSwitch.Config.WindowMode.Windowed)
+            {
+                var reinitTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+                reinitTimer.Tick += (_, _) =>
+                {
+                    reinitTimer.Stop();
+                    reinitTimer.Dispose();
+                    foreach (var c in _processManager.Clients)
+                    {
+                        if (_autoLoginManager.IsLoginActive(c.ProcessId)) continue;
+                        ForceDxReinit(c);
+                    }
+                };
+                reinitTimer.Start();
+            }
         }
     }
 

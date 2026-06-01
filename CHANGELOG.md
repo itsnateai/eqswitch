@@ -1,5 +1,36 @@
 # Changelog
 
+## v3.23.7 — Fix: vertical font smush after runtime Window-Mode toggle (2026-06-01)
+
+Closes a field-reported regression: toggling **Fullscreen ↔ Windowed** from the tray Video-Settings
+menu (the v3.22.90 real-time toggle) left the game's fonts/UI **vertically smushed**. A fresh launch
+was crisp; the smush followed a mode toggle.
+
+- **Root cause — `SetWindowMode` refreshed neither the INI nor the DX backbuffer.** EQ's windowed
+  backbuffer must equal the slim client height (`monH − captionVisible`: 0px Fullscreen / ~13px
+  Windowed) for a crisp 1:1 blit. `SetWindowMode` set the new mode + restyled the window, but never
+  re-ran `EnforceOverrides` (so `eqclient.ini WindowedHeight` kept the *prior* mode's value) and never
+  refreshed the running client's backbuffer (so EQ kept rendering the old height into the new client).
+  (Confirmed live: fresh Windowed load `WindowedHeight=1067 == client 1067`; a Fullscreen→Windowed
+  toggle left `1080` stale → smush.)
+- **Fix part 1 — persistent (both directions).** After saving the new mode, `SetWindowMode` now calls
+  `EQClientSettingsForm.EnforceOverrides(_config)` to rewrite `WindowedWidth/Height` for the new mode.
+  Every subsequent launch is crisp, and EQ's next natural DX reset (e.g. a zone change) rebuilds the
+  swap chain to the live client size — so the running client self-heals on zone in either direction.
+- **Fix part 2 — instant-live (Windowed target).** For a Fullscreen→Windowed toggle the running client
+  is refreshed *immediately* via `ForceDxReinit` (the "Fix Windows" DX-reset), deferred ~1.5s so the
+  restyle settles first. Gated to the Windowed target on purpose: `ForceDxReinit` toggles EQ's internal
+  ScreenMode and ends in EQ-*windowed* state, which matches our WS_CAPTION Windowed styling (crisp) but
+  fights our WS_POPUP Fullscreen styling (draws a titlebar, double-repaints, glitches). Autologin-active
+  clients are skipped (a mid-login ScreenMode toggle disrupts the login state machine).
+- **Reverted en route (documented so it isn't retried):** firing `ForceDxReinit` synchronously raced
+  the slim guard timer + GeoWndProc subclass into **runaway window growth** (unbounded, bled onto the
+  adjacent monitor); applying it to the Fullscreen target left a titlebar + black-screen glitch.
+- **Known residual:** Windowed→**Fullscreen** is crisp on the next zone/launch but may show a transient
+  ~1.2% vertical stretch until then (the running client keeps the 1067 backbuffer in the 1080 client).
+  Eliminating that transient needs a Native in-process `CResolutionHandler` backbuffer resize (no
+  ScreenMode toggle) — tracked as a separate, MQ2-researched effort.
+
 ## v3.23.6 — Fix: hotkey-bound colored tray rows broke submenu hover-open (2026-06-01)
 
 Closes a field-reported bug: with a hotkey bound to a **Character** (a blue-colored tray
