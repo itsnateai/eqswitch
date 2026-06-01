@@ -1,5 +1,45 @@
 # Changelog
 
+## v3.22.91 — Settings tidy: prune dead controls, mode-aware greying (2026-05-31)
+
+Frontend-design pass over the two advanced sub-dialogs on the Video tab (📐
+**Window Offsets** and ⚙ **Wrapper Settings**) to stop exposing values the user
+either can't safely change or that do nothing in the current window mode.
+
+**Removed (no real choice / inert):**
+- **Force Windowed Mode** toggle (Wrapper dialog) — `WindowedMode=TRUE` is a hard
+  requirement; an exclusive-fullscreen EQ client can't be window-managed (no slim
+  titlebar, no arrangement, no multibox). It was a footgun toggle. Now pinned
+  `true` internally (`PopulateFromConfig` + `PopulateVideoFromIni`), so a legacy
+  config with `ForceWindowedMode=false` self-corrects on the next save.
+- **Maximize on Launch** toggle (Wrapper dialog) — a parked/under-review feature.
+  Removed from the UI; `MaximizeWindow` stays `false` by default until the feature
+  is finished.
+- **Offset X / Offset Y** (Offsets dialog) — wrote eqclient.ini `XOffset`/`YOffset`,
+  which `WindowManager` overrides on launch (`X=monitor.Left`, `Y=monitor.Top+TopOffset`)
+  in both slim modes, so they never took effect. The backing fields are kept as
+  data holders, so any existing ini values still round-trip unchanged. Horizontal
+  Nudge and Top Offset (both genuinely applied by the positioner) remain.
+
+**Mode-aware greying:**
+- **Titlebar hidden (px)** and **Bottom margin (px)** (Wrapper dialog) now grey out
+  when **Fullscreen mode** is the selected mode — they only mean something in
+  Windowed mode (Fullscreen/WS_POPUP clamps the caption to 0 and renders flush all
+  sides, making both inert). The hint swaps to explain why. The old `.Enabled =
+  SlimTitlebar` gate was a dead no-op (`SlimTitlebar` is forced `true` for both
+  modes since v3.22.80, and it never reached the freshly-built dialog controls).
+
+**Cleanup:**
+- Fixed a stale `_nudBottomOffset` field-init literal (`22` → `21`) so the source
+  matches the canonical `WindowLayout.BottomOffset` default everywhere (the user
+  always saw `21` — `PopulateFromConfig` overwrote it before display — but the
+  source said `22`).
+- Both dialogs now use the measure-to-fit sizing pass (introduced for the Wrapper
+  dialog in v3.22.87), so pruning rows leaves no dead padding and no hint clips at
+  any DPI. Offsets dialog also gained Enter/Esc accept-cancel wiring.
+
+UI-only change — no logic, positioning math, or `Native/` touched.
+
 ## v3.22.90 — Window-mode toggle in the tray menu (2026-05-31)
 
 Added **Fullscreen mode** / **Windowed mode** radio items to the tray's **Video

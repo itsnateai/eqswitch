@@ -1634,7 +1634,12 @@ public class SettingsForm : Form
         _nudPipBorderThickness.Enabled = _config.Pip.ShowBorder;
 
         // Video (reads from eqclient.ini)
-        _chkVideoWindowed.Checked = _config.EQClientIni.ForceWindowedMode;
+        // v3.22.91: WindowedMode=TRUE is a hard requirement — an exclusive-fullscreen
+        // EQ client can't be window-managed (no slim titlebar, no arrangement, no
+        // multibox). No longer a user-facing toggle (removed from the Wrapper dialog);
+        // pinned true so any legacy config with ForceWindowedMode=false self-corrects
+        // on the next save.
+        _chkVideoWindowed.Checked = true;
         _chkVideoMultiMon.Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
         _nudVideoTopOffset.Value = DarkTheme.ClampNud(_nudVideoTopOffset, _config.Layout.TopOffset);
         _nudHorizontalNudge.Value = DarkTheme.ClampNud(_nudHorizontalNudge, _config.Layout.HorizontalNudgePx);
@@ -3389,7 +3394,7 @@ public class SettingsForm : Form
         // Launch + Force-Windowed (ForceWindowedMode plumbing) join these as
         // detached fields, surfaced only in the ⚙ Advanced dialog.
         _nudTitlebarOffset = new NumericUpDown { Value = 13, Minimum = 0, Maximum = 40 };  // transient; overwritten by PopulateFromConfig (default 13 — v3.22.86)
-        _nudBottomOffset = new NumericUpDown { Value = 22, Minimum = 0, Maximum = 100 };
+        _nudBottomOffset = new NumericUpDown { Value = 21, Minimum = 0, Maximum = 100 };  // transient; overwritten by PopulateFromConfig (default 21 — matches WindowLayout.BottomOffset)
         _chkUseHook = new CheckBox();
         _chkMaximizeWindow = new CheckBox();   // v3.22.80: Advanced-only
         _chkVideoWindowed = new CheckBox();     // v3.22.80: ForceWindowedMode plumbing, Advanced-only
@@ -3448,15 +3453,13 @@ public class SettingsForm : Form
 
     private void ShowOffsetsDialog()
     {
-        // v3.22.54: dialog reorganized into two sections.
-        //   Slim-mode (Fullscreen mode ON, default): only Horizontal Nudge
-        //     applies — our hook DLL + slim-titlebar math override the
-        //     eqclient.ini X/Y positions immediately on launch.
-        //   Non-slim mode (Fullscreen mode OFF): Offset X/Y/Top Offset
-        //     take effect — they write to eqclient.ini, which EQ honors
-        //     when SlimTitlebar isn't enforcing its own position.
-        // Hints now make the mode-gating explicit so users don't tweak
-        // values that do nothing in their current config.
+        // v3.22.91: Offset X/Y removed — they wrote eqclient.ini XOffset/YOffset,
+        // which WindowManager overrides on launch (X=monitor.Left, Y=monitor.Top
+        // +TopOffset) in both slim modes, so they were inert. What's left are the
+        // two nudges that DO apply in both Fullscreen and Windowed: Horizontal
+        // Nudge (1px DPI-sliver fix) and Top Offset (Y arrangement). The backing
+        // _nudVideoOffsetX/Y fields are kept as data holders so existing ini
+        // values still round-trip unchanged.
         using var dlg = new Form
         {
             Text = "Window Offsets",
@@ -3472,45 +3475,26 @@ public class SettingsForm : Form
         int y = 15;
         const int L = 15, I = 140;
 
-        bool slim = _chkSlimTitlebar.Checked;
-        string slimNote = slim ? " (Fullscreen mode ON — this one)" : "";
-        string nonSlimNote = slim ? "" : " (Fullscreen mode OFF — these)";
-
-        DarkTheme.AddHint(dlg, $"Slim-titlebar mode{slimNote}:", L, y);
-        y += 18;
+        DarkTheme.AddHint(dlg, "Fine-tune EQSwitch's window placement (both modes):", L, y);
+        y += 24;
 
         DarkTheme.AddLabel(dlg, "Horizontal Nudge:", L, y + 2);
         var nudHoriz = DarkTheme.AddNumeric(dlg, I, y, 60, _nudHorizontalNudge.Value, -10, 10);
-        DarkTheme.AddHint(dlg, "1 = shift +1px right", 210, y + 4);
-        y += 32;
-
-        DarkTheme.AddHint(dlg, $"Normal mode{nonSlimNote}:", L, y);
-        y += 18;
-
-        DarkTheme.AddLabel(dlg, "Offset X:", L, y + 2);
-        var nudX = DarkTheme.AddNumeric(dlg, I, y, 70, _nudVideoOffsetX.Value, -5000, 5000);
-        DarkTheme.AddHint(dlg, "px from left edge", 220, y + 4);
-        y += 28;
-
-        DarkTheme.AddLabel(dlg, "Offset Y:", L, y + 2);
-        var nudY = DarkTheme.AddNumeric(dlg, I, y, 70, _nudVideoOffsetY.Value, -5000, 5000);
-        DarkTheme.AddHint(dlg, "px from top edge", 220, y + 4);
-        y += 28;
+        DarkTheme.AddHint(dlg, "1 = shift +1px right", 215, y + 4);
+        y += 30;
 
         DarkTheme.AddLabel(dlg, "Top Offset:", L, y + 2);
         var nudTop = DarkTheme.AddNumeric(dlg, I, y, 70, _nudVideoTopOffset.Value, -100, 200);
-        DarkTheme.AddHint(dlg, "px down from top", 220, y + 4);
-        y += 28;
+        DarkTheme.AddHint(dlg, "px down from monitor top", 225, y + 4);
+        y += 30;
 
-        DarkTheme.AddHint(dlg, "X/Y/TopOffset save to eqclient.ini; EQ restart req.", L, y);
-        y += 22;
+        DarkTheme.AddHint(dlg, "Fixes a 1px DPI sliver / nudges vertical placement.", L, y);
+        y += 24;
 
         var btnOK = DarkTheme.MakePrimaryButton("Save", L, y);
         btnOK.Width = 90;
         btnOK.Click += (_, _) =>
         {
-            _nudVideoOffsetX.Value = nudX.Value;
-            _nudVideoOffsetY.Value = nudY.Value;
             _nudVideoTopOffset.Value = nudTop.Value;
             _nudHorizontalNudge.Value = nudHoriz.Value;
             dlg.DialogResult = DialogResult.OK;
@@ -3521,6 +3505,21 @@ public class SettingsForm : Form
         btnCancel.Width = 90;
         btnCancel.Click += (_, _) => dlg.DialogResult = DialogResult.Cancel;
         dlg.Controls.Add(btnCancel);
+
+        dlg.AcceptButton = (IButtonControl)btnOK;
+        dlg.CancelButton = (IButtonControl)btnCancel;
+
+        // v3.22.91 — measure-to-fit (same pattern as ShowWrapperDialog): size the
+        // client area to the actual content so removing the X/Y rows doesn't leave
+        // dead space and no hint clips at any DPI.
+        dlg.PerformLayout();
+        int contentRight = 0, contentBottom = 0;
+        foreach (Control c in dlg.Controls)
+        {
+            contentRight = Math.Max(contentRight, c.Right);
+            contentBottom = Math.Max(contentBottom, c.Bottom);
+        }
+        dlg.ClientSize = new Size(Math.Max(contentRight + L, 300), contentBottom + L);
 
         dlg.ShowDialog(this);
     }
@@ -3542,19 +3541,29 @@ public class SettingsForm : Form
         int y = 15;
         const int L = 15, I = 160;
 
+        // v3.22.91: Titlebar peek + bottom margin only mean something in Windowed
+        // mode. Fullscreen (WS_POPUP, flush all sides) clamps the caption to 0 and
+        // renders edge-to-edge, so both are inert there — grey them out so the user
+        // isn't tuning knobs that do nothing in the currently-selected mode.
+        bool fullscreen = _chkSlimTitlebar.Checked;
+
         DarkTheme.AddLabel(dlg, "Titlebar hidden (px):", L, y + 2);
         var nudTitle = DarkTheme.AddNumeric(dlg, I, y, 60, _nudTitlebarOffset.Value, 0, 40);
+        nudTitle.Enabled = !fullscreen;
         y += 24;
         DarkTheme.AddHint(dlg, "0 = hidden · 13 = title + half buttons (default) · 26 = full", L, y);
         y += 18;
 
         DarkTheme.AddLabel(dlg, "Bottom margin (px):", L, y + 2);
         var nudBottom = DarkTheme.AddNumeric(dlg, I, y, 60, _nudBottomOffset.Value, 0, 100);
+        nudBottom.Enabled = !fullscreen;
         y += 24;
         DarkTheme.AddHint(dlg, "Game render height reduction", L, y);
         y += 18;
 
-        DarkTheme.AddHint(dlg, "Defaults: titlebar 13, margin 21 · keep margin ≥ titlebar", L, y);
+        DarkTheme.AddHint(dlg, fullscreen
+            ? "Titlebar + margin apply in Windowed mode only (Fullscreen active)."
+            : "Defaults: titlebar 13, margin 21 · keep margin ≥ titlebar", L, y);
         y += 22;
 
         var chkHook = DarkTheme.AddCheckBox(dlg, "DLL Hook (zero flicker)", L, y);
@@ -3563,39 +3572,26 @@ public class SettingsForm : Form
         DarkTheme.AddHint(dlg, "Hooks SetWindowPos inside EQ", L, y);
         y += 28;
 
-        // v3.22.80: relocated from the Window Style card. ForceWindowedMode is
-        // required plumbing (WindowedMode=TRUE) — leave on. Maximize on Launch
-        // is parked here while its usefulness is evaluated.
-        var chkForceWindowed = DarkTheme.AddCheckBox(dlg, "Force Windowed Mode (eqclient.ini)", L, y);
-        chkForceWindowed.Checked = _chkVideoWindowed.Checked;
-        y += 20;
-        DarkTheme.AddHint(dlg, "WindowedMode=TRUE — required; leave on", L, y);
-        y += 26;
-
-        var chkMaximize = DarkTheme.AddCheckBox(dlg, "Maximize on Launch", L, y);
-        chkMaximize.Checked = _chkMaximizeWindow.Checked;
-        y += 20;
-        DarkTheme.AddHint(dlg, "Maximized=1 in eqclient.ini (parked — under review)", L, y);
-        y += 28;
-
-        // v3.22.54: Dark Titlebar moved out of this dialog up to the main
-        // Window Style card on the Video tab. Removed the local chkDark, the
-        // dialog growth, the reset entry, and the OK write-back.
+        // v3.22.91: removed two controls from this dialog —
+        //   • "Force Windowed Mode" (eqclient.ini WindowedMode=TRUE): a hard
+        //     requirement for EQSwitch's window management, not a real choice.
+        //     Pinned true in PopulateFromConfig / PopulateVideoFromIni.
+        //   • "Maximize on Launch": a parked/under-review feature. _chkMaximizeWindow
+        //     stays false by default; revisit if/when the feature is finished.
+        // Dark Titlebar lives on the main Window Style card (moved v3.22.54).
 
         var btnReset = DarkTheme.MakeButton("Reset Defaults", DarkTheme.BgMedium, L, y);
         btnReset.Width = 110;
         btnReset.Click += (_, _) =>
         {
-            // Defaults track AppConfig.WindowLayout:
-            //   TitlebarOffset = 13 (peeks ~half the maximize button — the WinEQ2
-            //   look; bottom kept flush by the v3.22.82 render-height fix + v3.22.84
-            //   read-back correction), BottomOffset = 21, UseHook = true.
-            //   DarkTitlebar default lives on the Window Style card now.
+            // Defaults track AppConfig.WindowLayout: TitlebarOffset = 13 (peeks
+            // ~half the maximize button — the WinEQ2 look; bottom kept flush by the
+            // v3.22.82 render-height fix + v3.22.84 read-back correction),
+            // BottomOffset = 21, UseHook = true. DarkTitlebar default lives on the
+            // Window Style card now.
             nudTitle.Value = 13;
             nudBottom.Value = 21;
             chkHook.Checked = true;
-            chkForceWindowed.Checked = true;   // ForceWindowedMode default
-            chkMaximize.Checked = false;       // MaximizeWindow default
         };
         dlg.Controls.Add(btnReset);
         y += 36;
@@ -3607,8 +3603,6 @@ public class SettingsForm : Form
             _nudTitlebarOffset.Value = nudTitle.Value;
             _nudBottomOffset.Value = nudBottom.Value;
             _chkUseHook.Checked = chkHook.Checked;
-            _chkVideoWindowed.Checked = chkForceWindowed.Checked;
-            _chkMaximizeWindow.Checked = chkMaximize.Checked;
             dlg.DialogResult = DialogResult.OK;
         };
         dlg.Controls.Add(btnOK);
@@ -3692,7 +3686,10 @@ public class SettingsForm : Form
                             if (int.TryParse(val, out int h)) _nudVideoHeight.Value = Math.Clamp(h, 200, 4320);
                             break;
                         case "windowedmode":
-                            _chkVideoWindowed.Checked = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
+                            // v3.22.91: WindowedMode is a pinned invariant (TRUE) — EQSwitch
+                            // can't manage an exclusive-fullscreen client. Ignore whatever the
+                            // ini currently says; the next save rewrites it TRUE. Not user-toggleable.
+                            _chkVideoWindowed.Checked = true;
                             break;
                         case "xoffset":
                             if (int.TryParse(val, out int ox)) _nudVideoOffsetX.Value = Math.Clamp(ox, -5000, 5000);
