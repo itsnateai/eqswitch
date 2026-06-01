@@ -113,6 +113,17 @@ public class TrayManager : IDisposable
     // the client crisp, and ReloadConfigCore re-runs the restyle so the window isn't left broken.
     private System.Windows.Forms.Timer? _dxReinitTimer;
 
+    // v3.24.0 — private window message the injected hook (eqswitch-hook.cpp
+    // GeoWndProc) listens for to rebuild EQ's DX backbuffer to the slim client
+    // size on a Window-Mode toggle. RegisterWindowMessage resolves the SAME
+    // string to the SAME system-wide id in both processes; cached after first use.
+    private const string BackbufferResizeMsgName = "EQSwitch_BackbufferResize_v1";
+    private uint _backbufferResizeMsg;
+    private uint BackbufferResizeMsg =>
+        _backbufferResizeMsg != 0
+            ? _backbufferResizeMsg
+            : (_backbufferResizeMsg = NativeMethods.RegisterWindowMessageW(BackbufferResizeMsgName));
+
     // Debounce timestamp for multi-monitor toggle (500ms)
     private long _lastMultiMonToggle;
 
@@ -1825,47 +1836,58 @@ public class TrayManager : IDisposable
             UpdateHookConfig();
             RaiseClientsAboveTaskbar(clients, foregroundActive: _processManager.GetActiveClient() != null);
 
-            // v3.23.7 smush fix (part 2/2: instant-live) — WINDOWED target ONLY. ForceDxReinit resets
-            // EQ's DX device by toggling its internal ScreenMode (windowed↔windowed-fullscreen),
-            // ENDING in EQ-windowed state. That matches our WS_CAPTION Windowed styling (live-verified
-            // crisp, no artifacts), so it cleanly resolves the Fullscreen→Windowed smush the instant
-            // you toggle. It is deliberately NOT applied for the Fullscreen target: there EQ's
-            // windowed end-state fights our WS_POPUP styling — it draws a titlebar, double-repaints,
-            // and repeated toggles black-screen-glitch (v3.23.7 live repro). Deferred ~1.5s so the
-            // restyle settles first (a synchronous fire raced the guard timer + GeoWndProc subclass
-            // into runaway window growth). The Fullscreen target relies on the part-1 INI fix + EQ's
-            // next natural DX reset (zone) — at most a transient ~1.2% stretch until then. Skip
-            // autologin-active clients (a mid-login ScreenMode toggle disrupts the login SM).
-            // FULL symmetric instant-crisp (both directions, no transient) needs a Native in-process
-            // CResolutionHandler backbuffer resize that doesn't touch ScreenMode — tracked as a
-            // separate, MQ2-researched effort. Do NOT re-add a ScreenMode reset for the Fullscreen path.
-            if (mode == EQSwitch.Config.WindowMode.Windowed)
+            // v3.24.0 smush fix (instant-live, BOTH directions) — Native in-process backbuffer
+            // rebuild. Replaces the v3.23.7 Windowed-only ForceDxReinit, which reset EQ's device by
+            // toggling its internal ScreenMode and ended in EQ-windowed state: that matched WS_CAPTION
+            // Windowed (crisp) but fought WS_POPUP Fullscreen (titlebar / double-repaint / black-glitch),
+            // so it was gated Windowed-only — leaving a transient ~1.2% stretch on Windowed→Fullscreen.
+            // Now: PostMessage a private RegisterWindowMessage to each INJECTED client; the hook's
+            // GeoWndProc (on EQ's main/render thread) reads the settled client rect and calls EQ's OWN
+            // gfx SetResolution + ResetDevice — no ScreenMode, no restyle → crisp BOTH ways, zero
+            // transient. Deferred ~300ms (NOT the v3.23.7 ~1.5s): that long wait existed because the old
+            // ForceDxReinit RESTYLED the window (ScreenMode toggle) and a synchronous fire raced the guard
+            // timer + GeoWndProc into runaway growth. Our reset touches NO window state, so that race is
+            // gone — the only reasons to defer at all are (a) let the slim restyle settle so GetClientRect
+            // reports the NEW mode's size, and (b) give EQ's per-frame SetWindowPos time to (re)install the
+            // GeoWndProc subclass when toggling Fullscreen→Windowed (pinGeometry just flipped to 1). 300ms
+            // is ample for both (EQ repaints every ~16ms) while making the toggle feel like one transition
+            // instead of "stretched for a second → flash → crisp". Stale-timer guard mirrors the v3.23.7
+            // one-shot pattern (WinForms Stop() doesn't dequeue an already-posted WM_TIMER). Skip
+            // autologin-active / hung / minimized clients. Non-injected clients (no hook) fall back to the
+            // part-1 INI fix + EQ's next natural DX reset (zone), exactly as before.
+            _dxReinitTimer?.Stop();
+            _dxReinitTimer?.Dispose();
+            var resizeTimer = new System.Windows.Forms.Timer { Interval = 300 };
+            _dxReinitTimer = resizeTimer;
+            resizeTimer.Tick += (_, _) =>
             {
-                // Stop any prior pending reset so a rapid Windowed→Fullscreen→Windowed cycle (<1.5s)
-                // doesn't stack a second ForceDxReinit pass (would double the toggle → black flash).
-                _dxReinitTimer?.Stop();
-                _dxReinitTimer?.Dispose();
-                var reinitTimer = new System.Windows.Forms.Timer { Interval = 1500 };
-                _dxReinitTimer = reinitTimer;
-                reinitTimer.Tick += (_, _) =>
+                if (_disposed) return; // queued Ticks can fire after Dispose (v3.22.33 pattern)
+                resizeTimer.Stop();
+                resizeTimer.Dispose();
+                if (!ReferenceEquals(_dxReinitTimer, resizeTimer)) return; // superseded by a newer toggle
+                _dxReinitTimer = null;
+                uint msg = BackbufferResizeMsg;
+                if (msg == 0)
                 {
-                    if (_disposed) return; // queued Ticks can fire after Dispose (v3.22.33 pattern)
-                    reinitTimer.Stop();
-                    reinitTimer.Dispose();
-                    // If a newer toggle already replaced us, this Tick is STALE → bail WITHOUT firing
-                    // ForceDxReinit. WinForms Stop() does NOT dequeue an already-posted WM_TIMER, so a
-                    // superseded timer's Tick can still arrive; firing it would double the reset (the
-                    // black-flash this whole field exists to prevent). The live timer fires exactly once.
-                    if (!ReferenceEquals(_dxReinitTimer, reinitTimer)) return;
-                    _dxReinitTimer = null;
-                    foreach (var c in _processManager.Clients)
+                    FileLogger.Warn("SetWindowMode: RegisterWindowMessage failed — backbuffer resize skipped");
+                    return;
+                }
+                foreach (var c in _processManager.Clients)
+                {
+                    int pid = c.ProcessId;
+                    if (_autoLoginManager.IsLoginActive(pid)) continue;
+                    if (!_injectedPids.Contains(pid)) continue; // only injected clients have GeoWndProc
+                    var hwnd = c.WindowHandle;
+                    if (!NativeMethods.IsWindow(hwnd) || NativeMethods.IsHungAppWindow(hwnd) || NativeMethods.IsIconic(hwnd))
                     {
-                        if (_autoLoginManager.IsLoginActive(c.ProcessId)) continue;
-                        ForceDxReinit(c);
+                        FileLogger.Info($"SetWindowMode: PID {pid} backbuffer resize skipped (gone/hung/minimized)");
+                        continue;
                     }
-                };
-                reinitTimer.Start();
-            }
+                    bool ok = NativeMethods.PostMessage(hwnd, msg, IntPtr.Zero, IntPtr.Zero);
+                    FileLogger.Info($"SetWindowMode: PID {pid} backbuffer-resize msg posted ({label}) ok={ok}");
+                }
+            };
+            resizeTimer.Start();
         }
     }
 

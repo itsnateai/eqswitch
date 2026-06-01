@@ -101,16 +101,19 @@ static char g_hookLogPath[MAX_PATH] = {};
 static bool g_hookLogPathReady = false;
 
 static void BuildLogPath() {
-    // Use NULL = process exe path (we're injected into eqgame.exe, log goes next to it)
-    if (GetModuleFileNameA(NULL, g_hookLogPath, MAX_PATH)) {
-        char* lastSlash = strrchr(g_hookLogPath, '\\');
-        if (lastSlash && (size_t)(lastSlash + 1 - g_hookLogPath) + 18 < MAX_PATH)
-            memcpy(lastSlash + 1, "eqswitch-hook.log", 18);
-        else
-            snprintf(g_hookLogPath, MAX_PATH, "eqswitch-hook.log");
-    } else {
-        snprintf(g_hookLogPath, MAX_PATH, "eqswitch-hook.log");
+    // Use NULL = process exe path (we're injected into eqgame.exe, log goes next to it).
+    // PER-PID filename: every injected eqgame.exe shares the same exe dir, so a single
+    // fixed name interleaves/corrupts under multibox (N clients append to one file with
+    // no cross-process locking). eqswitch-hook-{pid}.log keeps each client's log clean —
+    // matches the C# side's per-PID eqswitch-dinput8-{pid}.log convention.
+    char dir[MAX_PATH] = {};
+    if (GetModuleFileNameA(NULL, dir, MAX_PATH)) {
+        char* lastSlash = strrchr(dir, '\\');
+        if (lastSlash) *(lastSlash + 1) = '\0';   // keep the directory + trailing backslash
+        else dir[0] = '\0';
     }
+    _snprintf(g_hookLogPath, MAX_PATH, "%seqswitch-hook-%lu.log", dir, (unsigned long)GetCurrentProcessId());
+    g_hookLogPath[MAX_PATH - 1] = '\0';
     g_hookLogPathReady = true;
 }
 
@@ -260,12 +263,165 @@ static WNDPROC g_origGeoWndProc = NULL;       // proc present when we subclassed
 static HWND    g_geoSubclassHwnd = NULL;      // the window we subclassed (EQ's single main window)
 static volatile LONG g_geoSubclassInstalled = 0;
 
+// ─── v3.24.0 Native Window-Mode backbuffer resize ────────────────────────────
+// Instant-crisp DX backbuffer rebuild on a Window-Mode toggle — BOTH directions,
+// no ScreenMode flip, no window restyle (the v3.23.7 interim's ForceDxReinit had
+// both; its windowed-end-state fought our WS_POPUP Fullscreen → titlebar/glitch/
+// growth, so it was gated Windowed-only, leaving a transient stretch the other
+// way). Ported from EQ's OWN windowed-resize path (eqgame.exe FUN_008d9fd0,
+// RE'd 2026-06-01 — see X:/_Projects/_.eqswitch-re/decompile_spike/FINDINGS.md).
+//
+// eqgame.exe loads a graphics DLL (CreateGraphicsEngine) and stores the render-
+// engine interface pointer at a global (Ghidra DAT_015d46a4). That pointer is a
+// COM-like object whose vtable lives in the gfx DLL. EQ rebuilds its backbuffer
+// by calling this interface's SetResolution + ResetDevice; we call the SAME
+// interface, the SAME way, on the SAME thread (EQ's main/UI thread — where
+// GeoWndProc runs, between frames). Both EQSwitch slim modes are D3D-*windowed*
+// (WS_POPUP vs WS_CAPTION; neither is exclusive fullscreen), so present mode
+// never changes — only the backbuffer size (monH vs monH-caption). A pure
+// SetResolution(w,h,32,0)+ResetDevice(0) is exactly that.
+//
+// RVA is relative to eqgame.exe's preferred ImageBase (0x400000); ASLR-rebased
+// at runtime → resolve as GetModuleHandleA(NULL) + RVA.
+static const DWORD RVA_GFX_RENDER_PTR = 0x11D46A4;  // -> g_pRender (gfx interface)
+// gfx-interface vtable byte-offsets, verified against EQ's own call sites
+// (FUN_008d9fd0 / FUN_008d9c50): +0x18/+0x1c read the current backbuffer dims,
+// +0x6c sets the desired resolution, +0x64 resets the device (its false-return
+// path is the one that logs "ResetDevice() failed!" inside EQ).
+static const DWORD VT_GetBBWidth    = 0x18;
+static const DWORD VT_GetBBHeight   = 0x1c;
+static const DWORD VT_ResetDevice   = 0x64;
+static const DWORD VT_SetResolution = 0x6c;
+
+typedef int  (__thiscall *PFN_GfxGetDim)(void* self);
+typedef void (__thiscall *PFN_GfxSetRes)(void* self, int w, int h, int bpp, int refreshHz);
+typedef char (__thiscall *PFN_GfxReset) (void* self, int unused);
+
+// Registered once via RegisterWindowMessage — the SAME string resolves to the
+// SAME system-wide id in this hook AND the C# host, so PostMessage(eqHwnd,
+// g_backbufferResizeMsg) from C# lands in GeoWndProc here. 0 until registered.
+static UINT g_backbufferResizeMsg = 0;
+static const wchar_t* BACKBUFFER_RESIZE_MSG_NAME = L"EQSwitch_BackbufferResize_v1";
+
+// Best-effort gate: is [p, p+n) committed + readable (and executable if asked),
+// without straddling out of its region? The SEH __try below is the real safety
+// net; this just rejects obviously-bad pointers (null/uninit/stale offset) early
+// and loudly instead of faulting.
+static bool MemIsReadable(const void* p, SIZE_T n, bool needExec) {
+    if (!p) return false;
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery(p, &mbi, sizeof(mbi)) != sizeof(mbi)) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    DWORD prot = mbi.Protect & 0xFF;  // strip PAGE_GUARD/NOCACHE/WRITECOMBINE bits
+    bool readable = (prot & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+                             PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+    if (!readable) return false;
+    if (needExec) {
+        bool exec = (prot & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                             PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+        if (!exec) return false;
+    }
+    UINT_PTR endOfRegion = (UINT_PTR)mbi.BaseAddress + mbi.RegionSize;
+    if ((UINT_PTR)p + n > endOfRegion) return false;
+    return true;
+}
+
+// Rebuild EQ's windowed D3D backbuffer to (clientW x clientH) via EQ's own gfx
+// interface. MUST run on EQ's render/main thread (GeoWndProc guarantees this).
+// Fully SEH-guarded + pointer-validated: on ANY fault or bad state it logs and
+// returns false rather than crash the host. NEVER calls _exit — EQ does that on
+// ResetDevice failure, but we must not take a live client down. Idempotent: a
+// no-op (returns true) when the backbuffer is already at the target size, which
+// is also the natural guard against a redundant reset flash.
+static bool ApplyBackbufferResize(int clientW, int clientH) {
+    if (clientW <= 0 || clientH <= 0 || clientW > 16384 || clientH > 16384) {
+        LogMessage("BackbufferResize: refused — degenerate target %dx%d", clientW, clientH);
+        return false;
+    }
+    HMODULE base = GetModuleHandleA(NULL);
+    if (!base) return false;
+
+    bool result = false;
+    __try {
+        void** ppRender = (void**)((BYTE*)base + RVA_GFX_RENDER_PTR);
+        if (!MemIsReadable(ppRender, sizeof(void*), false)) {
+            LogMessage("BackbufferResize: gfx ptr slot unreadable (RVA 0x%X) — skipping", RVA_GFX_RENDER_PTR);
+            return false;
+        }
+        void* gfx = *ppRender;
+        if (!gfx || !MemIsReadable(gfx, sizeof(void*), false)) {
+            LogMessage("BackbufferResize: gfx interface null/not ready (no device yet?) — skipping");
+            return false;
+        }
+        void** vtbl = *(void***)gfx;
+        if (!MemIsReadable(vtbl, (VT_SetResolution / 4 + 1) * sizeof(void*), false)) {
+            LogMessage("BackbufferResize: gfx vtable unreadable — skipping");
+            return false;
+        }
+        void* pGetW  = vtbl[VT_GetBBWidth / 4];
+        void* pGetH  = vtbl[VT_GetBBHeight / 4];
+        void* pSet   = vtbl[VT_SetResolution / 4];
+        void* pReset = vtbl[VT_ResetDevice / 4];
+        if (!MemIsReadable(pGetW, 1, true) || !MemIsReadable(pGetH, 1, true) ||
+            !MemIsReadable(pSet, 1, true)  || !MemIsReadable(pReset, 1, true)) {
+            LogMessage("BackbufferResize: gfx vtable slots not executable — skipping (offsets stale on this build?)");
+            return false;
+        }
+
+        int curW = ((PFN_GfxGetDim)pGetW)(gfx);
+        int curH = ((PFN_GfxGetDim)pGetH)(gfx);
+        if (curW == clientW && curH == clientH) {
+            LogMessage("BackbufferResize: already %dx%d — no reset needed", curW, curH);
+            return true;
+        }
+
+        LogMessage("BackbufferResize: %dx%d -> %dx%d (gfx SetResolution + ResetDevice)", curW, curH, clientW, clientH);
+        ((PFN_GfxSetRes)pSet)(gfx, clientW, clientH, 32, 0);  // bpp=32, refresh=0 (windowed)
+        char ok = ((PFN_GfxReset)pReset)(gfx, 0);
+        if (ok == 0) {
+            LogMessage("BackbufferResize: gfx ResetDevice returned FALSE — left to EQ's own recovery (NOT exiting)");
+            result = false;
+        } else {
+            int newW = ((PFN_GfxGetDim)pGetW)(gfx);
+            int newH = ((PFN_GfxGetDim)pGetH)(gfx);
+            LogMessage("BackbufferResize: OK — backbuffer now %dx%d", newW, newH);
+            result = (newW == clientW && newH == clientH);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        LogMessage("BackbufferResize: SEH fault during gfx reset — host protected, no reset applied");
+        result = false;
+    }
+    return result;
+}
+
 static LRESULT CALLBACK GeoWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     // Defensive: GeoWndProc can only be the window proc if EnsureGeoSubclass set
     // g_origGeoWndProc first, so this is never NULL in practice — but never
     // CallWindowProc(NULL).
     if (!g_origGeoWndProc)
         return DefWindowProcW(hWnd, msg, wParam, lParam);
+
+    // v3.24.0 — Window-Mode toggle backbuffer resize. Lazily register the private
+    // message id (idempotent; same string → same id as the C# host). We run on
+    // EQ's main/UI thread between frames, so user32 + a synchronous gfx ResetDevice
+    // are both safe here. The C# host PostMessages this AFTER the slim restyle has
+    // settled, so GetClientRect now reports the NEW mode's client size; we rebuild
+    // the DX backbuffer to match. Handled regardless of pin/enabled so the
+    // Fullscreen (WS_POPUP) target gets it too, and we return WITHOUT chaining (EQ
+    // has no handler for this registered id). Skip while minimized (0x0 client).
+    if (g_backbufferResizeMsg == 0)
+        g_backbufferResizeMsg = RegisterWindowMessageW(BACKBUFFER_RESIZE_MSG_NAME);
+    if (g_backbufferResizeMsg != 0 && msg == g_backbufferResizeMsg) {
+        if (IsIconic(hWnd)) {
+            LogMessage("BackbufferResize: window minimized — skipping reset");
+        } else {
+            RECT rc;
+            if (GetClientRect(hWnd, &rc))
+                ApplyBackbufferResize(rc.right - rc.left, rc.bottom - rc.top);
+        }
+        return 0;
+    }
 
     // Read only the live fields we need, directly from the volatile mapping.
     // Individual int reads are atomic on x86; a torn rect (C# mid-write) is a
@@ -453,11 +609,18 @@ static BOOL WINAPI HookedSetWindowPos(
             }
         }
 
-        // v3.22.81 — Windowed mode: lazily install the per-message geometry
-        // subclass (kills the multi-monitor growth + sliver the C# guard timer
-        // raced into). Re-installs transparently after EQ recreates its window.
-        if (cfg.pinGeometry)
-            EnsureGeoSubclass(hWnd);
+        // v3.22.81 — install the per-message geometry subclass (kills the
+        // multi-monitor growth + sliver the C# guard timer raced into). Re-installs
+        // transparently after EQ recreates its window. v3.24.0: install in BOTH
+        // modes (was `if (cfg.pinGeometry)` = Windowed only) so the GeoWndProc
+        // backbuffer-resize message handler is present for the Fullscreen target
+        // too — a client launched in Fullscreen and never toggled to Windowed would
+        // otherwise silently drop the resize PostMessage (no subclass = EQ's own
+        // WndProc gets it and ignores the registered id). Geometry-pinning AND the
+        // slim transform stay Windowed-gated inside GeoWndProc / EnsureGeoSubclass
+        // (the latter returns right after install when !pin), so Fullscreen behavior
+        // is unchanged except that the resize message is now handled.
+        EnsureGeoSubclass(hWnd);
     }
 
     BOOL r = g_origSetWindowPos(hWnd, hWndInsertAfter, X, Y, cx, cy, uFlags);
@@ -485,10 +648,11 @@ static BOOL WINAPI HookedMoveWindow(
             }
         }
 
-        // v3.22.81 — Windowed mode: lazily install the per-message geometry
-        // subclass (see HookedSetWindowPos for the full rationale).
-        if (cfg.pinGeometry)
-            EnsureGeoSubclass(hWnd);
+        // Install the per-message geometry subclass in BOTH modes (v3.24.0; was
+        // pinGeometry-gated). See HookedSetWindowPos for the full rationale — the
+        // backbuffer-resize handler lives in GeoWndProc and must be present for the
+        // Fullscreen target too; pinning/slim stay Windowed-gated.
+        EnsureGeoSubclass(hWnd);
     }
 
     BOOL r = g_origMoveWindow(hWnd, X, Y, nWidth, nHeight, bRepaint);
@@ -546,9 +710,12 @@ static BOOL WINAPI HookedShowWindow(HWND hWnd, int nCmdShow)
     // far earlier than the C# guard tick — so the recreated window is slim
     // before its first paint (no guard-tick flash, no "dance once ingame").
     // No message pump runs between g_origShowWindow and here (same detour frame
-    // on the EQ UI thread), so the NORMAL window never composites. Gated on the
-    // live SHM pinGeometry flag so Fullscreen is completely unaffected.
-    if (IsEqWindow(hWnd) && ReadConfig(&cfg) && cfg.enabled && cfg.pinGeometry) {
+    // on the EQ UI thread), so the NORMAL window never composites. v3.24.0:
+    // install in BOTH modes (was `&& cfg.pinGeometry`) so GeoWndProc — and its
+    // backbuffer-resize message handler — is present for Fullscreen-launched
+    // clients too. The slim transform inside EnsureGeoSubclass stays pin-gated, so
+    // a Fullscreen client gets the subclass installed but no Windowed restyle.
+    if (IsEqWindow(hWnd) && ReadConfig(&cfg) && cfg.enabled) {
         EnsureGeoSubclass(hWnd);
     }
 

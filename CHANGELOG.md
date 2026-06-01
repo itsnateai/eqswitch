@@ -1,5 +1,41 @@
 # Changelog
 
+## v3.24.0 — Native instant-crisp Window-Mode toggle, both directions (2026-06-01)
+
+Completes the v3.23.7 smush fix. The interim made **Fullscreen→Windowed** instant-crisp but left a
+transient **~1.2% vertical stretch on Windowed→Fullscreen** until the next zone, because its DX reset
+(`ForceDxReinit`) toggled EQ's internal ScreenMode and ended in EQ-*windowed* state — fine for our
+WS_CAPTION Windowed styling, but it fought WS_POPUP Fullscreen (titlebar / double-repaint / glitch), so
+it was deliberately gated Windowed-only. This release closes that gap with a Native in-process backbuffer
+rebuild that touches **no ScreenMode** and does **no window restyle**, so it works **both directions** with
+zero transient.
+
+- **Ported from EQ's own code, not invented.** A full Ghidra RE pass on Dalaya's `eqgame.exe` (the MQ2
+  RoF2 *(Test)* offset table turned out to be the wrong build — its `UpdateResolution`/`ReloadUI` RVAs
+  don't map to Dalaya) located EQ's windowed-resize path (`FUN_008d9fd0`). EQ rebuilds its backbuffer by
+  calling its loaded graphics-DLL render interface: `SetResolution(w,h,bpp,refresh)` then `ResetDevice()`.
+  EQSwitch now calls the **same interface, the same way, on the same thread**. Both slim modes are D3D-
+  *windowed* (WS_POPUP vs WS_CAPTION; neither is exclusive fullscreen), so present mode never changes —
+  only the backbuffer size — which is exactly what this rebuild does.
+- **Runs on EQ's render thread, safely.** On a toggle, the C# host `PostMessage`s a private
+  `RegisterWindowMessage` to each injected client; the hook's `GeoWndProc` (already installed in both
+  modes, running on EQ's main/UI thread between frames) reads the now-settled client rect and rebuilds
+  the backbuffer to match. The Native call is fully SEH-guarded with pointer/vtable validation — on any
+  fault or unexpected state it logs and bails, and it **never** takes a live client down (unlike EQ's own
+  path, which `_exit`s on `ResetDevice` failure). Idempotent: a no-op when the backbuffer already matches.
+- **Same safety gates as before.** Deferred ~300ms so the restyle settles first (down from the v3.23.7
+  ~1.5s — that long wait existed because the old `ForceDxReinit` restyled the window and raced a guard
+  timer into runaway growth; our reset touches no window state, so the toggle now reads as one quick
+  transition instead of "stretched for a second → flash → crisp"). Stale-timer guard against rapid
+  re-toggles; autologin-active / hung / minimized clients are skipped. Non-injected clients (no hook)
+  fall back to the v3.23.7 part-1 INI rewrite + EQ's next natural zone reset, exactly as before.
+- **Robustness (review-driven).** The `GeoWndProc` subclass that handles the resize message is now
+  installed in BOTH modes (was Windowed-only) so a client launched directly in Fullscreen and never
+  toggled to Windowed still gets the reset — geometry-pinning + slim transform stay Windowed-gated, so
+  Fullscreen behaviour is otherwise unchanged. The hook log is now per-PID (`eqswitch-hook-{pid}.log`)
+  so concurrent multibox clients don't interleave one file.
+- RE findings + verified Dalaya offsets archived at `_.eqswitch-re/decompile_spike/FINDINGS.md`.
+
 ## v3.23.7 — Fix: vertical font smush after runtime Window-Mode toggle (2026-06-01)
 
 Closes a field-reported regression: toggling **Fullscreen ↔ Windowed** from the tray Video-Settings
