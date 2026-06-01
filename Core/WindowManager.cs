@@ -246,12 +246,16 @@ public class WindowManager
     /// restore" from "other — transient, no user action".
     /// </para>
     /// </summary>
-    public (int Iconic, int Other) ArrangeWindows(IReadOnlyList<EQClient> clients, IReadOnlyDictionary<int, int>? monitorSlotByPid = null)
+    // v3.24.1 taskbar-flicker fix — coverPrimaryFirst (default false) is honored ONLY
+    // on the multimonitor swap path; it flows to ArrangeMultiMonitor's incoming-first
+    // HWND_TOP plant. Default false keeps every other caller (Fix-Windows, deferred
+    // cosmetics, toggles, settings-apply) byte-for-byte unchanged.
+    public (int Iconic, int Other) ArrangeWindows(IReadOnlyList<EQClient> clients, IReadOnlyDictionary<int, int>? monitorSlotByPid = null, bool coverPrimaryFirst = false)
     {
         if (clients.Count == 0) return (0, 0);
 
         if (_config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase))
-            return ArrangeMultiMonitor(clients, monitorSlotByPid);
+            return ArrangeMultiMonitor(clients, monitorSlotByPid, coverPrimaryFirst);
         else
             return ArrangeSingleScreen(clients);
     }
@@ -341,6 +345,40 @@ public class WindowManager
     }
 
     /// <summary>
+    /// v3.24.2 — THE single source of truth for the lock-to-primary-dims POLICY DECISION.
+    /// Both <see cref="ArrangeMultiMonitor"/> (which sizes the window) AND
+    /// <see cref="UI.TrayManager"/>'s hook-config path (which pins the in-process hook rect)
+    /// call this, so the two can no longer disagree on the secondary client's size. A
+    /// disagreement WAS the v3.24.1 swap refit: arrange sized the secondary to the primary's
+    /// dims (lock-to-primary), but the hook config sized it to the secondary monitor's NATIVE
+    /// dims; the hook won and yanked the window on every swap → a DX backbuffer rebuild =
+    /// taskbar peek + black-bar/smoosh. Active ⇒ both windows take the primary's dims so the
+    /// DX swap-chain stays one constant size across swaps. Gated on: 2+ monitors, both the
+    /// same slim flag, ≤200px delta on each axis, and primary fits within secondary.
+    /// </summary>
+    public static bool ShouldLockToPrimaryDims(WinRect primary, WinRect secondary, bool primarySlim, bool secondarySlim)
+    {
+        bool bothSameSlim = primarySlim == secondarySlim;
+        int wDelta = Math.Abs(primary.Width - secondary.Width);
+        int hDelta = Math.Abs(primary.Height - secondary.Height);
+        bool primaryFits = primary.Width <= secondary.Width && primary.Height <= secondary.Height;
+        return bothSameSlim && wDelta <= 200 && hDelta <= 200 && primaryFits;
+    }
+
+    /// <summary>
+    /// v3.24.2 — under lock-to-primary-dims, a SECONDARY-slot client takes its OWN monitor's
+    /// origin but the PRIMARY monitor's dimensions. (The primary slot is unchanged — it IS the
+    /// source of dims.) Single source of truth shared by the arrange + hook-config paths.
+    /// </summary>
+    public static WinRect ApplyLockToPrimaryDims(WinRect secondaryMonitor, WinRect primary) => new WinRect
+    {
+        Left = secondaryMonitor.Left,
+        Top = secondaryMonitor.Top,
+        Right = secondaryMonitor.Left + primary.Width,
+        Bottom = secondaryMonitor.Top + primary.Height,
+    };
+
+    /// <summary>
     /// Multi-monitor mode: distribute windows across physical monitors.
     /// Each window fills its assigned monitor. Cycles through monitors if
     /// there are more windows than screens.
@@ -371,7 +409,7 @@ public class WindowManager
     /// </list>
     /// </para>
     /// </summary>
-    private (int Iconic, int Other) ArrangeMultiMonitor(IReadOnlyList<EQClient> clients, IReadOnlyDictionary<int, int>? monitorSlotByPid = null)
+    private (int Iconic, int Other) ArrangeMultiMonitor(IReadOnlyList<EQClient> clients, IReadOnlyDictionary<int, int>? monitorSlotByPid = null, bool coverPrimaryFirst = false)
     {
         int skippedIconic = 0;
         int skippedOther = 0;  // v3.22.44 r3.5 — non-iconic silent skips
@@ -429,7 +467,10 @@ public class WindowManager
             int hDelta = Math.Abs(primaryBounds.Height - secBounds.Height);
             bool primaryFits = primaryBounds.Width <= secBounds.Width && primaryBounds.Height <= secBounds.Height;
 
-            if (bothSameSlim && wDelta <= 200 && hDelta <= 200 && primaryFits)
+            // v3.24.2 — decision via the shared policy (UpdateHookConfigForPid uses the SAME
+            // helper, so the hook pins the size this arrange sets — no resize fight). The
+            // locals above remain for the OFF-path log message below.
+            if (ShouldLockToPrimaryDims(primaryBounds, secBounds, monitorOrder[0].useSlim, monitorOrder[1].useSlim))
             {
                 lockToPrimaryDims = true;
                 int hBand = secBounds.Height - primaryBounds.Height;
@@ -458,6 +499,11 @@ public class WindowManager
         int titlebarOffset = _config.Layout.TitlebarOffset;
         int topOffset = _config.Layout.TopOffset;
         var targets = new List<(IntPtr hwnd, int x, int y, int w, int h, uint flags, string logLabel)>(clients.Count);
+        // v3.24.1 taskbar-flicker fix — the primary-bound (slot-0) client's target,
+        // captured during this build loop so it can be planted at HWND_TOP over primary
+        // BEFORE the pass-2 batch moves the outgoing client off primary (plant site is
+        // just before BeginDeferWindowPos below). Null ⇒ nothing to plant.
+        (IntPtr hwnd, int x, int y, int w, int h)? primaryPlant = null;
 
         for (int i = 0; i < clients.Count; i++)
         {
@@ -497,21 +543,11 @@ public class WindowManager
             // origin but inherits primary's W/H. Primary slot is unchanged
             // (it IS the source of dimensions). Synthetic bounds feed into
             // the same slim/non-slim formulae below.
-            WinRect effectiveBounds;
-            if (lockToPrimaryDims && slotIdx != 0)
-            {
-                effectiveBounds = new WinRect
-                {
-                    Left = mon.Left,
-                    Top = mon.Top,
-                    Right = mon.Left + primaryBounds.Width,
-                    Bottom = mon.Top + primaryBounds.Height
-                };
-            }
-            else
-            {
-                effectiveBounds = mon;
-            }
+            // v3.24.2 — shared helper (also used by the hook-config path) so the size the
+            // hook pins matches the size set here.
+            WinRect effectiveBounds = (lockToPrimaryDims && slotIdx != 0)
+                ? ApplyLockToPrimaryDims(mon, primaryBounds)
+                : mon;
 
             // v3.22.44 r2 (T2-Opus HIGH Item B): skip iconic clients — same
             // rationale as ArrangeSingleScreen above. ApplyDeferredCosmetics
@@ -615,6 +651,17 @@ public class WindowManager
             string lockLabel = lockToPrimaryDims ? " [locked-to-primary]" : "";
             targets.Add((client.WindowHandle, x, y, w, h, swpFlags,
                 $"{client} → {monLabel} monitor ({mon.Left},{mon.Top}) {w}x{h}{slimLabel}{lockLabel} [slot={slot}]"));
+
+            // v3.24.1 taskbar-flicker fix — remember the FIRST eligible slot-0
+            // (primary-bound) client to plant before the batch. The dual-box swap has
+            // exactly one; w>0/h>0 guards the degenerate non-slim no-fit case (a 0-size
+            // plant would shrink the window). monitorOrder.Count > 1 scopes the plant to
+            // genuine MULTI-monitor swaps: the cross-monitor rude-window recalc is the only
+            // thing it fixes, so on a single physical monitor (multimon MODE, one display —
+            // every client resolves to slotIdx 0) the plant would be a pointless z-order
+            // raise on the first client. Armed only when the caller opts in (swap path).
+            if (coverPrimaryFirst && monitorOrder.Count > 1 && slotIdx == 0 && w > 0 && h > 0 && !primaryPlant.HasValue)
+                primaryPlant = (client.WindowHandle, x, y, w, h);
         }
 
         if (targets.Count == 0)
@@ -647,6 +694,26 @@ public class WindowManager
         var pass2Stages = new List<long>(targets.Count + 2);
         bool batchOk = false;
         pass2Stages.Add(swArrange.ElapsedMilliseconds); // tBeforeBegin
+
+        // v3.24.1 taskbar-flicker fix — incoming-first coverage. Plant the primary-bound
+        // client at HWND_TOP covering primary BEFORE the batch moves the outgoing client
+        // off it, so the shell's rude-window recalc (fired by the outgoing client's
+        // fullscreen-exit) always sees a covering top-of-Z window on primary → no
+        // one-frame taskbar peek. HWND_TOP (not HWND_TOPMOST): EQ clients are non-topmost,
+        // so top-of-normal-band is enough; HWND_TOPMOST is itself a documented flicker
+        // trigger (DisplayFusion "Disallow TopMost Calls"). The pass-2 batch re-applies the
+        // same primary coords with SWP_NOZORDER (preserves this z-order) — a harmless
+        // redundant move on this one window. Our plant is a cross-process SetWindowPos in
+        // EQSwitch.exe; eqswitch-hook.dll only hooks SetWindowPos INSIDE eqgame.exe, so it
+        // is not intercepted — no fight. See docs/specs/2026-05-31-eqswitch-taskbar-flicker-fix.md.
+        if (coverPrimaryFirst && primaryPlant.HasValue)
+        {
+            var p = primaryPlant.Value;
+            _api.SetWindowPos(p.hwnd, NativeMethods.HWND_TOP, p.x, p.y, p.w, p.h,
+                              NativeMethods.SWP_NOACTIVATE);
+            FileLogger.Info($"ArrangeMultiMonitor: incoming-first cover — planted slot-0 hwnd 0x{p.hwnd.ToInt64():X} at HWND_TOP over primary ({p.x},{p.y}) {p.w}x{p.h} before batch (taskbar-flicker fix)");
+        }
+
         var hdwp = _api.BeginDeferWindowPos(targets.Count);
         if (hdwp != IntPtr.Zero)
         {

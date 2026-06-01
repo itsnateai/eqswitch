@@ -372,6 +372,29 @@ static class Program
             Environment.Exit(exitCode);
             return;
         }
+
+        // --test-swap-cover — run Core/SwapCoverOrderingTests.RunAll() and exit. Guards the
+        // v3.24.1 incoming-first HWND_TOP plant (taskbar-flicker fix): on the multimon swap
+        // path (coverPrimaryFirst:true) ArrangeMultiMonitor must plant the primary-bound
+        // (slot-0) client at HWND_TOP covering primary BEFORE the DeferWindowPos batch, and
+        // do nothing when coverPrimaryFirst:false. A recording IWindowsApi fake verifies the
+        // plant's params + that it precedes the batch commit.
+        if (args.Length >= 1 && args[0] == "--test-swap-cover")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.SwapCoverOrderingTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"SwapCoverOrderingTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
 #endif
 
         // Enforce single instance

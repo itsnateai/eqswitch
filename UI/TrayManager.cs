@@ -1097,7 +1097,9 @@ public class TrayManager : IDisposable
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 RotateMonitorSlots();
                 long tRotate = sw.ElapsedMilliseconds;
-                _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
+                // v3.24.1 coverPrimaryFirst: true — incoming-first HWND_TOP plant kills
+                // the multimon swap taskbar peek (see WindowManager.ArrangeMultiMonitor).
+                _windowManager.ArrangeWindows(clients, _monitorSlotByPid, coverPrimaryFirst: true);
                 long tArrange = sw.ElapsedMilliseconds;
                 UpdateHookConfig();
                 long tHook = sw.ElapsedMilliseconds;
@@ -1170,7 +1172,9 @@ public class TrayManager : IDisposable
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 RotateMonitorSlots();
                 long tRotate = sw.ElapsedMilliseconds;
-                _windowManager.ArrangeWindows(clients, _monitorSlotByPid);
+                // v3.24.1 coverPrimaryFirst: true — incoming-first HWND_TOP plant kills
+                // the multimon swap taskbar peek (see WindowManager.ArrangeMultiMonitor).
+                _windowManager.ArrangeWindows(clients, _monitorSlotByPid, coverPrimaryFirst: true);
                 long tArrange = sw.ElapsedMilliseconds;
                 UpdateHookConfig();
                 long tHook = sw.ElapsedMilliseconds;
@@ -3387,7 +3391,10 @@ public class TrayManager : IDisposable
                         var sw = System.Diagnostics.Stopwatch.StartNew();
                         RotateMonitorSlots();
                         long tRotate = sw.ElapsedMilliseconds;
-                        _windowManager.ArrangeWindows(swapClients, _monitorSlotByPid);
+                        // v3.24.1 coverPrimaryFirst: true — same incoming-first HWND_TOP
+                        // plant as the `\`/`]` hotkeys; the tray-menu swap is the identical
+                        // multimon swap mechanism and would otherwise peek too.
+                        _windowManager.ArrangeWindows(swapClients, _monitorSlotByPid, coverPrimaryFirst: true);
                         long tArrange = sw.ElapsedMilliseconds;
                         UpdateHookConfig();
                         long tHook = sw.ElapsedMilliseconds;
@@ -4753,7 +4760,10 @@ public class TrayManager : IDisposable
             // the rotated slot assignment instead of the fixed clientIndex.
             if (slimForThisPid)
             {
-                var monBounds = GetMonitorForPid(pid, clientIndex);
+                // v3.24.2 — EFFECTIVE bounds (lock-to-primary-aware), NOT the secondary's
+                // native bounds, so the hook pins the SAME size ArrangeMultiMonitor sets.
+                // Pinning native dims here was the swap refit (taskbar peek + smoosh).
+                var monBounds = GetEffectiveMonitorForPid(pid, clientIndex);
                 // v3.22.45: route hook-DLL target dims through the same
                 // AdjustWindowRectEx-based math as ApplySlimTitlebar so the
                 // hook (which forces these exact dims on every EQ-side
@@ -5060,6 +5070,39 @@ public class TrayManager : IDisposable
 
         int slot = ResolveSlotForPid(pid, clientIndexFallback);
         return monitorOrder[slot % monitorOrder.Count];
+    }
+
+    /// <summary>
+    /// v3.24.2 — the EFFECTIVE slim-coverage monitor bounds for a PID, applying the SAME
+    /// lock-to-primary-dims policy <see cref="WindowManager.ArrangeMultiMonitor"/> uses to SIZE
+    /// the window. This is what the hook must pin so it doesn't fight the arrange — the v3.24.1
+    /// swap refit (taskbar peek + DX smoosh/black-bar) was the hook pinning the secondary
+    /// monitor's NATIVE dims (e.g. 1920x1200) while arrange used the locked primary dims
+    /// (1920x1080); the hook won and that per-swap resize fired EQ's backbuffer rebuild.
+    /// Mirrors <see cref="GetMonitorForPid"/> but overrides a secondary-slot client to the
+    /// primary's dims when the shared policy is active.
+    /// </summary>
+    private WinRect GetEffectiveMonitorForPid(int pid, int clientIndexFallback)
+    {
+        var monitors = _windowManager.GetAllMonitorFullBounds();
+        if (monitors.Count == 0)
+            return new WinRect { Right = 1920, Bottom = 1080 };
+
+        var primaryIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, monitors.Count - 1);
+        int secondaryIdx = WindowManager.ResolveSecondaryMonitorIdx(_config.Layout.SecondaryMonitor, primaryIdx, monitors);
+        var primaryMon = monitors[primaryIdx];
+        if (monitors.Count <= 1) return primaryMon;  // one monitor → no lock-to-primary
+
+        var secondaryMon = monitors[secondaryIdx];
+        int slot = ResolveSlotForPid(pid, clientIndexFallback);
+        if ((slot % 2) == 0) return primaryMon;  // primary slot is the source of dims, unchanged
+
+        // Secondary slot: apply the SAME lock-to-primary decision the arrange uses, so the hook
+        // pins the locked size (matching arrange) instead of the secondary monitor's native dims.
+        return WindowManager.ShouldLockToPrimaryDims(primaryMon, secondaryMon,
+                   _config.Layout.SlimTitlebar, _config.Layout.SlimTitlebarSecondary)
+            ? WindowManager.ApplyLockToPrimaryDims(secondaryMon, primaryMon)
+            : secondaryMon;
     }
 
     /// <summary>

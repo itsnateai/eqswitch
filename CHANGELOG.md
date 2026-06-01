@@ -1,5 +1,33 @@
 # Changelog
 
+## v3.24.2 — Fix: multimonitor swap taskbar peek + DX smoosh (root cause: hook/arrange size disagreement) (2026-06-01)
+
+Kills the one-frame taskbar peek AND the black-bar/smoosh on `\` / `]` (and tray-menu "Swap
+Windows") multimonitor swaps in slim mode, on mismatched-resolution monitor setups.
+
+- **Root cause — two positioning authorities disagreed on the window size.**
+  `WindowManager.ArrangeMultiMonitor` applies *lock-to-primary-dims* (both clients sized to the
+  primary monitor's dimensions, to keep EQ's DX swap-chain one constant size across swaps). But
+  `TrayManager.UpdateHookConfigForPid` — which writes the rect the injected `eqswitch-hook.dll`
+  pins on every `WM_WINDOWPOSCHANGING` — sized each client to its OWN monitor's *native* dims.
+  On a primary-1080 / secondary-1200 setup the arrange set the secondary window to 1920×1080 and
+  the hook immediately yanked it to 1920×1216. **That per-swap resize fired EQ's DX backbuffer
+  rebuild** — which is the taskbar peek (the rebuild re-triggers the shell's rude-window recalc)
+  AND the smoosh/black-bar (1080-rendered content stretched into a 1216 window). The earlier
+  HWND_TOP plant and `MarkFullscreenWindow` attempts were treating symptoms of this.
+- **Fix — one source of truth for the multimon size.** The lock-to-primary-dims policy
+  (`ShouldLockToPrimaryDims` + `ApplyLockToPrimaryDims`) is now shared: both `ArrangeMultiMonitor`
+  (sets the window size) and `UpdateHookConfigForPid` (pins the hook rect, via the new
+  `GetEffectiveMonitorForPid`) derive the rect from the *same* helpers, so the hook can no longer
+  pin a different size than the arrange set. No resize → no DX rebuild → no peek and no smoosh. On
+  mismatched monitors the clean result is a primary-sized window on the taller secondary with the
+  **secondary taskbar visible in the leftover band** (the long-wanted "taskbar on 2nd monitor").
+- **Retained:** the incoming-first `HWND_TOP` plant (`coverPrimaryFirst`, default-false, on the 3
+  swap sites) — cheap coverage of the move-time recalc, verified by `--test-swap-cover`.
+- **Removed:** the v3.24.1 `MarkFullscreenWindow` attempt — unnecessary once the resize-fight is
+  gone, and it would have suppressed the very 2nd-monitor taskbar this fix exposes.
+  Root-cause research + surgery brief: `docs/specs/2026-05-31-eqswitch-taskbar-flicker-fix.md`.
+
 ## v3.24.0 — Native instant-crisp Window-Mode toggle, both directions (2026-06-01)
 
 Completes the v3.23.7 smush fix. The interim made **Fullscreen→Windowed** instant-crisp but left a
