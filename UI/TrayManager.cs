@@ -3854,58 +3854,80 @@ public class TrayManager : IDisposable
         try
         {
 
+        // v3.23.4: launch-time same-login dedup. Two team slots resolving to the same
+        // login (Username, Server) would have EQ kick the second client. The
+        // AutoLoginTeamsDialog Save-time guard blocks this at save, but slots persist as
+        // bare name strings resolved late (Character-first), so a team can silently
+        // become a same-login collision when Accounts/Characters mutate post-save (FK
+        // edit, account rename/delete, splitter re-run). Dedup here at the launch
+        // boundary against the live resolved logins. See Core/TeamLoginDeduper.
         int fired = 0;
-        bool first = true;
+        bool anyFired = false;
+        var firedLogins = new HashSet<(string, string)>();
         foreach (var (user, slotLabel) in slots)
         {
             if (string.IsNullOrEmpty(user)) continue;
 
-            if (!first)
+            // Resolve the slot to a Character or Account, then to its backing login.
+            // v3.22.27 R2 (T2-Sonnet + T2-Opus convergent HIGH): this lambda runs on a
+            // Task.Run threadpool thread, NOT the UI thread. ApplySettings (UI thread)
+            // can swap _config.Characters / _config.Accounts via ReloadConfigCore between
+            // iterations; without this lock the threadpool reader sees a torn
+            // FirstOrDefault. Resolve under the lock, release before any await/fire.
+            Character? character;
+            Account? account = null;
+            lock (ConfigManager.ConfigMutationLock)
+            {
+                character = _config.FindCharacterByName(user);
+                if (character == null) account = _config.FindAccountByName(user);
+            }
+
+            AccountKey? login = character != null ? character.AccountKey
+                              : account != null ? AccountKey.From(account)
+                              : (AccountKey?)null;
+
+            // Per-slot dedup decision via the same primitive the unit tests exercise
+            // (TeamLoginDeduper.Step / Decide) — production and test share one impl.
+            var decision = TeamLoginDeduper.Step(firedLogins, login);
+            if (decision == TeamLoginDeduper.Decision.SkipUnresolved)
+            {
+                FileLogger.Warn($"FireTeam({teamIndex}): {slotLabel} '{user}' not found in Accounts or Characters — skipping");
+                continue;
+            }
+            if (decision == TeamLoginDeduper.Decision.SkipDuplicate)
+            {
+                var dupMsg = $"{slotLabel} '{user}' resolves to login {login!.Value}, already fired this team — skipping (EQ would kick the duplicate session)";
+                FileLogger.Warn($"FireTeam({teamIndex}): {dupMsg}");
+                _uiContext?.Post(_ => ShowWarning($"Team {teamIndex}: {dupMsg}"), null);
+                continue;
+            }
+
+            // Inter-slot delay only between slots that actually fire - a skipped slot
+            // shouldn't burn the LaunchDelayMs gap. Honors Settings -> Video -> Client
+            // Launch Delay so concurrent autologins don't hit Dalaya's auth gate within
+            // ~ms of each other (both BURST 1 submits within 31ms caused "connection
+            // error" rejections, dual-box test 2026-04-25).
+            if (anyFired)
             {
                 FileLogger.Info($"FireTeam({teamIndex}): waiting {delayMs}ms before next slot (LaunchDelayMs)");
                 await Task.Delay(delayMs);
             }
-            first = false;
+            anyFired = true;
 
-            // Character-first resolve (preferred team-slot content).
-            // v3.22.27 R2 (T2-Sonnet + T2-Opus convergent HIGH): this lambda
-            // runs on a Task.Run threadpool thread, NOT the UI thread.
-            // Between Task.Delay iterations, ApplySettings (UI thread) can
-            // swap _config.Characters / _config.Accounts via ReloadConfigCore
-            // assignments. Without this lock the threadpool reader sees a
-            // torn FirstOrDefault. Same ConfigMutationLock pattern.
-            Character? character;
-            lock (ConfigManager.ConfigMutationLock)
-            {
-                character = _config.FindCharacterByName(user);
-            }
             if (character != null)
             {
-                // Always null override -> Character's default behavior (enter world).
-                bool? enterWorldOverride = null;
-                FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{user}' \u2192 Character '{character.EffectiveLabel}' \u2192 enter world");
-                _ = _autoLoginManager.LoginAndEnterWorld(character, enterWorldOverride);  // PARALLEL — no await
+                // Null override -> Character's default behavior (enter world).
+                FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{user}' → Character '{character.EffectiveLabel}' → enter world");
+                _ = _autoLoginManager.LoginAndEnterWorld(character, null);  // PARALLEL - no await
                 fired++;
-                continue;
             }
-
-            // Account-only slot. Always charselect — no character target to enter world with.
-            // v3.22.27 R2: same threadpool-thread lock-protection as the
-            // Character branch above.
-            Account? account;
-            lock (ConfigManager.ConfigMutationLock)
+            else
             {
-                account = _config.FindAccountByName(user);
-            }
-            if (account != null)
-            {
-                    FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{user}' \u2192 Account '{account.EffectiveLabel}' \u2192 charselect");
-                _ = _autoLoginManager.LoginToCharselect(account);  // PARALLEL — no await
+                // Account-only slot. Always charselect - no character target to enter world.
+                FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{user}' → Account '{account!.EffectiveLabel}' → charselect");
+                _ = _autoLoginManager.LoginToCharselect(account);  // PARALLEL - no await
                 fired++;
-                continue;
             }
-
-            FileLogger.Warn($"FireTeam({teamIndex}): {slotLabel} '{user}' not found in Accounts or Characters \u2014 skipping");
         }
         if (fired == 0)
         {

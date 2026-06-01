@@ -1,5 +1,29 @@
 # Changelog
 
+## v3.23.4 — Launch-time same-login guard for teams (2026-06-01)
+
+Closes the gap the v3.23.1 Quick Login dup-warning and the AutoLoginTeamsDialog Save-time
+guard both leave open: those validate at *edit/save* time, but team slots persist as bare
+name strings resolved late (Character-first), so a previously-valid team can silently become
+a same-login collision when the Account/Character lists mutate afterward (an FK edit, an
+account rename/delete, or the v4 splitter re-running on a Settings save). Firing two clients
+into one login `(Username, Server)` gets the second kicked by EQ.
+
+- **`FireTeam` now dedups at the launch boundary.** As each slot resolves to its backing
+  login, a login already fired for this team is skipped — `Warn` log + tray balloon
+  ("…already fired this team — skipping") instead of launching a doomed second client. The
+  check runs against the *live resolved* logins at fire time, so it catches collisions the
+  save-time guards can't see. Case-insensitive on username **and** server, matching the
+  save-time guard.
+- **Inter-slot delay only between slots that actually fire** — a skipped or unresolved slot
+  no longer burns the `LaunchDelayMs` gap.
+- **New pure helper `Core/TeamLoginDeduper`** (`KeyOf` + `Decide`) with 9 unit cases behind a
+  `--test-team-dedup` flag: same-login pair, distinct logins, case-variant user/server,
+  null-between-dups, empty-username, boundary non-collision (`ab|c` vs `a|bc`), triple-dup.
+
+Surfaced while investigating a duplicate "Ohyoudidntknow" identity — a Character and a phantom
+Account sharing a name — that had put two `gotquiz1`-login characters on one team.
+
 ## v3.23.2 — Quick Login typed-format fixes (verification swarm) (2026-05-31)
 
 Two fixes surfaced by an adversarial multi-agent review of v3.23.1.

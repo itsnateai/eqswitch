@@ -188,6 +188,26 @@ static class Program
             return;
         }
 
+        // --test-team-dedup — run Core/TeamLoginDeduperTests.RunAll() and exit with its
+        // return code. Guards the v3.23.4 launch-time same-login dedup that backstops
+        // FireTeam (two slots resolving to one login must not both fire — EQ kicks the dup).
+        if (args.Length >= 1 && args[0] == "--test-team-dedup")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.TeamLoginDeduperTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"TeamLoginDeduperTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
         // --test-window-mode-style — run Core/WindowModeStyleTests.RunAll() and
         // exit with its return code. Guards the WindowMode → GWL_STYLE mapping
         // (Fullscreen=WS_POPUP, Windowed=WS_CAPTION) added in v3.22.81 Phase 2.
