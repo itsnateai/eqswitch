@@ -716,6 +716,29 @@ public static class DarkTheme
             Math.Clamp(c.G + amount, 0, 255),
             Math.Clamp(c.B + amount, 0, 255));
 
+    /// <summary>Width of text as a Label renders it (default TextRenderer padding).</summary>
+    public static int MeasureText(string text, Font font) =>
+        TextRenderer.MeasureText(text, font).Width;
+
+    /// <summary>
+    /// Truncate text with a trailing ellipsis so it fits maxWidth px in the given
+    /// font. maxWidth == int.MaxValue means "no limit". Keeps a variable-length
+    /// name label from overrunning a fixed control column (hotkey dialog rows).
+    /// </summary>
+    public static string Ellipsize(string text, Font font, int maxWidth)
+    {
+        if (maxWidth == int.MaxValue || MeasureText(text, font) <= maxWidth) return text;
+        if (maxWidth <= 0) return "";
+        for (int len = text.Length - 1; len > 0; len--)
+        {
+            var candidate = text.Substring(0, len) + "…";
+            if (MeasureText(candidate, font) <= maxWidth) return candidate;
+        }
+        // Honor the contract: never return something wider than maxWidth. If even
+        // the bare ellipsis doesn't fit (maxWidth narrower than the glyph), drop it.
+        return MeasureText("…", font) <= maxWidth ? "…" : "";
+    }
+
     /// <summary>
     /// Dispose all non-shared Font objects on a control tree.
     /// WinForms does NOT own or dispose fonts assigned to controls — call this

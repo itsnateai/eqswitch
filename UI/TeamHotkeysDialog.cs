@@ -40,12 +40,18 @@ public sealed class TeamHotkeysDialog : Form
         _otherHotkeys = otherHotkeys;
 
         // Row label is "Team N — name1 / name2" (no destination suffix —
-        // destination is per-slot now, dictated by kind). Label column 200
-        // covers most pairs; AutoEllipsis truncates worst case. Form 400.
-        const int formW = 400;
-        const int formH = 250;
-        const int cardW = 370;
-        const int cardH = 180;
+        // destination is per-slot now, dictated by kind). The compound name
+        // chain needs the widest label column in the family, so Team is the
+        // 470px member. It shares the family's 150px box (wide enough for
+        // "Ctrl+Alt+Shift+F12") and row pitch; the box is right-aligned 10px
+        // from the card edge. Long name pairs are ellipsized with a greedy
+        // budget — a short first name donates room to a long second one.
+        const int formW = 470;
+        const int formH = 252;
+        const int cardW = 440;
+        const int cardH = 182;
+        const int boxX  = 280;    // box left edge (right-aligned: cardW - 10 - boxW); wide label column for long 2nd names
+        const int boxW  = 150;    // wide enough for "Ctrl+Alt+Shift+F12"
 
         // Restore last-open position if available; otherwise center on parent.
         if (_lastLocation.HasValue)
@@ -83,10 +89,44 @@ public sealed class TeamHotkeysDialog : Form
             else
             {
                 int xCursor = prefix.Right;
+                // Names render as separate color-coded labels laid end-to-end, so a
+                // long pair can overrun the hotkey box. Measure the whole chain; if
+                // it would reach the box, ellipsize each name to an even share of
+                // the room before the box. Short pairs stay un-clipped.
+                var font = DarkTheme.FontUI85;
+                int sepW = DarkTheme.MeasureText(" / ", font);
+                int nameRoom = (boxX - 8) - xCursor - sepW * (slots.Count - 1);
+                int totalW = slots.Sum(sl => DarkTheme.MeasureText(sl.Name, font));
+                // Per-name display budgets. If the whole chain fits, nothing clips.
+                // Otherwise each name gets a fair share, but names that fit under
+                // their share donate the slack to longer ones — so a short first
+                // name (e.g. "Natedogg") lets a long second name show more chars
+                // instead of both truncating to the same width.
+                var budget = new int[slots.Count];
+                if (totalW <= nameRoom)
+                {
+                    for (int b = 0; b < budget.Length; b++) budget[b] = int.MaxValue;
+                }
+                else
+                {
+                    int fair = Math.Max(0, nameRoom / slots.Count);
+                    int slack = 0, over = 0;
+                    foreach (var sl in slots)
+                    {
+                        int w = DarkTheme.MeasureText(sl.Name, font);
+                        if (w <= fair) slack += fair - w; else over++;
+                    }
+                    int bonus = over > 0 ? slack / over : 0;
+                    for (int b = 0; b < slots.Count; b++)
+                    {
+                        int w = DarkTheme.MeasureText(slots[b].Name, font);
+                        budget[b] = w <= fair ? int.MaxValue : fair + bonus;
+                    }
+                }
                 for (int s = 0; s < slots.Count; s++)
                 {
                     var (name, isCharacter) = slots[s];
-                    var nameLbl = DarkTheme.AddCardLabel(card, name, xCursor, cy + 4);
+                    var nameLbl = DarkTheme.AddCardLabel(card, DarkTheme.Ellipsize(name, font, budget[s]), xCursor, cy + 4);
                     nameLbl.ForeColor = isCharacter switch
                     {
                         true  => DarkTheme.CardBlue,
@@ -102,7 +142,7 @@ public sealed class TeamHotkeysDialog : Form
                 }
             }
 
-            _boxes[i] = MakeHotkeyBox(card, 220, cy + 1, 140, initial[i] ?? "");
+            _boxes[i] = MakeHotkeyBox(card, boxX, cy + 1, boxW, initial[i] ?? "");
             cy += 30;
         }
 
@@ -110,13 +150,13 @@ public sealed class TeamHotkeysDialog : Form
             "Press a combo to capture. Backspace, Delete, or Escape clears.",
             10, cy + 4);
 
-        // Buttons: Cancel right edge (~370) lands ~10px inside card right edge (380).
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 200, formH - 44);
+        // Buttons: Cancel right edge aligns to the card's right edge (450); Save sits 10px to its left.
+        var btnSave = DarkTheme.MakePrimaryButton("Save", 280, formH - 44);
         btnSave.Click += OnSaveClicked;
         Controls.Add(btnSave);
         AcceptButton = btnSave;
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 290, formH - 44);
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 370, formH - 44);
         btnCancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         Controls.Add(btnCancel);
         CancelButton = btnCancel;
@@ -134,6 +174,7 @@ public sealed class TeamHotkeysDialog : Form
             Font = _hotkeyFont,
             TextAlign = HorizontalAlignment.Center,
             ShortcutsEnabled = false,
+            PlaceholderText = "press keys…",   // affordance on empty boxes; clears on capture
             Text = initialText,
         };
         tb.KeyDown += HotkeyBoxKeyDown;

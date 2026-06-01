@@ -83,9 +83,25 @@ public sealed class AccountHotkeysDialog : Form
         // +24px overhead reserves a row at the top of the card for the
         // "Will load to Character Select" intent hint (only shown in the
         // populated branch — the empty-state branch has its own message).
+        //
+        // Width is stale-aware. Stale (deleted-account) rows need a 3rd column
+        // — the rebind dropdown — so they keep the legacy wide 460px layout.
+        // The common case (live rows only) is compact: a 305px form with a 150px
+        // hotkey box (wide enough for "Ctrl+Alt+Shift+F12"), right-aligned 10px
+        // from the card edge so it sits just right of the account-name column.
+        // Long names are ellipsized in AddLiveRow so they can't overrun the box.
+        // CharacterHotkeysDialog shares these numbers; Team uses the same 150px
+        // box on a wider card for its compound "name / name" labels.
+        bool hasStale  = staleBindings.Count > 0;
+        int  formWidth = hasStale ? 460 : 305;
+        int  cardWidth = formWidth - 30;                 // 10 left inset + 20 right gap
+        int  rowPitch  = 30;             // a touch airier between rows than 28
+        int  boxWidth  = hasStale ? 160 : 150;           // fits "Ctrl+Alt+Shift+F12" centered
+        int  boxX      = hasStale ? 240 : (cardWidth - 10 - boxWidth);  // right-aligned 10px from card edge (≈115 on the 305px form), just right of the name
+
         int rowCount = accounts.Count + staleBindings.Count;
         bool showIntentHint = rowCount > 0;
-        int cardHeight = Math.Max(82, 64 + rowCount * 30 + (showIntentHint ? 24 : 0));
+        int cardHeight = Math.Max(82, 64 + rowCount * rowPitch + (showIntentHint ? 24 : 0));
         int formHeight = Math.Min(70 + cardHeight, 540);
 
         // Restore last-open position if available; otherwise center on parent.
@@ -99,13 +115,13 @@ public sealed class AccountHotkeysDialog : Form
             StartPosition = FormStartPosition.CenterParent;
         }
         FormClosing += (_, _) => _lastLocation = Location;
-        DarkTheme.StyleForm(this, "Account Hotkeys", new Size(460, formHeight));
+        DarkTheme.StyleForm(this, "Account Hotkeys", new Size(formWidth, formHeight));
 
         var card = DarkTheme.MakeCard(this,
             "\uD83D\uDD11",
             "Direct Account Hotkeys",
             DarkTheme.CardGold,
-            10, 10, 430, cardHeight);
+            10, 10, cardWidth, cardHeight);
 
         int cy = 32;
 
@@ -114,7 +130,8 @@ public sealed class AccountHotkeysDialog : Form
             var lblEmpty = DarkTheme.AddCardHint(card,
                 "No accounts yet — add one via Settings \u2192 Accounts first.",
                 10, cy);
-            lblEmpty.Size = new Size(410, 40);
+            lblEmpty.AutoSize = false;   // allow wrap within the narrow card
+            lblEmpty.Size = new Size(cardWidth - 20, 40);
         }
         else
         {
@@ -130,7 +147,7 @@ public sealed class AccountHotkeysDialog : Form
             foreach (var stale in staleBindings.OrderBy(b => b.TargetName, StringComparer.Ordinal))
             {
                 AddStaleRow(card, 10, cy, stale);
-                cy += 30;
+                cy += rowPitch;
             }
 
             // Live rows in Accounts list order. Display = Username (so users can
@@ -140,35 +157,42 @@ public sealed class AccountHotkeysDialog : Form
             foreach (var a in accounts)
             {
                 byTargetName.TryGetValue(a.Name, out var currentCombo);
-                AddLiveRow(card, 10, cy, a.Name, a.Username, currentCombo ?? "");
-                cy += 30;
+                AddLiveRow(card, 10, cy, a.Name, a.Username, currentCombo ?? "", boxX, boxWidth);
+                cy += rowPitch;
             }
 
             cy += 8;
             DarkTheme.AddCardHint(card,
-                "Press a combo to capture. Backspace, Delete, or Escape clears.",
+                "Press a combo. Backspace/Delete/Esc clears.",
                 10, cy);
         }
 
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 250, formHeight - 44);
+        // Right-align Cancel to the card's right edge; Save sits 10px to its left.
+        int btnCancelX = 10 + cardWidth - 80;
+        int btnSaveX   = btnCancelX - 90;
+
+        var btnSave = DarkTheme.MakePrimaryButton("Save", btnSaveX, formHeight - 44);
         btnSave.Click += OnSaveClicked;
         Controls.Add(btnSave);
         AcceptButton = btnSave;
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 350, formHeight - 44);
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, btnCancelX, formHeight - 44);
         btnCancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         Controls.Add(btnCancel);
         CancelButton = btnCancel;
     }
 
-    private void AddLiveRow(Panel card, int x, int y, string accountName, string accountUsername, string currentCombo)
+    private void AddLiveRow(Panel card, int x, int y, string accountName, string accountUsername, string currentCombo, int boxX, int boxWidth)
     {
         // Display = Username; binding TargetName = accountName (the friendly Name).
-        var lbl = DarkTheme.AddCardLabel(card, accountUsername, x, y + 4);
+        // Ellipsize so a long username can't overrun the box (the label is AutoSize).
+        var shown = DarkTheme.Ellipsize(accountUsername, DarkTheme.FontUI85, boxX - 8 - x);
+        var lbl = DarkTheme.AddCardLabel(card, shown, x, y + 4);
         // Match the A-pill purple in the Accounts team-configure window.
         lbl.ForeColor = DarkTheme.CardPurple;
-        lbl.Size = new Size(220, 20);
-        var tb = MakeHotkeyBox(card, x + 230, y + 1, 160, currentCombo);
+        // Label is AutoSize — it hugs the username text; the box position (boxX,
+        // right-aligned by the caller) is what defines the clean two-column gap.
+        var tb = MakeHotkeyBox(card, boxX, y + 1, boxWidth, currentCombo);
         _liveRows.Add((accountName, tb));
     }
 
@@ -213,6 +237,7 @@ public sealed class AccountHotkeysDialog : Form
             Font = _hotkeyFont,   // shared — dialog-lifetime Font disposed in override below
             TextAlign = HorizontalAlignment.Center,
             ShortcutsEnabled = false,
+            PlaceholderText = "press keys…",   // affordance on empty boxes; clears on capture
             Text = initialText,
         };
         tb.KeyDown += HotkeyBoxKeyDown;

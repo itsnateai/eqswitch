@@ -69,9 +69,24 @@ public sealed class CharacterHotkeysDialog : Form
         // +24px overhead reserves a row at the top of the card for the
         // "Will load into game" intent hint (only shown in the populated
         // branch — the empty-state branch has its own message).
+        //
+        // Width is stale-aware. Stale (deleted-character) rows need a 3rd column
+        // — the rebind dropdown — so they keep the legacy wide 460px layout.
+        // The common case (live rows only) is compact: a 305px form with a 150px
+        // hotkey box (wide enough for "Ctrl+Alt+Shift+F12"), right-aligned 10px
+        // from the card edge — identical to AccountHotkeysDialog. Long names are
+        // ellipsized in AddLiveRow so they can't overrun the box; orphan rows
+        // append " (no account)", which is also subject to that ellipsis.
+        bool hasStale  = staleBindings.Count > 0;
+        int  formWidth = hasStale ? 460 : 305;
+        int  cardWidth = formWidth - 30;                 // 10 left inset + 20 right gap
+        int  rowPitch  = 30;             // a touch airier between rows than 28
+        int  boxWidth  = hasStale ? 160 : 150;           // fits "Ctrl+Alt+Shift+F12" centered
+        int  boxX      = hasStale ? 240 : (cardWidth - 10 - boxWidth);  // right-aligned 10px from card edge
+
         int rowCount = characters.Count + staleBindings.Count;
         bool showIntentHint = rowCount > 0;
-        int cardHeight = Math.Max(82, 64 + rowCount * 30 + (showIntentHint ? 24 : 0));
+        int cardHeight = Math.Max(82, 64 + rowCount * rowPitch + (showIntentHint ? 24 : 0));
         int formHeight = Math.Min(70 + cardHeight, 540);
 
         // Restore last-open position if available; otherwise center on parent.
@@ -85,13 +100,13 @@ public sealed class CharacterHotkeysDialog : Form
             StartPosition = FormStartPosition.CenterParent;
         }
         FormClosing += (_, _) => _lastLocation = Location;
-        DarkTheme.StyleForm(this, "Character Hotkeys", new Size(460, formHeight));
+        DarkTheme.StyleForm(this, "Character Hotkeys", new Size(formWidth, formHeight));
 
         var card = DarkTheme.MakeCard(this,
             "\uD83E\uDDD9",
             "Direct Character Hotkeys",
             DarkTheme.CardPurple,
-            10, 10, 430, cardHeight);
+            10, 10, cardWidth, cardHeight);
 
         int cy = 32;
 
@@ -100,7 +115,8 @@ public sealed class CharacterHotkeysDialog : Form
             var lblEmpty = DarkTheme.AddCardHint(card,
                 "No characters yet — add one via Settings \u2192 Accounts \u2192 Characters first.",
                 10, cy);
-            lblEmpty.Size = new Size(410, 40);
+            lblEmpty.AutoSize = false;   // allow wrap within the narrow card
+            lblEmpty.Size = new Size(cardWidth - 20, 40);
         }
         else
         {
@@ -115,44 +131,50 @@ public sealed class CharacterHotkeysDialog : Form
             foreach (var stale in staleBindings.OrderBy(b => b.TargetName, StringComparer.Ordinal))
             {
                 AddStaleRow(card, 10, cy, stale);
-                cy += 30;
+                cy += rowPitch;
             }
 
             foreach (var c in characters)
             {
                 byTargetName.TryGetValue(c.Name, out var currentCombo);
                 AddLiveRow(card, 10, cy, c.Name, currentCombo ?? "",
-                    isOrphan: string.IsNullOrEmpty(c.AccountUsername));
-                cy += 30;
+                    isOrphan: string.IsNullOrEmpty(c.AccountUsername), boxX: boxX, boxWidth: boxWidth);
+                cy += rowPitch;
             }
 
             cy += 8;
             DarkTheme.AddCardHint(card,
-                "Press a combo to capture. Backspace, Delete, or Escape clears.",
+                "Press a combo. Backspace/Delete/Esc clears.",
                 10, cy);
         }
 
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 250, formHeight - 44);
+        // Right-align Cancel to the card's right edge; Save sits 10px to its left.
+        int btnCancelX = 10 + cardWidth - 80;
+        int btnSaveX   = btnCancelX - 90;
+
+        var btnSave = DarkTheme.MakePrimaryButton("Save", btnSaveX, formHeight - 44);
         btnSave.Click += OnSaveClicked;
         Controls.Add(btnSave);
         AcceptButton = btnSave;
 
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 350, formHeight - 44);
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, btnCancelX, formHeight - 44);
         btnCancel.Click += (_, _) => { DialogResult = DialogResult.Cancel; Close(); };
         Controls.Add(btnCancel);
         CancelButton = btnCancel;
     }
 
-    private void AddLiveRow(Panel card, int x, int y, string characterName, string currentCombo, bool isOrphan)
+    private void AddLiveRow(Panel card, int x, int y, string characterName, string currentCombo, bool isOrphan, int boxX, int boxWidth)
     {
         var displayName = isOrphan ? $"{characterName} (no account)" : characterName;
-        var lbl = DarkTheme.AddCardLabel(card, displayName, x, y + 4);
+        // Ellipsize so a long or orphan-suffixed name can't overrun the box.
+        var shown = DarkTheme.Ellipsize(displayName, DarkTheme.FontUI85, boxX - 8 - x);
+        var lbl = DarkTheme.AddCardLabel(card, shown, x, y + 4);
         // Orphan-dim outranks the role color — signals "this won't actually launch"
         // until re-linked. Resolved characters get CardBlue to match the C-pill.
         lbl.ForeColor = isOrphan ? DarkTheme.FgDimGray : DarkTheme.CardBlue;
-        lbl.Size = new Size(220, 20);
-
-        var tb = MakeHotkeyBox(card, x + 230, y + 1, 160, currentCombo);
+        // Label is AutoSize — it hugs the (possibly orphan-suffixed) name; the box
+        // position (boxX, right-aligned by the caller) defines the two-column gap.
+        var tb = MakeHotkeyBox(card, boxX, y + 1, boxWidth, currentCombo);
         _liveRows.Add((characterName, tb));
     }
 
@@ -200,6 +222,7 @@ public sealed class CharacterHotkeysDialog : Form
             Font = _hotkeyFont,   // shared — disposed in Dispose override
             TextAlign = HorizontalAlignment.Center,
             ShortcutsEnabled = false,
+            PlaceholderText = "press keys…",   // affordance on empty boxes; clears on capture
             Text = initialText,
         };
         tb.KeyDown += HotkeyBoxKeyDown;
