@@ -809,8 +809,9 @@ public class EQClientSettingsForm : Form
             else
                 Set("Defaults", "SkyUpdateInterval", "3000"); // EQ default
 
-            // EQ reads WindowedMode from [Defaults], not [VideoMode] — write both
-            string wmVal = config.EQClientIni.ForceWindowedMode ? "TRUE" : "FALSE";
+            // EQ reads WindowedMode from [Defaults], not [VideoMode] — write both.
+            // v3.22.91: pinned invariant — always TRUE (AppConfig.Validate floors it).
+            const string wmVal = "TRUE";
             Set("Defaults", "WindowedMode", wmVal);
             Set("VideoMode", "WindowedMode", wmVal);
             // Write Maximized to all sections that use it
