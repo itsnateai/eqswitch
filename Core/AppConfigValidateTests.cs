@@ -406,8 +406,22 @@ public static class AppConfigValidateTests
             failures += Assert("quicklogin empty preserved", cfg.QuickLogin4, "");
         }
 
+        // Case 17 (v3.23.2): interior-whitespace name-trim + mutated flag. A hand-edited
+        // "char:  Nate  " must normalize to "char:Nate" (else dispatch looks up "  Nate"
+        // and misses), and Validate() must report it mutated so the fix persists to disk.
+        {
+            var cfg = new AppConfig
+            {
+                ConfigVersion = 4,
+                QuickLogin1 = "char:  Nate  ",
+            };
+            bool mutated = cfg.Validate();
+            failures += Assert("quicklogin interior-whitespace trimmed", cfg.QuickLogin1, "char:Nate");
+            failures += Assert("quicklogin normalization sets mutated", mutated, true);
+        }
+
         Console.WriteLine(failures == 0
-            ? "AppConfigValidateTests: all 16 cases PASSED"
+            ? "AppConfigValidateTests: all 17 cases PASSED"
             : $"AppConfigValidateTests: {failures} assertion failure(s)");
         return failures == 0 ? 0 : 1;
     }

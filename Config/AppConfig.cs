@@ -432,15 +432,23 @@ public class AppConfig
             mutated = true;
         }
 
-        // v3.23.1: normalize the four typed Quick Login slot values (QuickLogin1-4). Trim,
-        // and drop a prefix with an empty name ("char:" / "acct:" from a hand-edit) back to
-        // unassigned so dispatch never fires a lookup for "". Same mutated-on-change contract
-        // as DefaultLaunchOneAccount above.
+        // v3.23.1: normalize the four typed Quick Login slot values (QuickLogin1-4). Trim the
+        // whole value AND the bare name inside a char:/acct: prefix (a hand-edited "char:  Nate"
+        // would otherwise resolve to a name with leading spaces and silently miss), and drop a
+        // prefix with an empty name back to unassigned so dispatch never looks up "". Same
+        // mutated-on-change contract as DefaultLaunchOneAccount above. (v3.23.2: name-trim.)
         static string NormQuickLogin(string? value, ref bool mut)
         {
-            var v = (value ?? "").Trim();
-            if (v == QuickLoginSlot.CharPrefix || v == QuickLoginSlot.AcctPrefix) v = "";
-            if (v != (value ?? "")) mut = true;
+            var original = value ?? "";
+            var (kind, name) = QuickLoginSlot.Parse(original.Trim());
+            name = name.Trim();
+            string v = kind switch
+            {
+                QuickLoginSlot.Kind.Character => name.Length == 0 ? "" : QuickLoginSlot.ForCharacter(name),
+                QuickLoginSlot.Kind.Account   => name.Length == 0 ? "" : QuickLoginSlot.ForAccount(name),
+                _ => name, // Empty or LegacyBare — already trimmed bare value
+            };
+            if (v != original) mut = true;
             return v;
         }
         QuickLogin1 = NormQuickLogin(QuickLogin1, ref mutated);

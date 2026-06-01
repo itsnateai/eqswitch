@@ -1907,8 +1907,10 @@ public class WindowManager
         // in-world title yet, use the bound QuickLogin value itself. For
         // account-only binds (e.g. "backup") this renders the user's chosen
         // label instead of an empty {CHAR} slot (handoff 2026-04-24 Open #3).
+        // v3.23.2: strip the typed char:/acct: prefix here too — boundName is the raw
+        // slot value, so without Parse the title would render "char:Natedogg" verbatim.
         if (string.IsNullOrEmpty(charName) && !string.IsNullOrEmpty(boundName))
-            charName = boundName;
+            charName = QuickLoginSlot.Parse(boundName).Name;
 
         var title = template
             .Replace("{CHAR}", charName)

@@ -1,5 +1,17 @@
 # Changelog
 
+## v3.23.2 — Quick Login typed-format fixes (verification swarm) (2026-05-31)
+
+Two fixes surfaced by an adversarial multi-agent review of v3.23.1.
+
+- **Window-title `{CHAR}` no longer leaks the prefix.** `SetWindowTitle`'s final fallback used
+  the raw slot value, so a custom title template could render `char:Natedogg` / `acct:gotquiz`
+  verbatim. It now strips the `char:`/`acct:` prefix (restoring the pre-typed-format behavior of
+  rendering the bare name). Narrow path (custom title template only), but a real leak.
+- **`Validate()` trims the name inside the prefix.** A hand-edited `char:  Nate` now normalizes
+  to `char:Nate` instead of resolving to a name with leading spaces (which silently missed at
+  dispatch). New `AppConfigValidateTests` case 17 covers it + asserts the mutated flag.
+
 ## v3.23.1 — Quick Login polish: dup-warning, Validate, dead-code cleanup (2026-05-31)
 
 Follow-up hardening of the v3.23.0 Quick Login Slots feature.
