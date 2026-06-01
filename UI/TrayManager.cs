@@ -107,7 +107,10 @@ public class TrayManager : IDisposable
 
     // Deferred DX-reset for instant-live Window-Mode toggle (Windowed target). Instance field
     // (not a local) so a rapid re-toggle stops the prior pending reset instead of stacking a
-    // second ForceDxReinit pass (v3.23.7 review). Disposed in StopForegroundHook.
+    // second ForceDxReinit pass (v3.23.7 review). Disposed in StopForegroundHook — which also means
+    // a Settings→Apply (ReloadConfigCore→StopForegroundHook) within the ~1.5s window cancels a
+    // pending reset. That's acceptable: the part-1 INI rewrite + EQ's next zone DX reset still land
+    // the client crisp, and ReloadConfigCore re-runs the restyle so the window isn't left broken.
     private System.Windows.Forms.Timer? _dxReinitTimer;
 
     // Debounce timestamp for multi-monitor toggle (500ms)
@@ -1849,7 +1852,12 @@ public class TrayManager : IDisposable
                     if (_disposed) return; // queued Ticks can fire after Dispose (v3.22.33 pattern)
                     reinitTimer.Stop();
                     reinitTimer.Dispose();
-                    if (ReferenceEquals(_dxReinitTimer, reinitTimer)) _dxReinitTimer = null;
+                    // If a newer toggle already replaced us, this Tick is STALE → bail WITHOUT firing
+                    // ForceDxReinit. WinForms Stop() does NOT dequeue an already-posted WM_TIMER, so a
+                    // superseded timer's Tick can still arrive; firing it would double the reset (the
+                    // black-flash this whole field exists to prevent). The live timer fires exactly once.
+                    if (!ReferenceEquals(_dxReinitTimer, reinitTimer)) return;
+                    _dxReinitTimer = null;
                     foreach (var c in _processManager.Clients)
                     {
                         if (_autoLoginManager.IsLoginActive(c.ProcessId)) continue;
