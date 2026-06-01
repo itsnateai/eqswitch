@@ -2138,7 +2138,7 @@ public class TrayManager : IDisposable
                     ToolTipText = captured.Tooltip,
                     ShortcutKeyDisplayString = hkLookup.GetCombo(captured.Name),
                     // AccountItemMarker \u2192 DarkMenuRenderer paints the row in
-                    // FgAccountOrange (the hotkey column stays white per
+                    // FgAccountOrangeMenu (the hotkey column stays white per
                     // OnRenderItemText's shortcut-pass override).
                     Tag = DarkMenuRenderer.AccountItemMarker,
                 };
@@ -2193,6 +2193,11 @@ public class TrayManager : IDisposable
                 {
                     ToolTipText = tooltip,
                     ShortcutKeyDisplayString = hkLookup.GetCombo(captured.Name),
+                    // CharacterItemMarker → DarkMenuRenderer paints the row in
+                    // FgCharacterBlueMenu (the hotkey column stays white per
+                    // OnRenderItemText's shortcut-pass override). Orphan rows
+                    // override this with OrphanItemMarker below.
+                    Tag = DarkMenuRenderer.CharacterItemMarker,
                 };
                 if (isOrphan)
                 {
@@ -2277,7 +2282,7 @@ public class TrayManager : IDisposable
                 //
                 // SlotSource is carried through so the renderer can color
                 // Account-resolved names orange and Character-resolved names
-                // white inside one row (DarkMenuRenderer.OnRenderItemText
+                // blue inside one row (DarkMenuRenderer.OnRenderItemText
                 // walks the TeamRowSegments stored in Item.Tag). The Item.Text
                 // we set below MUST equal the concatenated visible string \u2014
                 // ToolStrip sizes the row from Text, and the segment-draw
@@ -2294,14 +2299,19 @@ public class TrayManager : IDisposable
                     label = $"{emojiPrefix}{string.Join(" / ", slotResults.Select(r => r.Name))}";
                     var segs = new List<DarkMenuRenderer.TeamRowSegment>(2 * slotResults.Count + 1)
                     {
-                        new(emojiPrefix, IsAccount: false),
+                        new(emojiPrefix, DarkTheme.FgWhite),
                     };
                     for (int i = 0; i < slotResults.Count; i++)
                     {
-                        if (i > 0) segs.Add(new DarkMenuRenderer.TeamRowSegment(" / ", IsAccount: false));
+                        if (i > 0) segs.Add(new DarkMenuRenderer.TeamRowSegment(" / ", DarkTheme.FgWhite));
                         segs.Add(new DarkMenuRenderer.TeamRowSegment(
                             slotResults[i].Name,
-                            IsAccount: slotResults[i].Source == SlotSource.Account));
+                            slotResults[i].Source switch
+                            {
+                                SlotSource.Account   => DarkTheme.FgAccountOrangeMenu,
+                                SlotSource.Character => DarkTheme.FgCharacterBlueMenu,
+                                _                    => DarkTheme.FgWhite,
+                            }));
                     }
                     segments = new DarkMenuRenderer.TeamRowSegments(segs);
                 }
@@ -2490,8 +2500,8 @@ public class TrayManager : IDisposable
             // label segment that concatenate back to Item.Text for layout sizing.
             item.Tag = new DarkMenuRenderer.TeamRowSegments(new[]
             {
-                new DarkMenuRenderer.TeamRowSegment($"{bullet}  ", IsAccount: active),
-                new DarkMenuRenderer.TeamRowSegment(text, IsAccount: false),
+                new DarkMenuRenderer.TeamRowSegment($"{bullet}  ", active ? DarkTheme.FgAccountOrangeMenu : DarkTheme.FgWhite),
+                new DarkMenuRenderer.TeamRowSegment(text, DarkTheme.FgWhite),
             });
             item.Click += (_, _) => SetWindowMode(m);
             return item;
@@ -2509,8 +2519,8 @@ public class TrayManager : IDisposable
         var pipItem = new ToolStripMenuItem($"{pipBox}  Picture in Picture");
         pipItem.Tag = new DarkMenuRenderer.TeamRowSegments(new[]
         {
-            new DarkMenuRenderer.TeamRowSegment($"{pipBox}  ", IsAccount: pipOn),
-            new DarkMenuRenderer.TeamRowSegment("Picture in Picture", IsAccount: false),
+            new DarkMenuRenderer.TeamRowSegment($"{pipBox}  ", pipOn ? DarkTheme.FgAccountOrangeMenu : DarkTheme.FgWhite),
+            new DarkMenuRenderer.TeamRowSegment("Picture in Picture", DarkTheme.FgWhite),
         });
         if (!string.IsNullOrEmpty(hk.TogglePip))
             pipItem.ShortcutKeyDisplayString = hk.TogglePip;
@@ -2533,8 +2543,8 @@ public class TrayManager : IDisposable
         };
         multiMonItem.Tag = new DarkMenuRenderer.TeamRowSegments(new[]
         {
-            new DarkMenuRenderer.TeamRowSegment($"{mmBox}  ", IsAccount: isMultiMon),
-            new DarkMenuRenderer.TeamRowSegment("Multi-Monitor Mode", IsAccount: false),
+            new DarkMenuRenderer.TeamRowSegment($"{mmBox}  ", isMultiMon ? DarkTheme.FgAccountOrangeMenu : DarkTheme.FgWhite),
+            new DarkMenuRenderer.TeamRowSegment("Multi-Monitor Mode", DarkTheme.FgWhite),
         });
         multiMonItem.Click += (_, _) =>
         {
@@ -5364,7 +5374,8 @@ internal class DarkMenuRenderer : ToolStripProfessionalRenderer
     private static readonly Color SepColor = DarkTheme.Border;           // (64, 56, 78)
     private static readonly Color CheckBg = DarkTheme.AccentGreen;       // (0, 140, 80)
     private static readonly Color MarginBg = DarkTheme.BgPanel;          // (38, 33, 48)
-    private static readonly Color AccountText = DarkTheme.FgAccountOrange; // (255, 159, 0)
+    private static readonly Color AccountText = DarkTheme.FgAccountOrangeMenu; // dimmed orange — menu sits on BgDark
+    private static readonly Color CharacterText = DarkTheme.FgCharacterBlueMenu; // dimmed blue — menu sits on BgDark
 
     // ─── Tag-routed color markers ──────────────────────────────────────
     // Set ToolStripMenuItem.Tag to one of these singletons at build time;
@@ -5372,17 +5383,22 @@ internal class DarkMenuRenderer : ToolStripProfessionalRenderer
     // ReferenceEquals compare is allocation-free and typo-immune (vs a string
     // tag). Used by BuildAccountsSubmenu and BuildCharactersSubmenu.
     internal static readonly object AccountItemMarker = new();
+    internal static readonly object CharacterItemMarker = new();
     internal static readonly object OrphanItemMarker = new();
 
     // Per-segment label spec for Teams rows that mix Account- and
     // Character-resolved slot names. Drawn by OnRenderItemText so a single
     // row can render "🚀  natedogg / acpots" with the Account-sourced name
-    // in orange and the Character-sourced name in white. Tag the item with
-    // a TeamRowSegments instance to opt into this rendering. The item's
-    // primary Text MUST still contain the visible string concatenated —
-    // ToolStrip layout sizes the row from Item.Text, not from segments.
+    // in orange and the Character-sourced name in blue. Each segment carries
+    // its own explicit Color, so the renderer stays purely presentational
+    // (it never maps a role → color — call sites pick FgAccountOrangeMenu /
+    // FgCharacterBlueMenu / FgWhite). Also drives the orange-glyph toggle rows
+    // (Window-mode radios, PiP, Multi-Monitor). Tag the item with a
+    // TeamRowSegments instance to opt into this rendering. The item's primary
+    // Text MUST still contain the visible string concatenated — ToolStrip
+    // layout sizes the row from Item.Text, not from segments.
     internal sealed record TeamRowSegments(IReadOnlyList<TeamRowSegment> Segments);
-    internal sealed record TeamRowSegment(string Text, bool IsAccount);
+    internal sealed record TeamRowSegment(string Text, Color Color);
 
     public DarkMenuRenderer() : base(new DarkColorTable()) { }
 
@@ -5410,6 +5426,7 @@ internal class DarkMenuRenderer : ToolStripProfessionalRenderer
         // valid path (renderer clobbers it). All color choices live here.
         e.Item.ForeColor = !e.Item.Enabled ? DisabledText
             : ReferenceEquals(e.Item.Tag, AccountItemMarker) ? AccountText
+            : ReferenceEquals(e.Item.Tag, CharacterItemMarker) ? CharacterText
             : ReferenceEquals(e.Item.Tag, OrphanItemMarker) ? DisabledText
             : ItemText;
     }
@@ -5445,7 +5462,7 @@ internal class DarkMenuRenderer : ToolStripProfessionalRenderer
 
         // Primary-label pass for segmented Teams rows: draw each segment in
         // its own color so Account-resolved names render orange and
-        // Character-resolved names render white inside the same row.
+        // Character-resolved names render blue inside the same row.
         if (e.Item.Enabled && e.Item.Tag is TeamRowSegments segs)
         {
             DrawTeamRowSegments(e, segs);
@@ -5475,7 +5492,7 @@ internal class DarkMenuRenderer : ToolStripProfessionalRenderer
         foreach (var seg in segs.Segments)
         {
             if (string.IsNullOrEmpty(seg.Text) || remaining <= 0) continue;
-            var color = seg.IsAccount ? AccountText : ItemText;
+            var color = seg.Color;
             var size = TextRenderer.MeasureText(
                 e.Graphics, seg.Text, e.TextFont, new Size(remaining, rect.Height), format);
             int drawWidth = Math.Min(size.Width, remaining);

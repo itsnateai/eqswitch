@@ -112,7 +112,8 @@ public sealed class AccountHotkeysDialog : Form
         }
         else
         {
-            StartPosition = FormStartPosition.CenterParent;
+            StartPosition = FormStartPosition.Manual;
+            DarkTheme.CenterOnOwnerOnLoad(this);
         }
         FormClosing += (_, _) => _lastLocation = Location;
         DarkTheme.StyleForm(this, "Account Hotkeys", new Size(formWidth, formHeight));
@@ -188,8 +189,8 @@ public sealed class AccountHotkeysDialog : Form
         // Ellipsize so a long username can't overrun the box (the label is AutoSize).
         var shown = DarkTheme.Ellipsize(accountUsername, DarkTheme.FontUI85, boxX - 8 - x);
         var lbl = DarkTheme.AddCardLabel(card, shown, x, y + 4);
-        // Match the A-pill purple in the Accounts team-configure window.
-        lbl.ForeColor = DarkTheme.CardPurple;
+        // Match the A-pill orange in the Accounts team-configure window.
+        lbl.ForeColor = DarkTheme.FgAccountOrange;
         // Label is AutoSize — it hugs the username text; the box position (boxX,
         // right-aligned by the caller) is what defines the clean two-column gap.
         var tb = MakeHotkeyBox(card, boxX, y + 1, boxWidth, currentCombo);

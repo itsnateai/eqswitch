@@ -92,7 +92,7 @@ public sealed class AccountEditDialog : Form
 
         var card = DarkTheme.MakeCard(this, "\uD83D\uDD11",
             _isEdit ? "Edit Account" : "New Account",
-            DarkTheme.CardGold, 10, 10, cardW, cardH);
+            DarkTheme.CardOrange, 10, 10, cardW, cardH);
 
         int cy = 32;
 

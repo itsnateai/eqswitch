@@ -116,7 +116,7 @@ public sealed class CharacterEditDialog : Form
 
         var card = DarkTheme.MakeCard(this, "\uD83E\uDDD9",
             _isEdit ? "Edit Character" : "New Character",
-            DarkTheme.CardPurple, 10, 10, cardW, cardH);
+            DarkTheme.FgCharacterBlue, 10, 10, cardW, cardH);
 
         int cy = 32;
 

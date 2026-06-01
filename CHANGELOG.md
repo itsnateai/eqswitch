@@ -1,5 +1,26 @@
 # Changelog
 
+## v3.23.5 — Unified identity color scheme + dialog centering (2026-06-01)
+
+App-wide color consistency: **Account identity renders orange, Character identity renders
+blue, hotkey text stays white** — consistently across the tray Accounts/Characters/Teams
+submenus, the Autologin Teams dialog (pills, dropdowns, summary table), the
+Account/Character/Team hotkey dialogs, Quick Login, and the Settings cards. The previous
+per-surface mix (account gold/purple, character white/blue/purple) is gone.
+
+- **Two-layer palette.** Full-strength orange/blue on the lighter card and dialog surfaces;
+  dimmed variants in the tray context menu, which sits on a darker background where the full
+  tones glowed and produced ClearType edge-fringing.
+- **Card-title rule.** Edit dialogs take their identity color on the card accent (Account
+  edit = orange, Character edit = blue); the hotkey dialogs keep a neutral gold title so it
+  doesn't compete with their colored name rows.
+- **Owner-drawn dropdown rows** (Autologin Teams + Quick Login) color Character entries blue
+  and Account entries orange, switching to white on the highlighted row so it stays readable
+  on the system highlight.
+- **Modeless "Configure" dialogs now open centered on the Settings window** instead of the
+  top-left corner — `FormStartPosition.CenterParent` is ignored for modeless `Show()`, so a
+  shared helper centers them on first open and clamps to the owner's monitor.
+
 ## v3.23.4 — Launch-time same-login guard for teams (2026-06-01)
 
 Closes the gap the v3.23.1 Quick Login dup-warning and the AutoLoginTeamsDialog Save-time

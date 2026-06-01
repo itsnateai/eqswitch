@@ -61,7 +61,8 @@ public sealed class TeamHotkeysDialog : Form
         }
         else
         {
-            StartPosition = FormStartPosition.CenterParent;
+            StartPosition = FormStartPosition.Manual;
+            DarkTheme.CenterOnOwnerOnLoad(this);
         }
         FormClosing += (_, _) => _lastLocation = Location;
         DarkTheme.StyleForm(this, "Team Hotkeys", new Size(formW, formH));
@@ -74,8 +75,8 @@ public sealed class TeamHotkeysDialog : Form
         for (int i = 0; i < 4; i++)
         {
             // Show "Team N — slot1 / slot2" with each slot color-coded by kind:
-            // Character=CardBlue, Account=CardPurple, unresolved=default. Matches
-            // the A/C pill colors in the Accounts team-configure window.
+            // Character=blue, Account=orange, unresolved=gray. Matches the A/C
+            // pill colors in the Accounts team-configure window.
             // No destination suffix — destination is per-slot, dictated by kind:
             // Character → enters world, Account → charselect (handled at FireTeam).
             var slots = i < teamPreviews.Count ? teamPreviews[i] : Array.Empty<(string, bool?)>();
@@ -129,8 +130,8 @@ public sealed class TeamHotkeysDialog : Form
                     var nameLbl = DarkTheme.AddCardLabel(card, DarkTheme.Ellipsize(name, font, budget[s]), xCursor, cy + 4);
                     nameLbl.ForeColor = isCharacter switch
                     {
-                        true  => DarkTheme.CardBlue,
-                        false => DarkTheme.CardPurple,
+                        true  => DarkTheme.FgCharacterBlue,
+                        false => DarkTheme.FgAccountOrange,
                         null  => DarkTheme.FgGray,
                     };
                     xCursor = nameLbl.Right;

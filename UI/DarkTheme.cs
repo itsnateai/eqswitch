@@ -483,10 +483,39 @@ public static class DarkTheme
         return panel;
     }
 
+    /// <summary>
+    /// Center a MODELESS form (shown via Show(owner), not ShowDialog) over its
+    /// owner on first paint. FormStartPosition.CenterParent is silently ignored
+    /// for Show() — only ShowDialog honors it — so modeless dialogs otherwise
+    /// open at the design-time top-left corner. Wire this from the ctor's
+    /// first-open branch (with StartPosition = Manual). Owner is assigned by
+    /// Show(owner) before Load fires; falls back to the monitor under the cursor
+    /// if no owner is set.
+    /// </summary>
+    public static void CenterOnOwnerOnLoad(Form form)
+    {
+        form.Load += (_, _) =>
+        {
+            var a = form.Owner?.Bounds ?? Screen.FromPoint(Cursor.Position).WorkingArea;
+            int x = a.Left + (a.Width  - form.Width)  / 2;
+            int y = a.Top  + (a.Height - form.Height) / 2;
+            // Clamp to the owner's screen working area so an owner sitting near a
+            // monitor edge can't push the centered dialog (partly) off-screen.
+            var wa = Screen.FromRectangle(a).WorkingArea;
+            x = Math.Max(wa.Left, Math.Min(x, wa.Right  - form.Width));
+            y = Math.Max(wa.Top,  Math.Min(y, wa.Bottom - form.Height));
+            form.Location = new Point(x, y);
+        };
+    }
+
     /// <summary>Card title colors — consistent palette for all tabs.</summary>
     public static readonly Color CardGreen = Color.FromArgb(100, 220, 130);
     public static readonly Color CardBlue = Color.FromArgb(140, 160, 220);
     public static readonly Color CardGold = Color.FromArgb(220, 190, 100);
+    // Softer card-title orange. The neon identity orange (FgAccountOrange 255,159,0)
+    // reads fine on the dark menu but is harsh as a card title on the lighter BgPanel
+    // — this dampened tone keeps the "Accounts = orange" cue without burning the eye.
+    public static readonly Color CardOrange = Color.FromArgb(225, 150, 70);
     public static readonly Color CardRed = Color.FromArgb(220, 120, 120);
     public static readonly Color CardPurple = Color.FromArgb(180, 140, 220);
     public static readonly Color CardCyan = Color.FromArgb(100, 200, 210);
@@ -508,6 +537,22 @@ public static class DarkTheme
     // Account-resolved slots inside Teams rows). Matches EQ's classic /ooc
     // chat orange — thematic recognition + reads cleanly on BgDark and BgHover.
     public static readonly Color FgAccountOrange = Color.FromArgb(255, 159, 0);
+
+    // Character-identity color — a saturated royal/cornflower blue, legible on the
+    // dark BgPanel (38,33,48). Chosen 2026-06-01 over the earlier purple (Nate
+    // preferred blue in the eyeball loop). Used for character names everywhere:
+    // tray Characters/Teams submenus, the hotkey dialogs, the Autologin Teams
+    // dialog + summary table, and the Characters card accents. Pairs with
+    // FgAccountOrange — the app-wide "account = orange, character = blue" scheme.
+    public static readonly Color FgCharacterBlue = Color.FromArgb(80, 140, 235);
+
+    // Dimmed identity variants for the tray CONTEXT MENU only. The menu sits on
+    // BgDark (32,28,42) — darker than the card BgPanel — so the full-strength
+    // FgAccountOrange / FgCharacterBlue pop too hard there (Nate, 2026-06-01).
+    // Everywhere else (cards, dialogs, pills, dropdowns) keeps the full-strength
+    // colors. Used by DarkMenuRenderer + BuildTeamsSubmenu + the toggle glyphs.
+    public static readonly Color FgAccountOrangeMenu = Color.FromArgb(210, 135, 35);
+    public static readonly Color FgCharacterBlueMenu = Color.FromArgb(72, 123, 208);
 
     // Team-boundary separator in the Settings → Autologin Teams summary card.
     // Mid-saturation red — pure (255,0,0) would clash with FgAccountOrange on

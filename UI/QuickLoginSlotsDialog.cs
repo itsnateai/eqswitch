@@ -74,7 +74,8 @@ internal sealed class QuickLoginSlotsDialog : Form
         }
         else
         {
-            StartPosition = FormStartPosition.CenterParent;
+            StartPosition = FormStartPosition.Manual;
+            DarkTheme.CenterOnOwnerOnLoad(this);
         }
         FormClosing += (_, _) => _lastLocation = Location;
         DarkTheme.StyleForm(this, "Quick Login Slots", new Size(430, 320));
@@ -223,8 +224,9 @@ internal sealed class QuickLoginSlotsDialog : Form
 
     /// <summary>
     /// Owner-paint: Account entries orange (DarkTheme.FgAccountOrange — EQ /ooc orange),
-    /// Characters white, (none) dimmed. Paints both the closed selection box and the
-    /// dropdown rows; the system highlight (DrawBackground) reads fine under either color.
+    /// Character entries blue (FgCharacterBlue), (none) dimmed. Paints both the closed
+    /// selection box and the dropdown rows; the system highlight (DrawBackground) reads fine
+    /// under either color.
     /// </summary>
     private static void DrawComboItem(object? sender, DrawItemEventArgs e)
     {
@@ -243,12 +245,23 @@ internal sealed class QuickLoginSlotsDialog : Form
             e.Graphics.DrawLine(pen, e.Bounds.Left + 6, midY, e.Bounds.Right - 6, midY);
             return; // no text, no focus rectangle on a separator
         }
-        Color fg = opt?.Kind switch
+        // Selected dropdown row gets the system-highlight background; draw white
+        // there so the blue Character color isn't blue-on-blue. Identity color
+        // otherwise (incl. the closed box, which is ComboBoxEdit, not Selected).
+        Color fg;
+        if ((e.State & DrawItemState.Selected) != 0)
         {
-            QuickLoginSlot.Kind.Account => DarkTheme.FgAccountOrange,
-            QuickLoginSlot.Kind.Character => DarkTheme.FgWhite,
-            _ => DarkTheme.FgDimGray,
-        };
+            fg = DarkTheme.FgWhite;
+        }
+        else
+        {
+            fg = opt?.Kind switch
+            {
+                QuickLoginSlot.Kind.Account => DarkTheme.FgAccountOrange,
+                QuickLoginSlot.Kind.Character => DarkTheme.FgCharacterBlue,
+                _ => DarkTheme.FgDimGray,
+            };
+        }
         TextRenderer.DrawText(e.Graphics, opt?.Display ?? "", e.Font ?? cb.Font, e.Bounds, fg,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
         e.DrawFocusRectangle();

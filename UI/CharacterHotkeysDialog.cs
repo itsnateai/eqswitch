@@ -97,7 +97,8 @@ public sealed class CharacterHotkeysDialog : Form
         }
         else
         {
-            StartPosition = FormStartPosition.CenterParent;
+            StartPosition = FormStartPosition.Manual;
+            DarkTheme.CenterOnOwnerOnLoad(this);
         }
         FormClosing += (_, _) => _lastLocation = Location;
         DarkTheme.StyleForm(this, "Character Hotkeys", new Size(formWidth, formHeight));
@@ -105,7 +106,7 @@ public sealed class CharacterHotkeysDialog : Form
         var card = DarkTheme.MakeCard(this,
             "\uD83E\uDDD9",
             "Direct Character Hotkeys",
-            DarkTheme.CardPurple,
+            DarkTheme.CardGold,
             10, 10, cardWidth, cardHeight);
 
         int cy = 32;
@@ -170,8 +171,8 @@ public sealed class CharacterHotkeysDialog : Form
         var shown = DarkTheme.Ellipsize(displayName, DarkTheme.FontUI85, boxX - 8 - x);
         var lbl = DarkTheme.AddCardLabel(card, shown, x, y + 4);
         // Orphan-dim outranks the role color — signals "this won't actually launch"
-        // until re-linked. Resolved characters get CardBlue to match the C-pill.
-        lbl.ForeColor = isOrphan ? DarkTheme.FgDimGray : DarkTheme.CardBlue;
+        // until re-linked. Resolved characters get blue to match the C-pill.
+        lbl.ForeColor = isOrphan ? DarkTheme.FgDimGray : DarkTheme.FgCharacterBlue;
         // Label is AutoSize — it hugs the (possibly orphan-suffixed) name; the box
         // position (boxX, right-aligned by the caller) defines the two-column gap.
         var tb = MakeHotkeyBox(card, boxX, y + 1, boxWidth, currentCombo);

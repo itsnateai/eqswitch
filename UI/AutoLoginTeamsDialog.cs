@@ -9,7 +9,8 @@ namespace EQSwitch.UI;
 /// Dialog for configuring Autologin Teams 1-12 (v3.22.58, 2026-05-27 — extended from 6 to 12).
 /// Each team has 2 slots. Slot dropdowns list Characters (enter-world targets, preferred)
 /// followed by Accounts (charselect-only fallback). A colored status pill next to each
-/// slot indicates resolution: blue 'C' = Character, purple 'A' = Account-only, red ✗ = unresolved.
+/// slot indicates resolution: blue 'C' = Character, orange 'A' = Account-only, red ✗ = unresolved.
+/// Dropdown rows are owner-painted the same way (Character blue, Account orange) — see DrawComboItem.
 ///
 /// Teams 7-12 are tray-right-click-submenu only (no global hotkey binding, no trayclick
 /// action dropdown entry) — by design per Nate 2026-05-27. The hotkey/trayclick firewall
@@ -144,7 +145,8 @@ internal sealed class AutoLoginTeamsDialog : Form
         }
         else
         {
-            StartPosition = FormStartPosition.CenterParent;
+            StartPosition = FormStartPosition.Manual;
+            DarkTheme.CenterOnOwnerOnLoad(this);
         }
         FormClosing += (_, _) => _lastLocation = Location;
         // Width 480 (unchanged from 6-team layout). Height 560 fits 12 team
@@ -348,6 +350,12 @@ internal sealed class AutoLoginTeamsDialog : Form
             ForeColor = DarkTheme.FgWhite,
             DropDownStyle = ComboBoxStyle.DropDownList,
             FlatStyle = FlatStyle.Flat,
+            // Owner-draw so Character rows render blue and Account rows orange
+            // (matches the C/A pills + the rest of the app). Mirrors the proven
+            // QuickLoginSlotsDialog pattern; independent of the WS_EX_COMPOSITED
+            // path that was dropped in v3.22.69.
+            DrawMode = DrawMode.OwnerDrawFixed,
+            ItemHeight = 18,
         };
         // v3.22.10: use AddRange (single layout invalidation) instead of N×Add
         // (one per item). Items themselves are hoisted to _comboItems built
@@ -356,12 +364,52 @@ internal sealed class AutoLoginTeamsDialog : Form
         // across the 24-combo ctor.
         cb.Items.AddRange(_comboItemsArray);
         cb.SelectedIndex = 0;
+        cb.DrawItem += DrawComboItem;
 
         if (_comboMaxW > width) cb.DropDownWidth = _comboMaxW;
 
         cb.MouseWheel += (_, e) => ((HandledMouseEventArgs)e).Handled = true;
         Controls.Add(cb);
         return cb;
+    }
+
+    /// <summary>
+    /// Owner-paint: Character entries blue (FgCharacterBlue), Account entries
+    /// orange (FgAccountOrange), (none) dimmed. Paints both the closed selection box
+    /// and the dropdown rows; the system highlight (DrawBackground) reads fine under
+    /// either color. Mirrors QuickLoginSlotsDialog.DrawComboItem.
+    /// </summary>
+    private static void DrawComboItem(object? sender, DrawItemEventArgs e)
+    {
+        if (sender is not ComboBox cb) return;
+        e.DrawBackground();
+        if (e.Index < 0 || e.Index >= cb.Items.Count)
+        {
+            e.DrawFocusRectangle();
+            return;
+        }
+        var opt = cb.Items[e.Index] as SlotOption;
+        // On the highlighted dropdown row the system paints SystemColors.Highlight
+        // (blue) behind the text — drawing the blue Character color there would be
+        // blue-on-blue. Use white for the selected row; identity color otherwise
+        // (incl. the closed box, which is ComboBoxEdit state, not Selected).
+        Color fg;
+        if ((e.State & DrawItemState.Selected) != 0)
+        {
+            fg = DarkTheme.FgWhite;
+        }
+        else
+        {
+            fg = opt?.Kind switch
+            {
+                SlotKind.Account   => DarkTheme.FgAccountOrange,
+                SlotKind.Character => DarkTheme.FgCharacterBlue,
+                _                  => DarkTheme.FgDimGray, // (none)
+            };
+        }
+        TextRenderer.DrawText(e.Graphics, opt?.Display ?? "", e.Font ?? cb.Font, e.Bounds, fg,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        e.DrawFocusRectangle();
     }
 
     private void SelectByValue(ComboBox cbo, string value)
@@ -428,7 +476,7 @@ internal sealed class AutoLoginTeamsDialog : Form
         if (opt.Kind == SlotKind.Character)
         {
             pill.Text = "C";
-            pill.BackColor = DarkTheme.CardBlue;
+            pill.BackColor = DarkTheme.FgCharacterBlue;
             pill.ForeColor = Color.White;
             _tooltip.SetToolTip(pill,
                 "Resolves to Character — enters world when Enter World is on.");
@@ -436,8 +484,11 @@ internal sealed class AutoLoginTeamsDialog : Form
         else // Account
         {
             pill.Text = "A";
-            pill.BackColor = DarkTheme.CardPurple;
-            pill.ForeColor = Color.White;
+            pill.BackColor = DarkTheme.FgAccountOrange;
+            // Dark glyph on the bright-orange badge — white on FgAccountOrange is
+            // only ~1.9:1 contrast; BgDark reads cleanly (~13:1). The blue 'C'
+            // pill keeps white (white-on-blue is comfortable).
+            pill.ForeColor = DarkTheme.BgDark;
             _tooltip.SetToolTip(pill,
                 "Resolves to Account — charselect only (Accounts cannot enter world).");
         }

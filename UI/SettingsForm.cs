@@ -109,7 +109,7 @@ public class SettingsForm : Form
     // v3.22.78: OnSameNameCollision event + _lastNameCollisionHash field
     // removed. The "tray-menu clarity" balloon they powered is obsolete now
     // that the tray context menu colors Account-resolved rows orange and
-    // Character-resolved rows white — kind is structurally visible, not
+    // Character-resolved rows blue — kind is structurally visible, not
     // ambiguous, even when an Account and a Character share names
     // case-insensitively. See DarkMenuRenderer.OnRenderItemText / Build*Submenu.
 
@@ -905,7 +905,7 @@ public class SettingsForm : Form
         if (FocusExistingHotkeyDialog()) return;
 
         // Build structured per-slot previews so the dialog can color-code each
-        // name by kind (Character=blue, Account=purple) — matches the A/C pills
+        // name by kind (Character=blue, Account=orange) — matches the A/C pills
         // in the Accounts team-configure window. Resolution per slot:
         // Character.Name → IsCharacter=true; Account.Name → IsCharacter=false;
         // raw fallback → IsCharacter=null (rendered uncolored).
@@ -2100,7 +2100,7 @@ public class SettingsForm : Form
 
         // v3.22.78: same-name "consider renaming" balloon removed. Tray menu
         // now colors Account-resolved rows orange and Character-resolved rows
-        // white, so case-insensitive name collisions render unambiguously.
+        // blue, so case-insensitive name collisions render unambiguously.
 
         return true;
     }
@@ -2208,7 +2208,7 @@ public class SettingsForm : Form
         // ─── Accounts card ───────────────────────────────────────────
         // Card height 216: the DPAPI note + Flag legend share one hint row (legend
         // moved up beside the note, v3.22.91). Was 234 when the legend had its own row.
-        var accountsCard = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Accounts", DarkTheme.CardGold, 10, y, 480, 216);
+        var accountsCard = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Accounts", DarkTheme.CardOrange, 10, y, 480, 216);
 
         _dgvAccounts = MakeDualSectionGrid();
         _dgvAccounts.Columns.Add("Num", "#");
@@ -2284,7 +2284,7 @@ public class SettingsForm : Form
         y += 224;
 
         // ─── Characters card ─────────────────────────────────────────
-        var charactersCard = DarkTheme.MakeCard(page, "\uD83E\uDDD9", "Characters", DarkTheme.CardPurple, 10, y, 480, 196);
+        var charactersCard = DarkTheme.MakeCard(page, "\uD83E\uDDD9", "Characters", DarkTheme.FgCharacterBlue, 10, y, 480, 196);
 
         _dgvCharacters = MakeDualSectionGrid();
         _dgvCharacters.Columns.Add("Num", "#");
@@ -4067,7 +4067,7 @@ public class SettingsForm : Form
 /// <summary>
 /// Owner-painted Label that renders multi-colored team-summary rows. Set
 /// <see cref="Rows"/> to drive paint; segments are colored by their
-/// <see cref="SummarySegmentKind"/> (Account → orange, Character → white,
+/// <see cref="SummarySegmentKind"/> (Account → orange, Character → blue,
 /// TeamSeparator → red, Plain → ForeColor). Mirror text is published to the
 /// base <c>Label.Text</c> property so AutoEllipsis fallback + Narrator can
 /// still see the row content if owner-paint somehow doesn't fire.
@@ -4140,6 +4140,7 @@ internal sealed class TeamSummaryLabel : Label
                 var color = seg.Kind switch
                 {
                     SummarySegmentKind.AccountName    => DarkTheme.FgAccountOrange,
+                    SummarySegmentKind.CharacterName  => DarkTheme.FgCharacterBlue,
                     SummarySegmentKind.TeamSeparator  => DarkTheme.FgTeamSeparatorRed,
                     _                                 => ForeColor,
                 };
@@ -4169,7 +4170,7 @@ internal enum SummarySegmentKind
     Plain,
     /// <summary>Orange (FgAccountOrange): an Account-resolved slot name.</summary>
     AccountName,
-    /// <summary>White (Label.ForeColor): a Character-resolved slot name.</summary>
+    /// <summary>Blue (FgCharacterBlue): a Character-resolved slot name.</summary>
     CharacterName,
     /// <summary>Red (FgTeamSeparatorRed): the " | " boundary between two teams on the same row.</summary>
     TeamSeparator,
