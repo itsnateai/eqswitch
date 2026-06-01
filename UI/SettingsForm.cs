@@ -540,7 +540,7 @@ public class SettingsForm : Form
             if (_txtShowMenu != null && _txtShowMenu.Text != _txtShowMenuGeneral.Text)
                 _txtShowMenu.Text = _txtShowMenuGeneral.Text;
         };
-        DarkTheme.AddCardHint(cardEQ, "pop menu above clock", 250, cy + 2);
+        DarkTheme.AddCardHint(cardEQ, "pops menu above clock", 250, cy + 2);
 
         // v3.22.54: card-advance matched to card height (was 156 paired with
         // a 148 card; now 164 paired with the 156 card so the next card
