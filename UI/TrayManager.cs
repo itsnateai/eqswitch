@@ -1776,10 +1776,15 @@ public class TrayManager : IDisposable
     {
         if (_config.Layout.WindowMode == mode) return; // no-op if already set
 
-        // Write the invariant before the mode so a concurrent AutoLogin
-        // SaveImmediate serialize never sees WindowMode flipped while
-        // SlimTitlebar lags (both modes are slim-managed; AppConfig.Validate
-        // enforces this too).
+        // Both modes are slim-managed, so SlimTitlebar must be true. The real
+        // invariant enforcer is AppConfig.Validate (forces SlimTitlebar=true for
+        // any non-Fullscreen WindowMode on load) — a torn write that somehow
+        // persisted Windowed+non-slim self-heals there. We still set it here, and
+        // write it BEFORE WindowMode, so the only invalid pairing (Windowed +
+        // non-slim) is never even the transient in-memory state a concurrent
+        // AutoLogin SaveImmediate serialize could observe between these two
+        // writes. (Ordering narrows the torn-read window; it does not make the
+        // pair atomic — these are plain field stores, not a lock.)
         _config.Layout.SlimTitlebar = true;
         _config.Layout.WindowMode = mode;
 
