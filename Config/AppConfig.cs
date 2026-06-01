@@ -1172,7 +1172,9 @@ public class LaunchConfig
 
 public class PipConfig
 {
-    public bool Enabled { get; set; } = true;
+    // v3.23.0: PiP off by default. Fresh installs / configs missing the key start with the
+    // overlay disabled; existing configs keep their saved value (STJ deserialization).
+    public bool Enabled { get; set; } = false;
 
     /// <summary>Size preset: "Small", "Medium", "Large", "XL", "XXL", "XXXL", "Custom"</summary>
     public string SizePreset { get; set; } = "Large";

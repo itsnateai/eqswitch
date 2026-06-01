@@ -168,6 +168,26 @@ static class Program
             return;
         }
 
+        // --test-quicklogin — run Core/QuickLoginSlotTests.RunAll() and exit with its
+        // return code. Guards the v3.23.0 typed Quick Login slot format (char:/acct:
+        // round-trip + legacy bare back-compat) that the tray dispatch depends on.
+        if (args.Length >= 1 && args[0] == "--test-quicklogin")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.QuickLoginSlotTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"QuickLoginSlotTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
         // --test-window-mode-style — run Core/WindowModeStyleTests.RunAll() and
         // exit with its return code. Guards the WindowMode → GWL_STYLE mapping
         // (Fullscreen=WS_POPUP, Windowed=WS_CAPTION) added in v3.22.81 Phase 2.

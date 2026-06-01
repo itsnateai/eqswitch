@@ -3034,7 +3034,7 @@ public class TrayManager : IDisposable
         if (!string.IsNullOrEmpty(hk.LaunchOne))
             lines.Add($"  [{hk.LaunchOne}]  Launch one client");
         if (!string.IsNullOrEmpty(hk.LaunchAll))
-            lines.Add($"  [{hk.LaunchAll}]  Launch all clients");
+            lines.Add($"  [{hk.LaunchAll}]  Launch two clients");
 
         // Direct switch keys
         for (int i = 0; i < hk.DirectSwitchKeys.Count; i++)
@@ -3073,7 +3073,7 @@ public class TrayManager : IDisposable
         "SwapWindows" => "Swap positions",
         "TogglePiP" => "Toggle PiP",
         "LaunchOne" => "Launch one",
-        "LaunchAll" => "Launch all clients",
+        "LaunchAll" => "Launch two",
         "LoginAll"   => "Auto-login Team 1",
         "LoginAll2"  => "Auto-login Team 2",
         "LoginAll3"  => "Auto-login Team 3",
@@ -3235,7 +3235,7 @@ public class TrayManager : IDisposable
                 OnLaunchOne();
                 break;
             case "LaunchAll":
-                ShowBalloon("Launching all clients...");
+                ShowBalloon("Launching two clients...");
                 OnLaunchAll();
                 break;
             case "AutoLogin1": FireLegacyQuickLoginSlot(1); break;
@@ -3513,17 +3513,53 @@ public class TrayManager : IDisposable
         };
         if (string.IsNullOrEmpty(targetName))
         {
-            // v4 fallback: walk CharacterHotkeys ∪ AccountHotkeys (populated only)
-            // and fire the slot-th entry. Lets users with no v3 QuickLogin slots
-            // still bind tray AutoLoginN to their v4 hotkey-list entries.
-            if (TryFireV4QuickLoginFallback(slot)) return;
-
-            // Always log — diagnostic trail for empty-slot fires. Balloon is rate-limited
-            // to avoid tray-notification spam if a user holds down or rapidly repeats the hotkey.
-            // First press ALWAYS balloons (rate-limit only kicks in on rapid repeat).
-            FileLogger.Info($"FireLegacyQuickLoginSlot: slot {slot} fired but QuickLogin{slot} empty AND no v4 hotkey-list entry at index {slot}");
+            // v3.23.0: explicit slot assignment (QuickLoginSlotsDialog) is authoritative.
+            // Dropped the implicit "fire the Nth populated hotkey-list entry" fallback — it
+            // silently fired whoever happened to be first in the hotkey list for an
+            // UNASSIGNED slot, which surprised users. Empty now means empty. Balloon is
+            // rate-limited; first press always balloons.
+            FileLogger.Info($"FireLegacyQuickLoginSlot: slot {slot} fired but QuickLogin{slot} is unassigned");
             if (!ShouldSuppressEmptySlotBalloon(slot))
                 ShowBalloon($"Quick Login {slot}: no account assigned");
+            return;
+        }
+
+        // v3.23.0: typed slot targets written by QuickLoginSlotsDialog —
+        //   char:<Name> → v4 Character, enters world
+        //   acct:<Name> → v4 Account, stops at charselect
+        // Deterministic; bypasses the legacy LegacyAccount/AutoEnterWorld resolution below,
+        // which can't honor an explicit account=charselect pick when a same-username
+        // LegacyAccount row carries AutoEnterWorld=true. Un-prefixed values fall through to
+        // the legacy resolver for pre-v3.23 configs / hand-edits.
+        var typedSlot = QuickLoginSlot.Parse(targetName);
+        if (typedSlot.Kind == QuickLoginSlot.Kind.Character)
+        {
+            Character? ch;
+            lock (ConfigManager.ConfigMutationLock)
+                ch = _config.FindCharacterByName(typedSlot.Name);
+            if (ch != null)
+            {
+                LogFirstFire(slot, "Character (typed slot)", ch.EffectiveLabel);
+                FireCharacterLogin(ch);
+                return;
+            }
+            ShowBalloon($"Quick Login {slot}: character '{typedSlot.Name}' not found");
+            FileLogger.Warn($"QuickLogin{slot}: typed target 'char:{typedSlot.Name}' resolves to no v4 Character");
+            return;
+        }
+        if (typedSlot.Kind == QuickLoginSlot.Kind.Account)
+        {
+            Account? acc;
+            lock (ConfigManager.ConfigMutationLock)
+                acc = _config.Accounts.FirstOrDefault(a => a.Name.Equals(typedSlot.Name, StringComparison.OrdinalIgnoreCase));
+            if (acc != null)
+            {
+                LogFirstFire(slot, "Account (typed slot)", acc.EffectiveLabel);
+                FireAccountLogin(acc);
+                return;
+            }
+            ShowBalloon($"Quick Login {slot}: account '{typedSlot.Name}' not found");
+            FileLogger.Warn($"QuickLogin{slot}: typed target 'acct:{typedSlot.Name}' resolves to no v4 Account");
             return;
         }
 
@@ -3622,68 +3658,6 @@ public class TrayManager : IDisposable
 
         ShowBalloon($"Quick Login {slot}: v4 data missing for '{targetName}' (migration issue?)");
         FileLogger.Warn($"Legacy QuickLogin{slot}: resolved legacy row '{legacyRow.Name}' (key {accountKey}) but no v4 Account matches");
-    }
-
-    /// <summary>
-    /// v4 fallback for tray AutoLogin{N}: walks CharacterHotkeys then AccountHotkeys
-    /// (populated entries only), positionally indexed by slot. Characters first because
-    /// they enter world (higher-intent action); accounts after charselect-only.
-    /// Returns true if a binding was found and dispatched (caller skips empty-slot balloon).
-    /// </summary>
-    private bool TryFireV4QuickLoginFallback(int slot)
-    {
-        // v3.22.27 R1 (T2-Sonnet + T2-Opus convergent): snapshot the combined
-        // bindings list + the resolved entity lookups under the lock, then
-        // dispatch outside. Same pattern as FireLegacyQuickLoginSlot's
-        // three-tiny-locks. Re-entrant on the ApplySettings → BuildContextMenu
-        // call-path (which already holds the lock).
-        List<(HotkeyBinding Binding, bool IsCharacter)> combined;
-        lock (ConfigManager.ConfigMutationLock)
-        {
-            var hk = _config.Hotkeys;
-            combined = hk.CharacterHotkeys.Select(b => (Binding: b, IsCharacter: true))
-                .Concat(hk.AccountHotkeys.Select(b => (Binding: b, IsCharacter: false)))
-                .Where(t => HotkeyBindingUtil.IsPopulated(t.Binding))
-                .ToList();
-        }
-        if (slot < 1 || slot > combined.Count) return false;
-
-        var (binding, isCharacter) = combined[slot - 1];
-        if (isCharacter)
-        {
-            Character? character;
-            lock (ConfigManager.ConfigMutationLock)
-            {
-                character = _config.FindCharacterByName(binding.TargetName);
-            }
-            if (character != null)
-            {
-                LogFirstFire(slot, "Character (v4 fallback)", character.EffectiveLabel);
-                FireCharacterLogin(character);
-                return true;
-            }
-        }
-        else
-        {
-            Account? account;
-            lock (ConfigManager.ConfigMutationLock)
-            {
-                account = _config.Accounts.FirstOrDefault(a =>
-                    a.Name.Equals(binding.TargetName, StringComparison.OrdinalIgnoreCase));
-            }
-            if (account != null)
-            {
-                LogFirstFire(slot, "Account (v4 fallback)", account.EffectiveLabel);
-                FireAccountLogin(account);
-                return true;
-            }
-        }
-
-        // Stale binding — TargetName doesn't resolve to any v4 entity. Surface it
-        // explicitly rather than silently falling through to "no account assigned".
-        ShowBalloon($"Quick Login {slot}: hotkey target '{binding.TargetName}' is stale (deleted)");
-        FileLogger.Warn($"v4 fallback for slot {slot}: TargetName '{binding.TargetName}' (kind={(isCharacter ? "Character" : "Account")}) does not resolve");
-        return true;  // we DID handle it (with an error balloon) — caller shouldn't double-balloon.
     }
 
     // Empty-slot balloon rate-limiter — tracks last fire per slot. Guards against

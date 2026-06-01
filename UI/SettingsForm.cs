@@ -136,6 +136,16 @@ public class SettingsForm : Form
     // different surface (Configure Teams vs hotkey rebinding) and Nate wants
     // non-modal behavior so Settings stays interactable while it's open.
     private AutoLoginTeamsDialog? _openTeamsDialog;
+    // v3.23.0: Quick Login slots. Typed char:/acct: targets (see QuickLoginSlot), staged
+    // like the team slots — initialized from _config in LoadSettings, edited via the
+    // QuickLoginSlotsDialog (opened from the Characters card), consumed by BuildAppConfig.
+    // _lblQuickLoginReadout shows the live 1-4 assignments under the Tray Click Actions card.
+    private QuickLoginSlotsDialog? _openQuickLoginDialog;
+    private string _pendingQuickLogin1 = "";
+    private string _pendingQuickLogin2 = "";
+    private string _pendingQuickLogin3 = "";
+    private string _pendingQuickLogin4 = "";
+    private Label _lblQuickLoginReadout = null!;
     // Team login hotkeys: edited via TeamHotkeysDialog (opened from Direct
     // Bindings card on the Hotkeys tab). _pending* fields stage edits until
     // ApplySettings, mirroring the AccountHotkeys / CharacterHotkeys flow.
@@ -391,6 +401,12 @@ public class SettingsForm : Form
         _pendingTeam12A = _config.Team12Account1;
         _pendingTeam12B = _config.Team12Account2;
 
+        // v3.23.0: stage the four Quick Login slot targets (typed char:/acct: values).
+        _pendingQuickLogin1 = _config.QuickLogin1;
+        _pendingQuickLogin2 = _config.QuickLogin2;
+        _pendingQuickLogin3 = _config.QuickLogin3;
+        _pendingQuickLogin4 = _config.QuickLogin4;
+
         // Team{N}AutoEnter removed — kind alone dictates destination.
 
         tabs.TabPages.Add(BuildGeneralTab());      // 0
@@ -565,10 +581,14 @@ public class SettingsForm : Form
         // fallback preserves the value but the user has no in-UI way to
         // change it. Completing the round-trip here means hand-edit + UI
         // both work.
-        var clickActions = new[] { "None", "AutoLogin1", "AutoLoginTeam1", "TogglePiP", "LaunchOne", "LaunchAll", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "AutoLogin2", "AutoLogin3", "AutoLogin4", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4", "AutoLoginTeam5", "AutoLoginTeam6" };
+        // Display strings. "Launch One"/"Launch Two" are display-only (stored values stay
+        // "LaunchOne"/"LaunchAll" via the tray action maps) — "Launch Two" because the
+        // action launches the configured client count, which is 2 by default. See the
+        // _trayDisplayActionMap / _trayActionDisplayMap entries below.
+        var clickActions = new[] { "None", "Auto-Login1", "AutoLoginTeam1", "TogglePiP", "Launch One", "Launch Two", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "Auto-Login2", "Auto-Login3", "Auto-Login4", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4", "AutoLoginTeam5", "AutoLoginTeam6" };
         const int cboW = 140;
 
-        var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 131);
+        var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 154);
 
         // ── Left Click section ──
         var lblLeft = DarkTheme.AddCardLabel(cardTray, "Left Click", 10, 30);
@@ -597,7 +617,14 @@ public class SettingsForm : Form
         lblTriple.Font = TrackFont(new Font("Segoe UI Semibold", 9f));
         _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 325, 75, cboW, clickActions);
 
-        y += 139;
+        // v3.23.0: live readout of what each "AutoLogin 1-4" dropdown entry currently fires,
+        // so the slots aren't mysterious. Assigned via the Quick Login button on the
+        // Characters card; refreshed here (values already staged in InitializeForm) and on
+        // dialog save.
+        _lblQuickLoginReadout = DarkTheme.AddCardHint(cardTray, "", 12, 132);
+        RefreshQuickLoginReadout();
+
+        y += 162;
 
         // ─── Log Trim card ──────────────────────────────────────
         var cardLog = DarkTheme.MakeCard(page, "✂", "Log File Trimming", DarkTheme.CardCyan, 10, y, 480, 48);
@@ -2057,14 +2084,14 @@ public class SettingsForm : Form
             // T4 catch). No UI control yet; JSON-edit-only tunable like the LaunchConfig
             // timing knobs below.
             WarmupDwellMs = _config.WarmupDwellMs,
-            // Preserve existing QuickLogin values when the combos are not built (Phase 5a
-            // removed the surface from the Hotkeys tab, leaving _cboQuickLoginN as null).
-            // GetQuickLoginUsername returns "" on null, which would clobber user data on
-            // every Save — use the live config value as the fallback instead.
-            QuickLogin1 = _cboQuickLogin1 != null ? GetQuickLoginUsername(_cboQuickLogin1) : _config.QuickLogin1,
-            QuickLogin2 = _cboQuickLogin2 != null ? GetQuickLoginUsername(_cboQuickLogin2) : _config.QuickLogin2,
-            QuickLogin3 = _cboQuickLogin3 != null ? GetQuickLoginUsername(_cboQuickLogin3) : _config.QuickLogin3,
-            QuickLogin4 = _cboQuickLogin4 != null ? GetQuickLoginUsername(_cboQuickLogin4) : _config.QuickLogin4,
+            // v3.23.0: Quick Login slots staged via _pendingQuickLogin1-4 (initialized in
+            // InitializeForm, edited by QuickLoginSlotsDialog). Replaces a dead ternary —
+            // the _cboQuickLoginN combos were removed in Phase 5a, so it always fell back
+            // to _config anyway.
+            QuickLogin1 = _pendingQuickLogin1,
+            QuickLogin2 = _pendingQuickLogin2,
+            QuickLogin3 = _pendingQuickLogin3,
+            QuickLogin4 = _pendingQuickLogin4,
             AutoEnterWorld = _config.AutoEnterWorld,   // pass-through (UI checkbox removed; one-shot v3→v4 migration trigger lives in AppConfig.Validate)
             LogTrimThresholdMB = (int)_nudLogTrimThreshold.Value,
             Team1Account1  = _pendingTeam1A,
@@ -2336,6 +2363,11 @@ public class SettingsForm : Form
             if (_dgvCharacters.SelectedRows.Count > 0)
                 OnDeleteCharacter(_dgvCharacters.SelectedRows[0].Index);
         };
+
+        // v3.23.0: assign the four "AutoLogin 1-4" Quick Login slots. Right-aligned to the
+        // 480-wide card edge (480 − 10 margin − 135 width = 335).
+        var btnQuickLogin = DarkTheme.AddCardButton(charactersCard, "⚡ Quick Login…", 335, btnY, 135);
+        btnQuickLogin.Click += (_, _) => OnConfigureQuickLogin();
 
         y += 204;
 
@@ -2733,7 +2765,7 @@ public class SettingsForm : Form
             if (!oldName.Equals(newName, StringComparison.OrdinalIgnoreCase))
             {
                 UpdateTeamSlotUsername(oldName, newName);
-                PropagateNameChangeToQuickLogins(oldName, newName);
+                PropagateNameChangeToQuickLogins(QuickLoginSlot.Kind.Account, oldName, newName);
             }
             RefreshAccountsGrid();
             RefreshCharactersGrid();
@@ -2816,7 +2848,7 @@ public class SettingsForm : Form
             if (!oldName.Equals(newName, StringComparison.OrdinalIgnoreCase))
             {
                 UpdateTeamSlotUsername(oldName, newName);
-                PropagateNameChangeToQuickLogins(oldName, newName);
+                PropagateNameChangeToQuickLogins(QuickLoginSlot.Kind.Character, oldName, newName);
             }
             RefreshCharactersGrid();
             _lblTeamSummary.Rows = BuildTeamSummaryRows();
@@ -2824,27 +2856,30 @@ public class SettingsForm : Form
     }
 
     /// <summary>
-    /// When an Account or Character is renamed, update any QuickLogin1-4 combo
-    /// whose current selection matches the old name so the binding doesn't silently
-    /// drop to (None) when RefreshQuickLoginCombos rebuilds the item list.
+    /// When an Account or Character is renamed, rewrite any Quick Login slot
+    /// (<c>_pendingQuickLogin1-4</c>) bound to the old name so the binding survives instead
+    /// of going stale (dispatch would otherwise balloon "not found"). Matches on BOTH kind
+    /// AND name — an Account rename must not clobber a same-named Character slot (e.g. the
+    /// "Eisley" Character vs the "eisley" Account, which collide case-insensitively).
+    /// v3.23.0: rewritten off the dead _cboQuickLogin combos (removed in Phase 5a) onto the
+    /// live typed staging fields.
     /// </summary>
-    private void PropagateNameChangeToQuickLogins(string oldName, string newName)
+    private void PropagateNameChangeToQuickLogins(QuickLoginSlot.Kind kind, string oldName, string newName)
     {
         if (string.IsNullOrEmpty(oldName)) return;
-        var combos = new[] { _cboQuickLogin1, _cboQuickLogin2, _cboQuickLogin3, _cboQuickLogin4 };
-        foreach (var cbo in combos)
+        string Remap(string slot)
         {
-            if (cbo == null) continue;
-            if (cbo.SelectedItem?.ToString()?.Equals(oldName, StringComparison.OrdinalIgnoreCase) == true)
-            {
-                // Intentionally mutate the item text before RefreshQuickLoginCombos
-                // replaces the list — this keeps the selection visually stable.
-                int si = cbo.SelectedIndex;
-                if (si >= 0 && si < cbo.Items.Count)
-                    cbo.Items[si] = newName;
-                cbo.SelectedIndex = si;
-            }
+            var (k, name) = QuickLoginSlot.Parse(slot);
+            if (k != kind || !name.Equals(oldName, StringComparison.OrdinalIgnoreCase)) return slot;
+            return kind == QuickLoginSlot.Kind.Character
+                ? QuickLoginSlot.ForCharacter(newName)
+                : QuickLoginSlot.ForAccount(newName);
         }
+        _pendingQuickLogin1 = Remap(_pendingQuickLogin1);
+        _pendingQuickLogin2 = Remap(_pendingQuickLogin2);
+        _pendingQuickLogin3 = Remap(_pendingQuickLogin3);
+        _pendingQuickLogin4 = Remap(_pendingQuickLogin4);
+        RefreshQuickLoginReadout();
     }
 
     private void OnDeleteCharacter(int idx)
@@ -3049,6 +3084,51 @@ public class SettingsForm : Form
         };
         _openTeamsDialog = dlg;
         dlg.Show(this);
+    }
+
+    /// <summary>
+    /// Open the Quick Login Slots dialog (assigns the four "AutoLogin 1-4" targets).
+    /// Non-modal + staged through _pendingQuickLogin1-4, mirroring ShowTeamsDialog.
+    /// </summary>
+    private void OnConfigureQuickLogin()
+    {
+        if (_openQuickLoginDialog != null && !_openQuickLoginDialog.IsDisposed)
+        {
+            _openQuickLoginDialog.Activate();
+            return;
+        }
+        var dlg = new QuickLoginSlotsDialog(
+            _pendingAccounts, _pendingCharacters,
+            _pendingQuickLogin1, _pendingQuickLogin2, _pendingQuickLogin3, _pendingQuickLogin4);
+        dlg.FormClosed += (_, _) =>
+        {
+            if (dlg.DialogResult == DialogResult.OK)
+            {
+                _pendingQuickLogin1 = dlg.Slot1;
+                _pendingQuickLogin2 = dlg.Slot2;
+                _pendingQuickLogin3 = dlg.Slot3;
+                _pendingQuickLogin4 = dlg.Slot4;
+                RefreshQuickLoginReadout();
+            }
+            _openQuickLoginDialog = null;
+            dlg.Dispose();
+        };
+        _openQuickLoginDialog = dlg;
+        dlg.Show(this);
+    }
+
+    /// <summary>Rebuild the "AutoLogin slots: 1 X  2 Y …" readout under the Tray Click card.</summary>
+    private void RefreshQuickLoginReadout()
+    {
+        if (_lblQuickLoginReadout == null) return;
+        _lblQuickLoginReadout.Text =
+            "Auto-Login slots:   " + string.Join("    ", new[]
+            {
+                $"1 {QuickLoginSlot.DisplayName(_pendingQuickLogin1)}",
+                $"2 {QuickLoginSlot.DisplayName(_pendingQuickLogin2)}",
+                $"3 {QuickLoginSlot.DisplayName(_pendingQuickLogin3)}",
+                $"4 {QuickLoginSlot.DisplayName(_pendingQuickLogin4)}",
+            });
     }
 
     private void ClearStaleTeamSlots(string username)
@@ -4050,6 +4130,17 @@ public class SettingsForm : Form
     // intact across config-write/read, JSON hand-edit, and Settings dropdown.
     private static readonly Dictionary<string, string> _trayActionDisplayMap = new()
     {
+        // v3.23.0: "Launch Two" reads cleaner than "LaunchAll" (launches the configured
+        // client count, 2 by default). Display-only — stored value stays "LaunchAll".
+        ["LaunchOne"] = "Launch One",
+        ["LaunchAll"] = "Launch Two",
+        // v3.23.0: slot labels get a hyphen ("Auto-Login1") to match the Quick Login dialog.
+        // Team labels keep the original "AutoLoginTeam N" form. Display-only — stored values
+        // stay AutoLogin1-4 / LoginAll[N].
+        ["AutoLogin1"] = "Auto-Login1",
+        ["AutoLogin2"] = "Auto-Login2",
+        ["AutoLogin3"] = "Auto-Login3",
+        ["AutoLogin4"] = "Auto-Login4",
         ["LoginAll"]  = "AutoLoginTeam1",
         ["LoginAll2"] = "AutoLoginTeam2",
         ["LoginAll3"] = "AutoLoginTeam3",
@@ -4060,6 +4151,12 @@ public class SettingsForm : Form
 
     private static readonly Dictionary<string, string> _trayDisplayActionMap = new()
     {
+        ["Launch One"] = "LaunchOne",
+        ["Launch Two"] = "LaunchAll",
+        ["Auto-Login1"] = "AutoLogin1",
+        ["Auto-Login2"] = "AutoLogin2",
+        ["Auto-Login3"] = "AutoLogin3",
+        ["Auto-Login4"] = "AutoLogin4",
         ["AutoLoginTeam1"] = "LoginAll",
         ["AutoLoginTeam2"] = "LoginAll2",
         ["AutoLoginTeam3"] = "LoginAll3",

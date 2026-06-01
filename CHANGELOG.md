@@ -1,5 +1,41 @@
 # Changelog
 
+## v3.23.0 — Quick Login slots you can actually set + "Launch Two" rename (2026-05-31)
+
+Makes the tray-click **AutoLogin 1-4** actions configurable from a real UI, and renames
+the confusing **LaunchAll** action to **Launch Two**.
+
+**"Launch Two" (display-only rename).** The tray-click dropdown's `LaunchAll` entry now
+reads **Launch Two** (and `LaunchOne` → **Launch One**), matching what it does — launch
+the configured client count (2 by default), with no auto-login. This is a **display-only**
+change via the existing tray action maps; the stored config value stays `LaunchAll`, so the
+allowlist, dispatch, hotkeys, and existing configs are untouched. The Help text and tray
+balloons were aligned to match. (Caveat by design: the label says "Launch Two" even if you
+raise the client count above 2.)
+
+**Quick Login Slots dialog.** A new **⚡ Quick Login…** button on the Characters card
+(Settings → Accounts) opens a dialog assigning each of the four Auto-Login slots to a
+Character (🧙 enters world) or an Account (🔑 char-select), with a line separator between the
+two groups. Accounts render in orange (EQ's /ooc color), mirroring the Autologin Teams
+summary convention. The Tray Click Actions card now shows a live **"Auto-Login slots: 1 … 2 …
+3 … 4 …"** readout so the dropdown entries aren't mysterious. The tray-click dropdown slot
+labels were renamed to **Auto-Login1-4** to match the dialog (display-only; stored values +
+the `AutoLoginTeam` labels unchanged).
+
+**PiP off by default.** The Picture-in-Picture overlay now defaults to disabled on fresh
+installs / configs missing the key. Existing configs keep their saved value.
+
+**Typed slot storage (`char:` / `acct:`).** Slots now store a *typed* target
+(`char:<Name>` / `acct:<Name>`) instead of a bare name, so dispatch routes deterministically
+— an explicit Account pick stops at char-select even when a same-username legacy row carries
+`AutoEnterWorld=true` (the bug a bare name would have hit). Un-prefixed values from older
+configs fall through to the legacy resolver, so nothing breaks. New helper
+`Config/QuickLoginSlot.cs` owns the format; covered by `--test-quicklogin`.
+
+**Empty slots are empty.** Dropped the implicit "an unassigned slot fires whoever is first
+in your hotkey list" fallback — it surprised users. An unassigned slot now does nothing but
+show a "no account assigned" balloon. Assign it in the new dialog instead.
+
 ## v3.22.91 — Settings tidy: prune dead controls, Windowed default, mode-aware greying (2026-05-31)
 
 Frontend-design pass over the Video tab and its two advanced sub-dialogs (📐
