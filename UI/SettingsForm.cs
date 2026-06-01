@@ -116,10 +116,6 @@ public class SettingsForm : Form
     private DataGridView _dgvAccounts = null!;
     private DataGridView _dgvCharacters = null!;
     private NumericUpDown _nudLoginScreenDelay = null!;
-    private ComboBox _cboQuickLogin1 = null!;
-    private ComboBox _cboQuickLogin2 = null!;
-    private ComboBox _cboQuickLogin3 = null!;
-    private ComboBox _cboQuickLogin4 = null!;
     // Phase 5a: _txtAutoLogin1-4 removed. Edited via AccountHotkeysDialog /
     // CharacterHotkeysDialog. Legacy HotkeyConfig.AutoLogin1-4 fields pass through
     // BuildAppConfig from _config during the v3.10.x deprecation window.
@@ -153,7 +149,6 @@ public class SettingsForm : Form
     private string _pendingTeamLogin2 = "";
     private string _pendingTeamLogin3 = "";
     private string _pendingTeamLogin4 = "";
-    private Label _lblSlotDuplicateWarn = null!;
     private TeamSummaryLabel _lblTeamSummary = null!;
     private string _pendingTeam1A = "";
     private string _pendingTeam1B = "";
@@ -762,8 +757,12 @@ public class SettingsForm : Form
             _legacyBanner = null;
         }
 
-        bool anyLegacy = !string.IsNullOrEmpty(_config.QuickLogin1) || !string.IsNullOrEmpty(_config.QuickLogin2)
-                      || !string.IsNullOrEmpty(_config.QuickLogin3) || !string.IsNullOrEmpty(_config.QuickLogin4);
+        // v3.23.0: only un-prefixed (pre-v3.23) bare-name slots count as "legacy". A typed
+        // char:/acct: value set via the new Quick Login dialog is a current binding, not a
+        // migration leftover, so it must NOT trigger the "slots moved" banner.
+        static bool IsLegacyBare(string v) => QuickLoginSlot.Parse(v).Kind == QuickLoginSlot.Kind.LegacyBare;
+        bool anyLegacy = IsLegacyBare(_config.QuickLogin1) || IsLegacyBare(_config.QuickLogin2)
+                      || IsLegacyBare(_config.QuickLogin3) || IsLegacyBare(_config.QuickLogin4);
         if (!anyLegacy || _config.HotkeysLegacyBannerDismissed) return;
 
         var page = _cardDirectBindings.Parent;
@@ -966,45 +965,6 @@ public class SettingsForm : Form
         if (_openHotkeyDialog == null || _openHotkeyDialog.IsDisposed) return false;
         _openHotkeyDialog.Activate();
         return true;
-    }
-
-    private void CheckDuplicateSlotAccounts()
-    {
-        if (_lblSlotDuplicateWarn == null) return;
-
-        var combos = new[] { _cboQuickLogin1, _cboQuickLogin2, _cboQuickLogin3, _cboQuickLogin4 };
-        // Phase 5a: QuickLogin combos may never be built. Bail cleanly instead of NRE.
-        if (combos.All(c => c == null)) return;
-        var seen = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        bool reverted = false;
-
-        for (int i = 0; i < combos.Length; i++)
-        {
-            if (combos[i] == null) continue;
-            var username = GetQuickLoginUsername(combos[i]);
-            if (string.IsNullOrEmpty(username)) continue;
-            if (seen.ContainsKey(username))
-            {
-                // Revert the duplicate back to (None) — SoD crashes on duplicate logins
-                combos[i]!.SelectedIndex = 0;
-                reverted = true;
-            }
-            else
-            {
-                seen[username] = i;
-            }
-        }
-
-        if (reverted)
-        {
-            _lblSlotDuplicateWarn.Text = "\u26A0 Same account can't be in multiple slots (Dalaya limitation)";
-            _lblSlotDuplicateWarn.ForeColor = DarkTheme.CardWarn;
-        }
-        else
-        {
-            _lblSlotDuplicateWarn.Text = "Bind to tray click actions or hotkeys above";
-            _lblSlotDuplicateWarn.ForeColor = DarkTheme.FgDimGray;
-        }
     }
 
     private TextBox MakeHotkeyBox(Panel card, int x, int y, int width = 80)
@@ -2576,7 +2536,6 @@ public class SettingsForm : Form
                 ? $"Last autologin {lastResult} at {lastAt.Value.ToLocalTime():yyyy-MM-dd HH:mm}"
                 : "No autologin attempt recorded yet";
         }
-        RefreshQuickLoginCombos();
     }
 
     private void RefreshCharactersGrid()
@@ -2632,7 +2591,6 @@ public class SettingsForm : Form
                     TrackFont(new Font("Segoe UI", 9f, FontStyle.Italic));
             }
         }
-        RefreshQuickLoginCombos();
     }
 
     private string LookupHotkeyForTarget(string targetName)
@@ -2664,74 +2622,6 @@ public class SettingsForm : Form
                 return combo;
         }
         return "";
-    }
-
-    private void RefreshQuickLoginCombos()
-    {
-        if (_cboQuickLogin1 == null) return; // not built yet
-
-        // Phase 4: Quick Login combos prefer Characters (enter-world) over Accounts
-        // (charselect-only). Label format: Character.Name or Account.Name; the config
-        // value stored is the same name (FK handled at tray dispatch time).
-        var labels = new List<string>();
-        labels.Add("(None)");
-        foreach (var c in _pendingCharacters)
-            labels.Add(c.Name);
-        foreach (var a in _pendingAccounts)
-        {
-            // Don't duplicate: if an Account.Name matches a Character.Name we've already
-            // added, skip — the character wins.
-            if (_pendingCharacters.Any(ch => ch.Name.Equals(a.Name, StringComparison.OrdinalIgnoreCase))) continue;
-            labels.Add(a.Name);
-        }
-
-        var combos = new[] { _cboQuickLogin1, _cboQuickLogin2, _cboQuickLogin3, _cboQuickLogin4 };
-        var saved = combos.Select(c => c?.SelectedItem?.ToString()).ToArray();
-        foreach (var cbo in combos)
-        {
-            if (cbo == null) continue;
-            cbo.Items.Clear();
-            cbo.Items.AddRange(labels.ToArray<object>());
-        }
-        for (int i = 0; i < combos.Length; i++)
-        {
-            if (combos[i] == null) continue;
-            combos[i]!.SelectedItem = saved[i] ?? "(None)";
-            if (combos[i]!.SelectedIndex < 0) combos[i]!.SelectedIndex = 0;
-        }
-    }
-
-    /// <summary>
-    /// Select the combo item matching a config value. Combo items are Character.Name
-    /// entries first, then Account.Name entries (no duplicates).
-    /// </summary>
-    private void SelectQuickLoginCombo(ComboBox cbo, string identifier)
-    {
-        if (string.IsNullOrEmpty(identifier)) { cbo.SelectedIndex = 0; return; }
-        for (int i = 0; i < cbo.Items.Count; i++)
-        {
-            if (cbo.Items[i]?.ToString() is string s && s.Equals(identifier, StringComparison.OrdinalIgnoreCase))
-            {
-                cbo.SelectedIndex = i;
-                return;
-            }
-        }
-        cbo.SelectedIndex = 0;
-    }
-
-    /// <summary>
-    /// Return the selected Character.Name / Account.Name for the combo, or empty string
-    /// when (None) is selected. Null-safe: the QuickLogin combos are declared with the
-    /// null-forgiving init pattern (`null!`) but the card that once built them no longer
-    /// exists in the Hotkeys tab (Phase 5a moved that surface to dialogs). Any caller
-    /// that reaches here with a null combo should get an empty-string — `ApplySettings`
-    /// separately preserves the existing config value so saves don't clobber user data.
-    /// </summary>
-    private string GetQuickLoginUsername(ComboBox? cbo)
-    {
-        if (cbo == null) return "";
-        if (cbo.SelectedIndex <= 0) return "";
-        return cbo.SelectedItem?.ToString() ?? "";
     }
 
     // Phase 4: editing routes through AccountEditDialog / CharacterEditDialog. The

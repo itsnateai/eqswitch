@@ -46,6 +46,7 @@ internal sealed class QuickLoginSlotsDialog : Form
     private readonly IReadOnlyList<Character> _characters;
     private readonly ComboBox[] _cbo = new ComboBox[SlotCount];
     private object[] _comboItemsArray = null!;
+    private Label _lblDupWarn = null!;
 
     public string Slot1 => GetValue(_cbo[0]);
     public string Slot2 => GetValue(_cbo[1]);
@@ -112,6 +113,15 @@ internal sealed class QuickLoginSlotsDialog : Form
         legend.AutoSize = true;
         y += 24;
 
+        // Non-blocking duplicate-target notice. Quick Login slots fire independently, so a
+        // repeated target isn't a hard error (unlike a team that launches both at once) —
+        // warn, don't block. Reserve the row so measure-to-fit height stays stable.
+        _lblDupWarn = DarkTheme.AddLabel(this, "", L, y);
+        _lblDupWarn.ForeColor = DarkTheme.FgWarn;
+        _lblDupWarn.Font = DarkTheme.FontUI75;
+        _lblDupWarn.AutoSize = true;
+        y += 20;
+
         var btnOK = DarkTheme.MakePrimaryButton("Save", L, y);
         btnOK.Width = 100;
         btnOK.Click += (_, _) =>
@@ -142,6 +152,7 @@ internal sealed class QuickLoginSlotsDialog : Form
         var saved = new[] { slot1, slot2, slot3, slot4 };
         for (int i = 0; i < SlotCount; i++)
             SelectByValue(_cbo[i], saved[i]);
+        RefreshDupWarning();
 
         ResumeLayout(performLayout: true);
     }
@@ -202,6 +213,7 @@ internal sealed class QuickLoginSlotsDialog : Form
                 // SelectByValue — clear it so GetValue returns the new pick (incl. (none)),
                 // not the deleted/renamed original.
                 box.Tag = null;
+                RefreshDupWarning();
             }
         };
         cb.MouseWheel += (_, e) => ((HandledMouseEventArgs)e).Handled = true;
@@ -283,6 +295,29 @@ internal sealed class QuickLoginSlotsDialog : Form
 
     private static string GetValue(ComboBox cbo) =>
         (cbo.SelectedItem as SlotOption)?.Value is { Length: > 0 } v ? v : (cbo.Tag as string) ?? "";
+
+    /// <summary>
+    /// Non-blocking warning when two slots fire the same target — firing both kicks one
+    /// login on Dalaya. Exact-value match (two char:Same or two acct:Same); a char: bind
+    /// plus its backing acct: bind isn't flagged (deliberate pairing, not the common slip).
+    /// </summary>
+    private void RefreshDupWarning()
+    {
+        if (_lblDupWarn == null) return;
+        var seen = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < SlotCount; i++)
+        {
+            var v = GetValue(_cbo[i]);
+            if (string.IsNullOrEmpty(v)) continue;
+            if (seen.TryGetValue(v, out int first))
+            {
+                _lblDupWarn.Text = $"⚠ Slots {first + 1} & {i + 1} target the same login.";
+                return;
+            }
+            seen[v] = i;
+        }
+        _lblDupWarn.Text = "";
+    }
 
     protected override void Dispose(bool disposing)
     {

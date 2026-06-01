@@ -388,8 +388,26 @@ public static class AppConfigValidateTests
             failures += Assert("forceWindowedMode pinned true", cfg.EQClientIni.ForceWindowedMode, true);
         }
 
+        // Case 16 (v3.23.1): QuickLogin slot normalization — trim whitespace + drop a
+        // prefix-with-empty-name back to unassigned; clean/empty values pass through.
+        {
+            var cfg = new AppConfig
+            {
+                ConfigVersion = 4,
+                QuickLogin1 = "  char:Natedogg  ",
+                QuickLogin2 = "char:",
+                QuickLogin3 = "acct:gotquiz",
+                QuickLogin4 = "",
+            };
+            cfg.Validate();
+            failures += Assert("quicklogin trim", cfg.QuickLogin1, "char:Natedogg");
+            failures += Assert("quicklogin empty-prefix reset", cfg.QuickLogin2, "");
+            failures += Assert("quicklogin clean preserved", cfg.QuickLogin3, "acct:gotquiz");
+            failures += Assert("quicklogin empty preserved", cfg.QuickLogin4, "");
+        }
+
         Console.WriteLine(failures == 0
-            ? "AppConfigValidateTests: all 15 cases PASSED"
+            ? "AppConfigValidateTests: all 16 cases PASSED"
             : $"AppConfigValidateTests: {failures} assertion failure(s)");
         return failures == 0 ? 0 : 1;
     }

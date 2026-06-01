@@ -1843,12 +1843,11 @@ public class WindowManager
             // binding carried in QuickLogin{N}. The QuickLogin{N} indirection itself is
             // Phase 6-deletion-slated; only the resolved-name data source moves to v4 here.
             //
-            // QuickLogin{N} can hold either a Character.Name (enter-world bind) or an
-            // Account.Name (charselect-only bind) — RefreshQuickLoginCombos builds the
-            // list from both. Account-only binds intentionally fall through here: the
-            // EQ native window title ("EverQuest - CharName" once logged in) is the
-            // appropriate render for a slot the user did not bind to a specific
-            // character. Phase 6 will rewire this whole indirection.
+            // QuickLogin{N} holds a typed char:/acct: slot value (v3.23.0). A char: bind
+            // names a Character (enter-world); an acct: bind names an Account (charselect-
+            // only) and intentionally falls through here — the EQ native title
+            // ("EverQuest - CharName" once logged in) is the right render for a slot not
+            // bound to a specific character. Phase 6 will rewire this whole indirection.
             boundName = slotIndex switch
             {
                 0 => _config.QuickLogin1,
@@ -1859,13 +1858,16 @@ public class WindowManager
             };
             if (!string.IsNullOrEmpty(boundName))
             {
+                // v3.23.0: extract the bare name from the typed slot value before lookup —
+                // a "char:"/"acct:" prefix would never match FindCharacterByName.
+                var slotName = QuickLoginSlot.Parse(boundName).Name;
                 // v3.22.29 Orphan-1: snapshot under ConfigMutationLock. Fires
                 // from WinForms timer (UI thread) but ReloadConfig swap of
                 // _config.Characters can still race.
                 Character? character;
                 lock (ConfigManager.ConfigMutationLock)
                 {
-                    character = _config.FindCharacterByName(boundName);
+                    character = _config.FindCharacterByName(slotName);
                 }
                 if (character != null && !string.IsNullOrEmpty(character.Name))
                     charName = character.Name;

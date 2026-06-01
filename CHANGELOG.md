@@ -1,5 +1,24 @@
 # Changelog
 
+## v3.23.1 — Quick Login polish: dup-warning, Validate, dead-code cleanup (2026-05-31)
+
+Follow-up hardening of the v3.23.0 Quick Login Slots feature.
+
+- **Duplicate-target warning** in the Quick Login dialog — a non-blocking amber notice when
+  two slots target the same login (firing both kicks one on Dalaya). Slots fire
+  independently, so it warns rather than blocks.
+- **`Validate()` normalizes slot values** — trims whitespace and drops a prefix-with-empty-name
+  (`char:` / `acct:` from a hand-edit) back to unassigned, so dispatch never looks up `""`.
+- **Dead-code cleanup** — removed the Phase-5a `_cboQuickLogin1-4` combos and their orphaned
+  methods (`RefreshQuickLoginCombos`, `SelectQuickLoginCombo`, `GetQuickLoginUsername`,
+  `CheckDuplicateSlotAccounts`) — vestigial since the combos stopped being built; the real
+  duplicate guard now lives in the dialog.
+- **Blast-radius fixes for the v3.23.0 typed format** (caught during cleanup): the `{CHAR}`
+  window-title resolver and the legacy "slots moved" banner both read `QuickLogin{N}`
+  directly — the title resolver now parses the `char:`/`acct:` prefix before lookup, and the
+  banner no longer misfires on a typed value set via the new dialog (only genuinely-legacy
+  bare-name values trigger it).
+
 ## v3.23.0 — Quick Login slots you can actually set + "Launch Two" rename (2026-05-31)
 
 Makes the tray-click **AutoLogin 1-4** actions configurable from a real UI, and renames

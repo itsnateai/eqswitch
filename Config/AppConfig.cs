@@ -432,6 +432,22 @@ public class AppConfig
             mutated = true;
         }
 
+        // v3.23.1: normalize the four typed Quick Login slot values (QuickLogin1-4). Trim,
+        // and drop a prefix with an empty name ("char:" / "acct:" from a hand-edit) back to
+        // unassigned so dispatch never fires a lookup for "". Same mutated-on-change contract
+        // as DefaultLaunchOneAccount above.
+        static string NormQuickLogin(string? value, ref bool mut)
+        {
+            var v = (value ?? "").Trim();
+            if (v == QuickLoginSlot.CharPrefix || v == QuickLoginSlot.AcctPrefix) v = "";
+            if (v != (value ?? "")) mut = true;
+            return v;
+        }
+        QuickLogin1 = NormQuickLogin(QuickLogin1, ref mutated);
+        QuickLogin2 = NormQuickLogin(QuickLogin2, ref mutated);
+        QuickLogin3 = NormQuickLogin(QuickLogin3, ref mutated);
+        QuickLogin4 = NormQuickLogin(QuickLogin4, ref mutated);
+
         // v3.15.2: clamp the 10 new autologin-timing tunables. Floors are
         // calibrated against the comments next to each property in LaunchConfig
         // (e.g. "below ~300 risks deactivating before EQ consumes the keystroke").
