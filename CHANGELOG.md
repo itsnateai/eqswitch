@@ -1,5 +1,34 @@
 # Changelog
 
+## v3.23.6 — Fix: hotkey-bound colored tray rows broke submenu hover-open (2026-06-01)
+
+Closes a field-reported bug: with a hotkey bound to a **Character** (a blue-colored tray
+menu row), hovering the Characters submenu left the **next** sibling submenu (Accounts/Teams)
+refusing to auto-open on hover — though clicking it still opened it fine. Accounts→Teams worked
+indefinitely as long as you avoided hovering Characters. Unbinding the character hotkey restored
+hover; rebinding broke it again (deterministic A/B).
+
+- **Root cause — repaint loop in `DarkMenuRenderer.OnRenderItemText`.** The right-aligned
+  hotkey-column paint pass used `e.Item.ForeColor` as a scratch variable: save current color →
+  set white → `base.OnRenderItemText` → restore. Assigning a *changed* `ToolStripItem.ForeColor`
+  inside a paint pass raises `OnForeColorChanged → Invalidate()`. On a **colored** row
+  (Account=orange, Character=blue) the saved color isn't white, so BOTH the set-white and the
+  restore-colored writes were real value changes — **two `Invalidate()` calls per paint**. The
+  row requested a repaint forever. That continuous repaint on the open submenu saturated the UI
+  message pump and starved the parent `ContextMenuStrip`'s `WM_MOUSEHOVER` submenu auto-expand
+  timer, so sibling submenus stopped opening on hover. A click (`WM_LBUTTONDOWN`) is immediate
+  and was unaffected — hence "click works, hover doesn't."
+- **Fix.** The hotkey-column pass now draws directly via `TextRenderer.DrawText(...)` in its target
+  color (dim for disabled/orphan, else white), never round-tripping `e.Item.ForeColor`. Mirrors the
+  existing `DrawTeamRowSegments` rendering. (`OnRenderMenuItemBackground` still assigns
+  `e.Item.ForeColor` once per paint to route the row's body color, but that write is *idempotent* —
+  WinForms' `ForeColor` setter only raises `OnForeColorChanged`→`Invalidate()` on a real value
+  change, so after the first paint the same-value writes are no-ops. The fixed bug was the
+  *save-white/restore-colored* pair changing the value twice every paint; removing that round-trip
+  closes the loop.) Only triggered for rows that had **both** a colored Tag **and** a non-empty
+  hotkey label, so it surfaced once Character coloring (v3.23.5) met a bound character hotkey; the
+  label's mere presence drove it — no hotkey conflict/registration involved.
+
 ## v3.23.5 — Unified identity color scheme + dialog centering (2026-06-01)
 
 App-wide color consistency: **Account identity renders orange, Character identity renders

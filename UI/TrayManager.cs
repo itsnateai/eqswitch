@@ -5445,18 +5445,23 @@ internal class DarkMenuRenderer : ToolStripProfessionalRenderer
             // orange Accounts rows keep a white "Alt+1", segmented Teams rows
             // keep a white "Ctrl+Alt+Shift+F9". Orphan rows render dim end-to-
             // end so the row reads as a single muted entry.
-            var saved = e.Item.ForeColor;
-            try
-            {
-                e.Item.ForeColor = !e.Item.Enabled || ReferenceEquals(e.Item.Tag, OrphanItemMarker)
-                    ? DisabledText
-                    : ItemText;
-                base.OnRenderItemText(e);
-            }
-            finally
-            {
-                e.Item.ForeColor = saved;
-            }
+            // Draw the hotkey column directly in its target color. Do NOT route
+            // through e.Item.ForeColor: assigning a *changed* ForeColor inside a
+            // paint pass raises OnForeColorChanged → Invalidate(). The previous
+            // save-white / restore-colored pair changed it TWICE per paint, and on
+            // any colored row (Account=orange, Character=blue) `saved` != white, so
+            // both writes were real changes → an unbounded Invalidate→repaint loop
+            // on the open submenu. That paint flood saturated the UI message pump
+            // and starved the parent menu's WM_MOUSEHOVER auto-expand timer, so
+            // sibling submenus stopped opening on hover (click still worked).
+            // Field-confirmed v3.23.6: a hotkey-bound blue Character row broke the
+            // next submenu's hover-open; unbind/rebind toggled it deterministically.
+            // Mirrors DrawTeamRowSegments — draw via TextRenderer, never touch the
+            // item. See [[reference_toolstrip_renderer_forecolor_repaint_loop]].
+            var shortcutColor = !e.Item.Enabled || ReferenceEquals(e.Item.Tag, OrphanItemMarker)
+                ? DisabledText
+                : ItemText;
+            TextRenderer.DrawText(e.Graphics, e.Text, e.TextFont, e.TextRectangle, shortcutColor, e.TextFormat);
             return;
         }
 
