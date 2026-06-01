@@ -361,10 +361,13 @@ public class AppConfig
         // v3.22.80: WindowMode is the user-facing window-style selector
         // (Fullscreen=WS_POPUP borderless, Windowed=WS_CAPTION slim). Clamp
         // out-of-range enum values from corrupt / hand-edited JSON.
+        // v3.22.91: reset target is Windowed (the new default). Resetting a corrupt
+        // enum to Fullscreen would snap a Windowed-default install to Fullscreen — the
+        // exact surprise this version set out to remove.
         if (!Enum.IsDefined(typeof(WindowMode), Layout.WindowMode))
         {
-            FileLogger.Warn($"AppConfig.Validate: WindowMode out of range ({(int)Layout.WindowMode}) — reset to Fullscreen");
-            Layout.WindowMode = WindowMode.Fullscreen;
+            FileLogger.Warn($"AppConfig.Validate: WindowMode out of range ({(int)Layout.WindowMode}) — reset to Windowed");
+            Layout.WindowMode = WindowMode.Windowed;
             mutated = true;
         }
         // v3.22.81 (Phase 2): the Phase-1 "pin Windowed→Fullscreen" clamp is
@@ -380,6 +383,21 @@ public class AppConfig
         {
             FileLogger.Warn($"AppConfig.Validate: WindowMode={Layout.WindowMode} requires SlimTitlebar — forced true (legacy non-slim migrated to {Layout.WindowMode} look)");
             Layout.SlimTitlebar = true;
+            mutated = true;
+        }
+
+        // v3.22.91: ForceWindowedMode (eqclient.ini WindowedMode=TRUE) is a hard
+        // invariant — an exclusive-fullscreen EQ client can't be window-managed (no
+        // slim titlebar, no arrangement, no multibox). Pin it true so neither a
+        // hand-edited config, a legacy false value, nor any UI path can persist a
+        // window-management-breaking state. The user-facing "Force Windowed Mode"
+        // toggles were removed from BOTH the Wrapper dialog and EQClientSettingsForm
+        // in v3.22.91; this Validate floor is what makes the invariant airtight
+        // (loud per Rule 12 — the rare legacy false value is corrected with a warn).
+        if (!EQClientIni.ForceWindowedMode)
+        {
+            FileLogger.Warn("AppConfig.Validate: ForceWindowedMode was false — forced true (required invariant for window management)");
+            EQClientIni.ForceWindowedMode = true;
             mutated = true;
         }
 
@@ -638,9 +656,18 @@ public class WindowLayout
 
     /// <summary>
     /// v3.22.80: the user-facing window-mode selector that drives the Window
-    /// Style card. Default Fullscreen preserves the v3.22.76+ borderless look.
+    /// Style card.
+    /// <para>
+    /// v3.22.91 — default flipped Fullscreen → Windowed per Nate 2026-05-31:
+    /// "Windowed mode needs to be default." Windowed (WS_CAPTION slim, draggable
+    /// WinEQ2 look) is the preferred multibox shape and what Nate's own config has
+    /// run since v3.22.80. Existing configs keep their saved value via STJ
+    /// deserialization; only fresh installs / configs missing the key adopt
+    /// Windowed. The Video-tab Reset button no longer touches WindowMode at all
+    /// (v3.22.91), so Reset can't yank a Windowed user back to Fullscreen.
+    /// </para>
     /// </summary>
-    public WindowMode WindowMode { get; set; } = WindowMode.Fullscreen;
+    public WindowMode WindowMode { get; set; } = WindowMode.Windowed;
 
     /// <summary>
     /// v3.22.19 (2026-05-18): per-monitor slim override for multi-monitor mode.

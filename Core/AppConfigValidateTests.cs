@@ -330,18 +330,20 @@ public static class AppConfigValidateTests
                 inRangeCfg.WarmupDwellMs, 8000);
         }
 
-        // v3.22.80 Case: WindowMode default is Fullscreen on a fresh config.
+        // v3.22.91 Case: WindowMode default is Windowed on a fresh config (flipped
+        // from Fullscreen — Windowed is the preferred multibox shape).
         {
             var cfg = new AppConfig();
-            failures += Assert("windowMode default", cfg.Layout.WindowMode, WindowMode.Fullscreen);
+            failures += Assert("windowMode default", cfg.Layout.WindowMode, WindowMode.Windowed);
         }
 
-        // v3.22.80 Case: out-of-range WindowMode (corrupt/hand-edited JSON) → Fullscreen.
+        // v3.22.91 Case: out-of-range WindowMode (corrupt/hand-edited JSON) → Windowed
+        // (was Fullscreen; the reset target follows the new default).
         {
             var cfg = new AppConfig();
             cfg.Layout.WindowMode = (WindowMode)99;
             cfg.Validate();
-            failures += Assert("windowMode invalid clamps", cfg.Layout.WindowMode, WindowMode.Fullscreen);
+            failures += Assert("windowMode invalid clamps", cfg.Layout.WindowMode, WindowMode.Windowed);
         }
 
         // v3.22.81 Case (Phase 2): WindowMode.Windowed is now IMPLEMENTED — the
@@ -374,6 +376,16 @@ public static class AppConfigValidateTests
             cfg.Validate();
             failures += Assert("Windowed+nonSlim → Windowed preserved", cfg.Layout.WindowMode, WindowMode.Windowed);
             failures += Assert("Windowed+nonSlim → slim true", cfg.Layout.SlimTitlebar, true);
+        }
+
+        // v3.22.91 Case: ForceWindowedMode is a pinned invariant — Validate forces it
+        // true even if a config (or a seeded eqclient.ini) had it false. Window
+        // management requires it; an exclusive-fullscreen client can't be managed.
+        {
+            var cfg = new AppConfig();
+            cfg.EQClientIni.ForceWindowedMode = false;
+            cfg.Validate();
+            failures += Assert("forceWindowedMode pinned true", cfg.EQClientIni.ForceWindowedMode, true);
         }
 
         Console.WriteLine(failures == 0

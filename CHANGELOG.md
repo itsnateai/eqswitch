@@ -1,20 +1,38 @@
 # Changelog
 
-## v3.22.91 — Settings tidy: prune dead controls, mode-aware greying (2026-05-31)
+## v3.22.91 — Settings tidy: prune dead controls, Windowed default, mode-aware greying (2026-05-31)
 
-Frontend-design pass over the two advanced sub-dialogs on the Video tab (📐
+Frontend-design pass over the Video tab and its two advanced sub-dialogs (📐
 **Window Offsets** and ⚙ **Wrapper Settings**) to stop exposing values the user
-either can't safely change or that do nothing in the current window mode.
+either can't safely change or that do nothing in the current window mode — plus a
+correctness pass that closes a window-management invariant hole found in review.
+
+**Windowed is now the default.** `AppConfig.WindowMode` default flipped
+Fullscreen → Windowed — the preferred multibox shape. Existing configs keep their
+saved value (STJ deserialization); only fresh installs / configs missing the key
+adopt Windowed.
+
+**Reset no longer fights your window mode.** Clicking **Reset** in the EQ
+Resolution card used to force Window Style back to Fullscreen (it restored the
+fresh-install default), yanking Windowed users out of their mode. Reset now
+restores **only resolution + offsets** and leaves the Window Style card untouched
+— a deliberate reversal of the v3.22.57 "reset everything" contract.
 
 **Removed (no real choice / inert):**
-- **Force Windowed Mode** toggle (Wrapper dialog) — `WindowedMode=TRUE` is a hard
-  requirement; an exclusive-fullscreen EQ client can't be window-managed (no slim
-  titlebar, no arrangement, no multibox). It was a footgun toggle. Now pinned
-  `true` internally (`PopulateFromConfig` + `PopulateVideoFromIni`), so a legacy
-  config with `ForceWindowedMode=false` self-corrects on the next save.
+- **Force Windowed Mode** toggle — removed from **both** the Wrapper dialog **and**
+  EQClientSettingsForm. `WindowedMode=TRUE` is a hard requirement (an
+  exclusive-fullscreen EQ client can't be window-managed: no slim titlebar, no
+  arrangement, no multibox). It's now an **airtight invariant** — pinned `true` in
+  `AppConfig.Validate`, so no UI path, legacy value, or hand-edited config can
+  persist a window-management-breaking state. (A review pass caught that a *second*
+  "Force Windowed Mode" toggle lived in EQClientSettingsForm and could re-break the
+  invariant via `EnforceOverrides` at launch — that's the twin now removed.)
+- **DLL Hook (zero flicker)** toggle (Wrapper dialog) — injection already
+  auto-falls-back to the guard timer on failure, so the casual toggle wasn't
+  needed. `UseHook` stays a config-only knob (default `true`); power users can
+  still set it via JSON for the guard-timer-only path.
 - **Maximize on Launch** toggle (Wrapper dialog) — a parked/under-review feature.
-  Removed from the UI; `MaximizeWindow` stays `false` by default until the feature
-  is finished.
+  Removed from the UI; `MaximizeWindow` stays `false` by default.
 - **Offset X / Offset Y** (Offsets dialog) — wrote eqclient.ini `XOffset`/`YOffset`,
   which `WindowManager` overrides on launch (`X=monitor.Left`, `Y=monitor.Top+TopOffset`)
   in both slim modes, so they never took effect. The backing fields are kept as
@@ -25,20 +43,62 @@ either can't safely change or that do nothing in the current window mode.
 - **Titlebar hidden (px)** and **Bottom margin (px)** (Wrapper dialog) now grey out
   when **Fullscreen mode** is the selected mode — they only mean something in
   Windowed mode (Fullscreen/WS_POPUP clamps the caption to 0 and renders flush all
-  sides, making both inert). The hint swaps to explain why. The old `.Enabled =
-  SlimTitlebar` gate was a dead no-op (`SlimTitlebar` is forced `true` for both
-  modes since v3.22.80, and it never reached the freshly-built dialog controls).
+  sides, making both inert). The hint swaps to explain why.
+
+**Also removed (untested / over-promising):**
+- The 4 WinEQ2-style "half-screen multibox" presets (`960×1080 — 2 boxes
+  side-by-side`, etc.) are gone from the EQ Resolution dropdown. They only set EQ's
+  render resolution — they don't tile windows (EQSwitch's positioning does that), and
+  a half-width backbuffer fights the default full-monitor positioning. The
+  2-on-one-monitor workflow they implied was never tested. Standard resolutions +
+  Custom remain (and also fixes the long names clipping off the dropdown).
+
+**Bug fix — Characters grid Hotkey column.** A character with a hotkey (e.g.
+`Natedogg`) showed a blank Hotkey cell. `LookupHotkeyForTarget` only consulted the
+legacy `QuickLogin`/`AutoLogin` bridge slots — empty on any v4-migrated config — and
+never read `Hotkeys.CharacterHotkeys[]`, where Phase-5 actually stores the binding. It
+now checks Character/Account hotkeys first, so the green ✓ (with the full combo on
+hover) appears as designed.
+
+**Readability & polish:**
+- **Tray → Video Settings** mode radios (Fullscreen / Windowed) are now orange,
+  matching the tray's account accent so they read as a distinct control group.
+- **Dark Titlebar** hint de-jargoned → `dark title bar instead of the default white`.
+- **Windowed Mode** hint `slim titlebar, draggable (WinEQ2-style)` →
+  `slim titlebar, covers taskbar` (the window is geometry-pinned, not draggable; the
+  WinEQ2 reference was noise).
+- **Titlebar-hidden** hint: dropped the misleading "full" anchor (`26 = full`) —
+  `TitlebarOffset` is the *total* px of caption visible, and showing the full bar
+  defeats the slim look, so it's now `0 = hidden · 13 = title + half buttons · raise
+  for more`. Also dropped the redundant `(default)`.
+- **Wrapper Settings** `Reset Defaults` button → `Reset` (matches the other Reset
+  buttons), resized to fit.
+- **Window Offsets dialog** (frontend-design pass): identical 55px inputs (were a
+  ragged 60/70) on one alignment rule; Horizontal Nudge hint `+ = right · - = left`;
+  Top Offset's use case on full-width lines so nothing clips.
+- **General tab**: capitalized two hints (`Click and press key`, `Pops menu above clock`).
+- **Paths tab + Accounts**: user-facing "SoD" → "Dalaya".
+- **Accounts card**: the DPAPI note and the Flag legend (`✓ ok / ✗ failed / — untried`)
+  now share one row instead of stacking; the card shrank 234→216 to close the gap.
+
+**Correctness (from the verification swarm):**
+- `AppConfig.Validate` now resets a corrupt/out-of-range `WindowMode` to **Windowed**
+  (was Fullscreen) — matching the new default, so a bad enum can't snap a Windowed
+  install to Fullscreen. Test assertion updated; `--test-config-validate` green (15/15).
+- First-run `SeedFromIni → Save` (Program.cs) now calls `Validate()` before the save,
+  so the `ForceWindowedMode=true` invariant can't be momentarily written false to disk
+  even if the seeded eqclient.ini had `WindowedMode=FALSE`.
+- The Video Settings save path now writes `WindowedMode=TRUE` **literally** — the
+  vestigial always-true `_chkVideoWindowed` backing field was removed, so the invariant
+  is airtight by construction rather than by coincidence. A new `forceWindowedMode
+  pinned true` test guards the `Validate` pin.
 
 **Cleanup:**
-- Fixed a stale `_nudBottomOffset` field-init literal (`22` → `21`) so the source
-  matches the canonical `WindowLayout.BottomOffset` default everywhere (the user
-  always saw `21` — `PopulateFromConfig` overwrote it before display — but the
-  source said `22`).
-- Both dialogs now use the measure-to-fit sizing pass (introduced for the Wrapper
-  dialog in v3.22.87), so pruning rows leaves no dead padding and no hint clips at
-  any DPI. Offsets dialog also gained Enter/Esc accept-cancel wiring.
+- Stale `_nudBottomOffset` field-init `22` → `21`; both Video-tab dialogs use the
+  v3.22.87 measure-to-fit pass; Offsets dialog has Enter/Esc accept-cancel; corrected a
+  stale "4 rows" comment on the EQClientSettingsForm Gameplay card (now 3 rows).
 
-UI-only change — no logic, positioning math, or `Native/` touched.
+UI + config-validation change — no positioning math or `Native/` touched.
 
 ## v3.22.90 — Window-mode toggle in the tray menu (2026-05-31)
 

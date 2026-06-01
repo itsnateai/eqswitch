@@ -428,6 +428,12 @@ static class Program
                     config.EQClientIni = EQClientIniConfig.SeedFromIni(iniPath);
                 }
 
+                // v3.22.91: SeedFromIni copies the user's eqclient.ini verbatim, which
+                // may include WindowedMode=FALSE. Validate() pins the required
+                // ForceWindowedMode=true invariant BEFORE this first-run Save persists
+                // it — without this, a false would land on disk until the next launch's
+                // Load→Validate. (Closes the SeedFromIni→Save gap a verifier flagged.)
+                config.Validate();
                 ConfigManager.Save(config);
                 ConfigManager.FlushSave();
             }

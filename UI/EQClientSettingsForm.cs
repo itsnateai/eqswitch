@@ -54,7 +54,6 @@ public class EQClientSettingsForm : Form
     private CheckBox _chkDisableLootAllConfirm = null!;
     private NumericUpDown _nudClipPlane = null!;
     private NumericUpDown _nudMouseSensitivity = null!;
-    private CheckBox _chkForceWindowed = null!;
     private NumericUpDown _nudMaxFPS = null!;
     private NumericUpDown _nudMaxBGFPS = null!;
     private NumericUpDown _nudShadowClipPlane = null!;
@@ -86,8 +85,8 @@ public class EQClientSettingsForm : Form
         int y = 8;
         const int C1 = 10, C2 = 245, C3 = 480, RH = 22;
 
-        // ─── Gameplay card (3 columns × 4 rows) ─────────────────
-        var cardGame = DarkTheme.MakeCard(this, "\u2694", "Gameplay", DarkTheme.CardGreen, 10, y, 710, 130);
+        // ─── Gameplay card (3 columns × 3 rows) ─────────────────
+        var cardGame = DarkTheme.MakeCard(this, "\u2694", "Gameplay", DarkTheme.CardGreen, 10, y, 710, 108);
         int cy = 30;
 
         _chkAnonymous = DarkTheme.AddCardCheckBox(cardGame, "Anonymous", C1, cy);
@@ -101,11 +100,11 @@ public class EQClientSettingsForm : Form
         _chkAttackOnAssist = DarkTheme.AddCardCheckBox(cardGame, "Attack on Assist", C1, cy);
         _chkShowInspectMessage = DarkTheme.AddCardCheckBox(cardGame, "Show Inspect Message", C2, cy);
         _chkDisableInspectOthers = DarkTheme.AddCardCheckBox(cardGame, "Disable Inspect Others", C3, cy);
-        cy += RH;
-        _chkForceWindowed = DarkTheme.AddCardCheckBox(cardGame, "Force Windowed Mode", C1, cy);
-        DarkTheme.AddCardHint(cardGame, "writes to [Defaults] + [VideoMode]", C1 + 165, cy + 2);
+        // v3.22.91: "Force Windowed Mode" checkbox removed — WindowedMode=TRUE is now
+        // a pinned invariant (AppConfig.Validate), not a user-toggleable setting. The
+        // ini-write below always emits TRUE.
 
-        y += 138;
+        y += 116;
 
         // ─── Sound & Audio card (3 columns × 2 rows) ────────────
         var cardSound = DarkTheme.MakeCard(this, "\uD83D\uDD0A", "Sound & Audio", DarkTheme.CardGold, 10, y, 710, 85);
@@ -360,9 +359,6 @@ public class EQClientSettingsForm : Form
                             if (int.TryParse(val, out int acp))
                                 _nudActorClipPlane.Value = Math.Clamp(acp, 0, 999);
                             break;
-                        case "windowedmode":
-                            _chkForceWindowed.Checked = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
-                            break;
                         case "log":
                             _chkDisableLog.Checked = val.Equals("FALSE", StringComparison.OrdinalIgnoreCase);
                             break;
@@ -423,12 +419,8 @@ public class EQClientSettingsForm : Form
                             break;
                     }
                 }
-                else if (currentSection.Equals("[VideoMode]", StringComparison.OrdinalIgnoreCase))
-                {
-                    // [VideoMode] overrides [Defaults] for WindowedMode if present
-                    if (key.Equals("WindowedMode", StringComparison.OrdinalIgnoreCase))
-                        _chkForceWindowed.Checked = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
-                }
+                // v3.22.91: [VideoMode] WindowedMode read removed — the Force Windowed
+                // Mode toggle is gone; WindowedMode is pinned TRUE (AppConfig.Validate).
             }
 
             FileLogger.Info("EQClientSettings: loaded current values from eqclient.ini");
@@ -469,7 +461,8 @@ public class EQClientSettingsForm : Form
         _config.EQClientIni.AANoConfirm = _chkAANoConfirm.Checked;
         _config.EQClientIni.DisableChatServer = _chkDisableChatServer.Checked;
         _config.EQClientIni.DisableLootAllConfirm = _chkDisableLootAllConfirm.Checked;
-        _config.EQClientIni.ForceWindowedMode = _chkForceWindowed.Checked;
+        // v3.22.91: ForceWindowedMode no longer written from this form — pinned TRUE
+        // in AppConfig.Validate (the Force Windowed Mode checkbox was removed).
         _config.EQClientIni.MaxFPS = (int)_nudMaxFPS.Value;
         _config.EQClientIni.MaxBGFPS = (int)_nudMaxBGFPS.Value;
         _config.EQClientIni.ClipPlane = (int)_nudClipPlane.Value;
@@ -567,9 +560,9 @@ public class EQClientSettingsForm : Form
                 SetIniValue(lines, "Defaults", "SkyUpdateInterval", restoreVal);
             }
 
-            string wmVal = _chkForceWindowed.Checked ? "TRUE" : "FALSE";
-            SetIniValue(lines, "Defaults", "WindowedMode", wmVal);
-            SetIniValue(lines, "VideoMode", "WindowedMode", wmVal);
+            // v3.22.91: WindowedMode is a pinned invariant — always write TRUE.
+            SetIniValue(lines, "Defaults", "WindowedMode", "TRUE");
+            SetIniValue(lines, "VideoMode", "WindowedMode", "TRUE");
 
             if ((int)_nudMaxFPS.Value > 0)
             {

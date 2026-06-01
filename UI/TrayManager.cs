@@ -2478,7 +2478,18 @@ public class TrayManager : IDisposable
         // Style" checkboxes. \u25CF = active, \u25CB = inactive.
         ToolStripMenuItem WindowModeRadio(EQSwitch.Config.WindowMode m, string text)
         {
-            var item = new ToolStripMenuItem($"{(_config.Layout.WindowMode == m ? "\u25CF" : "\u25CB")}  {text}");
+            bool active = _config.Layout.WindowMode == m;
+            string bullet = active ? "\u25CF" : "\u25CB";
+            var item = new ToolStripMenuItem($"{bullet}  {text}");
+            // v3.22.91 (Nate): ONLY the radio glyph is orange; the label stays white.
+            // ForeColor colors the whole row (and the renderer clobbers it anyway), so
+            // reuse the renderer's per-segment path \u2014 an orange bullet segment + a white
+            // label segment that concatenate back to Item.Text for layout sizing.
+            item.Tag = new DarkMenuRenderer.TeamRowSegments(new[]
+            {
+                new DarkMenuRenderer.TeamRowSegment($"{bullet}  ", IsAccount: true),
+                new DarkMenuRenderer.TeamRowSegment(text, IsAccount: false),
+            });
             item.Click += (_, _) => SetWindowMode(m);
             return item;
         }

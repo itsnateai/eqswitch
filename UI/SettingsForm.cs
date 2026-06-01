@@ -195,41 +195,30 @@ public class SettingsForm : Form
     // offsets that takes effect with Fullscreen Window (slim titlebar)
     // enabled. Maps to Layout.HorizontalNudgePx, clamped ±10.
     private NumericUpDown _nudHorizontalNudge = null!;
-    private CheckBox _chkVideoWindowed = null!;
     private CheckBox _chkVideoMultiMon = null!;
     private ComboBox _cboVideoPrimaryMon = null!;
     private ComboBox _cboVideoSecondaryMon = null!;
     private bool _suppressVideoSync; // prevent SyncVideoPresetToCustom during programmatic changes
     private Label? _lblVideoLoadError; // warning label shown when ini load fails
 
-    // Resolution presets for Video tab
-    // v3.22.69: added 4 multibox-tile presets inspired by WinEQ2's resolution set
-    // (per Lavish Software wiki — WinEQ2 ships ~17 resolutions including half-screen
-    // variants tuned for tiled multibox layouts). EQ historically hides resolutions
-    // with any dimension < 512, so half-screen presets only render on desktops
-    // ≥ 1280×1024 — a non-issue on any modern setup.
-    //
-    // Half-width presets give side-by-side 2-box; half-height give stacked 2-box.
-    // EQSwitch's grid-arrange + slim-titlebar already achieves the same tiling
-    // outcome via window-resize, but the in-game-resolution path lets the user
-    // bypass EQSwitch and have EQ render at the tile size natively (sharper text,
-    // lower GPU bandwidth, and survives the rare case where window-resize fights
-    // EQ's own DirectX backbuffer).
+    // Resolution presets for Video tab. EQSwitch runs each client at full-monitor
+    // bounds (slim titlebar) and positions the windows itself, so these are plain
+    // single-client resolutions — NOT tiling presets. v3.22.91 removed 4 WinEQ2-style
+    // "half-screen multibox" presets (960x1080/1920x540/etc.): they only set EQ's
+    // render resolution, don't arrange anything, and a half-width backbuffer actually
+    // fights the default full-monitor positioning. The 2-on-one-monitor workflow they
+    // implied was never tested, so offering them over-promised. Custom covers any
+    // non-listed size for a power user who genuinely wants one.
     private static readonly (string Name, int W, int H)[] VideoPresets =
     {
         ("1920x1080", 1920, 1080),
         ("1920x1200", 1920, 1200),
         ("1920x1020 (above taskbar)", 1920, 1020),
         ("2560x1440", 2560, 1440),
-        ("3840x2160 (4K)", 3840, 2160),
+        ("3840x2160", 3840, 2160),
         ("1280x720", 1280, 720),
         ("1600x900", 1600, 900),
         ("1366x768", 1366, 768),
-        // ─── WinEQ2-style multibox tiles (v3.22.69) ───
-        ("960x1080 (2-up side, 1080p)", 960, 1080),
-        ("1920x540 (2-up stack, 1080p)", 1920, 540),
-        ("1280x1440 (2-up side, 1440p)", 1280, 1440),
-        ("2560x720 (2-up stack, 1440p)", 2560, 720),
         ("Custom", 0, 0)
     };
 
@@ -506,7 +495,7 @@ public class SettingsForm : Form
         };
         cardEQ.Controls.Add(_txtSwitchKeyGeneral);
         DarkTheme.WrapWithBorder(_txtSwitchKeyGeneral);
-        DarkTheme.AddCardHint(cardEQ, "click and press key  |  Delete to clear", 210, cy + 2);
+        DarkTheme.AddCardHint(cardEQ, "Click and press key  |  Delete to clear", 210, cy + 2);
         cy += R;
 
         // EQ Path
@@ -540,7 +529,7 @@ public class SettingsForm : Form
             if (_txtShowMenu != null && _txtShowMenu.Text != _txtShowMenuGeneral.Text)
                 _txtShowMenu.Text = _txtShowMenuGeneral.Text;
         };
-        DarkTheme.AddCardHint(cardEQ, "pops menu above clock", 250, cy + 2);
+        DarkTheme.AddCardHint(cardEQ, "Pops menu above clock", 250, cy + 2);
 
         // v3.22.54: card-advance matched to card height (was 156 paired with
         // a 148 card; now 164 paired with the 156 card so the next card
@@ -981,7 +970,7 @@ public class SettingsForm : Form
 
         if (reverted)
         {
-            _lblSlotDuplicateWarn.Text = "\u26A0 Same account can't be in multiple slots (SoD limitation)";
+            _lblSlotDuplicateWarn.Text = "\u26A0 Same account can't be in multiple slots (Dalaya limitation)";
             _lblSlotDuplicateWarn.ForeColor = DarkTheme.CardWarn;
         }
         else
@@ -1278,7 +1267,7 @@ public class SettingsForm : Form
             };
             if (ofd.ShowDialog() == DialogResult.OK) _txtDalayaPatcherPath.Text = ofd.FileName;
         };
-        DarkTheme.AddCardHint(cardPaths, "Patcher may be deleted by antivirus — re-download from SoD if missing.", L, cy + 26);
+        DarkTheme.AddCardHint(cardPaths, "Patcher may be deleted by antivirus — re-download from Dalaya if missing.", L, cy + 26);
         cy += 52;
 
         DarkTheme.AddCardLabel(cardPaths, "Custom Icon:", L, cy);
@@ -1633,13 +1622,9 @@ public class SettingsForm : Form
         _cboPipBorderColor.Enabled = _config.Pip.ShowBorder;
         _nudPipBorderThickness.Enabled = _config.Pip.ShowBorder;
 
-        // Video (reads from eqclient.ini)
-        // v3.22.91: WindowedMode=TRUE is a hard requirement — an exclusive-fullscreen
-        // EQ client can't be window-managed (no slim titlebar, no arrangement, no
-        // multibox). No longer a user-facing toggle (removed from the Wrapper dialog);
-        // pinned true so any legacy config with ForceWindowedMode=false self-corrects
-        // on the next save.
-        _chkVideoWindowed.Checked = true;
+        // Video (reads from eqclient.ini). WindowedMode=TRUE is a hard requirement
+        // (AppConfig.Validate pins ForceWindowedMode=true) and VideoSaveToIni writes it
+        // literally — no UI control or backing field needed.
         _chkVideoMultiMon.Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
         _nudVideoTopOffset.Value = DarkTheme.ClampNud(_nudVideoTopOffset, _config.Layout.TopOffset);
         _nudHorizontalNudge.Value = DarkTheme.ClampNud(_nudHorizontalNudge, _config.Layout.HorizontalNudgePx);
@@ -2234,9 +2219,9 @@ public class SettingsForm : Form
         page.AutoScrollMargin = new Size(0, 20);
 
         // ─── Accounts card ───────────────────────────────────────────
-        // Card height 234 (was 216) leaves room for the second hint row added
-        // below \u2014 single-line "DPAPI ... + Flag legend" overflowed 480 width.
-        var accountsCard = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Accounts", DarkTheme.CardGold, 10, y, 480, 234);
+        // Card height 216: the DPAPI note + Flag legend share one hint row (legend
+        // moved up beside the note, v3.22.91). Was 234 when the legend had its own row.
+        var accountsCard = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Accounts", DarkTheme.CardGold, 10, y, 480, 216);
 
         _dgvAccounts = MakeDualSectionGrid();
         _dgvAccounts.Columns.Add("Num", "#");
@@ -2304,10 +2289,12 @@ public class SettingsForm : Form
         _nudLoginScreenDelay.DecimalPlaces = 1;
         _nudLoginScreenDelay.Increment = 0.5m;
 
-        DarkTheme.AddCardHint(accountsCard, "DPAPI-encrypted passwords — same Windows user only.", 10, 196);
-        DarkTheme.AddCardHint(accountsCard, "Flag: ✓ ok    ✗ failed    — untried", 10, 212);
+        // v3.22.91 (Nate): DPAPI note + Flag legend share one row now (legend moved
+        // up beside the note). Shortened "passwords" off the note so both fit 480.
+        DarkTheme.AddCardHint(accountsCard, "DPAPI-encrypted — same Windows user only.", 10, 196);
+        DarkTheme.AddCardHint(accountsCard, "Flag: ✓ ok   ✗ failed   — untried", 250, 196);
 
-        y += 242;
+        y += 224;
 
         // ─── Characters card ─────────────────────────────────────────
         var charactersCard = DarkTheme.MakeCard(page, "\uD83E\uDDD9", "Characters", DarkTheme.CardPurple, 10, y, 480, 196);
@@ -2619,9 +2606,19 @@ public class SettingsForm : Form
     private string LookupHotkeyForTarget(string targetName)
     {
         if (string.IsNullOrEmpty(targetName)) return "";
-        // Phase 4 bridge: QuickLogin1-4 + HotkeyConfig.AutoLogin1-4 still hold character
-        // bindings until Phase 5 replaces with CharacterHotkeys[]. Show whichever hotkey
-        // currently points at this target.
+        // v3.22.91 fix: v4 per-character/-account bindings live in
+        // Hotkeys.CharacterHotkeys / AccountHotkeys (TargetName == Name). Phase 5 has
+        // shipped, so these are the live source — check them FIRST. The legacy
+        // QuickLogin/AutoLogin slots below are the pre-v4 bridge and are EMPTY on any
+        // migrated config — which is exactly why the Characters-grid ✓ went missing:
+        // the lookup only consulted the empty bridge slots, never CharacterHotkeys[].
+        var hit = _config.Hotkeys.CharacterHotkeys
+            .Concat(_config.Hotkeys.AccountHotkeys)
+            .FirstOrDefault(b => HotkeyBindingUtil.IsPopulated(b)
+                && b.TargetName.Equals(targetName, StringComparison.OrdinalIgnoreCase));
+        if (hit != null) return hit.Combo;
+
+        // Legacy QuickLogin1-4 + AutoLogin1-4 bridge (pre-v4 configs only).
         var slots = new (string target, string combo)[]
         {
             (_config.QuickLogin1, _config.Hotkeys.AutoLogin1),
@@ -3375,7 +3372,7 @@ public class SettingsForm : Form
         cardStyle.Controls.Add(btnWrapper);
 
         _chkWindowedMode = DarkTheme.AddCardCheckBox(cardStyle, "Windowed Mode", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "slim titlebar, draggable (WinEQ2-style)", hintX, cy + 2);
+        DarkTheme.AddCardHint(cardStyle, "slim titlebar + covers taskbar", hintX, cy + 2);
         cy += 26;
 
         _chkSlimTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Fullscreen mode", L, cy);
@@ -3386,18 +3383,18 @@ public class SettingsForm : Form
         // to the main Window Style card per Nate 2026-05-26 — it's a regular
         // visual preference that shouldn't be buried two clicks deep.
         _chkDarkTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Dark Titlebar", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "DWM immersive dark caption (Win10 1809+/11)", hintX, cy + 2);
+        DarkTheme.AddCardHint(cardStyle, "dark title bar instead of the default white", hintX, cy + 2);
         cy += 22;
 
         // Wrapper dialog backing fields — titlebar offset, bottom margin, DLL
         // hook. Advanced settings most users don't touch. v3.22.80: Maximize on
-        // Launch + Force-Windowed (ForceWindowedMode plumbing) join these as
-        // detached fields, surfaced only in the ⚙ Advanced dialog.
+        // Launch is a detached field surfaced only via the ⚙ Advanced dialog.
+        // (v3.22.91: Force-Windowed is no longer a field — ForceWindowedMode is a
+        // pinned invariant written literally by VideoSaveToIni.)
         _nudTitlebarOffset = new NumericUpDown { Value = 13, Minimum = 0, Maximum = 40 };  // transient; overwritten by PopulateFromConfig (default 13 — v3.22.86)
         _nudBottomOffset = new NumericUpDown { Value = 21, Minimum = 0, Maximum = 100 };  // transient; overwritten by PopulateFromConfig (default 21 — matches WindowLayout.BottomOffset)
         _chkUseHook = new CheckBox();
         _chkMaximizeWindow = new CheckBox();   // v3.22.80: Advanced-only
-        _chkVideoWindowed = new CheckBox();     // v3.22.80: ForceWindowedMode plumbing, Advanced-only
         btnWrapper.Enabled = true;              // Advanced is always reachable now
         btnWrapper.Click += (_, _) => ShowWrapperDialog();
 
@@ -3478,18 +3475,28 @@ public class SettingsForm : Form
         DarkTheme.AddHint(dlg, "Fine-tune EQSwitch's window placement (both modes):", L, y);
         y += 24;
 
+        // v3.22.91 (Nate /frontend-design): both numerics share ONE width (55) and
+        // ONE hint rule (HINTX) so the rows read as a matched pair. They only hold
+        // 2-4 digits, so the old 60/70 mismatch looked oversized and ragged.
+        const int NUDW = 55, HINTX = I + NUDW + 12;
         DarkTheme.AddLabel(dlg, "Horizontal Nudge:", L, y + 2);
-        var nudHoriz = DarkTheme.AddNumeric(dlg, I, y, 60, _nudHorizontalNudge.Value, -10, 10);
-        DarkTheme.AddHint(dlg, "1 = shift +1px right", 215, y + 4);
+        var nudHoriz = DarkTheme.AddNumeric(dlg, I, y, NUDW, _nudHorizontalNudge.Value, -10, 10);
+        DarkTheme.AddHint(dlg, "+ = right   ·   - = left", HINTX, y + 4);
         y += 30;
 
         DarkTheme.AddLabel(dlg, "Top Offset:", L, y + 2);
-        var nudTop = DarkTheme.AddNumeric(dlg, I, y, 70, _nudVideoTopOffset.Value, -100, 200);
-        DarkTheme.AddHint(dlg, "px down from monitor top", 225, y + 4);
-        y += 30;
+        var nudTop = DarkTheme.AddNumeric(dlg, I, y, NUDW, _nudVideoTopOffset.Value, -100, 200);
+        DarkTheme.AddHint(dlg, "px from top", HINTX, y + 4);
+        y += 32;
 
-        DarkTheme.AddHint(dlg, "Fixes a 1px DPI sliver / nudges vertical placement.", L, y);
-        y += 24;
+        // v3.22.91: use-case explanations live on full-width lines at the bottom (not
+        // long right-of-box hints) so the dialog stays narrow and the text can't run
+        // off — AddHint labels are AutoSize, so measure-to-fit grows the dialog to
+        // exactly fit the widest line below.
+        DarkTheme.AddHint(dlg, "Nudge: fixes a 1px gap on some multi-monitor setups.", L, y);
+        y += 16;
+        DarkTheme.AddHint(dlg, "Top Offset: only if your taskbar/bezel sits at the TOP (else 0).", L, y);
+        y += 26;
 
         var btnOK = DarkTheme.MakePrimaryButton("Save", L, y);
         btnOK.Width = 90;
@@ -3551,7 +3558,7 @@ public class SettingsForm : Form
         var nudTitle = DarkTheme.AddNumeric(dlg, I, y, 60, _nudTitlebarOffset.Value, 0, 40);
         nudTitle.Enabled = !fullscreen;
         y += 24;
-        DarkTheme.AddHint(dlg, "0 = hidden · 13 = title + half buttons (default) · 26 = full", L, y);
+        DarkTheme.AddHint(dlg, "0 = hidden · 13 = title + half buttons · raise for more", L, y);
         y += 18;
 
         DarkTheme.AddLabel(dlg, "Bottom margin (px):", L, y + 2);
@@ -3564,34 +3571,29 @@ public class SettingsForm : Form
         DarkTheme.AddHint(dlg, fullscreen
             ? "Titlebar + margin apply in Windowed mode only (Fullscreen active)."
             : "Defaults: titlebar 13, margin 21 · keep margin ≥ titlebar", L, y);
-        y += 22;
-
-        var chkHook = DarkTheme.AddCheckBox(dlg, "DLL Hook (zero flicker)", L, y);
-        chkHook.Checked = _chkUseHook.Checked;
-        y += 20;
-        DarkTheme.AddHint(dlg, "Hooks SetWindowPos inside EQ", L, y);
         y += 28;
 
-        // v3.22.91: removed two controls from this dialog —
+        // v3.22.91: removed three controls from this dialog —
         //   • "Force Windowed Mode" (eqclient.ini WindowedMode=TRUE): a hard
         //     requirement for EQSwitch's window management, not a real choice.
-        //     Pinned true in PopulateFromConfig / PopulateVideoFromIni.
+        //     Pinned true in AppConfig.Validate (airtight invariant).
         //   • "Maximize on Launch": a parked/under-review feature. _chkMaximizeWindow
         //     stays false by default; revisit if/when the feature is finished.
+        //   • "DLL Hook (zero flicker)": injection auto-falls-back to the guard timer
+        //     on failure, so the casual toggle wasn't needed. _chkUseHook stays a
+        //     config-only knob (default true); power users can still set it via JSON.
         // Dark Titlebar lives on the main Window Style card (moved v3.22.54).
 
-        var btnReset = DarkTheme.MakeButton("Reset Defaults", DarkTheme.BgMedium, L, y);
-        btnReset.Width = 110;
+        var btnReset = DarkTheme.MakeButton("Reset", DarkTheme.BgMedium, L, y);
+        btnReset.Width = 70;
         btnReset.Click += (_, _) =>
         {
             // Defaults track AppConfig.WindowLayout: TitlebarOffset = 13 (peeks
             // ~half the maximize button — the WinEQ2 look; bottom kept flush by the
             // v3.22.82 render-height fix + v3.22.84 read-back correction),
-            // BottomOffset = 21, UseHook = true. DarkTitlebar default lives on the
-            // Window Style card now.
+            // BottomOffset = 21. DarkTitlebar + DLL hook defaults live elsewhere now.
             nudTitle.Value = 13;
             nudBottom.Value = 21;
-            chkHook.Checked = true;
         };
         dlg.Controls.Add(btnReset);
         y += 36;
@@ -3602,7 +3604,6 @@ public class SettingsForm : Form
         {
             _nudTitlebarOffset.Value = nudTitle.Value;
             _nudBottomOffset.Value = nudBottom.Value;
-            _chkUseHook.Checked = chkHook.Checked;
             dlg.DialogResult = DialogResult.OK;
         };
         dlg.Controls.Add(btnOK);
@@ -3685,12 +3686,8 @@ public class SettingsForm : Form
                         case "height":
                             if (int.TryParse(val, out int h)) _nudVideoHeight.Value = Math.Clamp(h, 200, 4320);
                             break;
-                        case "windowedmode":
-                            // v3.22.91: WindowedMode is a pinned invariant (TRUE) — EQSwitch
-                            // can't manage an exclusive-fullscreen client. Ignore whatever the
-                            // ini currently says; the next save rewrites it TRUE. Not user-toggleable.
-                            _chkVideoWindowed.Checked = true;
-                            break;
+                        // v3.22.91: WindowedMode read removed — it's a pinned invariant
+                        // (TRUE), written literally by VideoSaveToIni; nothing to read in.
                         case "xoffset":
                             if (int.TryParse(val, out int ox)) _nudVideoOffsetX.Value = Math.Clamp(ox, -5000, 5000);
                             break;
@@ -3737,7 +3734,7 @@ public class SettingsForm : Form
             _config.Layout.TopOffset = (int)_nudVideoTopOffset.Value;
             _config.Layout.TargetMonitor = _cboVideoPrimaryMon.SelectedIndex;
             _config.Layout.SecondaryMonitor = _cboVideoSecondaryMon.SelectedIndex <= 0 ? -1 : _cboVideoSecondaryMon.SelectedIndex - 1;
-            _config.EQClientIni.ForceWindowedMode = _chkVideoWindowed.Checked;
+            _config.EQClientIni.ForceWindowedMode = true;  // pinned invariant (see AppConfig.Validate)
             _config.Layout.Mode = _chkVideoMultiMon.Checked ? "multimonitor" : "single";
             if (_chkVideoMultiMon.Checked)
                 _config.Hotkeys.MultiMonitorEnabled = true;
@@ -3773,7 +3770,7 @@ public class SettingsForm : Form
             {
                 ["Width"] = ((int)_nudVideoWidth.Value).ToString(),
                 ["Height"] = ((int)_nudVideoHeight.Value).ToString(),
-                ["WindowedMode"] = _chkVideoWindowed.Checked ? "TRUE" : "FALSE",
+                ["WindowedMode"] = "TRUE",  // pinned invariant — never FALSE
                 ["Maximized"] = _config.EQClientIni.MaximizeWindow ? "1" : "0",
                 ["XOffset"] = ((int)_nudVideoOffsetX.Value).ToString(),
                 ["YOffset"] = ((int)_nudVideoOffsetY.Value).ToString()
@@ -3803,7 +3800,7 @@ public class SettingsForm : Form
             }
 
             // Sync WindowedMode in [Defaults] too — EQ reads from there
-            string wmVal = _chkVideoWindowed.Checked ? "TRUE" : "FALSE";
+            string wmVal = "TRUE";  // pinned invariant
             for (int i = 0; i < lines.Count; i++)
             {
                 var trimmed = lines[i].Trim();
@@ -3908,7 +3905,6 @@ public class SettingsForm : Form
         _cboVideoPreset.SelectedIndex = 0; // triggers width/height update
         _nudVideoOffsetX.Value = 0;
         _nudVideoOffsetY.Value = 0;
-        _chkVideoWindowed.Checked = true;
         _chkVideoMultiMon.Checked = false;
         _nudVideoTopOffset.Value = 0;
         // v3.22.54 round-1 fix (T3 Sonnet + T3 Opus convergent IMPORTANT):
@@ -3916,23 +3912,13 @@ public class SettingsForm : Form
         // with the other three or Reset Defaults silently keeps the nudge.
         _nudHorizontalNudge.Value = 0;
 
-        // v3.22.57 (post-v3.22.56 verifier swarm T2-Sonnet + T2-Opus
-        // convergent MEDIUM): Reset Defaults previously only touched the
-        // Video Resolution + Window Offsets controls; the Window Style card
-        // (slim/dark/maximize/use-hook/titlebar+bottom offsets) was silently
-        // untouched, so the button restored "defaults" while leaving half
-        // the Video tab's user-tweaked values in place. Hard contract:
-        // Reset Defaults on the Video tab restores ALL Video-tab controls
-        // to AppConfig.WindowLayout / EQClientIniConfig defaults. Values
-        // mirror the C# initializers in those classes — keep in sync if
-        // either default changes.
-        _chkSlimTitlebar.Checked = true;        // WindowMode = Fullscreen
-        _chkWindowedMode.Checked = false;       // WindowLayout.WindowMode = Fullscreen
-        _chkDarkTitlebar.Checked = true;        // WindowLayout.DarkTitlebar (v3.22.56)
-        _nudTitlebarOffset.Value = DarkTheme.ClampNud(_nudTitlebarOffset, 13);  // WindowLayout.TitlebarOffset (13 peek ~half maximize button; bottom flush via v3.22.84 read-back)
-        _nudBottomOffset.Value   = DarkTheme.ClampNud(_nudBottomOffset, 21);    // WindowLayout.BottomOffset
-        _chkUseHook.Checked = true;             // WindowLayout.UseHook
-        _chkMaximizeWindow.Checked = false;     // EQClientIniConfig.MaximizeWindow
+        // v3.22.91 (Nate 2026-05-31): Reset Defaults on the Video tab deliberately
+        // does NOT touch the Window Style card (window mode / dark titlebar / titlebar
+        // + bottom offsets / DLL hook). This reverts the v3.22.57 "reset ALL video
+        // controls" contract ON PURPOSE — clicking Reset in the EQ Resolution card was
+        // yanking Windowed users back to Fullscreen, which is surprising and unwanted.
+        // Reset now restores only resolution + offsets; window mode/style is left
+        // exactly as the user set it. (Window-mode default is Windowed as of v3.22.91.)
     }
 
     private void PopulateVideoPresets()
