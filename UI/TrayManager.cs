@@ -783,6 +783,7 @@ public class TrayManager : IDisposable
             // Clean up injection tracking and per-process shared memory
             _injectedPids.Remove(c.ProcessId);
             _di8InjectedPids.Remove(c.ProcessId);
+            _startupWarmedPids.Remove(c.ProcessId);   // v3.24.4 — so a recycled PID gets re-warmed
             _hookConfig?.Close(c.ProcessId);
             // v3.22.46: drop the dedupe entry so a recycled PID (or a fresh
             // launch of the same character later in the session) gets its
@@ -4975,6 +4976,15 @@ public class TrayManager : IDisposable
         FileLogger.Info($"UpdateHookConfig: PID {pid} → {string.Join(", ", features)}");
     }
 
+    // v3.24.4 — per-PID set of clients already given the startup backbuffer warmup.
+    // NOT a single bool: a multibox team injects STAGGERED (LaunchManager staggers
+    // launches), so a global one-shot warms only the FIRST client and leaves the rest
+    // with the cold-backbuffer glitch (verifier-caught 2026-06-01). Per-PID warms each
+    // client once, as it becomes injected — and retries (doesn't record the PID) if the
+    // reset couldn't post (window gone / hung / iconic / mid-login). Cleared per-PID in
+    // ClientLost so a recycled PID isn't wrongly skipped.
+    private readonly HashSet<int> _startupWarmedPids = new();
+
     /// <summary>
     /// v3.22.84 — slim-titlebar guard tick. Re-applies slim style/position to
     /// NON-injected clients via <see cref="WindowManager.ApplySlimTitlebarToAll"/>
@@ -4986,7 +4996,50 @@ public class TrayManager : IDisposable
     private void SlimTitlebarGuardTick()
     {
         _windowManager.ApplySlimTitlebarToAll(_processManager.Clients, _injectedPids);
+        MaybeFireStartupBackbufferWarmup();   // before the read-back: reset, then measure (mirrors SetWindowMode)
         CorrectInjectedWindowedGeometry();
+    }
+
+    /// <summary>
+    /// v3.24.4 — fire EQ's backbuffer reset ONCE PER injected Windowed client on startup.
+    /// <para>
+    /// <see cref="PostBackbufferResize"/> (EQ's own SetResolution+ResetDevice via the
+    /// hook's GeoWndProc) is wired to swaps, the Windowed↔Fullscreen toggle, and
+    /// Fix-Windows — but NOT the startup arrange. A session that launches straight into
+    /// Windowed mode therefore renders against a backbuffer that was never reset to the
+    /// slim client size — the main-monitor taskbar glitch — until the user round-trips
+    /// through Fullscreen (or hits Fix-Windows), both of which DO reset it. This
+    /// reproduces that reset automatically at startup, so Windowed-start is clean without
+    /// the manual detour. (Nate's lead, 2026-06-01.)
+    /// </para>
+    /// <para>
+    /// PER-PID, not a single latch: a multibox team injects staggered, so each client is
+    /// warmed once as it becomes injected — a first-client-only latch missed the rest
+    /// (verifier-caught). <see cref="PostBackbufferResize"/> returns false when the window
+    /// is gone / hung / iconic / mid-login (it self-gates on IsLoginActive + IsIconic +
+    /// IsHungAppWindow); in that case we do NOT record the PID, so a later tick retries
+    /// once the client is responsive. Gated to Windowed (Fullscreen has its own settle).
+    /// Native side is idempotent (no reset when the backbuffer already matches), so a
+    /// slightly-early fire is a cheap no-op a later swap re-confirms.
+    /// </para>
+    /// </summary>
+    private void MaybeFireStartupBackbufferWarmup()
+    {
+        if (_config.Layout.WindowMode != EQSwitch.Config.WindowMode.Windowed) return;
+        var clients = _processManager.Clients;
+        for (int i = 0; i < clients.Count; i++)
+        {
+            var c = clients[i];
+            if (!_injectedPids.Contains(c.ProcessId)) continue;      // hook-managed clients only
+            if (_startupWarmedPids.Contains(c.ProcessId)) continue;  // already warmed this PID
+            // Record the PID ONLY on a posted reset — a false return (hung/iconic/mid-login)
+            // leaves it unrecorded so the next guard tick retries.
+            if (PostBackbufferResize(c.ProcessId, c.WindowHandle, "startup-warmup"))
+            {
+                _startupWarmedPids.Add(c.ProcessId);
+                FileLogger.Info($"startup-warmup: PID {c.ProcessId} backbuffer reset (Windowed cold-backbuffer glitch fix, per-client at startup — no manual round-trip needed)");
+            }
+        }
     }
 
     /// <summary>

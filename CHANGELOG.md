@@ -1,5 +1,70 @@
 # Changelog
 
+## v3.24.6 — Read-back won't cache a non-slim frame (stops the geometry-cache poisoning) (2026-06-01)
+
+Guards the measured-frame cache against poisoning, which had defeated v3.24.5 in the wild. If a
+multimon startup leaves the window **non-slim** (still WS_THICKFRAME — observed when a Settings
+ReloadConfig raced the autologin startup arrange), the read-back was measuring that window's
+resize-border frame (`8/31/8/8`) and caching it over the correct slim frame (`3/26/3/3`). Because
+v3.24.5 made the arrange trust the cache, every subsequent placement then overshot ~5px/edge and
+covered the taskbar.
+
+- **Fix:** `TryComputeReadbackCorrection` now **skips entirely** (no cache write, no reposition) when
+  the window still carries `WS_THICKFRAME` — it isn't slim yet, so its frame must not be cached and
+  it must not be positioned against a slim arrange. The guard tick re-measures once the slim restyle
+  has stripped the frame (mirrors the existing `actT<=0` transitional guard).
+- Does NOT by itself fix a startup that leaves the window non-slim — that restyle path is the
+  separate root still under investigation. This change makes the cache *robust* to it so the
+  overshoot can't compound across launches.
+- No Native/DX binary changes. EXE-only.
+
+## v3.24.5 — Windowed multimon arrange lands flush on first paint (no startup taskbar overshoot) (2026-06-01)
+
+Fixes the real root of the "windowed-start window sits over the taskbar until you hit `\`" glitch
+(which the v3.24.4 backbuffer warmup did not address — that was the wrong layer; this is window
+geometry, not the DX backbuffer).
+
+- **Root cause (confirmed in `eqswitch.log`):** `ArrangeMultiMonitor` placed the slim window using
+  the `AdjustWindowRectEx` **prediction** (`1936×1106`, ~5px/edge overshoot → covers the taskbar),
+  and the **read-back** that corrects it to the **measured** flush frame (`1926×1096`) is gated OFF
+  during autologin. On a windowed start the overshoot therefore persisted until a manual swap (`\`)
+  re-arranged the window. The `EnforceOverrides` INI rewrite is a no-op for already-running clients
+  (EQ reads eqclient.ini only at its own launch), so the INI was never the issue.
+- **Fix:** `ArrangeMultiMonitor` now consults the warm **measured-frame cache**
+  (`TryCachedOuterRect`) — the same cached frame `UpdateHookConfigForPid`, the 2-arg overload, and
+  the read-back already use — so the window lands **flush on the first paint when the cache is
+  warm** (the normal cross-session case; the cache persists in `eqswitch-frame-cache.json` and
+  loads eagerly at startup), no overshoot, no dependence on the login-gated read-back. A truly
+  **cold** cache (first-ever launch / cache clear / DPI change) still takes the prediction overshoot
+  until the read-back measures + warms it for the next launch — i.e. the fix is flush from the
+  second launch onward on a fresh machine, and from the first launch on any machine with a warmed
+  cache. Cold / wrong-DPI / Fullscreen → falls back to the style-aware prediction (prior exact
+  behavior). Note: on mixed-DPI multi-monitor the cached frame is the system-DPI frame (same
+  limitation the prediction path already had — PerMonitorV2 is deferred), so no new regression there.
+- No Native/DX binary changes. EXE-only; `eqswitch-di8.dll` / `eqswitch-hook.dll` byte-identical.
+
+## v3.24.4 — Windowed startup backbuffer warmup (2026-06-01)
+
+Fixes the main-monitor taskbar glitch on a fresh **Windowed** start. EQ's backbuffer reset
+(`SetResolution`+`ResetDevice` via the hook's `GeoWndProc`) was wired to swaps, the
+Windowed↔Fullscreen toggle, and Fix-Windows — but **not** the startup arrange. So launching
+straight into Windowed mode left the client rendering against a backbuffer that was never reset to
+the slim client size (the glitch), and it only cleaned up after the user round-tripped through
+Fullscreen or hit Fix-Windows.
+
+- **Fix — one-shot startup warmup.** `SlimTitlebarGuardTick` now fires `PostBackbufferResize` for
+  injected Windowed clients exactly once, as soon as a hook-injected client exists, reproducing the
+  Fullscreen→Windowed reset automatically at startup. Idempotent native-side (no-op when the
+  backbuffer already matches); gated to Windowed + injected; the guard tick is already disabled
+  during login so it never races autologin.
+- No Native/DX binary changes. EXE-only; `eqswitch-di8.dll` / `eqswitch-hook.dll` byte-identical.
+
+> **Note (not in this build):** the residual *non-focused-client tearing* on swaps / leaving
+> fullscreen is a Windows present-path issue (the backgrounded borderless window loses its
+> Multi-Plane Overlay / DirectFlip plane). The reversible system-level mitigation is disabling MPO
+> (`HKLM\SOFTWARE\Microsoft\Windows\Dwm\OverlayTestMode = 5` DWORD, reboot). See
+> `_docs/research/deepresearch-d3d9-background-window-tearing-2026-06-01-2215.md`.
+
 ## v3.24.3 — Multimonitor window-management: one sizing authority, taskbar-visibility mode, black-bar fix, transition curtain (2026-06-01)
 
 Closes the remaining multimonitor behavior after the v3.24.2 swap fix — makes taskbar coverage

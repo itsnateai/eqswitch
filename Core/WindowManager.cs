@@ -653,9 +653,28 @@ public class WindowManager
                 // of both monitors, AND DX swap-chain stretch artifacts
                 // would appear on every client — exactly the same bug class
                 // the lock-to-primary-dims was added to suppress on swap.
-                long currentSlimStyle = DesiredSlimStyle(_api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64(), _config.Layout.WindowMode);
-                long currentExStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_EXSTYLE).ToInt64();
-                (x, y, w, h) = ComputeSlimTitlebarOuterRect(effectiveBounds, titlebarOffset, currentSlimStyle, currentExStyle);
+                // v3.24.5 — prefer the warm MEASURED-frame cache over the AdjustWindowRectEx
+                // prediction so the multimon arrange lands the window FLUSH on the first paint
+                // WHEN THE CACHE IS WARM (the normal cross-session case — the cache persists in
+                // eqswitch-frame-cache.json and loads eagerly at startup). A truly COLD cache
+                // (first-ever launch / cache clear / DPI change) still takes the prediction
+                // overshoot below until the read-back measures + warms it for the next launch.
+                // Avoids the ~5px/edge overshoot (covering the taskbar) that otherwise persists
+                // until the login-gated read-back corrects it. The 2-arg overload, UpdateHookConfigForPid,
+                // and the read-back already converge on this same cached frame; ArrangeMultiMonitor
+                // was the one placement path still taking the raw style-prediction → the
+                // "windowed-start window sits over the taskbar until you hit \" symptom (Nate,
+                // 2026-06-01, confirmed in eqswitch.log: first arrange + hook-config pushed the
+                // predicted 1936×1106 overshoot, read-back later flushed to the measured 1926×1096).
+                // Cold / wrong-DPI / Fullscreen (WS_POPUP 0-frame) → TryCachedOuterRect returns
+                // false → fall back to the style-aware prediction = prior exact behavior.
+                if (!TryCachedOuterRect(effectiveBounds, titlebarOffset, out var slimOuter))
+                {
+                    long currentSlimStyle = DesiredSlimStyle(_api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_STYLE).ToInt64(), _config.Layout.WindowMode);
+                    long currentExStyle = _api.GetWindowLongPtr(client.WindowHandle, NativeMethods.GWL_EXSTYLE).ToInt64();
+                    slimOuter = ComputeSlimTitlebarOuterRect(effectiveBounds, titlebarOffset, currentSlimStyle, currentExStyle);
+                }
+                (x, y, w, h) = slimOuter;
                 swpFlags = NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE;
             }
             else
@@ -1904,6 +1923,23 @@ public class WindowManager
         if (actT <= 0)
         {
             FileLogger.Info($"TryComputeReadbackCorrection: skip — 0-top frame (hwnd=0x{hwnd.ToInt64():X} L{actL} T{actT} R{actR} B{actB}); WS_CAPTION restyle not settled yet, guard tick will retry");
+            return false;
+        }
+
+        // v3.24.6 — skip if the window still carries WS_THICKFRAME (i.e. NOT slim-styled
+        // yet). A non-slim window's measured non-client frame is the resize-border ~8/31/8/8
+        // (vs the slim WS_CAPTION-only ~3/26/3/3); caching THAT poisons the persisted
+        // eqswitch-frame-cache.json, and as of v3.24.5 the arrange trusts the cache, so every
+        // subsequent placement overshoots ~5px/edge (covers the taskbar) — observed live
+        // 2026-06-01: the cache flipped 3/26/3/3 → 8/31/8/8 after a multimon startup left the
+        // window non-slim, which then defeated the v3.24.5 arrange fix. Correcting to a
+        // non-slim-flush rect would also fight the slim arrange. Skip entirely; the guard tick
+        // re-measures once the slim restyle has stripped WS_THICKFRAME (mirrors the actT<=0
+        // transitional guard above — same "style not settled, retry next tick" contract).
+        long liveStyleRb = _api.GetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE).ToInt64();
+        if ((liveStyleRb & NativeMethods.WS_THICKFRAME) != 0)
+        {
+            FileLogger.Info($"TryComputeReadbackCorrection: skip — window still WS_THICKFRAME, not slim (hwnd=0x{hwnd.ToInt64():X} frame {actL}/{actT}/{actR}/{actB}); slim restyle not landed, guard tick will retry — NOT caching this frame");
             return false;
         }
 
