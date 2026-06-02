@@ -1926,13 +1926,14 @@ public class AutoLoginManager
     /// <see cref="ShouldSkipShmEnterWorld"/>:
     ///
     /// <list type="bullet">
-    /// <item>Dalaya (default skip=true): goes directly to PulseKey3D fallback —
-    /// CLW_EnterWorldButton isn't in the CXWnd tree by the time charselect-
-    /// ready is signaled, so all SHM attempts would return -1 and waste
-    /// ~2-2.5s before fallback (v3.15.11 Target 2 Option A short-circuit).</item>
-    /// <item>Non-Dalaya: up to 4× SHM <see cref="CharSelectReader.RequestEnterWorld"/>
+    /// <item>Dalaya (default skip=FALSE since 2026-06-02): attempts the SHM
+    /// button-click first. The historical skip=true rationale ("CLW_EnterWorldButton
+    /// isn't in the CXWnd tree") was a wrong-NAME bug — RoF2's button is ScreenID
+    /// "Play_Button", now resolved by the bridge — so the SHM click works and is
+    /// preferred. A persisted skip=true keeps the PulseKey3D-direct behavior.</item>
+    /// <item>SHM path: up to 4× <see cref="CharSelectReader.RequestEnterWorld"/>
     /// with result-code handling (-2 already-in-game, -4 SEH abort, !=1 retry,
-    /// =1 success). PulseKey3D fallback if all SHM attempts fail.</item>
+    /// =1 clicked). PulseKey3D fallback if the SHM click doesn't reach in-world.</item>
     /// </list>
     ///
     /// Either path waits for <see cref="WaitForEnterWorldTransition"/> to confirm
@@ -2034,14 +2035,24 @@ public class AutoLoginManager
                     continue;
                 }
 
-                FileLogger.Info($"AutoLogin-SM: CLW_EnterWorldButton clicked via SHM (attempt {attempt + 1})");
+                FileLogger.Info($"AutoLogin-SM: ENTER-WORLD path=SHM button-click (Play_Button) — clicked (attempt {attempt + 1}), waiting up to 90s for in-world transition (PID {pid})");
 
                 // Wait for zone-load. Primary: IsHungAppWindow hung→responsive
                 // (authoritative on Dalaya where gameState stays 0 and title stays
                 // custom across char-select→in-world). Fallback: native " - " title
                 // flip. 90s cap per legacy.
                 if (WaitForEnterWorldTransition(pid, ref hwnd, 90))
+                {
                     entered = true;
+                    FileLogger.Info($"AutoLogin-SM: ✓ ENTERED WORLD via SHM button-click (Play_Button) — SHM path SUCCESS (PID {pid})");
+                }
+                else
+                {
+                    // Make the handoff visible: a no-op/late click would dead-wait the
+                    // full 90s here before PulseKey3D engages. If this line appears, the
+                    // SHM click did not reach in-world and the backup path is taking over.
+                    FileLogger.Warn($"AutoLogin-SM: ✗ SHM button-click did NOT reach in-world within 90s — SHM path SHUTTING DOWN, handing off to PulseKey3D fallback (PID {pid})");
+                }
                 break; // button confirmed clicked — never re-click (could cause disconnect)
             }
         }
@@ -2062,11 +2073,11 @@ public class AutoLoginManager
         if (!entered)
         {
             if (charSelect.IsMQ2Available(pid) && skipShmEnterWorld)
-                FileLogger.Info("AutoLogin-SM: PulseKey3D enter-world (SHM skipped per Launch.SkipShmEnterWorldOnDalaya)");
+                FileLogger.Info($"AutoLogin-SM: ENTER-WORLD path=PulseKey3D (SHM skipped per Launch.SkipShmEnterWorldOnDalaya, PID {pid})");
             else if (charSelect.IsMQ2Available(pid))
-                FileLogger.Warn("AutoLogin-SM: SHM enter-world failed, falling back to PulseKey3D");
+                FileLogger.Warn($"AutoLogin-SM: ENTER-WORLD path=PulseKey3D (BACKUP — SHM button-click did not confirm in-world, PID {pid})");
             else
-                FileLogger.Info("AutoLogin-SM: MQ2 not available, using PulseKey3D for enter-world");
+                FileLogger.Info($"AutoLogin-SM: ENTER-WORLD path=PulseKey3D (MQ2 not available, PID {pid})");
 
             for (int attempt = 0; attempt < 3 && !entered; attempt++)
             {
@@ -2144,7 +2155,10 @@ public class AutoLoginManager
                 // 60s cap per legacy line 2487 — PulseKey3D is the fallback, if the
                 // first attempt's keystroke didn't land we still have 2 more attempts.
                 if (WaitForEnterWorldTransition(pid, ref hwnd, 60))
+                {
                     entered = true;
+                    FileLogger.Info($"AutoLogin-SM: ✓ ENTERED WORLD via PulseKey3D fallback — PulseKey3D path SUCCESS (PID {pid}, attempt {attempt + 1})");
+                }
             }
         }
 
@@ -3427,7 +3441,7 @@ public class AutoLoginManager
                         continue;
                     }
 
-                    FileLogger.Info($"AutoLogin: CLW_EnterWorldButton clicked via SHM (attempt {attempt + 1})");
+                    FileLogger.Info($"AutoLogin: enter-world button clicked via SHM (Play_Button) (attempt {attempt + 1})");
 
                     // Wait for zone-load transition (Dalaya loads can take 5-90s).
                     // Primary: IsHungAppWindow hung→responsive pattern (authoritative

@@ -97,7 +97,9 @@ namespace MQ2Bridge {
     // servers. Returns the button widget, or nullptr if neither resolves.
     // Confirmed live 2026-06-02 (both clients). See
     // _.eqswitch-re/enterworld-re-2026-06-02/BREAKTHROUGH-play-button.md.
-    void *FindEnterWorldButton();
+    // If matchedName is non-null, *matchedName is set to the literal ScreenID that
+    // resolved ("Play_Button" / "CLW_EnterWorldButton" / "(none)") for logging.
+    void *FindEnterWorldButton(const char **matchedName = nullptr);
 
     // ─── UI manipulation (in-process login) ────────────────────
     // Set text on a CEditWnd (username/password fields).
