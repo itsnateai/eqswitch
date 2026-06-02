@@ -391,14 +391,17 @@ public class WindowManager
     /// Windowed-vs-Fullscreen band inconsistency (the read-back used the secondary's NATIVE
     /// bounds, growing it past the taskbar in Windowed only).
     /// <para>
-    /// Symmetric by construction: when the two monitors are close enough to lock, BOTH slots
-    /// receive the SAME W×H (only the origin differs), so a swap never resizes a client and
-    /// the DX swap-chain stays one constant size. <paramref name="mode"/> chooses which rect
-    /// set is locked: <b>CoverAll</b> → the primary's FULL bounds (primary covers its taskbar;
-    /// a taller secondary's leftover band shows that monitor's taskbar); <b>ShowTaskbars</b> →
-    /// the primary's WORK area (every monitor leaves taskbar room). When the monitors differ
-    /// too much to lock (4K + 1080p), <paramref name="locked"/> is false and each slot keeps
-    /// its own native bounds (per-monitor-fit; the user presses Fix-Windows to re-init DX).
+    /// v3.24.10 — PER-MONITOR FIT (supersedes the v3.24.3 lock-to-primary). The primary slot is
+    /// ALWAYS its own FULL bounds (the main window is always maxed → covers the main taskbar, in
+    /// both modes). The secondary slot fits its OWN monitor: <b>ShowTaskbars</b> → the secondary's
+    /// WORK area (game butts the 2nd taskbar, no desktop gap, 2nd taskbar visible); <b>CoverAll</b>
+    /// → the secondary's FULL bounds (game covers the 2nd taskbar, full immersion). Because each
+    /// window fits its own monitor, "no gap" holds on a taller/shorter 2nd monitor by construction,
+    /// and the primary-bigger-than-secondary case just fits the secondary to itself (no overflow).
+    /// On MISMATCHED monitors the two windows differ in size, so a swap RESIZES a client — absorbed
+    /// by the native backbuffer resize (EQ's own SetResolution+ResetDevice rebuilds 1:1 → crisp, no
+    /// smoosh; curtain masks the reset). <paramref name="locked"/> reports whether the secondary is
+    /// the SAME size as the primary (matched monitors / CoverAll → swap won't resize).
     /// </para>
     /// </summary>
     /// <param name="slot">Monitor slot — even (0, 2, …) = primary, odd = secondary.</param>
@@ -412,23 +415,33 @@ public class WindowManager
         WinRect? secondaryFull, WinRect? secondaryWork,
         Config.MultiMonTaskbarMode mode)
     {
-        // CoverAll operates on full monitor bounds; ShowTaskbars on work areas. The
-        // primary slot is always the source of dims, placed at its own monitor top-left.
+        // v3.24.10 — PER-MONITOR FIT (replaces v3.24.3 lock-to-primary). The primary slot
+        // ALWAYS takes its own FULL bounds (the main window is always maxed → covers the main
+        // taskbar, in BOTH modes). The secondary slot fits its OWN monitor — never the primary's
+        // — so "no desktop gap" holds on a taller/shorter 2nd monitor BY CONSTRUCTION:
+        //   • ShowTaskbars → secondary WORK area: game butts the 2nd taskbar (bottom edge =
+        //     OS-reported work-area bottom = taskbar top, in the SAME coord space SetWindowPos
+        //     uses → exact, no DPI math), 2nd taskbar stays visible.
+        //   • CoverAll     → secondary FULL bounds: game covers the 2nd taskbar (full immersion).
+        // No lock-to-primary: on MISMATCHED monitors the two windows differ in height, so a
+        // `\`/`]` swap RESIZES a client. That resize is absorbed by the native backbuffer resize
+        // (TrayManager.PostBackbufferResizeToClients → EQ's own SetResolution+ResetDevice rebuilds
+        // the DX backbuffer to the new client size 1:1 — crisp, no smoosh; the swap curtain masks
+        // the brief reset). On MATCHED monitors CoverAll is naturally symmetric (both full, same
+        // size → swap never resizes); ShowTaskbars is asymmetric by design (primary full vs
+        // secondary work) — the 2nd taskbar cannot show unless the sizes differ.
+        // NOTE: `primaryWork` is intentionally unused (reserved) — the primary is always full.
+        // `locked` now reports "secondary is the SAME size as primary" → this swap won't resize.
         bool showTaskbars = mode == Config.MultiMonTaskbarMode.ShowTaskbars;
-        WinRect primary = showTaskbars ? primaryWork : primaryFull;
 
+        // Primary slot (even) — or no real second monitor — always its own full bounds.
         if ((slot % 2) == 0 || secondaryFull is null || secondaryWork is null)
-            return (primary, false);
+            return (primaryFull, false);
 
         WinRect secondary = showTaskbars ? secondaryWork.Value : secondaryFull.Value;
-        // Lock the secondary to the primary's dims (its own origin) when the monitors are
-        // close enough; otherwise hand back the secondary's native bounds (degrade). The
-        // bothSameSlim gate is structurally satisfied in multimon (both slots are slim-
-        // managed; the taskbar MODE — not the per-monitor slim flag — now controls
-        // visibility), so pass true/true.
-        return ShouldLockToPrimaryDims(primary, secondary, true, true)
-            ? (ApplyLockToPrimaryDims(secondary, primary), true)
-            : (secondary, false);
+        bool sameSizeAsPrimary = secondary.Width == primaryFull.Width
+                                 && secondary.Height == primaryFull.Height;
+        return (secondary, sameSizeAsPrimary);
     }
 
     /// <summary>
@@ -500,27 +513,27 @@ public class WindowManager
         WinRect? secondaryFullMon = hasSecondary ? fullBounds[secondaryIdx] : (WinRect?)null;
         WinRect? secondaryWorkMon = hasSecondary ? workAreas[secondaryIdx] : (WinRect?)null;
 
-        // Summary lock decision (for the log only) — the per-client effective bounds come
-        // straight from EffectiveSlotBounds in the build loop below, so this can never
-        // drift from what's actually applied.
-        bool lockToPrimaryDims = false;
+        // Summary symmetry decision (for the log only) — per-client effective bounds come
+        // straight from EffectiveSlotBounds in the build loop below, so this can never drift
+        // from what's actually applied. v3.24.10: per-monitor-fit always; `secondarySymmetric`
+        // just reports whether the 2nd window happens to be the SAME size as primary (matched
+        // monitors / CoverAll → swap won't resize), else the swap resizes and the native
+        // backbuffer resize rebuilds to match (expected, not a problem → Info not Warn).
+        bool secondarySymmetric = false;
         if (hasSecondary)
         {
-            (_, lockToPrimaryDims) = EffectiveSlotBounds(1, primaryFullMon, primaryWorkMon, secondaryFullMon, secondaryWorkMon, taskbarMode);
-            bool showTaskbars = taskbarMode == Config.MultiMonTaskbarMode.ShowTaskbars;
-            var primForLog = showTaskbars ? primaryWorkMon : primaryFullMon;
-            var secForLog  = showTaskbars ? secondaryWorkMon!.Value : secondaryFullMon!.Value;
-            if (lockToPrimaryDims)
+            var (primEff, _) = EffectiveSlotBounds(0, primaryFullMon, primaryWorkMon, secondaryFullMon, secondaryWorkMon, taskbarMode);
+            var (secEff, sym) = EffectiveSlotBounds(1, primaryFullMon, primaryWorkMon, secondaryFullMon, secondaryWorkMon, taskbarMode);
+            secondarySymmetric = sym;
+            if (secondarySymmetric)
             {
-                int hBand = secForLog.Height - primForLog.Height;
-                int wBand = secForLog.Width - primForLog.Width;
-                FileLogger.Info($"ArrangeMultiMonitor: lock-to-primary-dims ACTIVE (taskbarMode={taskbarMode}) — both windows {primForLog.Width}x{primForLog.Height}; secondary monitor has {wBand}px horizontal + {hBand}px vertical empty band (eliminates cross-monitor smoosh on SwitchKey swap)");
+                FileLogger.Info($"ArrangeMultiMonitor: per-monitor-fit SYMMETRIC (taskbarMode={taskbarMode}) — both windows {primEff.Width}x{primEff.Height}; swap won't resize (no DX rebuild)");
             }
             else
             {
-                int wDelta = Math.Abs(primForLog.Width - secForLog.Width);
-                int hDelta = Math.Abs(primForLog.Height - secForLog.Height);
-                FileLogger.Warn($"ArrangeMultiMonitor: lock-to-primary-dims OFF (taskbarMode={taskbarMode}) — primary={primForLog.Width}x{primForLog.Height} secondary={secForLog.Width}x{secForLog.Height} wDelta={wDelta} hDelta={hDelta}. Using per-monitor-fit; cross-monitor SwitchKey swap may smoosh — press Fix Windows to force DX reinit");
+                int wDelta = secEff.Width - primEff.Width;
+                int hDelta = secEff.Height - primEff.Height;
+                FileLogger.Info($"ArrangeMultiMonitor: per-monitor-fit ASYMMETRIC (taskbarMode={taskbarMode}) — primary={primEff.Width}x{primEff.Height} secondary={secEff.Width}x{secEff.Height} (Δw={wDelta} Δh={hDelta}); swap resizes → native backbuffer resize rebuilds to match (curtain-masked)");
             }
         }
 
@@ -708,7 +721,7 @@ public class WindowManager
 
             string monLabel = slotIdx == 0 ? "primary" : "secondary";
             string slimLabel = useSlim ? " (slim titlebar)" : " (normal frame, work-area)";
-            string lockLabel = lockToPrimaryDims ? " [locked-to-primary]" : "";
+            string lockLabel = secondarySymmetric ? " [symmetric]" : " [per-monitor-fit]";
             targets.Add((client.WindowHandle, x, y, w, h, swpFlags,
                 $"{client} → {monLabel} monitor ({effectiveBounds.Left},{effectiveBounds.Top}) {w}x{h}{slimLabel}{lockLabel} [slot={slot}]"));
 
@@ -830,7 +843,7 @@ public class WindowManager
 
         string modeLabel = $" (taskbarMode={taskbarMode})";
         string batchLabel = batchOk ? "atomic batch" : "sequential fallback";
-        string lockSummary = lockToPrimaryDims ? ", lock-to-primary" : "";
+        string lockSummary = secondarySymmetric ? ", symmetric" : ", per-monitor-fit";
         FileLogger.Info($"ArrangeMultiMonitor: {targets.Count}/{clients.Count} window(s), primary={primaryIdx} secondary={secondaryIdx}{modeLabel}, positioned via {batchLabel}{lockSummary} — pass1={tPass1}ms pass2={tPass2 - tPass1}ms");
         // Per-stage pass-2 timing (v3.22.22 diagnostic — round-5 T2-Opus catch):
         // For N clients: [tBeforeBegin, tAfterDefer_0, ..., tAfterDefer_{N-1}, tAfterEnd].

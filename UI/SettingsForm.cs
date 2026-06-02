@@ -201,8 +201,9 @@ public class SettingsForm : Form
     // enabled. Maps to Layout.HorizontalNudgePx, clamped ±10.
     private NumericUpDown _nudHorizontalNudge = null!;
     private CheckBox _chkVideoMultiMon = null!;
-    // v3.24.3 — multimonitor taskbar-visibility mode (checked = ShowTaskbars, unchecked =
-    // CoverAll). The symmetric replacement for the legacy SlimTitlebarSecondary flag.
+    // v3.24.10 — multimonitor 2nd-monitor taskbar-visibility mode (checked = ShowTaskbars → 2nd
+    // window = own work area, taskbar shows, no gap; unchecked = CoverAll → 2nd window = own full
+    // bounds, covers 2nd taskbar). Per-monitor-fit; replaces the legacy SlimTitlebarSecondary flag.
     private CheckBox _chkShowSecondaryTaskbar = null!;
     private ComboBox _cboVideoPrimaryMon = null!;
     private ComboBox _cboVideoSecondaryMon = null!;
@@ -3286,10 +3287,11 @@ public class SettingsForm : Form
         cy = 32;
 
         _chkVideoMultiMon = DarkTheme.AddCheckBox(cardMon, "Multi-Monitor Mode", L, cy);
-        // v3.24.3 — taskbar-visibility mode (multimonitor). Checked = ShowTaskbars (both
-        // windows lock to the primary's WORK area → every monitor's taskbar stays visible);
-        // unchecked = CoverAll (lock to the primary's FULL bounds → primary maxed, a taller
-        // secondary shows its taskbar in the leftover band). Both are symmetric → clean swaps.
+        // v3.24.10 — 2nd-monitor taskbar-visibility (multimonitor). Checked = ShowTaskbars (the
+        // 2nd window fills its OWN work area → game butts the 2nd taskbar, no gap, taskbar visible);
+        // unchecked = CoverAll (the 2nd window fills its OWN full monitor → covers the 2nd taskbar).
+        // The main window always covers its own taskbar. Mismatched monitors → swap resizes (native
+        // backbuffer rebuild, curtain-masked); matched CoverAll stays symmetric (no resize).
         _chkShowSecondaryTaskbar = DarkTheme.AddCheckBox(cardMon, "Show taskbars (multi-mon)", 250, cy);
 
         cy += 26;

@@ -397,10 +397,11 @@ static class Program
         }
 
         // --test-effective-bounds — run Core/EffectiveSlotBoundsTests.RunAll() and exit. Guards
-        // the v3.24.3 single multimonitor sizing authority (WindowManager.EffectiveSlotBounds)
-        // across the cross-hardware config matrix: single/matched/mismatched/4K-degrade/
-        // primary-bigger-degrade/slot-wrap + CoverAll-vs-ShowTaskbars. The load-bearing
-        // invariant: when locked, both slots get the SAME size (symmetric → clean swaps).
+        // the multimonitor sizing authority (WindowManager.EffectiveSlotBounds) across the
+        // cross-hardware config matrix: single/matched/mismatched/4K/primary-bigger/slot-wrap/
+        // auto-hide/asymmetric-fit + CoverAll-vs-ShowTaskbars. The v3.24.10 load-bearing
+        // invariant: PER-MONITOR FIT — primary always own-full, secondary own-work (ShowTaskbars,
+        // game butts taskbar, no gap) or own-full (CoverAll); no lock-to-primary.
         if (args.Length >= 1 && args[0] == "--test-effective-bounds")
         {
             int exitCode;

@@ -1,5 +1,36 @@
 # Changelog
 
+## v3.24.10 — Multimon "Show taskbars": per-monitor fit (no desktop gap on the 2nd monitor) (2026-06-02)
+
+Reworks the multimonitor **"Show taskbars (multi-mon)"** toggle so it does what its name says on
+mismatched monitors. The v3.24.3 design locked BOTH windows to the *primary's* size to keep swaps
+symmetric — but on a taller 2nd monitor that left a leftover band (desktop gap **+** taskbar), so
+neither mode could ever cleanly cover OR cleanly butt the 2nd taskbar. v3.24.10 switches to
+**per-monitor fit**: each window is sized to its OWN monitor.
+
+- **`WindowManager.EffectiveSlotBounds`** (the single sizing authority — drives arrange, the hook
+  pin, the Windowed read-back, and the eqclient.ini backbuffer) now returns, per slot:
+  - **Primary** — always its own FULL bounds (the main window always covers its own taskbar, both
+    modes). `primaryWork` is now reserved/unused.
+  - **Secondary, ShowTaskbars (checked)** — the 2nd monitor's WORK area: the game butts the 2nd
+    taskbar (bottom edge = OS-reported work-area bottom = taskbar top, same coord space as
+    `SetWindowPos` → exact, **no desktop gap, no DPI math**), 2nd taskbar stays visible.
+  - **Secondary, CoverAll (unchecked)** — the 2nd monitor's FULL bounds: covers the 2nd taskbar,
+    full immersion.
+- **Cross-hardware:** "main bigger than 2nd" now just fits the 2nd window to its own (smaller)
+  monitor — no overflow, no lock math. Matched monitors under CoverAll stay symmetric (swap won't
+  resize). The `locked` flag now reports "2nd window is the same size as primary" rather than
+  "lock-to-primary applied".
+- **Swaps:** on mismatched monitors the two windows differ in size, so a `\`/`]` swap resizes a
+  client. That resize is absorbed by the existing native backbuffer resize (EQ's own
+  `SetResolution`+`ResetDevice` rebuilds the DX backbuffer 1:1 → crisp, no smoosh) already wired to
+  every swap, with the swap curtain masking the brief reset. (Window-size differences are *not* the
+  source of the separate MPO/refresh-rate background tear; that is unchanged by this release.)
+- Retires lock-to-primary from the sizing path; `EffectiveSlotBoundsTests` rewritten for the new
+  per-monitor-fit semantics (11 cases: single / matched / mismatched 1080+1200 both modes /
+  4K+1080p / primary-bigger both modes / 3+ slot-wrap / auto-hide-taskbar / asymmetric-fit), each
+  asserting the no-gap invariant where it applies. Run with `--test-effective-bounds`.
+
 ## v3.24.9 — FIX enter-world on Dalaya: search "Play_Button" (RoF2), prefer the SHM click (2026-06-02)
 
 Root-causes and fixes the reason Dalaya enter-world fell back to PulseKey3D. EQSwitch searched the
