@@ -128,8 +128,15 @@ struct CXStr {
 
 // ─── CEverQuest offset constants ───────────────────────────────
 
-// Verified CCharacterSelect vtable on Dalaya ROF2 (stable across sessions)
-static const uintptr_t CHARSELECT_EXPECTED_VTABLE = 0x00B05410;
+// v3.24.7 — REMOVED `static const uintptr_t CHARSELECT_EXPECTED_VTABLE = 0x00B05410;`.
+// That absolute address was captured at one session's module base, but eqgame.exe
+// relocates under ASLR every launch, so the live CCharacterSelect vtable appears at
+// 0x007A5410 / 0x01485410 / … — the low bits stay (…5410) but the base slides. The
+// old NOTE compared against the frozen absolute and therefore fired EVERY session
+// with a meaningless delta (pure log noise; it gated nothing — GetChildItem ran
+// regardless). Replaced by a session-latched baseline at the use site: latch the
+// first non-null vtable, warn only if a LATER read differs (the real signal —
+// pCharSelWnd now references a different object type / heap reuse).
 
 // v3.22.34 — DALAYA-SPECIFIC offset, confirmed via live ReadProcessMemory
 // probe against in-game gotquiz (10 chars) + gotquiz1 (1 char) clients
@@ -3316,12 +3323,23 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                 if (pCharSelWnd && IsReadablePtr(pCharSelWnd, sizeof(void *))) {
                     void *vtable = *(void **)pCharSelWnd;
                     if (vtable && IsReadablePtr(vtable, sizeof(void *))) {
-                        // Log vtable change (informational — SEH protects against crashes)
+                        // v3.24.7 — session-latched vtable baseline (informational; SEH
+                        // protects against crashes). The first non-null vtable seen this
+                        // session becomes the baseline (a class vtable is fixed within a
+                        // process — ASLR slides the module base once at load, not after).
+                        // Warn only if a LATER read DIFFERS — that means pCharSelWnd now
+                        // points at a different object type (heap reuse / wrong window),
+                        // the genuinely useful signal. The old absolute compare against a
+                        // frozen 0x00B05410 fired every session as ASLR noise.
+                        uintptr_t vt = (uintptr_t)vtable;
+                        static volatile uintptr_t charSelVtableBaseline = 0;
                         static volatile bool vtableWarned = false;
-                        if ((uintptr_t)vtable != CHARSELECT_EXPECTED_VTABLE && !vtableWarned) {
-                            DI8Log("mq2_bridge: NOTE — CCharacterSelect vtable 0x%08X (expected 0x%08X, delta=%+d)",
-                                   (uintptr_t)vtable, CHARSELECT_EXPECTED_VTABLE,
-                                   (int)((uintptr_t)vtable - CHARSELECT_EXPECTED_VTABLE));
+                        if (charSelVtableBaseline == 0) {
+                            charSelVtableBaseline = vt;
+                            DI8Log("mq2_bridge: char-select vtable baseline latched 0x%08X (session-relative; ASLR-safe)", vt);
+                        } else if (vt != charSelVtableBaseline && !vtableWarned) {
+                            DI8Log("mq2_bridge: NOTE — CCharacterSelect vtable CHANGED 0x%08X (baseline 0x%08X, delta=%+d) — pCharSelWnd may reference a different object",
+                                   vt, charSelVtableBaseline, (int)(vt - charSelVtableBaseline));
                             vtableWarned = true;
                         }
                         // Try GetChildItem regardless — SEH handles wrong object type
@@ -3763,6 +3781,17 @@ static void EmitVerificationReport(volatile CharSelectShm *shm) {
 // observing charSelectReady == 1, so a valid charCount is guaranteed by the
 // time a selection request lands in SHM.
 
+// v3.24.7 — game-thread marshaling (defined in device_proxy.cpp). At charselect
+// eqmain.dll is unloaded, so the GiveTime game-thread poll is gone and
+// MQ2BridgePollTick runs on the ActivateThread fallback. UI calls (SetCurSel,
+// WndNotification click) have game-thread (window) affinity — calling them
+// cross-thread SendMessage()s the owning thread and HANGS when it's busy
+// (background client mid-3D-scene-load). The two request handlers below detect
+// the off-game-thread case and PostGameThreadPoll() so the WndProc subclass
+// re-runs the poll on the game thread, where the UI call is a safe direct call.
+extern volatile DWORD g_gameThreadId;
+extern void PostGameThreadPoll();
+
 static void HandleEnterWorldRequest(volatile CharSelectShm *shm, int gameState) {
     // Handle Enter World request — gated against gameState=5 (in-game).
     // Dalaya ROF2 uses gameState=0 at BOTH login and charselect, so we can't
@@ -3781,6 +3810,14 @@ static void HandleEnterWorldRequest(volatile CharSelectShm *shm, int gameState) 
     uint32_t ewAck = shm->enterWorldAck;
 
     if (ewReq == ewAck) return;
+
+    // v3.24.7 — the enter-world click is a UI call (game-thread affinity). If this
+    // poll is on the ActivateThread (charselect fallback), marshal it to the game
+    // thread; don't ack (the reposted game-thread run does the click + ack).
+    if (g_gameThreadId != 0 && GetCurrentThreadId() != g_gameThreadId) {
+        PostGameThreadPoll();
+        return;
+    }
 
     DI8Log("mq2_bridge: Enter World request (seq %u->%u, gameState=%d)", ewAck, ewReq, gameState);
     if (gameState == 5 || gameState == -99) {
@@ -3829,9 +3866,28 @@ static void HandleSelectionRequest(volatile CharSelectShm *shm) {
 
     if (reqSeq == ackSeq) return;
 
+    // v3.24.7 — SetCurSel (below) is a UI call with game-thread (window) affinity.
+    // At charselect eqmain is unloaded so this poll runs on the ActivateThread; a
+    // cross-thread SetCurSel SendMessage()s the game thread and HANGS when it's busy
+    // (background client mid-3D-scene-load) — the intermittent char-select freeze.
+    // Marshal to the game thread via the WndProc subclass; the reposted poll re-runs
+    // this on the game thread where SetCurSel is a safe direct call. Don't ack here —
+    // the game-thread run does the SetCurSel + ack. (g_gameThreadId==0 only before
+    // the GiveTime detour ever ran; the gate then no-ops and we keep prior behavior.)
+    if (g_gameThreadId != 0 && GetCurrentThreadId() != g_gameThreadId) {
+        static uint32_t s_lastDeferSeq = 0xFFFFFFFF;
+        if (s_lastDeferSeq != reqSeq) {
+            DI8Log("mq2_bridge: selection seq %u — OFF game thread (tid=%lu gameTid=%lu), marshaling to game thread",
+                   reqSeq, GetCurrentThreadId(), g_gameThreadId);
+            s_lastDeferSeq = reqSeq;
+        }
+        PostGameThreadPoll();
+        return;
+    }
+
     int requestedIdx = shm->requestedIndex;
-    DI8Log("mq2_bridge: selection request -- index=%d (seq %u->%u)",
-           requestedIdx, ackSeq, reqSeq);
+    DI8Log("mq2_bridge: selection request -- index=%d (seq %u->%u) [on game thread tid=%lu]",
+           requestedIdx, ackSeq, reqSeq, GetCurrentThreadId());
 
     if (requestedIdx < 0 || requestedIdx >= shm->charCount) {
         // Invalid index — ack to prevent infinite retry. (Either C# raced

@@ -60,6 +60,49 @@ static bool SuppressPhysicalInput() {
 
 HWND GetEqHwnd() { return g_eqHwnd; }
 
+// ─── v3.24.7: game-thread marshaling for char-select UI calls ──────────────
+// EQ's game (window-owning) thread id. Written by BOTH the LoginController::
+// GiveTime detour (login phase) and ActivateWndProc (always the window thread),
+// read by mq2_bridge.cpp to detect when a bridge poll is running on the
+// ActivateThread fallback instead of the game thread.
+//
+// THE BUG THIS FIXES: at charselect, eqmain.dll unloads, so the GiveTime
+// game-thread poll is gone and MQ2BridgePollTick() falls back to running on the
+// ActivateThread (see the !GiveTimeDetour::IsInstalled() branch below). Calling
+// CListWnd::SetCurSel / WndNotification from there is a CROSS-THREAD UI call —
+// it SendMessage()s the owning (game) thread and BLOCKS/HANGS when that thread
+// is busy and not pumping (background client mid-3D-scene-load). That is the
+// intermittent, background-only char-select freeze. The fix: when a UI mutation
+// is requested off the game thread, PostMessage a coalesced "run the poll" msg
+// to the subclassed window so the poll re-runs ON the game thread, where the UI
+// call is a safe direct call.
+volatile DWORD g_gameThreadId = 0;
+static UINT g_wmGameThreadPoll = 0;          // RegisterWindowMessage handle (0 until subclass install)
+static volatile LONG g_pollPostPending = 0;  // coalesce: at most one queued poll msg at a time
+
+// Called by the bridge (mq2_bridge.cpp) from the ActivateThread when it needs a
+// UI mutation that must happen on the game thread. Async + coalesced: never
+// blocks the caller, never floods the queue. If the game thread is wedged the
+// msg simply waits (no hang); the bridge re-requests every poll until acked.
+void PostGameThreadPoll() {
+    // Lazy-register (idempotent; RegisterWindowMessage returns the same id for the
+    // same string process-wide) so this never no-ops on wm=0 even if the subclass
+    // installer hasn't run yet. The WndProc reads the same g_wmGameThreadPoll.
+    if (!g_wmGameThreadPoll)
+        g_wmGameThreadPoll = RegisterWindowMessageW(L"EQSwitchGameThreadPollV1");
+    HWND hwnd = g_eqHwnd;
+    if (!hwnd || !g_wmGameThreadPoll) {
+        DI8Log("PostGameThreadPoll: NO-OP hwnd=%p wm=%u (not ready)", hwnd, g_wmGameThreadPoll);
+        return;
+    }
+    if (InterlockedCompareExchange(&g_pollPostPending, 1, 0) != 0) return;  // already queued
+    BOOL ok = PostMessageW(hwnd, g_wmGameThreadPoll, 0, 0);
+    DI8Log("PostGameThreadPoll: posted=%d hwnd=%p wm=%u gameTid=%lu callerTid=%lu",
+           (int)ok, hwnd, g_wmGameThreadPoll, g_gameThreadId, GetCurrentThreadId());
+    if (!ok)
+        InterlockedExchange(&g_pollPostPending, 0);  // post failed — allow retry next bridge tick
+}
+
 // --- Background activation (Phase 2c: multi-layer defense) ---
 //
 // EQ's main loop checks an internal activation flag. When the window loses
@@ -92,6 +135,23 @@ static bool g_subclassInstalled = false;
 // to message-pump pressure the way v6e's SetTimer did.
 
 static LRESULT CALLBACK ActivateWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // v3.24.7 — a WndProc ALWAYS runs on the window's owning thread = EQ's game
+    // thread. Record it so the bridge can tell a game-thread poll from the
+    // ActivateThread fallback. Cheap; idempotent.
+    g_gameThreadId = GetCurrentThreadId();
+
+    // v3.24.7 — marshaled poll: the bridge posts this from the ActivateThread when
+    // it needs a UI mutation (SetCurSel / enter-world click) that must run on the
+    // game thread. Running MQ2BridgePollTick() HERE puts those calls on the owning
+    // thread → no cross-thread SendMessage deadlock. Swallow (don't forward to EQ).
+    if (g_wmGameThreadPoll && msg == g_wmGameThreadPoll) {
+        InterlockedExchange(&g_pollPostPending, 0);  // allow the next post before we run
+        DI8Log("ActivateWndProc: marshaled poll RECEIVED on tid=%lu (gameTid=%lu) — running MQ2BridgePollTick",
+               GetCurrentThreadId(), g_gameThreadId);
+        MQ2BridgePollTick();
+        return 0;
+    }
+
     if (KeyShm::IsActive()) {
         // Block all focus-loss messages — EQ must believe it's always foreground
         if (msg == WM_ACTIVATEAPP) {
@@ -122,6 +182,12 @@ static LRESULT CALLBACK ActivateWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 // Install or re-install the WndProc subclass. Safe to call repeatedly.
 // Returns true if the subclass was freshly (re-)installed.
 static bool EnsureSubclassInstalled(HWND hwnd) {
+    // v3.24.7 — register the game-thread marshaling message once. RegisterWindowMessage
+    // returns a process-unique id in the 0xC000-0xFFFF range, so it can never collide
+    // with EQ's own WM_USER/WM_APP messages.
+    if (!g_wmGameThreadPoll)
+        g_wmGameThreadPoll = RegisterWindowMessageW(L"EQSwitchGameThreadPollV1");
+
     WNDPROC current = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
     if (current == ActivateWndProc) return false; // already installed
 
@@ -228,13 +294,20 @@ static DWORD WINAPI ActivateThread(LPVOID) {
                 DI8Log("wm_activate: pattern scan found nothing — relying on WndProc subclass");
         }
 
-        if (active && hwnd) {
-            // Layer 1: install/verify WndProc subclass (after init delay)
-            bool freshInstall = false;
-            if (initDelay >= 100) {
-                freshInstall = EnsureSubclassInstalled(hwnd);
-            }
+        // v3.24.7 — install/verify the WndProc subclass whenever the window exists,
+        // NOT only when KeyShm is active. The subclass is the di8's ONLY game-thread
+        // execution point at charselect (eqmain unloaded → GiveTime detour gone), and
+        // the StateMachine login path uses no DI8 key injection so `active` is often
+        // false the whole time. The WndProc only blocks focus messages when
+        // KeyShm::IsActive(), so installing it while inactive is harmless. This also
+        // runs RegisterWindowMessage (inside EnsureSubclassInstalled), fixing the
+        // PostGameThreadPoll wm=0 NO-OP that broke the game-thread marshal.
+        bool freshInstall = false;
+        if (hwnd && initDelay >= 100) {
+            freshInstall = EnsureSubclassInstalled(hwnd);
+        }
 
+        if (active && hwnd) {
             if (!wasActive || freshInstall) {
                 // Rising edge OR subclass was just (re-)installed after EQ overwrote it.
                 // When EQ re-inits DirectInput (e.g. 3D char select), it replaces our

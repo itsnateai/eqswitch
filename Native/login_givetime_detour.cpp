@@ -52,6 +52,11 @@ void DI8Log(const char *fmt, ...);
 // 500ms throttle + PollReentryGuard keep MQ2 work to ~2/sec.
 void MQ2BridgePollTick();
 
+// v3.24.7 — defined in device_proxy.cpp. This detour runs on EQ's game thread,
+// so recording the id here lets the bridge marshal char-select UI calls back to
+// the game thread once eqmain unloads (and this detour is gone). See device_proxy.cpp.
+extern volatile DWORD g_gameThreadId;
+
 namespace {
 
 constexpr uintptr_t GIVETIME_RVA = 0x128B0;
@@ -97,6 +102,13 @@ void __fastcall GiveTime_Detour(void *thisPtr, void *edxBogus) {
     // Increment tick counter for diagnostics (GetTickCount() accessor).
     // Not atomic — only EQ's game thread writes, readers tolerate stale values.
     ++g_tickCount;
+
+    // v3.24.7 — record EQ's game thread id while we're on it. The bridge uses this
+    // at charselect (after eqmain unloads and this detour is gone) to detect that
+    // MQ2BridgePollTick is running on the ActivateThread fallback and marshal any
+    // UI mutation back to the game thread. The id is stable across the eqmain
+    // unload (same game thread runs login → charselect → in-world).
+    g_gameThreadId = GetCurrentThreadId();
 
     // v7 Phase 4: stash the LoginController* so FindWindowByName can use it.
     // thisPtr changes identity across eqmain reloads (new login session after

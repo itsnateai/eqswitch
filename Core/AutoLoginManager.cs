@@ -1852,9 +1852,10 @@ public class AutoLoginManager
         charSelect.RequestSelectionBySlot(pid, resolvedSlot);
         FileLogger.Info($"AutoLogin-SM: requested slot {resolvedSlot} (byName={resolvedByName}, PID {pid})");
 
-        // Wait for DLL ack — up to 10s at 50ms granularity (matches legacy
-        // v3.15.9 tuning: 200 iter × 50ms = 10s cap). Hard abort on timeout —
-        // see legacy hotfix v6b reasoning at lines 2298-2308. Cheap first-read
+        // Wait for DLL ack — up to 24s at 50ms granularity (v3.22.89 raised the
+        // cap from the legacy 200 iter × 50ms = 10s to 480 × 50ms = 24s; see the
+        // ack-starvation reasoning at the maxAckIters declaration below). Hard
+        // abort on timeout — see legacy hotfix v6b reasoning at lines 2298-2308. Cheap first-read
         // bypass mirrors legacy lines 2267-2280: the native two-tier throttle
         // often acks before C# even starts the Sleep loop.
         var ackSw = Stopwatch.StartNew();
@@ -1890,7 +1891,7 @@ public class AutoLoginManager
 
         if (!acked)
         {
-            FileLogger.Error($"AutoLogin-SM: DLL did not ack selection for slot {resolvedSlot} in 10s — stopping at char select to avoid wrong-character enter-world (PID {pid})");
+            FileLogger.Error($"AutoLogin-SM: DLL did not ack selection for slot {resolvedSlot} in 24s — stopping at char select to avoid wrong-character enter-world (PID {pid})");
             Report($"{account.Name}: character selection not confirmed — stopped at char select");
             return LoginPhase.Error;
         }
@@ -3241,7 +3242,8 @@ public class AutoLoginManager
                     if (selected)
                     {
                         bool acked = false;
-                        // v3.15.9: poll granularity 200ms → 50ms (cap unchanged at 10s).
+                        // v3.15.9: poll granularity 200ms → 50ms (cap was 10s then;
+                        // v3.24.7 raised it to 24s — see the loop bound below).
                         // The DLL writes the ack flag during EQ's game-thread tick (~16ms);
                         // 200ms granularity meant we noticed the ack up to 200ms after it
                         // actually fired. 50ms catches it 4× faster on average — saves
@@ -3271,7 +3273,14 @@ public class AutoLoginManager
                         }
                         else
                         {
-                            for (int ack = 0; ack < 200; ack++)  // 200x50ms = 10s
+                            // v3.24.7 — was 200 (10s). Propagates the v3.22.89 SM-path
+                            // ack-starvation fix to the legacy path: the DLL runs SetCurSel
+                            // on the GAME thread via TIMERPROC, which can stay busy >10s
+                            // during char-select scene load and starve the ack — a
+                            // game-client property that hits BOTH paths identically. Still
+                            // ack-gated → no wrong-character enter-world risk; a longer
+                            // budget just lets a late ack land instead of dead-stopping.
+                            for (int ack = 0; ack < 480; ack++)  // 480x50ms = 24s
                             {
                                 Thread.Sleep(50);
                                 totalIters = ack + 2; // +2: 1 pre-loop read + (ack+1) in-loop iterations
@@ -3294,7 +3303,7 @@ public class AutoLoginManager
                             // CHARACTER — exactly the regression Phase 5b's unified abort
                             // was designed to prevent. The ack-timeout path was an
                             // unguarded hole in that design. Abort instead.
-                            FileLogger.Error($"AutoLogin: DLL did not ack selection for slot {resolvedSlot} in 10s — stopping at charselect to avoid wrong-character enter-world");
+                            FileLogger.Error($"AutoLogin: DLL did not ack selection for slot {resolvedSlot} in 24s — stopping at charselect to avoid wrong-character enter-world");
                             Report($"{account.Name}: character selection not confirmed — stopped at char select");
                             return;
                         }

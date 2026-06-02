@@ -333,6 +333,23 @@ public class TrayManager : IDisposable
                     {
                         FileLogger.Info($"AutoLogin: deferred hook-config refresh PID {capturedPid} (cosmetic re-apply skipped — v3.22.60 phantom-swap fix)");
                         UpdateHookConfigForPid(capturedPid);
+
+                        // v3.24.7 — the v3.22.60 skip is correct for the phantom-swap
+                        // case (full ArrangeWindows re-applies when nothing changed),
+                        // but it ALSO skipped the genuine-regression case: if the
+                        // Settings-vs-startup race left THIS client non-slim, skipping
+                        // entirely strands it NORMAL. A STYLE-ONLY re-slim is not a
+                        // phantom — it no-ops unless the style actually regressed, and
+                        // it never repositions (the hook owns geometry in MM). This is
+                        // a fast-path repair at the known login-complete point; the
+                        // guard-tick ReslimRegressedInjectedClients self-heal is the
+                        // continuous backstop.
+                        var clientList = _processManager.Clients;
+                        int cIdx = -1;
+                        for (int ci = 0; ci < clientList.Count; ci++)
+                            if (clientList[ci].ProcessId == capturedPid) { cIdx = ci; break; }
+                        if (cIdx >= 0 && IsPidSlimManaged(capturedPid, cIdx))
+                            _windowManager.ReapplySlimStyleOnly(clientList[cIdx].WindowHandle);
                     }
                 }
                 catch (Exception ex)
@@ -4996,8 +5013,67 @@ public class TrayManager : IDisposable
     private void SlimTitlebarGuardTick()
     {
         _windowManager.ApplySlimTitlebarToAll(_processManager.Clients, _injectedPids);
+        ReslimRegressedInjectedClients();     // v3.24.7 — MM-mode style-only recovery (ApplySlimTitlebarToAll bails for MM)
         MaybeFireStartupBackbufferWarmup();   // before the read-back: reset, then measure (mirrors SetWindowMode)
         CorrectInjectedWindowedGeometry();
+    }
+
+    /// <summary>
+    /// v3.24.7 — guard-tick self-heal: re-slim any INJECTED client whose window
+    /// regressed to a non-slim style (<c>WS_THICKFRAME</c>) without the hook DLL
+    /// catching it. Closes the gap CHANGELOG v3.24.6 left open as "the separate
+    /// root still under investigation".
+    /// <para>
+    /// Why this is needed in addition to the existing guards:
+    /// <list type="bullet">
+    /// <item><see cref="WindowManager.ApplySlimTitlebarToAll"/> <b>early-returns in
+    ///   multimonitor mode</b> (it sizes every client to one monitor — wrong for MM),
+    ///   so it never re-slims a regressed MM client.</item>
+    /// <item><see cref="CorrectInjectedWindowedGeometry"/> (v3.24.6) <b>skips the
+    ///   read-back while WS_THICKFRAME is present</b> ("guard tick will retry") — but
+    ///   in MM nothing actually did the restyle, so that retry never converged.</item>
+    /// <item>The <c>LoginComplete</c> deferred timer skips its cosmetic re-apply
+    ///   (v3.22.60 phantom-swap fix), which also skipped the genuine-regression case.</item>
+    /// </list>
+    /// The hook DLL owns <i>position</i> in MM; this fills the missing <i>style</i>
+    /// recovery via <see cref="WindowManager.ReapplySlimStyleOnly"/> (no reposition →
+    /// no hook fight, no phantom swap). Runs every guard tick so the Settings-vs-startup
+    /// race self-heals within one tick regardless of WHEN it happens — not only right
+    /// after login. Single-screen is already covered by ApplySlimTitlebarToAll's
+    /// reposition path, so this no-ops there after the fact (idempotent).
+    /// </para>
+    /// </summary>
+    /// <summary>
+    /// v3.24.7 — resolve whether an injected PID's window should be slim-styled,
+    /// using the SAME per-monitor-slot logic as UpdateHookConfigForPid and
+    /// CorrectInjectedWindowedGeometry. Single-screen → <c>Layout.SlimTitlebar</c>;
+    /// multimonitor → primary slot (0) uses <c>SlimTitlebar</c>, secondary uses
+    /// <c>SlimTitlebarSecondary</c>. <c>AppConfig.Validate</c> currently force-pins
+    /// BOTH flags true (v3.24.3 folded the non-slim-secondary trap into
+    /// <c>ShowTaskbars</c>), so today this only ever returns <c>true</c> — but
+    /// resolving it keeps every self-heal call site correct (and consistent with
+    /// the existing call sites' convention) if that pin is ever relaxed, rather
+    /// than forking a simpler "always re-slim" rule that would strip a deliberately
+    /// non-slim secondary.
+    /// </summary>
+    private bool IsPidSlimManaged(int pid, int clientIndex)
+    {
+        if (!_config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase))
+            return _config.Layout.SlimTitlebar;
+        int slot = _monitorSlotByPid.TryGetValue(pid, out int s) ? s : (clientIndex % 2);
+        return (slot == 0) ? _config.Layout.SlimTitlebar : _config.Layout.SlimTitlebarSecondary;
+    }
+
+    private void ReslimRegressedInjectedClients()
+    {
+        var clients = _processManager.Clients;
+        for (int i = 0; i < clients.Count; i++)
+        {
+            var c = clients[i];
+            if (!_injectedPids.Contains(c.ProcessId)) continue;   // hook-managed clients only
+            if (!IsPidSlimManaged(c.ProcessId, i)) continue;      // never re-slim a deliberately non-slim secondary
+            _windowManager.ReapplySlimStyleOnly(c.WindowHandle);  // no-op unless the style actually regressed
+        }
     }
 
     /// <summary>

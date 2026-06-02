@@ -1355,6 +1355,66 @@ public class WindowManager
     }
 
     /// <summary>
+    /// v3.24.7 — STYLE-ONLY slim re-apply for an INJECTED client whose window
+    /// style regressed to non-slim (<c>WS_THICKFRAME</c> back) without the hook
+    /// DLL catching it. The motivating case: opening Settings right before a
+    /// multimonitor team launch raced the autologin startup arrange and left a
+    /// client NORMAL — and in multimonitor mode nothing re-slimmed it, because
+    /// <see cref="ApplySlimTitlebarToAll"/> early-returns for MM (it sizes to a
+    /// single monitor) and the hook DLL only re-strips on EQ's own SetWindowPos.
+    /// (CHANGELOG v3.24.6 flagged this exact "restyle path" as the open root.)
+    /// <para>
+    /// Strips to <see cref="DesiredSlimStyle"/> and SWP_FRAMECHANGEs <b>in place</b>
+    /// — <c>SWP_NOMOVE | SWP_NOSIZE</c>, NO reposition — so it does NOT fight the
+    /// hook DLL's GeoWndProc, which owns outer position+size in MM mode. The frame
+    /// recomputes (client area grows into the freed resize border) while the outer
+    /// rect is untouched, so the hook's per-WM_WINDOWPOSCHANGING size-pin stays
+    /// satisfied. Because there is no move, there is no v3.22.60 phantom swap.
+    /// </para>
+    /// <para>
+    /// Idempotent: returns <c>false</c> with ZERO Win32 mutation when the style
+    /// already matches <see cref="DesiredSlimStyle"/> (the steady-state path), so
+    /// it is safe to call every guard tick. The expensive responsiveness probe
+    /// (<see cref="IWindowsApi.IsClientResponsive"/>, up to ~100ms) only runs when
+    /// an actual regression is found. Iconic / dead / non-responsive windows are
+    /// skipped exactly like <see cref="ApplySlimTitlebar"/> — the guard tick retries.
+    /// </para>
+    /// </summary>
+    /// <returns><c>true</c> if a regression was found and the style was re-applied;
+    /// <c>false</c> if the window was already slim, gone, iconic, or non-responsive.</returns>
+    public bool ReapplySlimStyleOnly(IntPtr hwnd)
+    {
+        if (!_api.IsWindow(hwnd)) return false;
+        if (_api.IsIconic(hwnd)) return false;
+
+        long style = _api.GetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE).ToInt64();
+        long desired = DesiredSlimStyle(style, _config.Layout.WindowMode);
+        if (style == desired) return false;   // already slim — no-op (phantom-swap-safe steady state)
+
+        // Only probe responsiveness once we KNOW there is a regression to fix —
+        // SetWindowLongPtr on a window whose pump is stuck mid-zone-load DX reset
+        // is the 14.5s-stall / crash class (see ApplySlimTitlebar's leaf probe).
+        if (!_api.IsClientResponsive(hwnd, out int lastErr))
+        {
+            FileLogger.Warn($"ReapplySlimStyleOnly: skip non-responsive window (hwnd=0x{hwnd.ToInt64():X}; likely mid-zone-load DX reset; guard tick will retry; lastErr={lastErr})");
+            return false;
+        }
+
+        _api.SetWindowLongPtr(hwnd, NativeMethods.GWL_STYLE, (IntPtr)desired);
+        // Frame-only commit: NOMOVE|NOSIZE delegates outer geometry to the hook;
+        // FRAMECHANGED forces the non-client recompute so the freed border becomes
+        // client area. NOACTIVATE (not SHOWWINDOW) — SHOWWINDOW trips EQ's
+        // focus-loss minimize during init (same rationale as ApplySlimTitlebar Step 1).
+        _api.SetWindowPos(
+            hwnd, IntPtr.Zero, 0, 0, 0, 0,
+            NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER |
+            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_FRAMECHANGED);
+        ApplyDarkTitlebarIfRequested(hwnd);
+        FileLogger.Info($"ReapplySlimStyleOnly: hwnd=0x{hwnd.ToInt64():X} style 0x{style:X}→0x{desired:X} (regressed to non-slim → style-only re-slim, no reposition; hook owns geometry)");
+        return true;
+    }
+
+    /// <summary>
     /// v3.22.53 — apply <c>DWMWA_USE_IMMERSIVE_DARK_MODE</c> to the given EQ
     /// window, writing the current value of <see cref="WindowLayout.DarkTitlebar"/>
     /// (1 if on, 0 if off). Both transitions matter: writing 0 actively

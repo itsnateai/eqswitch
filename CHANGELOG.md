@@ -1,5 +1,62 @@
 # Changelog
 
+## v3.24.8 — FIX the intermittent char-select freeze: cross-thread SetCurSel → marshal to game thread (2026-06-02)
+
+Root-causes and fixes the long-standing **intermittent background-client char-select stall**
+("DLL did not ack selection in 24s — stopping at char select") that failed team autologins
+~40-60% of the time on the background client. Live-validated 8/8 clients across 4 team launches.
+
+- **Root cause (our code, confirmed against live logs + diagnostics):** at char-select, `eqmain.dll`
+  **unloads** (the 3D scene is eqgame's, not eqmain's), so the `LoginController::GiveTime` detour —
+  which ran the bridge poll on EQ's **game thread** — is gone. `device_proxy.cpp` falls back to
+  running `MQ2BridgePollTick()` from the **ActivateThread** (a di8 background thread). There it
+  calls `CListWnd::SetCurSel` — a UI function with **game-thread (window) affinity**. A cross-thread
+  `SetCurSel` internally `SendMessage`s the owning thread and **blocks/hangs** when that thread is
+  busy and not pumping (background client mid-3D-scene-load). Foreground client pumps between frames
+  → works; background client starves → hangs. Intermittent (timing), background-only, no SEH (it's a
+  block not a fault) — every symptom explained. The hung WM_TIMER-equivalent freezes the whole game
+  thread → 24s ack timeout → SM safety-bail at char-select.
+- **Fix:** capture EQ's game-thread id (the GiveTime detour and the WndProc subclass both run on it),
+  and in `HandleSelectionRequest`/`HandleEnterWorldRequest`, when the poll is **off the game thread**,
+  `PostMessage` a coalesced "run poll" message (`RegisterWindowMessage`) to the subclassed window.
+  The `ActivateWndProc` subclass — which runs on the game thread — then re-runs `MQ2BridgePollTick()`,
+  so `SetCurSel` executes as a safe **in-thread** call. Async + coalesced: never blocks the caller,
+  worst case (game thread wedged) is a clean SM timeout instead of a hang.
+- **Also:** the WndProc subclass is now installed whenever the EQ window exists (previously gated on
+  `KeyShm::IsActive()`, which the StateMachine login path leaves false — so the subclass, the di8's
+  only game-thread hook at char-select, wasn't reliably present). The subclass only blocks focus
+  messages when `KeyShm::IsActive()`, so installing it while inactive is harmless.
+- Native di8 change (`device_proxy.cpp`, `login_givetime_detour.cpp`, `mq2_bridge.cpp`). Deployed,
+  superseding the prior known-good di8 (this build also carries the held anti-bleed + the v3.24.7
+  vtable-baseline diagnostic). Diagnostic log lines (`marshaling to game thread` / `marshaled poll
+  RECEIVED`) retained — low-volume, make the critical path observable.
+
+## v3.24.7 — Self-heal a window that regressed to non-slim (closes the v3.24.6 open root) (2026-06-02)
+
+Fixes the "restyle path" v3.24.6 explicitly left open: a multimon startup that leaves a client
+**non-slim** (still `WS_THICKFRAME`). The motivating trigger is opening **Settings right before a
+multimon team launch** — the Settings `ReloadConfig` races the autologin startup arrange and a client
+lands NORMAL (full titlebar, taskbar showing). v3.24.6 made the geometry cache *robust* to that state
+but did not *repair* it; this does.
+
+- **Root:** in multimonitor mode nothing re-slimmed a regressed **injected** client.
+  `ApplySlimTitlebarToAll` early-returns for MM (it sizes to a single monitor — wrong for MM), the
+  `LoginComplete` deferred timer skips its cosmetic re-apply (the v3.22.60 phantom-swap fix), and the
+  hook DLL only re-strips `WS_THICKFRAME` when EQ itself calls `SetWindowPos`. So a style regression
+  the hook didn't observe (Settings-driven `SetWindowLongPtr`, a direct `WM_SIZE`) just sat there.
+- **Fix:** new `WindowManager.ReapplySlimStyleOnly(hwnd)` — a **style-only** re-slim. It strips to the
+  desired slim style and `SWP_FRAMECHANGED`s **in place** (`SWP_NOMOVE | SWP_NOSIZE`), so it does NOT
+  reposition → does NOT fight the hook DLL's `GeoWndProc` (which owns outer geometry in MM) and CANNOT
+  cause the v3.22.60 phantom swap. It is idempotent: zero Win32 mutation when the style already
+  matches, and the ~100ms responsiveness probe only runs when an actual regression is found.
+- **Wired in two places:** (1) a new guard-tick self-heal `ReslimRegressedInjectedClients()` runs every
+  tick so the race self-heals within one tick *whenever* it happens (not only right after login),
+  resolving the per-PID slim flag exactly like `UpdateHookConfigForPid` (never re-slims a deliberately
+  non-slim secondary); (2) a targeted fast-path call at the `LoginComplete` deferred point, the exact
+  root site. Single-screen is already covered by `ApplySlimTitlebarToAll`'s reposition path, so the
+  self-heal no-ops there after the fact.
+- No Native/DX binary changes. EXE-only.
+
 ## v3.24.6 — Read-back won't cache a non-slim frame (stops the geometry-cache poisoning) (2026-06-01)
 
 Guards the measured-frame cache against poisoning, which had defeated v3.24.5 in the wild. If a
