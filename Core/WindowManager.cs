@@ -345,41 +345,7 @@ public class WindowManager
     }
 
     /// <summary>
-    /// v3.24.2 — THE single source of truth for the lock-to-primary-dims POLICY DECISION.
-    /// Both <see cref="ArrangeMultiMonitor"/> (which sizes the window) AND
-    /// <see cref="UI.TrayManager"/>'s hook-config path (which pins the in-process hook rect)
-    /// call this, so the two can no longer disagree on the secondary client's size. A
-    /// disagreement WAS the v3.24.1 swap refit: arrange sized the secondary to the primary's
-    /// dims (lock-to-primary), but the hook config sized it to the secondary monitor's NATIVE
-    /// dims; the hook won and yanked the window on every swap → a DX backbuffer rebuild =
-    /// taskbar peek + black-bar/smoosh. Active ⇒ both windows take the primary's dims so the
-    /// DX swap-chain stays one constant size across swaps. Gated on: 2+ monitors, both the
-    /// same slim flag, ≤200px delta on each axis, and primary fits within secondary.
-    /// </summary>
-    public static bool ShouldLockToPrimaryDims(WinRect primary, WinRect secondary, bool primarySlim, bool secondarySlim)
-    {
-        bool bothSameSlim = primarySlim == secondarySlim;
-        int wDelta = Math.Abs(primary.Width - secondary.Width);
-        int hDelta = Math.Abs(primary.Height - secondary.Height);
-        bool primaryFits = primary.Width <= secondary.Width && primary.Height <= secondary.Height;
-        return bothSameSlim && wDelta <= 200 && hDelta <= 200 && primaryFits;
-    }
-
-    /// <summary>
-    /// v3.24.2 — under lock-to-primary-dims, a SECONDARY-slot client takes its OWN monitor's
-    /// origin but the PRIMARY monitor's dimensions. (The primary slot is unchanged — it IS the
-    /// source of dims.) Single source of truth shared by the arrange + hook-config paths.
-    /// </summary>
-    public static WinRect ApplyLockToPrimaryDims(WinRect secondaryMonitor, WinRect primary) => new WinRect
-    {
-        Left = secondaryMonitor.Left,
-        Top = secondaryMonitor.Top,
-        Right = secondaryMonitor.Left + primary.Width,
-        Bottom = secondaryMonitor.Top + primary.Height,
-    };
-
-    /// <summary>
-    /// v3.24.3 — THE single multimonitor per-slot sizing authority. Returns the effective
+    /// v3.24.10 — THE single multimonitor per-slot sizing authority. Returns the effective
     /// target monitor-rect (origin + W×H) for <paramref name="slot"/> (0 = primary,
     /// 1 = secondary), applying <paramref name="mode"/>. EVERY place that needs a
     /// multimonitor window/backbuffer size derives it from here — <see cref="ArrangeMultiMonitor"/>
@@ -454,7 +420,7 @@ public class WindowManager
     /// via SwitchKey instead of the legacy clientIndex-positional assignment.
     /// </para>
     /// <para>
-    /// v3.22.21 refactor: two-pass design + lock-to-primary-dims policy.
+    /// v3.22.21 refactor: two-pass design. v3.24.10: per-monitor-fit sizing.
     /// <list type="bullet">
     /// <item><b>Pass 1 (sequential, style)</b> — per-client WS_THICKFRAME
     /// strip/restore + SWP_FRAMECHANGED notify. Can't be batched: each
@@ -464,14 +430,13 @@ public class WindowManager
     /// single DWM composite — eliminates the cascade flicker that v3.22.20
     /// showed during SwitchKey swap (windows visibly moved one-by-one).
     /// Falls back to sequential SetWindowPos on hdwp failure.</item>
-    /// <item><b>Lock-to-primary-dims</b> — both windows sized to primary's
-    /// bounds with each monitor's own origin. Eliminates the cross-monitor
-    /// smoosh symptom: DX swap-chain stays at one constant size across
-    /// SwitchKey swaps, so font/UI textures don't get stretched. Auto-
-    /// degrades to per-monitor-fit when monitors differ too much
-    /// (|Δ| &gt; 200px on either axis) or have mixed slim/non-slim flags
-    /// — power users with 4K+1080p get per-monitor-fit and the v3.22.21
-    /// "Fix Windows" hotkey for manual DX reinit.</item>
+    /// <item><b>Per-monitor-fit sizing</b> (v3.24.10) — each slot is sized to
+    /// its OWN monitor via <see cref="EffectiveSlotBounds"/> (primary full;
+    /// secondary work-area for ShowTaskbars / full for CoverAll). On mismatched
+    /// monitors the two windows differ in size, so a SwitchKey swap resizes a
+    /// client; the native backbuffer resize (PostBackbufferResize, fired on
+    /// every swap) rebuilds EQ's DX backbuffer to match — crisp, curtain-masked.
+    /// On matched monitors CoverAll is symmetric (swap never resizes).</item>
     /// </list>
     /// </para>
     /// </summary>

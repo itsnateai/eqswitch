@@ -1417,13 +1417,16 @@ public class TrayManager : IDisposable
 
     /// <summary>
     /// v3.24.3 — post the native backbuffer-resize to every injected client after a swap.
-    /// A NO-OP under the locked-to-primary path (the window size doesn't change on a swap, so
-    /// the native side finds the backbuffer already matched and returns without a reset), but
-    /// on the per-monitor-fit DEGRADE path (4K+1080p / primary-bigger, where
-    /// <see cref="WindowManager.EffectiveSlotBounds"/> returns locked=false) a swap DOES resize
+    /// Self-gating + idempotent: the native side reads the live client size and returns without
+    /// a reset when the backbuffer already matches (so a SYMMETRIC swap — same-size windows,
+    /// matched monitors under CoverAll — is a no-op). Under v3.24.10 per-monitor-fit, a swap on
+    /// MISMATCHED monitors (primary full vs secondary work/full of a different size) DOES resize
     /// the client — this rebuilds the DX backbuffer to match instead of leaving the smoosh /
-    /// black bar until the user presses Fix-Windows. Makes the swap consistent across hardware,
-    /// not just the lockable case; the transition curtain masks the brief reset.
+    /// black bar until the user presses Fix-Windows. Fired on EVERY swap so coverage is uniform;
+    /// the transition curtain masks the brief reset. NOTE: per-client, this skips clients that
+    /// are not injected / mid-login / hung / iconic (see <see cref="PostBackbufferResize"/>) —
+    /// such a client, if swapped while in that state, keeps a mismatched backbuffer until the
+    /// next Fix-Windows (transient: steady-state multibox has both clients injected + in-world).
     /// </summary>
     private void PostBackbufferResizeToClients(string ctx)
     {
@@ -5311,14 +5314,14 @@ public class TrayManager : IDisposable
     }
 
     /// <summary>
-    /// v3.24.2 — the EFFECTIVE slim-coverage monitor bounds for a PID, applying the SAME
-    /// lock-to-primary-dims policy <see cref="WindowManager.ArrangeMultiMonitor"/> uses to SIZE
-    /// the window. This is what the hook must pin so it doesn't fight the arrange — the v3.24.1
-    /// swap refit (taskbar peek + DX smoosh/black-bar) was the hook pinning the secondary
-    /// monitor's NATIVE dims (e.g. 1920x1200) while arrange used the locked primary dims
-    /// (1920x1080); the hook won and that per-swap resize fired EQ's backbuffer rebuild.
-    /// Mirrors <see cref="GetMonitorForPid"/> but overrides a secondary-slot client to the
-    /// primary's dims when the shared policy is active.
+    /// v3.24.10 — the EFFECTIVE slim-coverage monitor bounds for a PID, derived from the SAME
+    /// per-monitor-fit authority (<see cref="WindowManager.EffectiveSlotBounds"/>) that
+    /// <see cref="WindowManager.ArrangeMultiMonitor"/> uses to SIZE the window. This is what the
+    /// hook must pin so it doesn't fight the arrange — the v3.24.1 swap refit (taskbar peek + DX
+    /// smoosh/black-bar) was the hook pinning a DIFFERENT size than arrange. Routing both through
+    /// EffectiveSlotBounds keeps the hook pin, the arrange, and the Windowed read-back agreeing on
+    /// the per-slot size by construction (primary = its own full bounds; secondary = its own work
+    /// area for ShowTaskbars / full bounds for CoverAll).
     /// </summary>
     private WinRect GetEffectiveMonitorForPid(int pid, int clientIndexFallback)
     {
