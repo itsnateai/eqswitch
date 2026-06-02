@@ -395,6 +395,28 @@ static class Program
             Environment.Exit(exitCode);
             return;
         }
+
+        // --test-effective-bounds — run Core/EffectiveSlotBoundsTests.RunAll() and exit. Guards
+        // the v3.24.3 single multimonitor sizing authority (WindowManager.EffectiveSlotBounds)
+        // across the cross-hardware config matrix: single/matched/mismatched/4K-degrade/
+        // primary-bigger-degrade/slot-wrap + CoverAll-vs-ShowTaskbars. The load-bearing
+        // invariant: when locked, both slots get the SAME size (symmetric → clean swaps).
+        if (args.Length >= 1 && args[0] == "--test-effective-bounds")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.EffectiveSlotBoundsTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"EffectiveSlotBoundsTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
 #endif
 
         // Enforce single instance

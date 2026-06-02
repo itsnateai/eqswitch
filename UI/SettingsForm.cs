@@ -201,6 +201,9 @@ public class SettingsForm : Form
     // enabled. Maps to Layout.HorizontalNudgePx, clamped ±10.
     private NumericUpDown _nudHorizontalNudge = null!;
     private CheckBox _chkVideoMultiMon = null!;
+    // v3.24.3 — multimonitor taskbar-visibility mode (checked = ShowTaskbars, unchecked =
+    // CoverAll). The symmetric replacement for the legacy SlimTitlebarSecondary flag.
+    private CheckBox _chkShowSecondaryTaskbar = null!;
     private ComboBox _cboVideoPrimaryMon = null!;
     private ComboBox _cboVideoSecondaryMon = null!;
     private bool _suppressVideoSync; // prevent SyncVideoPresetToCustom during programmatic changes
@@ -1613,6 +1616,7 @@ public class SettingsForm : Form
         // (AppConfig.Validate pins ForceWindowedMode=true) and VideoSaveToIni writes it
         // literally — no UI control or backing field needed.
         _chkVideoMultiMon.Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+        _chkShowSecondaryTaskbar.Checked = _config.Layout.MultiMonTaskbarMode == MultiMonTaskbarMode.ShowTaskbars;
         _nudVideoTopOffset.Value = DarkTheme.ClampNud(_nudVideoTopOffset, _config.Layout.TopOffset);
         _nudHorizontalNudge.Value = DarkTheme.ClampNud(_nudHorizontalNudge, _config.Layout.HorizontalNudgePx);
         PopulateVideoFromIni();
@@ -1845,6 +1849,14 @@ public class SettingsForm : Form
                 HorizontalNudgePx = (int)_nudHorizontalNudge.Value,
                 WindowMode = _chkWindowedMode.Checked ? WindowMode.Windowed : WindowMode.Fullscreen,
                 SlimTitlebar = _chkSlimTitlebar.Checked || _chkWindowedMode.Checked,
+                // v3.24.3 — taskbar-visibility mode from its checkbox. SlimTitlebarSecondary stays
+                // at its (re-pinned-true) default; the mode now governs 2nd-monitor taskbar
+                // visibility. The two swap-curtain knobs are JSON-only — preserve them across
+                // Settings→Apply (this block rebuilds WindowLayout from scratch, so an
+                // uncopied field would silently reset to its C# default).
+                MultiMonTaskbarMode = _chkShowSecondaryTaskbar.Checked ? MultiMonTaskbarMode.ShowTaskbars : MultiMonTaskbarMode.CoverAll,
+                SwapTransitionCurtain = _config.Layout.SwapTransitionCurtain,
+                SwapCurtainMs = _config.Layout.SwapCurtainMs,
                 DarkTitlebar = _chkDarkTitlebar.Checked,
                 TitlebarOffset = (int)_nudTitlebarOffset.Value,
                 BottomOffset = (int)_nudBottomOffset.Value,
@@ -3274,6 +3286,11 @@ public class SettingsForm : Form
         cy = 32;
 
         _chkVideoMultiMon = DarkTheme.AddCheckBox(cardMon, "Multi-Monitor Mode", L, cy);
+        // v3.24.3 — taskbar-visibility mode (multimonitor). Checked = ShowTaskbars (both
+        // windows lock to the primary's WORK area → every monitor's taskbar stays visible);
+        // unchecked = CoverAll (lock to the primary's FULL bounds → primary maxed, a taller
+        // secondary shows its taskbar in the leftover band). Both are symmetric → clean swaps.
+        _chkShowSecondaryTaskbar = DarkTheme.AddCheckBox(cardMon, "Show taskbars (multi-mon)", 250, cy);
 
         cy += 26;
         var screens = Screen.AllScreens.OrderBy(s => s.Bounds.Left).ToArray();

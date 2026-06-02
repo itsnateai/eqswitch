@@ -834,13 +834,26 @@ public class EQClientSettingsForm : Form
                 // (2026-05-31 natedogg smush — INI WindowedHeight 1187 for the 1920×1200
                 // screen vs the 1920×1080 primary the window used). Sharing the source
                 // keeps backbuffer == visible client → crisp.
-                var monitorBounds = new WindowsApi().GetAllMonitorBounds();
+                var api = new WindowsApi();
+                var fullBounds = api.GetAllMonitorBounds();
+                var workAreas = api.GetAllMonitorWorkAreas();
                 System.Drawing.Rectangle screenBounds;
-                if (monitorBounds.Count > 0)
+                if (fullBounds.Count > 0)
                 {
-                    int targetIdx = Math.Clamp(config.Layout.TargetMonitor, 0, monitorBounds.Count - 1);
-                    var m = monitorBounds[targetIdx];
-                    screenBounds = new System.Drawing.Rectangle(m.Left, m.Top, m.Width, m.Height);
+                    int targetIdx = Math.Clamp(config.Layout.TargetMonitor, 0, fullBounds.Count - 1);
+                    // v3.24.3 — the eqclient.ini backbuffer is the SHARED render size for BOTH
+                    // clients, so it MUST equal the single sizing authority's PRIMARY-slot dims
+                    // (the size both windows are locked to). CoverAll → primary FULL bounds
+                    // (unchanged from before); ShowTaskbars → primary WORK area (so the
+                    // backbuffer matches the work-area-sized windows 1:1 → no stretch/black-bar).
+                    // Single-screen keeps the target monitor's full bounds (CoverAll-equivalent).
+                    bool isMM = config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+                    Core.WinRect primaryFull = fullBounds[targetIdx];
+                    Core.WinRect primaryWork = (workAreas.Count == fullBounds.Count) ? workAreas[targetIdx] : fullBounds[targetIdx];
+                    Core.WinRect eff = isMM
+                        ? Core.WindowManager.EffectiveSlotBounds(0, primaryFull, primaryWork, null, null, config.Layout.MultiMonTaskbarMode).bounds
+                        : primaryFull;
+                    screenBounds = new System.Drawing.Rectangle(eff.Left, eff.Top, eff.Width, eff.Height);
                 }
                 else
                 {

@@ -1,5 +1,53 @@
 # Changelog
 
+## v3.24.3 — Multimonitor window-management: one sizing authority, taskbar-visibility mode, black-bar fix, transition curtain (2026-06-01)
+
+Closes the remaining multimonitor behavior after the v3.24.2 swap fix — makes taskbar coverage
+**consistent across window modes and hardware**, kills a stuck-backbuffer black bar, and masks the
+residual sub-second peek. Generalizes the mechanism (not a one-off for one machine).
+
+- **One sizing authority.** `WindowManager.EffectiveSlotBounds` is now the single function that
+  computes each multimonitor slot's effective window rect (origin + W×H). `ArrangeMultiMonitor`
+  (sizes the window), `TrayManager.GetEffectiveMonitorForPid` (pins the injected-hook rect AND
+  drives the Windowed read-back), and `EQClientSettingsForm.EnforceOverrides` (writes the
+  eqclient.ini backbuffer) **all derive from it** — so window, hook, read-back, and backbuffer can
+  never disagree. When the monitors are close enough, every slot gets the SAME W×H (symmetric →
+  a swap never resizes a client → no DX rebuild). This subsumes and hardens the v3.24.2
+  `ShouldLockToPrimaryDims`/`ApplyLockToPrimaryDims` split.
+- **Fix — Windowed no longer covers the 2nd-monitor taskbar (consistent with Fullscreen).**
+  Root cause: the Windowed "measure, don't predict" read-back (`CorrectInjectedWindowedGeometry`)
+  computed the secondary's outer rect against the secondary's **native** bounds (`GetMonitorForPid`,
+  e.g. 1920×1200) instead of the lock-to-primary size — growing the secondary client to ~1187 and
+  covering the taskbar, then overwriting the (correct) hook rect and winning. Fullscreen has no
+  read-back, so it stayed at the locked 1080 and showed the taskbar in the band — the inconsistency.
+  The read-back now routes through `GetEffectiveMonitorForPid` (the authority), so Windowed and
+  Fullscreen leave the **same** band → the 2nd-monitor taskbar is visible in both.
+- **Fix — stuck-backbuffer black bar that "Fix Windows" couldn't clear.** The native
+  backbuffer-resize (the hook's `GeoWndProc` reads the live client → EQ's own `SetResolution` +
+  `ResetDevice`) was only wired to the Window-Mode toggle. "Fix Windows" used the old, unreliable
+  `ForceDxReinit` titlebar-double-click (ScreenMode toggle), which couldn't rebuild a backbuffer
+  stuck at a mismatched size. "Fix Windows" now posts the reliable native resize to injected
+  clients (non-injected clients keep the `ForceDxReinit` fallback), so a stuck backbuffer / black
+  bar is always clearable. (The consistent read-back above also means a swap no longer changes the
+  client size, so the backbuffer can't go stale on a swap in the first place.)
+- **New — `MultiMonTaskbarMode` (CoverAll | ShowTaskbars), a symmetric taskbar-visibility setting.**
+  Replaces the legacy per-monitor `SlimTitlebarSecondary` "show 2nd taskbar" hack (which turned
+  lock-to-primary OFF → reintroduced the swap smoosh). **CoverAll** (default) locks both windows to
+  the primary's full bounds (primary maxed; a taller secondary shows its taskbar in the band).
+  **ShowTaskbars** locks both to the primary's work area (every monitor leaves taskbar room). Both
+  are symmetric → clean swaps. Exposed as "Show taskbars (multi-mon)" on the Settings → Video
+  Monitor card. A legacy `SlimTitlebarSecondary=false` config is auto-migrated to ShowTaskbars
+  (intent preserved, trap removed).
+- **New — transition curtain (`UI/TransitionCurtain.cs`) masks the residual sub-second peek.**
+  A topmost, non-activating (`WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_LAYERED`) black cover is
+  raised over the primary monitor across a swap, keeping the monitor "rude" through EQ's D3D-device
+  settle so the taskbar can't peek; auto-hides after `SwapCurtainMs` (default 180ms). Owned by
+  EQSwitch.exe → no cross-process/hook contention; never steals focus. JSON off-switch
+  `swapTransitionCurtain`.
+- **Tests:** new `--test-effective-bounds` (24 assertions across single / matched / mismatched /
+  4K-degrade / primary-bigger-degrade / slot-wrap + CoverAll-vs-ShowTaskbars). The v3.24.2
+  `--test-swap-cover` guard stays green (no regression). Native (`eqswitch-hook.dll`) unchanged.
+
 ## v3.24.2 — Fix: multimonitor swap taskbar peek + DX smoosh (root cause: hook/arrange size disagreement) (2026-06-01)
 
 Kills the one-frame taskbar peek AND the black-bar/smoosh on `\` / `]` (and tray-menu "Swap

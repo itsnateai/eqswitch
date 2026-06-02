@@ -130,6 +130,11 @@ public class TrayManager : IDisposable
     // PiP overlay
     private PipOverlay? _pipOverlay;
 
+    // v3.24.3 — transition curtain that masks the residual sub-second DX-settle taskbar
+    // peek across a multimonitor swap. Lazy (its Form isn't created until the first Flash),
+    // reusable, owned here; disposed in Dispose.
+    private readonly TransitionCurtain _curtain = new();
+
     // Process Manager (single-instance)
     private ProcessManagerForm? _processManagerForm;
 
@@ -1094,6 +1099,9 @@ public class TrayManager : IDisposable
                 // _.src/.oursrcarchive/eqswitch_ahk/EQSwitch.ahk:414-441
                 // uses sequential WinMove (no DeferWindowPos batching);
                 // worth A/B testing in v3.22.22.
+                // v3.24.3 — raise the curtain BEFORE the swap so the primary stays covered
+                // through the move + the DX-device settle (auto-hides after SwapCurtainMs).
+                ShowSwapCurtain();
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 RotateMonitorSlots();
                 long tRotate = sw.ElapsedMilliseconds;
@@ -1104,6 +1112,9 @@ public class TrayManager : IDisposable
                 UpdateHookConfig();
                 long tHook = sw.ElapsedMilliseconds;
                 FileLogger.Info($"SwitchKey-swap-timing: rotate={tRotate}ms, arrange={tArrange - tRotate}ms, hookConfig={tHook - tArrange}ms, total={tHook}ms");
+                // v3.24.3 — re-sync the DX backbuffer (no-op when locked; rebuilds on the
+                // per-monitor-fit degrade path so a mismatched-monitor swap can't leave a black bar).
+                PostBackbufferResizeToClients("SwitchKey-swap");
             }
             catch (Exception ex)
             {
@@ -1169,6 +1180,8 @@ public class TrayManager : IDisposable
                 // v3.22.20: see OnSwitchKey comment — real slot rotation
                 // instead of physical-swap-then-clientIndex-revert.
                 // v3.22.21 smoke-2: phase timing (mirrors OnSwitchKey).
+                // v3.24.3 — curtain before the swap (mirrors OnSwitchKey).
+                ShowSwapCurtain();
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 RotateMonitorSlots();
                 long tRotate = sw.ElapsedMilliseconds;
@@ -1179,6 +1192,8 @@ public class TrayManager : IDisposable
                 UpdateHookConfig();
                 long tHook = sw.ElapsedMilliseconds;
                 FileLogger.Info($"GlobalSwitchKey-swap-timing: rotate={tRotate}ms, arrange={tArrange - tRotate}ms, hookConfig={tHook - tArrange}ms, total={tHook}ms");
+                // v3.24.3 — re-sync the DX backbuffer (no-op when locked; rebuilds on degrade).
+                PostBackbufferResizeToClients("GlobalSwitchKey-swap");
             }
             catch (Exception ex)
             {
@@ -1309,17 +1324,93 @@ public class TrayManager : IDisposable
         int arranged = clientsToArrange.Count - skippedIconic - skippedOther;
         FileLogger.Info($"ArrangeWindows: arranged {arranged}/{allClients.Count} client(s){skippedLabel}");
 
-        // v3.22.21: force DX swap-chain reinit. PostMessage(WM_NCLBUTTONDBLCLK,
-        // HTCAPTION) hits the same WndProc path as a real user titlebar
-        // double-click → CResolutionHandler::ToggleScreenMode → DX device reset.
-        // ForceDxReinit itself re-gates on IsLoginActive + IsIconic before the
-        // second click (T2-Opus + T3-Sonnet round-2 convergence) — defense in
-        // depth against state changes during the 250ms inter-click window.
+        // Force a DX backbuffer re-sync so any STUCK backbuffer (the "black bar Fix Windows
+        // can't clear" symptom — backbuffer smaller than the window → black gap at the bottom)
+        // is rebuilt to the live client size.
+        // v3.24.3: injected clients (have the GeoWndProc subclass) get the RELIABLE native
+        // rebuild — GeoWndProc reads the live client rect → EQ's own gfx SetResolution +
+        // ResetDevice, no ScreenMode toggle, idempotent (no-op + no flash when already matched).
+        // Non-injected clients have no subclass to receive the message, so they keep the legacy
+        // ForceDxReinit titlebar-double-click (WM_NCLBUTTONDBLCLK → CResolutionHandler::
+        // ToggleScreenMode), which re-gates IsLoginActive + IsIconic before its 2nd click.
         foreach (var c in clientsToArrange)
-            ForceDxReinit(c);
+        {
+            if (_injectedPids.Contains(c.ProcessId) && !_autoLoginManager.IsLoginActive(c.ProcessId))
+                PostBackbufferResize(c.ProcessId, c.WindowHandle, "FixWindows");
+            else
+                ForceDxReinit(c);
+        }
 
         string mode = _config.Layout.SlimTitlebar ? "slim titlebar" : "stacked";
         ShowBalloon($"Fixed {arranged} window(s) ({mode}){skippedLabel}");
+    }
+
+    /// <summary>
+    /// v3.24.3 — raise the transition curtain over the PRIMARY monitor just before a
+    /// multimonitor swap, masking the residual sub-second taskbar peek while EQ's D3D device
+    /// settles on the monitor change. No-op unless multimonitor + slim + the
+    /// <see cref="WindowLayout.SwapTransitionCurtain"/> flag + 2+ physical monitors (a single
+    /// display has no cross-monitor settle to mask). Auto-hides after SwapCurtainMs.
+    /// </summary>
+    private void ShowSwapCurtain()
+    {
+        if (!_config.Layout.SwapTransitionCurtain) return;
+        if (!_config.Layout.SlimTitlebar) return;
+        if (!_config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase)) return;
+        var monitors = _windowManager.GetAllMonitorFullBounds();
+        if (monitors.Count < 2) return;  // single physical display → no cross-monitor settle
+        int primaryIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, monitors.Count - 1);
+        _curtain.Flash(monitors[primaryIdx], _config.Layout.SwapCurtainMs);
+    }
+
+    /// <summary>
+    /// v3.24.3 — post the private backbuffer-resize message to an INJECTED client. The hook's
+    /// GeoWndProc (on EQ's render thread, between frames) reads the SETTLED client rect and calls
+    /// EQ's OWN gfx <c>SetResolution</c> + <c>ResetDevice</c> so the DX backbuffer matches the
+    /// window 1:1 — crisp, no stretch, no black bar, no ScreenMode flip. This is the RELIABLE
+    /// recovery the old <see cref="ForceDxReinit"/> titlebar-double-click could not be: a stuck
+    /// backbuffer (the "Fix Windows can't clear the black bar" symptom) is cleared because the
+    /// native side reads the live client and rebuilds to it. Idempotent on the native side
+    /// (no reset when the backbuffer already matches → no flash on the common no-op path).
+    /// <para>
+    /// Gated to injected clients only (a non-injected client has no GeoWndProc to receive the
+    /// message). Skips autologin-active / gone / hung / minimized PIDs. Returns true if posted.
+    /// </para>
+    /// </summary>
+    private bool PostBackbufferResize(int pid, IntPtr hwnd, string ctx)
+    {
+        uint msg = BackbufferResizeMsg;
+        if (msg == 0)
+        {
+            FileLogger.Warn($"{ctx}: RegisterWindowMessage failed — backbuffer resize skipped (PID {pid})");
+            return false;
+        }
+        if (_autoLoginManager.IsLoginActive(pid)) return false;
+        if (!_injectedPids.Contains(pid)) return false; // only injected clients have GeoWndProc
+        if (!NativeMethods.IsWindow(hwnd) || NativeMethods.IsHungAppWindow(hwnd) || NativeMethods.IsIconic(hwnd))
+        {
+            FileLogger.Info($"{ctx}: PID {pid} backbuffer resize skipped (gone/hung/minimized)");
+            return false;
+        }
+        bool ok = NativeMethods.PostMessage(hwnd, msg, IntPtr.Zero, IntPtr.Zero);
+        FileLogger.Info($"{ctx}: PID {pid} backbuffer-resize msg posted ok={ok}");
+        return ok;
+    }
+
+    /// <summary>
+    /// v3.24.3 — post the native backbuffer-resize to every injected client after a swap.
+    /// A NO-OP under the locked-to-primary path (the window size doesn't change on a swap, so
+    /// the native side finds the backbuffer already matched and returns without a reset), but
+    /// on the per-monitor-fit DEGRADE path (4K+1080p / primary-bigger, where
+    /// <see cref="WindowManager.EffectiveSlotBounds"/> returns locked=false) a swap DOES resize
+    /// the client — this rebuilds the DX backbuffer to match instead of leaving the smoosh /
+    /// black bar until the user presses Fix-Windows. Makes the swap consistent across hardware,
+    /// not just the lockable case; the transition curtain masks the brief reset.
+    /// </summary>
+    private void PostBackbufferResizeToClients(string ctx)
+    {
+        foreach (var c in _processManager.Clients)
+            PostBackbufferResize(c.ProcessId, c.WindowHandle, ctx);
     }
 
     /// <summary>
@@ -1870,26 +1961,21 @@ public class TrayManager : IDisposable
                 resizeTimer.Dispose();
                 if (!ReferenceEquals(_dxReinitTimer, resizeTimer)) return; // superseded by a newer toggle
                 _dxReinitTimer = null;
-                uint msg = BackbufferResizeMsg;
-                if (msg == 0)
-                {
-                    FileLogger.Warn("SetWindowMode: RegisterWindowMessage failed — backbuffer resize skipped");
-                    return;
-                }
                 foreach (var c in _processManager.Clients)
-                {
-                    int pid = c.ProcessId;
-                    if (_autoLoginManager.IsLoginActive(pid)) continue;
-                    if (!_injectedPids.Contains(pid)) continue; // only injected clients have GeoWndProc
-                    var hwnd = c.WindowHandle;
-                    if (!NativeMethods.IsWindow(hwnd) || NativeMethods.IsHungAppWindow(hwnd) || NativeMethods.IsIconic(hwnd))
-                    {
-                        FileLogger.Info($"SetWindowMode: PID {pid} backbuffer resize skipped (gone/hung/minimized)");
-                        continue;
-                    }
-                    bool ok = NativeMethods.PostMessage(hwnd, msg, IntPtr.Zero, IntPtr.Zero);
-                    FileLogger.Info($"SetWindowMode: PID {pid} backbuffer-resize msg posted ({label}) ok={ok}");
-                }
+                    PostBackbufferResize(c.ProcessId, c.WindowHandle, $"SetWindowMode({label})");
+
+                // v3.24.3 — PRE-WARM the Windowed frame-measurement cache on a Fullscreen→Windowed
+                // toggle, so the FIRST multimon swap lands flush (no ~10px read-back reposition →
+                // no primary-monitor taskbar/window tear). On a COLD cache (fresh install / new DPI
+                // / a session that launched in Fullscreen, where the WS_POPUP 0-frame read-back
+                // never runs) the swap path otherwise places the AdjustWindowRectEx-PREDICTED frame
+                // (~8px) and only the ~500ms guard-tick read-back corrects it to the MEASURED frame
+                // (~3px) — that lagging correction during a rapid-swap burst is the warm-up tear.
+                // The window is restyled to WS_CAPTION + settled by now, so measuring here populates
+                // the persisted cache before the user can swap. No-op once warm (idempotent) and
+                // self-gated to Windowed inside the helper. See [[reference_dx_backbuffer_client_match_crispness]].
+                if (mode == EQSwitch.Config.WindowMode.Windowed)
+                    CorrectInjectedWindowedGeometry();
             };
             resizeTimer.Start();
         }
@@ -3388,6 +3474,8 @@ public class TrayManager : IDisposable
                         // timing instrumentation from OnSwitchKey / OnGlobalSwitchKey
                         // so the tray-menu path captures the same diagnostic
                         // data when exercised. v3.22.22 reads these logs.
+                        // v3.24.3 — curtain before the swap (mirrors the hotkey swap path).
+                        ShowSwapCurtain();
                         var sw = System.Diagnostics.Stopwatch.StartNew();
                         RotateMonitorSlots();
                         long tRotate = sw.ElapsedMilliseconds;
@@ -3399,6 +3487,8 @@ public class TrayManager : IDisposable
                         UpdateHookConfig();
                         long tHook = sw.ElapsedMilliseconds;
                         FileLogger.Info($"TraySwap-swap-timing: rotate={tRotate}ms, arrange={tArrange - tRotate}ms, hookConfig={tHook - tArrange}ms, total={tHook}ms");
+                        // v3.24.3 — re-sync the DX backbuffer (no-op when locked; rebuilds on degrade).
+                        PostBackbufferResizeToClients("TraySwap-swap");
                     }
                     else
                     {
@@ -4118,6 +4208,16 @@ public class TrayManager : IDisposable
         // the per-monitor secondary override via Settings → Apply would not
         // take effect until restart. Mirror the SlimTitlebar copy.
         _config.Layout.SlimTitlebarSecondary = newConfig.Layout.SlimTitlebarSecondary;
+        // v3.24.3: multimonitor taskbar-visibility mode + the swap-curtain knobs — the THIRD
+        // of the three dual-propagation sites (AppConfig field + BuildAppConfig pickup + this
+        // ReloadConfigCore propagation). Without this, toggling "Show taskbars (multi-mon)" in
+        // Settings → Apply would write to disk but the live _config.Layout.MultiMonTaskbarMode
+        // (which ArrangeMultiMonitor + GetEffectiveMonitorForPid read every swap) would stay
+        // stale until restart — the exact silent-stale-config bug class the curtain/backbuffer
+        // sizes off. See [[reference_settings_apply_dual_propagation_bug]].
+        _config.Layout.MultiMonTaskbarMode = newConfig.Layout.MultiMonTaskbarMode;
+        _config.Layout.SwapTransitionCurtain = newConfig.Layout.SwapTransitionCurtain;
+        _config.Layout.SwapCurtainMs = newConfig.Layout.SwapCurtainMs;
         _config.Layout.TitlebarOffset = newConfig.Layout.TitlebarOffset;
         // v3.22.54: horizontal nudge propagation (slim-mode 1-px DPI sliver fix).
         // Live-applies on the next slim-titlebar guard-timer tick or foreground hook.
@@ -4929,7 +5029,16 @@ public class TrayManager : IDisposable
                 int slot = _monitorSlotByPid.TryGetValue(c.ProcessId, out int s) ? s : (i % 2);
                 bool slim = (slot == 0) ? _config.Layout.SlimTitlebar : _config.Layout.SlimTitlebarSecondary;
                 if (!slim) continue;  // non-slim secondary keeps its normal frame — leave it
-                monitor = GetMonitorForPid(c.ProcessId, i);
+                // v3.24.3 PROBLEM-#1 FIX — was GetMonitorForPid (the secondary's NATIVE bounds,
+                // e.g. 1920x1200). That made the Windowed read-back recompute the secondary's
+                // outer rect against the full 1200-tall monitor → client grew to ~1187 →
+                // COVERED the 2nd-monitor taskbar, and (since it overwrote the SHM rect +
+                // repositioned) WON over the correctly-locked hook config. Fullscreen has no
+                // read-back, so it stayed at the locked 1080 → band → taskbar visible — the
+                // exact windowed-vs-fullscreen inconsistency. GetEffectiveMonitorForPid routes
+                // through the lock-to-primary authority, so the read-back now targets the SAME
+                // locked size arrange + the hook use → Windowed == Fullscreen by construction.
+                monitor = GetEffectiveMonitorForPid(c.ProcessId, i);
             }
             else
             {
@@ -5084,25 +5193,31 @@ public class TrayManager : IDisposable
     /// </summary>
     private WinRect GetEffectiveMonitorForPid(int pid, int clientIndexFallback)
     {
-        var monitors = _windowManager.GetAllMonitorFullBounds();
-        if (monitors.Count == 0)
+        var fullBounds = _windowManager.GetAllMonitorFullBounds();
+        var workAreas = _windowManager.GetAllMonitorWorkAreas();
+        if (fullBounds.Count == 0)
             return new WinRect { Right = 1920, Bottom = 1080 };
+        // Both enumerations walk EnumDisplayMonitors so counts match; if they ever diverge,
+        // fall back to full-bounds for work areas (degrades ShowTaskbars to CoverAll rather
+        // than indexing a shorter list).
+        if (workAreas.Count != fullBounds.Count) workAreas = fullBounds;
 
-        var primaryIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, monitors.Count - 1);
-        int secondaryIdx = WindowManager.ResolveSecondaryMonitorIdx(_config.Layout.SecondaryMonitor, primaryIdx, monitors);
-        var primaryMon = monitors[primaryIdx];
-        if (monitors.Count <= 1) return primaryMon;  // one monitor → no lock-to-primary
-
-        var secondaryMon = monitors[secondaryIdx];
+        var primaryIdx = Math.Clamp(_config.Layout.TargetMonitor, 0, fullBounds.Count - 1);
+        int secondaryIdx = WindowManager.ResolveSecondaryMonitorIdx(_config.Layout.SecondaryMonitor, primaryIdx, fullBounds);
+        bool hasSecondary = fullBounds.Count > 1;
         int slot = ResolveSlotForPid(pid, clientIndexFallback);
-        if ((slot % 2) == 0) return primaryMon;  // primary slot is the source of dims, unchanged
 
-        // Secondary slot: apply the SAME lock-to-primary decision the arrange uses, so the hook
-        // pins the locked size (matching arrange) instead of the secondary monitor's native dims.
-        return WindowManager.ShouldLockToPrimaryDims(primaryMon, secondaryMon,
-                   _config.Layout.SlimTitlebar, _config.Layout.SlimTitlebarSecondary)
-            ? WindowManager.ApplyLockToPrimaryDims(secondaryMon, primaryMon)
-            : secondaryMon;
+        // v3.24.3 — THE single sizing authority, the SAME call ArrangeMultiMonitor uses to
+        // size the window. The hook pins exactly what arrange set (no resize fight = the
+        // v3.24.2 swap fix), AND the Windowed read-back (CorrectInjectedWindowedGeometry,
+        // which now routes its monitor through HERE) targets the locked size instead of the
+        // secondary's native bounds — so Windowed stops growing past the taskbar.
+        return WindowManager.EffectiveSlotBounds(
+            slot,
+            fullBounds[primaryIdx], workAreas[primaryIdx],
+            hasSecondary ? fullBounds[secondaryIdx] : (WinRect?)null,
+            hasSecondary ? workAreas[secondaryIdx] : (WinRect?)null,
+            _config.Layout.MultiMonTaskbarMode).bounds;
     }
 
     /// <summary>
@@ -5407,6 +5522,7 @@ public class TrayManager : IDisposable
         _foregroundHookProc = null; // safe to release now — message pump fully drained at shutdown
         _boldMenuFont?.Dispose();
         _pipOverlay?.Dispose();
+        _curtain.Dispose();
         _hotkeyManager.Dispose();
         _keyboardHook.Dispose();
         _taskbarMessageWindow?.DestroyHandle();

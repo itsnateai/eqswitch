@@ -357,6 +357,9 @@ public class AppConfig
         // beyond ±10 are almost certainly a config typo; the legitimate
         // Win11-DPI-sliver fix is ±1.
         Layout.HorizontalNudgePx = Math.Clamp(Layout.HorizontalNudgePx, -10, 10);
+        // v3.24.3: clamp the swap-curtain dwell to a sane range (must outlast the DX settle
+        // but stay short enough to read as a transition, not a black flash).
+        Layout.SwapCurtainMs = Math.Clamp(Layout.SwapCurtainMs, 60, 600);
 
         // v3.22.80: WindowMode is the user-facing window-style selector
         // (Fullscreen=WS_POPUP borderless, Windowed=WS_CAPTION slim). Clamp
@@ -383,6 +386,28 @@ public class AppConfig
         {
             FileLogger.Warn($"AppConfig.Validate: WindowMode={Layout.WindowMode} requires SlimTitlebar — forced true (legacy non-slim migrated to {Layout.WindowMode} look)");
             Layout.SlimTitlebar = true;
+            mutated = true;
+        }
+
+        // v3.24.3: clamp a corrupt / hand-edited MultiMonTaskbarMode enum to CoverAll.
+        if (!Enum.IsDefined(typeof(MultiMonTaskbarMode), Layout.MultiMonTaskbarMode))
+        {
+            FileLogger.Warn($"AppConfig.Validate: MultiMonTaskbarMode out of range ({(int)Layout.MultiMonTaskbarMode}) — reset to CoverAll");
+            Layout.MultiMonTaskbarMode = MultiMonTaskbarMode.CoverAll;
+            mutated = true;
+        }
+        // v3.24.3: fold the legacy SlimTitlebarSecondary=false "show 2nd taskbar" trap into
+        // the clean symmetric mode. The old flag turned lock-to-primary OFF (bothSameSlim
+        // false) → reintroduced the cross-monitor swap smoosh; the same user intent (visible
+        // 2nd-monitor taskbar) is now expressed by ShowTaskbars, which keeps BOTH windows the
+        // same (work-area-locked) size → clean swaps. One-time, idempotent: after this fires
+        // the flag is true so it never re-triggers, and a deliberate ShowTaskbars choice is
+        // untouched. (Loud per Rule 12 — the rare legacy false value is migrated with a warn.)
+        if (!Layout.SlimTitlebarSecondary)
+        {
+            FileLogger.Warn("AppConfig.Validate: legacy SlimTitlebarSecondary=false migrated → MultiMonTaskbarMode=ShowTaskbars + SlimTitlebarSecondary re-pinned true (symmetric show-taskbars replaces the non-slim-secondary swap-smoosh trap)");
+            Layout.MultiMonTaskbarMode = MultiMonTaskbarMode.ShowTaskbars;
+            Layout.SlimTitlebarSecondary = true;
             mutated = true;
         }
 
@@ -636,6 +661,26 @@ public enum WindowMode
     Windowed = 1,
 }
 
+/// <summary>
+/// v3.24.3 — multimonitor taskbar-visibility mode. The SYMMETRIC, cross-hardware
+/// replacement for the legacy per-monitor <see cref="WindowLayout.SlimTitlebarSecondary"/>
+/// "show 2nd taskbar" hack (which turned lock-to-primary OFF → reintroduced the
+/// cross-monitor swap smoosh). Both modes lock BOTH swap windows to ONE shared size
+/// so a swap never resizes a client (no DX backbuffer rebuild → no smoosh/peek/band).
+/// <list type="bullet">
+/// <item><b>CoverAll</b> — lock to the primary's FULL bounds. Primary covers its
+///   taskbar; on a taller secondary the leftover band shows that monitor's taskbar.
+///   This is the historical lock-to-primary behavior (default).</item>
+/// <item><b>ShowTaskbars</b> — lock to the primary's WORK area. Every monitor leaves
+///   room for its taskbar. The symmetric "show taskbars on all monitors" mode.</item>
+/// </list>
+/// </summary>
+public enum MultiMonTaskbarMode
+{
+    CoverAll = 0,
+    ShowTaskbars = 1,
+}
+
 public class WindowLayout
 {
     public bool SnapToMonitor { get; set; } = true;
@@ -714,6 +759,44 @@ public class WindowLayout
     /// rough edges around cross-DPI positioning).
     /// </summary>
     public bool SlimTitlebarSecondary { get; set; } = true;
+
+    /// <summary>
+    /// v3.24.3 — multimonitor taskbar-visibility mode (see <see cref="Config.MultiMonTaskbarMode"/>).
+    /// THE single knob the multimonitor sizing authority
+    /// (<see cref="Core.WindowManager.EffectiveSlotBounds"/>) reads to decide whether the
+    /// swap-locked window size is the primary's FULL bounds (CoverAll — primary maxed,
+    /// a taller secondary shows its taskbar in the band) or the primary's WORK area
+    /// (ShowTaskbars — every monitor leaves taskbar room). Symmetric either way → clean
+    /// swaps. Default CoverAll (the historical lock-to-primary behavior).
+    /// <para>
+    /// Supersedes the per-monitor <see cref="SlimTitlebarSecondary"/> flag for the "show
+    /// taskbar on the 2nd monitor" want: AppConfig.Validate migrates a legacy
+    /// <c>SlimTitlebarSecondary=false</c> config to <c>ShowTaskbars</c> + re-pins the flag
+    /// true, so the old non-slim-secondary trap (lock OFF → smoosh) can never recur while
+    /// the user's intent (visible 2nd-monitor taskbar) is preserved through the clean,
+    /// symmetric path.
+    /// </para>
+    /// </summary>
+    public MultiMonTaskbarMode MultiMonTaskbarMode { get; set; } = MultiMonTaskbarMode.CoverAll;
+
+    /// <summary>
+    /// v3.24.3 — mask the residual sub-second taskbar peek that can flash on the primary
+    /// monitor while EQ's D3D device settles after a multimonitor swap (upstream of EQSwitch
+    /// — maskable, not removable). When true, a topmost non-activating black curtain
+    /// (<see cref="UI.TransitionCurtain"/>) covers the primary monitor for
+    /// <see cref="SwapCurtainMs"/> across the swap, keeping the monitor "rude" so the taskbar
+    /// can't peek. Default true. JSON-only off-switch in case the brief dim is more
+    /// distracting than the peek for a given user.
+    /// </summary>
+    public bool SwapTransitionCurtain { get; set; } = true;
+
+    /// <summary>
+    /// v3.24.3 — how long (ms) the <see cref="SwapTransitionCurtain"/> stays up after a swap,
+    /// covering the DX-device settle. Clamped to [60, 600] in Validate. Default 180 — long
+    /// enough to outlast the observed sub-second settle, short enough to read as a flicker-
+    /// free transition rather than a black flash.
+    /// </summary>
+    public int SwapCurtainMs { get; set; } = 180;
 
     /// <summary>
     /// How many pixels of the titlebar to LEAVE VISIBLE (peeking) inside the
