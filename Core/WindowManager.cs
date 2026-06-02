@@ -1891,6 +1891,22 @@ public class WindowManager
         if (!FrameSane(actL) || !FrameSane(actT) || !FrameSane(actR) || !FrameSane(actB))
             return false;
 
+        // v3.24.3 — a SETTLED Windowed (WS_CAPTION) window always has a top caption frame
+        // (actT ≈ 26px). A 0-top frame means the window is NOT yet in WS_CAPTION — a WS_POPUP
+        // (Fullscreen) frame read mid Fullscreen→Windowed restyle (in multimon ApplySlimTitlebarToAll
+        // bails, so the style flip lands a touch later than the synchronous single-screen path) or a
+        // transitional state. FrameSane(0) is true, so without this a 0/0/0/0 frame would be cached
+        // as the Windowed frame — poisoning the PERSISTED eqswitch-frame-cache.json (next cold launch
+        // loads the bad 0-frame → captionless monitor-exact placement → the overshoot returns) AND
+        // repositioning to a captionless rect. Skip; the next guard tick re-measures once the WS_CAPTION
+        // restyle has settled. (Convergent completion-checkpoint verifier finding, 2026-06-01 — the
+        // pre-warm in SetWindowMode is a new caller that measures only ~300ms after the toggle.)
+        if (actT <= 0)
+        {
+            FileLogger.Info($"TryComputeReadbackCorrection: skip — 0-top frame (hwnd=0x{hwnd.ToInt64():X} L{actL} T{actT} R{actR} B{actB}); WS_CAPTION restyle not settled yet, guard tick will retry");
+            return false;
+        }
+
         // v3.22.88 — CACHE WRITE rides the existing measurement. The measured frame is a
         // stable per-DPI constant; persist it (write-on-change) so the NEXT launch's
         // first-paint SHM rect (the no-HWND ComputeSlimTitlebarOuterRect overload) is

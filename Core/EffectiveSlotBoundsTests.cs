@@ -134,6 +134,36 @@ public static class EffectiveSlotBoundsTests
             failures += AssertTrue("ShowTaskbars primary uses WORK height (1040)", show.Height == 1040);
         }
 
+        // ── Case 9 — ShowTaskbars with AUTO-HIDE taskbar (work == full on both) ──
+        // A monitor with an auto-hidden taskbar reports rcWork == rcMonitor. ShowTaskbars then
+        // operates on work areas that equal the full bounds, so it degenerates to the same
+        // result as CoverAll — both slots lock to the primary's dims, no crash, no negative band.
+        {
+            var pf = Mon(0, 0, 1920, 1080);
+            var pw = Mon(0, 0, 1920, 1080);   // work == full (auto-hide)
+            var sf = Mon(1920, 0, 1920, 1200);
+            var sw = Mon(1920, 0, 1920, 1200); // work == full (auto-hide)
+            var (b0, _) = WindowManager.EffectiveSlotBounds(0, pf, pw, sf, sw, MultiMonTaskbarMode.ShowTaskbars);
+            var (b1, l1) = WindowManager.EffectiveSlotBounds(1, pf, pw, sf, sw, MultiMonTaskbarMode.ShowTaskbars);
+            failures += AssertRect("auto-hide/ShowTaskbars: slot0 = primary full (work==full)", b0, 0, 0, 1920, 1080);
+            failures += AssertRect("auto-hide/ShowTaskbars: slot1 locked to 1080 (no negative band)", b1, 1920, 0, 3840, 1080);
+            failures += AssertTrue("auto-hide/ShowTaskbars: locked", l1);
+        }
+
+        // ── Case 10 — ASYMMETRIC fit fail: secondary narrower on ONE axis ⇒ degrade ──
+        // primary 1920×1080, secondary 1800×1200: wDelta=120≤200, hDelta=120≤200, BUT primary does
+        // not fit (1920 > 1800 on width). ShouldLockToPrimaryDims requires fit on BOTH axes, so this
+        // must NOT lock (locking would push the window 120px past the secondary's right edge).
+        {
+            var pf = Mon(0, 0, 1920, 1080);
+            var pw = Mon(0, 0, 1920, 1040);
+            var sf = Mon(1920, 0, 1800, 1200);
+            var sw = Mon(1920, 0, 1800, 1160);
+            var (b1, l1) = WindowManager.EffectiveSlotBounds(1, pf, pw, sf, sw, MultiMonTaskbarMode.CoverAll);
+            failures += AssertFalse("asymmetric-fit/CoverAll: NOT locked (primary wider than secondary)", l1);
+            failures += AssertRect("asymmetric-fit/CoverAll: slot1 native secondary", b1, 1920, 0, 3720, 1200);
+        }
+
         Console.WriteLine(failures == 0
             ? "EffectiveSlotBoundsTests: ALL PASS"
             : $"EffectiveSlotBoundsTests: {failures} FAILURE(S)");
