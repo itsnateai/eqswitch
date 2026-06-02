@@ -29,6 +29,34 @@ static IDirectInputDevice8W *g_realKeyboardDevice = nullptr;
 static volatile bool g_shutdown = false;
 static HANDLE g_hActivateThread = nullptr;
 static HANDLE g_hShmThread = nullptr;
+// v3.24.4 — set true if the cooperative-level restore-to-FOREGROUND TOMBSTONES (gives up after
+// the 60-attempt retry cap, leaving the device stuck in BACKGROUND with g_coopSwitched stuck
+// true). In that failure state the OLD behavior was leaky-but-PLAYABLE (BACKGROUND reads the
+// global keyboard, so the user's keys still reach EQ). Without this flag the anti-bleed
+// suppression below would turn that into a DEAD keyboard in-world (every physical key dropped
+// forever) — strictly worse. So once restore gives up we STOP suppressing: revert to the old
+// leaky-but-playable state (recoverable by the next autologin or an EQSwitch restart, exactly as
+// the existing tombstone contract promises). Cleared on the next login's rising edge.
+static bool g_restoreGaveUp = false;
+
+// v3.24.4 — physical-key suppression is the EQ-side half of a TWO-condition invariant:
+// while the keyboard is in BACKGROUND mode it reads the GLOBAL keyboard regardless of focus,
+// so a physical key pressed in ANY app would land in EQ — and with a team's clients all
+// BACKGROUND during simultaneous autologin, in EVERY one of them at once (the "both clients
+// typed the same key" bleed). The injection bursts already pass suppress=true, but the SHM
+// suppress flag (active && suppress) and the actual BACKGROUND state (g_coopSwitched) DECOUPLE
+// in the gaps: the ~16ms while `active` has gone 0 but the cooperative-level restore-to-
+// FOREGROUND hasn't fired yet, and any active=0-but-still-BACKGROUND phase between login steps.
+// In those windows ShouldSuppress() is false but the device is still BACKGROUND → physical keys
+// leak. Key the suppression on the DANGER condition itself: suppress physical input whenever the
+// keyboard is BACKGROUND (g_coopSwitched) OR the SHM says so. BACKGROUND exists ONLY for
+// injection, which writes its keys AFTER the physical-zeroing — so this never drops an injected
+// key; and normal play is FOREGROUND (g_coopSwitched=false) so physical passes untouched.
+static bool SuppressPhysicalInput() {
+    // !g_restoreGaveUp — once the FOREGROUND restore has tombstoned, stop suppressing so the
+    // keyboard stays usable (leaky, the pre-v3.24.4 behavior) instead of going dead in-world.
+    return !g_restoreGaveUp && (g_coopSwitched || KeyShm::ShouldSuppress());
+}
 
 HWND GetEqHwnd() { return g_eqHwnd; }
 
@@ -239,6 +267,9 @@ static DWORD WINAPI ActivateThread(LPVOID) {
                 // writer at the SetCooperativeLevel intercept (other thread).
                 retryTickCounter = 0;
                 retryAttempts = 0;
+                // v3.24.4 — a new login cycle re-attempts the restore, so clear the give-up
+                // sentinel and re-enable anti-bleed suppression for this login.
+                g_restoreGaveUp = false;
 
                 if (!wasActive && !g_coopSwitched && g_realKeyboardDevice) {
                     g_realKeyboardDevice->Unacquire();
@@ -365,6 +396,11 @@ static DWORD WINAPI ActivateThread(LPVOID) {
                     DI8Log("wm_activate: RESTORE RETRY #%d failed (SetCoop=0x%08X Acquire=0x%08X)%s",
                            retryAttempts, (unsigned)hr, (unsigned)acqHr,
                            retryAttempts == 60 ? " — GIVING UP; phantom keys persist until next autologin or EQSwitch restart" : "");
+                    // v3.24.4 — give-up: the device is stuck BACKGROUND. Stop the anti-bleed
+                    // suppression so the keyboard stays usable in-world (leaky, pre-v3.24.4) rather
+                    // than going dead. Re-enabled on the next login's rising edge.
+                    if (retryAttempts == 60)
+                        g_restoreGaveUp = true;
                 }
             }
         }
@@ -517,7 +553,7 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::GetDeviceState(DWORD cbData, LPVOID lpvDa
 
         DWORD kbLen = (cbData > 256) ? 256 : cbData;
         if (SUCCEEDED(hr)) {
-            if (KeyShm::ShouldSuppress())
+            if (SuppressPhysicalInput())  // v3.24.4 — BACKGROUND ⇒ drop physical (anti-bleed)
                 memset(lpvData, 0, kbLen);
             bool injected = KeyShm::InjectKeys((uint8_t *)lpvData, kbLen);
             if (injected && g_gdsLogCount < 100) {
@@ -573,7 +609,7 @@ HRESULT STDMETHODCALLTYPE DeviceProxy::GetDeviceData(
         DI8Log("GetDeviceData: heartbeat callCount=%d hr=0x%08X realCount=%lu", calls, (unsigned)hr, realCount);
     g_gddWasActive = shmIsActive;
 
-    if (KeyShm::ShouldSuppress() && realCount > 0)
+    if (SuppressPhysicalInput() && realCount > 0)  // v3.24.4 — BACKGROUND ⇒ drop physical (anti-bleed)
         realCount = 0;
 
     // Read current synthetic key state
