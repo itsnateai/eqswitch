@@ -218,8 +218,10 @@ static volatile int      g_cachedNameCol     = -1;
 static volatile int      g_cachedSlotCount   = -1;  // slot probe result cache (-1 = not probed)
 // [ENTERWORLD-BTN-PROBE] diagnostic-only (no behavior change): one-shot per charselect,
 // logs whether the RoF2 enter-world button resolves under ScreenID "Play_Button" vs the
-// obsolete "CLW_EnterWorldButton" EQSwitch currently searches. Reset at gameState==5 +
-// Shutdown. See _.eqswitch-re/enterworld-re-2026-06-02/BREAKTHROUGH-play-button.md.
+// obsolete "CLW_EnterWorldButton" EQSwitch currently searches. Reset on the charselect
+// transition (the PRIMARY gate-clear path on Dalaya, where gameState stays 0) + the
+// gameState==5 path (non-Dalaya) + Shutdown — mirrors the sibling *Logged flags.
+// See _.eqswitch-re/enterworld-re-2026-06-02/BREAKTHROUGH-play-button.md.
 static volatile bool     g_loggedPlayBtnProbe = false;
 // v3.22.16: rate-limit timestamp for column-discovery failure logging.
 // The v3.22.10 closeout's "P9/P8/uiFallback latch back-out gap" was exactly the
@@ -3298,6 +3300,7 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                         g_p9GateLogged = false;
                         g_p9SehLogged = false;
                         g_partialPopLogged = false;
+                        g_loggedPlayBtnProbe = false;  // [ENTERWORLD-BTN-PROBE] primary re-probe path on Dalaya (gameState stays 0)
                         // v3.22.37: per-charselect-cycle reset for deref-null
                         // gates so the diagnostic re-fires on each new char-select
                         // session (consistent with the sibling *Logged flags above).
@@ -4068,6 +4071,10 @@ static void HandleSelectionRequest(volatile CharSelectShm *shm) {
     // against the obsolete "CLW_EnterWorldButton" EQSwitch searches in
     // HandleEnterWorldRequest. If Play_Button resolves non-null, the enter-world button
     // is present-but-renamed (RVA-free fix = rename the search), NOT missing.
+    // Deliberately placed AFTER a successful SetCurSel: the charselect screen is then
+    // confirmed loaded (Character_List resolved), so a null Play_Button means truly-absent,
+    // not not-yet-ready. (Trade-off: a charselect where selection DEFERS never reaches here
+    // — acceptable, since a deferred selection means the tree isn't ready to probe anyway.)
     if (!g_loggedPlayBtnProbe) {
         g_loggedPlayBtnProbe = true;
         __try {
