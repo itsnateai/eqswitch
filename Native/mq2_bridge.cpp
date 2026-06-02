@@ -216,13 +216,6 @@ static volatile bool     g_p9SehLogged       = false;
 static volatile bool     g_partialPopLogged  = false;
 static volatile int      g_cachedNameCol     = -1;
 static volatile int      g_cachedSlotCount   = -1;  // slot probe result cache (-1 = not probed)
-// [ENTERWORLD-BTN-PROBE] diagnostic-only (no behavior change): one-shot per charselect,
-// logs whether the RoF2 enter-world button resolves under ScreenID "Play_Button" vs the
-// obsolete "CLW_EnterWorldButton" EQSwitch currently searches. Reset on the charselect
-// transition (the PRIMARY gate-clear path on Dalaya, where gameState stays 0) + the
-// gameState==5 path (non-Dalaya) + Shutdown — mirrors the sibling *Logged flags.
-// See _.eqswitch-re/enterworld-re-2026-06-02/BREAKTHROUGH-play-button.md.
-static volatile bool     g_loggedPlayBtnProbe = false;
 // v3.22.16: rate-limit timestamp for column-discovery failure logging.
 // The v3.22.10 closeout's "P9/P8/uiFallback latch back-out gap" was exactly the
 // silent retry-every-poll-no-log pattern. Now logs once per 5s per charselect
@@ -3300,7 +3293,6 @@ void *MQ2Bridge::FindWindowByName(const char *name) {
                         g_p9GateLogged = false;
                         g_p9SehLogged = false;
                         g_partialPopLogged = false;
-                        g_loggedPlayBtnProbe = false;  // [ENTERWORLD-BTN-PROBE] primary re-probe path on Dalaya (gameState stays 0)
                         // v3.22.37: per-charselect-cycle reset for deref-null
                         // gates so the diagnostic re-fires on each new char-select
                         // session (consistent with the sibling *Logged flags above).
@@ -3800,6 +3792,21 @@ static void EmitVerificationReport(volatile CharSelectShm *shm) {
 extern volatile DWORD g_gameThreadId;
 extern void PostGameThreadPoll();
 
+// Resolve the char-select enter-world button. On RoF2/Dalaya the button is
+// registered under ScreenID "Play_Button" (member CCharacterListWnd+0x240,
+// EnterWorldIcon decal; its WndNotification branch runs validate->EnterWorld).
+// "CLW_EnterWorldButton" is the obsolete pre-RoF name kept as a fallback for
+// older/non-RoF emu servers. Single source of the name list so the two callers
+// (HandleEnterWorldRequest + login_state_machine::DiscoverCharSelectWidgets)
+// can't drift. Confirmed live 2026-06-02 — both clients resolved Play_Button
+// non-null, CLW_EnterWorldButton null. See
+// _.eqswitch-re/enterworld-re-2026-06-02/BREAKTHROUGH-play-button.md.
+void *MQ2Bridge::FindEnterWorldButton() {
+    void *pBtn = MQ2Bridge::FindWindowByName("Play_Button");
+    if (!pBtn) pBtn = MQ2Bridge::FindWindowByName("CLW_EnterWorldButton");
+    return pBtn;
+}
+
 static void HandleEnterWorldRequest(volatile CharSelectShm *shm, int gameState) {
     // Handle Enter World request — gated against gameState=5 (in-game).
     // Dalaya ROF2 uses gameState=0 at BOTH login and charselect, so we can't
@@ -3840,10 +3847,12 @@ static void HandleEnterWorldRequest(volatile CharSelectShm *shm, int gameState) 
         return;
     }
 
-    void *pEnterBtn = MQ2Bridge::FindWindowByName("CLW_EnterWorldButton");
+    // RoF2/Dalaya: the enter-world button is ScreenID "Play_Button" (the obsolete
+    // "CLW_EnterWorldButton" is the pre-RoF fallback) — see FindEnterWorldButton.
+    void *pEnterBtn = MQ2Bridge::FindEnterWorldButton();
     if (!pEnterBtn) {
         shm->enterWorldResult = -1;
-        DI8Log("mq2_bridge: CLW_EnterWorldButton not found (gameState=%d)", gameState);
+        DI8Log("mq2_bridge: enter-world button not found (tried Play_Button + CLW_EnterWorldButton, gameState=%d)", gameState);
     } else if (!g_fnWndNotification) {
         shm->enterWorldResult = -3;
         DI8Log("mq2_bridge: WndNotification fn unresolved -- cannot click");
@@ -3851,7 +3860,7 @@ static void HandleEnterWorldRequest(volatile CharSelectShm *shm, int gameState) 
         __try {
             g_fnWndNotification(pEnterBtn, pEnterBtn, 1 /*XWM_LCLICK*/, nullptr);
             shm->enterWorldResult = 1;
-            DI8Log("mq2_bridge: clicked CLW_EnterWorldButton");
+            DI8Log("mq2_bridge: clicked enter-world button (%p)", pEnterBtn);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
             // Hotfix v6c (Agent 2 F2.5, Agent 3 F3.4): disambiguate SEH
@@ -3861,7 +3870,7 @@ static void HandleEnterWorldRequest(volatile CharSelectShm *shm, int gameState) 
             // abort the login cleanly with a user-visible "client faulted"
             // message instead of spamming Enter into a broken client.
             shm->enterWorldResult = -4;
-            DI8Log("mq2_bridge: SEH clicking CLW_EnterWorldButton");
+            DI8Log("mq2_bridge: SEH clicking enter-world button");
         }
     }
     MemoryBarrier();
@@ -4063,28 +4072,6 @@ static void HandleSelectionRequest(volatile CharSelectShm *shm) {
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         DI8Log("mq2_bridge: SEH in SetCurSel(%d)", rowIdx);
-    }
-
-    // [ENTERWORLD-BTN-PROBE] DIAGNOSTIC ONLY — no behavior change. Runs on the game
-    // thread (HandleSelectionRequest is marshaled there), one-shot per charselect.
-    // Compares the RoF2 ScreenID "Play_Button" (what Init/0x42EBC0 actually registers)
-    // against the obsolete "CLW_EnterWorldButton" EQSwitch searches in
-    // HandleEnterWorldRequest. If Play_Button resolves non-null, the enter-world button
-    // is present-but-renamed (RVA-free fix = rename the search), NOT missing.
-    // Deliberately placed AFTER a successful SetCurSel: the charselect screen is then
-    // confirmed loaded (Character_List resolved), so a null Play_Button means truly-absent,
-    // not not-yet-ready. (Trade-off: a charselect where selection DEFERS never reaches here
-    // — acceptable, since a deferred selection means the tree isn't ready to probe anyway.)
-    if (!g_loggedPlayBtnProbe) {
-        g_loggedPlayBtnProbe = true;
-        __try {
-            void *pPlay = MQ2Bridge::FindWindowByName("Play_Button");
-            void *pOld  = MQ2Bridge::FindWindowByName("CLW_EnterWorldButton");
-            DI8Log("mq2_bridge: [ENTERWORLD-BTN-PROBE] Play_Button=%p  CLW_EnterWorldButton=%p (non-null Play_Button => RVA-free fix viable)",
-                   pPlay, pOld);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            DI8Log("mq2_bridge: [ENTERWORLD-BTN-PROBE] SEH during FindWindowByName probe");
-        }
     }
 }
 
@@ -4363,7 +4350,6 @@ void MQ2Bridge::Poll(volatile CharSelectShm *shm) {
         g_p9GateLogged = false;
         g_p9SehLogged = false;
         g_partialPopLogged = false;
-        g_loggedPlayBtnProbe = false;  // [ENTERWORLD-BTN-PROBE] re-probe next charselect
         g_cachedNameCol = -1;
         g_cachedSlotCount = -1;
         g_heapScanDone = false;
@@ -5454,7 +5440,6 @@ void MQ2Bridge::Shutdown() {
     g_p9GateLogged     = false;
     g_p9SehLogged      = false;
     g_partialPopLogged = false;
-    g_loggedPlayBtnProbe = false;  // [ENTERWORLD-BTN-PROBE]
     // v3.22.37: reset the 4 per-case deref-null gates so a Shutdown/re-Init
     // cycle gets fresh diagnostic signal (sibling pattern with the *Logged
     // flags above — pre-v3.22.37 the single shared flag was never reset,

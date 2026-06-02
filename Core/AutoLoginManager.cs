@@ -4586,17 +4586,19 @@ public class AutoLoginManager
 
     /// <summary>
     /// Returns true if the SHM-based Enter World path should be skipped for
-    /// this account, falling straight through to PulseKey3D. Currently only
-    /// Dalaya qualifies (per Launch.SkipShmEnterWorldOnDalaya, default true).
-    /// Empirically on Dalaya, CLW_EnterWorldButton isn't constructed by the
-    /// time charselect-ready is signaled — every SHM attempt returns -1 and
-    /// PulseKey3D fallback fires after ~2-2.5s of failed retries. This gate
-    /// eliminates that wasted retry budget. The structural fix (bridge
-    /// writes a buttonReady SHM flag and C# polls it) is filed as Option B
-    /// follow-up. Settings dropdown is locked to "Dalaya" in v3.14.7+ so
-    /// effectively all v3.15.11 users get the fast path; the flag is the
-    /// power-user opt-out for hypothetical other-server use via direct
-    /// edit of eqswitch-config.json.
+    /// this account, falling straight through to PulseKey3D. Gated on
+    /// Launch.SkipShmEnterWorldOnDalaya (default flipped to FALSE on 2026-06-02).
+    /// HISTORY: this gate was added when SHM enter-world appeared broken on
+    /// Dalaya — every attempt returned -1 ("button not found"). Root-caused
+    /// 2026-06-02 as a wrong NAME, not a missing button: the bridge searched
+    /// the obsolete pre-RoF "CLW_EnterWorldButton" while RoF2 registers the
+    /// button under ScreenID "Play_Button" (confirmed live, both clients).
+    /// The bridge now resolves it (MQ2Bridge::FindEnterWorldButton), so the SHM
+    /// WndNotification click works on Dalaya and is preferred — deterministic,
+    /// routes through the game's own validate→EnterWorld; PulseKey3D stays as
+    /// the automatic fallback. The flag remains a power-user opt-out (set true
+    /// to force PulseKey3D) via direct edit of eqswitch-config.json. Configs
+    /// that persisted "true" under the old default keep skipping until edited.
     /// </summary>
     private bool ShouldSkipShmEnterWorld(Account account)
     {

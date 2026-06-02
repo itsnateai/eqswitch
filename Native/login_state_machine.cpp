@@ -736,7 +736,9 @@ static void DiscoverDialogWidgets() {
 
 static void DiscoverCharSelectWidgets() {
     g_pCharList      = MQ2Bridge::FindWindowByName("Character_List");
-    g_pEnterWorldBtn = MQ2Bridge::FindWindowByName("CLW_EnterWorldButton");
+    // RoF2/Dalaya enter-world button is ScreenID "Play_Button" (CLW_EnterWorldButton
+    // is the pre-RoF fallback) — single source in MQ2Bridge::FindEnterWorldButton.
+    g_pEnterWorldBtn = MQ2Bridge::FindEnterWorldButton();
 
     if (g_pCharList)
         DI8Log("login_sm: char select widgets found (list=%p enter=%p)",
