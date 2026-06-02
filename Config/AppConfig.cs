@@ -16,7 +16,7 @@ namespace EQSwitch.Config;
 public class AppConfig
 {
     /// <summary>Schema version for config migration. Bump when making breaking changes.</summary>
-    public const int CurrentConfigVersion = 5;
+    public const int CurrentConfigVersion = 6;
 
     public int ConfigVersion { get; set; } = CurrentConfigVersion;
     public bool IsFirstRun { get; set; } = true;
@@ -845,9 +845,11 @@ public class WindowLayout
     /// (<c>true</c>), so they silently adopt the dark caption on next
     /// launch. This is the intended behavior (the directive was "default
     /// ON"), but documented here so the migration story is loud rather
-    /// than implicit. No <c>MigrateV5ToV6</c> step is needed because the
-    /// field's absence is semantically equivalent to "accept whatever the
-    /// current default is."
+    /// than implicit. <c>DarkTitlebar</c> itself needs no migration step
+    /// because the field's absence is semantically equivalent to "accept
+    /// whatever the current default is." (The <c>MigrateV5ToV6</c> step that
+    /// DOES exist is unrelated — it flips <c>skipShmEnterWorldOnDalaya</c>,
+    /// whose key IS present on disk so STJ would otherwise keep the old value.)
     /// </para>
     /// </summary>
     public bool DarkTitlebar { get; set; } = true;
