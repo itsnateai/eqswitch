@@ -1,5 +1,30 @@
 # Changelog
 
+## v3.24.9 — FIX enter-world on Dalaya: search "Play_Button" (RoF2), prefer the SHM click (2026-06-02)
+
+Root-causes and fixes the reason Dalaya enter-world fell back to PulseKey3D. EQSwitch searched the
+**obsolete pre-RoF widget name `CLW_EnterWorldButton`**, which doesn't exist in RoF2 → the lookup
+returned NULL → SHM enter-world looked "broken" → `SkipShmEnterWorldOnDalaya=true` routed straight to
+PulseKey3D. The button was never missing: RoF2 registers it under **ScreenID `Play_Button`** (member
+`CCharacterListWnd+0x240`, EnterWorldIcon decal). **Confirmed live 2026-06-02 — both team-1 clients
+resolved `Play_Button` non-null, `CLW_EnterWorldButton` NULL.** Full RE:
+`_.eqswitch-re/enterworld-re-2026-06-02/`.
+
+- **Native:** new `MQ2Bridge::FindEnterWorldButton()` — tries `Play_Button`, falls back to
+  `CLW_EnterWorldButton` for older/non-RoF emu servers; single source so the two callers
+  (`HandleEnterWorldRequest` + `login_state_machine::DiscoverCharSelectWidgets`) can't drift. The
+  click log now reports the resolved ScreenID (`clicked enter-world button via ScreenID '%s'`).
+- **C#:** `Launch.SkipShmEnterWorldOnDalaya` default flipped `true → false` so Dalaya attempts the SHM
+  `WndNotification` click first (deterministic; routes through the game's own validate→EnterWorld),
+  with the **existing PulseKey3D fallback retained**. Existing configs that persisted `true` keep
+  PulseKey3D until edited/migrated (migration is a tracked follow-up).
+- **Logging:** enter-world now logs the active PATH explicitly — `path=SHM button-click (Play_Button)`
+  vs `path=PulseKey3D`, a `✓ ENTERED WORLD via …` on success, and a `✗ … SHUTTING DOWN, handing off`
+  line when the SHM click doesn't reach in-world within 90s (so a backup-path delay is visible).
+- **Safety:** `result=1` (clicked) is **not** trusted as success — `WaitForEnterWorldTransition` (the
+  observed in-world signal) gates `entered`; a no-op click times out → PulseKey3D fallback fires.
+- Removed the spent `[ENTERWORLD-BTN-PROBE]` diagnostic.
+
 ## v3.24.8 — FIX the intermittent char-select freeze: cross-thread SetCurSel → marshal to game thread (2026-06-02)
 
 Root-causes and fixes the long-standing **intermittent background-client char-select stall**

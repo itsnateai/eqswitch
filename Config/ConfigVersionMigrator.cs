@@ -63,6 +63,10 @@ public static class ConfigVersionMigrator
                     MigrateV4ToV5(root);
                     break;
 
+                case 5:
+                    MigrateV5ToV6(root);
+                    break;
+
                 default:
                     // Unknown version ahead of us — don't touch it
                     FileLogger.Warn($"ConfigMigrator: config version {version} is newer than supported ({AppConfig.CurrentConfigVersion})");
@@ -460,5 +464,35 @@ public static class ConfigVersionMigrator
 
         layout["bottomOffset"] = 0;
         FileLogger.Info($"ConfigMigrator v4→v5: cleared layout.bottomOffset (was {oldOffset}, now redundant after v3.22.45 AdjustWindowRectEx-based slim-titlebar sizing — Win11 DWM bleed accounting is now automatic)");
+    }
+
+    /// <summary>
+    /// v5 → v6: flip the now-obsolete <c>Launch.skipShmEnterWorldOnDalaya</c> from
+    /// <c>true</c> → <c>false</c>. The flag was added (default true) when the SHM
+    /// enter-world click appeared broken on Dalaya — every attempt returned -1.
+    /// Root-caused 2026-06-02 (v3.24.9) as a wrong-NAME bug: EQSwitch searched the
+    /// obsolete pre-RoF "CLW_EnterWorldButton" while RoF2 registers the button under
+    /// ScreenID "Play_Button". The bridge now resolves it, so the SHM click works and
+    /// is preferred (deterministic; routes through the game's own validate→EnterWorld;
+    /// PulseKey3D remains the automatic fallback). Existing configs persisted the old
+    /// default <c>true</c> — the key is present on disk, so STJ keeps it (unlike an
+    /// absent key, which would adopt the new <c>false</c> default) — so without this
+    /// step an upgrading user would never get the fix.
+    ///
+    /// Idempotent + minimal: only an explicit <c>true</c> is flipped; a <c>false</c> or
+    /// an absent key is left untouched. A power-user who genuinely wants PulseKey3D
+    /// (e.g. an unvalidated non-RoF emu server) can re-set the flag after upgrade.
+    /// </summary>
+    private static void MigrateV5ToV6(JsonObject root)
+    {
+        if (root["launch"]?.AsObject() is not { } launch)
+            return;
+
+        bool skip = launch["skipShmEnterWorldOnDalaya"]?.GetValue<bool>() ?? false;
+        if (!skip)
+            return; // already false / absent — nothing to flip (idempotent)
+
+        launch["skipShmEnterWorldOnDalaya"] = false;
+        FileLogger.Info("ConfigMigrator v5→v6: flipped Launch.skipShmEnterWorldOnDalaya true→false — RoF2 enter-world button is ScreenID 'Play_Button' (was searched as the obsolete 'CLW_EnterWorldButton'); the SHM click now works and is preferred, PulseKey3D fallback retained (v3.24.9)");
     }
 }

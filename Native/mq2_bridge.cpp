@@ -3792,6 +3792,23 @@ static void EmitVerificationReport(volatile CharSelectShm *shm) {
 extern volatile DWORD g_gameThreadId;
 extern void PostGameThreadPoll();
 
+// Resolve the char-select enter-world button. On RoF2/Dalaya the button is
+// registered under ScreenID "Play_Button" (member CCharacterListWnd+0x240,
+// EnterWorldIcon decal; its WndNotification branch runs validate->EnterWorld).
+// "CLW_EnterWorldButton" is the obsolete pre-RoF name kept as a fallback for
+// older/non-RoF emu servers. Single source of the name list so the two callers
+// (HandleEnterWorldRequest + login_state_machine::DiscoverCharSelectWidgets)
+// can't drift. Confirmed live 2026-06-02 — both clients resolved Play_Button
+// non-null, CLW_EnterWorldButton null. See
+// _.eqswitch-re/enterworld-re-2026-06-02/BREAKTHROUGH-play-button.md.
+void *MQ2Bridge::FindEnterWorldButton(const char **matchedName) {
+    void *pBtn = MQ2Bridge::FindWindowByName("Play_Button");
+    if (pBtn) { if (matchedName) *matchedName = "Play_Button"; return pBtn; }
+    pBtn = MQ2Bridge::FindWindowByName("CLW_EnterWorldButton");
+    if (matchedName) *matchedName = pBtn ? "CLW_EnterWorldButton" : "(none)";
+    return pBtn;
+}
+
 static void HandleEnterWorldRequest(volatile CharSelectShm *shm, int gameState) {
     // Handle Enter World request — gated against gameState=5 (in-game).
     // Dalaya ROF2 uses gameState=0 at BOTH login and charselect, so we can't
@@ -3832,10 +3849,13 @@ static void HandleEnterWorldRequest(volatile CharSelectShm *shm, int gameState) 
         return;
     }
 
-    void *pEnterBtn = MQ2Bridge::FindWindowByName("CLW_EnterWorldButton");
+    // RoF2/Dalaya: the enter-world button is ScreenID "Play_Button" (the obsolete
+    // "CLW_EnterWorldButton" is the pre-RoF fallback) — see FindEnterWorldButton.
+    const char *btnName = "(none)";
+    void *pEnterBtn = MQ2Bridge::FindEnterWorldButton(&btnName);
     if (!pEnterBtn) {
         shm->enterWorldResult = -1;
-        DI8Log("mq2_bridge: CLW_EnterWorldButton not found (gameState=%d)", gameState);
+        DI8Log("mq2_bridge: enter-world button not found (tried Play_Button + CLW_EnterWorldButton, gameState=%d)", gameState);
     } else if (!g_fnWndNotification) {
         shm->enterWorldResult = -3;
         DI8Log("mq2_bridge: WndNotification fn unresolved -- cannot click");
@@ -3843,7 +3863,7 @@ static void HandleEnterWorldRequest(volatile CharSelectShm *shm, int gameState) 
         __try {
             g_fnWndNotification(pEnterBtn, pEnterBtn, 1 /*XWM_LCLICK*/, nullptr);
             shm->enterWorldResult = 1;
-            DI8Log("mq2_bridge: clicked CLW_EnterWorldButton");
+            DI8Log("mq2_bridge: clicked enter-world button via ScreenID '%s' (%p)", btnName, pEnterBtn);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
             // Hotfix v6c (Agent 2 F2.5, Agent 3 F3.4): disambiguate SEH
@@ -3853,7 +3873,7 @@ static void HandleEnterWorldRequest(volatile CharSelectShm *shm, int gameState) 
             // abort the login cleanly with a user-visible "client faulted"
             // message instead of spamming Enter into a broken client.
             shm->enterWorldResult = -4;
-            DI8Log("mq2_bridge: SEH clicking CLW_EnterWorldButton");
+            DI8Log("mq2_bridge: SEH clicking enter-world button");
         }
     }
     MemoryBarrier();

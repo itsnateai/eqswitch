@@ -16,7 +16,7 @@ namespace EQSwitch.Config;
 public class AppConfig
 {
     /// <summary>Schema version for config migration. Bump when making breaking changes.</summary>
-    public const int CurrentConfigVersion = 5;
+    public const int CurrentConfigVersion = 6;
 
     public int ConfigVersion { get; set; } = CurrentConfigVersion;
     public bool IsFirstRun { get; set; } = true;
@@ -845,9 +845,11 @@ public class WindowLayout
     /// (<c>true</c>), so they silently adopt the dark caption on next
     /// launch. This is the intended behavior (the directive was "default
     /// ON"), but documented here so the migration story is loud rather
-    /// than implicit. No <c>MigrateV5ToV6</c> step is needed because the
-    /// field's absence is semantically equivalent to "accept whatever the
-    /// current default is."
+    /// than implicit. <c>DarkTitlebar</c> itself needs no migration step
+    /// because the field's absence is semantically equivalent to "accept
+    /// whatever the current default is." (The <c>MigrateV5ToV6</c> step that
+    /// DOES exist is unrelated — it flips <c>skipShmEnterWorldOnDalaya</c>,
+    /// whose key IS present on disk so STJ would otherwise keep the old value.)
     /// </para>
     /// </summary>
     public bool DarkTitlebar { get; set; } = true;
@@ -1205,15 +1207,21 @@ public class LaunchConfig
     /// <summary>
     /// Skip SHM-based Enter World (in-process CLW_EnterWorldButton click) on
     /// Dalaya and use the PulseKey3D keyboard fallback directly. Empirically,
-    /// the button isn't constructed by the time charselect-ready is signaled
-    /// on Dalaya — every SHM attempt returns -1 (button not found) and the
-    /// PulseKey3D fallback takes over after ~2-2.5s of failed retries. This
-    /// flag eliminates that wasted retry budget. Default true. Other servers
-    /// (account.Server != "Dalaya", case-insensitive) ignore this flag and
-    /// keep the SHM-primary path. Not exposed in Settings UI — power-user
-    /// opt-out via direct edit of eqswitch-config.json only.
+    /// when true, skips the SHM Enter World path on Dalaya and goes straight to
+    /// PulseKey3D. HISTORICAL RATIONALE (now obsolete): the enter-world button was
+    /// thought "not constructed" on Dalaya because the bridge searched the obsolete
+    /// pre-RoF name "CLW_EnterWorldButton" → every SHM attempt returned -1 → ~2-2.5s
+    /// of wasted retries before PulseKey3D. **2026-06-02: root-caused as a wrong NAME,
+    /// not a missing button** — the RoF2 button is ScreenID "Play_Button" (confirmed
+    /// live, both clients). The bridge now resolves it (MQ2Bridge::FindEnterWorldButton),
+    /// so the SHM WndNotification click works on Dalaya and is preferred (deterministic;
+    /// routes through the game's own validate→EnterWorld). **Default flipped to false.**
+    /// PulseKey3D remains the automatic fallback if the SHM click fails. Still a
+    /// power-user opt-out via direct edit of eqswitch-config.json (set true to force
+    /// PulseKey3D). NOTE: existing configs persisted "true" from the old default keep
+    /// skipping until edited/migrated — see PR for the migration follow-up.
     /// </summary>
-    public bool SkipShmEnterWorldOnDalaya { get; set; } = true;
+    public bool SkipShmEnterWorldOnDalaya { get; set; } = false;
 
     /// <summary>
     /// Skip the SHM warmup ritual (loginShm.SendLoginCommand) before BURST 1.

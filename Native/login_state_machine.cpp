@@ -736,7 +736,9 @@ static void DiscoverDialogWidgets() {
 
 static void DiscoverCharSelectWidgets() {
     g_pCharList      = MQ2Bridge::FindWindowByName("Character_List");
-    g_pEnterWorldBtn = MQ2Bridge::FindWindowByName("CLW_EnterWorldButton");
+    // RoF2/Dalaya enter-world button is ScreenID "Play_Button" (CLW_EnterWorldButton
+    // is the pre-RoF fallback) — single source in MQ2Bridge::FindEnterWorldButton.
+    g_pEnterWorldBtn = MQ2Bridge::FindEnterWorldButton();
 
     if (g_pCharList)
         DI8Log("login_sm: char select widgets found (list=%p enter=%p)",
@@ -1583,7 +1585,7 @@ static void TickImpl(volatile LoginShm *loginShm, volatile CharSelectShm *charSe
 
             if (g_pEnterWorldBtn) {
                 MQ2Bridge::ClickButton(g_pEnterWorldBtn);
-                DI8Log("login_sm: clicked CLW_EnterWorldButton (attempt %u)", g_retryCount + 1);
+                DI8Log("login_sm: clicked enter-world button (Play_Button/CLW fallback) (attempt %u)", g_retryCount + 1);
                 g_retryCount++;
                 loginShm->retryCount = g_retryCount;
 
@@ -1591,7 +1593,7 @@ static void TickImpl(volatile LoginShm *loginShm, volatile CharSelectShm *charSe
                     SetError(loginShm, "Enter World failed after 10 attempts");
                 }
             } else {
-                DI8Log("login_sm: CLW_EnterWorldButton not found, retrying...");
+                DI8Log("login_sm: enter-world button not found (Play_Button/CLW), retrying...");
             }
         }
         break;

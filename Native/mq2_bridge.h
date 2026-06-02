@@ -91,6 +91,16 @@ namespace MQ2Bridge {
     // Returns the widget pointer, or nullptr if not found.
     void *FindWindowByName(const char *name);
 
+    // Find the char-select enter-world button. On RoF2 (Dalaya) it is
+    // registered under ScreenID "Play_Button"; the pre-RoF name
+    // "CLW_EnterWorldButton" is kept as a fallback for older/non-RoF emu
+    // servers. Returns the button widget, or nullptr if neither resolves.
+    // Confirmed live 2026-06-02 (both clients). See
+    // _.eqswitch-re/enterworld-re-2026-06-02/BREAKTHROUGH-play-button.md.
+    // If matchedName is non-null, *matchedName is set to the literal ScreenID that
+    // resolved ("Play_Button" / "CLW_EnterWorldButton" / "(none)") for logging.
+    void *FindEnterWorldButton(const char **matchedName = nullptr);
+
     // ─── UI manipulation (in-process login) ────────────────────
     // Set text on a CEditWnd (username/password fields).
     // Calls CXWnd::SetWindowText internally.
