@@ -678,7 +678,13 @@ static class Program
     private static void CleanupUpdateArtifacts()
     {
         var dir = AppDomain.CurrentDomain.BaseDirectory;
-        var updateables = new[] { "EQSwitch.exe", "eqswitch-hook.dll", "eqswitch-di8.dll" };
+        // Torn-state recovery set — mirrors UpdateDialog's `files` swap list. uninstall.bat
+        // (bundled in the zip since v3.24.18, self-updated since v3.24.19) is included so a
+        // hard crash between Phase A
+        // and Phase B can't silently lose it. It is intentionally ABSENT from `oldFiles` below
+        // (no .ok-gated rollback retention — a text file never "proves it runs"); its `.old` is
+        // cleaned via `alwaysCleanup` instead.
+        var updateables = new[] { "EQSwitch.exe", "eqswitch-hook.dll", "eqswitch-di8.dll", "uninstall.bat" };
 
         // Torn-state recovery: any updateable missing while its `.old` sibling
         // exists indicates an update was interrupted (hard crash / power loss
@@ -749,7 +755,18 @@ static class Program
         // .new and update.zip artifacts are always safe to remove (incomplete
         // download or interrupted extract — never the user's only good copy).
         var oldFiles = new[] { "EQSwitch.exe.old", "eqswitch-hook.dll.old", "eqswitch-di8.dll.old" };
-        var alwaysCleanup = new[] { "EQSwitch.exe.new", "eqswitch-hook.dll.new", "eqswitch-di8.dll.new", "update.zip" };
+        // uninstall.bat.old joins the always-cleanup set rather than the .ok-gated `oldFiles`
+        // set: a text file has no "new binary proved it can start" rollback semantics, so there
+        // is nothing to gate its retention on (and gating it would emit a misleading "new binary
+        // did not finish init" Warn every update). Safe by ordering — the torn-state branch above
+        // runs and returns FIRST, so by the time we reach here every updateable (incl.
+        // uninstall.bat) is present, making its `.old` dead weight rather than a recovery source.
+        var alwaysCleanup = new[]
+        {
+            "EQSwitch.exe.new", "eqswitch-hook.dll.new", "eqswitch-di8.dll.new",
+            "uninstall.bat.old", "uninstall.bat.new",
+            "update.zip"
+        };
 
         foreach (var oldName in oldFiles)
         {

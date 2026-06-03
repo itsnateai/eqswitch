@@ -1,5 +1,30 @@
 # Changelog
 
+## v3.24.19 — Self-update now delivers `uninstall.bat` (2026-06-03)
+
+v3.24.18 added `uninstall.bat` to the release zip(s) so **fresh downloaders** get the
+GUI-won't-launch fallback the README and in-app Help point them to. But the **self-updater**
+only ever extracted and swapped the three runtime files (`EQSwitch.exe` + the two hook DLLs) — so
+users who upgraded **in place never received `uninstall.bat`**. This closes that gap: the updater
+now treats `uninstall.bat` as an updateable file, so every delivery path (manual download *and*
+in-app upgrade) ships it.
+
+- **`UpdateDialog.cs`** — `uninstall.bat` added to the swap set. It's extracted from the zip and
+  staged/committed through the same atomic two-phase (`.old`/`.new`) swap as the binaries, and
+  created fresh for users upgrading from a pre-bundle version (Phase A's missing-local guard
+  already handles the first-time-install case). It is never module-locked, so it can't fail the
+  swap the way the injected DLLs can.
+- **`Program.cs` (`CleanupUpdateArtifacts`)** — `uninstall.bat` added to torn-state recovery so a
+  hard crash mid-swap can't silently lose it. Its `.old`/`.new` artifacts are cleaned via the
+  always-cleanup set rather than the `.ok`-gated retention used for the binaries: a text file has
+  no "new binary proved it can start" rollback semantics, so there's nothing to gate on (and it
+  avoids a misleading "new binary did not finish init" log line every update). Safe by ordering —
+  torn-state recovery runs and returns before cleanup, so a `.old` only reaches the cleanup loop
+  once its primary is confirmed present.
+- **Both release zips** (`EQSwitch.zip` + `EQSwitch-X.Y.Z.zip`) already carry `uninstall.bat` —
+  they're built from one `Compress-Archive` and copied byte-for-byte, so the dual-asset transition
+  needs no further change; the updater extracts the bat from whichever asset it downloaded.
+
 ## v3.24.18 — Version-independent `EQSwitch.zip` release asset (2026-06-03)
 
 The release now also ships a **version-independent `EQSwitch.zip`** alongside the existing

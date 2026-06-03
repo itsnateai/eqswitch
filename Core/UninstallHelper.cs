@@ -154,9 +154,10 @@ public static class UninstallHelper
             FileLogger.Warn($"Uninstall: {msg}");
         }
 
-        // 4. Native DLL logs in EQ folder. eqswitch-di8.dll writes
-        //    eqswitch-dinput8-{pid}.log per-process (Native/eqswitch-di8.cpp), and
-        //    eqswitch-hook.dll writes eqswitch-hook.log. These accumulate one per
+        // 4. Native DLL logs in EQ folder. Both DLLs write per-PID next to eqgame.exe:
+        //    eqswitch-di8.dll writes eqswitch-dinput8-{pid}.log (Native/eqswitch-di8.cpp)
+        //    and eqswitch-hook.dll writes eqswitch-hook-{pid}.log (Native/eqswitch-hook.cpp).
+        //    The eqswitch-*.log glob below catches both. These accumulate one per
         //    eqgame.exe PID until uninstall — current versions don't rotate them.
         //
         // v3.22.53 post-round-5 fix (T3 Sonnet + T3 Opus convergent IMPORTANT):

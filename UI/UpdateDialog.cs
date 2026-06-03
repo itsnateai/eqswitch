@@ -600,12 +600,24 @@ public class UpdateDialog : Form
             var exeDir = Path.GetDirectoryName(exePath)!;
             zipPath = Path.Combine(exeDir, "update.zip");
 
-            // Files to update: (name in zip, local path)
+            // Files to update: (name in zip, local path). The three binaries are the
+            // runtime; uninstall.bat is a shipped-but-never-executed helper (bundled in
+            // the release zip since v3.24.18). It's listed here so self-updaters receive
+            // it too — not just fresh downloaders — closing the gap where an in-place
+            // upgrade never delivered the GUI-won't-launch fallback the README points to.
+            // It's never module-locked (plain text, not loaded into any process), so it
+            // can't fail the atomic swap the way the injected DLLs can.
+            //
+            // The updateable SET is mirrored in Program.CleanupUpdateArtifacts (torn-state
+            // recovery + artifact cleanup). uninstall.bat is deliberately handled there
+            // WITHOUT a .ok sentinel / .old retention — a text file has no "new binary
+            // proved it runs" rollback semantics. Keep the two sites in sync.
             files = new[]
             {
                 ("EQSwitch.exe", exePath),
                 ("eqswitch-hook.dll", Path.Combine(exeDir, "eqswitch-hook.dll")),
-                ("eqswitch-di8.dll", Path.Combine(exeDir, "eqswitch-di8.dll"))
+                ("eqswitch-di8.dll", Path.Combine(exeDir, "eqswitch-di8.dll")),
+                ("uninstall.bat", Path.Combine(exeDir, "uninstall.bat"))
             };
 
             // Download the zip bundle

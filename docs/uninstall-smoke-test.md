@@ -105,6 +105,26 @@ Run `uninstall.bat` inside `Sandbox_*.wsb` against a Sandbox-mounted fake EQ
 folder containing each scenario's pre-conditions. Same post-conditions as the
 GUI button. The .bat must NEVER delete a >200KB `dinput8.dll`.
 
+### Scenario 9 — `uninstall.bat` delivery (download + self-update)
+The whole flow above is moot if the user never has `uninstall.bat`. Verify both
+delivery paths (the v3.24.19 self-update fix):
+
+**Fresh download (v3.24.18+):** extract `EQSwitch.zip` (and `EQSwitch-X.Y.Z.zip`)
+and confirm `uninstall.bat` is present alongside `EQSwitch.exe`. Both zips are
+byte-identical, so checking one is sufficient.
+
+**Self-update (v3.24.19+):**
+- Pre: an install whose folder has NO `uninstall.bat` (simulates a pre-bundle
+  install). Trigger an in-app upgrade to a release whose zip contains it.
+- Post: `uninstall.bat` now exists next to `EQSwitch.exe` (Phase B creates it —
+  Phase A's missing-local guard skips the stage). No `uninstall.bat.old` or
+  `uninstall.bat.new` left behind after the next launch (cleaned via
+  `alwaysCleanup`). No "new binary did not finish init" Warn for `uninstall.bat`
+  (it's intentionally not `.ok`-gated).
+- Torn-state: kill the process between Phase A and Phase B with `uninstall.bat`
+  staged to `.old`. Next launch must restore it (it's in the `updateables`
+  recovery set), not silently drop it.
+
 ## Post-test verification checklist
 
 - [ ] `git diff` shows only expected changes (config `RunAtStartup: false`).
