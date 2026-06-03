@@ -4058,6 +4058,15 @@ public class SettingsForm : Form
         int h = (int)_nudVideoHeight.Value;
         string key = $"{w}x{h}";
 
+        // Native is represented by the synthetic "Native (WxH)" combo entry, never a stored
+        // custom preset. Without this guard, a user whose native res isn't one of the built-in
+        // VideoPresets (e.g. an ultrawide 3440x1440) who saves with Native selected would get
+        // their res added to CustomVideoPresets — then PopulateVideoPresets renders it TWICE
+        // (once as "Native (WxH)", once as a bare "WxH" custom row). Skip native dims here.
+        var (natW, natH) = GetNativeResolution();
+        if (w == natW && h == natH)
+            return;
+
         if (Array.Exists(VideoPresets, p => p.W == w && p.H == h))
             return;
 

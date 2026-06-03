@@ -1,5 +1,20 @@
 # Changelog
 
+## v3.24.17 — Fix: don't duplicate the Native resolution as a custom preset (2026-06-03)
+
+Fast-follow to v3.24.16. A verification pass caught one cosmetic regression from the new Native
+preset: a user whose monitor resolution is **not** one of the built-in presets (e.g. an ultrawide
+3440×1440) who saved with **Native** selected had their resolution written into
+`CustomVideoPresets`, so the Video dropdown then showed it twice — once as `Native (3440×1440)`
+and again as a bare `3440×1440` custom row. Common resolutions (1920×1080, 2560×1440, 3840×2160,
+1920×1200, …) were unaffected because they already exist as built-in presets.
+
+- **`VideoSaveCustomPreset` now skips the native resolution.** Native is represented by the
+  synthetic `Native (W×H)` combo entry, never a stored custom preset — so it can't be persisted to
+  `CustomVideoPresets` and can't produce a duplicate row. No functional impact in v3.24.16 (the
+  resolution still applied correctly); this just removes the duplicate dropdown entry and the
+  stray config entry for non-built-in (ultrawide) resolutions.
+
 ## v3.24.16 — Video tab defaults to "Native" resolution (no more blind-Save to 1920×1080) (2026-06-03)
 
 The **EQ Resolution** preset on the Video tab now defaults to the user's actual monitor
