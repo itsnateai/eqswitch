@@ -1,5 +1,71 @@
 # Changelog
 
+## v3.24.14 — Self-update polish: "close EQ first" pre-flight + clearer locked-file errors (2026-06-03)
+
+Found during a read-only audit of the self-update flow. The producer↔consumer contract —
+`release.yml`'s zip + `SHA256SUMS` vs. `UpdateDialog`'s download / SHA256-verify / atomic swap —
+was verified consistent end-to-end; these are the polish items on top.
+
+- **Proactive "close EverQuest" pre-flight:** the injected hook DLLs (`eqswitch-hook.dll` /
+  `eqswitch-di8.dll`) are module-locked inside any running `eqgame.exe`, and the atomic two-phase
+  swap is intentionally all-or-nothing — so updating mid-session always rolled back anyway. The
+  updater now detects running EQ clients *before* the ~60 MB download and asks the user to close
+  them, instead of downloading, failing the swap, and blaming antivirus. (`!TestMode`-gated so the
+  Debug `--test-update` swap self-test is unaffected.)
+- **Clearer locked-file message** for the race where EQ launches *during* the swap — names EQ's
+  clients as the likely cause (antivirus demoted to secondary), replacing the misleading "Your
+  antivirus may be locking the file."
+- **Removed the dead `_downloadSize` field** (read from the release JSON but never consumed — the
+  real size gate is `Content-Length` + a mid-stream byte ceiling) and corrected a stale
+  source-line reference in a swap comment.
+
+## v3.24.13 — Harden orphan-rescue: audit-log the flag, make the deferred-compaction skip loud (2026-06-03)
+
+Post-ship hardening from a 6-agent adversarial verification of v3.24.12. **No behavioral change**
+to window management — verified via `--test-compact-slots` (now 11 cases) plus the effective-bounds
+and swap-cover suites.
+
+- **`Layout.AutoRepackOnClose` joins the config-write audit log** (`ConfigManager.LogConfigWriteAudit`).
+  A silent flip to `false` would reintroduce the orphan-stranding bug under "Fix Windows still
+  works" cover — the same silent-flip class the audit log exists to trace (cf. the v3.22.71
+  `UseStateMachine` regression). The next flip now leaves a `ConfigWrite:` trace.
+- **Loud deferred-compaction skip** (Rule 12 / fail-loud): pressing Fix Windows while a sibling is
+  mid-autologin intentionally *defers* the orphan rescue (never move a mid-login window), but a
+  silent skip looked identical to "nothing to do." It now logs why, so a not-rescued orphan after
+  Fix Windows is explainable from the log instead of a mystery.
+- **Corrected the `ClientLost` comment:** the 250 ms on-close recovery re-arrange is itself
+  `SlimTitlebar`-gated (`AppConfig.Validate` pins `SlimTitlebar=true` in multimon, so it holds in
+  shipped configs) — not unconditional, as the comment implied.
+- **+3 `MonitorSlotPackerTests` cases** (8 → 11): slots ≥ monitorCount, reverse slot order, and a
+  3-monitor orphan (Compact stays correct above `GetMonitorOrderCount`'s cap of 2).
+
+## v3.24.12 — Orphan-rescue: auto-repack survivors toward the primary when a client closes (2026-06-03)
+
+Closes the multimon orphan-stranding bug: monitor-slot ownership is **sticky** — a client is
+assigned a slot once at discovery (`AssignNextFreeSlot`) and nothing ever recomputes it. So when
+the **primary-monitor (slot 0)** client closes, its sibling keeps its higher slot and stays
+stranded on the secondary — and **Fix Windows faithfully re-strands it** (it just re-applies the
+same sticky map).
+
+- **Fix — `MonitorSlotPacker.Compact`:** a pure permutation that re-packs the surviving clients
+  into the lowest slots `[0, 1, …]` with no gaps, **preserving relative order** (nearest-primary
+  stays nearest), tie-broken by PID for a deterministic result, and **wrapping modulo monitor
+  count** so the documented 3+-clients-on-2-monitors overflow stacking is preserved. The
+  lone-survivor field case (slot 1 → slot 0) is the headline.
+- **Two trigger points** (`TrayManager.CompactMonitorSlots`, multimon-only, UI-thread):
+  (1) **automatically on client close** — gated on `Layout.AutoRepackOnClose` (default on); the
+  survivor lands on the freed primary via the existing 250 ms taskbar-recovery arrange.
+  (2) **before a Fix Windows arrange**, so an on-demand fix also compacts. Both are **skipped
+  while any client is mid-autologin** — a slot shift during the sensitive login / char-select
+  sequence is never worth a convenience re-pack.
+- **MOVE-only invariant preserved:** a slot change is a window move, not a DX backbuffer rebuild,
+  so it rides the lock-size swap path — no `ResetDevice`, no crash.
+- **Tests:** 8 cases via `--test-compact-slots` (`Core/MonitorSlotPackerTests`) — orphan rescue,
+  already-compact no-churn, order preservation, PID tie-break, overflow modulo wrap,
+  single-monitor collapse, degenerate guards (empty map / `monitorCount < 1`), input-not-mutated.
+  Real acceptance gate is a live dual-monitor smoke: close the primary client, watch the survivor
+  jump to the primary.
+
 ## v3.24.11 — FIX Fullscreen↔Windowed toggle crash: two DLLs subclassing one HWND (2026-06-02)
 
 Fixes both injected clients crashing `eqgame.exe` in `USER32.dll` (`0xc000041d`,

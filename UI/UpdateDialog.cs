@@ -54,7 +54,6 @@ public class UpdateDialog : Form
     private string? _remoteVersion;
     private string? _downloadUrl;  // zip bundle URL
     private string? _hashFileUrl;
-    private long _downloadSize;
 
     // Gate the TestMode setter behind #if DEBUG. The Release build still
     // exposes the getter (defaults to false, always false in Release) so
@@ -368,7 +367,6 @@ public class UpdateDialog : Form
 
                 _remoteVersion = "99.0.0";
                 _downloadUrl = "TEST_LOCAL";
-                _downloadSize = 0;
 
                 ShowVersionComparison();
                 return;
@@ -419,8 +417,6 @@ public class UpdateDialog : Form
                     if (IsEQSwitchZipName(name))
                     {
                         _downloadUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
-                        _downloadSize = asset.TryGetProperty("size", out var sizeEl)
-                            ? sizeEl.GetInt64() : 0;
                     }
                     if (name.Equals("SHA256SUMS", StringComparison.OrdinalIgnoreCase) ||
                         name.Equals("SHA256SUMS.txt", StringComparison.OrdinalIgnoreCase))
@@ -521,6 +517,34 @@ public class UpdateDialog : Form
 
         try
         {
+            // Pre-flight: EQSwitch's hook DLLs (eqswitch-hook.dll / eqswitch-di8.dll) are
+            // injected into every running eqgame.exe, so they're module-locked against Phase A's
+            // File.Move while EQ is open. The swap is intentionally all-or-nothing (one locked
+            // DLL rolls the whole update back — see Phase A/B), so updating mid-session can never
+            // succeed. Catch it here, BEFORE spending a ~60 MB download on a guaranteed rollback,
+            // and name the real cause. "eqgame" is the default EQ process name; a user who
+            // renamed it skips this proactive check but still hits the clearer IOException below.
+            if (!TestMode)
+            {
+                var eqClients = Process.GetProcessesByName("eqgame");
+                try
+                {
+                    if (eqClients.Length > 0)
+                    {
+                        // Log like every other update-path decision (winget skip, hash reject)
+                        // so a user reporting "update won't run" leaves a trace, not just a dialog.
+                        FileLogger.Info($"Update: blocked — {eqClients.Length} eqgame.exe client(s) running; hook DLLs are locked. Asked user to close EQ first.");
+                        ShowError("Close EverQuest before updating.",
+                            $"{eqClients.Length} EQ client{(eqClients.Length == 1 ? "" : "s")} running — the hook DLLs load into them and can't be replaced while they run.");
+                        return;
+                    }
+                }
+                finally
+                {
+                    foreach (var p in eqClients) p.Dispose();
+                }
+            }
+
             _btnAction.Enabled = false;
             _btnCancel.Text = "Cancel";
             _progressOuter.Visible = true;
@@ -666,7 +690,7 @@ public class UpdateDialog : Form
             // AFTER file 1's swap fully landed left file 1 with new content,
             // file 2 with old content, file 3 untouched — a mismatched-version
             // state. The `.ok` sentinel + torn-state recovery only fires when
-            // the exe is gone (CleanupUpdateArtifacts line 431); it cannot
+            // the exe is gone (Program.CleanupUpdateArtifacts); it cannot
             // detect a successful-but-mismatched swap.
             //
             // Phase A — stage: original → .old for every file with a pending
@@ -799,7 +823,8 @@ public class UpdateDialog : Form
             if (zipPath != null) TryDelete(zipPath);
 
             if (ex.Message.Contains("being used by another process", StringComparison.OrdinalIgnoreCase))
-                ShowError("Cannot replace the executable.", "Your antivirus may be locking the file. Try again.");
+                ShowError("Cannot replace a locked file.",
+                    "Close all EverQuest clients (EQSwitch's hook DLLs load into them), then retry. Antivirus can also transiently lock files.");
             else
                 ShowError("Failed to apply update.", ex.Message);
         }
