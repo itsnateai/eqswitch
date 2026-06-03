@@ -101,3 +101,7 @@ _comms/
 # Internal — local debugging tools, not for public repo
 tools/
 dist/
+
+# Internal — CodeRabbit cloud-review config kept local-only (review is now the
+# local verifier swarm; config retained on disk for reference, not published)
+.coderabbit.yaml

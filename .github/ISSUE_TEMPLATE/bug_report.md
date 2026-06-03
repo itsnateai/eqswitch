@@ -22,7 +22,7 @@ What actually happened.
 
 **Environment**
 - Windows version: (e.g., Windows 11 23H2)
-- EQSwitch version: (e.g., v2.1.0)
+- EQSwitch version: (shown at the top of the Help window)
 - Number of EQ clients:
 - EQ server: (e.g., Shards of Dalaya)
 
