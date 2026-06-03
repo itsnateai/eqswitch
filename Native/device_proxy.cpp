@@ -207,21 +207,28 @@ static bool EnsureSubclassInstalled(HWND hwnd) {
     WNDPROC current = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
     if (current == ActivateWndProc) return false; // already on top — nothing to do
 
-    // v3.24.11 — cooperative check: if the hook's GeoWndProc is the current top proc AND we
-    // are already installed on THIS window, then the hook merely chained ON TOP of us — we are
-    // still in the chain BELOW it (Geo -> ActivateWndProc -> EQ). Re-grabbing here is exactly
-    // what captured the hook's proc as our chain target and closed the circular loop, so DON'T.
+    // v3.24.11 — cooperative check: if the hook's GeoWndProc is the current top proc AND OUR
+    // proc is genuinely in THIS window's chain (our property is set on THIS hwnd), then the hook
+    // merely chained ON TOP of us — we are still below it (Geo -> ActivateWndProc -> EQ).
+    // Re-grabbing here is exactly what captured the hook's proc as our chain target and closed
+    // the circular loop, so DON'T. We self-verify via OUR OWN property (GetPropW == our proc)
+    // rather than the g_subclassInstalled/g_subclassHwnd flags — the property is per-window and
+    // immune to HWND-value recycling (a fresh window with no di8 property → install, not decline).
     // (If current is neither ours nor the hook's, EQ overwrote the proc in place → fall through
-    // and re-grab to re-establish; the di8 marshaling subclass always recovers that way.)
+    // and re-grab; the di8 marshaling subclass always recovers that way.)
     WNDPROC hookProc = (WNDPROC)GetPropW(hwnd, PROP_HOOK_SUBCLASS);
-    if (hookProc && current == hookProc && g_subclassInstalled && g_subclassHwnd == hwnd)
-        return false;  // friendly hook subclass on top; we remain chained below it
+    WNDPROC myProc   = (WNDPROC)GetPropW(hwnd, PROP_DI8_SUBCLASS);
+    if (hookProc && current == hookProc && myProc == ActivateWndProc)
+        return false;  // friendly hook subclass on top; we are verifiably chained below it
 
-    // (Re)grab. Capture whatever is currently on top as our chain target and publish our proc
-    // so the hook's symmetric check can recognize us and avoid re-grabbing on top of us.
+    // (Re)grab. Capture whatever is currently on top as our chain target, then PUBLISH our proc
+    // BEFORE installing it on top: a cross-thread peer (the hook's UI-thread EnsureGeoSubclass)
+    // must never observe our proc as `current` without also seeing our property — otherwise its
+    // cooperative check misses us and it re-grabs → the circular chain re-forms. SetProp-then-
+    // SetWindowLongPtr closes that TOCTOU window (the property is live before the proc is on top).
     g_origWndProc = current;
-    SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)ActivateWndProc);
     SetPropW(hwnd, PROP_DI8_SUBCLASS, (HANDLE)ActivateWndProc);
+    SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)ActivateWndProc);
     g_subclassHwnd = hwnd;
     if (!g_subclassInstalled) {
         DI8Log("wndproc_hook: installed subclass (orig=0x%08X hwnd=0x%X)",
@@ -241,12 +248,19 @@ static void RemoveSubclass(HWND hwnd) {
     // timer coupling to worry about here.
     WNDPROC current = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
     if (current == ActivateWndProc) {
+        // We're on top — safe to fully unwind: restore EQ's proc, stop advertising, clear state.
         SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)g_origWndProc);
+        RemovePropW(hwnd, PROP_DI8_SUBCLASS);
+        if (hwnd == g_subclassHwnd) g_subclassHwnd = nullptr;
+        g_subclassInstalled = false;
         DI8Log("wndproc_hook: removed subclass");
     }
-    RemovePropW(hwnd, PROP_DI8_SUBCLASS);  // v3.24.11 — stop advertising our (now-removed) proc
-    if (hwnd == g_subclassHwnd) g_subclassHwnd = nullptr;
-    g_subclassInstalled = false;
+    // else: we are chained BELOW a friendly proc (the hook's GeoWndProc) — we can't unwind
+    // without corrupting the chain, and tearing down our property/flags here would defeat our
+    // own cooperative decline next tick (g_subclassInstalled=false → we'd re-grab on top of the
+    // hook → re-form the circular chain). So leave the subclass + property intact: it is always-on
+    // by design and the hook's cooperative check keeps the chain linear. (Symmetric with the
+    // hook's RemoveGeoSubclass, which also only unwinds when it is the current top proc.)
 }
 
 // --- Layer 2: Pattern scan for activation flag ---

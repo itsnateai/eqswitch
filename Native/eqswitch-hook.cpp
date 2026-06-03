@@ -506,19 +506,23 @@ static LRESULT CALLBACK GeoWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
 static void EnsureGeoSubclass(HWND hWnd) {
     WNDPROC current = (WNDPROC)GetWindowLongPtrW(hWnd, GWLP_WNDPROC);
     if (current == GeoWndProc) return;  // already on top — nothing to do
-    // v3.24.11 — cooperative check: if the di8's ActivateWndProc is the current top proc AND we
-    // are already installed on THIS window, the di8 merely chained ON TOP of us — GeoWndProc is
-    // still in the chain BELOW it. Re-grabbing here is what captured the di8's proc as our chain
-    // target and closed the circular loop on the mode toggle, so DON'T. (If current is neither
+    // v3.24.11 — cooperative check: if the di8's ActivateWndProc is the current top proc AND OUR
+    // proc is genuinely in THIS window's chain (our property is set on THIS hwnd), the di8 merely
+    // chained ON TOP of us — GeoWndProc is still below it. Re-grabbing here is what captured the
+    // di8's proc as our chain target and closed the circular loop on the mode toggle, so DON'T.
+    // Self-verify via OUR OWN property (immune to HWND-value recycling). (If current is neither
     // ours nor the di8's, EQ overwrote the proc in place → fall through and re-grab.)
     WNDPROC di8Proc = (WNDPROC)GetPropW(hWnd, PROP_DI8_SUBCLASS);
-    if (di8Proc && current == di8Proc && g_geoSubclassInstalled && g_geoSubclassHwnd == hWnd)
-        return;  // friendly di8 subclass on top; we remain chained below it
-    // EQ recreates its top-level window at char-select → in-world and may
-    // re-set its WndProc; capture whatever is current as the chain target.
+    WNDPROC myProc  = (WNDPROC)GetPropW(hWnd, PROP_HOOK_SUBCLASS);
+    if (di8Proc && current == di8Proc && myProc == GeoWndProc)
+        return;  // friendly di8 subclass on top; we are verifiably chained below it
+    // EQ recreates its top-level window at char-select → in-world and may re-set its WndProc;
+    // capture whatever is current as the chain target. PUBLISH our proc BEFORE installing it on
+    // top so a cross-thread peer (the di8's ActivateThread EnsureSubclassInstalled) never sees
+    // our proc as `current` without our property — closes the TOCTOU that could re-form the cycle.
     g_origGeoWndProc = current;
+    SetPropW(hWnd, PROP_HOOK_SUBCLASS, (HANDLE)GeoWndProc);  // advertise to the di8 BEFORE install
     SetWindowLongPtrW(hWnd, GWLP_WNDPROC, (LONG_PTR)GeoWndProc);
-    SetPropW(hWnd, PROP_HOOK_SUBCLASS, (HANDLE)GeoWndProc);  // advertise our proc to the di8
     g_geoSubclassHwnd = hWnd;
     if (!InterlockedExchange(&g_geoSubclassInstalled, 1))
         LogMessage("GeoWndProc: installed Windowed geometry subclass (hwnd=0x%p orig=0x%p)", (void*)hWnd, (void*)current);
@@ -586,10 +590,13 @@ static void RemoveGeoSubclass() {
     if (hWnd && IsWindow(hWnd) && g_origGeoWndProc) {
         WNDPROC current = (WNDPROC)GetWindowLongPtrW(hWnd, GWLP_WNDPROC);
         if (current == GeoWndProc) {
+            // On top — safe to unwind + stop advertising. If we're chained BELOW the di8 instead,
+            // leave both the proc AND the property intact: removing the property while our proc is
+            // still in the chain would let the di8's cooperative check miss us and re-grab → cycle.
             SetWindowLongPtrW(hWnd, GWLP_WNDPROC, (LONG_PTR)g_origGeoWndProc);
+            RemovePropW(hWnd, PROP_HOOK_SUBCLASS);
             LogMessage("GeoWndProc: removed geometry subclass");
         }
-        RemovePropW(hWnd, PROP_HOOK_SUBCLASS);  // v3.24.11 — stop advertising our proc
     }
     g_geoSubclassHwnd = NULL;
 }

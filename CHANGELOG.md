@@ -19,13 +19,17 @@ multibox. Fullscreen multibox was perfect; the toggle was the only path that cra
 - **Fix — cooperative raw subclassing:** the two raw subclasses now **recognize each other** so
   neither re-grabs on top of the other. Each DLL publishes its own subclass proc to a window
   property (`EQSwitchDi8SubclassProc` / `EQSwitchHookSubclassProc`); before re-grabbing, each
-  checks whether the *other* DLL's published proc is the current top proc — and if so (and it is
-  already installed on this window) it declines, because it is still chained *below* the friendly
-  proc. That breaks the mutual re-grab war (→ the circular chain can never form) while still
-  re-grabbing when EQ genuinely overwrites the proc. **Nothing else changed** — install timing,
-  threading, the `CallWindowProcW` chaining, and the entire v3.24.8 char-select marshaling path
-  (`PostGameThreadPoll` → `ActivateWndProc` → `MQ2BridgePollTick` → `SetCurSel`) are byte-identical
-  to v3.24.10. ~12 lines added per DLL, the most surgical of the options considered.
+  checks whether the *other* DLL's published proc is the current top proc and self-verifies (via
+  its own property) that it is genuinely chained *below* it — if so, it declines. That breaks the
+  mutual re-grab war **between our two DLLs** (the only two raw `GWLP_WNDPROC` subclassers in the
+  process — Dalaya's own MQ2/dinput8 detours EQ's WndProc rather than subclassing it, so it is
+  orthogonal) while still re-grabbing when EQ genuinely overwrites the proc. Each DLL **publishes
+  its property BEFORE installing its proc** on top, so a cross-thread peer can never see our proc
+  as the top proc without also seeing our property (closes the install-vs-publish TOCTOU that could
+  otherwise re-form the cycle); teardown only unwinds when on top (never tears down state while
+  chained below the friendly proc). **The char-select path is untouched** — install timing,
+  threading, `CallWindowProcW` chaining, and the entire v3.24.8 marshaling path (`PostGameThreadPoll`
+  → `ActivateWndProc` → `MQ2BridgePollTick` → `SetCurSel`) are byte-identical to v3.24.10.
 - **Why not comctl32 `SetWindowSubclass`:** tried first (the textbook multi-subclass coordinator),
   but its API **hard-fails when called off the window-owning thread**, and the di8 *must* install
   from its background `ActivateThread` so the subclass is present even when the game thread is
