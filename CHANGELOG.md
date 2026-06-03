@@ -1,5 +1,31 @@
 # Changelog
 
+## v3.24.20 — Bare keys (`\`, `]`) can now be typed into the Switch Key boxes (2026-06-03)
+
+The **EQ Switch Key** and **Global Switch Key** settings boxes rejected every modifier-less
+keypress — you could enter `Ctrl+\` but not a bare `\` or `]`, even though those are the app's
+shipped defaults. Anyone who already had `\` configured was fine, but a **new user literally could
+not type the default switch key**. Root cause: the shared hotkey-capture handler `HotkeyBoxKeyDown`
+required at least one modifier for *every* hotkey box — but the Switch Key / Global Switch Key boxes
+feed the low-level keyboard hook (`KeyboardHookManager`), which exists specifically to bind single
+modifier-less keys. The UI validation contradicted the backend it was capturing for.
+
+- **`SettingsForm.cs`** — Switch Key / Global Switch Key boxes now accept bare keys. Action-hotkey
+  boxes (Arrange Windows, Toggle MultiMon, Launch One/All, Toggle PiP, Show Menu) still require a
+  modifier: they register via `RegisterHotKey` at global scope, where a bare key would be swallowed
+  system-wide. A box opts in via `Tag == BareKeyTag`. The capture decision is extracted to a pure
+  `TryBuildHotkeyString`, and the `Keys`→name mapping to `FormatHotkeyKeyName` — both unit-tested.
+- **Round-trip fix** — number-row keys serialized as `"D1"`, which the resolver couldn't parse, so a
+  bare `1` would have registered as VK 0 and silently never fired. `FormatHotkeyKeyName` now emits
+  the canonical `"1"` (and `` "`" `` for the tilde key) that `HotkeyManager.ResolveVK` understands.
+  A bare key the resolver can't map is refused at entry rather than saved as a dead binding.
+- **`Core/HotkeyKeyNameTests.cs`** (new — `--test-hotkey-keyname`) — 23 cases pinning the
+  display↔resolve round-trip and the bare-vs-modifier gate (bare `\` accepted on a switch box,
+  rejected on an action box; `Ctrl+\` still works; unresolvable bare key refused).
+
+Known follow-up: the Account / Character / Team hotkey dialogs share the same `"D1"` round-trip
+quirk for modifier combos; they are modifier-only by design and were left untouched here.
+
 ## v3.24.19 — Self-update now delivers `uninstall.bat` (2026-06-03)
 
 v3.24.18 added `uninstall.bat` to the release zip(s) so **fresh downloaders** get the

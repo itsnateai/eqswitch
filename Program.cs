@@ -482,6 +482,28 @@ static class Program
             Environment.Exit(exitCode);
             return;
         }
+
+        // --test-hotkey-keyname — run Core/HotkeyKeyNameTests.RunAll() and exit. Guards the
+        // hotkey display↔resolve round-trip: SettingsForm.FormatHotkeyKeyName(Keys) must emit
+        // the canonical name HotkeyManager.ResolveVK can turn back into a non-zero VK. Locks
+        // the 2026-06-03 fix where bare keys (\ ]) were rejected and number-row keys ("D1")
+        // didn't resolve, so a "set" hotkey silently never fired.
+        if (args.Length >= 1 && args[0] == "--test-hotkey-keyname")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.HotkeyKeyNameTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"HotkeyKeyNameTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
 #endif
 
         // Enforce single instance

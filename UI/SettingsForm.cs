@@ -495,7 +495,9 @@ public class SettingsForm : Form
             BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
             BorderStyle = BorderStyle.FixedSingle, Font = TrackFont(new Font("Consolas", 10f, FontStyle.Bold)),
             TextAlign = HorizontalAlignment.Center,
-            ShortcutsEnabled = false
+            ShortcutsEnabled = false,
+            // Mirror of _txtSwitchKey — both edit Hotkeys.SwitchKey (a bare-key hook binding).
+            Tag = BareKeyTag
         };
         _txtSwitchKeyGeneral.KeyDown += HotkeyBoxKeyDown;
         _txtSwitchKeyGeneral.TextChanged += (_, _) =>
@@ -972,7 +974,7 @@ public class SettingsForm : Form
         return true;
     }
 
-    private TextBox MakeHotkeyBox(Panel card, int x, int y, int width = 80)
+    private TextBox MakeHotkeyBox(Panel card, int x, int y, int width = 80, bool allowBareKey = false)
     {
         var tb = new TextBox
         {
@@ -980,7 +982,11 @@ public class SettingsForm : Form
             BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
             BorderStyle = BorderStyle.None, Font = TrackFont(new Font("Consolas", 9f)),
             TextAlign = HorizontalAlignment.Center,
-            ShortcutsEnabled = false
+            ShortcutsEnabled = false,
+            // Switch-key boxes are consumed by the low-level keyboard hook, which is built
+            // for single keys (\ ]). Mark them so HotkeyBoxKeyDown accepts a modifier-less
+            // keypress; action boxes (RegisterHotKey, global scope) stay modifier-only.
+            Tag = allowBareKey ? BareKeyTag : null
         };
         tb.KeyDown += HotkeyBoxKeyDown;
         card.Controls.Add(tb);
@@ -999,7 +1005,7 @@ public class SettingsForm : Form
         int cy = 32;
 
         _lblSwitchKeyHotkey = DarkTheme.AddCardLabel(cardSwitch, "Switch Key (EQ-only):", L, cy);
-        _txtSwitchKey = MakeHotkeyBox(cardSwitch, I, cy - 2);
+        _txtSwitchKey = MakeHotkeyBox(cardSwitch, I, cy - 2, allowBareKey: true);
         _txtSwitchKey.TextChanged += (_, _) =>
         {
             if (_txtSwitchKeyGeneral != null && _txtSwitchKeyGeneral.Text != _txtSwitchKey.Text)
@@ -1010,7 +1016,7 @@ public class SettingsForm : Form
         cy += R + 2;
 
         DarkTheme.AddCardLabel(cardSwitch, "Global Switch Key:", L, cy);
-        _txtGlobalSwitchKey = MakeHotkeyBox(cardSwitch, I, cy - 2);
+        _txtGlobalSwitchKey = MakeHotkeyBox(cardSwitch, I, cy - 2, allowBareKey: true);
         _lblDuplicateKeyWarn = DarkTheme.AddCardHint(cardSwitch, "Works from any app, cycles thru all", 250, cy + 2);
 
         // Show warning when both switch keys match
@@ -1490,6 +1496,61 @@ public class SettingsForm : Form
         _txtSwitchKey.ForeColor = color;
     }
 
+    /// <summary>Tag marker on hotkey TextBoxes that accept bare (modifier-less) keys.</summary>
+    private const string BareKeyTag = "bareKeyOk";
+
+    /// <summary>
+    /// Maps a <see cref="Keys"/> code from a hotkey TextBox KeyDown to the canonical
+    /// key-name string that <see cref="HotkeyManager.ResolveVK"/> (KeyNameToVK) resolves
+    /// back to a VK. The two MUST round-trip: a display name the resolver can't parse
+    /// registers as VK 0 and the hotkey silently never fires. Number-row keys arrive as
+    /// Keys.D0–D9 ("D1") but the resolver wants "1"; Keys.Oemtilde is the backquote/tilde
+    /// key ("`"); OemPipe/OemBackslash both mean backslash across keyboard layouts.
+    /// Guarded by Core/HotkeyKeyNameTests (--test-hotkey-keyname).
+    /// </summary>
+    internal static string FormatHotkeyKeyName(Keys keyCode) => keyCode switch
+    {
+        Keys.OemPipe or Keys.OemBackslash => "\\",
+        Keys.OemCloseBrackets => "]",
+        Keys.OemOpenBrackets => "[",
+        Keys.Oemtilde => "`",
+        >= Keys.D0 and <= Keys.D9 => ((char)('0' + (keyCode - Keys.D0))).ToString(),
+        _ => keyCode.ToString()
+    };
+
+    /// <summary>
+    /// Pure decision for a hotkey TextBox keypress (caller has already filtered out
+    /// standalone modifiers and the Delete/Back/Escape clear-keys). Returns true and sets
+    /// <paramref name="result"/> to the formatted binding ("Ctrl+\", "\", "]") when the
+    /// keypress is acceptable; returns false (result = "") when it should be ignored.
+    ///
+    /// Bare (modifier-less) keys are accepted ONLY when <paramref name="allowBareKey"/> is
+    /// true (the Switch Key boxes, consumed by the low-level keyboard hook) AND the key
+    /// resolves to a real VK — a bare key the resolver can't parse would register as VK 0
+    /// and silently never fire, so it is refused. Action boxes (allowBareKey = false) still
+    /// require a modifier: they go through RegisterHotKey at global scope, where binding a
+    /// bare key would swallow that key system-wide. Guarded by Core/HotkeyKeyNameTests.
+    /// </summary>
+    internal static bool TryBuildHotkeyString(
+        bool allowBareKey, bool ctrl, bool alt, bool shift, Keys keyCode, out string result)
+    {
+        result = "";
+        bool bare = !ctrl && !alt && !shift;
+
+        if (bare && !allowBareKey) return false;
+
+        string keyName = FormatHotkeyKeyName(keyCode);
+        if (bare && HotkeyManager.ResolveVK(keyName) == 0) return false;
+
+        var parts = new List<string>();
+        if (ctrl) parts.Add("Ctrl");
+        if (alt) parts.Add("Alt");
+        if (shift) parts.Add("Shift");
+        parts.Add(keyName);
+        result = string.Join("+", parts);
+        return true;
+    }
+
     private void HotkeyBoxKeyDown(object? sender, KeyEventArgs e)
     {
         e.SuppressKeyPress = true;
@@ -1506,23 +1567,11 @@ public class SettingsForm : Form
             return;
         }
 
-        // Require at least one modifier — bare keys are not valid hotkey combos
-        if (!e.Control && !e.Alt && !e.Shift) return;
-
-        var parts = new List<string>();
-        if (e.Control) parts.Add("Ctrl");
-        if (e.Alt) parts.Add("Alt");
-        if (e.Shift) parts.Add("Shift");
-
-        string keyName = e.KeyCode switch
-        {
-            Keys.OemPipe or Keys.OemBackslash => "\\",
-            Keys.OemCloseBrackets => "]",
-            Keys.OemOpenBrackets => "[",
-            _ => e.KeyCode.ToString()
-        };
-        parts.Add(keyName);
-        if (sender is TextBox box) box.Text = string.Join("+", parts);
+        // Switch Key / Global Switch Key boxes opt into bare keys via Tag == BareKeyTag.
+        bool allowBareKey = (sender as Control)?.Tag as string == BareKeyTag;
+        if (TryBuildHotkeyString(allowBareKey, e.Control, e.Alt, e.Shift, e.KeyCode, out string combo)
+            && sender is TextBox box)
+            box.Text = combo;
     }
 
     // ─── Config I/O ───────────────────────────────────────────────
