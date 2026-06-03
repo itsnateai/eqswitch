@@ -201,11 +201,6 @@ public class SettingsForm : Form
     // enabled. Maps to Layout.HorizontalNudgePx, clamped ±10.
     private NumericUpDown _nudHorizontalNudge = null!;
     private CheckBox _chkVideoMultiMon = null!;
-    // v3.24.10 — multimonitor 2nd-monitor taskbar-visibility (checked = ShowTaskbars → 2nd window
-    // bottom-anchored to its work-area bottom, taskbar shows, no gap; unchecked = CoverAll → 2nd
-    // window bottom-anchored to the full bottom, covers the taskbar). Both windows keep the
-    // primary's SIZE (swap is move-only). Replaces the legacy SlimTitlebarSecondary flag.
-    private CheckBox _chkShowSecondaryTaskbar = null!;
     private ComboBox _cboVideoPrimaryMon = null!;
     private ComboBox _cboVideoSecondaryMon = null!;
     private bool _suppressVideoSync; // prevent SyncVideoPresetToCustom during programmatic changes
@@ -917,12 +912,17 @@ public class SettingsForm : Form
         (string Name, bool? IsCharacter)? ResolveSlot(string raw)
         {
             if (string.IsNullOrEmpty(raw)) return null;
-            var ch = _pendingCharacters.FirstOrDefault(c => c.Name.Equals(raw, StringComparison.OrdinalIgnoreCase));
+            // v3.24.15: route typed (char:/acct:) + legacy-bare values through the shared resolver so
+            // this preview matches FireTeam's resolution (and an Account isn't shadowed by a same-name
+            // Character). Staged (_pending*) lookups mirror the live path.
+            var (ch, ac) = TeamSlotResolver.Resolve(raw,
+                n => _pendingCharacters.FirstOrDefault(c => c.Name.Equals(n, StringComparison.OrdinalIgnoreCase)),
+                n => _pendingAccounts.FirstOrDefault(a => a.Name.Equals(n, StringComparison.OrdinalIgnoreCase)));
             if (ch != null) return (ch.Name, true);
-            var ac = _pendingAccounts.FirstOrDefault(a => a.Name.Equals(raw, StringComparison.OrdinalIgnoreCase));
-            // Resolve by Name (the FK), but display Username so the team-row
-            // preview label reads as the actual login string the user knows.
-            return ac != null ? (ac.Username, false) : (raw, (bool?)null);
+            // Resolve by Name (the FK), but display Username so the team-row preview label reads as
+            // the actual login string the user knows.
+            if (ac != null) return (ac.Username, false);
+            return (QuickLoginSlot.DisplayName(raw), (bool?)null);
         }
         IReadOnlyList<(string Name, bool? IsCharacter)> PreviewSlots(string a, string b)
         {
@@ -1618,7 +1618,6 @@ public class SettingsForm : Form
         // (AppConfig.Validate pins ForceWindowedMode=true) and VideoSaveToIni writes it
         // literally — no UI control or backing field needed.
         _chkVideoMultiMon.Checked = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
-        _chkShowSecondaryTaskbar.Checked = _config.Layout.MultiMonTaskbarMode == MultiMonTaskbarMode.ShowTaskbars;
         _nudVideoTopOffset.Value = DarkTheme.ClampNud(_nudVideoTopOffset, _config.Layout.TopOffset);
         _nudHorizontalNudge.Value = DarkTheme.ClampNud(_nudHorizontalNudge, _config.Layout.HorizontalNudgePx);
         PopulateVideoFromIni();
@@ -1851,12 +1850,13 @@ public class SettingsForm : Form
                 HorizontalNudgePx = (int)_nudHorizontalNudge.Value,
                 WindowMode = _chkWindowedMode.Checked ? WindowMode.Windowed : WindowMode.Fullscreen,
                 SlimTitlebar = _chkSlimTitlebar.Checked || _chkWindowedMode.Checked,
-                // v3.24.3 — taskbar-visibility mode from its checkbox. SlimTitlebarSecondary stays
-                // at its (re-pinned-true) default; the mode now governs 2nd-monitor taskbar
-                // visibility. The two swap-curtain knobs are JSON-only — preserve them across
-                // Settings→Apply (this block rebuilds WindowLayout from scratch, so an
-                // uncopied field would silently reset to its C# default).
-                MultiMonTaskbarMode = _chkShowSecondaryTaskbar.Checked ? MultiMonTaskbarMode.ShowTaskbars : MultiMonTaskbarMode.CoverAll,
+                // v3.24.15 — taskbar-visibility is pinned to ShowTaskbars (the "Show taskbars" toggle
+                // was removed; multimonitor always shows the 2nd taskbar — the validated working
+                // state). SlimTitlebarSecondary stays at its (re-pinned-true) default. The two
+                // swap-curtain knobs are JSON-only — preserve them across Settings→Apply (this block
+                // rebuilds WindowLayout from scratch, so an uncopied field would silently reset to its
+                // C# default).
+                MultiMonTaskbarMode = MultiMonTaskbarMode.ShowTaskbars,
                 SwapTransitionCurtain = _config.Layout.SwapTransitionCurtain,
                 SwapCurtainMs = _config.Layout.SwapCurtainMs,
                 DarkTitlebar = _chkDarkTitlebar.Checked,
@@ -2668,7 +2668,7 @@ public class SettingsForm : Form
             // need propagation because slot resolution is also OrdinalIgnoreCase.
             if (!oldName.Equals(newName, StringComparison.OrdinalIgnoreCase))
             {
-                UpdateTeamSlotUsername(oldName, newName);
+                UpdateTeamSlotName(QuickLoginSlot.Kind.Account, oldName, newName);
                 PropagateNameChangeToQuickLogins(QuickLoginSlot.Kind.Account, oldName, newName);
             }
             RefreshAccountsGrid();
@@ -2691,9 +2691,9 @@ public class SettingsForm : Form
                     MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
                 return;
             _pendingAccounts.RemoveAt(idx);
-            // ClearStaleTeamSlots takes the FK string (Account.Name) — slot
-            // values were persisted as Name, so we have to clear by Name.
-            ClearStaleTeamSlots(acct.Name);
+            // v3.24.15: ClearStaleTeamSlots is kind-aware — clear the Account's acct: slots (typed)
+            // plus any pre-v3.24.15 legacy-bare slot matching the Name, so nothing dangles.
+            ClearStaleTeamSlots(QuickLoginSlot.Kind.Account, acct.Name);
         }
         else
         {
@@ -2710,16 +2710,16 @@ public class SettingsForm : Form
                         c.AccountServer = "";
                     }
                     _pendingAccounts.RemoveAt(idx);
-                    ClearStaleTeamSlots(acct.Name);
+                    ClearStaleTeamSlots(QuickLoginSlot.Kind.Account, acct.Name);
                     break;
                 case CascadeDeleteChoice.DeleteAll:
                     foreach (var c in dependents)
                     {
                         _pendingCharacters.Remove(c);
-                        ClearStaleTeamSlots(c.Name);
+                        ClearStaleTeamSlots(QuickLoginSlot.Kind.Character, c.Name);
                     }
                     _pendingAccounts.RemoveAt(idx);
-                    ClearStaleTeamSlots(acct.Name);
+                    ClearStaleTeamSlots(QuickLoginSlot.Kind.Account, acct.Name);
                     break;
             }
         }
@@ -2751,7 +2751,7 @@ public class SettingsForm : Form
             _pendingCharacters[idx] = dlg.Result;
             if (!oldName.Equals(newName, StringComparison.OrdinalIgnoreCase))
             {
-                UpdateTeamSlotUsername(oldName, newName);
+                UpdateTeamSlotName(QuickLoginSlot.Kind.Character, oldName, newName);
                 PropagateNameChangeToQuickLogins(QuickLoginSlot.Kind.Character, oldName, newName);
             }
             RefreshCharactersGrid();
@@ -2794,7 +2794,7 @@ public class SettingsForm : Form
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
             return;
         _pendingCharacters.RemoveAt(idx);
-        ClearStaleTeamSlots(c.Name);
+        ClearStaleTeamSlots(QuickLoginSlot.Kind.Character, c.Name);
         RefreshCharactersGrid();
         _lblTeamSummary.Rows = BuildTeamSummaryRows();
     }
@@ -2818,18 +2818,19 @@ public class SettingsForm : Form
         {
             if (string.IsNullOrEmpty(targetName))
                 return new TeamSummarySegment("", SummarySegmentKind.Plain);
-            var ch = _pendingCharacters.FirstOrDefault(c =>
-                c.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
+            // v3.24.15: route the (typed or bare) slot value through the shared resolver so a
+            // char:/acct: prefix is honored and an Account is no longer shadowed by a same-name
+            // Character. Staged (_pending*) lookups mirror the live FireTeam path.
+            var (ch, ac) = TeamSlotResolver.Resolve(targetName,
+                n => _pendingCharacters.FirstOrDefault(c => c.Name.Equals(n, StringComparison.OrdinalIgnoreCase)),
+                n => _pendingAccounts.FirstOrDefault(a => a.Name.Equals(n, StringComparison.OrdinalIgnoreCase)));
             if (ch != null)
                 return new TeamSummarySegment(Clip(ch.Name), SummarySegmentKind.CharacterName);
-            var ac = _pendingAccounts.FirstOrDefault(a =>
-                a.Name.Equals(targetName, StringComparison.OrdinalIgnoreCase));
             if (ac != null)
                 return new TeamSummarySegment(Clip(ac.Name), SummarySegmentKind.AccountName);
-            // FK drift — render the raw string with a trailing "?" sentinel
-            // and route to Unresolved so the kind is explicit even though
-            // the visible color matches CharacterName for now.
-            return new TeamSummarySegment(Clip(targetName, MaxNameLen - 1) + "?", SummarySegmentKind.Unresolved);
+            // FK drift / unresolved typed target — render the clean (prefix-stripped) name with a
+            // trailing "?" sentinel and route to Unresolved so the kind is explicit.
+            return new TeamSummarySegment(Clip(QuickLoginSlot.DisplayName(targetName), MaxNameLen - 1) + "?", SummarySegmentKind.Unresolved);
         }
 
         void AppendTeamCell(List<TeamSummarySegment> segs, int teamNum, string u1, string u2)
@@ -3035,63 +3036,93 @@ public class SettingsForm : Form
             });
     }
 
-    private void ClearStaleTeamSlots(string username)
+    /// <summary>
+    /// Clear team slots referencing a just-deleted entity. v3.24.15: kind-aware for the typed slot
+    /// scheme — an Account delete clears its <c>acct:</c> slots, a Character delete clears its
+    /// <c>char:</c> slots, and a pre-v3.24.15 legacy-bare slot is cleared by name (so a deleted
+    /// entity leaves no dangling team reference). Mirrors PropagateNameChangeToQuickLogins' kind+name
+    /// matching; <see cref="TeamSlotResolver"/> documents the typed-vs-bare routing.
+    /// </summary>
+    private void ClearStaleTeamSlots(QuickLoginSlot.Kind kind, string name)
     {
+        if (string.IsNullOrEmpty(name)) return;
+        // A legacy-bare slot resolves Character-first (TeamSlotResolver), so it only "belongs" to an
+        // Account when no same-name Character survives — an Account delete must NOT clear a bare slot
+        // that still resolves to a surviving same-name Character ("Eisley" char vs "eisley" acct).
+        // Character deletes always own a name-matching bare slot.
+        bool bareMatchesKind = kind == QuickLoginSlot.Kind.Character
+            || !_pendingCharacters.Any(c => c.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         bool changed = false;
-        if (_pendingTeam1A  == username) { _pendingTeam1A  = ""; changed = true; }
-        if (_pendingTeam1B  == username) { _pendingTeam1B  = ""; changed = true; }
-        if (_pendingTeam2A  == username) { _pendingTeam2A  = ""; changed = true; }
-        if (_pendingTeam2B  == username) { _pendingTeam2B  = ""; changed = true; }
-        if (_pendingTeam3A  == username) { _pendingTeam3A  = ""; changed = true; }
-        if (_pendingTeam3B  == username) { _pendingTeam3B  = ""; changed = true; }
-        if (_pendingTeam4A  == username) { _pendingTeam4A  = ""; changed = true; }
-        if (_pendingTeam4B  == username) { _pendingTeam4B  = ""; changed = true; }
-        if (_pendingTeam5A  == username) { _pendingTeam5A  = ""; changed = true; }
-        if (_pendingTeam5B  == username) { _pendingTeam5B  = ""; changed = true; }
-        if (_pendingTeam6A  == username) { _pendingTeam6A  = ""; changed = true; }
-        if (_pendingTeam6B  == username) { _pendingTeam6B  = ""; changed = true; }
-        if (_pendingTeam7A  == username) { _pendingTeam7A  = ""; changed = true; }
-        if (_pendingTeam7B  == username) { _pendingTeam7B  = ""; changed = true; }
-        if (_pendingTeam8A  == username) { _pendingTeam8A  = ""; changed = true; }
-        if (_pendingTeam8B  == username) { _pendingTeam8B  = ""; changed = true; }
-        if (_pendingTeam9A  == username) { _pendingTeam9A  = ""; changed = true; }
-        if (_pendingTeam9B  == username) { _pendingTeam9B  = ""; changed = true; }
-        if (_pendingTeam10A == username) { _pendingTeam10A = ""; changed = true; }
-        if (_pendingTeam10B == username) { _pendingTeam10B = ""; changed = true; }
-        if (_pendingTeam11A == username) { _pendingTeam11A = ""; changed = true; }
-        if (_pendingTeam11B == username) { _pendingTeam11B = ""; changed = true; }
-        if (_pendingTeam12A == username) { _pendingTeam12A = ""; changed = true; }
-        if (_pendingTeam12B == username) { _pendingTeam12B = ""; changed = true; }
+        string Clear(string slot)
+        {
+            var (k, n) = QuickLoginSlot.Parse(slot);
+            if (!n.Equals(name, StringComparison.OrdinalIgnoreCase)) return slot;
+            bool match = k == kind || (k == QuickLoginSlot.Kind.LegacyBare && bareMatchesKind);
+            if (!match) return slot;
+            changed = true;
+            return "";
+        }
+        _pendingTeam1A  = Clear(_pendingTeam1A);   _pendingTeam1B  = Clear(_pendingTeam1B);
+        _pendingTeam2A  = Clear(_pendingTeam2A);   _pendingTeam2B  = Clear(_pendingTeam2B);
+        _pendingTeam3A  = Clear(_pendingTeam3A);   _pendingTeam3B  = Clear(_pendingTeam3B);
+        _pendingTeam4A  = Clear(_pendingTeam4A);   _pendingTeam4B  = Clear(_pendingTeam4B);
+        _pendingTeam5A  = Clear(_pendingTeam5A);   _pendingTeam5B  = Clear(_pendingTeam5B);
+        _pendingTeam6A  = Clear(_pendingTeam6A);   _pendingTeam6B  = Clear(_pendingTeam6B);
+        _pendingTeam7A  = Clear(_pendingTeam7A);   _pendingTeam7B  = Clear(_pendingTeam7B);
+        _pendingTeam8A  = Clear(_pendingTeam8A);   _pendingTeam8B  = Clear(_pendingTeam8B);
+        _pendingTeam9A  = Clear(_pendingTeam9A);   _pendingTeam9B  = Clear(_pendingTeam9B);
+        _pendingTeam10A = Clear(_pendingTeam10A);  _pendingTeam10B = Clear(_pendingTeam10B);
+        _pendingTeam11A = Clear(_pendingTeam11A);  _pendingTeam11B = Clear(_pendingTeam11B);
+        _pendingTeam12A = Clear(_pendingTeam12A);  _pendingTeam12B = Clear(_pendingTeam12B);
         if (changed) _lblTeamSummary.Rows = BuildTeamSummaryRows();
     }
 
-    private void UpdateTeamSlotUsername(string oldUsername, string newUsername)
+    /// <summary>
+    /// Remap team slots when an entity is renamed. v3.24.15: kind-aware — a typed slot of the
+    /// matching kind is re-emitted typed with the new name; a same-name typed slot of the OTHER kind
+    /// is left untouched (no cross-kind clobber — the "Eisley" Character vs "eisley" Account collide
+    /// case-insensitively); a legacy-bare slot is renamed in place (stays bare — old behavior).
+    /// Mirrors PropagateNameChangeToQuickLogins.
+    /// </summary>
+    private void UpdateTeamSlotName(QuickLoginSlot.Kind kind, string oldName, string newName)
     {
+        if (string.IsNullOrEmpty(oldName)) return;
+        // See ClearStaleTeamSlots: a legacy-bare slot resolves Character-first, so an Account rename
+        // only owns it when no same-name Character survives (else the bare slot still points at the
+        // Character and must not follow the Account rename).
+        bool bareMatchesKind = kind == QuickLoginSlot.Kind.Character
+            || !_pendingCharacters.Any(c => c.Name.Equals(oldName, StringComparison.OrdinalIgnoreCase));
         bool changed = false;
-        if (_pendingTeam1A  == oldUsername) { _pendingTeam1A  = newUsername; changed = true; }
-        if (_pendingTeam1B  == oldUsername) { _pendingTeam1B  = newUsername; changed = true; }
-        if (_pendingTeam2A  == oldUsername) { _pendingTeam2A  = newUsername; changed = true; }
-        if (_pendingTeam2B  == oldUsername) { _pendingTeam2B  = newUsername; changed = true; }
-        if (_pendingTeam3A  == oldUsername) { _pendingTeam3A  = newUsername; changed = true; }
-        if (_pendingTeam3B  == oldUsername) { _pendingTeam3B  = newUsername; changed = true; }
-        if (_pendingTeam4A  == oldUsername) { _pendingTeam4A  = newUsername; changed = true; }
-        if (_pendingTeam4B  == oldUsername) { _pendingTeam4B  = newUsername; changed = true; }
-        if (_pendingTeam5A  == oldUsername) { _pendingTeam5A  = newUsername; changed = true; }
-        if (_pendingTeam5B  == oldUsername) { _pendingTeam5B  = newUsername; changed = true; }
-        if (_pendingTeam6A  == oldUsername) { _pendingTeam6A  = newUsername; changed = true; }
-        if (_pendingTeam6B  == oldUsername) { _pendingTeam6B  = newUsername; changed = true; }
-        if (_pendingTeam7A  == oldUsername) { _pendingTeam7A  = newUsername; changed = true; }
-        if (_pendingTeam7B  == oldUsername) { _pendingTeam7B  = newUsername; changed = true; }
-        if (_pendingTeam8A  == oldUsername) { _pendingTeam8A  = newUsername; changed = true; }
-        if (_pendingTeam8B  == oldUsername) { _pendingTeam8B  = newUsername; changed = true; }
-        if (_pendingTeam9A  == oldUsername) { _pendingTeam9A  = newUsername; changed = true; }
-        if (_pendingTeam9B  == oldUsername) { _pendingTeam9B  = newUsername; changed = true; }
-        if (_pendingTeam10A == oldUsername) { _pendingTeam10A = newUsername; changed = true; }
-        if (_pendingTeam10B == oldUsername) { _pendingTeam10B = newUsername; changed = true; }
-        if (_pendingTeam11A == oldUsername) { _pendingTeam11A = newUsername; changed = true; }
-        if (_pendingTeam11B == oldUsername) { _pendingTeam11B = newUsername; changed = true; }
-        if (_pendingTeam12A == oldUsername) { _pendingTeam12A = newUsername; changed = true; }
-        if (_pendingTeam12B == oldUsername) { _pendingTeam12B = newUsername; changed = true; }
+        string Remap(string slot)
+        {
+            var (k, n) = QuickLoginSlot.Parse(slot);
+            if (!n.Equals(oldName, StringComparison.OrdinalIgnoreCase)) return slot;
+            if (k == kind)
+            {
+                changed = true;
+                return kind == QuickLoginSlot.Kind.Character
+                    ? QuickLoginSlot.ForCharacter(newName)
+                    : QuickLoginSlot.ForAccount(newName);
+            }
+            if (k == QuickLoginSlot.Kind.LegacyBare && bareMatchesKind)
+            {
+                changed = true;
+                return newName;   // preserve legacy-bare format (old behavior), new name only
+            }
+            return slot;          // typed slot of the other kind, or a bare slot owned by the other kind
+        }
+        _pendingTeam1A  = Remap(_pendingTeam1A);   _pendingTeam1B  = Remap(_pendingTeam1B);
+        _pendingTeam2A  = Remap(_pendingTeam2A);   _pendingTeam2B  = Remap(_pendingTeam2B);
+        _pendingTeam3A  = Remap(_pendingTeam3A);   _pendingTeam3B  = Remap(_pendingTeam3B);
+        _pendingTeam4A  = Remap(_pendingTeam4A);   _pendingTeam4B  = Remap(_pendingTeam4B);
+        _pendingTeam5A  = Remap(_pendingTeam5A);   _pendingTeam5B  = Remap(_pendingTeam5B);
+        _pendingTeam6A  = Remap(_pendingTeam6A);   _pendingTeam6B  = Remap(_pendingTeam6B);
+        _pendingTeam7A  = Remap(_pendingTeam7A);   _pendingTeam7B  = Remap(_pendingTeam7B);
+        _pendingTeam8A  = Remap(_pendingTeam8A);   _pendingTeam8B  = Remap(_pendingTeam8B);
+        _pendingTeam9A  = Remap(_pendingTeam9A);   _pendingTeam9B  = Remap(_pendingTeam9B);
+        _pendingTeam10A = Remap(_pendingTeam10A);  _pendingTeam10B = Remap(_pendingTeam10B);
+        _pendingTeam11A = Remap(_pendingTeam11A);  _pendingTeam11B = Remap(_pendingTeam11B);
+        _pendingTeam12A = Remap(_pendingTeam12A);  _pendingTeam12B = Remap(_pendingTeam12B);
         if (changed) _lblTeamSummary.Rows = BuildTeamSummaryRows();
     }
 
@@ -3288,12 +3319,9 @@ public class SettingsForm : Form
         cy = 32;
 
         _chkVideoMultiMon = DarkTheme.AddCheckBox(cardMon, "Multi-Monitor Mode", L, cy);
-        // v3.24.10 — 2nd-monitor taskbar-visibility (multimonitor). Both windows keep the primary's
-        // SIZE; this only sets where the 2nd window's BOTTOM lands. Checked = ShowTaskbars (2nd
-        // window bottom-anchored to its work-area bottom → game butts the 2nd taskbar, no gap,
-        // taskbar visible); unchecked = CoverAll (bottom-anchored to the full bottom → covers it).
-        // The main always covers its own taskbar. Same size → swaps are move-only (no resize/crash).
-        _chkShowSecondaryTaskbar = DarkTheme.AddCheckBox(cardMon, "Show taskbars (multi-mon)", 250, cy);
+        // v3.24.15: the "Show taskbars (multi-mon)" toggle was removed — multimonitor now always
+        // shows the 2nd taskbar (ShowTaskbars), the validated working state. The mode is pinned in
+        // ApplySettings + the AppConfig default/Validate; there is no user-facing knob anymore.
 
         cy += 26;
         var screens = Screen.AllScreens.OrderBy(s => s.Bounds.Left).ToArray();

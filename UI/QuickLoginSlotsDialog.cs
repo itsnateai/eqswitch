@@ -94,11 +94,11 @@ internal sealed class QuickLoginSlotsDialog : Form
         int y = 18;
 
         var intro = DarkTheme.AddLabel(this,
-            "Assign which Account or Character each Auto-Login slot fires.", L, y);
+            "Assign which Account or Character each\nAuto-Login Tray Click Actions clicks fires", L, y);
         intro.ForeColor = DarkTheme.FgDimGray;
         intro.Font = DarkTheme.FontUI75;
         intro.AutoSize = true;
-        y += 26;
+        y += 42;   // two-line hint now (was 26) — keeps combo1 from overlapping line 2
 
         for (int i = 0; i < SlotCount; i++)
         {
@@ -145,7 +145,7 @@ internal sealed class QuickLoginSlotsDialog : Form
         // Measure-to-fit: size to the widest element (combo block, intro/legend text, or
         // button row) + symmetric L margins, and trim the height to the button row + 18px —
         // no dead padding on the bottom or the right.
-        int introW  = TextRenderer.MeasureText(intro.Text,  DarkTheme.FontUI75).Width;
+        int introW  = intro.Text.Split('\n').Max(s => TextRenderer.MeasureText(s, DarkTheme.FontUI75).Width);
         int legendW = TextRenderer.MeasureText(legend.Text, DarkTheme.FontUI75).Width;
         int rightEdge = Math.Max(I + comboW, L + Math.Max(introW, Math.Max(legendW, 215)));
         ClientSize = new Size(rightEdge + L, btnCancel.Bottom + 18);

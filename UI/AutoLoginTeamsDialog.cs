@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // © itsnateai
 
+using EQSwitch.Config;
 using EQSwitch.Models;
 
 namespace EQSwitch.UI;
@@ -296,18 +297,15 @@ internal sealed class AutoLoginTeamsDialog : Form
             new("", "(none)", SlotKind.None),
         };
         foreach (var c in _characters)
-            items.Add(new SlotOption(c.Name, $"🧙  {c.Name}", SlotKind.Character));
+            items.Add(new SlotOption(QuickLoginSlot.ForCharacter(c.Name), $"🧙  {c.Name}", SlotKind.Character));
+        // v3.24.15: NO name-dedup. A Character (enter-world) and an Account (charselect) that share a
+        // name are DISTINCT intents — list both, exactly like QuickLoginSlotsDialog. Typed values
+        // (char:Name / acct:Name) keep them apart on save + dispatch, so e.g. character "Eisley" and
+        // account "eisley" no longer collapse into one entry. Display the Username (the login identity
+        // Nate recognizes); persist the typed Account.Name value so SelectByValue / ResolveAccountForSlot
+        // and the FireTeam resolver route deterministically.
         foreach (var a in _accounts)
-        {
-            // Don't duplicate: if Account.Name matches a Character.Name we've listed, skip.
-            if (_characters.Any(c => c.Name.Equals(a.Name, StringComparison.OrdinalIgnoreCase))) continue;
-            // Display the Username (the login identity Nate recognizes); persist
-            // the FK identity (Account.Name) as the SlotOption value so existing
-            // saved team slots keep resolving via ResolveAccountForSlot. New
-            // accounts have Name == Username (auto-shadowed in AccountEditDialog),
-            // so display and persistence agree for fresh data.
-            items.Add(new SlotOption(a.Name, $"🔑  {a.Username}", SlotKind.Account));
-        }
+            items.Add(new SlotOption(QuickLoginSlot.ForAccount(a.Name), $"🔑  {a.Username}", SlotKind.Account));
         return items;
     }
 
@@ -420,6 +418,7 @@ internal sealed class AutoLoginTeamsDialog : Form
             RefreshPillForCombo(cbo);
             return;
         }
+        // Exact typed match first (the v3.24.15 storage format: char:Name / acct:Name).
         for (int i = 0; i < cbo.Items.Count; i++)
         {
             if (cbo.Items[i] is SlotOption opt && opt.Value.Equals(value, StringComparison.OrdinalIgnoreCase))
@@ -428,6 +427,24 @@ internal sealed class AutoLoginTeamsDialog : Form
                 RefreshPillForCombo(cbo);
                 return;
             }
+        }
+        // Legacy bare name (pre-v3.24.15 saved team slots): match the un-prefixed name against a
+        // Character or Account option. Character wins ties — the same enter-world-first preference
+        // the launch-time resolver (TrayManager.FireTeam's LegacyBare branch) applies, so a bare
+        // slot keeps resolving to exactly what it fired before.
+        if (QuickLoginSlot.Parse(value).Kind == QuickLoginSlot.Kind.LegacyBare)
+        {
+            int charMatch = -1, acctMatch = -1;
+            for (int i = 0; i < cbo.Items.Count; i++)
+            {
+                if (cbo.Items[i] is not SlotOption opt || opt.Kind == SlotKind.None) continue;
+                var (_, name) = QuickLoginSlot.Parse(opt.Value);
+                if (!name.Equals(value, StringComparison.OrdinalIgnoreCase)) continue;
+                if (opt.Kind == SlotKind.Character && charMatch < 0) charMatch = i;
+                else if (opt.Kind == SlotKind.Account && acctMatch < 0) acctMatch = i;
+            }
+            int pick = charMatch >= 0 ? charMatch : acctMatch;
+            if (pick >= 0) { cbo.SelectedIndex = pick; RefreshPillForCombo(cbo); return; }
         }
         // Unresolved — keep (none) selected but surface via status pill.
         cbo.SelectedIndex = 0;
@@ -502,15 +519,17 @@ internal sealed class AutoLoginTeamsDialog : Form
     private Account? ResolveAccountForSlot(ComboBox cbo)
     {
         if (cbo.SelectedItem is not SlotOption opt || opt.Kind == SlotKind.None) return null;
+        // opt.Value is typed (char:Name / acct:Name) — parse to the bare entity name for lookup.
+        var (_, name) = QuickLoginSlot.Parse(opt.Value);
         if (opt.Kind == SlotKind.Character)
         {
-            var ch = _characters.FirstOrDefault(c => c.Name.Equals(opt.Value, StringComparison.OrdinalIgnoreCase));
+            var ch = _characters.FirstOrDefault(c => c.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
             if (ch == null) return null;
             return _accounts.FirstOrDefault(a =>
                 a.Username.Equals(ch.AccountUsername, StringComparison.OrdinalIgnoreCase) &&
                 a.Server.Equals(ch.AccountServer, StringComparison.OrdinalIgnoreCase));
         }
-        return _accounts.FirstOrDefault(a => a.Name.Equals(opt.Value, StringComparison.OrdinalIgnoreCase));
+        return _accounts.FirstOrDefault(a => a.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
     }
 
     private static string GetValue(ComboBox cbo) =>

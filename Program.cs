@@ -208,6 +208,27 @@ static class Program
             return;
         }
 
+        // --test-team-slot-resolver — run Core/TeamSlotResolverTests.RunAll() and exit with its
+        // return code. Guards the v3.24.15 typed/legacy-bare team-slot routing shared by FireTeam
+        // and the Teams display paths (acct:Name stays selectable even when a same-name Character
+        // exists — the "eisley account hidden in Configure Teams" fix).
+        if (args.Length >= 1 && args[0] == "--test-team-slot-resolver")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.TeamSlotResolverTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"TeamSlotResolverTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
         // --test-window-mode-style — run Core/WindowModeStyleTests.RunAll() and
         // exit with its return code. Guards the WindowMode → GWL_STYLE mapping
         // (Fullscreen=WS_POPUP, Windowed=WS_CAPTION) added in v3.22.81 Phase 2.

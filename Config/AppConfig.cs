@@ -389,11 +389,23 @@ public class AppConfig
             mutated = true;
         }
 
-        // v3.24.3: clamp a corrupt / hand-edited MultiMonTaskbarMode enum to CoverAll.
+        // v3.24.3: clamp a corrupt / hand-edited MultiMonTaskbarMode enum to a defined value.
         if (!Enum.IsDefined(typeof(MultiMonTaskbarMode), Layout.MultiMonTaskbarMode))
         {
-            FileLogger.Warn($"AppConfig.Validate: MultiMonTaskbarMode out of range ({(int)Layout.MultiMonTaskbarMode}) — reset to CoverAll");
-            Layout.MultiMonTaskbarMode = MultiMonTaskbarMode.CoverAll;
+            FileLogger.Warn($"AppConfig.Validate: MultiMonTaskbarMode out of range ({(int)Layout.MultiMonTaskbarMode}) — reset to ShowTaskbars");
+            Layout.MultiMonTaskbarMode = MultiMonTaskbarMode.ShowTaskbars;
+            mutated = true;
+        }
+        // v3.24.15: CoverAll mode retired. The "Show taskbars" toggle was removed and multimonitor
+        // now always shows the 2nd taskbar (ShowTaskbars — the validated working state). Force any
+        // saved / hand-edited CoverAll → ShowTaskbars so no config can express the dropped mode. The
+        // enum value itself is KEPT — EffectiveSlotBounds + EffectiveSlotBoundsTests still exercise
+        // both as a pure function; only the config/UI origination points (default, Apply, here) are
+        // closed off. (Loud per Rule 12 — the migration is warn-logged.)
+        if (Layout.MultiMonTaskbarMode == MultiMonTaskbarMode.CoverAll)
+        {
+            FileLogger.Warn("AppConfig.Validate: CoverAll multimon mode retired — migrated → ShowTaskbars");
+            Layout.MultiMonTaskbarMode = MultiMonTaskbarMode.ShowTaskbars;
             mutated = true;
         }
         // v3.24.3: fold the legacy SlimTitlebarSecondary=false "show 2nd taskbar" trap into
@@ -481,6 +493,35 @@ public class AppConfig
         QuickLogin2 = NormQuickLogin(QuickLogin2, ref mutated);
         QuickLogin3 = NormQuickLogin(QuickLogin3, ref mutated);
         QuickLogin4 = NormQuickLogin(QuickLogin4, ref mutated);
+
+        // v3.24.15: the 24 team slots (Team{1..12}Account{1,2}) share the same typed char:/acct:
+        // scheme since v3.24.15, so they need the identical normalization — a hand-edited
+        // "char:  Eisley " in a team slot would otherwise reach TeamSlotResolver with a space-padded
+        // name and silently miss (the same trap NormQuickLogin closes for the Quick Login slots).
+        Team1Account1  = NormQuickLogin(Team1Account1,  ref mutated);
+        Team1Account2  = NormQuickLogin(Team1Account2,  ref mutated);
+        Team2Account1  = NormQuickLogin(Team2Account1,  ref mutated);
+        Team2Account2  = NormQuickLogin(Team2Account2,  ref mutated);
+        Team3Account1  = NormQuickLogin(Team3Account1,  ref mutated);
+        Team3Account2  = NormQuickLogin(Team3Account2,  ref mutated);
+        Team4Account1  = NormQuickLogin(Team4Account1,  ref mutated);
+        Team4Account2  = NormQuickLogin(Team4Account2,  ref mutated);
+        Team5Account1  = NormQuickLogin(Team5Account1,  ref mutated);
+        Team5Account2  = NormQuickLogin(Team5Account2,  ref mutated);
+        Team6Account1  = NormQuickLogin(Team6Account1,  ref mutated);
+        Team6Account2  = NormQuickLogin(Team6Account2,  ref mutated);
+        Team7Account1  = NormQuickLogin(Team7Account1,  ref mutated);
+        Team7Account2  = NormQuickLogin(Team7Account2,  ref mutated);
+        Team8Account1  = NormQuickLogin(Team8Account1,  ref mutated);
+        Team8Account2  = NormQuickLogin(Team8Account2,  ref mutated);
+        Team9Account1  = NormQuickLogin(Team9Account1,  ref mutated);
+        Team9Account2  = NormQuickLogin(Team9Account2,  ref mutated);
+        Team10Account1 = NormQuickLogin(Team10Account1, ref mutated);
+        Team10Account2 = NormQuickLogin(Team10Account2, ref mutated);
+        Team11Account1 = NormQuickLogin(Team11Account1, ref mutated);
+        Team11Account2 = NormQuickLogin(Team11Account2, ref mutated);
+        Team12Account1 = NormQuickLogin(Team12Account1, ref mutated);
+        Team12Account2 = NormQuickLogin(Team12Account2, ref mutated);
 
         // v3.15.2: clamp the 10 new autologin-timing tunables. Floors are
         // calibrated against the comments next to each property in LaunchConfig
@@ -781,7 +822,7 @@ public class WindowLayout
     /// window: the 2nd window takes the PRIMARY's size, bottom-anchored to the 2nd monitor's FULL
     /// bottom (CoverAll → covers the 2nd taskbar) or WORK bottom (ShowTaskbars → game butts the 2nd
     /// taskbar, no gap, taskbar visible). The primary is always full-bounds (covers the main
-    /// taskbar) in both modes. Default CoverAll.
+    /// taskbar) in both modes. Default ShowTaskbars (the only selectable mode — the "Show taskbars" toggle was removed in v3.24.15).
     /// <para>
     /// Supersedes the per-monitor <see cref="SlimTitlebarSecondary"/> flag for the "show
     /// taskbar on the 2nd monitor" want: AppConfig.Validate migrates a legacy
@@ -790,7 +831,7 @@ public class WindowLayout
     /// bottom-anchor path.
     /// </para>
     /// </summary>
-    public MultiMonTaskbarMode MultiMonTaskbarMode { get; set; } = MultiMonTaskbarMode.CoverAll;
+    public MultiMonTaskbarMode MultiMonTaskbarMode { get; set; } = MultiMonTaskbarMode.ShowTaskbars;
 
     /// <summary>
     /// v3.24.3 — mask the residual sub-second taskbar peek that can flash on the primary

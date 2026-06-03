@@ -4043,12 +4043,11 @@ public class TrayManager : IDisposable
         Account? acc;
         lock (ConfigManager.ConfigMutationLock)
         {
-            ch = _config.FindCharacterByName(raw);
-            acc = ch == null ? _config.FindAccountByName(raw) : null;
+            (ch, acc) = TeamSlotResolver.Resolve(raw, _config.FindCharacterByName, _config.FindAccountByName);
         }
         if (ch != null) return (ch.Name, SlotSource.Character);
         if (acc != null && !string.IsNullOrEmpty(acc.Username)) return (acc.Username, SlotSource.Account);
-        return (raw, SlotSource.Raw);
+        return (QuickLoginSlot.DisplayName(raw), SlotSource.Raw);
     }
 
     /// <summary>
@@ -4074,12 +4073,11 @@ public class TrayManager : IDisposable
             Account? acc;
             lock (ConfigManager.ConfigMutationLock)
             {
-                ch = _config.FindCharacterByName(raw);
-                acc = ch == null ? _config.FindAccountByName(raw) : null;
+                (ch, acc) = TeamSlotResolver.Resolve(raw, _config.FindCharacterByName, _config.FindAccountByName);
             }
             if (ch != null) return $"{ch.LabelWithClass} \u2192 enter world";
             if (acc != null) return $"{acc.EffectiveLabel} \u2192 charselect";
-            return $"{raw} (unresolved)";
+            return $"{QuickLoginSlot.DisplayName(raw)} (unresolved)";
         }
         var lines = new List<string>();
         for (int i = 0; i < slots.Count; i++)
@@ -4134,12 +4132,17 @@ public class TrayManager : IDisposable
             // can swap _config.Characters / _config.Accounts via ReloadConfigCore between
             // iterations; without this lock the threadpool reader sees a torn
             // FirstOrDefault. Resolve under the lock, release before any await/fire.
+            // v3.24.15: typed slot dispatch via the shared TeamSlotResolver (one impl, reused by the
+            // Teams dialog + the submenu/tooltip/summary display paths). char:<Name> → Character
+            // (enter world), acct:<Name> → Account (charselect), bare → Character-first so pre-v3.24.15
+            // saved teams fire unchanged. slotName is the clean (prefix-stripped) name for logs/balloons.
+            var slotName = QuickLoginSlot.DisplayName(user);
             Character? character;
-            Account? account = null;
+            Account? account;
             lock (ConfigManager.ConfigMutationLock)
             {
-                character = _config.FindCharacterByName(user);
-                if (character == null) account = _config.FindAccountByName(user);
+                (character, account) = TeamSlotResolver.Resolve(
+                    user, _config.FindCharacterByName, _config.FindAccountByName);
             }
 
             AccountKey? login = character != null ? character.AccountKey
@@ -4151,12 +4154,12 @@ public class TrayManager : IDisposable
             var decision = TeamLoginDeduper.Step(firedLogins, login);
             if (decision == TeamLoginDeduper.Decision.SkipUnresolved)
             {
-                FileLogger.Warn($"FireTeam({teamIndex}): {slotLabel} '{user}' not found in Accounts or Characters — skipping");
+                FileLogger.Warn($"FireTeam({teamIndex}): {slotLabel} '{slotName}' not found in Accounts or Characters — skipping");
                 continue;
             }
             if (decision == TeamLoginDeduper.Decision.SkipDuplicate)
             {
-                var dupMsg = $"{slotLabel} '{user}' resolves to login {login!.Value}, already fired this team — skipping (EQ would kick the duplicate session)";
+                var dupMsg = $"{slotLabel} '{slotName}' resolves to login {login!.Value}, already fired this team — skipping (EQ would kick the duplicate session)";
                 FileLogger.Warn($"FireTeam({teamIndex}): {dupMsg}");
                 _uiContext?.Post(_ => ShowWarning($"Team {teamIndex}: {dupMsg}"), null);
                 continue;
@@ -4177,14 +4180,14 @@ public class TrayManager : IDisposable
             if (character != null)
             {
                 // Null override -> Character's default behavior (enter world).
-                FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{user}' → Character '{character.EffectiveLabel}' → enter world");
+                FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{slotName}' → Character '{character.EffectiveLabel}' → enter world");
                 _ = _autoLoginManager.LoginAndEnterWorld(character, null);  // PARALLEL - no await
                 fired++;
             }
             else
             {
                 // Account-only slot. Always charselect - no character target to enter world.
-                FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{user}' → Account '{account!.EffectiveLabel}' → charselect");
+                FileLogger.Info($"FireTeam({teamIndex}): {slotLabel} '{slotName}' → Account '{account!.EffectiveLabel}' → charselect");
                 _ = _autoLoginManager.LoginToCharselect(account);  // PARALLEL - no await
                 fired++;
             }

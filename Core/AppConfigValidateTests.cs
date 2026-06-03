@@ -420,8 +420,59 @@ public static class AppConfigValidateTests
             failures += Assert("quicklogin normalization sets mutated", mutated, true);
         }
 
+        // Case 18 (v3.24.15): MultiMonTaskbarMode default is ShowTaskbars on a fresh config —
+        // the "Show taskbars" toggle was removed; multimonitor always shows the 2nd taskbar.
+        {
+            var cfg = new AppConfig();
+            failures += Assert("multimon taskbar default ShowTaskbars",
+                cfg.Layout.MultiMonTaskbarMode, MultiMonTaskbarMode.ShowTaskbars);
+        }
+
+        // Case 19 (v3.24.15): a saved / hand-edited CoverAll config is force-migrated to
+        // ShowTaskbars (the retired mode is unreachable from any config path) and Validate()
+        // reports it mutated so the migration persists to disk.
+        {
+            var cfg = new AppConfig();
+            cfg.Layout.MultiMonTaskbarMode = MultiMonTaskbarMode.CoverAll;
+            bool mutated = cfg.Validate();
+            failures += Assert("CoverAll migrated to ShowTaskbars",
+                cfg.Layout.MultiMonTaskbarMode, MultiMonTaskbarMode.ShowTaskbars);
+            failures += Assert("CoverAll migration sets mutated", mutated, true);
+        }
+
+        // Case 20 (v3.24.15): an out-of-range (corrupt) MultiMonTaskbarMode enum clamps to
+        // ShowTaskbars — the reset target follows the new default, not the retired CoverAll.
+        {
+            var cfg = new AppConfig();
+            cfg.Layout.MultiMonTaskbarMode = (MultiMonTaskbarMode)99;
+            cfg.Validate();
+            failures += Assert("out-of-range multimon clamps to ShowTaskbars",
+                cfg.Layout.MultiMonTaskbarMode, MultiMonTaskbarMode.ShowTaskbars);
+        }
+
+        // Case 21 (v3.24.15): team slots get the SAME typed-value normalization as QuickLogin1-4 —
+        // a hand-edited "char:  Eisley " trims to "char:Eisley" (else TeamSlotResolver looks up a
+        // space-padded name and silently misses), an empty-name prefix drops to "", a legacy-bare
+        // value is trimmed but kept bare, and Validate() reports mutated.
+        {
+            var cfg = new AppConfig
+            {
+                ConfigVersion = 4,
+                Team1Account1 = "char:  Eisley ",
+                Team1Account2 = "acct:",
+                Team2Account1 = "Eisley",          // legacy-bare — trimmed, prefix-free, preserved
+                Team2Account2 = "",
+            };
+            bool mutated = cfg.Validate();
+            failures += Assert("team slot interior-whitespace trimmed", cfg.Team1Account1, "char:Eisley");
+            failures += Assert("team slot empty-prefix reset", cfg.Team1Account2, "");
+            failures += Assert("team slot legacy-bare preserved", cfg.Team2Account1, "Eisley");
+            failures += Assert("team slot empty preserved", cfg.Team2Account2, "");
+            failures += Assert("team slot normalization sets mutated", mutated, true);
+        }
+
         Console.WriteLine(failures == 0
-            ? "AppConfigValidateTests: all 17 cases PASSED"
+            ? "AppConfigValidateTests: all 21 cases PASSED"
             : $"AppConfigValidateTests: {failures} assertion failure(s)");
         return failures == 0 ? 0 : 1;
     }

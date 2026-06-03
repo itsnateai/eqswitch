@@ -1,5 +1,33 @@
 # Changelog
 
+## v3.24.15 — Configure-Teams account/character parity, Quick Login hint, pin multimon "show taskbars" (2026-06-03)
+
+Three UI/config items plus a shared-resolver refactor. Headline fix: the **Configure Teams**
+dropdowns now list an Account independently of a same-named Character, so an account can be assigned
+to a team slot for char-select even when a character shares its name (e.g. account `eisley` was
+hidden behind character `Eisley`).
+
+- **Teams: Account no longer hidden by a same-name Character.** `AutoLoginTeamsDialog` dropped its
+  name-based dedup and adopted the typed slot-value scheme (`char:Name` / `acct:Name`) already used
+  by Quick Login — so the `eisley` Account and the `Eisley` Character are both selectable with
+  distinct intents (Account → char-select, Character → enter world). Existing bare-name team slots
+  are unaffected: they resolve Character-first exactly as before, so **no config migration** is needed.
+- **One shared resolver for every team-slot path.** Extracted `Core/TeamSlotResolver` — the typed /
+  legacy-bare routing is now shared by `FireTeam` (launch), the Teams submenu label, the per-slot
+  tooltip, and the Settings team-summary panel, so they can't drift apart again (that divergence is
+  what caused the bug). Pure + unit-tested via the new `--test-team-slot-resolver` suite.
+- **Quick Login dialog hint** is now two balanced lines clarifying the slots are fired by the Tray
+  Click Actions.
+- **"Show taskbars (multi-mon)" toggle removed.** Multimonitor now always shows the 2nd taskbar (the
+  validated working state) — pinned via the config default, Settings→Apply, and a `Validate`
+  migration that pulls any saved `CoverAll` config forward to `ShowTaskbars`. The `MultiMonTaskbarMode`
+  enum is retained (its geometry stays unit-tested both ways); only the UI/config paths that could
+  reach the retired mode are closed off.
+- **Defaults confirmed (no code change):** Picture-in-Picture and Multi-Monitor Mode were already off
+  by default for fresh configs.
+- Tests: new `--test-team-slot-resolver`; `--test-config-validate` grows to 20 cases (multimon default
+  + CoverAll migration + out-of-range clamp).
+
 ## v3.24.14 — Self-update polish: "close EQ first" pre-flight + clearer locked-file errors (2026-06-03)
 
 Found during a read-only audit of the self-update flow. The producer↔consumer contract —
