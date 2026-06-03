@@ -51,6 +51,16 @@
     <Content Include="Native\eqswitch-hook.dll" Link="eqswitch-hook.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <Content Include="Native\eqswitch-di8.dll" Link="eqswitch-di8.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
+
+  <!-- Ship uninstall.bat next to the exe in build + publish output. The release zip
+       gets it from the repo root (release.yml's Compress-Archive), so this does NOT
+       change the released artifact. It gives dotnet publish parity and, crucially, lets
+       the self-update TestMode (the test-update CLI flag) exercise the uninstall.bat swap
+       path: TestMode builds its test zip from files that exist next to the exe, so without
+       this copy the new updateable entry is silently skipped in every local test. -->
+  <ItemGroup>
+    <Content Include="uninstall.bat" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.5" />
   </ItemGroup>
