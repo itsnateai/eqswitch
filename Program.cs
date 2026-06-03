@@ -418,6 +418,28 @@ static class Program
             Environment.Exit(exitCode);
             return;
         }
+
+        // --test-compact-slots — run Core/MonitorSlotPackerTests.RunAll() and exit. Guards the
+        // v3.24.12 orphan-rescue compaction (MonitorSlotPacker.Compact): when the primary-monitor
+        // client closes, the survivor must re-pack onto the freed primary, preserving relative
+        // order, tie-broken by PID, wrapping modulo monitorCount for the 3+-client overflow case.
+        // Pure-map test only; the real gate is a live close-primary-watch-orphan-jump smoke.
+        if (args.Length >= 1 && args[0] == "--test-compact-slots")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.MonitorSlotPackerTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"MonitorSlotPackerTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
 #endif
 
         // Enforce single instance

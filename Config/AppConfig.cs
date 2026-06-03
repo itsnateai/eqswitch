@@ -717,6 +717,17 @@ public class WindowLayout
     public string Mode { get; set; } = "single";
 
     /// <summary>
+    /// v3.24.12: when a client closes in multimonitor mode, automatically re-pack the
+    /// surviving clients toward the primary monitor so closing the primary-monitor client
+    /// doesn't strand its sibling on the secondary. Default on. Fix Windows ALWAYS compacts
+    /// regardless of this flag — this controls only the *automatic* on-close re-pack. Set
+    /// false to leave survivors exactly where they were until Fix Windows is pressed.
+    /// (No UI toggle yet — edit eqswitch-config.json. STJ: existing configs missing the key
+    /// keep this true, matching the WindowMode default-flip precedent.)
+    /// </summary>
+    public bool AutoRepackOnClose { get; set; } = true;
+
+    /// <summary>
     /// Internal "EQSwitch styles this window" signal read by WindowManager and
     /// EnforceOverrides. TRUE for both Fullscreen and Windowed window modes;
     /// the concrete style (WS_POPUP vs WS_CAPTION) is selected by

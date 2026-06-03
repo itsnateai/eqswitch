@@ -822,6 +822,24 @@ public class TrayManager : IDisposable
             // sequential assignment.
             _monitorSlotByPid.Remove(c.ProcessId);
 
+            // v3.24.12: auto-repack survivors toward the primary when a client closes
+            // (default on — Layout.AutoRepackOnClose). Without this, closing the primary-
+            // monitor client strands its sibling on the secondary until the user presses Fix
+            // Windows. Compacting here lets the 250ms taskbar-recovery pass below
+            // (RaiseRemainingClientsAboveTaskbar → ArrangeWindows) land the survivor on the
+            // freed primary automatically — it reads _monitorSlotByPid when the timer fires,
+            // which is after this synchronous compaction. Skipped while any client is mid-
+            // autologin: a slot shift during the sensitive login / char-select sequence is
+            // never worth a convenience re-pack — the next Fix Windows (or post-login arrange)
+            // compacts then. Multimon-only.
+            if (_config.Layout.AutoRepackOnClose
+                && _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase)
+                && _processManager.Clients.Count > 0
+                && !_processManager.Clients.Any(rc => _autoLoginManager.IsLoginActive(rc.ProcessId)))
+            {
+                CompactMonitorSlots();
+            }
+
             // Drop the PID→name binding so a recycled PID doesn't inherit a stale name.
             AutoLoginManager.ClearBoundName(c.ProcessId);
 
@@ -1300,6 +1318,27 @@ public class TrayManager : IDisposable
         // "Fixed N" arithmetic is correct in those cases too. Round-3
         // reintroduced the same overcounting bug shape for the non-iconic
         // silent skips.
+
+        // v3.24.12: pull an orphaned survivor back toward the primary before arranging.
+        // Slot ownership is sticky — when the primary-monitor client closes, its sibling
+        // keeps its higher slot and the arrange below would re-strand it on the secondary.
+        // Compacting first lets the arrange land it on the freed primary. Compacts
+        // independent of the AutoRepackOnClose auto-path (that flag governs only the on-close
+        // path). Multimon-only — single-screen ignores slots.
+        //
+        // Gated on no-login-active for the SAME reason as the ClientLost path: compaction
+        // renumbers the FULL map, including any mid-login PID (it is NOT spared just because
+        // it's excluded from clientsToArrange). Renumbering a logging-in client is unsafe
+        // because a teammate's LoginComplete restarts the SHARED slim-titlebar guard timer
+        // (TrayManager.cs ~278) while this client may still be mid-login, and the guard's
+        // read-back tick (CorrectInjectedWindowedGeometry, no per-PID login gate) would then
+        // RepositionWindow it off its login screen — violating the "never move a mid-login
+        // window" invariant every other arrange path upholds. Deferring keeps that invariant;
+        // the orphan is rescued on the next Fix Windows or the post-login arrange instead.
+        if (_config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase)
+            && !_processManager.Clients.Any(rc => _autoLoginManager.IsLoginActive(rc.ProcessId)))
+            CompactMonitorSlots();
+
         var skips = _windowManager.ArrangeWindows(clientsToArrange, _monitorSlotByPid);
         int skippedIconic = skips.Iconic;
         int skippedOther = skips.Other;
@@ -5207,6 +5246,35 @@ public class TrayManager : IDisposable
         for (int i = 0; i < pids.Count; i++)
             _monitorSlotByPid[pids[i]] = oldSlots[(i + 1) % oldSlots.Count];
         FileLogger.Info($"RotateMonitorSlots: {string.Join(", ", pids.Select(p => $"PID {p}→slot {_monitorSlotByPid[p]}"))}");
+    }
+
+    /// <summary>
+    /// v3.24.12: re-pack the live monitor-slot map so survivors fill the lowest slots with
+    /// no gaps, preserving relative order (see <see cref="MonitorSlotPacker.Compact"/>). Fixes
+    /// the orphan-stranding bug: slot ownership is sticky, so when the primary-monitor client
+    /// closes its sibling keeps its higher slot and Fix Windows re-strands it on the secondary.
+    /// Compacting pulls the orphan back toward the primary. Returns true if any slot changed
+    /// (callers log/arrange only when it did). Pure permutation of <see cref="_monitorSlotByPid"/>
+    /// — the MOVE-only swap invariant holds (lock-size: a slot change is a move, not a DX
+    /// rebuild → no crash). Multimon-only; callers gate on Layout.Mode. UI-thread only, like
+    /// every other slot-map mutator.
+    /// </summary>
+    private bool CompactMonitorSlots()
+    {
+        if (_monitorSlotByPid.Count == 0) return false;
+        var packed = MonitorSlotPacker.Compact(_monitorSlotByPid, GetMonitorOrderCount());
+        bool changed = false;
+        foreach (var kv in packed)
+        {
+            if (_monitorSlotByPid[kv.Key] != kv.Value)
+            {
+                _monitorSlotByPid[kv.Key] = kv.Value;
+                changed = true;
+            }
+        }
+        if (changed)
+            FileLogger.Info($"CompactMonitorSlots: repacked → {string.Join(", ", packed.OrderBy(k => k.Value).ThenBy(k => k.Key).Select(k => $"PID {k.Key}→slot {k.Value}"))}");
+        return changed;
     }
 
     /// <summary>
