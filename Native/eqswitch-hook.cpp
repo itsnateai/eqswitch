@@ -263,6 +263,16 @@ static WNDPROC g_origGeoWndProc = NULL;       // proc present when we subclassed
 static HWND    g_geoSubclassHwnd = NULL;      // the window we subclassed (EQ's single main window)
 static volatile LONG g_geoSubclassInstalled = 0;
 
+// v3.24.11 — cooperative raw subclassing (see the long rationale in device_proxy.cpp). The
+// di8 DLL (eqswitch-di8.dll) ALSO raw-subclasses this same EQ HWND from its background thread.
+// Both DLLs publish their subclass proc to a window property; before re-grabbing, each checks
+// whether the OTHER's proc is currently on top and, if so (and we're already installed here),
+// declines to re-grab — we are chained below it. That kills the mutual re-grab war that formed
+// the circular WndProc chain (→ USER32 0xc000041d on the Fullscreen<->Windowed toggle). These
+// property names are a process-wide contract with device_proxy.cpp — keep both in sync.
+static const wchar_t* PROP_DI8_SUBCLASS = L"EQSwitchDi8SubclassProc";
+static const wchar_t* PROP_HOOK_SUBCLASS = L"EQSwitchHookSubclassProc";
+
 // ─── v3.24.0 Native Window-Mode backbuffer resize ────────────────────────────
 // Instant-crisp DX backbuffer rebuild on a Window-Mode toggle — BOTH directions,
 // no ScreenMode flip, no window restyle (the v3.23.7 interim's ForceDxReinit had
@@ -495,11 +505,20 @@ static LRESULT CALLBACK GeoWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
 // under the recursive g_detourCs.
 static void EnsureGeoSubclass(HWND hWnd) {
     WNDPROC current = (WNDPROC)GetWindowLongPtrW(hWnd, GWLP_WNDPROC);
-    if (current == GeoWndProc) return;  // already ours on this window
+    if (current == GeoWndProc) return;  // already on top — nothing to do
+    // v3.24.11 — cooperative check: if the di8's ActivateWndProc is the current top proc AND we
+    // are already installed on THIS window, the di8 merely chained ON TOP of us — GeoWndProc is
+    // still in the chain BELOW it. Re-grabbing here is what captured the di8's proc as our chain
+    // target and closed the circular loop on the mode toggle, so DON'T. (If current is neither
+    // ours nor the di8's, EQ overwrote the proc in place → fall through and re-grab.)
+    WNDPROC di8Proc = (WNDPROC)GetPropW(hWnd, PROP_DI8_SUBCLASS);
+    if (di8Proc && current == di8Proc && g_geoSubclassInstalled && g_geoSubclassHwnd == hWnd)
+        return;  // friendly di8 subclass on top; we remain chained below it
     // EQ recreates its top-level window at char-select → in-world and may
     // re-set its WndProc; capture whatever is current as the chain target.
     g_origGeoWndProc = current;
     SetWindowLongPtrW(hWnd, GWLP_WNDPROC, (LONG_PTR)GeoWndProc);
+    SetPropW(hWnd, PROP_HOOK_SUBCLASS, (HANDLE)GeoWndProc);  // advertise our proc to the di8
     g_geoSubclassHwnd = hWnd;
     if (!InterlockedExchange(&g_geoSubclassInstalled, 1))
         LogMessage("GeoWndProc: installed Windowed geometry subclass (hwnd=0x%p orig=0x%p)", (void*)hWnd, (void*)current);
@@ -570,6 +589,7 @@ static void RemoveGeoSubclass() {
             SetWindowLongPtrW(hWnd, GWLP_WNDPROC, (LONG_PTR)g_origGeoWndProc);
             LogMessage("GeoWndProc: removed geometry subclass");
         }
+        RemovePropW(hWnd, PROP_HOOK_SUBCLASS);  // v3.24.11 — stop advertising our proc
     }
     g_geoSubclassHwnd = NULL;
 }

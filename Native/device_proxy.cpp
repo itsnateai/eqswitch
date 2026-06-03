@@ -126,6 +126,22 @@ void PostGameThreadPoll() {
 
 static WNDPROC g_origWndProc = nullptr;
 static bool g_subclassInstalled = false;
+static HWND g_subclassHwnd = nullptr;     // window our subclass is currently installed on
+
+// v3.24.11 — cooperative raw subclassing. The hook DLL (eqswitch-hook.dll) ALSO raw-subclasses
+// this same EQ HWND (its GeoWndProc). Two raw subclassers that each re-grab on seeing an
+// unrecognized proc on top formed a circular WndProc chain (di8.orig=Geo AND Geo.orig=di8) on
+// the Fullscreen<->Windowed toggle → infinite recursion → stack overflow → USER32 0xc000041d.
+// FIX without comctl32 (which hard-fails cross-thread — and the di8 MUST install from its
+// background ActivateThread so the subclass is present even when the game thread is wedged
+// mid-scene-load, the v3.24.8 char-select-marshaling contract): each DLL PUBLISHES its own
+// subclass proc to a window property and, before re-grabbing, checks whether the OTHER DLL's
+// published proc is the current top proc. If so — and we're already installed on this window —
+// we are chained BELOW the friendly proc, so we do NOT re-grab. That breaks the mutual re-grab
+// war (→ no cycle) while still re-grabbing when EQ genuinely overwrites the proc in place.
+// Property names are a process-wide contract with eqswitch-hook.cpp — keep both in sync.
+static const wchar_t* PROP_DI8_SUBCLASS = L"EQSwitchDi8SubclassProc";
+static const wchar_t* PROP_HOOK_SUBCLASS = L"EQSwitchHookSubclassProc";
 
 // v7 Phase 3: WM_TIMER-based MQ2 poll removed. MQ2BridgePollTick() now runs
 // from the LoginController::GiveTime detour (see login_givetime_detour.cpp)
@@ -189,18 +205,31 @@ static bool EnsureSubclassInstalled(HWND hwnd) {
         g_wmGameThreadPoll = RegisterWindowMessageW(L"EQSwitchGameThreadPollV1");
 
     WNDPROC current = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
-    if (current == ActivateWndProc) return false; // already installed
+    if (current == ActivateWndProc) return false; // already on top — nothing to do
 
-    // EQ may have re-set its WndProc — capture the new original
+    // v3.24.11 — cooperative check: if the hook's GeoWndProc is the current top proc AND we
+    // are already installed on THIS window, then the hook merely chained ON TOP of us — we are
+    // still in the chain BELOW it (Geo -> ActivateWndProc -> EQ). Re-grabbing here is exactly
+    // what captured the hook's proc as our chain target and closed the circular loop, so DON'T.
+    // (If current is neither ours nor the hook's, EQ overwrote the proc in place → fall through
+    // and re-grab to re-establish; the di8 marshaling subclass always recovers that way.)
+    WNDPROC hookProc = (WNDPROC)GetPropW(hwnd, PROP_HOOK_SUBCLASS);
+    if (hookProc && current == hookProc && g_subclassInstalled && g_subclassHwnd == hwnd)
+        return false;  // friendly hook subclass on top; we remain chained below it
+
+    // (Re)grab. Capture whatever is currently on top as our chain target and publish our proc
+    // so the hook's symmetric check can recognize us and avoid re-grabbing on top of us.
     g_origWndProc = current;
     SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)ActivateWndProc);
+    SetPropW(hwnd, PROP_DI8_SUBCLASS, (HANDLE)ActivateWndProc);
+    g_subclassHwnd = hwnd;
     if (!g_subclassInstalled) {
-        DI8Log("wndproc_hook: installed subclass (orig=0x%08X)",
-               (unsigned)(uintptr_t)current);
+        DI8Log("wndproc_hook: installed subclass (orig=0x%08X hwnd=0x%X)",
+               (unsigned)(uintptr_t)current, (unsigned)(uintptr_t)hwnd);
         g_subclassInstalled = true;
     } else {
-        DI8Log("wndproc_hook: RE-installed subclass (EQ overwrote, new orig=0x%08X)",
-               (unsigned)(uintptr_t)current);
+        DI8Log("wndproc_hook: RE-installed subclass (EQ overwrote, new orig=0x%08X hwnd=0x%X)",
+               (unsigned)(uintptr_t)current, (unsigned)(uintptr_t)hwnd);
     }
     return true; // freshly installed
 }
@@ -215,6 +244,8 @@ static void RemoveSubclass(HWND hwnd) {
         SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)g_origWndProc);
         DI8Log("wndproc_hook: removed subclass");
     }
+    RemovePropW(hwnd, PROP_DI8_SUBCLASS);  // v3.24.11 — stop advertising our (now-removed) proc
+    if (hwnd == g_subclassHwnd) g_subclassHwnd = nullptr;
     g_subclassInstalled = false;
 }
 

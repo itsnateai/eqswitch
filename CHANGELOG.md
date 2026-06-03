@@ -1,5 +1,45 @@
 # Changelog
 
+## v3.24.11 — FIX Fullscreen↔Windowed toggle crash: two DLLs subclassing one HWND (2026-06-02)
+
+Fixes both injected clients crashing `eqgame.exe` in `USER32.dll` (`0xc000041d`,
+`STATUS_FATAL_USER_CALLBACK_EXCEPTION`) the instant you hotswap Fullscreen↔Windowed in a
+multibox. Fullscreen multibox was perfect; the toggle was the only path that crashed.
+
+- **Root cause:** the di8 DLL (`device_proxy.cpp` `ActivateWndProc`, char-select marshaling,
+  always-on since v3.24.8) and the hook DLL (`eqswitch-hook.cpp` `GeoWndProc`, geometry/
+  backbuffer, installed in both modes since v3.24.0) **both** raw-subclassed the *same* EQ HWND
+  via `SetWindowLongPtr(GWLP_WNDPROC)` + a hand-captured "original proc" chain pointer, and each
+  **re-grabbed whenever it saw an unrecognized proc on top**. In steady state the chain was linear
+  (`di8 → Geo → EQ`). The Windowed toggle calls `SetWindowPos` → the hook's `EnsureGeoSubclass`
+  re-grabbed *on top of* the di8 (`Geo.orig = di8`) while `di8.orig = Geo` → **circular WndProc
+  chain → infinite mutual recursion → stack overflow → 0xc000041d**, both clients within ms.
+  (Fullscreen never re-called `EnsureGeoSubclass`, so its chain stayed linear — that's why only
+  the toggle crashed.) Pre-existing since v3.24.8; not the v3.24.10 bottom-anchor.
+- **Fix — cooperative raw subclassing:** the two raw subclasses now **recognize each other** so
+  neither re-grabs on top of the other. Each DLL publishes its own subclass proc to a window
+  property (`EQSwitchDi8SubclassProc` / `EQSwitchHookSubclassProc`); before re-grabbing, each
+  checks whether the *other* DLL's published proc is the current top proc — and if so (and it is
+  already installed on this window) it declines, because it is still chained *below* the friendly
+  proc. That breaks the mutual re-grab war (→ the circular chain can never form) while still
+  re-grabbing when EQ genuinely overwrites the proc. **Nothing else changed** — install timing,
+  threading, the `CallWindowProcW` chaining, and the entire v3.24.8 char-select marshaling path
+  (`PostGameThreadPoll` → `ActivateWndProc` → `MQ2BridgePollTick` → `SetCurSel`) are byte-identical
+  to v3.24.10. ~12 lines added per DLL, the most surgical of the options considered.
+- **Why not comctl32 `SetWindowSubclass`:** tried first (the textbook multi-subclass coordinator),
+  but its API **hard-fails when called off the window-owning thread**, and the di8 *must* install
+  from its background `ActivateThread` so the subclass is present even when the game thread is
+  wedged mid-scene-load (the exact v3.24.8 char-select contract). Live smoke caught it immediately:
+  `SetWindowSubclass FAILED` spam → `DLL did not ack selection in 24s`. Cooperative raw keeps the
+  background-thread install (works cross-thread) and is therefore regression-free. A re-entry guard
+  was also rejected — `DefWindowProc`-ing on re-entry bypasses EQ's real WndProc → breaks the game.
+- **Validated LIVE on the 1080+1200 dual-monitor rig (the gate):** team autologin both clients
+  `login complete` (marshal `RECEIVED`, character selected — char-select 8/8 contract intact);
+  **4× Fullscreen↔Windowed toggles both directions** with GeoWndProc + di8 confirmed coexisting
+  (`geo-install=1`, no re-grab war) and the full DX backbuffer-resize path running — **zero
+  `0xc000041d`** across the whole run (vs. the v3.24.10 baseline which crashed both clients on the
+  first toggle); in-world screenshot crisp at the slim Windowed geometry, no black-bars.
+
 ## v3.24.10 — Multimon "Show taskbars": 2nd window butts the taskbar, no desktop gap (2026-06-02)
 
 Makes the multimonitor **"Show taskbars (multi-mon)"** toggle put the 2nd-monitor game flush
