@@ -1130,8 +1130,8 @@ public class TrayManager : IDisposable
                 UpdateHookConfig();
                 long tHook = sw.ElapsedMilliseconds;
                 FileLogger.Info($"SwitchKey-swap-timing: rotate={tRotate}ms, arrange={tArrange - tRotate}ms, hookConfig={tHook - tArrange}ms, total={tHook}ms");
-                // v3.24.3 — re-sync the DX backbuffer (no-op when locked; rebuilds on the
-                // per-monitor-fit degrade path so a mismatched-monitor swap can't leave a black bar).
+                // v3.24.3 — re-sync the DX backbuffer (no-op when locked = move-only swap;
+                // rebuilds only on the rare degrade path — 4K / primary-bigger — where a swap resizes).
                 PostBackbufferResizeToClients("SwitchKey-swap");
             }
             catch (Exception ex)
@@ -1417,16 +1417,15 @@ public class TrayManager : IDisposable
 
     /// <summary>
     /// v3.24.3 — post the native backbuffer-resize to every injected client after a swap.
-    /// Self-gating + idempotent: the native side reads the live client size and returns without
-    /// a reset when the backbuffer already matches (so a SYMMETRIC swap — same-size windows,
-    /// matched monitors under CoverAll — is a no-op). Under v3.24.10 per-monitor-fit, a swap on
-    /// MISMATCHED monitors (primary full vs secondary work/full of a different size) DOES resize
-    /// the client — this rebuilds the DX backbuffer to match instead of leaving the smoosh /
-    /// black bar until the user presses Fix-Windows. Fired on EVERY swap so coverage is uniform;
-    /// the transition curtain masks the brief reset. NOTE: per-client, this skips clients that
-    /// are not injected / mid-login / hung / iconic (see <see cref="PostBackbufferResize"/>) —
-    /// such a client, if swapped while in that state, keeps a mismatched backbuffer until the
-    /// next Fix-Windows (transient: steady-state multibox has both clients injected + in-world).
+    /// Self-gating + idempotent: the native side reads the live client size and returns without a
+    /// reset when the backbuffer already matches. Under v3.24.10 lock-size+bottom-anchor BOTH
+    /// windows are the primary's size, so a swap is a pure MOVE — the backbuffer already matches →
+    /// this is a NO-OP on the common (lockable) path (and that's WHY the v3.24.10 first cut's
+    /// per-swap ResetDevice crash can't recur: there's no resize to rebuild). It still rebuilds on
+    /// the rare DEGRADE path (4K+1080p / primary-bigger), where a swap genuinely resizes the
+    /// client — instead of leaving the smoosh / black bar until Fix-Windows. Fired on EVERY swap so
+    /// coverage is uniform; the transition curtain masks any reset. NOTE: per-client, this skips
+    /// clients that are not injected / mid-login / hung / iconic (see <see cref="PostBackbufferResize"/>).
     /// </summary>
     private void PostBackbufferResizeToClients(string ctx)
     {
@@ -5314,14 +5313,14 @@ public class TrayManager : IDisposable
     }
 
     /// <summary>
-    /// v3.24.10 — the EFFECTIVE slim-coverage monitor bounds for a PID, derived from the SAME
-    /// per-monitor-fit authority (<see cref="WindowManager.EffectiveSlotBounds"/>) that
-    /// <see cref="WindowManager.ArrangeMultiMonitor"/> uses to SIZE the window. This is what the
-    /// hook must pin so it doesn't fight the arrange — the v3.24.1 swap refit (taskbar peek + DX
-    /// smoosh/black-bar) was the hook pinning a DIFFERENT size than arrange. Routing both through
-    /// EffectiveSlotBounds keeps the hook pin, the arrange, and the Windowed read-back agreeing on
-    /// the per-slot size by construction (primary = its own full bounds; secondary = its own work
-    /// area for ShowTaskbars / full bounds for CoverAll).
+    /// v3.24.10 — the EFFECTIVE slim-coverage monitor rect for a PID, derived from the SAME
+    /// lock-size + bottom-anchor authority (<see cref="WindowManager.EffectiveSlotBounds"/>) that
+    /// <see cref="WindowManager.ArrangeMultiMonitor"/> uses to SIZE + POSITION the window. This is
+    /// what the hook must pin so it doesn't fight the arrange — the v3.24.1 swap refit (taskbar
+    /// peek + DX smoosh/black-bar) was the hook pinning a DIFFERENT rect than arrange. Routing both
+    /// through EffectiveSlotBounds keeps the hook pin, the arrange, and the Windowed read-back
+    /// agreeing on the per-slot rect by construction (primary = its own full bounds at its origin;
+    /// secondary = the primary's SIZE, bottom-anchored within the 2nd monitor's work/full bounds).
     /// </summary>
     private WinRect GetEffectiveMonitorForPid(int pid, int clientIndexFallback)
     {

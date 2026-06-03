@@ -357,17 +357,16 @@ public class WindowManager
     /// Windowed-vs-Fullscreen band inconsistency (the read-back used the secondary's NATIVE
     /// bounds, growing it past the taskbar in Windowed only).
     /// <para>
-    /// v3.24.10 — PER-MONITOR FIT (supersedes the v3.24.3 lock-to-primary). The primary slot is
-    /// ALWAYS its own FULL bounds (the main window is always maxed → covers the main taskbar, in
-    /// both modes). The secondary slot fits its OWN monitor: <b>ShowTaskbars</b> → the secondary's
-    /// WORK area (game butts the 2nd taskbar, no desktop gap, 2nd taskbar visible); <b>CoverAll</b>
-    /// → the secondary's FULL bounds (game covers the 2nd taskbar, full immersion). Because each
-    /// window fits its own monitor, "no gap" holds on a taller/shorter 2nd monitor by construction,
-    /// and the primary-bigger-than-secondary case just fits the secondary to itself (no overflow).
-    /// On MISMATCHED monitors the two windows differ in size, so a swap RESIZES a client — absorbed
-    /// by the native backbuffer resize (EQ's own SetResolution+ResetDevice rebuilds 1:1 → crisp, no
-    /// smoosh; curtain masks the reset). <paramref name="locked"/> reports whether the secondary is
-    /// the SAME size as the primary (matched monitors / CoverAll → swap won't resize).
+    /// v3.24.10 — LOCK-SIZE + BOTTOM-ANCHOR. BOTH windows take the PRIMARY's SIZE, so one shared DX
+    /// backbuffer matches both (crisp) and a swap is a pure MOVE that never resizes a client (no
+    /// ResetDevice → no distortion / no crash — the stability invariant). The primary sits at its
+    /// own origin (covers the main taskbar). The secondary keeps that SAME SIZE but is BOTTOM-
+    /// ANCHORED so its bottom edge meets the 2nd monitor's WORK-area bottom (<b>ShowTaskbars</b> →
+    /// game butts the 2nd taskbar, no gap, taskbar visible) or FULL bottom (<b>CoverAll</b> → game
+    /// covers the 2nd taskbar); the leftover band sits at the TOP of the 2nd monitor. Lockable only
+    /// when the monitors are close (≤200px/axis) and the primary fits the 2nd; otherwise (4K+1080p,
+    /// primary-bigger) it degrades to the 2nd's native bounds. <paramref name="locked"/> is true
+    /// whenever the secondary is locked to the primary's size (→ a swap is move-only, never resizes).
     /// </para>
     /// </summary>
     /// <param name="slot">Monitor slot — even (0, 2, …) = primary, odd = secondary.</param>
@@ -381,33 +380,47 @@ public class WindowManager
         WinRect? secondaryFull, WinRect? secondaryWork,
         Config.MultiMonTaskbarMode mode)
     {
-        // v3.24.10 — PER-MONITOR FIT (replaces v3.24.3 lock-to-primary). The primary slot
-        // ALWAYS takes its own FULL bounds (the main window is always maxed → covers the main
-        // taskbar, in BOTH modes). The secondary slot fits its OWN monitor — never the primary's
-        // — so "no desktop gap" holds on a taller/shorter 2nd monitor BY CONSTRUCTION:
-        //   • ShowTaskbars → secondary WORK area: game butts the 2nd taskbar (bottom edge =
-        //     OS-reported work-area bottom = taskbar top, in the SAME coord space SetWindowPos
-        //     uses → exact, no DPI math), 2nd taskbar stays visible.
-        //   • CoverAll     → secondary FULL bounds: game covers the 2nd taskbar (full immersion).
-        // No lock-to-primary: on MISMATCHED monitors the two windows differ in height, so a
-        // `\`/`]` swap RESIZES a client. That resize is absorbed by the native backbuffer resize
-        // (TrayManager.PostBackbufferResizeToClients → EQ's own SetResolution+ResetDevice rebuilds
-        // the DX backbuffer to the new client size 1:1 — crisp, no smoosh; the swap curtain masks
-        // the brief reset). On MATCHED monitors CoverAll is naturally symmetric (both full, same
-        // size → swap never resizes); ShowTaskbars is asymmetric by design (primary full vs
-        // secondary work) — the 2nd taskbar cannot show unless the sizes differ.
-        // NOTE: `primaryWork` is intentionally unused (reserved) — the primary is always full.
-        // `locked` now reports "secondary is the SAME size as primary" → this swap won't resize.
+        // v3.24.10 — LOCK-SIZE + BOTTOM-ANCHOR. BOTH windows take the PRIMARY's SIZE, so ONE
+        // shared DX backbuffer matches both (crisp) AND a swap is a pure MOVE that never resizes a
+        // client → no ResetDevice → no distortion / no USER32 crash. This is the load-bearing
+        // stability invariant. The primary sits at its own origin (top-anchored → covers the main
+        // taskbar). The secondary keeps that SAME SIZE but is BOTTOM-ANCHORED so its bottom edge
+        // meets:
+        //   • ShowTaskbars → the 2nd monitor's WORK-area bottom → game butts the 2nd taskbar
+        //     (no gap between game and taskbar; taskbar visible).
+        //   • CoverAll     → the 2nd monitor's FULL bottom → game covers the 2nd taskbar.
+        // The leftover band (when the 2nd monitor is taller) sits at the TOP of the 2nd monitor.
+        // This is a POSITION-only delta from the primary's dims. The v3.24.10 first cut tried
+        // PER-MONITOR FIT (a DIFFERENT size per monitor) — that crashed EQ's windowed D3D9 on the
+        // per-swap ResetDevice (USER32 0xc000041d) + distorted (the per-client backbuffer rebuild
+        // raced its own GeoWndProc subclass). Bottom-anchor delivers the no-gap-at-taskbar look
+        // WITHOUT ever changing the swap-set size. `primaryWork` is intentionally unused (reserved).
         bool showTaskbars = mode == Config.MultiMonTaskbarMode.ShowTaskbars;
 
         // Primary slot (even) — or no real second monitor — always its own full bounds.
         if ((slot % 2) == 0 || secondaryFull is null || secondaryWork is null)
             return (primaryFull, false);
 
-        WinRect secondary = showTaskbars ? secondaryWork.Value : secondaryFull.Value;
-        bool sameSizeAsPrimary = secondary.Width == primaryFull.Width
-                                 && secondary.Height == primaryFull.Height;
-        return (secondary, sameSizeAsPrimary);
+        WinRect secFull = secondaryFull.Value, secWork = secondaryWork.Value;
+        // The bottom the 2nd game should reach (mode-dependent).
+        int refBottom = (showTaskbars ? secWork : secFull).Bottom;
+
+        // Lockable when the two monitors are close (≤200px/axis) AND the primary fits the 2nd
+        // monitor. Then lock the 2nd window to the PRIMARY's size (same size → stable swap) and
+        // bottom-anchor it. Wildly-mismatched (4K+1080p) or primary-bigger-than-secondary →
+        // degrade to the 2nd monitor's native bounds (rare; the swap then resizes → Fix-Windows
+        // recovers, the same caveat that predates this feature).
+        int wDelta = Math.Abs(primaryFull.Width - secFull.Width);
+        int hDelta = Math.Abs(primaryFull.Height - secFull.Height);
+        bool primaryFits = primaryFull.Width <= secFull.Width && primaryFull.Height <= secFull.Height;
+        if (!(wDelta <= 200 && hDelta <= 200 && primaryFits))
+            return (secFull, false);
+
+        int w = primaryFull.Width, h = primaryFull.Height;
+        // Bottom-anchor; clamp so the window never overflows the TOP of the 2nd monitor (a primary
+        // taller than the work-band top-anchors instead, covering the taskbar).
+        int top = Math.Max(secFull.Top, refBottom - h);
+        return (new WinRect { Left = secFull.Left, Top = top, Right = secFull.Left + w, Bottom = top + h }, true);
     }
 
     /// <summary>
@@ -430,13 +443,12 @@ public class WindowManager
     /// single DWM composite — eliminates the cascade flicker that v3.22.20
     /// showed during SwitchKey swap (windows visibly moved one-by-one).
     /// Falls back to sequential SetWindowPos on hdwp failure.</item>
-    /// <item><b>Per-monitor-fit sizing</b> (v3.24.10) — each slot is sized to
-    /// its OWN monitor via <see cref="EffectiveSlotBounds"/> (primary full;
-    /// secondary work-area for ShowTaskbars / full for CoverAll). On mismatched
-    /// monitors the two windows differ in size, so a SwitchKey swap resizes a
-    /// client; the native backbuffer resize (PostBackbufferResize, fired on
-    /// every swap) rebuilds EQ's DX backbuffer to match — crisp, curtain-masked.
-    /// On matched monitors CoverAll is symmetric (swap never resizes).</item>
+    /// <item><b>Lock-size + bottom-anchor</b> (v3.24.10) — both slots take the
+    /// PRIMARY's size via <see cref="EffectiveSlotBounds"/> (so a SwitchKey swap is
+    /// a pure MOVE, never a resize → no DX rebuild → no smoosh/crash), and the
+    /// secondary is bottom-anchored so its bottom butts the 2nd taskbar
+    /// (ShowTaskbars) or covers it (CoverAll). Degrades to the 2nd's native bounds
+    /// only when the monitors are too far apart to lock (4K+1080p).</item>
     /// </list>
     /// </para>
     /// </summary>
@@ -492,13 +504,13 @@ public class WindowManager
             secondarySymmetric = sym;
             if (secondarySymmetric)
             {
-                FileLogger.Info($"ArrangeMultiMonitor: per-monitor-fit SYMMETRIC (taskbarMode={taskbarMode}) — both windows {primEff.Width}x{primEff.Height}; swap won't resize (no DX rebuild)");
+                FileLogger.Info($"ArrangeMultiMonitor: lock-size+bottom-anchor (taskbarMode={taskbarMode}) — both windows {primEff.Width}x{primEff.Height}, 2nd bottom-anchored at ({secEff.Left},{secEff.Top}); swap is MOVE-only (no resize, no DX rebuild)");
             }
             else
             {
                 int wDelta = secEff.Width - primEff.Width;
                 int hDelta = secEff.Height - primEff.Height;
-                FileLogger.Info($"ArrangeMultiMonitor: per-monitor-fit ASYMMETRIC (taskbarMode={taskbarMode}) — primary={primEff.Width}x{primEff.Height} secondary={secEff.Width}x{secEff.Height} (Δw={wDelta} Δh={hDelta}); swap resizes → native backbuffer resize rebuilds to match (curtain-masked)");
+                FileLogger.Info($"ArrangeMultiMonitor: DEGRADED to 2nd-native (taskbarMode={taskbarMode}) — primary={primEff.Width}x{primEff.Height} secondary={secEff.Width}x{secEff.Height} (Δw={wDelta} Δh={hDelta}); monitors too far apart to lock — swap resizes, Fix-Windows recovers (rare: 4K / primary-bigger)");
             }
         }
 
