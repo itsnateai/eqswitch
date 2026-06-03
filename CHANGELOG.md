@@ -1,5 +1,27 @@
 # Changelog
 
+## v3.24.16 — Video tab defaults to "Native" resolution (no more blind-Save to 1920×1080) (2026-06-03)
+
+The **EQ Resolution** preset on the Video tab now defaults to the user's actual monitor
+resolution instead of a hardcoded `1920×1080`. This closes a footgun where a fresh user on a
+1440p/4K monitor could open the Video tab, hit **Save** without touching the dropdown, and
+overwrite their real `eqclient.ini` resolution with 1080p.
+
+- **New "Native (W×H)" preset, first in the dropdown and the new default.** It resolves to the
+  primary monitor's physical resolution (`Screen.PrimaryScreen.Bounds`; the app runs SystemAware
+  DPI so this is true pixels). Selecting it fills Width/Height with the detected resolution, so a
+  Save writes the user's *real* resolution.
+- **Every "no resolution known" fallback now lands on Native, not 1080p:** missing `eqclient.ini`,
+  an INI read error, and the Reset-Defaults button. There is no longer a hardcoded `1920×1080`
+  sitting in the combo for a blind Save to write.
+- **Clean round-trip:** loading an INI whose resolution equals the native res shows "Native";
+  the fixed presets (1920×1080, 2560×1440, …) all remain for power users who want a specific
+  non-native size. EQSwitch's window arrangement is unaffected — the INI resolution is only EQ's
+  initial backbuffer size, which the runtime native resize already reconciles to the window.
+- **Minor:** the Configure-Teams behavior hint dropped its cryptic "Orphan chars (no Account)
+  render '(unassigned)'" clause (that label only ever appears in the Characters grid) — it now
+  reads simply "Characters enter world; Accounts stop at charselect."
+
 ## v3.24.15 — Configure-Teams account/character parity, Quick Login hint, pin multimon "show taskbars" (2026-06-03)
 
 Three UI/config items plus a shared-resolver refactor. Headline fix: the **Configure Teams**

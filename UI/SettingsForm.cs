@@ -3716,19 +3716,30 @@ public class SettingsForm : Form
                 }
             }
 
-            // Match to preset
+            // Match to preset. Native first — if the INI resolution equals this monitor's
+            // native res, show "Native" (index 0) so it round-trips cleanly.
             int width = (int)_nudVideoWidth.Value;
             int height = (int)_nudVideoHeight.Value;
-            int presetIdx = Array.FindIndex(VideoPresets, p => p.W == width && p.H == height);
-            if (presetIdx >= 0)
+            var (natW, natH) = GetNativeResolution();
+            if (width == natW && height == natH)
             {
-                _cboVideoPreset.SelectedIndex = presetIdx;
+                _cboVideoPreset.SelectedIndex = 0; // Native
             }
             else
             {
-                string customKey = $"{width}x{height}";
-                int customIdx = _cboVideoPreset.Items.IndexOf(customKey);
-                _cboVideoPreset.SelectedIndex = customIdx >= 0 ? customIdx : _cboVideoPreset.Items.Count - 1;
+                int presetIdx = Array.FindIndex(VideoPresets, p => p.W == width && p.H == height);
+                if (presetIdx >= 0)
+                {
+                    // +1: "Native" is prepended at combo index 0, so VideoPresets[k] now lives
+                    // at combo index k+1.
+                    _cboVideoPreset.SelectedIndex = presetIdx + 1;
+                }
+                else
+                {
+                    string customKey = $"{width}x{height}";
+                    int customIdx = _cboVideoPreset.Items.IndexOf(customKey);
+                    _cboVideoPreset.SelectedIndex = customIdx >= 0 ? customIdx : _cboVideoPreset.Items.Count - 1;
+                }
             }
         }
         catch (Exception ex)
@@ -3939,9 +3950,31 @@ public class SettingsForm : Form
         // exactly as the user set it. (Window-mode default is Windowed as of v3.22.91.)
     }
 
+    /// <summary>
+    /// The primary monitor's physical resolution, backing the "Native" preset. The app runs
+    /// SystemAware DPI (Program.cs) so Screen.PrimaryScreen.Bounds is true physical pixels for
+    /// the primary monitor — the same coordinate space the window manager positions in. Mirrors
+    /// the Screen.PrimaryScreen fallback idiom already used in EQClientSettingsForm / PipOverlay
+    /// / TrayManager.
+    /// </summary>
+    private static (int W, int H) GetNativeResolution()
+    {
+        var b = (Screen.PrimaryScreen ?? Screen.AllScreens[0]).Bounds;
+        return (b.Width, b.Height);
+    }
+
     private void PopulateVideoPresets()
     {
         _cboVideoPreset.Items.Clear();
+
+        // "Native" first → resolves to THIS machine's primary-monitor resolution. Every index-0
+        // fallback (missing/unreadable eqclient.ini, Reset Defaults) now lands here, so a fresh
+        // user — or anyone who opens this tab and hits Save without touching the combo — writes
+        // their REAL resolution to eqclient.ini instead of the hardcoded 1920x1080 that index 0
+        // used to be (which would clobber a non-1080p user's actual settings).
+        var (nw, nh) = GetNativeResolution();
+        _cboVideoPreset.Items.Add($"Native ({nw}x{nh})");
+
         for (int i = 0; i < VideoPresets.Length - 1; i++)
             _cboVideoPreset.Items.Add(VideoPresets[i].Name);
 
@@ -3963,6 +3996,15 @@ public class SettingsForm : Form
         _suppressVideoSync = true;
         try
         {
+            // Native → fill W/H with the live primary-monitor resolution so a Save writes it.
+            if (selected.StartsWith("Native", StringComparison.Ordinal))
+            {
+                var (nw, nh) = GetNativeResolution();
+                _nudVideoWidth.Value = Math.Clamp(nw, 320, 7680);
+                _nudVideoHeight.Value = Math.Clamp(nh, 200, 4320);
+                return;
+            }
+
             var preset = Array.Find(VideoPresets, p => p.Name == selected);
             if (preset.W > 0)
             {
@@ -3987,6 +4029,11 @@ public class SettingsForm : Form
 
         int w = (int)_nudVideoWidth.Value;
         int h = (int)_nudVideoHeight.Value;
+
+        // Typed dims == this monitor's native res → snap to "Native" (combo index 0),
+        // consistent with how PopulateVideoFromIni round-trips a native-res INI.
+        var (natW, natH) = GetNativeResolution();
+        if (w == natW && h == natH) { _cboVideoPreset.SelectedIndex = 0; return; }
 
         foreach (var p in VideoPresets)
         {

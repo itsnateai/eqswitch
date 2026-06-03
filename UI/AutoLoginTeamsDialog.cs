@@ -194,7 +194,7 @@ internal sealed class AutoLoginTeamsDialog : Form
 
         // Behavior hint — explains the kind→destination rule users see in pills above.
         var behaviorHint = DarkTheme.AddLabel(this,
-            "Characters enter world; Accounts stop at charselect. Orphan chars (no Account) render '(unassigned)'.",
+            "Characters enter world; Accounts stop at charselect.",
             L, y);
         behaviorHint.ForeColor = DarkTheme.FgDimGray;
         behaviorHint.Font = DarkTheme.FontUI75;
