@@ -481,6 +481,10 @@ public static class ConfigManager
         public bool UseHook { get; init; }
         public int JoinServerId { get; init; }
         public WindowMode WindowMode { get; init; }
+        // v3.24.13: a silent flip to false reintroduces the multimon orphan-stranding
+        // bug (survivor not auto-rescued to primary on close) under the "Fix Windows
+        // still works" cover — same silent-flip regression class the audit log exists for.
+        public bool AutoRepackOnClose { get; init; }
 
         public static AuditFlags From(AppConfig cfg) => new()
         {
@@ -491,6 +495,7 @@ public static class ConfigManager
             UseHook = cfg.Layout.UseHook,
             JoinServerId = cfg.Launch.JoinServerId,
             WindowMode = cfg.Layout.WindowMode,
+            AutoRepackOnClose = cfg.Layout.AutoRepackOnClose,
         };
 
         public static List<string> DiffLines(AuditFlags? old, AuditFlags @new)
@@ -507,6 +512,7 @@ public static class ConfigManager
                 lines.Add($"first-write Layout.UseHook={@new.UseHook}");
                 lines.Add($"first-write Launch.JoinServerId={@new.JoinServerId}");
                 lines.Add($"first-write Layout.WindowMode={@new.WindowMode}");
+                lines.Add($"first-write Layout.AutoRepackOnClose={@new.AutoRepackOnClose}");
                 return lines;
             }
             var o = old.Value;
@@ -524,6 +530,8 @@ public static class ConfigManager
                 lines.Add($"Launch.JoinServerId {o.JoinServerId}->{@new.JoinServerId}");
             if (o.WindowMode != @new.WindowMode)
                 lines.Add($"Layout.WindowMode {o.WindowMode}->{@new.WindowMode}");
+            if (o.AutoRepackOnClose != @new.AutoRepackOnClose)
+                lines.Add($"Layout.AutoRepackOnClose {o.AutoRepackOnClose}->{@new.AutoRepackOnClose}");
             return lines;
         }
     }

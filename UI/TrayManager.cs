@@ -827,8 +827,11 @@ public class TrayManager : IDisposable
             // monitor client strands its sibling on the secondary until the user presses Fix
             // Windows. Compacting here lets the 250ms taskbar-recovery pass below
             // (RaiseRemainingClientsAboveTaskbar → ArrangeWindows) land the survivor on the
-            // freed primary automatically — it reads _monitorSlotByPid when the timer fires,
-            // which is after this synchronous compaction. Skipped while any client is mid-
+            // freed primary — it reads _monitorSlotByPid when the timer fires, which is after
+            // this synchronous compaction. NOTE that recovery pass is itself gated on
+            // SlimTitlebar; AppConfig.Validate pins SlimTitlebar=true in multimon so it holds
+            // in shipped configs (were it ever false, the map would compact with no on-close
+            // re-arrange until the next Fix Windows). Skipped while any client is mid-
             // autologin: a slot shift during the sensitive login / char-select sequence is
             // never worth a convenience re-pack — the next Fix Windows (or post-login arrange)
             // compacts then. Multimon-only.
@@ -1335,9 +1338,16 @@ public class TrayManager : IDisposable
         // RepositionWindow it off its login screen — violating the "never move a mid-login
         // window" invariant every other arrange path upholds. Deferring keeps that invariant;
         // the orphan is rescued on the next Fix Windows or the post-login arrange instead.
-        if (_config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase)
+        bool mmModeForCompact = _config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
+        if (mmModeForCompact
             && !_processManager.Clients.Any(rc => _autoLoginManager.IsLoginActive(rc.ProcessId)))
             CompactMonitorSlots();
+        else if (mmModeForCompact)
+            // v3.24.13 (T3 verifier, Rule 12): make the skip loud. Pressing Fix Windows
+            // while a sibling is mid-login intentionally defers compaction, but a silent
+            // skip looks identical to "nothing to do" — log it so a not-rescued orphan
+            // after Fix Windows is explainable from the log, not a mystery.
+            FileLogger.Info("ArrangeWindows: orphan-compaction skipped — autologin active on a client; orphan rescue deferred to next Fix Windows / post-login arrange");
 
         var skips = _windowManager.ArrangeWindows(clientsToArrange, _monitorSlotByPid);
         int skippedIconic = skips.Iconic;

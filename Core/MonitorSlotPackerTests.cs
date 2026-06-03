@@ -97,6 +97,32 @@ public static class MonitorSlotPackerTests
             failures += Assert("input map left untouched", input[42], 9);
         }
 
+        // ── Case 9 — both survivors on non-contiguous slots ≥ monitorCount: order by
+        //              current slot (not absolute value), lowest-slot PID → slot 0. ──
+        {
+            var packed = MonitorSlotPacker.Compact(new Dictionary<int, int> { { 100, 5 }, { 200, 3 } }, 2);
+            failures += Assert("hi-slot: PID 200 (slot 3) → slot 0", Slot(packed, 200), 0);
+            failures += Assert("hi-slot: PID 100 (slot 5) → slot 1", Slot(packed, 100), 1);
+        }
+
+        // ── Case 10 — three survivors in REVERSE slot order, monitorCount 2: compacts
+        //              by slot order with modulo wrap (0,1,0), independent of PID order. ──
+        {
+            var packed = MonitorSlotPacker.Compact(
+                new Dictionary<int, int> { { 100, 2 }, { 200, 1 }, { 300, 0 } }, 2);
+            failures += Assert("reverse: PID 300 (slot 0) → slot 0", Slot(packed, 300), 0);
+            failures += Assert("reverse: PID 200 (slot 1) → slot 1", Slot(packed, 200), 1);
+            failures += Assert("reverse: PID 100 (slot 2) → slot 0 (wrap)", Slot(packed, 100), 0);
+        }
+
+        // ── Case 11 — orphan on a 3-monitor rig (monitorCount 3): slot 1 → slot 0. ──
+        //   GetMonitorOrderCount currently caps at 2, but Compact must stay correct if a
+        //   future caller passes 3 (don't bake the cap into the pure helper's contract).
+        {
+            var packed = MonitorSlotPacker.Compact(new Dictionary<int, int> { { 7, 1 } }, 3);
+            failures += Assert("3-mon orphan: PID 7 (slot 1) → slot 0", Slot(packed, 7), 0);
+        }
+
         Console.WriteLine(failures == 0
             ? "MonitorSlotPackerTests: ALL PASS"
             : $"MonitorSlotPackerTests: {failures} FAILURE(S)");
