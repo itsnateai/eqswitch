@@ -129,7 +129,7 @@ FIRST-RUN CONFIG SEEDING:
   are NOT enforced until you explicitly click Save.
 
 UNINSTALL / CLEAN UP:
-  Settings → General → Uninstall button (or run uninstall.bat)
+  Settings → Paths → Uninstall button (or run uninstall.bat)
   Reverts all external changes:
     • Removes startup shortcut
     • Removes desktop shortcut

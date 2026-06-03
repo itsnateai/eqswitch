@@ -67,7 +67,7 @@ jobs:
           # them at "No update package found." See memory:
           # reference_self_update_versionless_asset_dual_rollout.
           $versioned = "EQSwitch-${{ steps.version.outputs.VERSION }}.zip"
-          Compress-Archive -Path EQSwitch.exe, eqswitch-hook.dll, eqswitch-di8.dll, LICENSE, README.md, CHANGELOG.md -DestinationPath $versioned -Force
+          Compress-Archive -Path EQSwitch.exe, eqswitch-hook.dll, eqswitch-di8.dll, uninstall.bat, LICENSE, README.md, CHANGELOG.md -DestinationPath $versioned -Force
           Copy-Item $versioned "EQSwitch.zip" -Force
 
       - name: Generate SHA256SUMS

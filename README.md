@@ -27,10 +27,12 @@ A lightweight EverQuest multiboxer — hotkey switching, encrypted auto-login, P
 | File | Size | Purpose |
 |------|------|---------|
 | **EQSwitch.exe** | ~180 MB | Main app (self-contained, no .NET runtime needed) |
-| **eqswitch-hook.dll** | ~130 KB | Window management hooks (SetWindowPos/MoveWindow) |
-| **eqswitch-di8.dll** | ~239 KB | DirectInput hooks + login state machine for background auto-login |
+| **eqswitch-hook.dll** | ~135 KB | Window management hooks (SetWindowPos/MoveWindow) |
+| **eqswitch-di8.dll** | ~248 KB | DirectInput hooks + login state machine for background auto-login |
+| **uninstall.bat** | ~10 KB | GUI-less uninstaller — reverts external changes |
+| **LICENSE**, **README.md**, **CHANGELOG.md** | small | License, this readme, version history |
 
-All three files must be in the same folder. A separate `SHA256SUMS` file is published alongside the zip on each release for integrity verification.
+Keep `EQSwitch.exe` and the two `.dll` files together in one folder. A separate `SHA256SUMS` file is published alongside the zip on each release for integrity verification.
 
 </details>
 
@@ -81,7 +83,7 @@ All three files must be in the same folder. A separate `SHA256SUMS` file is publ
 - **Character Profiles** — Per-character priority overrides, export/import
 - **Custom Tray Icon** — Custom .ico support
 - **Auto-Login** — Encrypted account presets with one-click launch, login, server select, and character enter world
-- **Background Auto-Login** — Injects DirectInput hooks via suspended-process injection for true background input — no focus stealing, no game file modifications
+- **Background Auto-Login** — Logs each client in while the window stays in the background — no focus stealing, no game file modifications
 - **Self-Updater** — Built-in update check against GitHub Releases. Downloads the new zip, verifies SHA256, replaces all three binaries in place (no installer to re-run)
 - **Portable** — One zip, extract anywhere, config stored next to the exe — no installer needed
 - **Privacy First** — Zero telemetry, no network calls, no data collection. Saved passwords are encrypted with Windows DPAPI and can only be decrypted by your Windows account on your machine
@@ -89,6 +91,122 @@ All three files must be in the same folder. A separate `SHA256SUMS` file is publ
 ## Requirements
 
 - Windows 10/11
+
+## Default Hotkeys
+
+| Hotkey | Action |
+|--------|--------|
+| `\` | Switch client — swap-last (default) or cycle-all, depending on Switch Key Mode in Settings → Hotkeys. Only fires when EQ is focused. |
+| `]` | Global switch — same mode as above, but also brings EQ to front when another app is focused |
+| Ctrl+Alt+N | Toggle single-screen / multi-monitor mode |
+
+### Tray Icon Actions (all configurable in Settings → General)
+
+| Action | Default | Notes |
+|--------|---------|-------|
+| Right-click | Context menu | Not user-configurable |
+| Single-click | (none) | Configurable |
+| Double-click | Launch one EQ client | Configurable |
+| Triple-click | (none) | Configurable |
+| Middle-click | Toggle PiP overlay | |
+| Middle-double-click | Open Settings | Two middle-clicks, not three |
+
+## Config
+
+Config is stored as `eqswitch-config.json` alongside the exe (portable). Auto-backups are created in a `backups/` subfolder (last 10 kept).
+
+### Custom Tray Icon
+
+EQSwitch ships with a built-in tray icon. To use your own instead, open **Settings → Paths** and point the **Custom Icon** field at any `.ico` file — EQSwitch loads it on the next launch (or after you click Apply).
+
+### Process Priority Defaults
+
+- **Active client**: AboveNormal priority
+- **Background clients**: AboveNormal priority
+- Per-character priority overrides in Settings → Characters
+- CPU core assignment via eqclient.ini CPUAffinity0-5 slots (Settings → Process Manager)
+
+## Auto-Login Security
+
+Passwords are encrypted using **Windows DPAPI** (Data Protection API) via `ProtectedData.Protect` with `DataProtectionScope.CurrentUser`, and stored locally in your config file. Here's what that means:
+
+- **User-scoped** — Only your Windows user account on your machine can decrypt the passwords. Other users on the same PC (even administrators) cannot read them. The decryption key is derived from your Windows account credentials by the OS — EQSwitch never sees it
+- **Zero network traffic** — Encryption and decryption happen entirely on your machine. Passwords are never transmitted anywhere
+- **No master password** — Your Windows login IS the master key. The OS-managed key material lives in `%APPDATA%\Microsoft\Protect\{SID}\`
+- **Stored as base64** — The encrypted blob is base64-encoded in `eqswitch-config.json`. Even if someone reads the file, they see gibberish without your Windows credentials
+
+> [!IMPORTANT]
+> If you reinstall Windows or create a new user account, stored passwords cannot be recovered. You'll need to re-enter them in Settings.
+
+## eqclient.ini Handling
+
+EQSwitch never writes to your `eqclient.ini` automatically. Whenever you open Settings → Video (or any of the EQ Client Settings sub-forms — Key Mappings, Chat, Particles, Models, VideoMode), EQSwitch reads your *current* `eqclient.ini` so the form reflects your real values, not generic defaults that could silently overwrite your manual INI edits.
+
+Changes are **not written back** until you explicitly click Save in the EQ Client Settings form.
+
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| **Hotkeys not working** | Run as Administrator — some games need elevated privileges for global hotkeys |
+| **EQ path not detected** | Use Settings → Paths to set your EQ installation directory |
+| **PiP not showing** | Requires 2+ EQ clients running. Middle-click tray icon to toggle |
+| **CPU affinity not applying** | EQ resets affinity after launch — EQSwitch retries automatically. Use tray menu → Force Apply |
+| **Config lost after moving exe** | Move `eqswitch-config.json` with the exe. Backups in `backups/` subfolder |
+| **DLL blocked by antivirus** | Add your EQSwitch folder to Windows Defender exclusions |
+
+## Uninstall / Clean Up
+
+EQSwitch can be fully removed without leaving traces:
+
+**From the GUI:** Settings → Paths tab → **Uninstall** button
+
+This reverts all external system changes:
+- Restores Dalaya's `dinput8.dll` if a legacy proxy was renamed during the chain-load era
+- Removes legacy EQSwitch DLL artifacts from the EQ folder (size-detected — never touches Dalaya's MQ2 core)
+- Removes the startup shortcut
+- Removes the desktop shortcut
+- Removes the legacy `HKCU\...\Run\EQSwitch` registry entry from pre-shortcut versions
+
+**Fallback:** if the GUI won't launch, run `uninstall.bat` from the EQSwitch folder. It mirrors the GUI logic.
+
+Your `eqclient.ini` settings and EQSwitch config files are **not** modified — restore from `.bak` files in your EQ folder if needed.
+
+> [!TIP]
+> After running uninstall, you can delete the entire EQSwitch folder to complete the removal.
+
+## Supporting This Project
+
+This app is free and open source. If it saves you time, consider supporting continued development:
+
+<p>
+  <a href="https://buymeacoffee.com/itsnate"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee"></a>
+</p>
+
+- **[Buy Me a Coffee](https://buymeacoffee.com/itsnate)** — one-time support
+
+You can also build from source for free — see the build instructions below.
+
+---
+
+<sub>↓ Technical details, building from source, and project internals below.</sub>
+
+## Background Auto-Login
+
+When **Background Login** is enabled (Settings → Accounts), EQSwitch logs each EQ client in for you — password, server select, and character enter-world — without ever bringing the window to the foreground. One click, every account in.
+
+<details>
+<summary>How it works (the short version)</summary>
+
+EQSwitch starts each EQ client paused, slips two small helper DLLs in before the game runs, and hands the password to the login screen directly in memory — so EQ logs in as if you'd typed it, even while the window is in the background. Nothing is written to your EQ folder; the helpers live next to EQSwitch.exe and load only at runtime.
+
+</details>
+
+> [!NOTE]
+> No files are deployed to your EQ directory. The DLLs are injected at runtime and live alongside EQSwitch.exe.
+
+> [!WARNING]
+> Windows Defender may flag the injectable DLLs as suspicious (DLL injection is a common game-tool technique). Add your EQSwitch folder to Defender's exclusion list if DLLs are blocked or quarantined.
 
 ## Build from Source
 
@@ -111,44 +229,6 @@ dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
 
 Output: `bin/Release/net8.0-windows/win-x64/publish/EQSwitch.exe` + `eqswitch-hook.dll` + `eqswitch-di8.dll`
 
-## Default Hotkeys
-
-| Hotkey | Action |
-|--------|--------|
-| `\` | Switch client — swap-last (default) or cycle-all, depending on Switch Key Mode in Settings → Hotkeys. Only fires when EQ is focused. |
-| `]` | Global switch — same mode as above, but also brings EQ to front when another app is focused |
-| Ctrl+Alt+N | Toggle single-screen / multi-monitor mode |
-
-### Tray Icon Actions (all configurable in Settings → General)
-
-| Action | Default | Notes |
-|--------|---------|-------|
-| Right-click | Context menu | Not user-configurable |
-| Single-click | Launch one EQ client | |
-| Double-click | (none) | Configurable |
-| Triple-click | (none) | Configurable |
-| Middle-click | Toggle PiP overlay | |
-| Middle-double-click | Open Settings | Two middle-clicks, not three |
-
-## Config
-
-Config is stored as `eqswitch-config.json` alongside the exe (portable). Auto-backups are created in a `backups/` subfolder (last 10 kept).
-
-### Custom Icons
-
-EQSwitch ships with two icon styles selectable in Settings:
-- **Dark** (default): Black background, gold EQ lettering with crossed swords
-- **Stone**: Lighter stone background, same design
-
-Place a file named `eqswitch-custom.ico` next to the exe to use your own icon.
-
-### Process Priority Defaults
-
-- **Active client**: AboveNormal priority
-- **Background clients**: AboveNormal priority
-- Per-character priority overrides in Settings → Characters
-- CPU core assignment via eqclient.ini CPUAffinity0-5 slots (Settings → Process Manager)
-
 ## Project Structure
 
 | Path | Description |
@@ -159,83 +239,6 @@ Place a file named `eqswitch-custom.ico` next to the exe to use your own icon.
 | `Models/` | EQ client data model |
 | `UI/` | Tray manager, settings GUI, PiP overlay, dark theme, process manager |
 | `Native/` | C++ DLL sources — eqswitch-hook (MinHook) + eqswitch-di8 (DirectInput + IAT hooks), 32-bit x86 |
-
-## Background Auto-Login
-
-When **Background Login** is enabled (Settings → Accounts), EQSwitch types passwords into background EQ windows without stealing focus. This allows true one-click multi-account login.
-
-**How it works:**
-1. EQSwitch launches eqgame.exe with `CREATE_SUSPENDED`, waits for the Windows loader to initialize, then injects `eqswitch-di8.dll` and `eqswitch-hook.dll` before the game runs
-2. `eqswitch-di8.dll` hooks DirectInput8Create (via MinHook) and patches keyboard state APIs (GetAsyncKeyState, GetForegroundWindow, etc.) so EQ processes input while backgrounded
-3. Per-PID shared memory injects scan codes directly into EQ's DirectInput keyboard device
-4. EQ processes the keystrokes as if it were the focused window — no game files are modified
-
-> [!NOTE]
-> No files are deployed to your EQ directory. The DLLs are injected at runtime and live alongside EQSwitch.exe.
-
-> [!WARNING]
-> Windows Defender may flag the injectable DLLs as suspicious (DLL injection is a common game-tool technique). Add your EQSwitch folder to Defender's exclusion list if DLLs are blocked or quarantined.
-
-## Auto-Login Security
-
-Passwords are encrypted using **Windows DPAPI** (Data Protection API) via `ProtectedData.Protect` with `DataProtectionScope.CurrentUser`, and stored locally in your config file. Here's what that means:
-
-- **User-scoped** — Only your Windows user account on your machine can decrypt the passwords. Other users on the same PC (even administrators) cannot read them. The decryption key is derived from your Windows account credentials by the OS — EQSwitch never sees it
-- **Zero network traffic** — Encryption and decryption happen entirely on your machine. Passwords are never transmitted anywhere
-- **No master password** — Your Windows login IS the master key. The OS-managed key material lives in `%APPDATA%\Microsoft\Protect\{SID}\`
-- **Stored as base64** — The encrypted blob is base64-encoded in `eqswitch-config.json`. Even if someone reads the file, they see gibberish without your Windows credentials
-
-> [!IMPORTANT]
-> If you reinstall Windows or create a new user account, stored passwords cannot be recovered. You'll need to re-enter them in Settings.
-
-## eqclient.ini Handling
-
-EQSwitch never writes to your `eqclient.ini` automatically. Whenever you open Settings → Video (or any of the EQ Client Settings sub-forms — Key Mappings, Chat, Particles, Models, VideoMode), EQSwitch reads your *current* `eqclient.ini` so the form reflects your real values, not generic defaults that could silently overwrite your manual INI edits.
-
-Changes are **not written back** until you explicitly click Save in the EQ Client Settings form.
-
-## Uninstall / Clean Up
-
-EQSwitch can be fully removed without leaving traces:
-
-**From the GUI:** Settings → Paths tab → **Uninstall** button
-
-This reverts all external system changes:
-- Restores Dalaya's `dinput8.dll` if a legacy proxy was renamed during the chain-load era
-- Removes legacy EQSwitch DLL artifacts from the EQ folder (size-detected — never touches Dalaya's MQ2 core)
-- Removes the startup shortcut
-- Removes the desktop shortcut
-- Removes the legacy `HKCU\...\Run\EQSwitch` registry entry from pre-shortcut versions
-
-**Fallback:** if the GUI won't launch, run `uninstall.bat` from the EQSwitch folder. It mirrors the GUI logic.
-
-Your `eqclient.ini` settings and EQSwitch config files are **not** modified — restore from `.bak` files in your EQ folder if needed.
-
-> [!TIP]
-> After running uninstall, you can delete the entire EQSwitch folder to complete the removal.
-
-## Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| **Hotkeys not working** | Run as Administrator — some games need elevated privileges for global hotkeys |
-| **EQ path not detected** | Use Settings → Paths to set your EQ installation directory |
-| **PiP not showing** | Requires 2+ EQ clients running. Middle-click tray icon to toggle |
-| **CPU affinity not applying** | EQ resets affinity after launch — EQSwitch retries automatically. Use tray menu → Force Apply |
-| **Config lost after moving exe** | Move `eqswitch-config.json` with the exe. Backups in `backups/` subfolder |
-| **DLL blocked by antivirus** | Add your EQSwitch folder to Windows Defender exclusions |
-
-## Supporting This Project
-
-This app is free and open source. If it saves you time, consider supporting continued development:
-
-<p>
-  <a href="https://buymeacoffee.com/itsnate"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee"></a>
-</p>
-
-- **[Buy Me a Coffee](https://buymeacoffee.com/itsnate)** — one-time support
-
-You can also build from source for free — see the build instructions above.
 
 ---
 
