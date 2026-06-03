@@ -345,41 +345,7 @@ public class WindowManager
     }
 
     /// <summary>
-    /// v3.24.2 — THE single source of truth for the lock-to-primary-dims POLICY DECISION.
-    /// Both <see cref="ArrangeMultiMonitor"/> (which sizes the window) AND
-    /// <see cref="UI.TrayManager"/>'s hook-config path (which pins the in-process hook rect)
-    /// call this, so the two can no longer disagree on the secondary client's size. A
-    /// disagreement WAS the v3.24.1 swap refit: arrange sized the secondary to the primary's
-    /// dims (lock-to-primary), but the hook config sized it to the secondary monitor's NATIVE
-    /// dims; the hook won and yanked the window on every swap → a DX backbuffer rebuild =
-    /// taskbar peek + black-bar/smoosh. Active ⇒ both windows take the primary's dims so the
-    /// DX swap-chain stays one constant size across swaps. Gated on: 2+ monitors, both the
-    /// same slim flag, ≤200px delta on each axis, and primary fits within secondary.
-    /// </summary>
-    public static bool ShouldLockToPrimaryDims(WinRect primary, WinRect secondary, bool primarySlim, bool secondarySlim)
-    {
-        bool bothSameSlim = primarySlim == secondarySlim;
-        int wDelta = Math.Abs(primary.Width - secondary.Width);
-        int hDelta = Math.Abs(primary.Height - secondary.Height);
-        bool primaryFits = primary.Width <= secondary.Width && primary.Height <= secondary.Height;
-        return bothSameSlim && wDelta <= 200 && hDelta <= 200 && primaryFits;
-    }
-
-    /// <summary>
-    /// v3.24.2 — under lock-to-primary-dims, a SECONDARY-slot client takes its OWN monitor's
-    /// origin but the PRIMARY monitor's dimensions. (The primary slot is unchanged — it IS the
-    /// source of dims.) Single source of truth shared by the arrange + hook-config paths.
-    /// </summary>
-    public static WinRect ApplyLockToPrimaryDims(WinRect secondaryMonitor, WinRect primary) => new WinRect
-    {
-        Left = secondaryMonitor.Left,
-        Top = secondaryMonitor.Top,
-        Right = secondaryMonitor.Left + primary.Width,
-        Bottom = secondaryMonitor.Top + primary.Height,
-    };
-
-    /// <summary>
-    /// v3.24.3 — THE single multimonitor per-slot sizing authority. Returns the effective
+    /// v3.24.10 — THE single multimonitor per-slot sizing authority. Returns the effective
     /// target monitor-rect (origin + W×H) for <paramref name="slot"/> (0 = primary,
     /// 1 = secondary), applying <paramref name="mode"/>. EVERY place that needs a
     /// multimonitor window/backbuffer size derives it from here — <see cref="ArrangeMultiMonitor"/>
@@ -391,14 +357,16 @@ public class WindowManager
     /// Windowed-vs-Fullscreen band inconsistency (the read-back used the secondary's NATIVE
     /// bounds, growing it past the taskbar in Windowed only).
     /// <para>
-    /// Symmetric by construction: when the two monitors are close enough to lock, BOTH slots
-    /// receive the SAME W×H (only the origin differs), so a swap never resizes a client and
-    /// the DX swap-chain stays one constant size. <paramref name="mode"/> chooses which rect
-    /// set is locked: <b>CoverAll</b> → the primary's FULL bounds (primary covers its taskbar;
-    /// a taller secondary's leftover band shows that monitor's taskbar); <b>ShowTaskbars</b> →
-    /// the primary's WORK area (every monitor leaves taskbar room). When the monitors differ
-    /// too much to lock (4K + 1080p), <paramref name="locked"/> is false and each slot keeps
-    /// its own native bounds (per-monitor-fit; the user presses Fix-Windows to re-init DX).
+    /// v3.24.10 — LOCK-SIZE + BOTTOM-ANCHOR. BOTH windows take the PRIMARY's SIZE, so one shared DX
+    /// backbuffer matches both (crisp) and a swap is a pure MOVE that never resizes a client (no
+    /// ResetDevice → no distortion / no crash — the stability invariant). The primary sits at its
+    /// own origin (covers the main taskbar). The secondary keeps that SAME SIZE but is BOTTOM-
+    /// ANCHORED so its bottom edge meets the 2nd monitor's WORK-area bottom (<b>ShowTaskbars</b> →
+    /// game butts the 2nd taskbar, no gap, taskbar visible) or FULL bottom (<b>CoverAll</b> → game
+    /// covers the 2nd taskbar); the leftover band sits at the TOP of the 2nd monitor. Lockable only
+    /// when the monitors are close (≤200px/axis) and the primary fits the 2nd; otherwise (4K+1080p,
+    /// primary-bigger) it degrades to the 2nd's native bounds. <paramref name="locked"/> is true
+    /// whenever the secondary is locked to the primary's size (→ a swap is move-only, never resizes).
     /// </para>
     /// </summary>
     /// <param name="slot">Monitor slot — even (0, 2, …) = primary, odd = secondary.</param>
@@ -412,23 +380,50 @@ public class WindowManager
         WinRect? secondaryFull, WinRect? secondaryWork,
         Config.MultiMonTaskbarMode mode)
     {
-        // CoverAll operates on full monitor bounds; ShowTaskbars on work areas. The
-        // primary slot is always the source of dims, placed at its own monitor top-left.
+        // v3.24.10 — LOCK-SIZE + BOTTOM-ANCHOR. BOTH windows take the PRIMARY's SIZE, so ONE
+        // shared DX backbuffer matches both (crisp) AND a swap is a pure MOVE that never resizes a
+        // client → no ResetDevice → no distortion / no USER32 crash. This is the load-bearing
+        // stability invariant. The primary sits at its own origin (top-anchored → covers the main
+        // taskbar). The secondary keeps that SAME SIZE but is BOTTOM-ANCHORED so its bottom edge
+        // meets:
+        //   • ShowTaskbars → the 2nd monitor's WORK-area bottom → game butts the 2nd taskbar
+        //     (no gap between game and taskbar; taskbar visible).
+        //   • CoverAll     → the 2nd monitor's FULL bottom → game covers the 2nd taskbar.
+        // The leftover band (when the 2nd monitor is taller) sits at the TOP of the 2nd monitor.
+        // This is a POSITION-only delta from the primary's dims. The v3.24.10 first cut tried
+        // PER-MONITOR FIT (a DIFFERENT size per monitor) — that crashed EQ's windowed D3D9 on the
+        // per-swap ResetDevice (USER32 0xc000041d) + distorted (the per-client backbuffer rebuild
+        // raced its own GeoWndProc subclass). Bottom-anchor delivers the no-gap-at-taskbar look
+        // WITHOUT ever changing the swap-set size. `primaryWork` is intentionally unused (reserved).
         bool showTaskbars = mode == Config.MultiMonTaskbarMode.ShowTaskbars;
-        WinRect primary = showTaskbars ? primaryWork : primaryFull;
 
+        // Primary slot (even) — or no real second monitor — always its own full bounds.
         if ((slot % 2) == 0 || secondaryFull is null || secondaryWork is null)
-            return (primary, false);
+            return (primaryFull, false);
 
-        WinRect secondary = showTaskbars ? secondaryWork.Value : secondaryFull.Value;
-        // Lock the secondary to the primary's dims (its own origin) when the monitors are
-        // close enough; otherwise hand back the secondary's native bounds (degrade). The
-        // bothSameSlim gate is structurally satisfied in multimon (both slots are slim-
-        // managed; the taskbar MODE — not the per-monitor slim flag — now controls
-        // visibility), so pass true/true.
-        return ShouldLockToPrimaryDims(primary, secondary, true, true)
-            ? (ApplyLockToPrimaryDims(secondary, primary), true)
-            : (secondary, false);
+        WinRect secFull = secondaryFull.Value, secWork = secondaryWork.Value;
+        // The bottom the 2nd game should reach (mode-dependent).
+        int refBottom = (showTaskbars ? secWork : secFull).Bottom;
+
+        // Lockable when the two monitors are close (≤200px/axis) AND the primary fits the 2nd
+        // monitor. Then lock the 2nd window to the PRIMARY's size (same size → stable swap) and
+        // bottom-anchor it. Wildly-mismatched (4K+1080p) or primary-bigger-than-secondary →
+        // degrade to the 2nd monitor's native bounds (rare; the swap then resizes → Fix-Windows
+        // recovers, the same caveat that predates this feature).
+        int wDelta = Math.Abs(primaryFull.Width - secFull.Width);
+        int hDelta = Math.Abs(primaryFull.Height - secFull.Height);
+        bool primaryFits = primaryFull.Width <= secFull.Width && primaryFull.Height <= secFull.Height;
+        if (!(wDelta <= 200 && hDelta <= 200 && primaryFits))
+            return (secFull, false);
+
+        int w = primaryFull.Width, h = primaryFull.Height;
+        // Bottom-anchor; clamp so the window never overflows the TOP of the 2nd monitor (a primary
+        // taller than the work-band top-anchors instead, covering the taskbar). NOTE: anchors the
+        // BOTTOM edge at full primary width from secFull.Left — tuned for a BOTTOM taskbar (the
+        // overwhelming common case, where secWork differs from secFull only at the bottom). A
+        // side/top taskbar on the 2nd monitor would be covered rather than skirted.
+        int top = Math.Max(secFull.Top, refBottom - h);
+        return (new WinRect { Left = secFull.Left, Top = top, Right = secFull.Left + w, Bottom = top + h }, true);
     }
 
     /// <summary>
@@ -441,7 +436,7 @@ public class WindowManager
     /// via SwitchKey instead of the legacy clientIndex-positional assignment.
     /// </para>
     /// <para>
-    /// v3.22.21 refactor: two-pass design + lock-to-primary-dims policy.
+    /// v3.22.21 refactor: two-pass design. v3.24.10: lock-size + bottom-anchor sizing.
     /// <list type="bullet">
     /// <item><b>Pass 1 (sequential, style)</b> — per-client WS_THICKFRAME
     /// strip/restore + SWP_FRAMECHANGED notify. Can't be batched: each
@@ -451,14 +446,12 @@ public class WindowManager
     /// single DWM composite — eliminates the cascade flicker that v3.22.20
     /// showed during SwitchKey swap (windows visibly moved one-by-one).
     /// Falls back to sequential SetWindowPos on hdwp failure.</item>
-    /// <item><b>Lock-to-primary-dims</b> — both windows sized to primary's
-    /// bounds with each monitor's own origin. Eliminates the cross-monitor
-    /// smoosh symptom: DX swap-chain stays at one constant size across
-    /// SwitchKey swaps, so font/UI textures don't get stretched. Auto-
-    /// degrades to per-monitor-fit when monitors differ too much
-    /// (|Δ| &gt; 200px on either axis) or have mixed slim/non-slim flags
-    /// — power users with 4K+1080p get per-monitor-fit and the v3.22.21
-    /// "Fix Windows" hotkey for manual DX reinit.</item>
+    /// <item><b>Lock-size + bottom-anchor</b> (v3.24.10) — both slots take the
+    /// PRIMARY's size via <see cref="EffectiveSlotBounds"/> (so a SwitchKey swap is
+    /// a pure MOVE, never a resize → no DX rebuild → no smoosh/crash), and the
+    /// secondary is bottom-anchored so its bottom butts the 2nd taskbar
+    /// (ShowTaskbars) or covers it (CoverAll). Degrades to the 2nd's native bounds
+    /// only when the monitors are too far apart to lock (4K+1080p).</item>
     /// </list>
     /// </para>
     /// </summary>
@@ -500,27 +493,27 @@ public class WindowManager
         WinRect? secondaryFullMon = hasSecondary ? fullBounds[secondaryIdx] : (WinRect?)null;
         WinRect? secondaryWorkMon = hasSecondary ? workAreas[secondaryIdx] : (WinRect?)null;
 
-        // Summary lock decision (for the log only) — the per-client effective bounds come
-        // straight from EffectiveSlotBounds in the build loop below, so this can never
-        // drift from what's actually applied.
-        bool lockToPrimaryDims = false;
+        // Summary symmetry decision (for the log only) — per-client effective bounds come
+        // straight from EffectiveSlotBounds in the build loop below, so this can never drift
+        // from what's actually applied. v3.24.10 lock-size+bottom-anchor: `secondarySymmetric`
+        // reports whether the 2nd window is locked to the primary's size (lockable → swap is
+        // MOVE-only) vs degraded to its native bounds (rare 4K / primary-bigger → swap resizes,
+        // native backbuffer rebuilds — expected, not a problem → Info not Warn).
+        bool secondarySymmetric = false;
         if (hasSecondary)
         {
-            (_, lockToPrimaryDims) = EffectiveSlotBounds(1, primaryFullMon, primaryWorkMon, secondaryFullMon, secondaryWorkMon, taskbarMode);
-            bool showTaskbars = taskbarMode == Config.MultiMonTaskbarMode.ShowTaskbars;
-            var primForLog = showTaskbars ? primaryWorkMon : primaryFullMon;
-            var secForLog  = showTaskbars ? secondaryWorkMon!.Value : secondaryFullMon!.Value;
-            if (lockToPrimaryDims)
+            var (primEff, _) = EffectiveSlotBounds(0, primaryFullMon, primaryWorkMon, secondaryFullMon, secondaryWorkMon, taskbarMode);
+            var (secEff, sym) = EffectiveSlotBounds(1, primaryFullMon, primaryWorkMon, secondaryFullMon, secondaryWorkMon, taskbarMode);
+            secondarySymmetric = sym;
+            if (secondarySymmetric)
             {
-                int hBand = secForLog.Height - primForLog.Height;
-                int wBand = secForLog.Width - primForLog.Width;
-                FileLogger.Info($"ArrangeMultiMonitor: lock-to-primary-dims ACTIVE (taskbarMode={taskbarMode}) — both windows {primForLog.Width}x{primForLog.Height}; secondary monitor has {wBand}px horizontal + {hBand}px vertical empty band (eliminates cross-monitor smoosh on SwitchKey swap)");
+                FileLogger.Info($"ArrangeMultiMonitor: lock-size+bottom-anchor (taskbarMode={taskbarMode}) — both windows {primEff.Width}x{primEff.Height}, 2nd bottom-anchored at ({secEff.Left},{secEff.Top}); swap is MOVE-only (no resize, no DX rebuild)");
             }
             else
             {
-                int wDelta = Math.Abs(primForLog.Width - secForLog.Width);
-                int hDelta = Math.Abs(primForLog.Height - secForLog.Height);
-                FileLogger.Warn($"ArrangeMultiMonitor: lock-to-primary-dims OFF (taskbarMode={taskbarMode}) — primary={primForLog.Width}x{primForLog.Height} secondary={secForLog.Width}x{secForLog.Height} wDelta={wDelta} hDelta={hDelta}. Using per-monitor-fit; cross-monitor SwitchKey swap may smoosh — press Fix Windows to force DX reinit");
+                int wDelta = secEff.Width - primEff.Width;
+                int hDelta = secEff.Height - primEff.Height;
+                FileLogger.Info($"ArrangeMultiMonitor: DEGRADED to 2nd-native (taskbarMode={taskbarMode}) — primary={primEff.Width}x{primEff.Height} secondary={secEff.Width}x{secEff.Height} (Δw={wDelta} Δh={hDelta}); monitors too far apart to lock — swap resizes, Fix-Windows recovers (rare: 4K / primary-bigger)");
             }
         }
 
@@ -708,7 +701,7 @@ public class WindowManager
 
             string monLabel = slotIdx == 0 ? "primary" : "secondary";
             string slimLabel = useSlim ? " (slim titlebar)" : " (normal frame, work-area)";
-            string lockLabel = lockToPrimaryDims ? " [locked-to-primary]" : "";
+            string lockLabel = secondarySymmetric ? " [locked]" : " [degraded-native]";
             targets.Add((client.WindowHandle, x, y, w, h, swpFlags,
                 $"{client} → {monLabel} monitor ({effectiveBounds.Left},{effectiveBounds.Top}) {w}x{h}{slimLabel}{lockLabel} [slot={slot}]"));
 
@@ -830,7 +823,7 @@ public class WindowManager
 
         string modeLabel = $" (taskbarMode={taskbarMode})";
         string batchLabel = batchOk ? "atomic batch" : "sequential fallback";
-        string lockSummary = lockToPrimaryDims ? ", lock-to-primary" : "";
+        string lockSummary = secondarySymmetric ? ", locked" : ", degraded-native";
         FileLogger.Info($"ArrangeMultiMonitor: {targets.Count}/{clients.Count} window(s), primary={primaryIdx} secondary={secondaryIdx}{modeLabel}, positioned via {batchLabel}{lockSummary} — pass1={tPass1}ms pass2={tPass2 - tPass1}ms");
         // Per-stage pass-2 timing (v3.22.22 diagnostic — round-5 T2-Opus catch):
         // For N clients: [tBeforeBegin, tAfterDefer_0, ..., tAfterDefer_{N-1}, tAfterEnd].

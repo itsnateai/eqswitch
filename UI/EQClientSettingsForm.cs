@@ -841,12 +841,13 @@ public class EQClientSettingsForm : Form
                 if (fullBounds.Count > 0)
                 {
                     int targetIdx = Math.Clamp(config.Layout.TargetMonitor, 0, fullBounds.Count - 1);
-                    // v3.24.3 — the eqclient.ini backbuffer is the SHARED render size for BOTH
-                    // clients, so it MUST equal the single sizing authority's PRIMARY-slot dims
-                    // (the size both windows are locked to). CoverAll → primary FULL bounds
-                    // (unchanged from before); ShowTaskbars → primary WORK area (so the
-                    // backbuffer matches the work-area-sized windows 1:1 → no stretch/black-bar).
-                    // Single-screen keeps the target monitor's full bounds (CoverAll-equivalent).
+                    // v3.24.10 — the eqclient.ini backbuffer is the SHARED initial render size for
+                    // BOTH clients, so it seeds from the single sizing authority's PRIMARY slot,
+                    // which is ALWAYS the primary monitor's FULL bounds (the main window covers its
+                    // taskbar in both modes). On mismatched monitors the SECONDARY window is a
+                    // different size — its backbuffer is corrected at runtime by the native resize
+                    // + the Windowed read-back (same path the old degrade case used). Single-screen
+                    // keeps the target monitor's full bounds.
                     bool isMM = config.Layout.Mode.Equals("multimonitor", StringComparison.OrdinalIgnoreCase);
                     Core.WinRect primaryFull = fullBounds[targetIdx];
                     Core.WinRect primaryWork = (workAreas.Count == fullBounds.Count) ? workAreas[targetIdx] : fullBounds[targetIdx];

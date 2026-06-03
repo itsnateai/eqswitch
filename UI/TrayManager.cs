@@ -1130,8 +1130,8 @@ public class TrayManager : IDisposable
                 UpdateHookConfig();
                 long tHook = sw.ElapsedMilliseconds;
                 FileLogger.Info($"SwitchKey-swap-timing: rotate={tRotate}ms, arrange={tArrange - tRotate}ms, hookConfig={tHook - tArrange}ms, total={tHook}ms");
-                // v3.24.3 — re-sync the DX backbuffer (no-op when locked; rebuilds on the
-                // per-monitor-fit degrade path so a mismatched-monitor swap can't leave a black bar).
+                // v3.24.3 — re-sync the DX backbuffer (no-op when locked = move-only swap;
+                // rebuilds only on the rare degrade path — 4K / primary-bigger — where a swap resizes).
                 PostBackbufferResizeToClients("SwitchKey-swap");
             }
             catch (Exception ex)
@@ -1417,13 +1417,15 @@ public class TrayManager : IDisposable
 
     /// <summary>
     /// v3.24.3 — post the native backbuffer-resize to every injected client after a swap.
-    /// A NO-OP under the locked-to-primary path (the window size doesn't change on a swap, so
-    /// the native side finds the backbuffer already matched and returns without a reset), but
-    /// on the per-monitor-fit DEGRADE path (4K+1080p / primary-bigger, where
-    /// <see cref="WindowManager.EffectiveSlotBounds"/> returns locked=false) a swap DOES resize
-    /// the client — this rebuilds the DX backbuffer to match instead of leaving the smoosh /
-    /// black bar until the user presses Fix-Windows. Makes the swap consistent across hardware,
-    /// not just the lockable case; the transition curtain masks the brief reset.
+    /// Self-gating + idempotent: the native side reads the live client size and returns without a
+    /// reset when the backbuffer already matches. Under v3.24.10 lock-size+bottom-anchor BOTH
+    /// windows are the primary's size, so a swap is a pure MOVE — the backbuffer already matches →
+    /// this is a NO-OP on the common (lockable) path (and that's WHY the v3.24.10 first cut's
+    /// per-swap ResetDevice crash can't recur: there's no resize to rebuild). It still rebuilds on
+    /// the rare DEGRADE path (4K+1080p / primary-bigger), where a swap genuinely resizes the
+    /// client — instead of leaving the smoosh / black bar until Fix-Windows. Fired on EVERY swap so
+    /// coverage is uniform; the transition curtain masks any reset. NOTE: per-client, this skips
+    /// clients that are not injected / mid-login / hung / iconic (see <see cref="PostBackbufferResize"/>).
     /// </summary>
     private void PostBackbufferResizeToClients(string ctx)
     {
@@ -5311,14 +5313,14 @@ public class TrayManager : IDisposable
     }
 
     /// <summary>
-    /// v3.24.2 — the EFFECTIVE slim-coverage monitor bounds for a PID, applying the SAME
-    /// lock-to-primary-dims policy <see cref="WindowManager.ArrangeMultiMonitor"/> uses to SIZE
-    /// the window. This is what the hook must pin so it doesn't fight the arrange — the v3.24.1
-    /// swap refit (taskbar peek + DX smoosh/black-bar) was the hook pinning the secondary
-    /// monitor's NATIVE dims (e.g. 1920x1200) while arrange used the locked primary dims
-    /// (1920x1080); the hook won and that per-swap resize fired EQ's backbuffer rebuild.
-    /// Mirrors <see cref="GetMonitorForPid"/> but overrides a secondary-slot client to the
-    /// primary's dims when the shared policy is active.
+    /// v3.24.10 — the EFFECTIVE slim-coverage monitor rect for a PID, derived from the SAME
+    /// lock-size + bottom-anchor authority (<see cref="WindowManager.EffectiveSlotBounds"/>) that
+    /// <see cref="WindowManager.ArrangeMultiMonitor"/> uses to SIZE + POSITION the window. This is
+    /// what the hook must pin so it doesn't fight the arrange — the v3.24.1 swap refit (taskbar
+    /// peek + DX smoosh/black-bar) was the hook pinning a DIFFERENT rect than arrange. Routing both
+    /// through EffectiveSlotBounds keeps the hook pin, the arrange, and the Windowed read-back
+    /// agreeing on the per-slot rect by construction (primary = its own full bounds at its origin;
+    /// secondary = the primary's SIZE, bottom-anchored within the 2nd monitor's work/full bounds).
     /// </summary>
     private WinRect GetEffectiveMonitorForPid(int pid, int clientIndexFallback)
     {

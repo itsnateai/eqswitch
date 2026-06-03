@@ -1,5 +1,36 @@
 # Changelog
 
+## v3.24.10 — Multimon "Show taskbars": 2nd window butts the taskbar, no desktop gap (2026-06-02)
+
+Makes the multimonitor **"Show taskbars (multi-mon)"** toggle put the 2nd-monitor game flush
+against the taskbar (no desktop gap between game and taskbar) — without the smoosh/crash that a
+naïve approach hits. The pre-existing design locked BOTH windows to the *primary's* size and
+top-anchored them, so on a taller 2nd monitor the leftover band (desktop **+** taskbar) sat below
+the game. v3.24.10 keeps the windows the **same size** (the load-bearing stability invariant) but
+**bottom-anchors** the 2nd window.
+
+- **`WindowManager.EffectiveSlotBounds`** (the single sizing authority — drives arrange, the hook
+  pin, the Windowed read-back, and the eqclient.ini backbuffer) now: the **primary** is its own
+  full bounds at its own origin (covers the main taskbar). The **secondary** keeps that SAME SIZE
+  but is bottom-anchored so its bottom edge meets:
+  - **ShowTaskbars (checked)** — the 2nd monitor's WORK-area bottom → game butts the 2nd taskbar
+    (no gap between game and taskbar), taskbar visible. The leftover band moves to the TOP.
+  - **CoverAll (unchecked)** — the 2nd monitor's FULL bottom → game covers the 2nd taskbar.
+- **Why same-size matters:** because both windows are the primary's size, ONE shared eqclient.ini
+  backbuffer matches both (crisp, no per-client divergence) and a `\`/`]` swap is a pure **MOVE**,
+  never a resize — so it never triggers EQ's windowed-D3D9 `ResetDevice`. (A first cut that sized
+  each window to its own monitor crashed `eqgame.exe` in `USER32.dll` `0xc000041d` on the per-swap
+  `ResetDevice` and distorted the 2nd client when the per-client backbuffer rebuild raced its own
+  GeoWndProc subclass — bottom-anchor avoids that entire class structurally.)
+- **Cross-hardware:** lockable when the monitors are within 200px/axis and the primary fits the 2nd;
+  otherwise (4K+1080p, primary-bigger-than-2nd) it degrades to the 2nd's native bounds (rare; the
+  pre-existing swap-resize caveat, Fix-Windows recovers). The `locked` flag is true whenever the
+  secondary is locked to the primary's size (→ swap move-only).
+- `EffectiveSlotBoundsTests` rewritten for the bottom-anchor semantics (11 cases: single / matched /
+  mismatched 1080+1200 both modes / 4K+1080p / primary-bigger both modes / 3+ slot-wrap /
+  auto-hide-taskbar / narrower-2nd), asserting the same-size (stability) + no-gap invariants. Run
+  with `--test-effective-bounds`. Retires the now-dead `ShouldLockToPrimaryDims`/`ApplyLockToPrimaryDims`.
+
 ## v3.24.9 — FIX enter-world on Dalaya: search "Play_Button" (RoF2), prefer the SHM click (2026-06-02)
 
 Root-causes and fixes the reason Dalaya enter-world fell back to PulseKey3D. EQSwitch searched the

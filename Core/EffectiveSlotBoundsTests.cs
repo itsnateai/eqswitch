@@ -7,16 +7,20 @@ using EQSwitch.Config;
 namespace EQSwitch.Core;
 
 /// <summary>
-/// v3.24.3 — pure-static regression guard for <see cref="WindowManager.EffectiveSlotBounds"/>,
+/// v3.24.10 — pure-static regression guard for <see cref="WindowManager.EffectiveSlotBounds"/>,
 /// THE single multimonitor sizing authority that ArrangeMultiMonitor (sizes the window), the
 /// hook-config pin, the Windowed read-back, and the eqclient.ini backbuffer all derive from.
 /// <para>
-/// Covers the cross-hardware config matrix the brief requires: single physical display,
-/// matched monitors, mismatched monitors (Nate's 1080 + 1200), wildly-mismatched (4K + 1080p)
-/// degrade-to-native, primary-bigger-than-secondary degrade, slot wrap for 3+ clients, AND the
-/// CoverAll-vs-ShowTaskbars full-vs-work axis. The load-bearing invariant under test:
-/// when locked, BOTH slots get the SAME W×H (symmetric → swap never resizes a client → no DX
-/// rebuild → no smoosh/peek/black-bar). Invoked via --test-effective-bounds. 0 = all pass.
+/// v3.24.10 LOCK-SIZE + BOTTOM-ANCHOR semantics: BOTH windows take the PRIMARY's SIZE (so one
+/// shared DX backbuffer matches both → crisp, AND a swap is a pure MOVE that never resizes →
+/// no ResetDevice → no distortion / no crash — the load-bearing stability invariant). The primary
+/// is top-anchored at its own origin (covers the main taskbar); the secondary keeps that SAME SIZE
+/// but is BOTTOM-ANCHORED so its bottom edge meets the 2nd monitor's WORK bottom (ShowTaskbars →
+/// game butts the 2nd taskbar, no gap) or FULL bottom (CoverAll → covers it); the leftover band
+/// sits at the TOP. Degrades to the 2nd's native bounds when the monitors are too far apart to lock
+/// (4K+1080p) or the primary doesn't fit the 2nd. The <c>locked</c> flag is true whenever the
+/// secondary is locked to the primary's size (→ swap is move-only). Invoked via
+/// --test-effective-bounds. 0 = all pass.
 /// </para>
 /// </summary>
 public static class EffectiveSlotBoundsTests
@@ -36,13 +40,12 @@ public static class EffectiveSlotBoundsTests
             var (b0, l0) = WindowManager.EffectiveSlotBounds(0, pf, pw, null, null, MultiMonTaskbarMode.CoverAll);
             failures += AssertRect("single: slot0 = primary full", b0, 0, 0, 1920, 1080);
             failures += AssertFalse("single: slot0 not locked", l0);
-            // Even an odd slot collapses to primary when there's no second monitor.
             var (b1, l1) = WindowManager.EffectiveSlotBounds(1, pf, pw, null, null, MultiMonTaskbarMode.CoverAll);
-            failures += AssertRect("single: slot1 falls back to primary", b1, 0, 0, 1920, 1080);
+            failures += AssertRect("single: slot1 falls back to primary full", b1, 0, 0, 1920, 1080);
             failures += AssertFalse("single: slot1 not locked", l1);
         }
 
-        // ── Case 2 — MATCHED 1920×1080, CoverAll → both lock to 1920×1080 (same size) ──
+        // ── Case 2 — MATCHED 1920×1080, CoverAll → both same size, 2nd covers (no band) ──
         {
             var pf = Mon(0, 0, 1920, 1080);
             var pw = Mon(0, 0, 1920, 1040);
@@ -50,14 +53,14 @@ public static class EffectiveSlotBoundsTests
             var sw = Mon(1920, 0, 1920, 1040);
             var (b0, _) = WindowManager.EffectiveSlotBounds(0, pf, pw, sf, sw, MultiMonTaskbarMode.CoverAll);
             var (b1, l1) = WindowManager.EffectiveSlotBounds(1, pf, pw, sf, sw, MultiMonTaskbarMode.CoverAll);
-            failures += AssertRect("matched/CoverAll: slot0", b0, 0, 0, 1920, 1080);
-            failures += AssertRect("matched/CoverAll: slot1 (sec origin, primary dims)", b1, 1920, 0, 3840, 1080);
+            failures += AssertRect("matched/CoverAll: slot0 primary full", b0, 0, 0, 1920, 1080);
+            failures += AssertRect("matched/CoverAll: slot1 (matched → top=0, covers)", b1, 1920, 0, 3840, 1080);
             failures += AssertTrue("matched/CoverAll: locked", l1);
-            failures += AssertTrue("matched/CoverAll: SAME size (symmetric swap)",
+            failures += AssertTrue("matched/CoverAll: SAME size (swap is move-only)",
                 b0.Width == b1.Width && b0.Height == b1.Height);
         }
 
-        // ── Case 3 — MISMATCHED 1080 + 1200, CoverAll → both 1920×1080; secondary band ──
+        // ── Case 3 — MISMATCHED 1080 + 1200, CoverAll → 2nd bottom-anchored to FULL bottom (covers) ──
         {
             var pf = Mon(0, 0, 1920, 1080);
             var pw = Mon(0, 0, 1920, 1040);
@@ -65,51 +68,55 @@ public static class EffectiveSlotBoundsTests
             var sw = Mon(1920, 0, 1920, 1160);
             var (b0, _) = WindowManager.EffectiveSlotBounds(0, pf, pw, sf, sw, MultiMonTaskbarMode.CoverAll);
             var (b1, l1) = WindowManager.EffectiveSlotBounds(1, pf, pw, sf, sw, MultiMonTaskbarMode.CoverAll);
-            failures += AssertRect("mismatch/CoverAll: slot0 primary full", b0, 0, 0, 1920, 1080);
-            failures += AssertRect("mismatch/CoverAll: slot1 locked to 1080 (120px band)", b1, 1920, 0, 3840, 1080);
+            failures += AssertRect("mismatch/CoverAll: slot0 primary full (covers main taskbar)", b0, 0, 0, 1920, 1080);
+            // size = primary (1920x1080); bottom-anchored so bottom = 1200 (full), top = 1200-1080 = 120
+            failures += AssertRect("mismatch/CoverAll: slot1 size=primary, bottom-anchored to FULL (covers taskbar)", b1, 1920, 120, 3840, 1200);
             failures += AssertTrue("mismatch/CoverAll: locked", l1);
-            failures += AssertTrue("mismatch/CoverAll: SAME size (symmetric swap)",
-                b0.Height == b1.Height && b0.Height == 1080);
+            failures += AssertTrue("mismatch/CoverAll: SAME size as primary (swap move-only, no crash)",
+                b1.Width == b0.Width && b1.Height == b0.Height);
+            failures += AssertTrue("mismatch/CoverAll: 2nd bottom == FULL bottom (covers taskbar)", b1.Bottom == sf.Bottom);
         }
 
-        // ── Case 4 — MISMATCHED 1080 + 1200, ShowTaskbars → both lock to primary WORK (1040) ──
+        // ── Case 4 — MISMATCHED 1080 + 1200, ShowTaskbars → 2nd butts the taskbar (no gap) ──
+        // Nate's best-case default: game's bottom = 2nd work bottom, taskbar visible, no gap; main FULL.
         {
             var pf = Mon(0, 0, 1920, 1080);
             var pw = Mon(0, 0, 1920, 1040);
             var sf = Mon(1920, 0, 1920, 1200);
-            var sw = Mon(1920, 0, 1920, 1160);
+            var sw = Mon(1920, 0, 1920, 1160);   // 2nd work bottom = 1160 (40px taskbar)
             var (b0, _) = WindowManager.EffectiveSlotBounds(0, pf, pw, sf, sw, MultiMonTaskbarMode.ShowTaskbars);
             var (b1, l1) = WindowManager.EffectiveSlotBounds(1, pf, pw, sf, sw, MultiMonTaskbarMode.ShowTaskbars);
-            failures += AssertRect("mismatch/ShowTaskbars: slot0 primary WORK", b0, 0, 0, 1920, 1040);
-            failures += AssertRect("mismatch/ShowTaskbars: slot1 locked to work-dims 1040", b1, 1920, 0, 3840, 1040);
+            failures += AssertRect("mismatch/ShowTaskbars: slot0 primary FULL (covers main taskbar)", b0, 0, 0, 1920, 1080);
+            // size = primary (1080); bottom-anchored to WORK bottom 1160 → top = 1160-1080 = 80
+            failures += AssertRect("mismatch/ShowTaskbars: slot1 size=primary, butts 2nd taskbar (no gap)", b1, 1920, 80, 3840, 1160);
             failures += AssertTrue("mismatch/ShowTaskbars: locked", l1);
-            failures += AssertTrue("mismatch/ShowTaskbars: SAME size (symmetric swap)",
-                b0.Height == b1.Height && b0.Height == 1040);
+            failures += AssertTrue("mismatch/ShowTaskbars: SAME size as primary (swap move-only)",
+                b1.Width == b0.Width && b1.Height == b0.Height);
+            // No-gap invariant: the 2nd window's bottom == the 2nd work-area bottom (= taskbar top).
+            failures += AssertTrue("mismatch/ShowTaskbars: 2nd bottom == 2nd work bottom (NO GAP)", b1.Bottom == sw.Bottom);
         }
 
-        // ── Case 5 — 4K + 1080p, CoverAll → Δ>200 ⇒ NOT lockable, slot1 native (degrade) ──
+        // ── Case 5 — 4K + 1080p, CoverAll → too far apart → degrade to 2nd native ──
         {
             var pf = Mon(0, 0, 3840, 2160);
             var pw = Mon(0, 0, 3840, 2120);
             var sf = Mon(3840, 0, 1920, 1080);
             var sw = Mon(3840, 0, 1920, 1040);
-            var (_, l1) = WindowManager.EffectiveSlotBounds(1, pf, pw, sf, sw, MultiMonTaskbarMode.CoverAll);
-            var (b1, _) = WindowManager.EffectiveSlotBounds(1, pf, pw, sf, sw, MultiMonTaskbarMode.CoverAll);
+            var (b1, l1) = WindowManager.EffectiveSlotBounds(1, pf, pw, sf, sw, MultiMonTaskbarMode.CoverAll);
             failures += AssertFalse("4K+1080p/CoverAll: NOT locked (degrade)", l1);
-            failures += AssertRect("4K+1080p/CoverAll: slot1 native secondary", b1, 3840, 0, 5760, 1080);
+            failures += AssertRect("4K+1080p/CoverAll: slot1 = 2nd native", b1, 3840, 0, 5760, 1080);
         }
 
-        // ── Case 6 — primary BIGGER than secondary (primary 1200, secondary 1080) ⇒ degrade ──
-        // ShouldLockToPrimaryDims requires the primary to FIT inside the secondary; it doesn't
-        // (1200 > 1080), so locking would extend the window past the secondary's edge → native.
+        // ── Case 6 — primary BIGGER than secondary (primary 1200, secondary 1080) → degrade ──
+        // Primary doesn't fit the smaller 2nd → degrade to 2nd native (rare; documented swap caveat).
         {
             var pf = Mon(0, 0, 1920, 1200);
             var pw = Mon(0, 0, 1920, 1160);
             var sf = Mon(1920, 0, 1920, 1080);
             var sw = Mon(1920, 0, 1920, 1040);
             var (b1, l1) = WindowManager.EffectiveSlotBounds(1, pf, pw, sf, sw, MultiMonTaskbarMode.CoverAll);
-            failures += AssertFalse("primary-bigger/CoverAll: NOT locked (primary doesn't fit)", l1);
-            failures += AssertRect("primary-bigger/CoverAll: slot1 native secondary", b1, 1920, 0, 3840, 1080);
+            failures += AssertFalse("primary-bigger/CoverAll: NOT locked (primary doesn't fit 2nd)", l1);
+            failures += AssertRect("primary-bigger/CoverAll: slot1 = 2nd native", b1, 1920, 0, 3840, 1080);
         }
 
         // ── Case 7 — slot wrap for 3+ clients (slot%2): even→primary, odd→secondary ──
@@ -119,49 +126,62 @@ public static class EffectiveSlotBoundsTests
             var sf = Mon(1920, 0, 1920, 1080);
             var sw = Mon(1920, 0, 1920, 1040);
             var (b2, _) = WindowManager.EffectiveSlotBounds(2, pf, pw, sf, sw, MultiMonTaskbarMode.CoverAll);
-            var (b3, _) = WindowManager.EffectiveSlotBounds(3, pf, pw, sf, sw, MultiMonTaskbarMode.CoverAll);
+            var (b3, l3) = WindowManager.EffectiveSlotBounds(3, pf, pw, sf, sw, MultiMonTaskbarMode.CoverAll);
             failures += AssertRect("slot2 wraps to primary", b2, 0, 0, 1920, 1080);
-            failures += AssertRect("slot3 wraps to secondary (locked)", b3, 1920, 0, 3840, 1080);
+            failures += AssertRect("slot3 wraps to secondary (locked, matched)", b3, 1920, 0, 3840, 1080);
+            failures += AssertTrue("slot3 locked", l3);
         }
 
-        // ── Case 8 — CoverAll vs ShowTaskbars pick FULL vs WORK on the primary slot ──
+        // ── Case 8 — mode picks the 2nd ANCHOR bottom; primary is FULL in BOTH modes ──
         {
             var pf = Mon(0, 0, 1920, 1080);
             var pw = Mon(0, 0, 1920, 1040);
-            var (cover, _) = WindowManager.EffectiveSlotBounds(0, pf, pw, null, null, MultiMonTaskbarMode.CoverAll);
-            var (show, _)  = WindowManager.EffectiveSlotBounds(0, pf, pw, null, null, MultiMonTaskbarMode.ShowTaskbars);
-            failures += AssertTrue("CoverAll primary uses FULL height (1080)", cover.Height == 1080);
-            failures += AssertTrue("ShowTaskbars primary uses WORK height (1040)", show.Height == 1040);
+            var sf = Mon(1920, 0, 1920, 1200);
+            var sw = Mon(1920, 0, 1920, 1160);
+            var (cover0, _) = WindowManager.EffectiveSlotBounds(0, pf, pw, sf, sw, MultiMonTaskbarMode.CoverAll);
+            var (show0,  _) = WindowManager.EffectiveSlotBounds(0, pf, pw, sf, sw, MultiMonTaskbarMode.ShowTaskbars);
+            var (cover1, _) = WindowManager.EffectiveSlotBounds(1, pf, pw, sf, sw, MultiMonTaskbarMode.CoverAll);
+            var (show1,  _) = WindowManager.EffectiveSlotBounds(1, pf, pw, sf, sw, MultiMonTaskbarMode.ShowTaskbars);
+            failures += AssertTrue("primary FULL in CoverAll (1080)", cover0.Height == 1080);
+            failures += AssertTrue("primary FULL in ShowTaskbars too (1080) — main always covers", show0.Height == 1080);
+            failures += AssertTrue("CoverAll 2nd bottom = FULL (1200, covers 2nd taskbar)", cover1.Bottom == 1200);
+            failures += AssertTrue("ShowTaskbars 2nd bottom = WORK (1160, butts 2nd taskbar)", show1.Bottom == 1160);
+            failures += AssertTrue("both modes: 2nd height == primary height (1080, stable)",
+                cover1.Height == 1080 && show1.Height == 1080);
         }
 
-        // ── Case 9 — ShowTaskbars with AUTO-HIDE taskbar (work == full on both) ──
-        // A monitor with an auto-hidden taskbar reports rcWork == rcMonitor. ShowTaskbars then
-        // operates on work areas that equal the full bounds, so it degenerates to the same
-        // result as CoverAll — both slots lock to the primary's dims, no crash, no negative band.
+        // ── Case 9 — ShowTaskbars with AUTO-HIDE taskbar (work == full on the 2nd) ──
+        // Auto-hidden taskbar → rcWork == rcMonitor → bottom-anchor to full bottom, covers full, no crash.
         {
             var pf = Mon(0, 0, 1920, 1080);
             var pw = Mon(0, 0, 1920, 1080);   // work == full (auto-hide)
             var sf = Mon(1920, 0, 1920, 1200);
             var sw = Mon(1920, 0, 1920, 1200); // work == full (auto-hide)
-            var (b0, _) = WindowManager.EffectiveSlotBounds(0, pf, pw, sf, sw, MultiMonTaskbarMode.ShowTaskbars);
             var (b1, l1) = WindowManager.EffectiveSlotBounds(1, pf, pw, sf, sw, MultiMonTaskbarMode.ShowTaskbars);
-            failures += AssertRect("auto-hide/ShowTaskbars: slot0 = primary full (work==full)", b0, 0, 0, 1920, 1080);
-            failures += AssertRect("auto-hide/ShowTaskbars: slot1 locked to 1080 (no negative band)", b1, 1920, 0, 3840, 1080);
+            failures += AssertRect("auto-hide/ShowTaskbars: slot1 size=primary, bottom-anchored to 1200", b1, 1920, 120, 3840, 1200);
             failures += AssertTrue("auto-hide/ShowTaskbars: locked", l1);
         }
 
-        // ── Case 10 — ASYMMETRIC fit fail: secondary narrower on ONE axis ⇒ degrade ──
-        // primary 1920×1080, secondary 1800×1200: wDelta=120≤200, hDelta=120≤200, BUT primary does
-        // not fit (1920 > 1800 on width). ShouldLockToPrimaryDims requires fit on BOTH axes, so this
-        // must NOT lock (locking would push the window 120px past the secondary's right edge).
+        // ── Case 10 — secondary narrower on ONE axis (1800×1200) → primary doesn't fit → degrade ──
         {
             var pf = Mon(0, 0, 1920, 1080);
             var pw = Mon(0, 0, 1920, 1040);
             var sf = Mon(1920, 0, 1800, 1200);
             var sw = Mon(1920, 0, 1800, 1160);
             var (b1, l1) = WindowManager.EffectiveSlotBounds(1, pf, pw, sf, sw, MultiMonTaskbarMode.CoverAll);
-            failures += AssertFalse("asymmetric-fit/CoverAll: NOT locked (primary wider than secondary)", l1);
-            failures += AssertRect("asymmetric-fit/CoverAll: slot1 native secondary", b1, 1920, 0, 3720, 1200);
+            failures += AssertFalse("asymmetric-fit/CoverAll: NOT locked (primary wider than 2nd)", l1);
+            failures += AssertRect("asymmetric-fit/CoverAll: slot1 = 2nd native", b1, 1920, 0, 3720, 1200);
+        }
+
+        // ── Case 11 — primary BIGGER + ShowTaskbars → degrade (primary doesn't fit smaller 2nd) ──
+        {
+            var pf = Mon(0, 0, 1920, 1200);
+            var pw = Mon(0, 0, 1920, 1160);
+            var sf = Mon(1920, 0, 1920, 1080);
+            var sw = Mon(1920, 0, 1920, 1040);
+            var (b1, l1) = WindowManager.EffectiveSlotBounds(1, pf, pw, sf, sw, MultiMonTaskbarMode.ShowTaskbars);
+            failures += AssertFalse("primary-bigger/ShowTaskbars: NOT locked (degrade)", l1);
+            failures += AssertRect("primary-bigger/ShowTaskbars: slot1 = 2nd native", b1, 1920, 0, 3840, 1080);
         }
 
         Console.WriteLine(failures == 0
