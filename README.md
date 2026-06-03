@@ -123,8 +123,8 @@ EQSwitch ships with a built-in tray icon. To use your own instead, open **Settin
 
 - **Active client**: AboveNormal priority
 - **Background clients**: AboveNormal priority
-- Per-character priority overrides in Settings → Characters
-- CPU core assignment via eqclient.ini CPUAffinity0-5 slots (Settings → Process Manager)
+- Per-character priority overrides in Settings → Accounts (Characters card)
+- CPU core assignment via eqclient.ini CPUAffinity0-5 slots (tray menu → Process Manager)
 
 ## Auto-Login Security
 
@@ -151,7 +151,7 @@ Changes are **not written back** until you explicitly click Save in the EQ Clien
 | **Hotkeys not working** | Run as Administrator — some games need elevated privileges for global hotkeys |
 | **EQ path not detected** | Use Settings → Paths to set your EQ installation directory |
 | **PiP not showing** | Requires 2+ EQ clients running. Middle-click tray icon to toggle |
-| **CPU affinity not applying** | EQ resets affinity after launch — EQSwitch retries automatically. Use tray menu → Force Apply |
+| **CPU affinity not applying** | EQ resets affinity after launch — EQSwitch retries automatically. To force it: tray menu → Process Manager → Apply |
 | **Config lost after moving exe** | Move `eqswitch-config.json` with the exe. Backups in `backups/` subfolder |
 | **DLL blocked by antivirus** | Add your EQSwitch folder to Windows Defender exclusions |
 

@@ -70,7 +70,7 @@ TRAY ICON:
   Double-click       {TrayManager.FormatActionName(config.TrayClick.DoubleClick)}
   Triple-click       {TrayManager.FormatActionName(config.TrayClick.TripleClick)}
   Middle-click       {TrayManager.FormatActionName(config.TrayClick.MiddleClick)}
-  Middle-triple      {TrayManager.FormatActionName(config.TrayClick.MiddleDoubleClick)}
+  Middle-double      {TrayManager.FormatActionName(config.TrayClick.MiddleDoubleClick)}
   (Configurable in Settings → General tab)
 
 LAYOUT MODES:
@@ -92,10 +92,10 @@ CPU AFFINITY & PRIORITY:
 CHARACTER PROFILES:
   Assign custom priority per character
   Import/export character lists as JSON
-  Configure in Settings → Characters tab
+  Configure in Settings → Accounts tab (Characters card)
 
 VIDEO SETTINGS:
-  Edit eqclient.ini from Launcher → Video Settings
+  Edit eqclient.ini from Settings → Video
   Manages resolution, windowed mode, particles, models, etc.
 
 CUSTOM TRAY ICON:
@@ -143,7 +143,7 @@ CONFIG:
 TROUBLESHOOTING:
   Hotkeys not working?   Run as Administrator
   PiP not showing?       Need 2+ clients running
-  Affinity not sticking? Tray → Affinity → Force Re-Apply
+  Affinity not sticking? Process Manager (tray menu) → Apply
   Config lost?           Check backups/ folder next to exe
 
 USEFUL LINKS:
