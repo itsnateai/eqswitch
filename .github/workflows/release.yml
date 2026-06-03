@@ -59,6 +59,13 @@ jobs:
           # self-updating; the canonical name gives manual users a stable download
           # + a consistent "EQSwitch" extract folder. (-Force lets a local re-run
           # rebuild over an existing zip; a fresh CI runner has none.)
+          #
+          # PHASE-2 GUARD — do NOT drop the versioned EQSwitch-X.Y.Z.zip (here, in
+          # SHA256SUMS, in the upload list, or in PRIMARY_ASSET) until the install
+          # base is past the last pre-canonical version (v3.24.17). Clients <=3.24.17
+          # only recognize the hyphenated name; a canonical-only release would strand
+          # them at "No update package found." See memory:
+          # reference_self_update_versionless_asset_dual_rollout.
           $versioned = "EQSwitch-${{ steps.version.outputs.VERSION }}.zip"
           Compress-Archive -Path EQSwitch.exe, eqswitch-hook.dll, eqswitch-di8.dll, LICENSE, README.md, CHANGELOG.md -DestinationPath $versioned -Force
           Copy-Item $versioned "EQSwitch.zip" -Force
@@ -66,10 +73,13 @@ jobs:
       - name: Generate SHA256SUMS
         shell: bash
         run: |
+          set -euo pipefail
           # One line per asset name (same digest — they're byte-identical). Old
           # clients look up the versioned line; v3.24.18+ clients look up
           # EQSwitch.zip. The consumer pins to the exact name it downloaded, so
-          # the sibling line can't shadow.
+          # the sibling line can't shadow. set -e: a sha256sum failure on either
+          # file aborts the build instead of uploading a truncated manifest (a
+          # missing line would make the consumer fail-closed on a real release).
           sha256sum "EQSwitch-${{ steps.version.outputs.VERSION }}.zip" "EQSwitch.zip" > SHA256SUMS
           cat SHA256SUMS
 

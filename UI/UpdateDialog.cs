@@ -279,14 +279,19 @@ public class UpdateDialog : Form
         filename.Equals($"{AppName}.zip", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Legacy versioned release zip name (e.g. EQSwitch-3.24.18.zip). Matched by
-    /// prefix/suffix, not a version parse — the exact-version integrity pinning
-    /// lives in ParseHashForZipBundle, keyed off the actual chosen asset name.
+    /// Legacy versioned release zip name (e.g. EQSwitch-3.24.18.zip). Requires a
+    /// version-shaped suffix — `AppName-` immediately followed by a digit — so a
+    /// future sibling asset like EQSwitch-symbols.zip or EQSwitch-debug.zip can't
+    /// be mistaken for the app bundle by discovery. (Exact-version integrity
+    /// pinning still lives in ParseHashForZipBundle, keyed off the chosen name;
+    /// this just keeps the predicate honest to its own name.)
     /// </summary>
     internal static bool IsVersionedZipName(string filename) =>
         !string.IsNullOrEmpty(filename) &&
         filename.StartsWith($"{AppName}-", StringComparison.OrdinalIgnoreCase) &&
-        filename.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
+        filename.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) &&
+        filename.Length > AppName.Length + 1 &&
+        char.IsAsciiDigit(filename[AppName.Length + 1]);
 
     // SHA-256 produces 32 bytes = 64 hex chars. Reject anything else so a
     // malformed SHA256SUMS body (truncated, non-hex, empty after `=`) can't

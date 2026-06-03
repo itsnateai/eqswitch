@@ -229,6 +229,27 @@ static class Program
             return;
         }
 
+        // --test-update-assets — run Core/UpdateAssetMatchTests.RunAll() and exit with its
+        // return code. Guards the v3.24.18 dual-asset self-update matching: canonical vs
+        // versioned zip predicates (versioned requires a version-shaped suffix) and the
+        // SHA256SUMS parser keyed off the exact chosen asset name (anti-shadowing, fail-closed).
+        if (args.Length >= 1 && args[0] == "--test-update-assets")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.UpdateAssetMatchTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"UpdateAssetMatchTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
         // --test-window-mode-style — run Core/WindowModeStyleTests.RunAll() and
         // exit with its return code. Guards the WindowMode → GWL_STYLE mapping
         // (Fullscreen=WS_POPUP, Windowed=WS_CAPTION) added in v3.22.81 Phase 2.
