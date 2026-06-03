@@ -52,12 +52,25 @@ jobs:
       - name: Create zip bundle
         shell: pwsh
         run: |
-          Compress-Archive -Path EQSwitch.exe, eqswitch-hook.dll, eqswitch-di8.dll, LICENSE, README.md, CHANGELOG.md -DestinationPath "EQSwitch-${{ steps.version.outputs.VERSION }}.zip"
+          # Build the versioned zip once, then copy it byte-for-byte to the
+          # canonical version-independent name. Identical bytes -> identical
+          # SHA256, so SHA256SUMS lists one digest under two names: one artifact,
+          # two asset names. The versioned name keeps pre-transition clients
+          # self-updating; the canonical name gives manual users a stable download
+          # + a consistent "EQSwitch" extract folder. (-Force lets a local re-run
+          # rebuild over an existing zip; a fresh CI runner has none.)
+          $versioned = "EQSwitch-${{ steps.version.outputs.VERSION }}.zip"
+          Compress-Archive -Path EQSwitch.exe, eqswitch-hook.dll, eqswitch-di8.dll, LICENSE, README.md, CHANGELOG.md -DestinationPath $versioned -Force
+          Copy-Item $versioned "EQSwitch.zip" -Force
 
       - name: Generate SHA256SUMS
         shell: bash
         run: |
-          sha256sum "EQSwitch-${{ steps.version.outputs.VERSION }}.zip" > SHA256SUMS
+          # One line per asset name (same digest — they're byte-identical). Old
+          # clients look up the versioned line; v3.24.18+ clients look up
+          # EQSwitch.zip. The consumer pins to the exact name it downloaded, so
+          # the sibling line can't shadow.
+          sha256sum "EQSwitch-${{ steps.version.outputs.VERSION }}.zip" "EQSwitch.zip" > SHA256SUMS
           cat SHA256SUMS
 
       - name: Create GitHub Release
@@ -66,13 +79,15 @@ jobs:
           generate_release_notes: true
           files: |
             EQSwitch-${{ steps.version.outputs.VERSION }}.zip
+            EQSwitch.zip
             SHA256SUMS
 
       # Post-publish verification — softprops/action-gh-release reports
       # "Uploaded ..." on push but only guarantees the upload-API call
       # returned 2xx. The step below fetches the release back and asserts
-      # both expected assets are present, state=uploaded, and the release
-      # is not a draft. SCOPE: catches CI-window failure modes (action bug,
+      # all expected assets (both zip names + SHA256SUMS) are present,
+      # state=uploaded, and the release is not a draft. SCOPE: catches
+      # CI-window failure modes (action bug,
       # eventual-consistency hiccup, concurrent re-run race, edits during
       # the ~25s retry window). It does NOT catch a human clobbering assets
       # via `gh release upload --clobber` or the web UI 30s / 30 days later
@@ -86,6 +101,7 @@ jobs:
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
           PRIMARY_ASSET: EQSwitch-${{ steps.version.outputs.VERSION }}.zip
+          SECONDARY_ASSET: EQSwitch.zip
           RETRY_MAX: '5'
           RETRY_SLEEP: '5'
         run: |
@@ -93,6 +109,7 @@ jobs:
           attempt=0
           JSON=''
           PRI_STATE=''
+          SEC_STATE=''
           SUM_STATE=''
           IS_DRAFT=''
           while [ "$attempt" -lt "$RETRY_MAX" ]; do
@@ -105,18 +122,19 @@ jobs:
               echo "Attempt ${attempt}/${RETRY_MAX}: gh api non-zero — keeping response body for diagnostics. Head: ${JSON:0:200}"
             fi
             PRI_STATE=$(printf '%s' "$JSON" | jq -r --arg n "$PRIMARY_ASSET" '.assets[]? | select(.name==$n) | .state' 2>/dev/null || true)
+            SEC_STATE=$(printf '%s' "$JSON" | jq -r --arg n "$SECONDARY_ASSET" '.assets[]? | select(.name==$n) | .state' 2>/dev/null || true)
             SUM_STATE=$(printf '%s' "$JSON" | jq -r '.assets[]? | select(.name=="SHA256SUMS") | .state' 2>/dev/null || true)
             IS_DRAFT=$(printf '%s' "$JSON" | jq -r '.draft // empty' 2>/dev/null || true)
-            if [ "$PRI_STATE" = "uploaded" ] && [ "$SUM_STATE" = "uploaded" ] && [ "$IS_DRAFT" != "true" ]; then
-              echo "::notice::Release ${TAG} verified: ${PRIMARY_ASSET} + SHA256SUMS both present, not draft"
+            if [ "$PRI_STATE" = "uploaded" ] && [ "$SEC_STATE" = "uploaded" ] && [ "$SUM_STATE" = "uploaded" ] && [ "$IS_DRAFT" != "true" ]; then
+              echo "::notice::Release ${TAG} verified: ${PRIMARY_ASSET} + ${SECONDARY_ASSET} + SHA256SUMS all present, not draft"
               exit 0
             fi
-            echo "Attempt ${attempt}/${RETRY_MAX}: primary=${PRI_STATE:-MISSING} sum=${SUM_STATE:-MISSING} draft=${IS_DRAFT:-?}"
+            echo "Attempt ${attempt}/${RETRY_MAX}: primary=${PRI_STATE:-MISSING} secondary=${SEC_STATE:-MISSING} sum=${SUM_STATE:-MISSING} draft=${IS_DRAFT:-?}"
             if [ "$attempt" -lt "$RETRY_MAX" ]; then
               sleep "$RETRY_SLEEP"
             fi
           done
-          echo "::error::Release ${TAG} not verified after ${RETRY_MAX} attempts. primary=${PRI_STATE:-MISSING} sum=${SUM_STATE:-MISSING} draft=${IS_DRAFT:-?}"
+          echo "::error::Release ${TAG} not verified after ${RETRY_MAX} attempts. primary=${PRI_STATE:-MISSING} secondary=${SEC_STATE:-MISSING} sum=${SUM_STATE:-MISSING} draft=${IS_DRAFT:-?}"
           echo "--- Last API response or error body (first 2000 chars) ---"
           printf '%s\n' "${JSON:0:2000}"
           exit 1

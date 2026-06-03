@@ -16,10 +16,10 @@ A lightweight EverQuest multiboxer — hotkey switching, encrypted auto-login, P
 
 ## Download
 
-**[Download EQSwitch.zip from Releases](https://github.com/itsnateai/eqswitch/releases/latest)** — extract and run. No installer, no runtime needed.
+**[Download EQSwitch.zip](https://github.com/itsnateai/eqswitch/releases/latest/download/EQSwitch.zip)** — extract and run. No installer, no runtime needed. _(Or browse [all releases](https://github.com/itsnateai/eqswitch/releases/latest).)_
 
 > [!TIP]
-> Extract the zip to any folder and run `EQSwitch.exe`. Config is stored as `eqswitch-config.json` next to the exe.
+> Extract the zip to any folder and run `EQSwitch.exe` — it lands in a consistent `EQSwitch` folder. Config is stored as `eqswitch-config.json` next to the exe.
 
 <details>
 <summary>What's in the zip?</summary>

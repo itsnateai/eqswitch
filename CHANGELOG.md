@@ -1,5 +1,28 @@
 # Changelog
 
+## v3.24.18 — Version-independent `EQSwitch.zip` release asset (2026-06-03)
+
+The release now also ships a **version-independent `EQSwitch.zip`** alongside the existing
+`EQSwitch-X.Y.Z.zip`. Manual downloaders get a stable name that extracts to a consistent
+`EQSwitch` folder (no more `EQSwitch-3.24.17` folders that look dated a year later), and a
+permanent download link: `releases/latest/download/EQSwitch.zip`.
+
+This is a **dual-asset transition** — both names ship on every release for now, so there is
+**zero self-update breakage**: clients built before this release keep updating off the versioned
+asset, while v3.24.18+ clients prefer the canonical name.
+
+- **Producer (`release.yml`):** the versioned zip is built once and copied byte-for-byte to
+  `EQSwitch.zip` (identical bytes → identical SHA256). `SHA256SUMS` lists both names; both are
+  uploaded; the post-publish persistence check now asserts all three assets reached
+  `state=uploaded`.
+- **Consumer (`UpdateDialog.cs`):** asset discovery now *deterministically* prefers `EQSwitch.zip`
+  and falls back to the versioned name (so a versioned-only or a future canonical-only release
+  both resolve) — no more last-match-wins on GitHub's asset ordering. The integrity check is keyed
+  off the **exact filename discovery chose** (threaded through `ParseHashForZipBundle`) instead of
+  rebuilding `EQSwitch-{version}.zip` independently, so discovery and SHA256SUMS verification can
+  never disagree about which file is being verified. The v3.22.30 anti-shadowing guarantee is
+  preserved — the match stays exact, so the extra SHA256SUMS line can't shadow the real hash.
+
 ## v3.24.17 — Fix: don't duplicate the Native resolution as a custom preset (2026-06-03)
 
 Fast-follow to v3.24.16. A verification pass caught one cosmetic regression from the new Native

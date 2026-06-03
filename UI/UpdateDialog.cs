@@ -52,7 +52,8 @@ public class UpdateDialog : Form
 
     // Release info from GitHub
     private string? _remoteVersion;
-    private string? _downloadUrl;  // zip bundle URL
+    private string? _downloadUrl;        // chosen zip bundle download URL
+    private string? _downloadAssetName;  // exact zip asset filename — threaded into the SHA256SUMS lookup so discovery and integrity agree on one file
     private string? _hashFileUrl;
 
     // Gate the TestMode setter behind #if DEBUG. The Release build still
@@ -206,28 +207,27 @@ public class UpdateDialog : Form
         IsAllowedHost(uri, allowApi);
 
     /// <summary>
-    /// Extract the hex hash for the EQSwitch zip bundle from a SHA256SUMS body.
+    /// Extract the hex hash for a named zip asset from a SHA256SUMS body.
     /// Handles GNU-coreutils format (`hexhash  filename` or `hexhash *filename`),
     /// BSD-tag format (`SHA256 (filename) = hexhash`), CRLF line endings,
     /// multi-entry files, and tab separators.
     ///
-    /// v3.22.30 Item 2: filename match is PINNED to the exact expected zip name
-    /// (`EQSwitch-{expectedVersion}.zip`), not a loose `EQSwitch-*.zip` glob.
-    /// Pre-v3.22.30 the first matching line won regardless of which zip version
-    /// it described — a SHA256SUMS body with multiple EQSwitch entries (extra
-    /// line targeting any EQSwitch-*.zip) could shadow the real release's hash.
-    /// release.yml emits one entry per release, so the pinning is conservative;
-    /// it just makes that contract explicit at parse time. Returns null on
-    /// null/empty <paramref name="expectedVersion"/> — fail-closed.
+    /// <paramref name="expectedName"/> is the EXACT zip filename chosen by asset
+    /// discovery (e.g. "EQSwitch.zip" or "EQSwitch-3.24.18.zip"), threaded in
+    /// rather than rebuilt from the version here — so discovery and integrity can
+    /// never disagree about which file is being verified. The match stays exact
+    /// (v3.22.30 anti-shadowing: a multi-entry SHA256SUMS — e.g. one line per
+    /// asset during the dual-asset transition — can't let a sibling line shadow
+    /// the hash of the file we actually downloaded). Returns null on null/empty
+    /// <paramref name="expectedName"/> — fail-closed.
     ///
     /// Returns null if no entry for the expected zip is found OR if the parsed
     /// hash isn't a 64-char hex string (defends against malformed SHA256SUMS
     /// bodies — the parser is the actual trust-decision input for self-update).
     /// </summary>
-    internal static string? ParseHashForZipBundle(string? content, string? expectedVersion)
+    internal static string? ParseHashForZipBundle(string? content, string? expectedName)
     {
-        if (string.IsNullOrEmpty(content) || string.IsNullOrEmpty(expectedVersion)) return null;
-        var expectedName = $"EQSwitch-{expectedVersion}.zip";
+        if (string.IsNullOrEmpty(content) || string.IsNullOrEmpty(expectedName)) return null;
         foreach (var rawLine in content.Split('\n'))
         {
             var line = rawLine.TrimEnd('\r').Trim();
@@ -267,10 +267,25 @@ public class UpdateDialog : Form
         return null;
     }
 
-    /// <summary>EQSwitch release ZIP filename convention: EQSwitch-X.Y.Z.zip.</summary>
-    internal static bool IsEQSwitchZipName(string filename) =>
+    /// <summary>
+    /// Canonical, version-independent release zip name (e.g. EQSwitch.zip).
+    /// Preferred asset as of the v3.24.18 versionless-rename transition: a stable
+    /// releases/latest/download URL and a consistent extract folder for manual
+    /// users. Emitted alongside the legacy versioned name during the dual-asset
+    /// rollout, so older clients keep self-updating off the versioned asset.
+    /// </summary>
+    internal static bool IsCanonicalZipName(string filename) =>
         !string.IsNullOrEmpty(filename) &&
-        filename.StartsWith("EQSwitch-", StringComparison.OrdinalIgnoreCase) &&
+        filename.Equals($"{AppName}.zip", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Legacy versioned release zip name (e.g. EQSwitch-3.24.18.zip). Matched by
+    /// prefix/suffix, not a version parse — the exact-version integrity pinning
+    /// lives in ParseHashForZipBundle, keyed off the actual chosen asset name.
+    /// </summary>
+    internal static bool IsVersionedZipName(string filename) =>
+        !string.IsNullOrEmpty(filename) &&
+        filename.StartsWith($"{AppName}-", StringComparison.OrdinalIgnoreCase) &&
         filename.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
 
     // SHA-256 produces 32 bytes = 64 hex chars. Reject anything else so a
@@ -408,22 +423,44 @@ public class UpdateDialog : Form
 
             _remoteVersion = root.GetProperty("tag_name").GetString()?.TrimStart('v') ?? "";
 
-            // Scan assets for the zip bundle (EQSwitch-X.X.X.zip)
+            // Scan assets for the zip bundle. During the dual-asset transition a
+            // release carries both the canonical EQSwitch.zip and the legacy
+            // EQSwitch-X.Y.Z.zip. Prefer the canonical name (deterministically —
+            // NOT last-match-wins, so GitHub's asset ordering can't pick the wrong
+            // one), but fall back to the versioned name so a pre-transition release
+            // (versioned-only) and an eventual Phase-2 release (canonical-only)
+            // both resolve. The chosen name is captured so the SHA256SUMS lookup
+            // verifies the exact file we downloaded.
             if (root.TryGetProperty("assets", out var assets))
             {
+                string? canonicalUrl = null, canonicalName = null;
+                string? versionedUrl = null, versionedName = null;
+
                 foreach (var asset in assets.EnumerateArray())
                 {
                     var name = asset.GetProperty("name").GetString() ?? "";
-                    if (IsEQSwitchZipName(name))
+                    var url = asset.GetProperty("browser_download_url").GetString() ?? "";
+
+                    if (url.Length > 0 && IsCanonicalZipName(name))
                     {
-                        _downloadUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
+                        canonicalUrl = url;
+                        canonicalName = name;
                     }
+                    else if (url.Length > 0 && IsVersionedZipName(name))
+                    {
+                        versionedUrl = url;
+                        versionedName = name;
+                    }
+
                     if (name.Equals("SHA256SUMS", StringComparison.OrdinalIgnoreCase) ||
                         name.Equals("SHA256SUMS.txt", StringComparison.OrdinalIgnoreCase))
                     {
-                        _hashFileUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
+                        _hashFileUrl = url;
                     }
                 }
+
+                _downloadUrl = canonicalUrl ?? versionedUrl;
+                _downloadAssetName = canonicalName ?? versionedName;
             }
 
             if (string.IsNullOrEmpty(_downloadUrl))
@@ -627,9 +664,10 @@ public class UpdateDialog : Form
                         _cts!.Token);
                     hashResponse.EnsureSuccessStatusCode();
                     var hashContent = await hashResponse.Content.ReadAsStringAsync(_cts.Token);
-                    // v3.22.30 Item 2: pin parser to the exact remote version so a
-                    // multi-entry SHA256SUMS body can't shadow the real release.
-                    string? expectedHash = ParseHashForZipBundle(hashContent, _remoteVersion);
+                    // Pin the integrity check to the EXACT asset discovery chose
+                    // (v3.22.30 anti-shadowing) — threaded by name so the dual-asset
+                    // SHA256SUMS can't let a sibling line shadow the file we fetched.
+                    string? expectedHash = ParseHashForZipBundle(hashContent, _downloadAssetName);
 
                     if (!string.IsNullOrEmpty(expectedHash))
                     {
