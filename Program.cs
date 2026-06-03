@@ -400,8 +400,8 @@ static class Program
         // the multimonitor sizing authority (WindowManager.EffectiveSlotBounds) across the
         // cross-hardware config matrix: single/matched/mismatched/4K/primary-bigger/slot-wrap/
         // auto-hide/asymmetric-fit + CoverAll-vs-ShowTaskbars. The v3.24.10 load-bearing
-        // invariant: PER-MONITOR FIT — primary always own-full, secondary own-work (ShowTaskbars,
-        // game butts taskbar, no gap) or own-full (CoverAll); no lock-to-primary.
+        // invariant: LOCK-SIZE + BOTTOM-ANCHOR — both windows take the primary's size; the 2nd is
+        // bottom-anchored to its work bottom (ShowTaskbars, butts taskbar) or full bottom (CoverAll).
         if (args.Length >= 1 && args[0] == "--test-effective-bounds")
         {
             int exitCode;

@@ -663,20 +663,20 @@ public enum WindowMode
 }
 
 /// <summary>
-/// v3.24.10 — multimonitor 2nd-monitor taskbar-visibility mode. PER-MONITOR FIT: the primary
-/// (main) window is ALWAYS its own full bounds (covers the main taskbar) in both modes — this
-/// knob governs only the SECOND monitor. <see cref="Core.WindowManager.EffectiveSlotBounds"/>
-/// reads it. Replaces the v3.24.3 lock-to-primary design (which forced both windows to one shared
-/// size and so could never cover a taller 2nd monitor's taskbar — it always left a band).
+/// v3.24.10 — multimonitor 2nd-monitor taskbar-visibility mode. LOCK-SIZE + BOTTOM-ANCHOR: BOTH
+/// windows take the primary's SIZE (so one shared backbuffer matches both → crisp, and a swap is a
+/// pure MOVE → no resize → no crash); the primary covers the main taskbar; this knob only governs
+/// where the SECOND window's bottom edge lands. <see cref="Core.WindowManager.EffectiveSlotBounds"/>
+/// reads it.
 /// <list type="bullet">
-/// <item><b>CoverAll</b> — the 2nd window fills its OWN full monitor: covers the 2nd taskbar,
-///   full immersion, no gap (default).</item>
-/// <item><b>ShowTaskbars</b> — the 2nd window fills its OWN work area: the game butts the 2nd
-///   taskbar (no desktop gap) and the 2nd taskbar stays visible.</item>
+/// <item><b>CoverAll</b> — the 2nd window is bottom-anchored to the 2nd monitor's FULL bottom:
+///   covers the 2nd taskbar, full immersion (default).</item>
+/// <item><b>ShowTaskbars</b> — the 2nd window is bottom-anchored to the 2nd monitor's WORK bottom:
+///   the game butts the 2nd taskbar (no gap between game and taskbar), taskbar stays visible.</item>
 /// </list>
-/// On MISMATCHED monitors the two windows differ in size, so a <c>\</c>/<c>]</c> swap resizes a
-/// client; the native backbuffer resize rebuilds EQ's DX backbuffer to match (crisp, curtain-
-/// masked). On MATCHED monitors CoverAll is symmetric (swap never resizes).
+/// When the 2nd monitor is taller, the leftover band sits at the TOP of the 2nd monitor. Both
+/// windows stay the same size, so a <c>\</c>/<c>]</c> swap never resizes (move-only). Degrades to
+/// the 2nd's native bounds only when the monitors are too far apart to lock (4K+1080p).
 /// </summary>
 public enum MultiMonTaskbarMode
 {
@@ -767,15 +767,16 @@ public class WindowLayout
     /// v3.24.10 — multimonitor 2nd-monitor taskbar-visibility mode (see
     /// <see cref="Config.MultiMonTaskbarMode"/>). THE single knob the multimonitor sizing
     /// authority (<see cref="Core.WindowManager.EffectiveSlotBounds"/>) reads to size the 2nd
-    /// window: CoverAll → the 2nd monitor's FULL bounds (covers the 2nd taskbar); ShowTaskbars →
-    /// the 2nd monitor's WORK area (game butts the 2nd taskbar, no gap, taskbar visible). The
-    /// primary is always full-bounds (covers the main taskbar) in both modes. Default CoverAll.
+    /// window: the 2nd window takes the PRIMARY's size, bottom-anchored to the 2nd monitor's FULL
+    /// bottom (CoverAll → covers the 2nd taskbar) or WORK bottom (ShowTaskbars → game butts the 2nd
+    /// taskbar, no gap, taskbar visible). The primary is always full-bounds (covers the main
+    /// taskbar) in both modes. Default CoverAll.
     /// <para>
     /// Supersedes the per-monitor <see cref="SlimTitlebarSecondary"/> flag for the "show
     /// taskbar on the 2nd monitor" want: AppConfig.Validate migrates a legacy
     /// <c>SlimTitlebarSecondary=false</c> config to <c>ShowTaskbars</c> + re-pins the flag
     /// true, preserving the user's intent (visible 2nd-monitor taskbar) through the
-    /// per-monitor-fit path.
+    /// bottom-anchor path.
     /// </para>
     /// </summary>
     public MultiMonTaskbarMode MultiMonTaskbarMode { get; set; } = MultiMonTaskbarMode.CoverAll;

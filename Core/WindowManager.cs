@@ -418,7 +418,10 @@ public class WindowManager
 
         int w = primaryFull.Width, h = primaryFull.Height;
         // Bottom-anchor; clamp so the window never overflows the TOP of the 2nd monitor (a primary
-        // taller than the work-band top-anchors instead, covering the taskbar).
+        // taller than the work-band top-anchors instead, covering the taskbar). NOTE: anchors the
+        // BOTTOM edge at full primary width from secFull.Left — tuned for a BOTTOM taskbar (the
+        // overwhelming common case, where secWork differs from secFull only at the bottom). A
+        // side/top taskbar on the 2nd monitor would be covered rather than skirted.
         int top = Math.Max(secFull.Top, refBottom - h);
         return (new WinRect { Left = secFull.Left, Top = top, Right = secFull.Left + w, Bottom = top + h }, true);
     }
@@ -433,7 +436,7 @@ public class WindowManager
     /// via SwitchKey instead of the legacy clientIndex-positional assignment.
     /// </para>
     /// <para>
-    /// v3.22.21 refactor: two-pass design. v3.24.10: per-monitor-fit sizing.
+    /// v3.22.21 refactor: two-pass design. v3.24.10: lock-size + bottom-anchor sizing.
     /// <list type="bullet">
     /// <item><b>Pass 1 (sequential, style)</b> — per-client WS_THICKFRAME
     /// strip/restore + SWP_FRAMECHANGED notify. Can't be batched: each
@@ -492,10 +495,10 @@ public class WindowManager
 
         // Summary symmetry decision (for the log only) — per-client effective bounds come
         // straight from EffectiveSlotBounds in the build loop below, so this can never drift
-        // from what's actually applied. v3.24.10: per-monitor-fit always; `secondarySymmetric`
-        // just reports whether the 2nd window happens to be the SAME size as primary (matched
-        // monitors / CoverAll → swap won't resize), else the swap resizes and the native
-        // backbuffer resize rebuilds to match (expected, not a problem → Info not Warn).
+        // from what's actually applied. v3.24.10 lock-size+bottom-anchor: `secondarySymmetric`
+        // reports whether the 2nd window is locked to the primary's size (lockable → swap is
+        // MOVE-only) vs degraded to its native bounds (rare 4K / primary-bigger → swap resizes,
+        // native backbuffer rebuilds — expected, not a problem → Info not Warn).
         bool secondarySymmetric = false;
         if (hasSecondary)
         {
@@ -698,7 +701,7 @@ public class WindowManager
 
             string monLabel = slotIdx == 0 ? "primary" : "secondary";
             string slimLabel = useSlim ? " (slim titlebar)" : " (normal frame, work-area)";
-            string lockLabel = secondarySymmetric ? " [symmetric]" : " [per-monitor-fit]";
+            string lockLabel = secondarySymmetric ? " [locked]" : " [degraded-native]";
             targets.Add((client.WindowHandle, x, y, w, h, swpFlags,
                 $"{client} → {monLabel} monitor ({effectiveBounds.Left},{effectiveBounds.Top}) {w}x{h}{slimLabel}{lockLabel} [slot={slot}]"));
 
@@ -820,7 +823,7 @@ public class WindowManager
 
         string modeLabel = $" (taskbarMode={taskbarMode})";
         string batchLabel = batchOk ? "atomic batch" : "sequential fallback";
-        string lockSummary = secondarySymmetric ? ", symmetric" : ", per-monitor-fit";
+        string lockSummary = secondarySymmetric ? ", locked" : ", degraded-native";
         FileLogger.Info($"ArrangeMultiMonitor: {targets.Count}/{clients.Count} window(s), primary={primaryIdx} secondary={secondaryIdx}{modeLabel}, positioned via {batchLabel}{lockSummary} — pass1={tPass1}ms pass2={tPass2 - tPass1}ms");
         // Per-stage pass-2 timing (v3.22.22 diagnostic — round-5 T2-Opus catch):
         // For N clients: [tBeforeBegin, tAfterDefer_0, ..., tAfterDefer_{N-1}, tAfterEnd].
