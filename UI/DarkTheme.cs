@@ -128,18 +128,18 @@ public static class DarkTheme
             Dock = DockStyle.Fill,
             DrawMode = TabDrawMode.OwnerDrawFixed,
             SizeMode = TabSizeMode.Fixed,
+            ItemSize = new Size(84, 30),
+            Padding = new Point(12, 6),
             Font = FontUI85
         };
 
-        // ItemSize/Padding are non-Bounds and NOT walked by AutoScaleMode.Dpi — set
-        // them from device units once the handle exists (DeviceDpi resolves post-handle).
-        // No-op at 100% scale.
-        tabs.HandleCreated += (_, _) =>
-        {
-            tabs.ItemSize = new Size(tabs.LogicalToDeviceUnits(84), tabs.LogicalToDeviceUnits(30));
-            tabs.Padding = new Point(tabs.LogicalToDeviceUnits(12), tabs.LogicalToDeviceUnits(6));
-        };
-
+        // ⚠️ DO NOT move ItemSize/Padding into a HandleCreated handler. TabControl.Padding
+        // (and ItemSize) call RecreateHandle() when changed after the handle exists; doing
+        // that from INSIDE HandleCreated is re-entrant handle creation → Win32Exception
+        // "Error creating window handle". It only triggers at non-100% DPI (where the scaled
+        // value differs from the current one), so it passes at 100% + build + the type-level
+        // guard and crashes on 125%+ machines. They stay unscaled (84×30) — fine for the short
+        // tab labels; DPI tab-strip scaling is a deferred nicety, not worth a crash.
         tabs.DrawItem += DrawTab;
 
         // Prevent the default rendering from showing through
