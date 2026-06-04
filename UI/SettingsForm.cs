@@ -621,7 +621,10 @@ public class SettingsForm : EqSwitchForm
         };
         var btnProcessMgr = Fields.Button("Process Manager...");
         btnProcessMgr.Click += (_, _) => _openProcessManager?.Invoke();
-        cardPrefs.Buttons(rightAlign: false, btnEQSettings, btnProcessMgr);
+        // EQ Client Settings hugs the left, Process Manager the right — both indented 12px from
+        // the card edges so they don't sit flush in the corners.
+        cardPrefs.Full(Bars.Split(new Control[] { btnEQSettings }, new Control[] { btnProcessMgr }))
+            .Margin = new Padding(12, 4, 12, 4);
 
         // ─── Tray Click Actions ──────────────────────────────────────
         // Display strings. "Launch One"/"Launch Two" are display-only (stored values stay
@@ -656,7 +659,8 @@ public class SettingsForm : EqSwitchForm
         // ─── Window Title ────────────────────────────────────────────
         var cardTitle = stack.NewCard("📝", "Window Title", DarkTheme.CardGreen);
         _txtWindowTitleTemplate = Fields.Text(maxLength: 100);
-        cardTitle.Full(_txtWindowTitleTemplate);
+        // Indent the field 12px from both card edges so it reads as centered in the section.
+        cardTitle.Full(_txtWindowTitleTemplate).Margin = new Padding(12, 4, 12, 4);
 
         return page;
     }
@@ -3262,10 +3266,18 @@ public class SettingsForm : EqSwitchForm
         cardMon.FlowRow("", btnIdentify, TrailingHint("Primary = active client. Secondary = background client (multimonitor mode)."));
 
         // ─── Window Style ────────────────────────────────────────────
-        var cardStyle = stack.NewCard("🪟", "Window Style", DarkTheme.CardPurple);
+        // Header-less card so the title shares its row with the Advanced button (title left,
+        // Advanced top-right). The accent bar still paints from the titleColor argument.
+        var cardStyle = stack.NewCard("", "", DarkTheme.CardPurple);
 
         var btnWrapper = Fields.Button("⚙ Advanced...", DarkTheme.BgInput);
         btnWrapper.Click += (_, _) => ShowWrapperDialog();
+        var lblStyleTitle = new Label
+        {
+            Text = "🪟  Window Style", AutoSize = true,
+            ForeColor = DarkTheme.CardPurple, Font = DarkTheme.FontSemibold95,
+        };
+        cardStyle.Full(Bars.Split(new Control[] { lblStyleTitle }, new Control[] { btnWrapper }));
 
         _chkWindowedMode = Fields.Check("Windowed Mode");
         cardStyle.Check(_chkWindowedMode, "slim titlebar + covers taskbar");
@@ -3273,7 +3285,6 @@ public class SettingsForm : EqSwitchForm
         cardStyle.Check(_chkSlimTitlebar, "borderless, flush all sides");
         _chkDarkTitlebar = Fields.Check("Dark Titlebar");
         cardStyle.Check(_chkDarkTitlebar, "dark title bar instead of the default white");
-        cardStyle.Buttons(rightAlign: true, btnWrapper);
 
         // Advanced-dialog backing fields — titlebar peek, bottom margin, DLL hook, maximize.
         _nudTitlebarOffset = new NumericUpDown { Value = 13, Minimum = 0, Maximum = 40 };  // transient; overwritten by PopulateFromConfig
@@ -3305,12 +3316,22 @@ public class SettingsForm : EqSwitchForm
         // ─── Preferences ─────────────────────────────────────────────
         var cardPrefs = stack.NewCard("⚙", "Preferences", DarkTheme.CardCyan);
         _chkShowTooltips = Fields.Check("Show Tooltips");
-        cardPrefs.Check(_chkShowTooltips);
-        // "Duration" = auto-dismiss interval for the post-action toast (100..5000ms); on/off is the
-        // ShowTooltips checkbox, not this numeric.
+        // "Duration" = auto-dismiss interval for the post-action toast (300..5000ms); on/off is the
+        // ShowTooltips checkbox, not this numeric. One row: toggle left, duration hugging the right
+        // (the duration label+nud+unit live in their own flow so Bars.Split's group margin-reset
+        // doesn't clobber InlineLabel's baseline nudge).
         _nudTooltipDuration = Fields.Numeric(300, 5000, 700, 64);
         _nudTooltipDuration.Increment = 100;
-        cardPrefs.FlowRow("Tooltip Duration:", _nudTooltipDuration, InlineLabel("ms"));
+        _nudTooltipDuration.Margin = new Padding(0, 2, 4, 2);
+        var durationFlow = new FlowLayoutPanel
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
+            Margin = Padding.Empty, Padding = Padding.Empty,
+        };
+        durationFlow.Controls.Add(InlineLabel("Tooltip Duration:"));
+        durationFlow.Controls.Add(_nudTooltipDuration);
+        durationFlow.Controls.Add(InlineLabel("ms"));
+        cardPrefs.Full(Bars.Split(new Control[] { _chkShowTooltips }, new Control[] { durationFlow }));
 
         return page;
     }

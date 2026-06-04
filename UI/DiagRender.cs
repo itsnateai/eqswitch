@@ -26,7 +26,7 @@ namespace EQSwitch.UI;
 ///                  onto the active desktop). Default captures real composited pixels on-screen.
 ///     --hold       leave the window open after capture instead of exiting
 ///
-/// Known forms: "PilotCard" (layout-primitive proof), "SettingsForm" (more added as converted).
+/// Known forms: "PilotCard" (layout-primitive proof), "SettingsForm", "ProcessManagerForm".
 /// Writes &lt;FormName&gt;[-tabN][-simF].png + a diag-render.log line (size + DeviceDpi) to --out.
 /// </summary>
 internal static class DiagRender
@@ -132,6 +132,8 @@ internal static class DiagRender
         {
             "PilotCard" => BuildPilot(),
             "SettingsForm" => new SettingsForm(config, _ => { }, tab, () => { }, () => { }, null, false),
+            "ProcessManagerForm" => new ProcessManagerForm(
+                () => Array.Empty<EQClient>(), () => null, () => { }, _ => { }, config),
             _ => throw new ArgumentException($"DiagRender: unknown form '{name}'"),
         };
     }
