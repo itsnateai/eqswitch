@@ -1,5 +1,18 @@
 # Changelog
 
+## v3.24.25 — EQ Path is Browse-only + "exe not found" guard on save (2026-06-03)
+
+Hardens the General tab against the silent config corruption that let a stray keystroke turn the
+EQ Path into `…\Eqfreshlll` and the exe into `eqgame.exellll` (only surfaced later as a confusing
+"eqclient.ini not found" popup):
+
+- **EQ Path is now read-only** — set it with the **Browse…** button (the folder picker only returns
+  real directories). No reason to hand-type a path, so the typo class is gone.
+- **Exe field stays typeable** — a dev running a custom MacroQuest build may use a different exe — but
+  now there's a **guard on Save**: if the named exe isn't actually in the EQ folder, you get a
+  "Save anyway?" prompt instead of a silently-broken launch. (A not-yet-copied build can still save.)
+- **Args** stay free-text for power users.
+
 ## v3.24.24 — Tab is bindable, numpad captures correctly regardless of NumLock, + reject cue & arrow guard (2026-06-03)
 
 Follow-ups to the hotkey-capture work, all via a new `HotkeyTextBox` (UI/HotkeyTextBox.cs):

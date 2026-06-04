@@ -512,9 +512,11 @@ public class SettingsForm : Form
         DarkTheme.AddCardHint(cardEQ, "Click and press key  |  Delete to clear", 210, cy + 2);
         cy += R;
 
-        // EQ Path
+        // EQ Path — Browse-only (read-only) so a stray keystroke can't silently corrupt the
+        // path. The folder picker only returns real directories, killing the typo class entirely.
         DarkTheme.AddCardLabel(cardEQ, "EQ Path:", L, cy);
         _txtEQPath = DarkTheme.AddCardTextBox(cardEQ, I, cy, IW);
+        _txtEQPath.ReadOnly = true;
         var btnBrowse = DarkTheme.AddCardButton(cardEQ, "Browse...", BRW, cy - 3, 75);
         btnBrowse.Click += (_, _) =>
         {
@@ -1768,6 +1770,22 @@ public class SettingsForm : Form
 
     private bool ApplySettings()
     {
+        // Exe guard — the EQ Path is now Browse-only (can't be typo'd), but the Exe field stays
+        // typeable for dev / custom MQ builds. If the named exe isn't actually in the EQ folder,
+        // surface it on save: a misnamed exe (e.g. "eqgame.exellll") silently breaks launch and
+        // the video-INI write. Confirm rather than hard-block, so a not-yet-copied build can save.
+        var eqExePath = _txtEQPath.Text.Trim();
+        var eqExeName = _txtExeName.Text.Trim();
+        if (eqExePath.Length > 0 && eqExeName.Length > 0
+            && !File.Exists(Path.Combine(eqExePath, eqExeName)))
+        {
+            var ans = MessageBox.Show(
+                $"'{eqExeName}' was not found in the EQ folder:\n{eqExePath}\n\n" +
+                "If that's a typo, fix the Exe field. (A custom MQ build that isn't there yet is fine.)\n\nSave anyway?",
+                "Exe not found", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (ans != DialogResult.Yes) return false;
+        }
+
         // Phase 3.5-D + Phase 5a: hotkey conflict detection — same key combo bound to
         // multiple actions causes RegisterHotKey to silently fail on the second
         // registration. Scan covers tab-level Action + Team hotkeys plus the family-
