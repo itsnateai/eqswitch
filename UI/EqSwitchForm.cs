@@ -33,4 +33,24 @@ public class EqSwitchForm : Form
         AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
     }
+
+    // TEMP DPI DIAGNOSTIC (v3.24.33) — logs the actual auto-scale state once each form
+    // is shown, so we can see WHY the layout isn't scaling at 125%/150%. If the form
+    // scaled, ClientSize is ~1.5× its design size at 150%; if AutoScaleFactor≈1.0 the
+    // baseline was clobbered. Remove after the root cause is fixed.
+    protected override void OnShown(System.EventArgs e)
+    {
+        base.OnShown(e);
+        try
+        {
+            float f = AutoScaleDimensions.Width > 0
+                ? CurrentAutoScaleDimensions.Width / AutoScaleDimensions.Width : -1f;
+            EQSwitch.Core.FileLogger.Info(
+                $"DPI-DIAG {GetType().Name}: DeviceDpi={DeviceDpi} mode={AutoScaleMode} " +
+                $"ASD={AutoScaleDimensions.Width:0}x{AutoScaleDimensions.Height:0} " +
+                $"CASD={CurrentAutoScaleDimensions.Width:0}x{CurrentAutoScaleDimensions.Height:0} " +
+                $"factor={f:0.00} ClientSize={ClientSize.Width}x{ClientSize.Height}");
+        }
+        catch { /* diagnostic only — never throw */ }
+    }
 }
