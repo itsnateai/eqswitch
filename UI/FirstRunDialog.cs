@@ -33,22 +33,41 @@ public class FirstRunDialog : EqSwitchForm
         };
         Controls.Add(welcomeLabel);
 
-        // Path input
+        // Path input + Browse — laid out in a 1-row table (layout-first, no magic-number
+        // alignment). A single-line TextBox is always font-height; a fixed-height button
+        // next to it can't stay aligned across DPI. The table centers both in a shared row
+        // so they align at 100/125/150/200% automatically. The panel Size scales via AutoScale.
+        var inputRow = new TableLayoutPanel
+        {
+            Location = new Point(20, 80),
+            Size = new Size(450, 32),
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = Color.Transparent
+        };
+        inputRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f)); // textbox fills
+        inputRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // button hugs text
+        inputRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+
         _pathTextBox = new TextBox
         {
             Text = @"C:\EverQuest",
-            Location = new Point(20, 80),
-            Size = new Size(350, 25),
+            Anchor = AnchorStyles.Left | AnchorStyles.Right,  // fill width, vertically centered in the row
             Font = new Font("Segoe UI", 10),
             BackColor = DarkTheme.BgInput,
             ForeColor = DarkTheme.FgWhite,
-            BorderStyle = BorderStyle.FixedSingle
+            BorderStyle = BorderStyle.FixedSingle,
+            Margin = new Padding(0, 0, 6, 0)
         };
-        Controls.Add(_pathTextBox);
+        inputRow.Controls.Add(_pathTextBox, 0, 0);
 
-        // Browse button
-        var browseBtn = DarkTheme.MakeButton("Browse...", DarkTheme.BgMedium, 380, 78);
-        browseBtn.Size = new Size(80, 28);
+        var browseBtn = DarkTheme.MakeButton("Browse...", DarkTheme.BgMedium, 0, 0);
+        browseBtn.AutoSize = true;
+        browseBtn.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        browseBtn.Anchor = AnchorStyles.Left;             // auto width, vertically centered
+        browseBtn.Margin = Padding.Empty;
         browseBtn.Click += (_, _) =>
         {
             using var fbd = new FolderBrowserDialog
@@ -59,7 +78,8 @@ public class FirstRunDialog : EqSwitchForm
             if (fbd.ShowDialog() == DialogResult.OK)
                 _pathTextBox.Text = fbd.SelectedPath;
         };
-        Controls.Add(browseBtn);
+        inputRow.Controls.Add(browseBtn, 1, 0);
+        Controls.Add(inputRow);
 
         // OK button (primary green)
         var okBtn = DarkTheme.MakePrimaryButton("Start", 280, 130);
