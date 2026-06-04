@@ -47,6 +47,22 @@ public static class HotkeyKeyNameTests
         failures += AssertRoundTrip("Tab",        Keys.Tab,     "Tab");
         failures += AssertRoundTrip("Space",      Keys.Space,   "Space");
 
+        // v3.24.22 — OEM punctuation, arrows/nav, extended F-keys. Previously these fell through
+        // to the WinForms enum name ("OemSemicolon"/"Left"/"F13") which ResolveVK returned 0 for,
+        // so a "set" hotkey silently never fired. Now they round-trip.
+        failures += AssertRoundTrip("semicolon",   Keys.OemSemicolon, ";");
+        failures += AssertRoundTrip("equals",      Keys.Oemplus,      "=");
+        failures += AssertRoundTrip("comma",       Keys.Oemcomma,     ",");
+        failures += AssertRoundTrip("minus",       Keys.OemMinus,     "-");
+        failures += AssertRoundTrip("period",      Keys.OemPeriod,    ".");
+        failures += AssertRoundTrip("slash",       Keys.OemQuestion,  "/");
+        failures += AssertRoundTrip("apostrophe",  Keys.OemQuotes,    "'");
+        failures += AssertRoundTrip("arrow Left",  Keys.Left,         "Left");
+        failures += AssertRoundTrip("arrow Down",  Keys.Down,         "Down");
+        failures += AssertRoundTrip("Home",        Keys.Home,         "Home");
+        failures += AssertRoundTrip("function F13", Keys.F13,         "F13");
+        failures += AssertRoundTrip("function F24", Keys.F24,         "F24");
+
         // ── Gate logic (the reported bug): bare keys on a Switch Key box, modifiers elsewhere.
         // bareKey=true mirrors a Switch Key / Global Switch Key box; bareKey=false an action box.
 
@@ -65,9 +81,14 @@ public static class HotkeyKeyNameTests
         // Action box modifier combos still build correctly.
         failures += AssertAccepts("Ctrl+Alt+N on action box", bareKey: false, true, true, false, Keys.N, "Ctrl+Alt+N");
 
-        // A bare key the resolver can't turn into a VK is refused (would register as VK 0,
-        // never fire) — '/' (OemQuestion) is not in the resolver's table.
-        failures += AssertRejects("bare / (unresolvable) on switch box", bareKey: true, false, false, false, Keys.OemQuestion);
+        // v3.24.22: '/' now resolves (VK_OEM_2) so it's a VALID bare switch key.
+        failures += AssertAccepts("bare / on switch box", bareKey: true, false, false, false, Keys.OemQuestion, "/");
+
+        // A key the resolver still can't map is refused — would register as VK 0 and never fire.
+        // The Windows key (LWin) has no entry and shouldn't (OS-reserved). Verifies the loud-refusal
+        // for BOTH a bare switch key AND a modifier combo (the v3.24.22 universal-refusal change).
+        failures += AssertRejects("bare LWin (unresolvable) on switch box", bareKey: true, false, false, false, Keys.LWin);
+        failures += AssertRejects("Ctrl+LWin (unresolvable) on action box", bareKey: false, true, false, false, Keys.LWin);
 
         Console.WriteLine(failures == 0
             ? "HotkeyKeyNameTests: all cases PASSED"

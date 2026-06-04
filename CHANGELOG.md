@@ -1,5 +1,27 @@
 # Changelog
 
+## v3.24.22 — Hotkey resolver covers OEM punctuation / arrows / F13–F24, and never saves a dead binding (2026-06-03)
+
+Found by the v3.24.21 post-ship verifier swarm: the same silent-VK-0 bug class fixed for the
+number row still bit other keys. `HotkeyManager.KeyNameToVK` had no entries for OEM punctuation
+(`;` `'` `,` `.` `-` `=` `/`), the arrow/navigation cluster, or F13–F24 — so binding e.g. `Ctrl+;`
+or `Alt+Left` produced a hotkey that registered as **VK 0 and silently never fired**. (Pre-existing;
+not introduced by v3.24.20/21 — those *added* coverage.)
+
+- **`HotkeyManager.cs` (`KeyNameToVK`)** — added OEM punctuation (`;`/`=`/`,`/`-`/`.`/`/`/`'`),
+  arrows + nav (Left/Right/Up/Down, PageUp/Down, Home/End/Insert/Delete), and F13–F24.
+- **`SettingsForm.cs` (`FormatHotkeyKeyName`)** — OEM-punctuation keys now emit the symbol
+  (`;` not `"OemSemicolon"`) so the display name round-trips through the resolver.
+- **Loud refusal everywhere** — `TryBuildHotkeyString` (Switch + action boxes) and all three
+  hotkey dialogs now refuse a key that doesn't resolve to a VK, for bare keys AND modifier combos.
+  A binding that would silently never fire is rejected at capture instead of saved dead.
+- **`HotkeyKeyNameTests.cs`** — round-trip coverage for the new keys; the bare-`/` case flipped
+  from "rejected" to "accepted" (it resolves now); added bare + modifier unresolvable-key
+  refusals (using the OS-reserved Windows key).
+
+Note: numpad-digit switch keys fire only with **NumLock ON** — Windows reports a different VK for
+the same physical numpad key when NumLock is off. This is inherent OS behavior, not changed here.
+
 ## v3.24.21 — Number-row modifier hotkeys (`Alt+1`..) now register in the Account/Character/Team dialogs (2026-06-03)
 
 Follow-up to v3.24.20. The Account / Character / Team hotkey dialogs each kept their own copy of the

@@ -156,6 +156,25 @@ public class HotkeyManager : IDisposable
         "]" or "OEM_6" => NativeMethods.VK_OEM_6,
         "[" or "OEM_4" => NativeMethods.VK_OEM_4,
 
+        // OEM punctuation (US layout) — accept the symbol OR the WinForms enum name
+        ";" or "OEM_1" or "OEMSEMICOLON" => 0xBA,
+        "=" or "OEM_PLUS" or "OEMPLUS" => 0xBB,
+        "," or "OEM_COMMA" or "OEMCOMMA" => 0xBC,
+        "-" or "OEM_MINUS" or "OEMMINUS" => 0xBD,
+        "." or "OEM_PERIOD" or "OEMPERIOD" => 0xBE,
+        "/" or "OEM_2" or "OEMQUESTION" => 0xBF,
+        "'" or "OEM_7" or "OEMQUOTES" => 0xDE,
+
+        // Arrow + navigation cluster
+        "LEFT" => 0x25, "UP" => 0x26, "RIGHT" => 0x27, "DOWN" => 0x28,
+        "PAGEUP" or "PRIOR" => 0x21, "PAGEDOWN" or "NEXT" => 0x22,
+        "END" => 0x23, "HOME" => 0x24, "INSERT" => 0x2D, "DELETE" or "DEL" => 0x2E,
+
+        // Extended function keys (macro keyboards)
+        "F13" => 0x7C, "F14" => 0x7D, "F15" => 0x7E, "F16" => 0x7F,
+        "F17" => 0x80, "F18" => 0x81, "F19" => 0x82, "F20" => 0x83,
+        "F21" => 0x84, "F22" => 0x85, "F23" => 0x86, "F24" => 0x87,
+
         // Numpad
         "NUMPAD0" => 0x60, "NUMPAD1" => 0x61, "NUMPAD2" => 0x62,
         "NUMPAD3" => 0x63, "NUMPAD4" => 0x64, "NUMPAD5" => 0x65,

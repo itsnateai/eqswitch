@@ -1514,7 +1514,18 @@ public class SettingsForm : Form
         Keys.OemCloseBrackets => "]",
         Keys.OemOpenBrackets => "[",
         Keys.Oemtilde => "`",
+        // OEM punctuation: emit the symbol the resolver understands, not the WinForms
+        // enum name ("OemSemicolon" etc., which KeyNameToVK can't parse).
+        Keys.OemSemicolon => ";",
+        Keys.Oemplus => "=",
+        Keys.Oemcomma => ",",
+        Keys.OemMinus => "-",
+        Keys.OemPeriod => ".",
+        Keys.OemQuestion => "/",
+        Keys.OemQuotes => "'",
         >= Keys.D0 and <= Keys.D9 => ((char)('0' + (keyCode - Keys.D0))).ToString(),
+        // Arrows, nav, and F13-F24 round-trip via their plain ToString() name ("Left",
+        // "Home", "F13") — KeyNameToVK now resolves those after .ToUpperInvariant().
         _ => keyCode.ToString()
     };
 
@@ -1540,7 +1551,10 @@ public class SettingsForm : Form
         if (bare && !allowBareKey) return false;
 
         string keyName = FormatHotkeyKeyName(keyCode);
-        if (bare && HotkeyManager.ResolveVK(keyName) == 0) return false;
+        // Refuse ANY key the resolver can't turn into a VK — bare OR modifier combo.
+        // A combo like "Ctrl+<unresolvable>" would build a string that registers as
+        // VK 0 and silently never fires; refusing at capture keeps the failure loud.
+        if (HotkeyManager.ResolveVK(keyName) == 0) return false;
 
         var parts = new List<string>();
         if (ctrl) parts.Add("Ctrl");

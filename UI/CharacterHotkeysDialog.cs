@@ -279,6 +279,8 @@ public sealed class CharacterHotkeysDialog : Form
         // resolver can't parse — the hotkey would register as VK 0 and silently never fire.
         // This dialog stays modifier-only (the no-modifier gate above is unchanged).
         string keyName = SettingsForm.FormatHotkeyKeyName(e.KeyCode);
+        // Refuse a combo whose key can't resolve to a VK — it would register as VK 0 and never fire.
+        if (EQSwitch.Core.HotkeyManager.ResolveVK(keyName) == 0) return;
         parts.Add(keyName);
         if (sender is TextBox box) box.Text = string.Join("+", parts);
     }
