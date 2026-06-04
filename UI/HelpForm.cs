@@ -50,6 +50,17 @@ public static class HelpForm
         var directKeys = hk.DirectSwitchKeys.Count > 0
             ? $"{hk.DirectSwitchKeys[0]}..{hk.DirectSwitchKeys[^1]}"
             : "(not set)";
+        // v3.24.29: report the live window mode from WindowMode (the real two-mode
+        // discriminator) — SlimTitlebar is now true in BOTH modes, so the old
+        // "SlimTitlebar ? ON : OFF" indicator was always ON and meaningless.
+        var windowStyle = layout.WindowMode == WindowMode.Fullscreen
+            ? "Fullscreen (borderless)"
+            : "Windowed (slim titlebar)";
+        // TargetMonitor is 0-based (0 = primary); the Settings UI shows it 1-indexed
+        // ("1: 1920x1080 (primary)"), so match that convention here.
+        var targetMon = layout.TargetMonitor == 0
+            ? "the primary monitor"
+            : $"monitor {layout.TargetMonitor + 1}";
 
         return $@"EQSwitch v{version} — EverQuest Window Manager
 ============================================
@@ -73,10 +84,14 @@ TRAY ICON:
   Middle-double      {TrayManager.FormatActionName(config.TrayClick.MiddleDoubleClick)}
   (Configurable in Settings → General tab)
 
-LAYOUT MODES:
-  Single Screen      Stacked on monitor {layout.TargetMonitor}
-  Multi-Monitor      One window per physical monitor
-  Fullscreen Window   {(layout.SlimTitlebar ? "ON" : "OFF")} — hides titlebar above screen edge (WinEQ2 mode)
+WINDOW STYLE (Settings → Video → Window Style):
+  Active now:        {windowStyle}
+  Fullscreen mode    Borderless; window covers the taskbar
+  Windowed Mode      Slim titlebar; covers taskbar (classic WinEQ2 look)
+
+WINDOW LAYOUT:
+  Single Screen      All clients stacked on {targetMon}
+  Multi-Monitor      One client per physical monitor
 
 PIP (PICTURE-IN-PICTURE):
   Live DWM thumbnail preview of background EQ windows
@@ -86,7 +101,7 @@ PIP (PICTURE-IN-PICTURE):
 
 CPU AFFINITY & PRIORITY:
   Core assignment via eqclient.ini CPUAffinity0-5 (6 slots)
-  Priority: {config.Affinity.ActivePriority} (all clients)
+  Priority: {config.Affinity.ActivePriority} (default; per-character overrides apply)
   Configure in Process Manager (tray menu)
 
 CHARACTER PROFILES:
@@ -102,14 +117,14 @@ CUSTOM TRAY ICON:
   Set a custom .ico file in Settings → Paths tab
 
 AUTO-LOGIN:
-  Types passwords via DirectInput shared memory
-  (no focus stealing — all clients stay in background)
+  Enters your password directly into each client in the
+  background — no focus stealing, all clients stay put.
   Injected into EQ at launch — no files placed in game folder.
 
   Autologin Teams: configure up to 12 teams of 2 accounts each.
-  Teams 1-4 fire via global hotkey OR tray menu OR tray-click action;
-  Teams 5-6 fire via tray menu OR tray-click action;
-  Teams 7-12 fire via tray right-click → Teams submenu only.
+  All teams fire from the tray menu (right-click → Teams).
+  Teams 1-4 can also bind to a global hotkey.
+  Teams 1-6 can also bind to a tray-click action.
   Accounts can appear in multiple teams (overlap OK).
   Configure in Settings → Accounts tab.
 
@@ -118,10 +133,11 @@ LAUNCHING:
   Delay between launches: {config.Launch.LaunchDelayMs / 1000.0:F1}s
   Auto-arrange after: {config.Launch.FixDelayMs / 1000.0:F0}s
 
-INJECTED DLLs (memory-only, auto-ejected on exit):
+INJECTED DLLs (memory-only — unload when each EQ client closes):
   eqswitch-hook.dll — prevents EQ from fighting window management
   eqswitch-di8.dll  — DirectInput hooks for background keyboard input
-  No files are placed in your EQ game folder.
+  No files are placed in your EQ game folder. Closing EQSwitch
+  leaves running clients untouched (the DLLs stay until EQ exits).
 
 FIRST-RUN CONFIG SEEDING:
   On first launch, EQSwitch reads your actual eqclient.ini

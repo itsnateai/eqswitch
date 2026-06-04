@@ -1,5 +1,18 @@
 # Changelog
 
+## v3.24.29 — Help window accuracy pass (2026-06-04)
+
+Audited the in-app Help window (Settings → Paths → Help / "❓ Help") against the current code. The dynamic parts (hotkeys, paths, priority, delays, tray-click actions) read live config and were already correct; these fixes are in the hardcoded prose that had drifted.
+
+- **Window-mode section rewritten.** The old "Fullscreen Window {ON/OFF}" line keyed off `Layout.SlimTitlebar`, which since the v3.22.80 two-mode split is `true` in **both** modes (`SlimTitlebar = Fullscreen || Windowed`) — so it always printed "ON" and never reflected reality, even for the default config (which is now `WindowMode.Windowed`). Replaced with a "WINDOW STYLE" block that reports the live mode from `Layout.WindowMode` and names both real UI checkboxes ("Fullscreen mode" / "Windowed Mode") as they appear on the Video → Window Style card. Window *arrangement* (Single Screen / Multi-Monitor) split into its own "WINDOW LAYOUT" block — they're orthogonal axes, not three peer modes.
+- **Monitor index now matches the UI.** "Stacked on monitor {TargetMonitor}" printed the raw 0-based value ("monitor 0"), but the Settings monitor picker labels displays 1-indexed ("1: …  (primary)"). Help now says "the primary monitor" for index 0 and "monitor N" (1-indexed) otherwise.
+- **Teams firing surfaces clarified.** Old text implied teams 5-6 and 7-12 lived in different tray surfaces; all 12 are in the same right-click → Teams submenu. The real distinction is bindability: teams 1-4 can also bind a global hotkey, teams 1-6 a tray-click action (verified against `TeamHotkeysDialog` `i<4`, the `clickActions` dropdown stopping at `AutoLoginTeam6`, and `BuildTeamsSubmenu` listing all 12).
+- **Auto-login wording de-jargoned.** "Types passwords via DirectInput shared memory" described only the legacy path; the default state-machine path writes the password via native direct text write. Reworded to the user-visible truth ("enters your password directly into each client in the background — no focus stealing").
+- **Priority caveat.** "Priority: {ActivePriority} (all clients)" → "(default; per-character overrides apply)", since per-character priority overrides exist (and the Character Profiles section advertises them).
+- **Injected-DLL lifecycle corrected.** "(memory-only, auto-ejected on exit)" was wrong — since the v3.22.44 crash fix, `Shutdown`/`Dispose` deliberately leave the hook DLLs resident in running clients (the eject path `EjectFromAllInjectedClients` has had no callers since the Detach Hooks menu item was removed in v3.22.54). The DLLs unload via their own `DLL_PROCESS_DETACH` when each eqgame.exe exits, not when EQSwitch closes. Reworded to say so, and added that closing EQSwitch leaves running clients untouched.
+
+Help-text only — no behavior change, no SHM layout change, no DLL rebuild.
+
 ## v3.24.28 — Verifier follow-up: validation hardening + classifier/counter fixes (2026-06-03)
 
 Pre-existing robustness items surfaced by the v3.24.27 verification pass (none were regressions in .27).
