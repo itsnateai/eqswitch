@@ -201,14 +201,22 @@ internal sealed class QuickLoginSlotsDialog : EqSwitchForm
         cb.Items.AddRange(_comboItemsArray);
         cb.SelectedIndex = 0;
         cb.DrawItem += DrawComboItem;
-        // Bounce off the non-selectable separator back to the last real selection.
-        int lastIndex = 0;
+        // Skip past the non-selectable separator in the direction of travel so keyboard arrows
+        // cross the Characters/Accounts boundary (a mouse-click on the divider lands on the
+        // adjacent real row). Falls back to the last real selection at the list edge.
+        int lastIndex = cb.SelectedIndex;   // == 0 here (set above); read it rather than hardcode
         cb.SelectedIndexChanged += (s, _) =>
         {
             var box = (ComboBox)s!;
             if (box.SelectedItem is SlotOption o && o.IsSeparator)
             {
-                box.SelectedIndex = lastIndex;
+                // Direction inferred from lastIndex (the event doesn't say which arrow was pressed);
+                // while-loop tolerates adjacent separators. Re-entrancy ends in the else-branch.
+                int dir = box.SelectedIndex > lastIndex ? 1 : -1;
+                int i = box.SelectedIndex + dir;
+                while (i >= 0 && i < box.Items.Count && box.Items[i] is SlotOption sepOpt && sepOpt.IsSeparator)
+                    i += dir;
+                box.SelectedIndex = (i >= 0 && i < box.Items.Count) ? i : lastIndex;
             }
             else
             {
