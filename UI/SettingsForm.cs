@@ -4347,12 +4347,14 @@ public class SettingsForm : EqSwitchForm
 
     /// <summary>
     /// Make the <see cref="TrayActionSeparator"/> divider rows in the tray-click dropdowns
-    /// non-selectable: if a divider is selected (mouse click, or arrow-key + commit), revert to the
-    /// last real selection. This guarantees a divider can never be committed and saved as a tray
-    /// action — TrayDisplayToAction would pass the divider string through verbatim and
-    /// AppConfig.Validate would then reject it, silently resetting the click to "None". Mirrors the
-    /// separator bounce in QuickLoginSlotsDialog. Re-entrancy is safe: reverting to lastIndex (a
-    /// real row) re-fires the handler, which takes the else-branch and terminates.
+    /// non-selectable: when a divider is landed on, skip PAST it in the direction of travel so
+    /// keyboard arrows can cross group boundaries (a mouse-click on a divider lands on the adjacent
+    /// real row); fall back to the last real selection only if the list edge is reached. A divider
+    /// can therefore never be committed and saved as a tray action — TrayDisplayToAction would pass
+    /// the divider string through verbatim and AppConfig.Validate would then reject it, silently
+    /// resetting the click to "None". Mirrors the separator skip in QuickLoginSlotsDialog.
+    /// Re-entrancy is safe: setting SelectedIndex to a real row re-fires the handler, which takes
+    /// the non-divider branch (updating lastIndex) and terminates.
     /// </summary>
     private static void WireTraySeparatorBounce(ComboBox cb)
     {
@@ -4360,10 +4362,19 @@ public class SettingsForm : EqSwitchForm
         cb.SelectedIndexChanged += (s, _) =>
         {
             var box = (ComboBox)s!;
-            if ((box.SelectedItem as string) == TrayActionSeparator)
-                box.SelectedIndex = lastIndex;   // dividers aren't actions — bounce back
-            else
+            if ((box.SelectedItem as string) != TrayActionSeparator)
+            {
                 lastIndex = box.SelectedIndex;
+                return;
+            }
+            // Skip past the divider in the direction of travel (inferred from lastIndex, since the
+            // event doesn't say which arrow was pressed); while-loop tolerates adjacent dividers.
+            // Edge guard: if no real row lies that way, revert to the last real index.
+            int dir = box.SelectedIndex > lastIndex ? 1 : -1;
+            int i = box.SelectedIndex + dir;
+            while (i >= 0 && i < box.Items.Count && (box.Items[i] as string) == TrayActionSeparator)
+                i += dir;
+            box.SelectedIndex = (i >= 0 && i < box.Items.Count) ? i : lastIndex;
         };
     }
 }
