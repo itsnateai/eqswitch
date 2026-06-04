@@ -633,7 +633,7 @@ public class SettingsForm : EqSwitchForm
         _nudLogTrimThreshold.Increment = 10;
         DarkTheme.AddCardHint(cardLog, "MB", 308, 12);
         var btnTrimNow = DarkTheme.MakeButton("✂ Trim Now", DarkTheme.BgInput, 345, 7);
-        btnTrimNow.Size = new Size(85, 24);
+        btnTrimNow.Size = new Size(85, 26);
         btnTrimNow.Font = DarkTheme.FontUI85;
         cardLog.Controls.Add(btnTrimNow);
         btnTrimNow.Click += (_, _) => FileOperations.TrimLogFiles(_config, (int)_nudLogTrimThreshold.Value, msg => MessageBox.Show(msg, "Trim Logs", MessageBoxButtons.OK, MessageBoxIcon.Information));
@@ -3408,7 +3408,7 @@ public class SettingsForm : EqSwitchForm
         DarkTheme.WrapWithBorder(_cboVideoPreset);
 
         var btnOffsets = DarkTheme.MakeButton("📐 Offsets...", DarkTheme.BgInput, 370, cy - 2);
-        btnOffsets.Size = new Size(95, 24);
+        btnOffsets.Size = new Size(95, 26);
         btnOffsets.Font = DarkTheme.FontUI85;
         cardRes.Controls.Add(btnOffsets);
         btnOffsets.Click += (_, _) => ShowOffsetsDialog();
@@ -3504,7 +3504,7 @@ public class SettingsForm : EqSwitchForm
         const int hintX = 260;
 
         var btnWrapper = DarkTheme.MakeButton("⚙ Advanced...", DarkTheme.BgInput, 385, 5);
-        btnWrapper.Size = new Size(80, 24);
+        btnWrapper.Size = new Size(80, 26);
         btnWrapper.Font = DarkTheme.FontUI85;
         cardStyle.Controls.Add(btnWrapper);
 

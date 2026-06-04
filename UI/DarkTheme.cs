@@ -301,6 +301,7 @@ public static class DarkTheme
         {
             Location = new Point(x, y),
             Size = new Size(width, 26),
+            MinimumSize = new Size(width, 26),         // floor — prevents spinner band eating digits at non-integer DPI ratios
             BackColor = BgInput,
             ForeColor = FgWhite,
             Minimum = min,
@@ -622,7 +623,8 @@ public static class DarkTheme
     /// <summary>Add left/right internal padding to a TextBox via EM_SETMARGINS.</summary>
     private static void SetTextBoxMargins(TextBox tb, int margin)
     {
-        var lParam = (IntPtr)(margin | (margin << 16));
+        int m = tb.LogicalToDeviceUnits(margin);   // scale the design margin to device px (EM_SETMARGINS is not auto-scaled)
+        var lParam = (IntPtr)(m | (m << 16));
         NativeMethods.SendMessage(tb.Handle, NativeMethods.EM_SETMARGINS,
             (IntPtr)(NativeMethods.EC_LEFTMARGIN | NativeMethods.EC_RIGHTMARGIN), lParam);
     }
@@ -649,7 +651,7 @@ public static class DarkTheme
         var cb = new ScrollGuardComboBox
         {
             Location = new Point(x, y),
-            Size = new Size(width, 24),
+            Size = new Size(width, 26),               // was 24 — bottom border clips at 125%+
             BackColor = BgInput,
             ForeColor = FgWhite,
             DropDownStyle = ComboBoxStyle.DropDownList,
@@ -668,7 +670,8 @@ public static class DarkTheme
         var nud = new NumericUpDown
         {
             Location = new Point(x, y),
-            Size = new Size(width, 22),
+            Size = new Size(width, 26),               // was 22 — 22×1.25 clips the bottom border at 125%+ (template "original sin")
+            MinimumSize = new Size(width, 26),         // floor — AutoScale won't shrink the spinner band into the digits
             BackColor = BgInput,
             ForeColor = FgWhite,
             Minimum = min,
