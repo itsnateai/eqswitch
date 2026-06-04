@@ -149,6 +149,26 @@ static class Program
             return;
         }
 
+        // --test-dpi-baseline — run Core/DpiBaselineTests.RunAll(): asserts every UI Form
+        // inherits EqSwitchForm (the 96-DPI baseline). Guards the DPI retrofit from regressing
+        // when new forms are added.
+        if (args.Length >= 1 && args[0] == "--test-dpi-baseline")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.DpiBaselineTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"DpiBaselineTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
         // --test-config-validate — run Core/AppConfigValidateTests.RunAll() and
         // exit with its return code.
         if (args.Length >= 1 && args[0] == "--test-config-validate")
