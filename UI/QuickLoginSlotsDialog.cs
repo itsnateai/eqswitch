@@ -243,8 +243,9 @@ internal sealed class QuickLoginSlotsDialog : EqSwitchForm
         if (opt?.IsSeparator == true)
         {
             int midY = e.Bounds.Top + e.Bounds.Height / 2;
+            int inset = cb.LogicalToDeviceUnits(6);   // owner-draw inset — not auto-scaled
             using var pen = new Pen(DarkTheme.FgDimGray);
-            e.Graphics.DrawLine(pen, e.Bounds.Left + 6, midY, e.Bounds.Right - 6, midY);
+            e.Graphics.DrawLine(pen, e.Bounds.Left + inset, midY, e.Bounds.Right - inset, midY);
             return; // no text, no focus rectangle on a separator
         }
         // Selected dropdown row gets the system-highlight background; draw white

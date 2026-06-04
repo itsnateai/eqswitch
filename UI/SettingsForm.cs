@@ -1151,8 +1151,10 @@ public class SettingsForm : EqSwitchForm
             var size = new Size((int)(160 * s), (int)(100 * s));
             var overlay = new Form
             {
-                AutoScaleDimensions = new SizeF(96F, 96F),
-                AutoScaleMode = AutoScaleMode.Dpi,
+                // NO AutoScale baseline here: this overlay has zero child controls and its
+                // box Size, Region, and painted glyph are ALL scaled manually by `s` below.
+                // Adding AutoScaleMode.Dpi would scale Form.Size a SECOND time (s × auto-scale
+                // = double-scale) while Region/Paint scale once — the box would overshoot.
                 FormBorderStyle = FormBorderStyle.None,
                 BackColor = DarkTheme.BgDark,
                 TopMost = true,
