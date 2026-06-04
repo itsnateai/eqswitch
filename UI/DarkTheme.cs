@@ -128,9 +128,16 @@ public static class DarkTheme
             Dock = DockStyle.Fill,
             DrawMode = TabDrawMode.OwnerDrawFixed,
             SizeMode = TabSizeMode.Fixed,
-            ItemSize = new Size(84, 30),
-            Padding = new Point(12, 6),
             Font = FontUI85
+        };
+
+        // ItemSize/Padding are non-Bounds and NOT walked by AutoScaleMode.Dpi — set
+        // them from device units once the handle exists (DeviceDpi resolves post-handle).
+        // No-op at 100% scale.
+        tabs.HandleCreated += (_, _) =>
+        {
+            tabs.ItemSize = new Size(tabs.LogicalToDeviceUnits(84), tabs.LogicalToDeviceUnits(30));
+            tabs.Padding = new Point(tabs.LogicalToDeviceUnits(12), tabs.LogicalToDeviceUnits(6));
         };
 
         tabs.DrawItem += DrawTab;
@@ -201,7 +208,8 @@ public static class DarkTheme
         if (isSelected)
         {
             using var accentBrush = new SolidBrush(accent);
-            e.Graphics.FillRectangle(accentBrush, bounds.Left + 2, bounds.Top, bounds.Width - 4, 3);
+            e.Graphics.FillRectangle(accentBrush, bounds.Left + tabs.LogicalToDeviceUnits(2), bounds.Top,
+                bounds.Width - tabs.LogicalToDeviceUnits(4), tabs.LogicalToDeviceUnits(3));
         }
 
         // Tab text — selected uses the tab's accent color, unselected is dim
@@ -215,7 +223,7 @@ public static class DarkTheme
             LineAlignment = StringAlignment.Center
         };
 
-        var textRect = new Rectangle(bounds.X, bounds.Y + (isSelected ? 2 : 0), bounds.Width, bounds.Height);
+        var textRect = new Rectangle(bounds.X, bounds.Y + (isSelected ? tabs.LogicalToDeviceUnits(2) : 0), bounds.Width, bounds.Height);
         e.Graphics.DrawString(tabPage.Text, font, textBrush, textRect, sf);
     }
 
@@ -468,9 +476,10 @@ public static class DarkTheme
             using var pen = new Pen(borderColor, 1);
             g.DrawRectangle(pen, 0, 0, panel.Width - 1, panel.Height - 1);
 
-            // Accent left-bar (3px, card's title color)
+            // Accent left-bar (3px design, card's title color) — paint geometry is
+            // not auto-scaled, so scale the width to the device DPI.
             using var accentBrush = new SolidBrush(titleColor);
-            g.FillRectangle(accentBrush, 0, 0, 3, panel.Height);
+            g.FillRectangle(accentBrush, 0, 0, panel.LogicalToDeviceUnits(3), panel.Height);
         };
 
         // Title row is optional — pass empty title to make a header-less card

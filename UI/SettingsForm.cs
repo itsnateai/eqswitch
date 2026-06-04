@@ -1117,9 +1117,14 @@ public class SettingsForm : EqSwitchForm
         for (int i = 0; i < screens.Length; i++)
         {
             var screen = screens[i];
-            var size = new Size(160, 100);
+            // SystemAware: the whole process uses the primary-monitor DPI. Scale the
+            // badge box + text Y to match the point-based fonts (which auto-scale).
+            double s = DeviceDpi / 96.0;
+            var size = new Size((int)(160 * s), (int)(100 * s));
             var overlay = new Form
             {
+                AutoScaleDimensions = new SizeF(96F, 96F),
+                AutoScaleMode = AutoScaleMode.Dpi,
                 FormBorderStyle = FormBorderStyle.None,
                 BackColor = DarkTheme.BgDark,
                 TopMost = true,
@@ -1128,7 +1133,7 @@ public class SettingsForm : EqSwitchForm
                 Size = size,
             };
             // Rounded region — eliminates the boxy look
-            var radius = 20;
+            var radius = (int)(20 * s);
             using var path = new System.Drawing.Drawing2D.GraphicsPath();
             path.AddArc(0, 0, radius, radius, 180, 90);
             path.AddArc(size.Width - radius, 0, radius, radius, 270, 90);
@@ -1152,11 +1157,11 @@ public class SettingsForm : EqSwitchForm
                 var numText = monitorNum.ToString();
                 var numSize = e.Graphics.MeasureString(numText, numFont);
                 e.Graphics.DrawString(numText, numFont, brush,
-                    (size.Width - numSize.Width) / 2, 12);
+                    (size.Width - numSize.Width) / 2, (int)(12 * s));
                 var labelText = screen.Primary ? "Primary" : $"Monitor";
                 var labelSize = e.Graphics.MeasureString(labelText, labelFont);
                 e.Graphics.DrawString(labelText, labelFont, dimBrush,
-                    (size.Width - labelSize.Width) / 2, 68);
+                    (size.Width - labelSize.Width) / 2, (int)(68 * s));
             };
             overlay.Show();
             _monitorOverlays.Add(overlay);

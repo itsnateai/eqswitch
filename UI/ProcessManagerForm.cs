@@ -135,7 +135,9 @@ public class ProcessManagerForm : EqSwitchForm
             g.Clear(cb.BackColor);
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
-            int boxSize = 16;
+            // Paint geometry is NOT auto-scaled — derive every literal from the
+            // control's device DPI so the glyph tracks the (already-scaled) control.
+            int boxSize = cb.LogicalToDeviceUnits(16);
             int boxY = (cb.Height - boxSize) / 2;
             var boxRect = new Rectangle(0, boxY, boxSize, boxSize);
 
@@ -148,13 +150,16 @@ public class ProcessManagerForm : EqSwitchForm
             // Checkmark: bright white for contrast
             if (cb.Checked)
             {
-                using var checkPen = new Pen(Color.White, 2f);
-                g.DrawLine(checkPen, 3, boxY + 8, 6, boxY + 12);
-                g.DrawLine(checkPen, 6, boxY + 12, 13, boxY + 4);
+                using var checkPen = new Pen(Color.White, cb.LogicalToDeviceUnits(2));
+                g.DrawLine(checkPen, cb.LogicalToDeviceUnits(3),  boxY + cb.LogicalToDeviceUnits(8),
+                                     cb.LogicalToDeviceUnits(6),  boxY + cb.LogicalToDeviceUnits(12));
+                g.DrawLine(checkPen, cb.LogicalToDeviceUnits(6),  boxY + cb.LogicalToDeviceUnits(12),
+                                     cb.LogicalToDeviceUnits(13), boxY + cb.LogicalToDeviceUnits(4));
             }
 
             // Draw text
-            var textRect = new Rectangle(boxSize + 6, 0, cb.Width - boxSize - 6, cb.Height);
+            int textGap = cb.LogicalToDeviceUnits(6);
+            var textRect = new Rectangle(boxSize + textGap, 0, cb.Width - boxSize - textGap, cb.Height);
             TextRenderer.DrawText(g, cb.Text, cb.Font, textRect, cb.ForeColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
         };
         _chkAffinityEnabled.CheckedChanged += (_, _) =>
