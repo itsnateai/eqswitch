@@ -170,7 +170,7 @@ public static class DarkTheme
 
     /// <summary>ComboBox that ignores mouse wheel when the dropdown is closed.
     /// Prevents accidental value changes while scrolling a parent panel/tab.</summary>
-    private class ScrollGuardComboBox : ComboBox
+    internal class ScrollGuardComboBox : ComboBox
     {
         private const int WM_MOUSEWHEEL = 0x020A;
 
