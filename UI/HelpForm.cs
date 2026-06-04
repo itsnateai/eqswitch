@@ -62,6 +62,16 @@ public static class HelpForm
             ? "the primary monitor"
             : $"monitor {layout.TargetMonitor + 1}";
 
+        // BY DESIGN — do NOT "fix" to interpolate NumClients (audits/verifiers
+        // keep flagging this as drift; it's a false positive). The HOTKEYS line
+        // below describes LaunchAll as "Launch two bare clients". LaunchManager
+        // launches config.Launch.NumClients (default 2, clamped 1-8, JSON-only —
+        // there is no UI control to change it), and the action is deliberately
+        // named "Launch Two" across the tray menu (TrayManager.FormatActionName)
+        // and the General-tab tray-click dropdown. The help matches that
+        // convention on purpose. Keep "two" unless the "Launch Two" naming is
+        // changed everywhere at once (per Nate, 2026-06-04).
+
         return $@"EQSwitch v{version} — EverQuest Window Manager
 ============================================
 GitHub: https://github.com/itsnateai/eqswitch
