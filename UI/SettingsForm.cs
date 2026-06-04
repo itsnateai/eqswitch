@@ -489,13 +489,14 @@ public class SettingsForm : Form
         // Switch key — prominent, right under card title
         _lblSwitchKey = DarkTheme.AddCardLabel(cardEQ, "EQ Switch Key:", L, cy);
         _lblSwitchKey.Font = TrackFont(new Font("Segoe UI Semibold", 8.5f));
-        _txtSwitchKeyGeneral = new TextBox
+        _txtSwitchKeyGeneral = new HotkeyTextBox
         {
             Location = new Point(I, cy - 2), Size = new Size(80, 24),
             BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
             BorderStyle = BorderStyle.FixedSingle, Font = TrackFont(new Font("Consolas", 10f, FontStyle.Bold)),
             TextAlign = HorizontalAlignment.Center,
             ShortcutsEnabled = false,
+            CaptureTab = true,
             // Mirror of _txtSwitchKey — both edit Hotkeys.SwitchKey (a bare-key hook binding).
             Tag = BareKeyTag
         };
@@ -976,13 +977,15 @@ public class SettingsForm : Form
 
     private TextBox MakeHotkeyBox(Panel card, int x, int y, int width = 80, bool allowBareKey = false)
     {
-        var tb = new TextBox
+        var tb = new HotkeyTextBox
         {
             Location = new Point(x, y), Size = new Size(width, 20),
             BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
             BorderStyle = BorderStyle.None, Font = TrackFont(new Font("Consolas", 9f)),
             TextAlign = HorizontalAlignment.Center,
             ShortcutsEnabled = false,
+            // Only the Switch Key boxes bind Tab — action boxes keep normal tab-navigation.
+            CaptureTab = allowBareKey,
             // Switch-key boxes are consumed by the low-level keyboard hook, which is built
             // for single keys (\ ]). Mark them so HotkeyBoxKeyDown accepts a modifier-less
             // keypress; action boxes (RegisterHotKey, global scope) stay modifier-only.
@@ -1529,6 +1532,20 @@ public class SettingsForm : Form
         _ => keyCode.ToString()
     };
 
+    /// <summary>The four arrow keys — blocked as a BARE switch key (binding one would swallow
+    /// in-game movement while EQ is focused). Still allowed in modifier combos.</summary>
+    internal static bool IsMovementKey(Keys keyCode) =>
+        keyCode is Keys.Left or Keys.Right or Keys.Up or Keys.Down;
+
+    /// <summary>
+    /// Brief red background flash on a hotkey box to signal a refused keypress (unsupported key,
+    /// bare key on a modifier-only box, or a blocked movement key) — instead of silently
+    /// swallowing it. Reverts to the known input background (not a captured one) so rapid repeated
+    /// rejects can't leave the box stuck on the warn color.
+    /// </summary>
+    internal static void FlashHotkeyReject(TextBox box)
+        => (box as HotkeyTextBox)?.FlashReject(DarkTheme.CardWarn, DarkTheme.BgInput);
+
     /// <summary>
     /// Pure decision for a hotkey TextBox keypress (caller has already filtered out
     /// standalone modifiers and the Delete/Back/Escape clear-keys). Returns true and sets
@@ -1549,6 +1566,10 @@ public class SettingsForm : Form
         bool bare = !ctrl && !alt && !shift;
 
         if (bare && !allowBareKey) return false;
+
+        // Per "no gameplay": a bare arrow key can't be a switch key — it would swallow in-game
+        // movement while EQ is focused. Arrows remain fine in modifier combos.
+        if (bare && IsMovementKey(keyCode)) return false;
 
         string keyName = FormatHotkeyKeyName(keyCode);
         // Refuse ANY key the resolver can't turn into a VK — bare OR modifier combo.
@@ -1583,9 +1604,26 @@ public class SettingsForm : Form
 
         // Switch Key / Global Switch Key boxes opt into bare keys via Tag == BareKeyTag.
         bool allowBareKey = (sender as Control)?.Tag as string == BareKeyTag;
-        if (TryBuildHotkeyString(allowBareKey, e.Control, e.Alt, e.Shift, e.KeyCode, out string combo)
-            && sender is TextBox box)
-            box.Text = combo;
+
+        // On a switch box, a numpad key pressed with NumLock off arrives as a nav key (numpad-8
+        // -> Keys.Up). HotkeyTextBox flagged it as numpad-origin via the extended-key bit;
+        // normalize it back to the NumPad key so it stores as "NumPad8" and fires under both
+        // NumLock states (matching the runtime hook). Not done for action boxes — those register
+        // via RegisterHotKey, which can't match the NumLock-translated VK.
+        Keys keyCode = e.KeyCode;
+        if (allowBareKey && sender is HotkeyTextBox htb && htb.LastKeyFromNumpad)
+            keyCode = (Keys)KeyboardHookManager.NormalizeNumpadVk((uint)e.KeyCode, 0);
+
+        if (TryBuildHotkeyString(allowBareKey, e.Control, e.Alt, e.Shift, keyCode, out string combo))
+        {
+            if (sender is TextBox box) box.Text = combo;
+        }
+        else if (sender is TextBox box)
+        {
+            // Refused (unsupported key, bare key on an action box, or a blocked movement key) —
+            // give a visible cue instead of silently swallowing the keypress.
+            FlashHotkeyReject(box);
+        }
     }
 
     // ─── Config I/O ───────────────────────────────────────────────

@@ -213,7 +213,7 @@ public sealed class CharacterHotkeysDialog : Form
 
     private TextBox MakeHotkeyBox(Panel card, int x, int y, int width, string initialText)
     {
-        var tb = new TextBox
+        var tb = new HotkeyTextBox
         {
             Location = new Point(x, y),
             Size = new Size(width, 20),
@@ -267,7 +267,12 @@ public sealed class CharacterHotkeysDialog : Form
             return;
         }
 
-        if (!e.Control && !e.Alt && !e.Shift) return;
+        // Modifier-only by design: a bare key flashes the box (cue) and is ignored.
+        if (!e.Control && !e.Alt && !e.Shift)
+        {
+            if (sender is TextBox b) SettingsForm.FlashHotkeyReject(b);
+            return;
+        }
 
         var parts = new List<string>();
         if (e.Control) parts.Add("Ctrl");
@@ -280,7 +285,11 @@ public sealed class CharacterHotkeysDialog : Form
         // This dialog stays modifier-only (the no-modifier gate above is unchanged).
         string keyName = SettingsForm.FormatHotkeyKeyName(e.KeyCode);
         // Refuse a combo whose key can't resolve to a VK — it would register as VK 0 and never fire.
-        if (EQSwitch.Core.HotkeyManager.ResolveVK(keyName) == 0) return;
+        if (EQSwitch.Core.HotkeyManager.ResolveVK(keyName) == 0)
+        {
+            if (sender is TextBox b) SettingsForm.FlashHotkeyReject(b);
+            return;
+        }
         parts.Add(keyName);
         if (sender is TextBox box) box.Text = string.Join("+", parts);
     }

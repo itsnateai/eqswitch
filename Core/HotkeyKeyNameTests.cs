@@ -98,6 +98,13 @@ public static class HotkeyKeyNameTests
         failures += AssertRejects("bare LWin (unresolvable) on switch box", bareKey: true, false, false, false, Keys.LWin);
         failures += AssertRejects("Ctrl+LWin (unresolvable) on action box", bareKey: false, true, false, false, Keys.LWin);
 
+        // v3.24.24 — no bare movement (arrow) keys as a switch key (would swallow in-game movement);
+        // still fine in modifier combos, and non-movement keys like Tab remain bindable bare.
+        failures += AssertRejects("bare Up arrow on switch box",   bareKey: true,  false, false, false, Keys.Up);
+        failures += AssertRejects("bare Left arrow on switch box", bareKey: true,  false, false, false, Keys.Left);
+        failures += AssertAccepts("Ctrl+Left combo is fine",       bareKey: false, true,  false, false, Keys.Left, "Ctrl+Left");
+        failures += AssertAccepts("bare Tab is allowed (not movement)", bareKey: true, false, false, false, Keys.Tab, "Tab");
+
         // ── v3.24.23 #2 — NumLock-independent numpad. A numpad-origin nav VK (extended flag CLEAR)
         // normalizes back to its NumPad VK so the binding fires regardless of NumLock; a DEDICATED
         // nav key (extended SET) is left alone so it can't trigger a numpad binding.

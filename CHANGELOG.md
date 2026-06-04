@@ -1,5 +1,23 @@
 # Changelog
 
+## v3.24.24 — Tab is bindable, numpad captures correctly regardless of NumLock, + reject cue & arrow guard (2026-06-03)
+
+Follow-ups to the hotkey-capture work, all via a new `HotkeyTextBox` (UI/HotkeyTextBox.cs):
+
+- **Tab can now be set as a hotkey.** WinForms consumed Tab (and the arrow/nav cluster) for focus
+  traversal before the `KeyDown` handler saw it, so pressing Tab in a hotkey box just moved to the
+  next field. `HotkeyTextBox.IsInputKey` now delivers those keys as input so they can be captured.
+- **Numpad keys capture correctly even with NumLock OFF.** Previously, binding numpad-9 with NumLock
+  off stored `PageUp` (Windows reports the nav VK, and `KeyEventArgs` hides the flag that would tell
+  them apart) — so it fired from the dedicated PageUp, not the numpad. `HotkeyTextBox` reads the
+  `WM_KEYDOWN` extended-key bit and the switch-key handler normalizes a numpad-origin press back to
+  `NumPadN`, so it stores and fires correctly regardless of NumLock. (Numpad **operators** `* + - /`
+  already worked — they have their own NumLock-independent VKs.)
+- **Visible reject cue.** A refused keypress (unsupported key, a bare key on a modifier-only box, or
+  a blocked movement key) now briefly flashes the box red instead of silently doing nothing.
+- **No-gameplay guard.** A bare **arrow** key can't be set as a Switch Key (it would swallow in-game
+  movement while EQ is focused). Arrows remain available in modifier combos (e.g. `Ctrl+Left`).
+
 ## v3.24.23 — Numpad switch keys work regardless of NumLock, + PrintScreen / numpad operators (2026-06-03)
 
 - **NumLock-independent numpad (the headline).** A numpad key bound as a Switch Key used to fire
