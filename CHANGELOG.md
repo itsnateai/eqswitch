@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.24.26 — Remove PrintScreen as a bindable key (it can't fire) (2026-06-03)
+
+v3.24.23 added PrintScreen to the resolver, but it can't actually work as a switch key: the
+low-level keyboard hook doesn't reliably receive a WM_KEYDOWN for PrintScreen — Windows intercepts
+it for screen capture and typically only delivers the key-up — and the switch key fires on key-down.
+So a PrintScreen binding looked accepted but never fired. Removed it from `KeyNameToVK` (it's now
+refused at capture, with the red flash), and added a regression test so it can't creep back in.
+ScrollLock / Pause were never bindable and stay that way. (The numpad operators `* + - /` added in
+v3.24.23 are fine — they have their own real VKs and were live-confirmed firing.)
+
 ## v3.24.25 — EQ Path is Browse-only + "exe not found" guard on save (2026-06-03)
 
 Hardens the General tab against the silent config corruption that let a stray keystroke turn the

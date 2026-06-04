@@ -63,8 +63,7 @@ public static class HotkeyKeyNameTests
         failures += AssertRoundTrip("function F13", Keys.F13,          "F13",  0x7C);
         failures += AssertRoundTrip("function F24", Keys.F24,          "F24",  0x87);
 
-        // v3.24.23 #4 — PrintScreen + numpad operators (own VKs, not NumLock-dependent).
-        failures += AssertRoundTrip("PrintScreen",   Keys.PrintScreen, "PrintScreen", 0x2C);
+        // v3.24.23 #4 — numpad operators (own VKs, not NumLock-dependent).
         failures += AssertRoundTrip("numpad *",      Keys.Multiply,    "Multiply",    0x6A);
         failures += AssertRoundTrip("numpad +",      Keys.Add,         "Add",         0x6B);
         failures += AssertRoundTrip("numpad -",      Keys.Subtract,    "Subtract",    0x6D);
@@ -97,6 +96,10 @@ public static class HotkeyKeyNameTests
         // for BOTH a bare switch key AND a modifier combo (the v3.24.22 universal-refusal change).
         failures += AssertRejects("bare LWin (unresolvable) on switch box", bareKey: true, false, false, false, Keys.LWin);
         failures += AssertRejects("Ctrl+LWin (unresolvable) on action box", bareKey: false, true, false, false, Keys.LWin);
+
+        // v3.24.26 — PrintScreen is intentionally NOT bindable: the low-level hook doesn't reliably
+        // receive its WM_KEYDOWN (Windows grabs it for screen capture), so a binding never fires.
+        failures += AssertRejects("bare PrintScreen (intentionally unsupported)", bareKey: true, false, false, false, Keys.PrintScreen);
 
         // v3.24.24 — no bare movement (arrow) keys as a switch key (would swallow in-game movement);
         // still fine in modifier combos, and non-movement keys like Tab remain bindable bare.

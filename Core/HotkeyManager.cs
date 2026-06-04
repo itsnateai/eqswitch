@@ -185,8 +185,9 @@ public class HotkeyManager : IDisposable
         "MULTIPLY" => 0x6A, "ADD" => 0x6B, "SUBTRACT" => 0x6D,
         "DIVIDE" => 0x6F, "DECIMAL" => 0x6E,
 
-        // Utility
-        "PRINTSCREEN" or "SNAPSHOT" => 0x2C,
+        // NOTE: PrintScreen is intentionally NOT here — the low-level hook doesn't reliably
+        // receive its WM_KEYDOWN (Windows intercepts it for screen capture), so it never fires.
+        // ScrollLock/Pause are likewise omitted. (v3.24.26)
 
         _ => 0
     };
