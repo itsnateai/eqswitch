@@ -72,7 +72,7 @@ Keep `EQSwitch.exe` and the two `.dll` files together in one folder. A separate 
 - **Fullscreen Window** — WinEQ2-style borderless mode that hides the titlebar above the screen edge
 - **DLL Hook Injection** — Hooks SetWindowPos/MoveWindow inside eqgame.exe for zero-flicker window positioning
 - **Multi-Monitor** — One client per physical monitor with automatic arrangement
-- **Process Priority** — Both active and background EQ clients default to AboveNormal (configurable per-character)
+- **Process Priority** — Both active and background EQ clients default to High (configurable per-character)
 - **CPU Core Assignment** — CPUAffinity0-5 slots written to eqclient.ini for per-client core pinning
 - **PiP Overlay** — Live DWM thumbnail previews (zero CPU, GPU composited). Vertical or horizontal layout, 6 size presets (Small / Medium / Large / XL / XXL / XXXL) + custom dimensions
 - **Staggered Launch** — Multi-client launch with configurable delay and auto-arrange
@@ -121,8 +121,8 @@ EQSwitch ships with a built-in tray icon. To use your own instead, open **Settin
 
 ### Process Priority Defaults
 
-- **Active client**: AboveNormal priority
-- **Background clients**: AboveNormal priority
+- **Active client**: High priority
+- **Background clients**: High priority
 - Per-character priority overrides in Settings → Accounts (Characters card)
 - CPU core assignment via eqclient.ini CPUAffinity0-5 slots (tray menu → Process Manager)
 

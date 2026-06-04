@@ -872,6 +872,13 @@ public class AutoLoginManager
         // same backing slot every tick. Dies with the SM — no cross-run
         // pollution surface.
         long okDialogFirstSeenMs = -1;
+        // v3.24.x one-shot connect-recovery latch. A stuck, UNREADABLE OkDialog at
+        // WaitConnectResponse (a transient connect/server error — bad-password is
+        // classified Fatal and bails earlier, untouched) earns exactly ONE
+        // dismiss-and-reconnect before we give up. Loop-local (per-PID, per-session)
+        // and consulted ONLY inside StepWaitConnectResponse, so it cannot bleed
+        // across phases, PIDs, or runs.
+        bool connectRecoverUsed = false;
 
         LoginShmWriter? loginShm = null;
         // Iter-3 (2026-05-17): CharSelectReader for character selection + Enter
@@ -1134,7 +1141,7 @@ public class AutoLoginManager
                         LoginPhase.WaitLoginScreen     => StepWaitLoginScreen(widgets, gameState, nativePhase),
                         LoginPhase.TypingCredentials   => StepTypingCredentials(widgets, gameState, nativePhase),
                         LoginPhase.ClickingConnect     => StepClickingConnect(widgets, gameState, nativePhase),
-                        LoginPhase.WaitConnectResponse => StepWaitConnectResponse(widgets, gameState, nativePhase, okClass, okText, sw.ElapsedMilliseconds, ref okDialogFirstSeenMs),
+                        LoginPhase.WaitConnectResponse => StepWaitConnectResponse(widgets, gameState, nativePhase, okClass, okText, sw.ElapsedMilliseconds, ref okDialogFirstSeenMs, ref connectRecoverUsed),
                         LoginPhase.ServerSelect        => StepServerSelect(widgets, gameState, nativePhase),
                         LoginPhase.WaitServerLoad      => StepWaitServerLoad(widgets, gameState, nativePhase),
                         _                              => current
@@ -1151,6 +1158,17 @@ public class AutoLoginManager
                     string aheadTag = nativeAhead ? $" [native-ahead: nativePhase={nativePhase}, C# stalling at {next}]" : string.Empty;
                     FileLogger.Info($"AutoLogin-SM: {current} → {next} (tick={tickCount}, t={sw.ElapsedMilliseconds}ms, " +
                         $"{widgets.DiagSummary()}, gameState={gameState}, nativePhase={nativePhase}){aheadTag}");
+                    // v3.24.x one-shot connect recovery: the ONLY backward edge into
+                    // WaitLoginScreen is StepWaitConnectResponse requesting a re-attempt
+                    // after a stuck, unreadable dialog (bounded by connectRecoverUsed).
+                    // Re-issue LOGIN so Native dismisses the blocking dialog and re-runs
+                    // type→connect. SHM layout is unchanged, so this degrades gracefully
+                    // against an un-updated DLL (worst case: the same bail as before).
+                    if (current == LoginPhase.WaitConnectResponse && next == LoginPhase.WaitLoginScreen)
+                    {
+                        FileLogger.Warn($"AutoLogin-SM: one-shot connect recovery — re-issuing LOGIN (PID {pid})");
+                        loginShm.SendLoginCommand(pid, account.Username, password, account.Server, character?.Name ?? string.Empty);
+                    }
                     // v3.22.8: mark pendingResult in-memory only — actual write
                     // + SaveImmediate happens in the finally block at SM exit
                     // (avoids tick-time disk I/O + lock contention with sibling
@@ -1547,7 +1565,7 @@ public class AutoLoginManager
     private const long OkDialogVisibleBudgetMs = 12_000;
 
     private static LoginPhase StepWaitConnectResponse(WidgetState widgets, int gameState, LoginPhase nativePhase,
-        OkDisplayClass okClass, string okText, long nowMs, ref long okDialogFirstSeenMs)
+        OkDisplayClass okClass, string okText, long nowMs, ref long okDialogFirstSeenMs, ref bool connectRecoverUsed)
     {
         if (nativePhase == LoginPhase.Error)
             return LoginPhase.Error;
@@ -1612,8 +1630,25 @@ public class AutoLoginManager
             long visibleAgeMs = nowMs - okDialogFirstSeenMs;
             if (visibleAgeMs > OkDialogVisibleBudgetMs)
             {
+                // One-shot recovery: a stuck dialog we can't read is almost always a
+                // transient connect/server error (bad-password is Fatal-classified and
+                // already bailed above). Dismiss + re-attempt connect exactly ONCE —
+                // the backward edge to WaitLoginScreen is the loop's re-LOGIN signal.
+                // okDialogFirstSeenMs is intentionally NOT reset (preserves the torn-
+                // read defense documented above): if the dialog recurs after the retry,
+                // this same gate fires immediately with connectRecoverUsed=true and
+                // bails — bounding recovery to a single attempt.
+                if (!connectRecoverUsed)
+                {
+                    connectRecoverUsed = true;
+                    FileLogger.Warn(
+                        $"AutoLogin-SM: stuck unreadable OkDialog at WaitConnectResponse "
+                        + $"(visibleAge={visibleAgeMs}ms, okClass={okClass}, textLen={okText?.Length ?? 0}) "
+                        + "— one-shot recovery: dismiss + re-attempt connect");
+                    return LoginPhase.WaitLoginScreen;
+                }
                 FileLogger.Warn(
-                    $"AutoLogin-SM: bail on long-visible OkDialog at WaitConnectResponse "
+                    $"AutoLogin-SM: bail on long-visible OkDialog at WaitConnectResponse after one recovery "
                     + $"(visibleAge={visibleAgeMs}ms, okClass={okClass}, textLen={okText?.Length ?? 0})");
                 return LoginPhase.Error;
             }

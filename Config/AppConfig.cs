@@ -439,7 +439,7 @@ public class AppConfig
             mutated = true;
         }
 
-        Affinity.LaunchRetryCount = Math.Clamp(Affinity.LaunchRetryCount, 0, 20);
+        Affinity.LaunchRetryCount = Math.Clamp(Affinity.LaunchRetryCount, 3, 7);
         Affinity.LaunchRetryDelayMs = Math.Clamp(Affinity.LaunchRetryDelayMs, 500, 30000);
 
         Launch.NumClients = Math.Clamp(Launch.NumClients, 1, 6);
@@ -613,9 +613,9 @@ public class AppConfig
         }
         if (Pip.Orientation is not ("Horizontal" or "Vertical")) Pip.Orientation = "Vertical";
         if (Affinity.ActivePriority is not ("Normal" or "AboveNormal" or "High" or "BelowNormal"))
-            Affinity.ActivePriority = "AboveNormal";
+            Affinity.ActivePriority = "High";
         if (Affinity.BackgroundPriority is not ("Normal" or "AboveNormal" or "High" or "BelowNormal"))
-            Affinity.BackgroundPriority = "AboveNormal";
+            Affinity.BackgroundPriority = "High";
         if (Hotkeys.SwitchKeyMode is not ("swapLast" or "cycleAll"))
             Hotkeys.SwitchKeyMode = "swapLast";
 
@@ -938,12 +938,12 @@ public class AffinityConfig
     /// Process priority for all EQ clients.
     /// High required to prevent virtual desktop crashes and keep autofollow working.
     /// </summary>
-    public string ActivePriority { get; set; } = "AboveNormal";
+    public string ActivePriority { get; set; } = "High";
 
     /// <summary>
     /// Process priority for background EQ clients (kept in sync with ActivePriority).
     /// </summary>
-    public string BackgroundPriority { get; set; } = "AboveNormal";
+    public string BackgroundPriority { get; set; } = "High";
 
     /// <summary>
     /// Number of retry attempts when applying priority to a newly launched client.

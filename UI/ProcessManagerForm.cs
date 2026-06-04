@@ -55,6 +55,8 @@ public class ProcessManagerForm : Form
     // Card 3: FPS
     private NumericUpDown _nudMaxFPS = null!;
     private NumericUpDown _nudMaxBGFPS = null!;
+    private Font _ghostFont = null!;
+    private Font _boldHintFont = null!;
 
     // Snapshot of config at form open — for Reset
     private readonly string _initialPriority;
@@ -112,11 +114,11 @@ public class ProcessManagerForm : Form
         int y = 10;
 
         // ─── Card 1: CPU Affinity Handling ───────────────────────
-        var cardPriority = DarkTheme.MakeCard(this, "\u26A1", "CPU Affinity/Priority Handling", DarkTheme.CardGold, Pad, y, GridW, 105);
+        var cardPriority = DarkTheme.MakeCard(this, "\u26A1", "CPU Priority Handling", DarkTheme.CardGold, Pad, y, GridW, 105);
 
         _chkAffinityEnabled = new CheckBox
         {
-            Text = "  Enable CPU Affinity/Priority Handling",
+            Text = "  Enable CPU Priority Handling",
             Location = new Point(15, 26),
             AutoSize = true,
             ForeColor = _config.Affinity.Enabled ? DarkTheme.CardGreen : DarkTheme.FgGray,
@@ -171,14 +173,17 @@ public class ProcessManagerForm : Form
         _cboPriority.SelectedItem = Priorities.Contains(_config.Affinity.ActivePriority)
             ? _config.Affinity.ActivePriority : "None";
 
-        DarkTheme.AddCardHint(cardPriority, "None = per-client in grid  |  High = prevents VD crashes + autofollow", 10, 50);
+        DarkTheme.AddCardHint(cardPriority, "Enforces CPU preference on clients, High is recommended", 10, 50);
 
         // Retry on launch — EQ resets its own priority after starting
         DarkTheme.AddCardHint(cardPriority, "On launch: EQ resets priority to Normal — Try", 10, 74);
-        _nudLaunchRetries = DarkTheme.AddCardNumeric(cardPriority, 248, 70, 40, _config.Affinity.LaunchRetryCount, 0, 10);
+        _nudLaunchRetries = DarkTheme.AddCardNumeric(cardPriority, 248, 70, 40, _config.Affinity.LaunchRetryCount, 3, 7);
         DarkTheme.AddCardHint(cardPriority, "times, rest", 293, 74);
-        _nudLaunchRetryDelay = DarkTheme.AddCardNumeric(cardPriority, 348, 70, 60, _config.Affinity.LaunchRetryDelayMs, 500, 10000);
-        DarkTheme.AddCardHint(cardPriority, "ms after launch", 413, 74);
+        // Shown in seconds; stored as ms in LaunchRetryDelayMs (schema/validator unchanged).
+        _nudLaunchRetryDelay = DarkTheme.AddCardNumeric(cardPriority, 348, 70, 60, _config.Affinity.LaunchRetryDelayMs / 1000m, 0.5m, 10m);
+        _nudLaunchRetryDelay.DecimalPlaces = 1;
+        _nudLaunchRetryDelay.Increment = 0.5m;
+        DarkTheme.AddCardHint(cardPriority, "sec after launch", 413, 74);
 
         y += 113;
 
@@ -201,7 +206,7 @@ public class ProcessManagerForm : Form
 
         // ─── Card 2: Core Assignment ─────────────────────────────
         // 6 slots matching eqclient.ini CPUAffinity0-5
-        var cardCores = DarkTheme.MakeCard(this, "\uD83E\uDDE0", "CPU Thread Mapping", DarkTheme.CardCyan, Pad, y, GridW, 125);
+        var cardCores = DarkTheme.MakeCard(this, "\uD83E\uDDE0", "CPU Affinity Thread Mapping", DarkTheme.CardCyan, Pad, y, GridW, 125);
 
         DarkTheme.AddCardHint(cardCores, "EQ uses 6 internal threads — assign each to a CPU core to spread the load", 10, 28);
 
@@ -228,12 +233,50 @@ public class ProcessManagerForm : Form
         var cardFps = DarkTheme.MakeCard(this, "\uD83C\uDFAE", "FPS Limits", DarkTheme.CardGreen, Pad, y, GridW, 85);
 
         DarkTheme.AddCardLabel(cardFps, "Active FPS:", 10, 32);
-        _nudMaxFPS = DarkTheme.AddCardNumeric(cardFps, 85, 30, 55, Math.Clamp(_config.EQClientIni.MaxFPS, 0, 999), 0, 999);
+        _nudMaxFPS = DarkTheme.AddCardNumeric(cardFps, 85, 30, 55, FpsForDisplay(_config.EQClientIni.MaxFPS), 10, 99);
+        _nudMaxFPS.Increment = 5;
+        _nudMaxFPS.ReadOnly = true;   // spinner-only: no free typing, stays on the 10-99 step-5 grid
 
         DarkTheme.AddCardLabel(cardFps, "Background FPS:", 165, 32);
-        _nudMaxBGFPS = DarkTheme.AddCardNumeric(cardFps, 275, 30, 55, Math.Clamp(_config.EQClientIni.MaxBGFPS, 0, 999), 0, 999);
+        _nudMaxBGFPS = DarkTheme.AddCardNumeric(cardFps, 275, 30, 55, FpsForDisplay(_config.EQClientIni.MaxBGFPS), 10, 99);
+        _nudMaxBGFPS.Increment = 5;
+        _nudMaxBGFPS.ReadOnly = true;
 
-        DarkTheme.AddCardHint(cardFps, "0 = unlimited  |  Default 80  |  Written to eqclient.ini on Save", 10, 56);
+        // Default + a bolded save-warning: opening this page and clicking Save
+        // rewrites the user's local eqclient.ini, so make that consequence loud.
+        _boldHintFont = new Font(DarkTheme.FontUI75, FontStyle.Bold);
+        var fpsHintFlow = new FlowLayoutPanel
+        {
+            Location = new Point(10, 56),
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            FlowDirection = FlowDirection.LeftToRight,
+            BackColor = Color.Transparent,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        fpsHintFlow.Controls.Add(new Label
+        {
+            Text = "Default 80     ",
+            AutoSize = true,
+            ForeColor = DarkTheme.FgDimGray,
+            Font = DarkTheme.FontUI75,
+            BackColor = Color.Transparent,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        });
+        fpsHintFlow.Controls.Add(new Label
+        {
+            Text = "Written to eqclient.ini on Save",
+            AutoSize = true,
+            ForeColor = DarkTheme.FgGray,
+            Font = _boldHintFont,
+            BackColor = Color.Transparent,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        });
+        cardFps.Controls.Add(fpsHintFlow);
 
         // Read current values from eqclient.ini and show as ghost hint
         var (iniFps, iniBgFps) = ReadIniFpsValues();
@@ -247,16 +290,37 @@ public class ProcessManagerForm : Form
             BackColor = Color.Transparent
         };
         cardFps.Controls.Add(iniLabel);
-        var iniHint = new Label
+        // Ghost line: dim labels with the live values highlighted green to match
+        // the card accent. Built as adjacent segments in an auto-sizing
+        // FlowLayoutPanel so it positions/scales correctly under high DPI
+        // (no manual pixel math).
+        _ghostFont = new Font("Consolas", 7.5f, FontStyle.Italic);
+        var ghostFlow = new FlowLayoutPanel
         {
-            Text = $"eqclient.ini: MaxFPS={iniFps}  MaxBGFPS={iniBgFps}",
-            Location = new Point(340, 44),
+            Location = new Point(340, 42),
             AutoSize = true,
-            ForeColor = DarkTheme.FgDimGray,
-            Font = new Font("Consolas", 7.5f, FontStyle.Italic),
-            BackColor = Color.Transparent
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            FlowDirection = FlowDirection.LeftToRight,
+            BackColor = Color.Transparent,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
         };
-        cardFps.Controls.Add(iniHint);
+        Label GhostSeg(string text, Color color) => new Label
+        {
+            Text = text,
+            AutoSize = true,
+            ForeColor = color,
+            Font = _ghostFont,
+            BackColor = Color.Transparent,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty
+        };
+        ghostFlow.Controls.Add(GhostSeg("eqclient.ini: MaxFPS=", DarkTheme.FgDimGray));
+        ghostFlow.Controls.Add(GhostSeg(iniFps, DarkTheme.CardGreen));
+        ghostFlow.Controls.Add(GhostSeg("  MaxBGFPS=", DarkTheme.FgDimGray));
+        ghostFlow.Controls.Add(GhostSeg(iniBgFps, DarkTheme.CardGreen));
+        cardFps.Controls.Add(ghostFlow);
 
         y += 93;
 
@@ -480,6 +544,16 @@ public class ProcessManagerForm : Form
     }
 
     /// <summary>
+    /// Maps a stored FPS value onto the Process Manager's displayable 10-99 range.
+    /// A stored 0 (legacy "don't set / leave eqclient.ini alone") falls back to the
+    /// 80 default — never the 10 floor — so a prior "don't set" config doesn't
+    /// silently become an unplayable 10 FPS; other out-of-range values clamp into
+    /// 10-99. The "leave eqclient.ini alone" (0 = don't set) escape hatch still
+    /// lives in the advanced EQ Client Settings form.
+    /// </summary>
+    private static int FpsForDisplay(int stored) => stored <= 0 ? 80 : Math.Clamp(stored, 10, 99);
+
+    /// <summary>
     /// Writes all card settings back to config and eqclient.ini.
     /// </summary>
     private void ApplyAllSettings()
@@ -499,7 +573,7 @@ public class ProcessManagerForm : Form
 
         // Launch retry settings
         _config.Affinity.LaunchRetryCount = (int)_nudLaunchRetries.Value;
-        _config.Affinity.LaunchRetryDelayMs = (int)_nudLaunchRetryDelay.Value;
+        _config.Affinity.LaunchRetryDelayMs = (int)(_nudLaunchRetryDelay.Value * 1000m);
 
         // Core Assignment — write slot values to config
         for (int i = 0; i < 6; i++)
@@ -553,8 +627,8 @@ public class ProcessManagerForm : Form
             _slotPickers[i].Value = i < _initialSlots.Length ? _initialSlots[i] : i;
 
         // FPS
-        _nudMaxFPS.Value = Math.Clamp(_initialMaxFPS, 0, 999);
-        _nudMaxBGFPS.Value = Math.Clamp(_initialMaxBGFPS, 0, 999);
+        _nudMaxFPS.Value = FpsForDisplay(_initialMaxFPS);
+        _nudMaxBGFPS.Value = FpsForDisplay(_initialMaxBGFPS);
     }
 
     protected override void Dispose(bool disposing)
@@ -565,6 +639,8 @@ public class ProcessManagerForm : Form
             _refreshTimer?.Dispose();
             _tooltip?.Dispose();
             // Dispose GDI Font handles — WinForms doesn't own control fonts
+            _ghostFont?.Dispose();
+            _boldHintFont?.Dispose();
             _chkAffinityEnabled?.Font?.Dispose();
             _statusLabel?.Font?.Dispose();
             _grid?.DefaultCellStyle?.Font?.Dispose();

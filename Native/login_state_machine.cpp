@@ -826,6 +826,22 @@ static void TickImpl(volatile LoginShm *loginShm, volatile CharSelectShm *charSe
         DI8Log("login_sm: command=%d seq=%u", (int)cmd, cmdSeq);
 
         if (cmd == LOGIN_CMD_LOGIN) {
+            // v3.24.x one-shot connect recovery (C#-driven): if a stuck, unreadable
+            // OK error dialog is blocking the login screen, dismiss it before re-
+            // driving the sequence — otherwise the re-typed credentials land behind
+            // the modal. INERT on a fresh login: DiscoverDialogWidgets only resolves
+            // g_pOkButton when an "okdialog" screen is actually visible, which never
+            // happens on a clean first login — so this fires ONLY on the recovery
+            // re-LOGIN that StepWaitConnectResponse triggers after a stuck dialog.
+            // Reuses the proven OK-button resolution + ClickButton (the same call the
+            // dormant in-phase recoverable-retry path at PHASE_WAIT_CONNECT_RESP uses),
+            // and runs on the game thread here (eqmain loaded at login, GiveTime detour
+            // drives Tick) — not the char-select cross-thread hazard surface.
+            DiscoverDialogWidgets();
+            if (g_pOkButton) {
+                MQ2Bridge::ClickButton(g_pOkButton);
+                DI8Log("login_sm: LOGIN — dismissed blocking OK dialog before restart");
+            }
             // Copy credentials locally and zero SHM password immediately
             strncpy(g_username, (const char *)loginShm->username, LOGIN_NAME_LEN - 1);
             g_username[LOGIN_NAME_LEN - 1] = '\0';

@@ -1,5 +1,20 @@
 # Changelog
 
+## v3.24.27 — Process Manager polish + autologin one-shot connect recovery (2026-06-03)
+
+**Process Manager UI**
+- **Priority now ships High** (active + background) and the handling toggle ships enabled. High prevents virtual-desktop crashes and keeps autofollow working — this restores the originally-intended default that had silently drifted to AboveNormal.
+- **Cards renamed for accuracy:** "CPU Affinity/Priority Handling" → **"CPU Priority Handling"** (that card only governs Windows priority); the core-assignment card → **"CPU Affinity Thread Mapping"** (the one that actually writes CPUAffinity0-5).
+- **Retry count guarded to 3–7** (was 0–10; 0 silently disabled the priority re-apply EQ needs after it resets priority on launch). Enforced at both the UI and the config validator.
+- **Retry delay shown in seconds** (0.5s steps) instead of a 1ms-per-click millisecond stepper. Stored value remains ms — no config migration.
+- **FPS limits constrained to 10–99 in steps of 5, spinner-only** (no free typing). The confusing "0 = unlimited" was removed (0 = unlimited crashes EQ); a stored 0 now displays as the 80 default. The "leave eqclient.ini untouched" power-user escape hatch still lives in the advanced EQ Client Settings form.
+- Current-settings values (`MaxFPS=…  MaxBGFPS=…`) are now highlighted green, and **"Written to eqclient.ini on Save" is bolded** — opening this page and clicking Save rewrites your local eqclient.ini, so the consequence is made loud.
+
+**Autologin — one-shot connect recovery**
+- When a background client's connect attempt is blocked by a stuck, **unreadable** OK error dialog (a transient connect/server error — e.g. network saturation) past the visibility budget, autologin now performs exactly **one** dismiss-and-reconnect before giving up, instead of bailing immediately. Bad-password dialogs are still classified Fatal and hard-fail with no retry. Bounded to a single attempt (per-PID, per-session); never fights manual intervention.
+- Native `LOGIN_CMD_LOGIN` now dismisses a blocking OK dialog before restarting — **inert on a fresh login** (the OK button only resolves when a dialog is actually visible). No shared-memory layout change, so it degrades gracefully against a not-yet-updated DLL.
+- Verified by a 14-agent adversarial pass (paired Opus+Sonnet across diff-clean / gap-audit / code-review / blast-radius / credential-safety) plus an orchestrator-side review. Defensive fix for an upstream condition that can't be reproduced on demand — watch `eqswitch.log` for `one-shot connect recovery — re-issuing LOGIN`.
+
 ## v3.24.26 — Remove PrintScreen as a bindable key (it can't fire) (2026-06-03)
 
 v3.24.23 added PrintScreen to the resolver, but it can't actually work as a switch key: the
