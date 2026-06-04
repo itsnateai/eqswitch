@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.24.30 — Help window: uninstall list accuracy (2026-06-04)
+
+Fast-follow to v3.24.29's help audit (verifier-surfaced items).
+- **Uninstall bullets completed.** The "Reverts all external changes" list omitted two things `UninstallHelper.CleanUp` actually does: removing the legacy `HKCU\...\Run\EQSwitch` startup registry entry (`RemoveLegacyRegistryEntry`) and deleting native `eqswitch-*.log` files from the EQ folder. Bullets now cover both.
+- Also lands the by-design comment on the "Launch two" HOTKEYS line (deliberate convention — `LaunchManager` launches `NumClients`, default 2, no UI knob; named "Launch Two" across tray menu + tray-click dropdown).
+
+Three other audit-flagged items examined and confirmed NON-issues (no change): hook-DLL described by purpose, not injection-gating (accurate as written); `targetMon` faithfully reports the stored config value (clamping the display would make it disagree with the config); `ActivePriority`/`BackgroundPriority` are kept in sync via the single Process Manager priority dropdown, so showing one is correct.
+
+Help-text only — no behavior change, no SHM layout change, no DLL rebuild.
+
 ## v3.24.29 — Help window accuracy pass (2026-06-04)
 
 Audited the in-app Help window (Settings → Paths → Help / "❓ Help") against the current code. The dynamic parts (hotkeys, paths, priority, delays, tray-click actions) read live config and were already correct; these fixes are in the hardcoded prose that had drifted.

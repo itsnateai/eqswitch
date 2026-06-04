@@ -157,9 +157,9 @@ FIRST-RUN CONFIG SEEDING:
 UNINSTALL / CLEAN UP:
   Settings → Paths → Uninstall button (or run uninstall.bat)
   Reverts all external changes:
-    • Removes startup shortcut
+    • Removes startup shortcut + legacy run-at-startup registry entry
     • Removes desktop shortcut
-    • Cleans up any legacy DLL artifacts from game folder
+    • Cleans up legacy DLL artifacts + native log files from game folder
   Does NOT modify eqclient.ini settings or EQSwitch config.
 
 CONFIG:
