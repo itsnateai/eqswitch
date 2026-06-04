@@ -414,7 +414,9 @@ public class SettingsForm : EqSwitchForm
         if (_initialTab > 0 && _initialTab < tabs.TabCount)
             tabs.SelectedIndex = _initialTab;
 
-        // Button panel at bottom
+        // Button panel at bottom \u2014 two docked FlowLayoutPanels for uniform, DPI-correct
+        // spacing. Replaces hand-placed absolute-x that drifted at scale: uneven gaps
+        // (GitHub\u2194Update 5px vs Save\u2194Apply 10px) and the version label overrunning Save.
         var buttonPanel = new Panel
         {
             Dock = DockStyle.Bottom,
@@ -422,44 +424,70 @@ public class SettingsForm : EqSwitchForm
             BackColor = DarkTheme.BgDark
         };
 
-        // GitHub button (left side)
-        var btnGitHub = DarkTheme.MakeButton("\uD83C\uDF10 GitHub", DarkTheme.BgMedium, 10, 10);
-        btnGitHub.Size = new Size(85, 30);
+        // Right group \u2014 visual order Save | Apply | Cancel (RightToLeft flow)
+        var actionFlow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Right,
+            FlowDirection = FlowDirection.RightToLeft,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            Padding = new Padding(0, 10, 10, 0),
+            BackColor = DarkTheme.BgDark
+        };
+        var btnSave = DarkTheme.MakePrimaryButton("Save", 0, 0);
+        btnSave.Margin = new Padding(6, 0, 0, 0);
+        btnSave.Click += (_, _) => { if (ApplySettings()) { ConfigManager.Save(_config); Close(); } };
+        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 0, 0);
+        btnApply.Margin = new Padding(6, 0, 0, 0);
+        btnApply.Click += (_, _) => { if (ApplySettings()) { ConfigManager.Save(_config); } };
+        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 0, 0);
+        btnCancel.Margin = new Padding(6, 0, 0, 0);
+        btnCancel.Click += (_, _) => Close();
+        actionFlow.Controls.AddRange(new Control[] { btnCancel, btnApply, btnSave });
+
+        // Left group \u2014 GitHub | Update | version (AutoSize buttons so emoji+text never clip)
+        var leftFlow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Left,
+            FlowDirection = FlowDirection.LeftToRight,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            Padding = new Padding(10, 10, 0, 0),
+            BackColor = DarkTheme.BgDark
+        };
+        var btnGitHub = DarkTheme.MakeButton("\uD83C\uDF10 GitHub", DarkTheme.BgMedium, 0, 0);
+        btnGitHub.AutoSize = true;
+        btnGitHub.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        btnGitHub.Margin = new Padding(0, 0, 6, 0);
         btnGitHub.Click += (_, _) =>
         {
             try { using var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://github.com/itsnateai/eqswitch") { UseShellExecute = true }); }
             catch (Exception ex) { FileLogger.Warn($"Failed to open GitHub URL: {ex.Message}"); }
         };
-
-        // Update button (small, discreet, next to GitHub)
-        var btnUpdate = DarkTheme.MakeButton("\u2B06 Update", DarkTheme.BgMedium, 100, 10);
-        btnUpdate.Size = new Size(70, 30);
+        var btnUpdate = DarkTheme.MakeButton("\u2B06 Update", DarkTheme.BgMedium, 0, 0);
+        btnUpdate.AutoSize = true;
+        btnUpdate.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        btnUpdate.Margin = new Padding(0, 0, 10, 0);
         btnUpdate.Click += (_, _) =>
         {
             using var dlg = new UpdateDialog();
             dlg.ShowDialog(this);
         };
-
-        // Version label
         var lblVersion = new Label
         {
             Text = $"v{System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?"}",
-            Location = new Point(175, 17),
             AutoSize = true,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(0, 8, 0, 0),
             ForeColor = DarkTheme.FgDimGray,
             Font = TrackFont(new Font("Segoe UI", 8f))
         };
+        leftFlow.Controls.AddRange(new Control[] { btnGitHub, btnUpdate, lblVersion });
 
-        var btnSave = DarkTheme.MakePrimaryButton("Save", 230, 10);
-        btnSave.Click += (_, _) => { if (ApplySettings()) { ConfigManager.Save(_config); Close(); } };
-
-        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 320, 10);
-        btnApply.Click += (_, _) => { if (ApplySettings()) { ConfigManager.Save(_config); } };
-
-        var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 410, 10);
-        btnCancel.Click += (_, _) => Close();
-
-        buttonPanel.Controls.AddRange(new Control[] { btnGitHub, btnUpdate, lblVersion, btnSave, btnApply, btnCancel });
+        buttonPanel.Controls.Add(actionFlow);
+        buttonPanel.Controls.Add(leftFlow);
 
         Controls.Add(tabs);
         Controls.Add(buttonPanel);
@@ -1333,13 +1361,15 @@ public class SettingsForm : EqSwitchForm
         y += 72;
 
         // ─── eqclient.ini actions card ─────────────────────────────
-        var cardIni = DarkTheme.MakeCard(page, "💾", "eqclient.ini", DarkTheme.CardGold, 10, y, 480, 70);
-        cy = 30;
+        // Taller card so the warning occupies its OWN row above the buttons — the
+        // dynamic-length "not found" text would otherwise overlap Backup/Restore at any
+        // scale (mirrors AutoLoginTeamsDialog's dedicated warning row).
+        var cardIni = DarkTheme.MakeCard(page, "💾", "eqclient.ini", DarkTheme.CardGold, 10, y, 480, 96);
 
         _lblVideoLoadError = new Label
         {
             Text = "⚠ Failed to read eqclient.ini — values shown are defaults, not your settings.",
-            Location = new Point(L, cy),
+            Location = new Point(L, 28),
             Size = new Size(460, 18),
             ForeColor = DarkTheme.CardWarn,
             Font = TrackFont(new Font("Segoe UI", 7.5f, FontStyle.Bold)),
@@ -1347,13 +1377,14 @@ public class SettingsForm : EqSwitchForm
         };
         cardIni.Controls.Add(_lblVideoLoadError);
 
+        cy = 52;
         var btnBackup = DarkTheme.AddCardButton(cardIni, "📋 Backup", 47, cy, 110);
         btnBackup.Click += (_, _) => VideoBackupIni();
 
         var btnRestore = DarkTheme.AddCardButton(cardIni, "📂 Restore", 340, cy, 110);
         btnRestore.Click += (_, _) => VideoRestoreIni();
 
-        y += 78;
+        y += 104;
 
         // ─── Help button ─────────────────────────────────────────
         var btnHelp = DarkTheme.MakeButton("❓ Help", DarkTheme.BgMedium, 10, y);
