@@ -143,6 +143,12 @@ static bool PollLoginServerAPIReady(int *outFailMode, uintptr_t *outVtableRva) {
 static LoginPhase g_phase = PHASE_IDLE;
 static uint32_t   g_lastCommandSeq = 0;
 static uint32_t   g_retryCount = 0;
+// v3.24.28: enter-world clicks use a SEPARATE counter from the connect-phase
+// retry counter. Previously both shared g_retryCount, so connect-phase
+// recoverable retries silently ate into the enter-world attempt budget
+// (cap became 10 - prior_connect_retries instead of a clean 10). Reset
+// alongside g_retryCount on LOGIN_CMD_LOGIN and Shutdown.
+static uint32_t   g_enterWorldRetryCount = 0;
 static DWORD      g_phaseEntryTick = 0;   // GetTickCount when phase was entered
 static DWORD      g_lastActionTick = 0;   // Debounce for widget interactions
 static int        g_lastGameState = -99;  // Track game state transitions
@@ -243,13 +249,35 @@ static void ClearOkDisplay(volatile LoginShm *shm) {
 //
 // Caller guarantees text is non-empty (this returns the wrong bucket for
 // empty text — empty should ClearOkDisplay, not Classify).
+// v3.24.28: case-insensitive ASCII substring search. Dalaya's dialog-text
+// casing isn't guaranteed stable across client builds, so a recased/reworded
+// "Invalid Password" must still classify Fatal rather than silently falling
+// through to Recoverable and retrying a doomed login. ASCII-only lowering —
+// no locale / <ctype> dependency.
+static bool ContainsNoCase(const char *hay, const char *needle) {
+    if (!hay || !needle) return false;
+    if (!needle[0]) return true;
+    for (const char *p = hay; *p; ++p) {
+        const char *h = p;
+        const char *n = needle;
+        while (*h && *n) {
+            char hc = (*h >= 'A' && *h <= 'Z') ? (char)(*h + 32) : *h;
+            char nc = (*n >= 'A' && *n <= 'Z') ? (char)(*n + 32) : *n;
+            if (hc != nc) break;
+            ++h; ++n;
+        }
+        if (!*n) return true;
+    }
+    return false;
+}
+
 static uint32_t ClassifyDialogText(const char *text) {
-    if (strstr(text, "password were not valid") ||
-        strstr(text, "Invalid Password") ||
-        strstr(text, "enter a username and password")) {
+    if (ContainsNoCase(text, "password were not valid") ||
+        ContainsNoCase(text, "invalid password") ||
+        ContainsNoCase(text, "enter a username and password")) {
         return 1; // Fatal
     }
-    if (strstr(text, "Logging in to the server")) {
+    if (ContainsNoCase(text, "logging in to the server")) {
         return 3; // Success ("connecting...")
     }
     return 2; // Recoverable (stale-session, server-busy, truncated, etc.)
@@ -856,6 +884,7 @@ static void TickImpl(volatile LoginShm *loginShm, volatile CharSelectShm *charSe
             memset((void *)loginShm->password, 0, LOGIN_PASS_LEN);
 
             g_retryCount = 0;
+            g_enterWorldRetryCount = 0;
             loginShm->retryCount = 0;
             g_loginBtnClicked = false;
             g_loginBtnAttempts = 0;
@@ -1601,11 +1630,11 @@ static void TickImpl(volatile LoginShm *loginShm, volatile CharSelectShm *charSe
 
             if (g_pEnterWorldBtn) {
                 MQ2Bridge::ClickButton(g_pEnterWorldBtn);
-                DI8Log("login_sm: clicked enter-world button (Play_Button/CLW fallback) (attempt %u)", g_retryCount + 1);
-                g_retryCount++;
-                loginShm->retryCount = g_retryCount;
+                DI8Log("login_sm: clicked enter-world button (Play_Button/CLW fallback) (attempt %u)", g_enterWorldRetryCount + 1);
+                g_enterWorldRetryCount++;
+                loginShm->retryCount = g_enterWorldRetryCount;
 
-                if (g_retryCount > 10) {
+                if (g_enterWorldRetryCount > 10) {
                     SetError(loginShm, "Enter World failed after 10 attempts");
                 }
             } else {
@@ -1624,6 +1653,7 @@ void Shutdown() {
     g_phase = PHASE_IDLE;
     g_lastCommandSeq = 0;
     g_retryCount = 0;
+    g_enterWorldRetryCount = 0;
     g_lastGameState = -99;
     g_connectGameState = -99;
     g_charSelGameState = -99;

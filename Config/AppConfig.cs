@@ -213,6 +213,11 @@ public class AppConfig
         {
             EQProcessName = "eqgame";
         }
+        // v3.24.28: null-guard EQPath for parity with EQProcessName above. A
+        // hand-edited config with "EQPath": null would otherwise NRE in any
+        // Path.Combine(EQPath, ...) consumer (e.g. ProcessManagerForm.ReadIniFpsValues).
+        // Empty (not a fabricated default) keeps the existing IsNullOrEmpty guards loud.
+        EQPath ??= "";
         // Guard against null nested objects from corrupt/hand-edited JSON
         Layout ??= new();
         Affinity ??= new();
@@ -241,6 +246,12 @@ public class AppConfig
         Hotkeys.AccountHotkeys.RemoveAll(b => b == null!);
         Hotkeys.CharacterHotkeys.RemoveAll(b => b == null!);
         CustomVideoPresets.RemoveAll(p => p == null!);
+        // v3.24.28: the two legacy lists are iterated below (CharacterSlot clamp +
+        // AutoEnterWorld migration, and the CharacterAliases derivation) but were
+        // skipped by the v3.15.2 sweep above — a literal null entry in a hand-edited
+        // "accounts"/legacy-profiles array would NRE there. Guard them for parity.
+        LegacyAccounts.RemoveAll(a => a == null!);
+        LegacyCharacterProfiles.RemoveAll(p => p == null!);
 
         // v3.14.8 split: Account.Name became an internal FK shadow of Username
         // and Notes is the new user-facing free-form column. For accounts that
@@ -655,6 +666,12 @@ public class AppConfig
         if (EQClientIni.CPUAffinitySlots is not { Length: 6 }) EQClientIni.CPUAffinitySlots = new[] { 1, 2, 3, 1, 2, 3 };
         for (int i = 0; i < 6; i++)
             EQClientIni.CPUAffinitySlots[i] = Math.Clamp(EQClientIni.CPUAffinitySlots[i], 0, 31);
+        // v3.24.28: cap FPS authoritatively. Both UI forms cap at 99 but the JSON
+        // config path was unclamped — a hand-edited/legacy MaxFPS>=100 would write to
+        // eqclient.ini despite the UI showing 99 (UI-vs-backend drift the verifier
+        // pass flagged). 0 = "don't set" sentinel preserved (clamp floor is 0).
+        EQClientIni.MaxFPS = Math.Clamp(EQClientIni.MaxFPS, 0, 99);
+        EQClientIni.MaxBGFPS = Math.Clamp(EQClientIni.MaxBGFPS, 0, 99);
 
         // LoginAccount field validation (legacy — operates on v3 LegacyAccounts list).
         // v4 Account type has no CharacterSlot field; per-character slot moves to

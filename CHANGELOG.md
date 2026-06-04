@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.24.28 — Verifier follow-up: validation hardening + classifier/counter fixes (2026-06-03)
+
+Pre-existing robustness items surfaced by the v3.24.27 verification pass (none were regressions in .27).
+- **AppConfig.Validate:** null-guard the `LegacyAccounts` and `LegacyCharacterProfiles` element lists (a literal `null` in a hand-edited `accounts[]` would NRE the CharacterSlot clamp / alias derivation); null-guard `EQPath` for parity with `EQProcessName` (prevents a `Path.Combine(null, …)` NRE in INI consumers).
+- **Native `ClassifyDialogText`:** login-error dialog classification is now case-insensitive (ASCII), so a recased/reworded "Invalid Password" still classifies Fatal instead of falling through to a doomed retry.
+- **Native enter-world retry counter decoupled:** `PHASE_ENTERING_WORLD` now uses its own `g_enterWorldRetryCount` instead of sharing the connect-phase `g_retryCount` — connect-phase retries no longer eat into the 10-attempt enter-world budget.
+- **EQ Client Settings FPS aligned:** MaxFPS/MaxBGFPS now cap at 99 (matching the config reader's 0–99 clamp and the Process Manager's 10–99 range) instead of 0–999, closing the silent re-clamp where a >99 value set here was overwritten on the next Process Manager Save. Min 0 (= don't set / leave eqclient.ini alone) and free-typing are retained — this stays the advanced/power-user form.
+
+No SHM layout change. di8 DLL rebuilt.
+
 ## v3.24.27 — Process Manager polish + autologin one-shot connect recovery (2026-06-03)
 
 **Process Manager UI**
