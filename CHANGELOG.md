@@ -1,5 +1,19 @@
 # Changelog
 
+## v3.24.21 — Number-row modifier hotkeys (`Alt+1`..) now register in the Account/Character/Team dialogs (2026-06-03)
+
+Follow-up to v3.24.20. The Account / Character / Team hotkey dialogs each kept their own copy of the
+key-capture mapping, which serialized number-row keys as `"D1"` and the tilde key as `"Oemtilde"` —
+neither of which `HotkeyManager.ResolveVK` can parse. So a common multibox hotkey like `Alt+1` (or
+`Ctrl+2`, `Shift+3`, `` Ctrl+` ``) displayed as `"Alt+D1"` and the hotkey **silently never
+registered**. These dialogs stay **modifier-only by design** (no bare keys) — this only fixes the
+round-trip so the modifier combos users actually set will fire.
+
+- **`AccountHotkeysDialog.cs` / `CharacterHotkeysDialog.cs` / `TeamHotkeysDialog.cs`** — the
+  duplicated `e.KeyCode switch` mapping is replaced with the shared, unit-tested
+  `SettingsForm.FormatHotkeyKeyName`, which emits the canonical `"1"` / `` "`" `` names the resolver
+  understands. The modifier-only gate (`!Ctrl && !Alt && !Shift → return`) is unchanged.
+
 ## v3.24.20 — Bare keys (`\`, `]`) can now be typed into the Switch Key boxes (2026-06-03)
 
 The **EQ Switch Key** and **Global Switch Key** settings boxes rejected every modifier-less

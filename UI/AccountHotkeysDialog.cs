@@ -289,13 +289,11 @@ public sealed class AccountHotkeysDialog : Form
         if (e.Alt) parts.Add("Alt");
         if (e.Shift) parts.Add("Shift");
 
-        string keyName = e.KeyCode switch
-        {
-            Keys.OemPipe or Keys.OemBackslash => "\\",
-            Keys.OemCloseBrackets => "]",
-            Keys.OemOpenBrackets => "[",
-            _ => e.KeyCode.ToString()
-        };
+        // Shared with SettingsForm so number-row (Alt+1..) and tilde combos round-trip through
+        // HotkeyManager.ResolveVK. A raw e.KeyCode.ToString() emits "D1"/"Oemtilde", which the
+        // resolver can't parse — the hotkey would register as VK 0 and silently never fire.
+        // This dialog stays modifier-only (the no-modifier gate above is unchanged).
+        string keyName = SettingsForm.FormatHotkeyKeyName(e.KeyCode);
         parts.Add(keyName);
         if (sender is TextBox box) box.Text = string.Join("+", parts);
     }
