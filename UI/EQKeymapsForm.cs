@@ -13,7 +13,7 @@ namespace EQSwitch.UI;
 /// Large values encode modifier flags in upper bits:
 ///   0x10000000 = Shift, 0x20000000 = Ctrl, 0x40000000 = Alt
 /// </summary>
-public class EQKeymapsForm : Form
+public class EQKeymapsForm : EqSwitchForm
 {
     private readonly AppConfig _config;
     private readonly string _iniPath;

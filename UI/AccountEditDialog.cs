@@ -14,7 +14,7 @@ namespace EQSwitch.UI;
 /// Modal dialog for creating or editing an Account (v4 first-class credentials).
 /// Phase 4. All controls via DarkTheme factories; no hardcoded colors.
 /// </summary>
-public sealed class AccountEditDialog : Form
+public sealed class AccountEditDialog : EqSwitchForm
 {
     // Remembers last-open location across opens within a session — shared
     // between Add and Edit modes (same dialog visually). Static so all

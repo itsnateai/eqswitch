@@ -18,7 +18,7 @@ namespace EQSwitch.UI;
 /// flagged with a "(no account)" suffix in the Rebind dropdown — still bindable
 /// but won't successfully launch until re-linked.
 /// </summary>
-public sealed class CharacterHotkeysDialog : Form
+public sealed class CharacterHotkeysDialog : EqSwitchForm
 {
     // Remembers last-open location across opens within a session. Static so all
     // instances share it; falls back to CenterParent on first open. Process

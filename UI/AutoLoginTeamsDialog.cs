@@ -21,7 +21,7 @@ namespace EQSwitch.UI;
 /// by zero-based team index. Public property getters Team1Account1..Team12Account2 are
 /// preserved for SettingsForm name-based consumption.
 /// </summary>
-internal sealed class AutoLoginTeamsDialog : Form
+internal sealed class AutoLoginTeamsDialog : EqSwitchForm
 {
     private const int TeamCount = 12;
 

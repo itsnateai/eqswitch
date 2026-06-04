@@ -7,7 +7,7 @@ namespace EQSwitch.UI;
 /// Simple first-run dialog that asks for the EQ installation path.
 /// Validates that eqgame.exe exists in the selected directory.
 /// </summary>
-public class FirstRunDialog : Form
+public class FirstRunDialog : EqSwitchForm
 {
     private TextBox _pathTextBox = null!;
     public string SelectedEQPath { get; private set; } = "";

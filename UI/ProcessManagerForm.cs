@@ -14,7 +14,7 @@ namespace EQSwitch.UI;
 /// 3. FPS Limits — MaxFPS / MaxBGFPS from eqclient.ini
 /// Plus the live process grid for per-process overrides.
 /// </summary>
-public class ProcessManagerForm : Form
+public class ProcessManagerForm : EqSwitchForm
 {
     // Remembers last-open location across opens within a session. Static so
     // all instances share it; falls back to CenterScreen on first open

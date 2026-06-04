@@ -11,7 +11,7 @@ namespace EQSwitch.UI;
 /// Manages eqclient.ini chat spam filter settings.
 /// All settings are in [Options] section, values are 0 or 1.
 /// </summary>
-public class EQChatSpamForm : Form
+public class EQChatSpamForm : EqSwitchForm
 {
     private readonly AppConfig _config;
     private readonly string _iniPath;

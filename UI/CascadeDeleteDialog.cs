@@ -24,7 +24,7 @@ public enum CascadeDeleteChoice
 /// Three-button: Cancel (default, ESC) / Unlink (orphan-preserving) /
 /// Delete All (cascade remove). Phase 4.
 /// </summary>
-public sealed class CascadeDeleteDialog : Form
+public sealed class CascadeDeleteDialog : EqSwitchForm
 {
     public CascadeDeleteChoice Choice { get; private set; } = CascadeDeleteChoice.Cancel;
 

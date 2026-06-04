@@ -11,7 +11,7 @@ namespace EQSwitch.UI;
 /// Manages particle/opacity settings in eqclient.ini.
 /// Most settings are in [Defaults]; FogScale, LODBias, SameResolution are in [Options].
 /// </summary>
-public class EQParticlesForm : Form
+public class EQParticlesForm : EqSwitchForm
 {
     private readonly AppConfig _config;
     private readonly string _iniPath;

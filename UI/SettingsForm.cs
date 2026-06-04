@@ -11,7 +11,7 @@ namespace EQSwitch.UI;
 /// Settings GUI with tabbed layout. Dark medieval purple theme with card panels.
 /// Each section uses emoji-titled card panels for visual clarity and grouping.
 /// </summary>
-public class SettingsForm : Form
+public class SettingsForm : EqSwitchForm
 {
     private readonly AppConfig _config;
     private readonly Action<AppConfig> _onApply;

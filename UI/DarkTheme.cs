@@ -391,6 +391,14 @@ public static class DarkTheme
     /// </summary>
     public static void StyleForm(Form form, string title, Size size)
     {
+        // DPI baseline for inline `new Form()` dialogs that route through StyleForm
+        // (Window Offsets, Wrapper Settings, Help) — named form classes get this from
+        // EqSwitchForm; this covers the ones that can't inherit a base class. The
+        // double-set on an inheriting form is an idempotent no-op (identical values).
+        // Order is load-bearing: AutoScaleDimensions BEFORE AutoScaleMode. No-op at 100%.
+        form.AutoScaleDimensions = new SizeF(96F, 96F);
+        form.AutoScaleMode = AutoScaleMode.Dpi;
+
         RepairDefaultFont();
         form.Text = title;
         // ClientSize (not Size) — every caller positions controls in client

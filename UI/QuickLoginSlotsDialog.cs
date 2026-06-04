@@ -22,7 +22,7 @@ namespace EQSwitch.UI;
 /// caused by <c>WS_EX_COMPOSITED</c> on the form, not by per-item DrawItem — which is not used
 /// here. Only four combos, no composited form style: the orange text is safe.
 /// </summary>
-internal sealed class QuickLoginSlotsDialog : Form
+internal sealed class QuickLoginSlotsDialog : EqSwitchForm
 {
     private const int SlotCount = 4;
 

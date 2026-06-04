@@ -12,7 +12,7 @@ namespace EQSwitch.UI;
 /// Reads current values from eqclient.ini on open.
 /// Toggle settings write both states (e.g., Sound=TRUE ↔ Sound=FALSE).
 /// </summary>
-public class EQClientSettingsForm : Form
+public class EQClientSettingsForm : EqSwitchForm
 {
     // Remembers last-open location across opens within a session. Static so
     // all instances share it; falls back to CenterScreen on first open

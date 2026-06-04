@@ -16,7 +16,7 @@ namespace EQSwitch.UI;
 /// Save against (a) the four entries themselves and (b) any other hotkeys the
 /// caller passes in via <paramref name="otherHotkeys"/>.
 /// </summary>
-public sealed class TeamHotkeysDialog : Form
+public sealed class TeamHotkeysDialog : EqSwitchForm
 {
     // Remembers last-open location across opens within a session. Static so all
     // instances share it; falls back to CenterParent on first open. Process

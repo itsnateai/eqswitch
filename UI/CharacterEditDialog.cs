@@ -17,7 +17,7 @@ namespace EQSwitch.UI;
 /// fields that drive launch behavior (Name + Account + Slot). Existing values are
 /// preserved silently from the source record so legacy data survives an edit.
 /// </summary>
-public sealed class CharacterEditDialog : Form
+public sealed class CharacterEditDialog : EqSwitchForm
 {
     // Remembers last-open location across opens within a session — shared
     // between Add and Edit modes (same dialog visually). Static so all

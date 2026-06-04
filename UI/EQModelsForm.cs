@@ -11,7 +11,7 @@ namespace EQSwitch.UI;
 /// Manages Luclin model settings in eqclient.ini [Defaults] section.
 /// Allows toggling individual race/gender models on/off.
 /// </summary>
-public class EQModelsForm : Form
+public class EQModelsForm : EqSwitchForm
 {
     private readonly AppConfig _config;
     private readonly string _iniPath;

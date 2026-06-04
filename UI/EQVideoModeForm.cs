@@ -11,7 +11,7 @@ namespace EQSwitch.UI;
 /// Manages eqclient.ini [VideoMode] section settings.
 /// Experimental sub-form for advanced/troubleshooting video mode configuration.
 /// </summary>
-public class EQVideoModeForm : Form
+public class EQVideoModeForm : EqSwitchForm
 {
     private readonly AppConfig _config;
     private readonly string _iniPath;

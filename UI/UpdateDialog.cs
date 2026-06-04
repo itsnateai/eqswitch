@@ -15,7 +15,7 @@ namespace EQSwitch.UI;
 /// Manual update checker — no telemetry, no background requests.
 /// User clicks the button, we check GitHub once, download if needed.
 /// </summary>
-public class UpdateDialog : Form
+public class UpdateDialog : EqSwitchForm
 {
     private static readonly HttpClient _http = CreateHttpClient();
 

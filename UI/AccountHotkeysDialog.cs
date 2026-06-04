@@ -17,7 +17,7 @@ namespace EQSwitch.UI;
 /// (red row with Rebind dropdown). Save atomically replaces the caller's
 /// pending binding list.
 /// </summary>
-public sealed class AccountHotkeysDialog : Form
+public sealed class AccountHotkeysDialog : EqSwitchForm
 {
     // Remembers last-open location across opens within a session. Static so all
     // instances share it; falls back to CenterParent on first open. Process
