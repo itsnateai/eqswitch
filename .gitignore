@@ -102,6 +102,10 @@ _comms/
 tools/
 dist/
 
+# Internal — local DPI real-150% verification package (self-contained diag exe + scripts +
+# rendered screenshots), strictly local — never publish
+_suzy-dpi-check*
+
 # Internal — CodeRabbit cloud-review config kept local-only (review is now the
 # local verifier swarm; config retained on disk for reference, not published)
 .coderabbit.yaml
