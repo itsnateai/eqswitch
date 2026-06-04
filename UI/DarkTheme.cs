@@ -752,6 +752,14 @@ public static class DarkTheme
         Math.Clamp(value, nud.Minimum, nud.Maximum);
 
     /// <summary>
+    /// Scale a 96-DPI design-pixel value to the control's current device DPI.
+    /// Use for owner-draw paint geometry and other int dimensions that
+    /// AutoScaleMode.Dpi does NOT walk (ItemHeight, ItemSize, paint coords,
+    /// EM_SETMARGINS). Returns the input unchanged at 100% scale.
+    /// </summary>
+    public static int Dpi(Control c, int designPixels) => c.LogicalToDeviceUnits(designPixels);
+
+    /// <summary>
     /// Lighten a color by a fixed amount (clamped to 255).
     /// </summary>
     public static Color Lighten(Color c, int amount) =>
