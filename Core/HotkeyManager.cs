@@ -181,6 +181,13 @@ public class HotkeyManager : IDisposable
         "NUMPAD6" => 0x66, "NUMPAD7" => 0x67, "NUMPAD8" => 0x68,
         "NUMPAD9" => 0x69,
 
+        // Numpad operators (own VKs, NOT NumLock-dependent) + decimal
+        "MULTIPLY" => 0x6A, "ADD" => 0x6B, "SUBTRACT" => 0x6D,
+        "DIVIDE" => 0x6F, "DECIMAL" => 0x6E,
+
+        // Utility
+        "PRINTSCREEN" or "SNAPSHOT" => 0x2C,
+
         _ => 0
     };
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## v3.24.23 — Numpad switch keys work regardless of NumLock, + PrintScreen / numpad operators (2026-06-03)
+
+- **NumLock-independent numpad (the headline).** A numpad key bound as a Switch Key used to fire
+  only with NumLock ON, because with NumLock OFF Windows reports the *navigation* VK for that
+  physical key (numpad-8 → `VK_UP`, etc.). The low-level hook now normalizes a numpad-origin nav VK
+  back to its `VK_NUMPADx` so the binding fires under **both** NumLock states. It disambiguates via
+  the `LLKHF_EXTENDED` flag — the *dedicated* arrow/nav keys carry it; the numpad's nav function
+  does not — so a numpad binding never gets triggered by the real arrow keys, and vice-versa. The
+  normalization is a **no-op for every non-numpad VK**, so existing `\` / `]` / letter switch keys
+  are completely unaffected. (`Core/KeyboardHookManager.cs::NormalizeNumpadVk` — no game RE needed,
+  this is pure Win32 keyboard-hook mechanics.)
+- **PrintScreen + numpad operators** (`* + - /` and decimal `.`) added to the resolver — slick for
+  macro-keyboard users; non-gameplay. Numpad operators have their own VKs and aren't NumLock-bound.
+- **Test hardening** — `HotkeyKeyNameTests.AssertRoundTrip` now pins the EXACT VK (not just
+  non-zero), so a future hex typo in `KeyNameToVK` can't slip through. Added a normalization-map
+  test for the NumLock behavior.
+- **Clarity** — parenthesized the clear-key guard `(KeyCode is Delete or Back or Escape) && !mods`
+  in all four hotkey handlers. Behavior is unchanged (it always parsed that way), but two separate
+  reviewers misread the precedence, so the parens prevent a future mis-edit.
+
 ## v3.24.22 — Hotkey resolver covers OEM punctuation / arrows / F13–F24, and never saves a dead binding (2026-06-03)
 
 Found by the v3.24.21 post-ship verifier swarm: the same silent-VK-0 bug class fixed for the

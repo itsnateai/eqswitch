@@ -148,6 +148,36 @@ public class KeyboardHookManager : IDisposable
         _downSwallowedByVk.TryRemove(vkCode, out _);
     }
 
+    // LLKHF_EXTENDED (KBDLLHOOKSTRUCT.flags bit 0) is SET for the dedicated navigation-cluster
+    // keys (Insert/Home/PageUp/PageDown/End/Delete/arrows) but CLEAR for the numeric keypad's
+    // navigation function (numpad keys pressed with NumLock OFF). A nav VK that arrives WITHOUT
+    // the extended flag therefore came from the numpad — normalize it back to its VK_NUMPADx so a
+    // numpad-bound hotkey fires under BOTH NumLock states, without conflating it with the real
+    // arrow/nav keys (which keep their own VK because they ARE extended). This is a no-op for
+    // every non-numpad VK, so existing switch keys (\ ] letters) are completely unaffected.
+    // v3.24.23 — closes the "numpad switch key only works with NumLock on" gap.
+    private const uint LLKHF_EXTENDED = 0x01;
+
+    internal static uint NormalizeNumpadVk(uint vkCode, uint flags)
+    {
+        if ((flags & LLKHF_EXTENDED) != 0) return vkCode; // dedicated nav key — leave as-is
+        return vkCode switch
+        {
+            0x0C => 0x65, // Clear  -> NumPad5
+            0x21 => 0x69, // Prior  -> NumPad9
+            0x22 => 0x63, // Next   -> NumPad3
+            0x23 => 0x61, // End    -> NumPad1
+            0x24 => 0x67, // Home   -> NumPad7
+            0x25 => 0x64, // Left   -> NumPad4
+            0x26 => 0x68, // Up     -> NumPad8
+            0x27 => 0x66, // Right  -> NumPad6
+            0x28 => 0x62, // Down   -> NumPad2
+            0x2D => 0x60, // Insert -> NumPad0
+            0x2E => 0x6E, // Delete -> Decimal (numpad .)
+            _ => vkCode
+        };
+    }
+
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode < 0) return NativeMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
@@ -163,6 +193,9 @@ public class KeyboardHookManager : IDisposable
         if (wParam == (IntPtr)NativeMethods.WM_KEYUP || wParam == (IntPtr)NativeMethods.WM_SYSKEYUP)
         {
             var upStruct = Marshal.PtrToStructure<NativeMethods.KBDLLHOOKSTRUCT>(lParam);
+            // Normalize the same way as the KEYDOWN path so the down-swallow pairing matches
+            // for a numpad key released under either NumLock state.
+            uint upVk = NormalizeNumpadVk(upStruct.vkCode, upStruct.flags);
             // v3.22.53 KEYUP swallow policy:
             //
             // If we swallowed the matching KEYDOWN earlier, the focused
@@ -184,15 +217,17 @@ public class KeyboardHookManager : IDisposable
             // was unrealizable — the OS never re-fires WM_SYSKEYUP for the
             // same physical release, so a single-shot swallow IS correct
             // semantics. Comment now matches code.
-            if (_downSwallowedByVk.TryRemove(upStruct.vkCode, out _))
+            if (_downSwallowedByVk.TryRemove(upVk, out _))
                 return (IntPtr)1;
         }
 
         if (wParam == (IntPtr)NativeMethods.WM_KEYDOWN || wParam == (IntPtr)NativeMethods.WM_SYSKEYDOWN)
         {
             var hookStruct = Marshal.PtrToStructure<NativeMethods.KBDLLHOOKSTRUCT>(lParam);
+            // NumLock-independent numpad: map a numpad-origin nav VK back to its VK_NUMPADx.
+            uint vk = NormalizeNumpadVk(hookStruct.vkCode, hookStruct.flags);
 
-            if (_bindings.TryGetValue(hookStruct.vkCode, out var binding))
+            if (_bindings.TryGetValue(vk, out var binding))
             {
                 // Don't swallow the key if no EQ clients are running
                 if (binding.RequireClients && _filteredPids.IsEmpty)
@@ -210,22 +245,22 @@ public class KeyboardHookManager : IDisposable
                 // hardware timestamp but isn't guaranteed to start at 0 nor
                 // to match TickCount, so we'd need a per-VK delta anyway.
                 long nowTicks = Environment.TickCount64;
-                if (_lastFireTickByVk.TryGetValue(hookStruct.vkCode, out long lastTick)
+                if (_lastFireTickByVk.TryGetValue(vk, out long lastTick)
                     && nowTicks - lastTick < RepeatDebounceMs)
                 {
                     // Swallow without firing the callback. Logged at Info so
                     // the SwitchKey "extra swap" diagnostics path stays
                     // visible without spamming Warn during normal typing.
-                    FileLogger.Info($"KeyboardHook: debounced VK 0x{hookStruct.vkCode:X2} ({nowTicks - lastTick}ms since last fire, <{RepeatDebounceMs}ms threshold)");
+                    FileLogger.Info($"KeyboardHook: debounced VK 0x{vk:X2} ({nowTicks - lastTick}ms since last fire, <{RepeatDebounceMs}ms threshold)");
                     // Still mark the down as swallowed so the matching KEYUP
                     // (which arrives outside the 80 ms window for any held
                     // key release) gets swallowed too. Otherwise a debounced
                     // KEYDOWN leaks its paired KEYUP.
-                    _downSwallowedByVk[hookStruct.vkCode] = true;
+                    _downSwallowedByVk[vk] = true;
                     return (IntPtr)1;
                 }
-                _lastFireTickByVk[hookStruct.vkCode] = nowTicks;
-                _downSwallowedByVk[hookStruct.vkCode] = true;
+                _lastFireTickByVk[vk] = nowTicks;
+                _downSwallowedByVk[vk] = true;
 
                 // v3.22.59: trigger-source diagnostic for phantom-swap investigation
                 // (Nate's 2026-05-27 smoke after v3.22.58 saw a `\` swap fire ~8s
@@ -234,18 +269,18 @@ public class KeyboardHookManager : IDisposable
                 // a long delta = UI thread queue backup; missing POSTED + present
                 // INVOKED = the swap came from somewhere other than the kbd hook.
                 long postedAt = Environment.TickCount64;
-                FileLogger.Info($"KeyboardHook: callback POSTED VK 0x{hookStruct.vkCode:X2} (tick={postedAt})");
+                FileLogger.Info($"KeyboardHook: callback POSTED VK 0x{vk:X2} (tick={postedAt})");
 
                 // Post callback to UI thread asynchronously — return immediately
                 // to avoid blocking the hook (Windows kills hooks that take >300ms)
                 _syncContext?.Post(_ =>
                 {
                     long invokedAt = Environment.TickCount64;
-                    FileLogger.Info($"KeyboardHook: callback INVOKED VK 0x{hookStruct.vkCode:X2} (post→invoke delta={invokedAt - postedAt}ms)");
+                    FileLogger.Info($"KeyboardHook: callback INVOKED VK 0x{vk:X2} (post→invoke delta={invokedAt - postedAt}ms)");
                     try { binding.Callback.Invoke(); }
                     catch (Exception ex)
                     {
-                        FileLogger.Error($"Hook callback error (VK 0x{hookStruct.vkCode:X2})", ex);
+                        FileLogger.Error($"Hook callback error (VK 0x{vk:X2})", ex);
                     }
                 }, null);
 

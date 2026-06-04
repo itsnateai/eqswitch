@@ -276,7 +276,7 @@ public sealed class AccountHotkeysDialog : Form
             or Keys.LShiftKey or Keys.RShiftKey or Keys.LControlKey or Keys.RControlKey)
             return;
 
-        if (e.KeyCode is Keys.Delete or Keys.Back or Keys.Escape && !e.Control && !e.Alt && !e.Shift)
+        if ((e.KeyCode is Keys.Delete or Keys.Back or Keys.Escape) && !e.Control && !e.Alt && !e.Shift)
         {
             if (sender is TextBox tb) tb.Text = "";
             return;

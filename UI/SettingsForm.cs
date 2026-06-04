@@ -1575,7 +1575,7 @@ public class SettingsForm : Form
             return;
 
         // Delete / Backspace / Escape all clear the field — Esc is the one users try first.
-        if (e.KeyCode is Keys.Delete or Keys.Back or Keys.Escape && !e.Control && !e.Alt && !e.Shift)
+        if ((e.KeyCode is Keys.Delete or Keys.Back or Keys.Escape) && !e.Control && !e.Alt && !e.Shift)
         {
             if (sender is TextBox tb) tb.Text = "";
             return;
