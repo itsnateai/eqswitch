@@ -353,7 +353,6 @@ internal sealed class AutoLoginTeamsDialog : EqSwitchForm
             // QuickLoginSlotsDialog pattern; independent of the WS_EX_COMPOSITED
             // path that was dropped in v3.22.69.
             DrawMode = DrawMode.OwnerDrawFixed,
-            ItemHeight = 18,
         };
         // v3.22.10: use AddRange (single layout invalidation) instead of N×Add
         // (one per item). Items themselves are hoisted to _comboItems built
@@ -368,6 +367,10 @@ internal sealed class AutoLoginTeamsDialog : EqSwitchForm
 
         cb.MouseWheel += (_, e) => ((HandledMouseEventArgs)e).Handled = true;
         Controls.Add(cb);
+        // ItemHeight is an int — AutoScaleMode.Dpi does not scale it. Derive from the live
+        // font at this control's DeviceDpi (resolves only after parenting) so owner-drawn
+        // dropdown rows match the rendered text at any scale.
+        cb.ItemHeight = (int)Math.Ceiling(cb.Font.GetHeight(cb.DeviceDpi)) + cb.LogicalToDeviceUnits(4);
         return cb;
     }
 

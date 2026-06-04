@@ -193,7 +193,6 @@ internal sealed class QuickLoginSlotsDialog : EqSwitchForm
             DropDownStyle = ComboBoxStyle.DropDownList,
             FlatStyle = FlatStyle.Flat,
             DrawMode = DrawMode.OwnerDrawFixed,
-            ItemHeight = 18,
         };
         cb.Items.AddRange(_comboItemsArray);
         cb.SelectedIndex = 0;
@@ -219,6 +218,9 @@ internal sealed class QuickLoginSlotsDialog : EqSwitchForm
         };
         cb.MouseWheel += (_, e) => ((HandledMouseEventArgs)e).Handled = true;
         Controls.Add(cb);
+        // ItemHeight is an int — AutoScaleMode.Dpi does not scale it. Derive from the live
+        // font at this control's DeviceDpi (resolves only after parenting).
+        cb.ItemHeight = (int)Math.Ceiling(cb.Font.GetHeight(cb.DeviceDpi)) + cb.LogicalToDeviceUnits(4);
         return cb;
     }
 
