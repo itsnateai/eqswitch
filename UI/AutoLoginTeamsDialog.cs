@@ -296,8 +296,14 @@ internal sealed class AutoLoginTeamsDialog : EqSwitchForm
         {
             new("", "(none)", SlotKind.None),
         };
+        // 2026-06-04: prefix dropdown rows with the SAME [C]/[A] tags the status pills and the
+        // legend ("C = Character  A = Account") use, instead of 🧙/🔑 emoji. Before selecting,
+        // the user had to guess what the wizard/key glyphs meant; now the closed box and every
+        // dropdown row speak the dialog's own C/A vocabulary. Rows stay color-coded (Character
+        // blue, Account orange) via DrawComboItem — the bracketed letter reads as a tag the way
+        // the colored pill badge does. Display only; Value (char:/acct:) is unchanged.
         foreach (var c in _characters)
-            items.Add(new SlotOption(QuickLoginSlot.ForCharacter(c.Name), $"🧙  {c.Name}", SlotKind.Character));
+            items.Add(new SlotOption(QuickLoginSlot.ForCharacter(c.Name), $"[C]  {c.Name}", SlotKind.Character));
         // v3.24.15: NO name-dedup. A Character (enter-world) and an Account (charselect) that share a
         // name are DISTINCT intents — list both, exactly like QuickLoginSlotsDialog. Typed values
         // (char:Name / acct:Name) keep them apart on save + dispatch, so e.g. character "Eisley" and
@@ -305,7 +311,7 @@ internal sealed class AutoLoginTeamsDialog : EqSwitchForm
         // Nate recognizes); persist the typed Account.Name value so SelectByValue / ResolveAccountForSlot
         // and the FireTeam resolver route deterministically.
         foreach (var a in _accounts)
-            items.Add(new SlotOption(QuickLoginSlot.ForAccount(a.Name), $"🔑  {a.Username}", SlotKind.Account));
+            items.Add(new SlotOption(QuickLoginSlot.ForAccount(a.Name), $"[A]  {a.Username}", SlotKind.Account));
         return items;
     }
 
