@@ -8,8 +8,8 @@ namespace EQSwitch.UI;
 
 /// <summary>
 /// Dialog for assigning the four Quick Login slots (v3.23.0). Each slot maps a tray-click
-/// "AutoLogin 1-4" action (and its hotkey) to one Account or Character. Pick a 🧙 Character
-/// (enters world) or a 🔑 Account (stops at char-select). Accounts render in orange — EQ's
+/// "AutoLogin 1-4" action (and its hotkey) to one Account or Character. Pick a [C] Character
+/// (enters world) or an [A] Account (stops at char-select). Accounts render in orange — EQ's
 /// classic /ooc chat color, matching the Autologin Teams summary convention.
 ///
 /// Modeled on <see cref="AutoLoginTeamsDialog"/> (same SlotOption / BuildComboItems / staging
@@ -108,7 +108,7 @@ internal sealed class QuickLoginSlotsDialog : EqSwitchForm
         }
 
         var legend = DarkTheme.AddLabel(this,
-            "🧙 Character → enters world      🔑 Account → char-select", L, y + 2);
+            "[C] Character → enters world      [A] Account → char-select", L, y + 2);
         legend.ForeColor = DarkTheme.FgDimGray;
         legend.Font = DarkTheme.FontUI75;
         legend.AutoSize = true;
@@ -159,7 +159,7 @@ internal sealed class QuickLoginSlotsDialog : EqSwitchForm
     }
 
     /// <summary>
-    /// (none) + every Character (🧙, enters world) + every Account (🔑, char-select).
+    /// (none) + every Character ([C], enters world) + every Account ([A], char-select).
     /// Characters and Accounts are BOTH listed even when names overlap — for Quick Login the
     /// two are distinct intents (enter-world vs charselect), unlike the Teams dialog where the
     /// Character entry is just an enter-world convenience over its backing Account.
@@ -170,15 +170,19 @@ internal sealed class QuickLoginSlotsDialog : EqSwitchForm
         {
             new("", "(none)", QuickLoginSlot.Kind.Empty),
         };
+        // 2026-06-04: [C]/[A] text tags instead of 🧙/🔑 emoji — matches AutoLoginTeamsDialog and the
+        // C/A vocabulary used throughout. This dialog has NO status pills (unlike Teams), so before
+        // this the only kind cue was the emoji glyph + row color; now the tag spells it out. Rows stay
+        // color-coded blue/orange via DrawComboItem. Display only; Value (char:/acct:) is unchanged.
         foreach (var c in _characters)
-            items.Add(new SlotOption(QuickLoginSlot.ForCharacter(c.Name), $"🧙  {c.Name}", QuickLoginSlot.Kind.Character));
+            items.Add(new SlotOption(QuickLoginSlot.ForCharacter(c.Name), $"[C]  {c.Name}", QuickLoginSlot.Kind.Character));
         // Non-selectable visual separator between the Characters group (enter world) and the
         // Accounts group (char-select), only when both groups are present. The bounce in
         // MakeCombo's SelectedIndexChanged keeps it unpickable.
         if (_characters.Count > 0 && _accounts.Count > 0)
             items.Add(new SlotOption("", "", QuickLoginSlot.Kind.Empty, isSeparator: true));
         foreach (var a in _accounts)
-            items.Add(new SlotOption(QuickLoginSlot.ForAccount(a.Name), $"🔑  {a.Username}", QuickLoginSlot.Kind.Account));
+            items.Add(new SlotOption(QuickLoginSlot.ForAccount(a.Name), $"[A]  {a.Username}", QuickLoginSlot.Kind.Account));
         return items;
     }
 
@@ -197,14 +201,22 @@ internal sealed class QuickLoginSlotsDialog : EqSwitchForm
         cb.Items.AddRange(_comboItemsArray);
         cb.SelectedIndex = 0;
         cb.DrawItem += DrawComboItem;
-        // Bounce off the non-selectable separator back to the last real selection.
-        int lastIndex = 0;
+        // Skip past the non-selectable separator in the direction of travel so keyboard arrows
+        // cross the Characters/Accounts boundary (a mouse-click on the divider lands on the
+        // adjacent real row). Falls back to the last real selection at the list edge.
+        int lastIndex = cb.SelectedIndex;   // == 0 here (set above); read it rather than hardcode
         cb.SelectedIndexChanged += (s, _) =>
         {
             var box = (ComboBox)s!;
             if (box.SelectedItem is SlotOption o && o.IsSeparator)
             {
-                box.SelectedIndex = lastIndex;
+                // Direction inferred from lastIndex (the event doesn't say which arrow was pressed);
+                // while-loop tolerates adjacent separators. Re-entrancy ends in the else-branch.
+                int dir = box.SelectedIndex > lastIndex ? 1 : -1;
+                int i = box.SelectedIndex + dir;
+                while (i >= 0 && i < box.Items.Count && box.Items[i] is SlotOption sepOpt && sepOpt.IsSeparator)
+                    i += dir;
+                box.SelectedIndex = (i >= 0 && i < box.Items.Count) ? i : lastIndex;
             }
             else
             {
