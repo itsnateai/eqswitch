@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.24.35 — Tray-click + login dropdown polish (2026-06-04)
+
+Four UI-polish improvements (PRs #11–#14), surfaced in review and held until the v3.24.33/34 high-DPI rebuild landed so they could graft onto the new layout. Display/UX only — no SHM/DLL/config/behavior change.
+
+- **Autologin Teams + Quick Login dropdowns** now speak the dialog's own C/A vocabulary: rows and legend read `[C]` (Character → enters world) / `[A]` (Account → stops at char-select) instead of 🧙/🔑 emoji, matching the C/A status pills. Rows stay color-coded (Character blue, Account orange); persisted values (`char:` / `acct:`) are unchanged. (#11, #12)
+- **Quick Login** Character/Account divider is keyboard-skippable — arrow keys cross the group boundary instead of snagging on the separator. (#12)
+- **Settings › Tray Click Actions:** the five click-action dropdowns gain non-selectable group dividers partitioning the list into four logical groups (primary | window + utility | extra Auto-Logins | extra Teams). A divider can never be selected, committed, or saved — `WireTraySeparatorBounce` skips past it in the direction of travel, and `AppConfig.Validate` would reject one regardless. Re-grafted onto the v3.24.33 layout-container rebuild of `SettingsForm`. (#13)
+- **Tray › Links:** "Fomelo Dalaya" → "Dalaya Fomelo" (URL unchanged: `dalaya.org/fomelo/`). (#14)
+
 ## v3.24.34 — Process Manager high-DPI rebuild + Settings layout polish (2026-06-04)
 
 Continues the high-DPI rollout from v3.24.33 (Settings window) to the **Process Manager**, and polishes four Settings layouts surfaced in review. Verified at real 100% and real 150% (DeviceDpi=144) on hardware.
