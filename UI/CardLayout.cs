@@ -567,6 +567,28 @@ public static class Bars
         return g;
     }
 
+    /// <summary>N controls each CENTRED within an equal-width column — symmetric breathing room on both
+    /// outer edges plus an even gap between, i.e. the "indented in from the card edges" look. Differs from
+    /// <see cref="Spread"/> only in anchoring: Spread pins the first/last control to the card edges, whereas
+    /// Centred floats every control to the middle of its own equal share. For two controls that means each
+    /// edge gets <c>(50% − controlWidth) / 2</c> of padding — roughly one control-width on a typical card.
+    /// Pure proportional columns + <see cref="AnchorStyles.None"/> centring → zero pixel literals, so 100 /
+    /// 125 / 150% are proportionally identical. If a control ever exceeds its share it overflows symmetrically
+    /// into the empty neighbouring slack rather than clipping (AutoSize controls always render their full text).</summary>
+    public static TableLayoutPanel Centered(params Control[] items)
+    {
+        int n = items.Length;
+        var g = NewBar(n);
+        for (int i = 0; i < n; i++) g.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / n));
+        for (int i = 0; i < n; i++)
+        {
+            items[i].Anchor = AnchorStyles.None;   // float to the centre of its share — even padding on both sides
+            items[i].Margin = Padding.Empty;
+            g.Controls.Add(items[i], i, 0);
+        }
+        return g;
+    }
+
     private static TableLayoutPanel NewBar(int cols) => new()
     {
         ColumnCount = cols,

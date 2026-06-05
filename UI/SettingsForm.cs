@@ -35,6 +35,9 @@ public class SettingsForm : EqSwitchForm
     private TextBox _txtEQPath = null!;
     private TextBox _txtExeName = null!;
     private TextBox _txtArgs = null!;
+    // Args-change warning state (one-time per modified value on Save/Apply — mirrors the Exe guard).
+    private string _argsAtLoad = "";
+    private string _lastWarnedArgs = "";
     private NumericUpDown _nudTooltipDuration = null!;
     private TextBox _txtCustomIconPath = null!;
     private TextBox _txtSwitchKeyGeneral = null!;
@@ -510,7 +513,15 @@ public class SettingsForm : EqSwitchForm
             var area = Screen.FromControl(this).WorkingArea;
             int chrome = tabs.ItemSize.Height + buttonPanel.Height + tp.Padding.Vertical + LogicalToDeviceUnits(14);
             int h = Math.Min(content.PreferredSize.Height + chrome, area.Height - LogicalToDeviceUnits(48));
-            if (Math.Abs(h - ClientSize.Height) > 2) ClientSize = new Size(ClientSize.Width, h);
+            if (Math.Abs(h - ClientSize.Height) > 2)
+            {
+                // Coalesce the resize-driven relayout into ONE pass so the window reshape on tab-switch
+                // settles in a single composited frame (the tab control is already WS_EX_COMPOSITED) instead
+                // of rippling child layouts. Height still fits the selected tab — no dead band on short tabs.
+                SuspendLayout();
+                ClientSize = new Size(ClientSize.Width, h);
+                ResumeLayout(performLayout: true);
+            }
         }
 
         Load += (_, _) =>
@@ -674,7 +685,9 @@ public class SettingsForm : EqSwitchForm
         _nudLogTrimThreshold = Fields.Numeric(10, 500, _config.LogTrimThresholdMB, 60);
         _nudLogTrimThreshold.Increment = 10;
         var btnTrimNow = Fields.Button("✂ Trim Now", DarkTheme.BgInput);
-        btnTrimNow.Click += (_, _) => FileOperations.TrimLogFiles(_config, (int)_nudLogTrimThreshold.Value, msg => MessageBox.Show(msg, "Trim Logs", MessageBoxButtons.OK, MessageBoxIcon.Information));
+        // The result callback is marshaled back to the UI thread by TrimLogFiles, but the trim is async
+        // — if Settings was closed meanwhile, own the popup to nothing (ownerless) instead of a disposed form.
+        btnTrimNow.Click += (_, _) => FileOperations.TrimLogFiles(_config, (int)_nudLogTrimThreshold.Value, msg => ThemedMessageDialog.Show(IsDisposed ? null : this, msg, "Trim Logs", MessageBoxButtons.OK, MessageBoxIcon.Information));
         cardLog.FlowRow("Threshold:", _nudLogTrimThreshold, InlineLabel("MB"), btnTrimNow);
         cardLog.Hint("Async trim + archive old logs");
 
@@ -716,8 +729,11 @@ public class SettingsForm : EqSwitchForm
 
     /// <summary>
     /// A two-section card body: "Left Click" + "Middle Click" side by side, each a label:field
-    /// column. The field columns are Percent (Fill) so the combos grow with the (DPI-scaled) form
-    /// width — long items like "AutoLoginTeam6" don't clip at 150%.
+    /// column. The field columns are Percent 50% (so the two sections split the card evenly), but the
+    /// combos themselves are <see cref="AnchorStyles.Left"/> at a content-fit width — they do NOT stretch
+    /// to fill the column (that caused an awkward "grow to the right" on tab-switch relayout).
+    /// <see cref="DpiScale.SizeFitFields"/> sizes them to their longest item ("AutoLoginTeam6"), so
+    /// nothing clips at 125/150%.
     /// </summary>
     private TableLayoutPanel MakeTwoColumnGrid(
         string leftTitle, (string label, Control field)[] left,
@@ -754,12 +770,15 @@ public class SettingsForm : EqSwitchForm
             if (i < left.Length)
             {
                 g.Controls.Add(RowLbl(left[i].label, 0), 0, r);
-                var f = left[i].field; f.Dock = DockStyle.Fill; f.Margin = new Padding(0, 2, 14, 2); g.Controls.Add(f, 1, r);
+                // Anchor.Left (not Dock.Fill): the action combos keep their content-fit width instead of
+                // stretching to the 50% column — no awkward "grow to the right" on tab-switch relayout, and
+                // DpiScale.SizeFitFields can now size them to their longest item (it skips Fill/Right fields).
+                var f = left[i].field; f.Anchor = AnchorStyles.Left; f.Margin = new Padding(0, 2, 14, 2); g.Controls.Add(f, 1, r);
             }
             if (i < right.Length)
             {
                 g.Controls.Add(RowLbl(right[i].label, 16), 2, r);
-                var f = right[i].field; f.Dock = DockStyle.Fill; f.Margin = new Padding(0, 2, 0, 2); g.Controls.Add(f, 3, r);
+                var f = right[i].field; f.Anchor = AnchorStyles.Left; f.Margin = new Padding(0, 2, 0, 2); g.Controls.Add(f, 3, r);
             }
             r++;
         }
@@ -1283,8 +1302,10 @@ public class SettingsForm : EqSwitchForm
             reset.Start();
         };
         _chkRunAtStartup = Fields.Check("Run at Startup");
-        _chkRunAtStartup.Margin = new Padding(0, 6, 0, 0);
-        cardStartup.Full(Bars.Split(new Control[] { btnShortcut }, new Control[] { _chkRunAtStartup }));
+        // Centred bars float each control to the middle of its half, so the button and checkbox sit
+        // indented from the card edges (matching the v3.22.22 layout) — and Anchor.None vertically
+        // centres the shorter checkbox against the button with no manual margin nudge.
+        cardStartup.Full(Bars.Centered(btnShortcut, _chkRunAtStartup));
 
         // ─── eqclient.ini actions ────────────────────────────────────
         var cardIni = stack.NewCard("💾", "eqclient.ini", DarkTheme.CardGold);
@@ -1301,7 +1322,9 @@ public class SettingsForm : EqSwitchForm
         btnBackup.Click += (_, _) => VideoBackupIni();
         var btnRestore = Fields.Button("📂 Restore");
         btnRestore.Click += (_, _) => VideoRestoreIni();
-        cardIni.Full(Bars.Split(new Control[] { btnBackup }, new Control[] { btnRestore }));
+        // Centred (not Split): each button floats to the middle of its half, giving equal ~button-width
+        // padding on both card edges instead of stranding them at opposite corners.
+        cardIni.Full(Bars.Centered(btnBackup, btnRestore));
 
         // ─── Help / Reset / Uninstall (loose button bar) ─────────────
         var btnHelp = Fields.Button("❓ Help");
@@ -1310,7 +1333,7 @@ public class SettingsForm : EqSwitchForm
         btnReset.ForeColor = DarkTheme.CardWarn;
         btnReset.Click += (_, _) =>
         {
-            var result = MessageBox.Show(
+            var result = ThemedMessageDialog.Show(this,
                 "⚠️ NUCLEAR OPTION ⚠️\n\n" +
                 "This will reset ALL settings to factory defaults.\n" +
                 "Your current config will be lost forever.\n\n" +
@@ -1564,6 +1587,8 @@ public class SettingsForm : EqSwitchForm
         _txtEQPath.Text = _config.EQPath;
         _txtExeName.Text = _config.Launch.ExeName;
         _txtArgs.Text = _config.Launch.Arguments;
+        _argsAtLoad = (_config.Launch.Arguments ?? "").Trim();
+        _lastWarnedArgs = _argsAtLoad;   // the loaded value is pre-acknowledged — only NEW edits warn
         _nudTooltipDuration.Value = Math.Clamp(_config.TooltipDurationMs, (int)_nudTooltipDuration.Minimum, (int)_nudTooltipDuration.Maximum);
         _txtCustomIconPath.Text = _config.CustomIconPath;
 
@@ -1656,7 +1681,7 @@ public class SettingsForm : EqSwitchForm
 
     private void RunUninstall()
     {
-        var result = MessageBox.Show(
+        var result = ThemedMessageDialog.Show(this,
             "This will revert all external changes made by EQSwitch:\n\n" +
             "  • Restore Dalaya's dinput8.dll if a legacy proxy is in the way\n" +
             "  • Remove legacy EQSwitch DLL artifacts from EQ folder\n" +
@@ -1689,7 +1714,7 @@ public class SettingsForm : EqSwitchForm
         actions.Add(string.Empty);
         actions.Add("You can now close EQSwitch and delete the EQSwitch folder to fully remove it.");
 
-        MessageBox.Show(
+        ThemedMessageDialog.Show(this,
             string.Join("\n", actions),
             "EQSwitch — Uninstall Complete",
             MessageBoxButtons.OK,
@@ -1707,11 +1732,28 @@ public class SettingsForm : EqSwitchForm
         if (eqExePath.Length > 0 && eqExeName.Length > 0
             && !File.Exists(Path.Combine(eqExePath, eqExeName)))
         {
-            var ans = MessageBox.Show(
+            var ans = ThemedMessageDialog.Show(this,
                 $"'{eqExeName}' was not found in the EQ folder:\n{eqExePath}\n\n" +
-                "If that's a typo, fix the Exe field. (A custom MQ build that isn't there yet is fine.)\n\nSave anyway?",
+                "If that's a typo, fix the Exe field.\n\nSave anyway?",
                 "Exe not found", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
             if (ans != DialogResult.Yes) return false;
+        }
+
+        // Args guard — launch arguments default to "patchme"; custom values can stop EQ from starting or
+        // logging in. Warn ONCE per modified value (not on every save), like the Exe guard above:
+        // _argsAtLoad is the value the dialog opened with, _lastWarnedArgs the value the user already
+        // OK'd — so re-saving the same edit, or reverting to the original, stays silent.
+        var argsNow = _txtArgs.Text.Trim();
+        if (argsNow != _argsAtLoad && argsNow != _lastWarnedArgs)
+        {
+            var ans = ThemedMessageDialog.Show(this,
+                "You changed the EQ launch arguments to:\n\n" +
+                $"    {(argsNow.Length == 0 ? "(empty)" : argsNow)}\n\n" +
+                "Custom launch arguments can stop EverQuest from starting or logging in. " +
+                "The default is \"patchme\".\n\nSave anyway?",
+                "Launch arguments changed", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (ans != DialogResult.Yes) return false;
+            _lastWarnedArgs = argsNow;
         }
 
         // Phase 3.5-D + Phase 5a: hotkey conflict detection — same key combo bound to
@@ -1757,7 +1799,7 @@ public class SettingsForm : EqSwitchForm
             var msg = "Cannot save — the same key combo is bound to multiple actions:\n\n"
                     + string.Join("\n", lines)
                     + "\n\nUnbind duplicates, then try again.";
-            MessageBox.Show(msg, "Hotkey Conflict", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            ThemedMessageDialog.Show(this, msg, "Hotkey Conflict", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
         }
 
@@ -1771,7 +1813,7 @@ public class SettingsForm : EqSwitchForm
         var emptyAcct = _pendingAccounts.FirstOrDefault(a => string.IsNullOrWhiteSpace(a.Username));
         if (emptyAcct != null)
         {
-            MessageBox.Show(
+            ThemedMessageDialog.Show(this,
                 $"An Account is missing a Username (Note '{emptyAcct.Name}'). Set a Username or delete it before saving.",
                 "Empty Account Username", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
@@ -1779,7 +1821,7 @@ public class SettingsForm : EqSwitchForm
         var emptyChar = _pendingCharacters.FirstOrDefault(c => string.IsNullOrWhiteSpace(c.Name));
         if (emptyChar != null)
         {
-            MessageBox.Show(
+            ThemedMessageDialog.Show(this,
                 "A Character is missing a Name. Set a Name or delete it before saving.",
                 "Empty Character Name", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
@@ -1803,7 +1845,7 @@ public class SettingsForm : EqSwitchForm
         if (acctNameDupes.Any())
         {
             var names = string.Join(", ", acctNameDupes.Select(g => $"'{g.Key}' ({g.Count()} times)"));
-            MessageBox.Show($"Account names must be unique.\n\nDuplicates: {names}",
+            ThemedMessageDialog.Show(this, $"Account names must be unique.\n\nDuplicates: {names}",
                 "Duplicate Account Name", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
         }
@@ -1816,7 +1858,7 @@ public class SettingsForm : EqSwitchForm
         if (acctCredDupes.Any())
         {
             var keys = string.Join(", ", acctCredDupes.Select(g => g.Key.Replace("\u0001", "@")));
-            MessageBox.Show($"Account (Username, Server) must be unique.\n\nDuplicates: {keys}",
+            ThemedMessageDialog.Show(this, $"Account (Username, Server) must be unique.\n\nDuplicates: {keys}",
                 "Duplicate Credentials", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
         }
@@ -1829,7 +1871,7 @@ public class SettingsForm : EqSwitchForm
         if (charNameDupes.Any())
         {
             var names = string.Join(", ", charNameDupes.Select(g => $"'{g.Key}' ({g.Count()} times)"));
-            MessageBox.Show($"Character names must be unique.\n\nDuplicates: {names}",
+            ThemedMessageDialog.Show(this, $"Character names must be unique.\n\nDuplicates: {names}",
                 "Duplicate Character Name", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
         }
@@ -1844,7 +1886,7 @@ public class SettingsForm : EqSwitchForm
                 a.Server.Equals(c.AccountServer, StringComparison.OrdinalIgnoreCase));
             if (!resolved)
             {
-                MessageBox.Show(
+                ThemedMessageDialog.Show(this,
                     $"Character '{c.Name}' references missing account '{c.AccountUsername}@{c.AccountServer}'.\n\n"
                   + "Edit the Character to pick a valid account, or delete the Character.",
                     "Broken Character FK", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -2652,7 +2694,7 @@ public class SettingsForm : EqSwitchForm
 
         if (dependents.Count == 0)
         {
-            if (MessageBox.Show($"Delete Account '{acct.Username}'?", "Delete Account",
+            if (ThemedMessageDialog.Show(this, $"Delete Account '{acct.Username}'?", "Delete Account",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
                 return;
             _pendingAccounts.RemoveAt(idx);
@@ -2755,7 +2797,7 @@ public class SettingsForm : EqSwitchForm
     {
         if (idx < 0 || idx >= _pendingCharacters.Count) return;
         var c = _pendingCharacters[idx];
-        if (MessageBox.Show($"Delete Character '{c.Name}'?", "Delete Character",
+        if (ThemedMessageDialog.Show(this, $"Delete Character '{c.Name}'?", "Delete Character",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
             return;
         _pendingCharacters.RemoveAt(idx);
@@ -3097,7 +3139,7 @@ public class SettingsForm : EqSwitchForm
     {
         if (_pendingAccounts.Count == 0)
         {
-            MessageBox.Show("No accounts to export.", "Export", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            ThemedMessageDialog.Show(this, "No accounts to export.", "Export", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -3116,12 +3158,12 @@ public class SettingsForm : EqSwitchForm
             var json = System.Text.Json.JsonSerializer.Serialize(_pendingAccounts,
                 new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(dlg.FileName, json);
-            MessageBox.Show($"Exported {_pendingAccounts.Count} account(s).\n\nPasswords are DPAPI-encrypted — this file only works on the same Windows user account.",
+            ThemedMessageDialog.Show(this, $"Exported {_pendingAccounts.Count} account(s).\n\nPasswords are DPAPI-encrypted — this file only works on the same Windows user account.",
                 "Export Successful", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Export failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ThemedMessageDialog.Show(this, $"Export failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -3149,13 +3191,13 @@ public class SettingsForm : EqSwitchForm
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Import failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ThemedMessageDialog.Show(this, $"Import failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
 
         if (imported.Count == 0)
         {
-            MessageBox.Show("No accounts found in file.", "Import", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            ThemedMessageDialog.Show(this, "No accounts found in file.", "Import", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -3172,7 +3214,7 @@ public class SettingsForm : EqSwitchForm
             }
             catch (System.Security.Cryptography.CryptographicException)
             {
-                var choice = MessageBox.Show(
+                var choice = ThemedMessageDialog.Show(this,
                     "These accounts were encrypted on a different Windows user account (or a different machine). "
                   + "The stored passwords cannot be decrypted here — you'll need to re-enter each password after import.\n\n"
                   + "Import the accounts anyway (without working passwords)?",
@@ -3181,7 +3223,7 @@ public class SettingsForm : EqSwitchForm
             }
             catch (FormatException)
             {
-                var choice = MessageBox.Show(
+                var choice = ThemedMessageDialog.Show(this,
                     "The stored password blob is not valid Base64 — the export file may be corrupted.\n\n"
                   + "Import the accounts anyway (without working passwords)?",
                     "Corrupted Password Blob", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
@@ -3223,7 +3265,7 @@ public class SettingsForm : EqSwitchForm
         var msg = $"Imported {added} account(s).";
         if (skipped > 0) msg += $"\nSkipped {skipped} duplicate(s).";
         msg += "\n\nClick Apply to save changes.";
-        MessageBox.Show(msg, "Import Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        ThemedMessageDialog.Show(this, msg, "Import Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     // ─── Video Tab (eqclient.ini) ───────────────────────────────────
@@ -3692,7 +3734,7 @@ public class SettingsForm : EqSwitchForm
             if (!File.Exists(iniPath))
             {
                 FileLogger.Warn($"VideoSettings: cannot save — {iniPath} not found");
-                MessageBox.Show(
+                ThemedMessageDialog.Show(this,
                     $"eqclient.ini not found at:\n{iniPath}\n\nEQSwitch config was saved, but video settings could not be written to the INI file.\nCheck your EQ Path on the General tab.",
                     "Save Incomplete", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
@@ -3769,7 +3811,7 @@ public class SettingsForm : EqSwitchForm
         catch (Exception ex)
         {
             FileLogger.Error("VideoSettings: save error", ex);
-            MessageBox.Show($"Failed to save: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ThemedMessageDialog.Show(this, $"Failed to save: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -3795,7 +3837,7 @@ public class SettingsForm : EqSwitchForm
         var iniPath = Path.Combine(_config.EQPath, "eqclient.ini");
         if (!File.Exists(iniPath))
         {
-            MessageBox.Show("eqclient.ini not found.", "Backup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            ThemedMessageDialog.Show(this, "eqclient.ini not found.", "Backup", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
@@ -3808,13 +3850,13 @@ public class SettingsForm : EqSwitchForm
             string bakPath = $"{iniPath}.bak{bakNum}";
             File.Copy(iniPath, bakPath, overwrite: false);
             FileLogger.Info($"VideoSettings: backed up eqclient.ini → {Path.GetFileName(bakPath)}");
-            MessageBox.Show($"Backed up to:\n{Path.GetFileName(bakPath)}", "Backup Created",
+            ThemedMessageDialog.Show(this, $"Backed up to:\n{Path.GetFileName(bakPath)}", "Backup Created",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {
             FileLogger.Error("VideoSettings: backup error", ex);
-            MessageBox.Show($"Backup failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ThemedMessageDialog.Show(this, $"Backup failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -3838,13 +3880,13 @@ public class SettingsForm : EqSwitchForm
             File.Copy(dlg.FileName, iniPath, overwrite: true);
             FileLogger.Info($"VideoSettings: restored eqclient.ini from {Path.GetFileName(dlg.FileName)}");
             PopulateVideoFromIni();
-            MessageBox.Show($"Restored from:\n{Path.GetFileName(dlg.FileName)}", "Restore Complete",
+            ThemedMessageDialog.Show(this, $"Restored from:\n{Path.GetFileName(dlg.FileName)}", "Restore Complete",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {
             FileLogger.Error("VideoSettings: restore error", ex);
-            MessageBox.Show($"Restore failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ThemedMessageDialog.Show(this, $"Restore failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 

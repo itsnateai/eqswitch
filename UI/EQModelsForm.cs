@@ -258,7 +258,7 @@ public class EQModelsForm : EqSwitchForm
         catch (Exception ex)
         {
             FileLogger.Error("EQModels: save error", ex);
-            MessageBox.Show($"Failed to save: {ex.Message}", "Error",
+            ThemedMessageDialog.Show(this, $"Failed to save: {ex.Message}", "Error",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }

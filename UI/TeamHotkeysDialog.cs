@@ -262,7 +262,7 @@ public sealed class TeamHotkeysDialog : EqSwitchForm
         {
             var lines = withinDup.Select(g =>
                 $"  {g.Key}  →  {string.Join(", ", g.Select(t => t.Label))}");
-            MessageBox.Show(
+            ThemedMessageDialog.Show(this,
                 "Cannot save — multiple Teams bound to the same key:\n\n" + string.Join("\n", lines),
                 "Hotkey Conflict", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
@@ -282,7 +282,7 @@ public sealed class TeamHotkeysDialog : EqSwitchForm
         }
         if (external.Any())
         {
-            MessageBox.Show(
+            ThemedMessageDialog.Show(this,
                 "Cannot save — a combo is already bound to another action:\n\n" + string.Join("\n", external),
                 "Hotkey Conflict", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
@@ -295,7 +295,7 @@ public sealed class TeamHotkeysDialog : EqSwitchForm
         if (noMod.Any())
         {
             var lines = noMod.Select(t => $"  {t.Label}: '{t.Combo}' needs a modifier (Ctrl/Alt/Shift)");
-            MessageBox.Show(
+            ThemedMessageDialog.Show(this,
                 "Cannot save — bare keys are not valid hotkeys:\n\n" + string.Join("\n", lines),
                 "Hotkey Conflict", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;

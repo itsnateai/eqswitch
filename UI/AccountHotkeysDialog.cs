@@ -346,7 +346,7 @@ public sealed class AccountHotkeysDialog : EqSwitchForm
         {
             var lines = within.Select(g =>
                 $"  {g.Key}  \u2192  {string.Join(", ", g.Select(b => $"Account '{b.TargetName}'"))}");
-            MessageBox.Show(
+            ThemedMessageDialog.Show(this,
                 "Cannot save — multiple Accounts bound to the same key:\n\n" + string.Join("\n", lines),
                 "Hotkey Conflict", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
@@ -364,7 +364,7 @@ public sealed class AccountHotkeysDialog : EqSwitchForm
         }
         if (externalConflicts.Any())
         {
-            MessageBox.Show(
+            ThemedMessageDialog.Show(this,
                 "Cannot save — a combo is already bound to another action:\n\n" + string.Join("\n", externalConflicts),
                 "Hotkey Conflict", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;

@@ -210,7 +210,7 @@ public class EQChatSpamForm : EqSwitchForm
         catch (Exception ex)
         {
             FileLogger.Error("EQChatSpam: apply error", ex);
-            MessageBox.Show($"Failed to update eqclient.ini: {ex.Message}", "Error",
+            ThemedMessageDialog.Show(this, $"Failed to update eqclient.ini: {ex.Message}", "Error",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }

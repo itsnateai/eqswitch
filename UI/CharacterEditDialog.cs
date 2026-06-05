@@ -176,7 +176,7 @@ public sealed class CharacterEditDialog : EqSwitchForm
         var name = _txtName.Text.Trim();
         if (string.IsNullOrEmpty(name))
         {
-            MessageBox.Show("Name is required.", "Invalid Character",
+            ThemedMessageDialog.Show(this, "Name is required.", "Invalid Character",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             _txtName.Focus();
             return;
@@ -187,7 +187,7 @@ public sealed class CharacterEditDialog : EqSwitchForm
             if (_isEdit && c.Name.Equals(_selfName, StringComparison.OrdinalIgnoreCase)) continue;
             if (c.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
             {
-                MessageBox.Show($"A Character named '{name}' already exists.", "Duplicate Name",
+                ThemedMessageDialog.Show(this, $"A Character named '{name}' already exists.", "Duplicate Name",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 _txtName.Focus();
                 return;
@@ -196,7 +196,7 @@ public sealed class CharacterEditDialog : EqSwitchForm
 
         if (_cboAccount.SelectedItem is not Account selectedAccount)
         {
-            MessageBox.Show("Account is required.", "Invalid Character",
+            ThemedMessageDialog.Show(this, "Account is required.", "Invalid Character",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }

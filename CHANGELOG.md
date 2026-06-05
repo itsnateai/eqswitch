@@ -1,5 +1,27 @@
 # Changelog
 
+## v3.24.36 — Dark-themed dialogs + dialog-crash fix + Settings polish (2026-06-05)
+
+**Fix — settings dialogs crashed with "Parameter is not valid"**
+
+Opening a settings dialog (Add Account, Configure Teams, Quick Login, Window-Style Advanced, Video Offsets…) or repainting the Autologin Teams readout could throw `ArgumentException: Parameter is not valid` from `System.Drawing.Font`, cascading until the UI was unusable. Root cause (introduced by the v3.24.33/34 high-DPI font-disposer): `DarkTheme.DisposeControlFonts` walked the control tree on dialog close and disposed every `Control.Font` not in its shared-font set — but an unstyled control's `Font` getter returns the *inherited* font, ultimately `Control.DefaultFont` (the single app-wide instance). Freeing it poisoned the whole process: the next control created threw in `SetWindowFont`, the next repaint in `Font.GetHeight`. Fixed with an ownership guard — it now disposes only fonts a control *owns* (a distinct instance from its parent's font / the default), never inherited ones. Covered by a new `--test-font-dispose` regression test.
+
+**Dark-themed message dialogs**
+
+Every settings dialog that was a white native `MessageBox` is now the dark-themed `ThemedMessageDialog`, matching the rest of the UI — exe-not-found, the new launch-args warning, Reset-to-Defaults, Uninstall, hotkey-conflict, all account/character/team validation, import/export, and the eqclient.ini sub-forms (~50 dialogs across 14 files). Destructive confirms (Reset) keep their safe default button (Esc/Enter → No). The two last-resort startup crash handlers stay native by design — a themed dialog builds its own controls and fonts, which is exactly what's already broken when those handlers fire.
+
+**New — launch-arguments guard**
+
+Changing the EQ launch arguments (default `patchme`) now warns once on Save/Apply — custom args can stop the client from starting or logging in. It warns only on a genuinely-modified value, not on every save.
+
+**Settings — layout polish**
+- **Paths › eqclient.ini** Backup/Restore and **Startup** Create-Shortcut / Run-at-Startup are indented from the card edges with even ~button-width padding (no longer stranded at opposite corners).
+- **General › Tray Click Actions** dropdowns are content-fit width instead of stretching half the card — no more "grow to the right" on tab switch.
+- The tab-switch window reshape is coalesced into a single layout pass.
+- Dropped the stale "(A custom MQ build that isn't there yet is fine.)" line from the exe-not-found dialog.
+
+All DPI-correct at 100/125/150%. `--test-dpi-baseline`, `--test-font-dispose`, and config-validate all pass. No SHM/DLL/Native change.
+
 ## v3.24.35 — Tray-click + login dropdown polish (2026-06-04)
 
 Four UI-polish improvements (PRs #11–#14), surfaced in review and held until the v3.24.33/34 high-DPI rebuild landed so they could graft onto the new layout. Display/UX only — no SHM/DLL/config/behavior change.

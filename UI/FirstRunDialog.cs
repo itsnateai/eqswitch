@@ -90,14 +90,14 @@ public class FirstRunDialog : EqSwitchForm
             var path = _pathTextBox.Text.Trim();
             if (!Directory.Exists(path))
             {
-                MessageBox.Show("That folder doesn't exist.", "EQSwitch", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ThemedMessageDialog.Show(this, "That folder doesn't exist.", "EQSwitch", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
             var exePath = Path.Combine(path, "eqgame.exe");
             if (!File.Exists(exePath))
             {
-                var result = MessageBox.Show(
+                var result = ThemedMessageDialog.Show(this,
                     "eqgame.exe was not found in that folder.\nContinue anyway?",
                     "EQSwitch",
                     MessageBoxButtons.YesNo,

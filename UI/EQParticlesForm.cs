@@ -350,7 +350,7 @@ public class EQParticlesForm : EqSwitchForm
         catch (Exception ex)
         {
             FileLogger.Error("EQParticles: save error", ex);
-            MessageBox.Show($"Failed to save: {ex.Message}", "Error",
+            ThemedMessageDialog.Show(this, $"Failed to save: {ex.Message}", "Error",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }

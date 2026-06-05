@@ -273,7 +273,7 @@ public class EQKeymapsForm : EqSwitchForm
         catch (Exception ex)
         {
             FileLogger.Error("EQKeymaps: save error", ex);
-            MessageBox.Show($"Failed to save: {ex.Message}", "Error",
+            ThemedMessageDialog.Show(this, $"Failed to save: {ex.Message}", "Error",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }

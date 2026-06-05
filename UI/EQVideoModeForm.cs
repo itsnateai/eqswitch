@@ -259,7 +259,7 @@ public class EQVideoModeForm : EqSwitchForm
         catch (Exception ex)
         {
             FileLogger.Error("EQVideoMode: save error", ex);
-            MessageBox.Show($"Failed to save: {ex.Message}", "Error",
+            ThemedMessageDialog.Show(this, $"Failed to save: {ex.Message}", "Error",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }

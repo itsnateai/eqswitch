@@ -131,6 +131,7 @@ internal static class DiagRender
         return name switch
         {
             "PilotCard" => BuildPilot(),
+            "ThemedMessageDialog" => ThemedMessageDialog.Preview(),
             "SettingsForm" => new SettingsForm(config, _ => { }, tab, () => { }, () => { }, null, false),
             "ProcessManagerForm" => new ProcessManagerForm(
                 () => Array.Empty<EQClient>(), () => null, () => { }, _ => { }, config),

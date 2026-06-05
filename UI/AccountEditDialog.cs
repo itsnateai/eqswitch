@@ -195,7 +195,7 @@ public sealed class AccountEditDialog : EqSwitchForm
         // Notes are free-form metadata; uniqueness only on (Username, Server).
         if (string.IsNullOrEmpty(username))
         {
-            MessageBox.Show("Username is required.", "Invalid Account",
+            ThemedMessageDialog.Show(this, "Username is required.", "Invalid Account",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             _txtUsername.Focus();
             return;
@@ -217,7 +217,7 @@ public sealed class AccountEditDialog : EqSwitchForm
             if (a.Username.Equals(username, StringComparison.OrdinalIgnoreCase) &&
                 a.Server.Equals(server, StringComparison.OrdinalIgnoreCase))
             {
-                MessageBox.Show(
+                ThemedMessageDialog.Show(this,
                     $"An Account with Username '{username}' on Server '{server}' already exists.",
                     "Duplicate Credentials", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 _txtUsername.Focus();
@@ -235,7 +235,7 @@ public sealed class AccountEditDialog : EqSwitchForm
         {
             if (string.IsNullOrEmpty(_txtPassword.Text))
             {
-                MessageBox.Show("Password is required for new Accounts.", "Password Missing",
+                ThemedMessageDialog.Show(this, "Password is required for new Accounts.", "Password Missing",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 _txtPassword.Focus();
                 return;
@@ -247,7 +247,7 @@ public sealed class AccountEditDialog : EqSwitchForm
             catch (Exception ex)
             {
                 FileLogger.Error($"AccountEditDialog: DPAPI encrypt failed: {ex.GetType().Name}: {ex.Message}", ex);
-                MessageBox.Show($"Failed to encrypt password: {ex.Message}", "Encryption Error",
+                ThemedMessageDialog.Show(this, $"Failed to encrypt password: {ex.Message}", "Encryption Error",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
