@@ -110,5 +110,5 @@ _suzy-dpi-check*
 # local verifier swarm; config retained on disk for reference, not published)
 .coderabbit.yaml
 
-# Local-only release-leak scanner allowlist (consumed by the _.claude pipeline, not shipped)
+# Local-only release-leak scanner allowlist (consumed by the local pipeline, not shipped)
 .release-leak-allow.txt
