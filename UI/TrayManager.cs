@@ -463,7 +463,7 @@ public class TrayManager : IDisposable
         _ = UninstallHelper.RestoreLegacyDlls(_config.EQPath ?? string.Empty);
 
         // Win11 tray-icon hygiene (snippet:
-        // _.claude/_templates/snippets/csharp/tray-icon-promoter.md). Sweep first
+        // tray-icon-promoter.md, local workspace). Sweep first
         // (zombies from prior versioned WinGet installs / single-file extraction
         // caches), then capture the baseline so Phase-2 orphan claim has a
         // "before NIM_ADD" reference. Existing Text seed below is non-empty, so
@@ -5649,7 +5649,7 @@ public class TrayManager : IDisposable
     /// <summary>
     /// Drive the TrayIconPromoter retry timer until our subkey is identified or
     /// the 10 s budget elapses. Idempotent — Phase 1 no-ops once IsPromoted=1.
-    /// Snippet: _.claude/_templates/snippets/csharp/tray-icon-promoter.md.
+    /// Snippet: tray-icon-promoter.md (local workspace).
     /// Independent of the auto-login state machine — promoter never blocks
     /// or interacts with the EQ login flow.
     /// </summary>

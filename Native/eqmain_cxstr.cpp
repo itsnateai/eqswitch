@@ -7,7 +7,7 @@
 // gate. Recon source: Native/recon/phase4-cxstr-recon.md.
 //
 // All RVAs and prologue bytes below are sourced from rizin static
-// analysis of `C:/Users/nate/proggy/Everquest/Eqfresh/eqmain.dll`
+// analysis of the local Dalaya eqmain.dll
 // (Dalaya x86 PE32, compiled 2013-05-11). To regenerate after a
 // Dalaya patch:
 //   rizin -q -c 'pxw 16 @ 0x100473d0' Native/recon/eqmain.dll

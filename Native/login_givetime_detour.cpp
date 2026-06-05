@@ -11,7 +11,7 @@
 //   for Phase 4 — not used here". That label is wrong per (a) authoritative
 //   upstream emu-branch eqlib/include/eqlib/offsets/eqmain.h:33 which puts
 //   pinstLoginController at 0x1015015C (RVA 0x15015C), and (b) live probe
-//   against Dalaya PID 8596 (2026-05-14, _.eqswitch-re/probe_login_globals.py)
+//   against Dalaya PID 8596 (2026-05-14, local probe_login_globals.py)
 //   which read *(eqmain+0x150174) = 0x0286C510 whose vtable[0] = 0x021D8938
 //   (NOT an eqmain.dll vtable — heap-garbage object, NOT a real LoginController).
 //   The same probe confirmed *(eqmain+0x15015C) is NULL at login (LoginController

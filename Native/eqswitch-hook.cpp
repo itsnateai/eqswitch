@@ -279,7 +279,7 @@ static const wchar_t* PROP_HOOK_SUBCLASS = L"EQSwitchHookSubclassProc";
 // both; its windowed-end-state fought our WS_POPUP Fullscreen → titlebar/glitch/
 // growth, so it was gated Windowed-only, leaving a transient stretch the other
 // way). Ported from EQ's OWN windowed-resize path (eqgame.exe FUN_008d9fd0,
-// RE'd 2026-06-01 — see X:/_Projects/_.eqswitch-re/decompile_spike/FINDINGS.md).
+// RE'd 2026-06-01 — see the local decompile_spike FINDINGS notes).
 //
 // eqgame.exe loads a graphics DLL (CreateGraphicsEngine) and stores the render-
 // engine interface pointer at a global (Ghidra DAT_015d46a4). That pointer is a

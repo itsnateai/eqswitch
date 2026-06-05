@@ -724,7 +724,7 @@ static bool IsReadablePtr(const void *ptr, size_t size) {
 // out-of-range garbage that fails the sanity gate. Symptom: "Path A
 // unreachable on Dalaya at char-select" reported in
 // reference_dalaya_path_a_unreachable_at_charselect.md — actually a bridge
-// bug, not a Dalaya structural quirk. See _.eqswitch-re/pathA-2026-05-23/
+// bug, not a Dalaya structural quirk. See the local pathA-2026-05-23
 // FINDINGS.md for the full Ghidra-evidenced writeup.
 //
 // (v3.22.35's CHANGELOG and adjacent comments called the third site the
@@ -3800,7 +3800,7 @@ extern void PostGameThreadPoll();
 // (HandleEnterWorldRequest + login_state_machine::DiscoverCharSelectWidgets)
 // can't drift. Confirmed live 2026-06-02 — both clients resolved Play_Button
 // non-null, CLW_EnterWorldButton null. See
-// _.eqswitch-re/enterworld-re-2026-06-02/BREAKTHROUGH-play-button.md.
+// the local enterworld-re-2026-06-02 BREAKTHROUGH-play-button notes.
 void *MQ2Bridge::FindEnterWorldButton(const char **matchedName) {
     void *pBtn = MQ2Bridge::FindWindowByName("Play_Button");
     if (pBtn) { if (matchedName) *matchedName = "Play_Button"; return pBtn; }

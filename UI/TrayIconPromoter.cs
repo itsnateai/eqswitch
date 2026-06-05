@@ -45,7 +45,7 @@ namespace EQSwitch.UI;
 /// try/catch so a schema change in a future build silently no-ops
 /// instead of crashing.
 ///
-/// Canonical snippet: _.claude/_templates/snippets/csharp/tray-icon-promoter.md
+/// Canonical snippet: tray-icon-promoter.md (local workspace).
 /// </summary>
 internal static class TrayIconPromoter
 {

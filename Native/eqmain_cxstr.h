@@ -32,7 +32,7 @@
 //     memory/feedback_eqswitch_no_regression_to_dinput8.md fail-mode rule).
 //
 // 2026-05-14: Added ScreenMode = 3 swap wrapper around WriteEditTextDirect
-// per Diff 1 of `_.eqswitch-re/mq2-autologin-eqswitch-diff.md`. Empirically
+// per Diff 1 of the local mq2-autologin-eqswitch-diff notes. Empirically
 // confirmed at login + server-select + char-select + in-world that natural
 // ScreenMode is {1, 1, 2, 2} respectively — value `3` is NEVER natural and is
 // MQ2's deliberate "fullscreen-UI-input" mode forced during writes. The

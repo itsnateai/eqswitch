@@ -547,7 +547,7 @@ static void PollWidgetVisibilityToShm(volatile LoginShm *shm) {
     // was always filtered out — so widgetOkDialogVisible was stuck at 0
     // and the C# state machine couldn't short-circuit on Fatal okClass,
     // leaving bad-password fail detection blocked behind the 120s phase
-    // timeout. See _.eqswitch-re/audit-2026-05-21/probe_okdialog_search.py
+    // timeout. See the local probe_okdialog_search.py
     // and okdialog-walk-PID21864.txt for the live-process probe data.
     void *pConnect      = ResolveCachedScreen(&g_cachedConnect,      "connect");
     void *pServerSel    = ResolveCachedScreen(&g_cachedServerSelect, "serverselect");
@@ -697,7 +697,7 @@ static void DiscoverDialogWidgets() {
     // because the OK button IS a child of okdialog (the dialog frame owns
     // its OK click target, just not the message text widget).
     //
-    // See _.eqswitch-re/audit-2026-05-21/{probe_okdialog_search.py,
+    // See the local {probe_okdialog_search.py,
     // probe_okbox_dump.py, okbox-dump-PID33768.txt} for the live probe data.
     g_pOkDisplay = nullptr;
     g_pOkButton  = nullptr;
@@ -749,7 +749,7 @@ static void DiscoverDialogWidgets() {
     // patchme bypasses kick-session — Dalaya's DINPUT8.dll patcher
     // ("Edge") actively disables the `patchme` arg shortly after process
     // start (see 2026-05-21 audit at
-    // `_.eqswitch-re/audit-2026-05-21/dalaya-dinput8-audit.md`, string
+    // the local dalaya-dinput8-audit notes, string
     // "disabling patchme" at VA 0x100f7fc0). Kick-session simply doesn't
     // fire because Edge's MQ2-derived connection management is compatible
     // with concurrent multi-client launches when each client uses unique

@@ -12,13 +12,13 @@
 4. Run the **Pre-cut checklist** (bottom of this file): confirm the 4 symbol anchors + the Win32 constants still exist where expected.
 5. Implement **Task 1** (3 edits + 1 test) as the minimal diff. Build → `--test-swap-cover` → **live dual-monitor dual-client smoke** (the real gate). Do NOT claim done off the unit test.
 6. Only if a residual peek remains after live smoke → Task 2, then Task 3.
-7. Ship: version bump + CHANGELOG + conventional commit, no Claude attribution.
+7. Ship: version bump + CHANGELOG + conventional commit, no AI attribution.
 
 > **Context:** dual-session day (2026-05-31). Another session shipped v3.22.90 and was actively editing the two target files, so this was researched + planned read-only and HELD for morning execution. Everything needed is in this file + the research doc — no conversation context required.
 
 > **Status:** HELD — execute against accurate code once the other session releases the eqswitch tree.
 > Symbol-anchored on purpose (no line numbers): the two target files are being edited concurrently; expect drift, re-read before cutting.
-> **Root-cause research (read first):** `X:/_Projects/_docs/research/deepresearch-eqswitch-taskbar-flicker-2026-05-31.md`
+> **Root-cause research (read first):** local research notes (deepresearch-eqswitch-taskbar-flicker-2026-05-31).
 > **Target destination when tree is free:** copy into `eqswitch/docs/specs/`.
 
 ## Goal
@@ -64,7 +64,7 @@ New `Core/SwapCoverOrderingTests.cs`, wired to a `--test-swap-cover` flag in `Pr
 LIVE smoke: 2 monitors, 2 in-world clients, slim multimonitor mode. Press `\` and `]` repeatedly; watch the primary taskbar edge — **no peek**. Confirm `eqswitch.log` shows the "incoming-first cover — planted slot-0 hwnd …" line per swap. Per `feedback_verify_live_before_claiming_done_eqswitch_snap` — do NOT claim done off the unit test alone.
 
 ### Ship
-Bump `EQSwitch.csproj` `<Version>` to the next free version — **READ the current `<Version>` first; never hardcode.** (At brief-time v3.23.0 was already shipped — Quick Login slots — and v3.22.91 was consumed by the Settings-tidy ship, so next free is ≥ v3.23.1. It will have advanced further overnight.) CHANGELOG entry; conventional commit `fix(window): incoming-first z-order plant kills multimon swap taskbar flicker`; **no Claude attribution**. Stakes = source code (not Native) ⇒ normal completion-checkpoint tier.
+Bump `EQSwitch.csproj` `<Version>` to the next free version — **READ the current `<Version>` first; never hardcode.** (At brief-time v3.23.0 was already shipped — Quick Login slots — and v3.22.91 was consumed by the Settings-tidy ship, so next free is ≥ v3.23.1. It will have advanced further overnight.) CHANGELOG entry; conventional commit `fix(window): incoming-first z-order plant kills multimon swap taskbar flicker`; **no AI attribution**. Stakes = source code (not Native) ⇒ normal completion-checkpoint tier.
 
 ## Fallbacks — ONLY if Task 1 live smoke still shows residual peek
 - **Task 2 — `ITaskbarList2::MarkFullscreenWindow(incoming, TRUE)`.** Cheapest first: call it from **C# on the eqgame HWND** and smoke — if the taskbar yields cross-process, done. If not, implement in-process in `eqswitch-hook.cpp` (`CoCreateInstance(CLSID_TaskbarList)` → `MarkFullscreenWindow(hwnd, TRUE)` after it positions the slim rect). Native ⇒ **high-stakes** completion-checkpoint + swarmaudit.

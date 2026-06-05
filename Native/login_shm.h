@@ -45,7 +45,7 @@
 // the trailing 20 bytes — JoinServer never fires because reqSeq stays 0).
 //
 // Architectural note (per MQ2 RoF2-emu autologin walkthrough §5.1 +
-// Diff 4 of `_.eqswitch-re/mq2-autologin-eqswitch-diff.md`): MQ2's
+// Diff 4 of the local mq2-autologin-eqswitch-diff notes): MQ2's
 // StateMachine.cpp:773 calls g_pLoginServerAPI->JoinServer((int)server->ID)
 // directly to advance from server-select to char-select, bypassing the
 // UI server-row click chain entirely. EQSwitch's pre-Diff-4 path used

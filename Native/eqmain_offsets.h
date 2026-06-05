@@ -85,10 +85,10 @@ void GetRange(uintptr_t *outBase, uint32_t *outSize);
 // pointer, index to the slot, return the slot function pointer.
 //
 // Authoritative source for vtable layout (this project, not MQ2 upstream):
-//   Static RTTI walk of C:/Users/nate/proggy/Everquest/Eqfresh/eqmain.dll
+//   Static RTTI walk of the local Dalaya eqmain.dll
 //   (Dalaya ROF2 frozen 2013-05-11). Cross-verified against the eqgame-side
 //   virtual-dispatch thunks in dinput8.dll (?SetWindowTextA@CXWnd, etc).
-//   Reproduce with: `python X:/_Projects/eqswitch/dumps/find_slot_diffs.py`.
+//   Reproduce with: `python dumps/find_slot_diffs.py` (local).
 //
 //   dinput8.dll ?SetWindowTextA    — thunk: `mov eax,[ecx]; lea eax,[eax+0x124]; mov eax,[eax]; jmp eax`
 //   dinput8.dll ?WndNotification   — thunk: `mov eax,[ecx]; lea eax,[eax+0x88];  mov eax,[eax]; jmp eax`
@@ -120,7 +120,7 @@ constexpr uint32_t VTABLE_OFFSET_SetWindowText   = 0x124;  // slot 73 * 4
 
 // Static-verified vtable RVAs (ImageBase=0x10000000, runtime 0x71E20000).
 // eqmain.dll has no ASLR per memory — these are stable across launches.
-// Reproduce with `python X:/_Projects/eqswitch/dumps/find_vtables.py`.
+// Reproduce with `python dumps/find_vtables.py` (local).
 constexpr uint32_t RVA_VTABLE_CXWnd          = 0x0010A084;
 constexpr uint32_t RVA_VTABLE_CSidlScreenWnd = 0x0010A574;
 constexpr uint32_t RVA_VTABLE_CButtonWnd     = 0x0010B53C;
@@ -150,9 +150,9 @@ constexpr uint32_t RVA_PINST_LoginViewManager = 0x00150170;
 // pinstLoginServerAPI is a void* at this RVA. Deref once → LoginServerAPI*.
 // JoinServer is a NON-VIRTUAL __thiscall at a fixed RVA (NOT a vtable slot).
 // Both pinned 2026-05-14 from upstream emu-branch
-// `_.src/_srcexamples/macroquest-rof2-emu/src/eqlib/include/eqlib/offsets/eqmain.h`
+// the upstream MQ emu-branch eqlib/include/eqlib/offsets/eqmain.h
 // lines 26 + 34 (build date 20130510 matches Dalaya exactly). Live-verified
-// against Dalaya PID 7588 (2026-05-15, _.eqswitch-re/probe_login_globals.py):
+// against Dalaya PID 7588 (2026-05-15, local probe_login_globals.py):
 // *(eqmain+0x150164) populated, vtable[0] at eqmain+0x1002D0 (matches
 // findings.md Round 3's documented LoginServerAPI secondary vtable).
 //

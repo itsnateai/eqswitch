@@ -774,7 +774,7 @@ public class AutoLoginManager
         //
         // If a future regression brings back the empty-field-at-submit symptom,
         // SUSPECT v3.16.0 ScreenMode swap regression FIRST (probe ScreenMode
-        // RVA via _.eqswitch-re/probe_screenmode.py + verify swap fires) before
+        // RVA via the local probe_screenmode.py + verify swap fires) before
         // re-reverting the gate. The keystroke fallback below remains intact
         // for the non-Combo-G path (warmup didn't fire OR comboGWriteOk=0).
         CombinedPressKey(writer, pid, hwnd, 0x08);
@@ -825,7 +825,7 @@ public class AutoLoginManager
     /// <c>EnteringWorld</c> → <c>Complete</c>. <c>StepServerSelect</c> and
     /// <c>StepWaitServerLoad</c> are DEAD-ON-DALAYA — see their summaries.
     ///
-    /// Plan-doc archive: <c>X:/_Projects/_.claude/_comms/plan-eqswitch-v3.22.0.md</c>.
+    /// Plan-doc archive: internal plan-eqswitch-v3.22.0.md (local-only).
     /// </summary>
     private void RunLoginStateMachine(int pid, Account account, Character? character, string password, bool? enterWorldOverride)
     {

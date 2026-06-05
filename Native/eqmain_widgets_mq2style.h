@@ -132,7 +132,7 @@ constexpr bool kMQ2StyleWidgetLookup = true;
 // widget at slot [176] in CXWndManager.pWindows has children=1, name
 // 'okdialog' stored at body offsets +0x1DC/+0x1FC/+0x228/+0x22C — the
 // only top-level widget with that name string at any of those offsets.
-// See _.eqswitch-re/audit-2026-05-21/probe_okdialog_search.py +
+// See the local probe_okdialog_search.py +
 // okdialog-walk-PID21864.txt for the verification dump.
 //
 // Returns nullptr when no top-level widget matches.

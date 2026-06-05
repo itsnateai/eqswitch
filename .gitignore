@@ -109,3 +109,6 @@ _suzy-dpi-check*
 # Internal — CodeRabbit cloud-review config kept local-only (review is now the
 # local verifier swarm; config retained on disk for reference, not published)
 .coderabbit.yaml
+
+# Local-only release-leak scanner allowlist (consumed by the _.claude pipeline, not shipped)
+.release-leak-allow.txt

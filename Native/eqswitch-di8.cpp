@@ -548,7 +548,7 @@ void MQ2BridgePollTick() {
                 // (often a CXMLDataPtr def; ClickButton skips + logs).
                 // For diagnosing what IS in the subtree, re-attach the
                 // DumpSubtreeNamesOnce diagnostic from
-                // _.claude/_tools/eqswitch-debug/re-enable-debug.md.
+                // the local eqswitch-debug re-enable-debug notes.
                 pBtn = MQ2Bridge::FindWindowByName(pw.buttonName);
                 via = "def fallback";
             }

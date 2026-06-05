@@ -730,7 +730,7 @@ public class WindowManager
         //
         // v3.22.22 hypothesis (post-v3.22.21 smoke): DeferWindowPos may not
         // be fully atomic across processes + monitors. AHK reference at
-        // X:/_Projects/_.src/.oursrcarchive/eqswitch_ahk/EQSwitch.ahk:414-441
+        // the legacy EQSwitch.ahk reference (local archive, L414-441)
         // uses sequential WinMove and reportedly does NOT flicker (caveat:
         // the AHK build did NOT inject eqswitch-hook.dll, so its swap
         // didn't fight any in-process hook-driven SetWindowPos replays —
