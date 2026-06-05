@@ -48,7 +48,8 @@ public class SettingsForm : EqSwitchForm
     // ─── Tray Click controls (Left)
     // 2026-06-04: non-selectable group divider inserted into the click-action dropdowns — a
     // U+2500 box-drawing line. WireTraySeparatorBounce keeps it unpickable so it can never be
-    // committed/saved as an action (which AppConfig.Validate would reject → silent reset to None).
+    // committed/saved as an action (which AppConfig.Validate would reject → silent reset to that
+    // slot's default — None/LaunchOne/TogglePiP/Settings per slot, see AppConfig.Validate).
     private const string TrayActionSeparator = "──────────────";
     private ComboBox _cboSingleClick = null!;
     private ComboBox _cboDoubleClick = null!;
@@ -4092,7 +4093,8 @@ public class SettingsForm : EqSwitchForm
     /// real row); fall back to the last real selection only if the list edge is reached. A divider
     /// can therefore never be committed and saved as a tray action — TrayDisplayToAction would pass
     /// the divider string through verbatim and AppConfig.Validate would then reject it, silently
-    /// resetting the click to "None". Mirrors the separator skip in QuickLoginSlotsDialog.
+    /// resetting that click to its slot default (None/LaunchOne/TogglePiP/Settings — see
+    /// AppConfig.Validate). Mirrors the separator skip in QuickLoginSlotsDialog.
     /// Re-entrancy is safe: setting SelectedIndex to a real row re-fires the handler, which takes
     /// the non-divider branch (updating lastIndex) and terminates.
     /// </summary>
