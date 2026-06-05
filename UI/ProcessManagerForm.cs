@@ -639,15 +639,15 @@ public class ProcessManagerForm : EqSwitchForm
             _refreshTimer?.Dispose();
             _tooltip?.Dispose();
             // Dispose GDI Font handles — WinForms doesn't own control fonts.
-            // _ghostFont/_boldHintFont are field-owned and SHARED across several labels, so dispose
-            // them once here (the tree walk below would otherwise hit them once per sharing label).
-            // Single-owner control fonts (the Enable checkbox + status label fonts) are intentionally
-            // NOT disposed here — DarkTheme.DisposeControlFonts(this) walks the control tree and
-            // disposes each non-shared Control.Font exactly once (it skips DarkTheme's shared statics).
-            // DataGridViewCellStyle.Font is NOT a Control.Font, so the grid's cell-style fonts are
-            // unreachable by that walk and must be disposed directly.
+            // _ghostFont is shared across the 4 ghost-readout labels, so dispose it once here as the
+            // explicit owner (the tree walk below would otherwise hit it once per sharing label).
+            // Single-owner control fonts — the Enable checkbox, the status label, and the bold warn
+            // label that owns _boldHintFont — are NOT disposed here: DarkTheme.DisposeControlFonts(this)
+            // walks the control tree and disposes each non-shared Control.Font once (it skips DarkTheme's
+            // shared statics; this form never detaches a control via Card.Clear, so the walk reaches all).
+            // DataGridViewCellStyle.Font is NOT a Control.Font, so the grid header cell-style font is
+            // unreachable by that walk and is disposed directly.
             _ghostFont?.Dispose();
-            _boldHintFont?.Dispose();
             _grid?.DefaultCellStyle?.Font?.Dispose();
             _grid?.ColumnHeadersDefaultCellStyle?.Font?.Dispose();
             DarkTheme.DisposeControlFonts(this);
