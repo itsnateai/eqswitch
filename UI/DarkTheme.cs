@@ -828,8 +828,19 @@ public static class DarkTheme
         foreach (Control c in root.Controls)
         {
             DisposeControlFonts(c);
-            if (c.Font != null && !SharedFonts.Contains(c.Font))
-                try { c.Font.Dispose(); } catch { }
+            // Dispose ONLY a font this control OWNS. An unstyled control's Font getter returns the
+            // INHERITED font — its parent's, ultimately Control.DefaultFont (the single app-wide
+            // instance from Application.SetDefaultFont). Freeing that bricks the whole process: the
+            // next control created crashes in SetWindowFont→ToHfont and the next repaint in
+            // Font.GetHeight, both as "ArgumentException: Parameter is not valid". An owned font is a
+            // DISTINCT instance from the inherited one, so reference-inequality with the parent's
+            // font (and with Control.DefaultFont) is the ownership test.
+            var font = c.Font;
+            if (font != null
+                && !SharedFonts.Contains(font)
+                && !ReferenceEquals(font, Control.DefaultFont)
+                && !ReferenceEquals(font, c.Parent?.Font))
+                try { font.Dispose(); } catch { }
         }
     }
 }

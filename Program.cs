@@ -169,6 +169,26 @@ static class Program
             return;
         }
 
+        // --test-font-dispose — run Core/FontDisposeOwnershipTests.RunAll(): asserts
+        // DisposeControlFonts frees only owned fonts, never inherited/Control.DefaultFont.
+        // Guards the button-click "Parameter is not valid" crash class from regressing.
+        if (args.Length >= 1 && args[0] == "--test-font-dispose")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.FontDisposeOwnershipTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"FontDisposeOwnershipTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
         // --diag-render-form <Name> [--out dir] [--tab N] [--scale F] [--hold] — DEBUG-only
         // DPI verification harness: render ONE form in isolation + screenshot it to a PNG so a
         // high-DPI Sandbox (or scaled display) captures how it looks at 125%/150% without a human
