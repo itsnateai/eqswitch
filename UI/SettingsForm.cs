@@ -46,6 +46,10 @@ public class SettingsForm : EqSwitchForm
     private NumericUpDown _nudLogTrimThreshold = null!;
 
     // ─── Tray Click controls (Left)
+    // 2026-06-04: non-selectable group divider inserted into the click-action dropdowns — a
+    // U+2500 box-drawing line. WireTraySeparatorBounce keeps it unpickable so it can never be
+    // committed/saved as an action (which AppConfig.Validate would reject → silent reset to None).
+    private const string TrayActionSeparator = "──────────────";
     private ComboBox _cboSingleClick = null!;
     private ComboBox _cboDoubleClick = null!;
     private ComboBox _cboTripleClick = null!;
@@ -630,7 +634,20 @@ public class SettingsForm : EqSwitchForm
         // Display strings. "Launch One"/"Launch Two" are display-only (stored values stay
         // "LaunchOne"/"LaunchAll" via the tray action maps). AutoLoginTeam5/6 included so a
         // hand-edited config binding them isn't shown a blank dropdown (round-trip-safe).
-        var clickActions = new[] { "None", "Auto-Login1", "AutoLoginTeam1", "TogglePiP", "Launch One", "Launch Two", "FixWindows", "SwapWindows", "Settings", "ShowHelp", "Auto-Login2", "Auto-Login3", "Auto-Login4", "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4", "AutoLoginTeam5", "AutoLoginTeam6" };
+        // 2026-06-04: TrayActionSeparator rows partition the list into four logical groups —
+        //   primary (None / Auto-Login1 / Team1) | window + utility | extra Auto-Logins | extra Teams.
+        // Dividers are made non-selectable below (WireTraySeparatorBounce). All 5 click combos
+        // share this one list.
+        var clickActions = new[]
+        {
+            "None", "Auto-Login1", "AutoLoginTeam1",
+            TrayActionSeparator,
+            "TogglePiP", "Launch One", "Launch Two", "FixWindows", "SwapWindows", "Settings", "ShowHelp",
+            TrayActionSeparator,
+            "Auto-Login2", "Auto-Login3", "Auto-Login4",
+            TrayActionSeparator,
+            "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4", "AutoLoginTeam5", "AutoLoginTeam6"
+        };
         var cardTray = stack.NewCard("🖱", "Tray Click Actions", DarkTheme.CardBlue);
 
         _cboSingleClick = Fields.Combo(140, clickActions);
@@ -641,6 +658,10 @@ public class SettingsForm : EqSwitchForm
         cardTray.Full(MakeTwoColumnGrid(
             "Left Click", new (string, Control)[] { ("Single", _cboSingleClick), ("Double", _cboDoubleClick), ("Triple", _cboTripleClick) },
             "Middle Click", new (string, Control)[] { ("Single", _cboMiddleClick), ("Triple", _cboMiddleDoubleClick) }));
+
+        // 2026-06-04: make the group dividers in clickActions non-selectable on every click combo.
+        foreach (var cb in new[] { _cboSingleClick, _cboDoubleClick, _cboTripleClick, _cboMiddleClick, _cboMiddleDoubleClick })
+            WireTraySeparatorBounce(cb);
 
         // v3.23.0: live readout of what each "AutoLogin 1-4" dropdown entry currently fires.
         _lblQuickLoginReadout = new Label { Text = "", AutoSize = true, ForeColor = DarkTheme.FgDimGray, Font = DarkTheme.FontUI75 };
@@ -4063,6 +4084,39 @@ public class SettingsForm : EqSwitchForm
     /// <summary>Convert dropdown display name back to config action name.</summary>
     private static string TrayDisplayToAction(string display) =>
         _trayDisplayActionMap.TryGetValue(display, out var action) ? action : display;
+
+    /// <summary>
+    /// Make the <see cref="TrayActionSeparator"/> divider rows in the tray-click dropdowns
+    /// non-selectable: when a divider is landed on, skip PAST it in the direction of travel so
+    /// keyboard arrows can cross group boundaries (a mouse-click on a divider lands on the adjacent
+    /// real row); fall back to the last real selection only if the list edge is reached. A divider
+    /// can therefore never be committed and saved as a tray action — TrayDisplayToAction would pass
+    /// the divider string through verbatim and AppConfig.Validate would then reject it, silently
+    /// resetting the click to "None". Mirrors the separator skip in QuickLoginSlotsDialog.
+    /// Re-entrancy is safe: setting SelectedIndex to a real row re-fires the handler, which takes
+    /// the non-divider branch (updating lastIndex) and terminates.
+    /// </summary>
+    private static void WireTraySeparatorBounce(ComboBox cb)
+    {
+        int lastIndex = cb.SelectedIndex;
+        cb.SelectedIndexChanged += (s, _) =>
+        {
+            var box = (ComboBox)s!;
+            if ((box.SelectedItem as string) != TrayActionSeparator)
+            {
+                lastIndex = box.SelectedIndex;
+                return;
+            }
+            // Skip past the divider in the direction of travel (inferred from lastIndex, since the
+            // event doesn't say which arrow was pressed); while-loop tolerates adjacent dividers.
+            // Edge guard: if no real row lies that way, revert to the last real index.
+            int dir = box.SelectedIndex > lastIndex ? 1 : -1;
+            int i = box.SelectedIndex + dir;
+            while (i >= 0 && i < box.Items.Count && (box.Items[i] as string) == TrayActionSeparator)
+                i += dir;
+            box.SelectedIndex = (i >= 0 && i < box.Items.Count) ? i : lastIndex;
+        };
+    }
 }
 
 /// <summary>
