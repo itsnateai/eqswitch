@@ -1,5 +1,40 @@
 # Changelog
 
+## v3.24.34 — Process Manager high-DPI rebuild + Settings layout polish (2026-06-04)
+
+Continues the high-DPI rollout from v3.24.33 (Settings window) to the **Process Manager**, and polishes four Settings layouts surfaced in review. Verified at real 100% and real 150% (DeviceDpi=144) on hardware.
+
+**Process Manager — rebuilt on layout containers (correct-by-construction at any DPI)**
+
+The Process Manager was absolute-coordinate-positioned, so above 100% its cards, the priority/affinity numerics, the client grid, and the footer buttons clipped (same root cause as the v3.24.33 Settings window). Rebuilt on the `CardLayout` primitives (`CardStack` / `Card` / `Fields` / `Bars`) so layout is relational — at 150% it renders pixel-proportionally identical to 100%, just larger. Process stays `HighDpiMode.SystemAware` (unchanged).
+- Four cards — **CPU Priority Handling**, **Running Clients**, **CPU Affinity Thread Mapping**, **FPS Limits** — size to their fonts; no fixed card heights to clip.
+- The client grid uses `AllCells` columns (auto-fit header+content at any DPI) with the Character column filling the slack; its height scales with DPI.
+- Footer (Save / Apply / Reset / Close) is a split bar (primary actions left, Close right), docked and always visible while the cards scroll.
+- All behavior preserved: live refresh, per-row Kill, priority preset + launch-retry, 6-thread CPU mapping, FPS limits, Reset snapshot, eqclient.ini read/write.
+
+**Settings — layout polish (review feedback)**
+- **Video › Window Style:** "Advanced…" moved to the top-right of the section (shares the title row) instead of bottom-right.
+- **Video › Preferences:** "Tooltip Duration" + field now share the "Show Tooltips" row, right-aligned on the opposite edge.
+- **General › Preferences:** "EQ Client Settings…" and "Process Manager…" split to opposite edges, indented from the card sides.
+- **General › Window Title:** the input is inset from both edges so it reads as centered in the section.
+
+No SHM/DLL/config change. `--test-dpi-baseline` passes (every `EQSwitch.UI` Form inherits `EqSwitchForm`).
+
+## v3.24.33 — Settings window: correct high-DPI scaling at 125%/150%+ (2026-06-04)
+
+The Settings window (and dialogs sharing `EqSwitchForm`) now scale proportionally at every display scale — at 150% it renders pixel-identical to 100%, just larger. Previously `AutoScaleMode.Dpi` did not grow this form's control bounds, so above 100% cards, buttons, labels, and grid headers clipped and the window itself didn't grow.
+
+Root cause + fix: the 6-tab `SettingsForm` was absolute-coordinate-positioned, which `AutoScaleMode.Dpi` failed to scale here. Rebuilt it on layout containers (`TableLayoutPanel` / `FlowLayoutPanel` + `AutoSize`) so layout is relational and correct-by-construction at any DPI. Process stays `HighDpiMode.SystemAware` — `PerMonitorV2` regresses the injected EQ game windows (unchanged).
+
+- **Window fits each tab's content** — no dead band on short tabs (PiP, General) at any scale; recomputed per tab.
+- **Fields size to their values** — numerics/combos measure their own content at the live DPI, so nothing is over-wide or clipped.
+- **Tabs fill the category bar** + scale height — no unused gutter, no scroll arrows.
+- **Grid headers fit** — Flag/Hotkey/Slot/# columns use `AllCells` (auto-fit at any DPI); name columns size to content.
+- **Button rows aligned** — split (primary left / secondary right) and evenly-spread layouts restored across Accounts, Hotkeys, Paths.
+- **Footer buttons** (Save/Apply/Cancel) grow with their text.
+
+New DPI-safe layout primitive `UI/CardLayout.cs` (`CardStack` / `Card` / `Fields` / `Bars`) underpins the rebuild. Verified at real 100% and real 150% (DeviceDpi=144) on hardware across all 6 tabs. No SHM/DLL/config change.
+
 ## v3.24.30 — Help window: uninstall list accuracy (2026-06-04)
 
 Fast-follow to v3.24.29's help audit (verifier-surfaced items).

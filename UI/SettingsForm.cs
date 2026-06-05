@@ -123,8 +123,7 @@ public class SettingsForm : EqSwitchForm
     // Phase 5a: _txtAutoLogin1-4 removed. Edited via AccountHotkeysDialog /
     // CharacterHotkeysDialog. Legacy HotkeyConfig.AutoLogin1-4 fields pass through
     // BuildAppConfig from _config during the v3.10.x deprecation window.
-    private Panel _cardDirectBindings = null!;
-    private Panel? _legacyBanner;   // rendered only when any QuickLoginN is populated and banner not dismissed
+    private Card _cardDirectBindings = null!;
     // Currently-open hotkey dialog (Account/Character/Team). Non-modal Show()
     // means SettingsForm and the tray menu stay clickable while editing — but
     // we still want to forbid opening two of these at once (their conflict
@@ -306,7 +305,7 @@ public class SettingsForm : EqSwitchForm
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "\u2694  Dalaya Settings  \u2694", new Size(530, 604));
+        DarkTheme.StyleForm(this, "\u2694  Dalaya Settings  \u2694", new Size(530, 660));
 
         // Restore last window position
         if (_config.SettingsWindowPos.Length >= 2)
@@ -441,12 +440,15 @@ public class SettingsForm : EqSwitchForm
         };
         var btnSave = DarkTheme.MakePrimaryButton("Save", 0, 0);
         btnSave.Margin = new Padding(6, 0, 0, 0);
+        btnSave.AutoSize = true; btnSave.AutoSizeMode = AutoSizeMode.GrowAndShrink; btnSave.Padding = new Padding(12, 3, 12, 3);
         btnSave.Click += (_, _) => { if (ApplySettings()) { ConfigManager.Save(_config); Close(); } };
         var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, 0, 0);
         btnApply.Margin = new Padding(6, 0, 0, 0);
+        btnApply.AutoSize = true; btnApply.AutoSizeMode = AutoSizeMode.GrowAndShrink; btnApply.Padding = new Padding(12, 3, 12, 3);
         btnApply.Click += (_, _) => { if (ApplySettings()) { ConfigManager.Save(_config); } };
         var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 0, 0);
         btnCancel.Margin = new Padding(6, 0, 0, 0);
+        btnCancel.AutoSize = true; btnCancel.AutoSizeMode = AutoSizeMode.GrowAndShrink; btnCancel.Padding = new Padding(12, 3, 12, 3);
         btnCancel.Click += (_, _) => Close();
         actionFlow.Controls.AddRange(new Control[] { btnCancel, btnApply, btnSave });
 
@@ -496,6 +498,47 @@ public class SettingsForm : EqSwitchForm
         Controls.Add(tabs);
         Controls.Add(buttonPanel);
 
+        // Per-tab DPI sizing. The window WIDTH scales to the device DPI; its HEIGHT fits the
+        // SELECTED tab's content (no dead band on short tabs), recomputed on tab switch. Tabs fill
+        // the category bar; the two grids + Teams readout + footer scale with the font.
+        void SizeToSelectedTab()
+        {
+            if (tabs.SelectedTab is not { } tp || tp.Controls.Count == 0) return;
+            var host = tp.Controls[0];
+            var content = host.Controls.Count > 0 ? host.Controls[0] : host;
+            var area = Screen.FromControl(this).WorkingArea;
+            int chrome = tabs.ItemSize.Height + buttonPanel.Height + tp.Padding.Vertical + LogicalToDeviceUnits(14);
+            int h = Math.Min(content.PreferredSize.Height + chrome, area.Height - LogicalToDeviceUnits(48));
+            if (Math.Abs(h - ClientSize.Height) > 2) ClientSize = new Size(ClientSize.Width, h);
+        }
+
+        Load += (_, _) =>
+        {
+            DpiScale.SizeFitFields(this);   // content-size numerics/combos/fit-textboxes (once)
+            double f = DeviceDpi / 96.0;
+            var wa = Screen.FromControl(this).WorkingArea;
+            if (f > 1.001)
+            {
+                buttonPanel.Height = (int)Math.Round(buttonPanel.Height * f);
+                ClientSize = new Size(Math.Min((int)Math.Round(530 * f), wa.Width), ClientSize.Height);
+                if (_dgvAccounts != null) _dgvAccounts.Height = (int)Math.Round(_dgvAccounts.Height * f);
+                if (_dgvCharacters != null) _dgvCharacters.Height = (int)Math.Round(_dgvCharacters.Height * f);
+                if (_lblTeamSummary?.Parent is { } teamPanel) teamPanel.Height = (int)Math.Round(teamPanel.Height * f);
+            }
+            // Tabs fill the (device-width) category bar + scale height. Set at Load (after the handle)
+            // — NOT in HandleCreated, which re-enters RecreateHandle and crashes at 125%+. The -8 is the
+            // tab-strip's left inset; without it 6 fixed tabs spill by a pixel into scroll arrows.
+            if (tabs.TabCount > 0)
+            {
+                try { tabs.ItemSize = new Size(Math.Max(40, (tabs.ClientSize.Width - 8) / tabs.TabCount), (int)Math.Round(30 * f)); }
+                catch (Exception ex) { FileLogger.Warn($"Tab-strip DPI fill skipped (RecreateHandle): {ex.Message}"); }
+            }
+            SizeToSelectedTab();   // window height = selected tab content (no dead band)
+            if (_config.SettingsWindowPos.Length < 2)
+                Location = new Point(wa.Left + Math.Max(0, (wa.Width - Width) / 2), wa.Top + Math.Max(0, (wa.Height - Height) / 2));
+        };
+        tabs.SelectedIndexChanged += (_, _) => SizeToSelectedTab();
+
         PopulateFromConfig();
     }
 
@@ -503,27 +546,24 @@ public class SettingsForm : EqSwitchForm
 
     private TabPage BuildGeneralTab()
     {
+        // Layout-container rebuild (DPI-correct by construction): cards + rows size to their
+        // fonts, so 100% and 150% are proportionally identical with no pixel literals to mis-scale.
+        // Replaces the absolute new Point/Size + hand-tuned card heights that clipped at 125%+.
         var page = DarkTheme.MakeTabPage("General");
-        int y = 8;
+        var stack = new CardStack(page);
 
-        // ─── Alignment grid: labels at L=10, inputs at L=120, browse at L=370 ───
-        const int L = 10, I = 120, I2 = 310, BRW = 370, IW = 240, R = 28;
+        // ─── EverQuest Setup ─────────────────────────────────────────
+        var cardEQ = stack.NewCard("⚔", "EverQuest Setup", DarkTheme.CardGreen);
 
-        // ─── EverQuest Setup card ────────────────────────────────
-        // v3.22.49: height bumped 118 → 148 to fit the new "Right click menu:" row
-        // below Exe/Args. Field mirrors _txtShowMenu on the Hotkeys tab.
-        // v3.22.54: bumped 148 → 156 to add 8 px padding between the Args
-        // textbox and the Right click menu row (Nate screenshot 2026-05-26 —
-        // the rows were sitting flush and read as a single group).
-        var cardEQ = DarkTheme.MakeCard(page, "⚔", "EverQuest Setup", DarkTheme.CardGreen, 10, y, 480, 156);
-        int cy = 30;
-
-        // Switch key — prominent, right under card title
-        _lblSwitchKey = DarkTheme.AddCardLabel(cardEQ, "EQ Switch Key:", L, cy);
-        _lblSwitchKey.Font = TrackFont(new Font("Segoe UI Semibold", 8.5f));
+        // Switch key. _lblSwitchKey is owned (recolors/retexts in UpdateSwitchKeyColor).
+        _lblSwitchKey = new Label
+        {
+            Text = "EQ Switch Key:", AutoSize = true, ForeColor = DarkTheme.FgWhite,
+            Font = TrackFont(new Font("Segoe UI Semibold", 8.5f)),
+        };
         _txtSwitchKeyGeneral = new HotkeyTextBox
         {
-            Location = new Point(I, cy - 2), Size = new Size(80, 24),
+            Width = 80,
             BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
             BorderStyle = BorderStyle.FixedSingle, Font = TrackFont(new Font("Consolas", 10f, FontStyle.Bold)),
             TextAlign = HorizontalAlignment.Center,
@@ -539,55 +579,38 @@ public class SettingsForm : EqSwitchForm
             if (_txtSwitchKey != null && _txtSwitchKey.Text != _txtSwitchKeyGeneral.Text)
                 _txtSwitchKey.Text = _txtSwitchKeyGeneral.Text;
         };
-        cardEQ.Controls.Add(_txtSwitchKeyGeneral);
-        DarkTheme.WrapWithBorder(_txtSwitchKeyGeneral);
-        DarkTheme.AddCardHint(cardEQ, "Click and press key  |  Delete to clear", 210, cy + 2);
-        cy += R;
+        cardEQ.FlowRow(_lblSwitchKey, _txtSwitchKeyGeneral, TrailingHint("Click and press key  |  Delete to clear"));
 
         // EQ Path — Browse-only (read-only) so a stray keystroke can't silently corrupt the
         // path. The folder picker only returns real directories, killing the typo class entirely.
-        DarkTheme.AddCardLabel(cardEQ, "EQ Path:", L, cy);
-        _txtEQPath = DarkTheme.AddCardTextBox(cardEQ, I, cy, IW);
+        _txtEQPath = Fields.Text();
         _txtEQPath.ReadOnly = true;
-        var btnBrowse = DarkTheme.AddCardButton(cardEQ, "Browse...", BRW, cy - 3, 75);
+        var btnBrowse = Fields.Button("Browse...");
         btnBrowse.Click += (_, _) =>
         {
             using var fbd = new FolderBrowserDialog { Description = "Select EverQuest folder", InitialDirectory = _txtEQPath.Text };
             if (fbd.ShowDialog() == DialogResult.OK) _txtEQPath.Text = fbd.SelectedPath;
         };
-        cy += R;
+        cardEQ.RowWith("EQ Path:", _txtEQPath, btnBrowse);
 
-        // Exe / Args on same row
-        DarkTheme.AddCardLabel(cardEQ, "Exe:", L, cy);
-        _txtExeName = DarkTheme.AddCardTextBox(cardEQ, I, cy, 100, 50);
-        DarkTheme.AddCardLabel(cardEQ, "Args:", 240, cy);
-        _txtArgs = DarkTheme.AddCardTextBox(cardEQ, I2, cy, 100, 100);
-        // v3.22.54: extra 8 px padding before the Right click menu row so it
-        // reads as a distinct section, not a continuation of the Exe/Args row.
-        cy += R + 8;
+        // Exe / Args on one row (fixed-width fit fields — short content).
+        _txtExeName = Fields.Text(130, 50);
+        _txtArgs = Fields.Text(150, 100);
+        cardEQ.FlowRow("Exe:", _txtExeName, InlineLabel("Args:"), _txtArgs);
 
-        // v3.22.49: Right-click-menu hotkey. Pops the tray context menu above the
-        // system clock without opening Start (bypasses the Win11 z-band issue
-        // where Start covers the tray menu underneath it). Width 120 fits the
-        // longest expected combo "Ctrl+Alt+Shift+E" in Consolas 9pt.
-        DarkTheme.AddCardLabel(cardEQ, "Right click menu:", L, cy);
-        _txtShowMenuGeneral = MakeHotkeyBox(cardEQ, I, cy - 2, 120);
+        // Right-click-menu hotkey. Pops the tray context menu above the system clock (mirror of
+        // _txtShowMenu on the Hotkeys tab). Width fits "Ctrl+Alt+Shift+E" in Consolas.
+        _txtShowMenuGeneral = MakeHotkeyField(120, allowBareKey: false);
         _txtShowMenuGeneral.TextChanged += (_, _) =>
         {
             if (_txtShowMenu != null && _txtShowMenu.Text != _txtShowMenuGeneral.Text)
                 _txtShowMenu.Text = _txtShowMenuGeneral.Text;
         };
-        DarkTheme.AddCardHint(cardEQ, "Pops menu above clock", 250, cy + 2);
+        cardEQ.FlowRow("Right click menu:", _txtShowMenuGeneral, TrailingHint("Pops menu above clock"));
 
-        // v3.22.54: card-advance matched to card height (was 156 paired with
-        // a 148 card; now 164 paired with the 156 card so the next card
-        // doesn't crowd the Right click menu row).
-        y += 164;
-
-        // ─── Preferences card ────────────────────────────────────
-        var cardPrefs = DarkTheme.MakeCard(page, "\u2699", "Preferences", DarkTheme.CardGold, 10, y, 480, 38);
-
-        var btnEQSettings = DarkTheme.AddCardButton(cardPrefs, "EQ Client Settings...", 143, 7, 140);
+        // ─── Preferences ─────────────────────────────────────────────
+        var cardPrefs = stack.NewCard("⚙", "Preferences", DarkTheme.CardGold);
+        var btnEQSettings = Fields.Button("EQ Client Settings...");
         btnEQSettings.Click += (_, _) =>
         {
             if (_eqClientSettingsForm != null && !_eqClientSettingsForm.IsDisposed)
@@ -600,23 +623,17 @@ public class SettingsForm : EqSwitchForm
             _eqClientSettingsForm.FormClosed += (_, _) => _eqClientSettingsForm = null;
             _eqClientSettingsForm.Show();
         };
-        var btnProcessMgr = DarkTheme.AddCardButton(cardPrefs, "Process Manager...", 306, 7, 135);
+        var btnProcessMgr = Fields.Button("Process Manager...");
         btnProcessMgr.Click += (_, _) => _openProcessManager?.Invoke();
+        // EQ Client Settings hugs the left, Process Manager the right — both indented 12px from
+        // the card edges so they don't sit flush in the corners.
+        cardPrefs.Full(Bars.Split(new Control[] { btnEQSettings }, new Control[] { btnProcessMgr }))
+            .Margin = new Padding(12, 4, 12, 4);
 
-        y += 46;
-
-        // ─── Tray Click Actions card ─────────────────────────────
-        // v3.22.53 post-round-6 fix (T2 Opus IMPORTANT): include
-        // AutoLoginTeam5/6 in the dropdown to match the round-5 allowlist
-        // widening. Without this, a hand-edited config binding Team 5/6 to a
-        // tray click slot opens to a blank dropdown — the BuildAppConfig
-        // fallback preserves the value but the user has no in-UI way to
-        // change it. Completing the round-trip here means hand-edit + UI
-        // both work.
+        // ─── Tray Click Actions ──────────────────────────────────────
         // Display strings. "Launch One"/"Launch Two" are display-only (stored values stay
-        // "LaunchOne"/"LaunchAll" via the tray action maps) — "Launch Two" because the
-        // action launches the configured client count, which is 2 by default. See the
-        // _trayDisplayActionMap / _trayActionDisplayMap entries below.
+        // "LaunchOne"/"LaunchAll" via the tray action maps). AutoLoginTeam5/6 included so a
+        // hand-edited config binding them isn't shown a blank dropdown (round-trip-safe).
         // 2026-06-04: TrayActionSeparator rows partition the list into four logical groups —
         //   primary (None / Auto-Login1 / Team1) | window + utility | extra Auto-Logins | extra Teams.
         // Dividers are made non-selectable below (WireTraySeparatorBounce). All 5 click combos
@@ -631,71 +648,121 @@ public class SettingsForm : EqSwitchForm
             TrayActionSeparator,
             "AutoLoginTeam2", "AutoLoginTeam3", "AutoLoginTeam4", "AutoLoginTeam5", "AutoLoginTeam6"
         };
-        const int cboW = 140;
+        var cardTray = stack.NewCard("🖱", "Tray Click Actions", DarkTheme.CardBlue);
 
-        var cardTray = DarkTheme.MakeCard(page, "🖱", "Tray Click Actions", DarkTheme.CardBlue, 10, y, 480, 154);
-
-        // ── Left Click section ──
-        var lblLeft = DarkTheme.AddCardLabel(cardTray, "Left Click", 10, 30);
-        lblLeft.Font = TrackFont(new Font("Segoe UI Semibold", 9f));
-        lblLeft.ForeColor = DarkTheme.FgWhite;
-
-        DarkTheme.AddCardLabel(cardTray, "Single", 20, 52);
-        _cboSingleClick = DarkTheme.AddCardComboBox(cardTray, 85, 49, cboW, clickActions);
-
-        DarkTheme.AddCardLabel(cardTray, "Double", 20, 78);
-        _cboDoubleClick = DarkTheme.AddCardComboBox(cardTray, 85, 75, cboW, clickActions);
-
-        var lblLeftTriple = DarkTheme.AddCardLabel(cardTray, "Triple", 20, 104);
-        lblLeftTriple.Font = TrackFont(new Font("Segoe UI Semibold", 9f));
-        _cboTripleClick = DarkTheme.AddCardComboBox(cardTray, 85, 101, cboW, clickActions);
-
-        // ── Middle Click section ──
-        var lblMiddle = DarkTheme.AddCardLabel(cardTray, "Middle Click", 250, 30);
-        lblMiddle.Font = TrackFont(new Font("Segoe UI Semibold", 9f));
-        lblMiddle.ForeColor = DarkTheme.FgWhite;
-
-        DarkTheme.AddCardLabel(cardTray, "Single", 260, 52);
-        _cboMiddleClick = DarkTheme.AddCardComboBox(cardTray, 325, 49, cboW, clickActions);
-
-        var lblTriple = DarkTheme.AddCardLabel(cardTray, "Triple", 260, 78);
-        lblTriple.Font = TrackFont(new Font("Segoe UI Semibold", 9f));
-        _cboMiddleDoubleClick = DarkTheme.AddCardComboBox(cardTray, 325, 75, cboW, clickActions);
+        _cboSingleClick = Fields.Combo(140, clickActions);
+        _cboDoubleClick = Fields.Combo(140, clickActions);
+        _cboTripleClick = Fields.Combo(140, clickActions);
+        _cboMiddleClick = Fields.Combo(140, clickActions);
+        _cboMiddleDoubleClick = Fields.Combo(140, clickActions);
+        cardTray.Full(MakeTwoColumnGrid(
+            "Left Click", new (string, Control)[] { ("Single", _cboSingleClick), ("Double", _cboDoubleClick), ("Triple", _cboTripleClick) },
+            "Middle Click", new (string, Control)[] { ("Single", _cboMiddleClick), ("Triple", _cboMiddleDoubleClick) }));
 
         // 2026-06-04: make the group dividers in clickActions non-selectable on every click combo.
         foreach (var cb in new[] { _cboSingleClick, _cboDoubleClick, _cboTripleClick, _cboMiddleClick, _cboMiddleDoubleClick })
             WireTraySeparatorBounce(cb);
 
-        // v3.23.0: live readout of what each "AutoLogin 1-4" dropdown entry currently fires,
-        // so the slots aren't mysterious. Assigned via the Quick Login button on the
-        // Characters card; refreshed here (values already staged in InitializeForm) and on
-        // dialog save.
-        _lblQuickLoginReadout = DarkTheme.AddCardHint(cardTray, "", 12, 132);
+        // v3.23.0: live readout of what each "AutoLogin 1-4" dropdown entry currently fires.
+        _lblQuickLoginReadout = new Label { Text = "", AutoSize = true, ForeColor = DarkTheme.FgDimGray, Font = DarkTheme.FontUI75 };
+        cardTray.Full(_lblQuickLoginReadout);
         RefreshQuickLoginReadout();
 
-        y += 162;
-
-        // ─── Log Trim card ──────────────────────────────────────
-        var cardLog = DarkTheme.MakeCard(page, "✂", "Log File Trimming", DarkTheme.CardCyan, 10, y, 480, 48);
-        DarkTheme.AddCardLabel(cardLog, "Threshold:", 175, 10);
-        _nudLogTrimThreshold = DarkTheme.AddCardNumeric(cardLog, 248, 8, 55, _config.LogTrimThresholdMB, 10, 500);
+        // ─── Log File Trimming ───────────────────────────────────────
+        var cardLog = stack.NewCard("✂", "Log File Trimming", DarkTheme.CardCyan);
+        _nudLogTrimThreshold = Fields.Numeric(10, 500, _config.LogTrimThresholdMB, 60);
         _nudLogTrimThreshold.Increment = 10;
-        DarkTheme.AddCardHint(cardLog, "MB", 308, 12);
-        var btnTrimNow = DarkTheme.MakeButton("✂ Trim Now", DarkTheme.BgInput, 345, 7);
-        btnTrimNow.Size = new Size(85, 26);
-        btnTrimNow.Font = DarkTheme.FontUI85;
-        cardLog.Controls.Add(btnTrimNow);
+        var btnTrimNow = Fields.Button("✂ Trim Now", DarkTheme.BgInput);
         btnTrimNow.Click += (_, _) => FileOperations.TrimLogFiles(_config, (int)_nudLogTrimThreshold.Value, msg => MessageBox.Show(msg, "Trim Logs", MessageBoxButtons.OK, MessageBoxIcon.Information));
-        DarkTheme.AddCardHint(cardLog, "Async trim + archive old logs", 10, 30);
+        cardLog.FlowRow("Threshold:", _nudLogTrimThreshold, InlineLabel("MB"), btnTrimNow);
+        cardLog.Hint("Async trim + archive old logs");
 
-        y += 56;
-
-        // ─── Window Title card ───────────────────────────────────
-        // Height 40 (vs 56 for hinted cards): textbox bottom = 8+26 = 34, +6 padding.
-        var cardTitle = DarkTheme.MakeCard(page, "\uD83D\uDCDD", "Window Title", DarkTheme.CardGreen, 10, y, 480, 40);
-        _txtWindowTitleTemplate = DarkTheme.AddCardTextBox(cardTitle, 130, 8, 330, 100);
+        // ─── Window Title ────────────────────────────────────────────
+        var cardTitle = stack.NewCard("📝", "Window Title", DarkTheme.CardGreen);
+        _txtWindowTitleTemplate = Fields.Text(maxLength: 100);
+        // Indent the field 12px from both card edges so it reads as centered in the section.
+        cardTitle.Full(_txtWindowTitleTemplate).Margin = new Padding(12, 4, 12, 4);
 
         return page;
+    }
+
+    /// <summary>A trailing dim italic hint label for a FlowRow (vertically nudged to baseline-align).</summary>
+    private static Label TrailingHint(string text) => new()
+    { Text = text, AutoSize = true, ForeColor = DarkTheme.FgDimGray, Font = DarkTheme.FontUI75Italic, Margin = new Padding(8, 6, 0, 0) };
+
+    /// <summary>An inline label inside a FlowRow (e.g. the "Args:" between Exe and Args boxes).</summary>
+    private static Label InlineLabel(string text) => new()
+    { Text = text, AutoSize = true, ForeColor = DarkTheme.FgGray, Font = DarkTheme.FontUI9, Margin = new Padding(2, 6, 6, 0) };
+
+    /// <summary>Height-free HotkeyTextBox (for the layout-container rebuild) — no fixed Size, no
+    /// WrapWithBorder; the row in CardLayout positions it. Mirrors MakeHotkeyBox's wiring.</summary>
+    private HotkeyTextBox MakeHotkeyField(int width, bool allowBareKey)
+    {
+        var tb = new HotkeyTextBox
+        {
+            Width = width,
+            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = TrackFont(new Font("Consolas", 9f)),
+            TextAlign = HorizontalAlignment.Center,
+            ShortcutsEnabled = false,
+            CaptureTab = allowBareKey,
+            Tag = allowBareKey ? BareKeyTag : null,
+        };
+        tb.KeyDown += HotkeyBoxKeyDown;
+        return tb;
+    }
+
+    /// <summary>
+    /// A two-section card body: "Left Click" + "Middle Click" side by side, each a label:field
+    /// column. The field columns are Percent (Fill) so the combos grow with the (DPI-scaled) form
+    /// width — long items like "AutoLoginTeam6" don't clip at 150%.
+    /// </summary>
+    private TableLayoutPanel MakeTwoColumnGrid(
+        string leftTitle, (string label, Control field)[] left,
+        string rightTitle, (string label, Control field)[] right)
+    {
+        var g = new TableLayoutPanel
+        {
+            ColumnCount = 4,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Top,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = Color.Transparent,
+        };
+        g.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // left labels
+        g.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));  // left fields (fill)
+        g.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // right labels
+        g.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));  // right fields (fill)
+
+        Label Section(string t) => new() { Text = t, AutoSize = true, ForeColor = DarkTheme.FgWhite, Font = DarkTheme.FontSemibold9, Margin = new Padding(0, 4, 0, 4) };
+        Label RowLbl(string t, int leftMargin) => new() { Text = t, AutoSize = true, ForeColor = DarkTheme.FgGray, Font = DarkTheme.FontUI9, Margin = new Padding(leftMargin, 6, 10, 2) };
+
+        int r = 0;
+        g.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var lt = Section(leftTitle); g.Controls.Add(lt, 0, r); g.SetColumnSpan(lt, 2);
+        var rt = Section(rightTitle); rt.Margin = new Padding(16, 4, 0, 4); g.Controls.Add(rt, 2, r); g.SetColumnSpan(rt, 2);
+        r++;
+
+        int rows = Math.Max(left.Length, right.Length);
+        for (int i = 0; i < rows; i++)
+        {
+            g.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            if (i < left.Length)
+            {
+                g.Controls.Add(RowLbl(left[i].label, 0), 0, r);
+                var f = left[i].field; f.Dock = DockStyle.Fill; f.Margin = new Padding(0, 2, 14, 2); g.Controls.Add(f, 1, r);
+            }
+            if (i < right.Length)
+            {
+                g.Controls.Add(RowLbl(right[i].label, 16), 2, r);
+                var f = right[i].field; f.Dock = DockStyle.Fill; f.Margin = new Padding(0, 2, 0, 2); g.Controls.Add(f, 3, r);
+            }
+            r++;
+        }
+        return g;
     }
 
     private void CheckDuplicateSwitchKeys()
@@ -724,12 +791,9 @@ public class SettingsForm : EqSwitchForm
     /// </summary>
     private void RefreshDirectBindingsCard()
     {
-        _cardDirectBindings.Controls.Clear();
+        _cardDirectBindings.Clear();
 
-        // v3.22.27 Item 1: snapshot _config reads under ConfigMutationLock to
-        // protect against torn reads if SM ever gains Account/Character writes.
-        // HotkeyBindingUtil.Count* methods iterate _config.* internally, so they
-        // belong inside the lock too. Re-entrant on the ApplySettings call-path.
+        // v3.22.27: snapshot _config reads under ConfigMutationLock (Count* iterate _config.*).
         int liveA, liveC, staleA, staleC, totalA, totalC;
         lock (ConfigManager.ConfigMutationLock)
         {
@@ -741,109 +805,69 @@ public class SettingsForm : EqSwitchForm
             totalC = _config.Characters.Count;
         }
 
-        // Header-less card — first row sits near the top of the panel.
-        // Per-row +4/-1 offsets keep the label vertically centered with the
-        // 26px Configure… button.
-        int cy = 6;
+        // Legacy "Quick Login slots moved" banner — folded in as the card's top row (was a separate
+        // floating panel). Only un-prefixed (pre-v3.23) bare-name slots count as legacy; a typed
+        // char:/acct: value is a current binding, not a migration leftover.
+        static bool IsLegacyBare(string v) => QuickLoginSlot.Parse(v).Kind == QuickLoginSlot.Kind.LegacyBare;
+        bool anyLegacy = IsLegacyBare(_config.QuickLogin1) || IsLegacyBare(_config.QuickLogin2)
+                      || IsLegacyBare(_config.QuickLogin3) || IsLegacyBare(_config.QuickLogin4);
+        if (anyLegacy && !_config.HotkeysLegacyBannerDismissed)
+        {
+            var bannerLbl = new Label
+            {
+                Text = "ℹ Quick Login slots 1-4 moved to Direct Bindings. Legacy hotkeys still work until v3.11.0.",
+                AutoSize = true, ForeColor = DarkTheme.FgGray, Font = DarkTheme.FontUI75,
+            };
+            var btnDismiss = Fields.Button("Dismiss");
+            btnDismiss.Click += (_, _) =>
+            {
+                _config.HotkeysLegacyBannerDismissed = true;
+                ConfigManager.Save(_config);
+                RefreshDirectBindingsCard();
+            };
+            _cardDirectBindings.RowWith("", bannerLbl, btnDismiss);
+        }
 
-        DarkTheme.AddCardLabel(_cardDirectBindings, "Accounts", 10, cy + 4);
-        var lblAcctCount = DarkTheme.AddCardLabel(_cardDirectBindings, $"{liveA} / {totalA} bound", 100, cy + 4);
-        lblAcctCount.ForeColor = DarkTheme.FgDimGray;
-        var btnConfigureAccounts = DarkTheme.AddCardButton(_cardDirectBindings, "Configure\u2026", 350, cy - 1, 110);
-        btnConfigureAccounts.Click += (_, _) => OpenAccountHotkeysDialog();
-        cy += 28;
+        // A family row: [name | "X / N bound" | Configure… button right-aligned].
+        void AddBindingRow(string family, string count, Action onConfigure)
+        {
+            var g = new TableLayoutPanel { ColumnCount = 3, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Top, Margin = new Padding(0, 1, 0, 1), Padding = Padding.Empty, BackColor = Color.Transparent };
+            g.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            g.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            g.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            g.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            g.Controls.Add(new Label { Text = family, AutoSize = true, ForeColor = DarkTheme.FgGray, Font = DarkTheme.FontUI9, Margin = new Padding(0, 7, 12, 2) }, 0, 0);
+            g.Controls.Add(new Label { Text = count, AutoSize = true, ForeColor = DarkTheme.FgDimGray, Font = DarkTheme.FontUI85, Anchor = AnchorStyles.Left, Margin = new Padding(0, 8, 0, 2) }, 1, 0);
+            var btn = Fields.Button("Configure…");
+            btn.Anchor = AnchorStyles.Right;
+            btn.Click += (_, _) => onConfigure();
+            g.Controls.Add(btn, 2, 0);
+            _cardDirectBindings.Full(g);
+        }
 
-        DarkTheme.AddCardLabel(_cardDirectBindings, "Characters", 10, cy + 4);
-        var lblCharCount = DarkTheme.AddCardLabel(_cardDirectBindings, $"{liveC} / {totalC} bound", 100, cy + 4);
-        lblCharCount.ForeColor = DarkTheme.FgDimGray;
-        var btnConfigureChars = DarkTheme.AddCardButton(_cardDirectBindings, "Configure\u2026", 350, cy - 1, 110);
-        btnConfigureChars.Click += (_, _) => OpenCharacterHotkeysDialog();
-        cy += 28;
-
-        // Counts ONLY teams 1-4 by design — only Hotkeys.TeamLogin1-4 exist
-        // as global hotkey slots. Teams 5-12 (added in v3.22.53 / v3.22.58)
-        // have no hotkey binding and are tray-submenu-only, so "X / 4" is the
-        // correct denominator for the hotkey-bound badge. Do NOT extend this
-        // counter to 12 without also growing HotkeyConfig.TeamLoginN.
+        AddBindingRow("Accounts", $"{liveA} / {totalA} bound", OpenAccountHotkeysDialog);
+        AddBindingRow("Characters", $"{liveC} / {totalC} bound", OpenCharacterHotkeysDialog);
+        // Counts ONLY teams 1-4 (only Hotkeys.TeamLogin1-4 are hotkey slots; teams 5-12 are tray-only).
         int liveT = (string.IsNullOrEmpty(_pendingTeamLogin1) ? 0 : 1)
                   + (string.IsNullOrEmpty(_pendingTeamLogin2) ? 0 : 1)
                   + (string.IsNullOrEmpty(_pendingTeamLogin3) ? 0 : 1)
                   + (string.IsNullOrEmpty(_pendingTeamLogin4) ? 0 : 1);
-        DarkTheme.AddCardLabel(_cardDirectBindings, "Teams", 10, cy + 4);
-        var lblTeamCount = DarkTheme.AddCardLabel(_cardDirectBindings, $"{liveT} / 4 hotkey-bound", 100, cy + 4);
-        lblTeamCount.ForeColor = DarkTheme.FgDimGray;
-        var btnConfigureTeams = DarkTheme.AddCardButton(_cardDirectBindings, "Configure\u2026", 350, cy - 1, 110);
-        btnConfigureTeams.Click += (_, _) => OpenTeamHotkeysDialog();
-        cy += 28;
+        AddBindingRow("Teams", $"{liveT} / 4 hotkey-bound", OpenTeamHotkeysDialog);
 
         if (staleA > 0 || staleC > 0)
         {
             var parts = new List<string>();
             if (staleA > 0) parts.Add($"{staleA} Account");
             if (staleC > 0) parts.Add($"{staleC} Character");
-            var lblStale = DarkTheme.AddCardLabel(_cardDirectBindings,
-                $"\u26A0 Stale bindings: {string.Join(" + ", parts)} \u2014 open Configure to review",
-                10, cy + 4);
-            lblStale.Size = new Size(460, 18);
-            lblStale.ForeColor = DarkTheme.CardWarn;
-            cy += 22;
+            var lblStale = new Label
+            {
+                Text = $"⚠ Stale bindings: {string.Join(" + ", parts)} — open Configure to review",
+                AutoSize = true, ForeColor = DarkTheme.CardWarn, Font = DarkTheme.FontUI85,
+            };
+            _cardDirectBindings.Full(lblStale);
         }
 
-        DarkTheme.AddCardHint(_cardDirectBindings,
-            "Bind a hotkey to any Account or Character. Ctrl+Alt+Letter style combos recommended.",
-            10, cy + 6);
-
-        RefreshLegacyBanner();
-    }
-
-    /// <summary>
-    /// Phase 5a: render/remove the legacy "Quick Login slots moved" banner above
-    /// the Direct Bindings card. Banner appears only when any QuickLoginN is
-    /// populated AND HotkeysLegacyBannerDismissed is false. Dismiss click flips
-    /// the bool + persists via ConfigManager.Save.
-    /// </summary>
-    private void RefreshLegacyBanner()
-    {
-        if (_legacyBanner != null && _legacyBanner.Parent != null)
-        {
-            _legacyBanner.Parent.Controls.Remove(_legacyBanner);
-            _legacyBanner.Dispose();
-            _legacyBanner = null;
-        }
-
-        // v3.23.0: only un-prefixed (pre-v3.23) bare-name slots count as "legacy". A typed
-        // char:/acct: value set via the new Quick Login dialog is a current binding, not a
-        // migration leftover, so it must NOT trigger the "slots moved" banner.
-        static bool IsLegacyBare(string v) => QuickLoginSlot.Parse(v).Kind == QuickLoginSlot.Kind.LegacyBare;
-        bool anyLegacy = IsLegacyBare(_config.QuickLogin1) || IsLegacyBare(_config.QuickLogin2)
-                      || IsLegacyBare(_config.QuickLogin3) || IsLegacyBare(_config.QuickLogin4);
-        if (!anyLegacy || _config.HotkeysLegacyBannerDismissed) return;
-
-        var page = _cardDirectBindings.Parent;
-        if (page == null) return;
-
-        var banner = new Panel
-        {
-            Location = new Point(_cardDirectBindings.Location.X, _cardDirectBindings.Location.Y - 38),
-            Size = new Size(_cardDirectBindings.Width, 34),
-            BackColor = DarkTheme.BgMedium,
-        };
-
-        var lbl = DarkTheme.AddCardLabel(banner,
-            "\u2139 Quick Login slots 1-4 moved to Direct Bindings. Legacy hotkeys still work until v3.11.0.",
-            10, 10);
-        lbl.Size = new Size(370, 18);
-
-        var btnDismiss = DarkTheme.AddCardButton(banner, "Dismiss", 390, 5, 80);
-        btnDismiss.Click += (_, _) =>
-        {
-            _config.HotkeysLegacyBannerDismissed = true;
-            ConfigManager.Save(_config);
-            RefreshLegacyBanner();
-        };
-
-        page.Controls.Add(banner);
-        _legacyBanner = banner;
+        _cardDirectBindings.Hint("Bind a hotkey to any Account or Character. Ctrl+Alt+Letter style combos recommended.");
     }
 
     private void OpenAccountHotkeysDialog()
@@ -1026,130 +1050,61 @@ public class SettingsForm : EqSwitchForm
         return true;
     }
 
-    private TextBox MakeHotkeyBox(Panel card, int x, int y, int width = 80, bool allowBareKey = false)
-    {
-        var tb = new HotkeyTextBox
-        {
-            Location = new Point(x, y), Size = new Size(width, 20),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            BorderStyle = BorderStyle.None, Font = TrackFont(new Font("Consolas", 9f)),
-            TextAlign = HorizontalAlignment.Center,
-            ShortcutsEnabled = false,
-            // Only the Switch Key boxes bind Tab — action boxes keep normal tab-navigation.
-            CaptureTab = allowBareKey,
-            // Switch-key boxes are consumed by the low-level keyboard hook, which is built
-            // for single keys (\ ]). Mark them so HotkeyBoxKeyDown accepts a modifier-less
-            // keypress; action boxes (RegisterHotKey, global scope) stay modifier-only.
-            Tag = allowBareKey ? BareKeyTag : null
-        };
-        tb.KeyDown += HotkeyBoxKeyDown;
-        card.Controls.Add(tb);
-        DarkTheme.WrapWithBorder(tb);
-        return tb;
-    }
-
     private TabPage BuildHotkeysTab()
     {
         var page = DarkTheme.MakeTabPage("Hotkeys");
-        int y = 8;
-        const int L = 10, I = 150, I2 = 310, R = 28;
+        var stack = new CardStack(page);
 
-        // ─── Window Switching card ───────────────────────────────
-        var cardSwitch = DarkTheme.MakeCard(page, "⚔", "Window Switching", DarkTheme.CardGreen, 10, y, 480, 90);
-        int cy = 32;
-
-        _lblSwitchKeyHotkey = DarkTheme.AddCardLabel(cardSwitch, "Switch Key (EQ-only):", L, cy);
-        _txtSwitchKey = MakeHotkeyBox(cardSwitch, I, cy - 2, allowBareKey: true);
+        // ─── Window Switching ────────────────────────────────────────
+        var cardSwitch = stack.NewCard("⚔", "Window Switching", DarkTheme.CardGreen);
+        _lblSwitchKeyHotkey = new Label { Text = "Switch Key (EQ-only):", AutoSize = true, ForeColor = DarkTheme.FgWhite, Font = DarkTheme.FontUI9 };
+        _txtSwitchKey = MakeHotkeyField(90, allowBareKey: true);
         _txtSwitchKey.TextChanged += (_, _) =>
         {
             if (_txtSwitchKeyGeneral != null && _txtSwitchKeyGeneral.Text != _txtSwitchKey.Text)
                 _txtSwitchKeyGeneral.Text = _txtSwitchKey.Text;
         };
-        DarkTheme.AddCardLabel(cardSwitch, "Mode:", 250, cy);
-        _cboSwitchKeyMode = DarkTheme.AddCardComboBox(cardSwitch, I2, cy, 130, new[] { "Swap Last Two", "Cycle All" });
-        cy += R + 2;
-
-        DarkTheme.AddCardLabel(cardSwitch, "Global Switch Key:", L, cy);
-        _txtGlobalSwitchKey = MakeHotkeyBox(cardSwitch, I, cy - 2, allowBareKey: true);
-        _lblDuplicateKeyWarn = DarkTheme.AddCardHint(cardSwitch, "Works from any app, cycles thru all", 250, cy + 2);
-
-        // Show warning when both switch keys match
         _txtSwitchKey.TextChanged += (_, _) => CheckDuplicateSwitchKeys();
+        _cboSwitchKeyMode = Fields.Combo(140, "Swap Last Two", "Cycle All");
+        cardSwitch.FlowRow(_lblSwitchKeyHotkey, _txtSwitchKey, InlineLabel("Mode:"), _cboSwitchKeyMode);
+
+        _txtGlobalSwitchKey = MakeHotkeyField(90, allowBareKey: true);
         _txtGlobalSwitchKey.TextChanged += (_, _) => CheckDuplicateSwitchKeys();
-        cy += R + 2;
+        _lblDuplicateKeyWarn = new Label { Text = "Works from any app, cycles thru all", AutoSize = true, ForeColor = DarkTheme.FgDimGray, Font = DarkTheme.FontUI75Italic, Margin = new Padding(8, 6, 0, 0) };
+        cardSwitch.FlowRow("Global Switch Key:", _txtGlobalSwitchKey, _lblDuplicateKeyWarn);
 
-        y += 98;
-
-        // ─── Right Click Menu card (v3.22.49) ────────────────────
-        // Mirrors _txtShowMenuGeneral on the General tab. Sits above Actions
-        // Launcher (per user request) so it's adjacent to Window Switching.
-        var cardShowMenu = DarkTheme.MakeCard(page, "🗔", "Right Click Menu", DarkTheme.CardBlue, 10, y, 480, 60);
-        DarkTheme.AddCardLabel(cardShowMenu, "Show Menu:", L, 32);
-        _txtShowMenu = MakeHotkeyBox(cardShowMenu, I, 30, 120);
+        // ─── Right Click Menu ────────────────────────────────────────
+        var cardShowMenu = stack.NewCard("🗔", "Right Click Menu", DarkTheme.CardBlue);
+        _txtShowMenu = MakeHotkeyField(120, allowBareKey: false);
         _txtShowMenu.TextChanged += (_, _) =>
         {
             if (_txtShowMenuGeneral != null && _txtShowMenuGeneral.Text != _txtShowMenu.Text)
                 _txtShowMenuGeneral.Text = _txtShowMenu.Text;
         };
-        DarkTheme.AddCardHint(cardShowMenu, "Pops menu above clock", 280, 35);
+        cardShowMenu.FlowRow("Show Menu:", _txtShowMenu, TrailingHint("Pops menu above clock"));
 
-        y += 68;
+        // ─── Actions Launcher ────────────────────────────────────────
+        var cardActions = stack.NewCard("🏰", "Actions Launcher", DarkTheme.CardGold);
+        _txtArrangeWindows = MakeHotkeyField(80, allowBareKey: false);
+        _txtLaunchOne = MakeHotkeyField(80, allowBareKey: false);
+        _txtToggleMultiMon = MakeHotkeyField(80, allowBareKey: false);
+        _txtLaunchAll = MakeHotkeyField(80, allowBareKey: false);
+        _txtTogglePip = MakeHotkeyField(80, allowBareKey: false);
+        cardActions.FlowRow("Fix Windows:", _txtArrangeWindows, InlineLabel("Launch One:"), _txtLaunchOne);
+        cardActions.FlowRow("Multi-Mon Toggle:", _txtToggleMultiMon, InlineLabel("Launch All:"), _txtLaunchAll);
+        cardActions.FlowRow("PiP Toggle:", _txtTogglePip);
+        cardActions.Hint("Press key combo to capture. Leave blank to disable. Backspace/Delete to clear.");
 
-        // ─── Actions card ────────────────────────────────────────
-        var cardActions = DarkTheme.MakeCard(page, "🏰", "Actions Launcher", DarkTheme.CardGold, 10, y, 480, 140);
-        cy = 32;
-        const int col2 = 250, col2I = 370;
-
-        DarkTheme.AddCardLabel(cardActions, "Fix Windows:", L, cy);
-        _txtArrangeWindows = MakeHotkeyBox(cardActions, I, cy - 2);
-        DarkTheme.AddCardLabel(cardActions, "Launch One:", col2, cy);
-        _txtLaunchOne = MakeHotkeyBox(cardActions, col2I, cy - 2);
-        cy += R + 2;
-
-        DarkTheme.AddCardLabel(cardActions, "Multi-Mon Toggle:", L, cy);
-        _txtToggleMultiMon = MakeHotkeyBox(cardActions, I, cy - 2);
-        DarkTheme.AddCardLabel(cardActions, "Launch All:", col2, cy);
-        _txtLaunchAll = MakeHotkeyBox(cardActions, col2I, cy - 2);
-        cy += R + 2;
-
-        DarkTheme.AddCardLabel(cardActions, "PiP Toggle:", L, cy);
-        _txtTogglePip = MakeHotkeyBox(cardActions, I, cy - 2);
-        cy += R + 2;
-
-        DarkTheme.AddCardHint(cardActions, "Press key combo to capture. Leave blank to disable. Backspace/Delete to clear.", L, cy);
-
-        y += 150;
-
-        // Phase 5a + Teams: legacy Quick Login slot combos + Auto-Login hotkey
-        // TextBoxes + the inline Team Hotkeys card all collapsed into the
-        // Direct Bindings card below, edited via AccountHotkeysDialog /
-        // CharacterHotkeysDialog / TeamHotkeysDialog. QuickLogin1-4 and
-        // HotkeyConfig.AutoLogin1-4 remain on AppConfig for v3.10.x back-compat;
-        // Phase 6 deletes them.
-
-
-        // ─── Direct Bindings (Account + Character hotkey families) ──
-        // Header-less card: Accounts / Characters / Teams rows. Each row is
-        // self-labelled with a Configure\u2026 button that opens its dialog. Height
-        // 118 fits 3 rows (cy increments of 28) plus the hint with ~10px of
-        // breathing room before the bottom border.
-        _cardDirectBindings = DarkTheme.MakeCard(page, "", "",
-            DarkTheme.CardGreen, 10, y, 480, 118);
+        // ─── Direct Bindings (Account + Character + Team hotkey families) ──
+        // Header-less, rebuilt dynamically by RefreshDirectBindingsCard (counts + Configure buttons,
+        // optional stale-binding warning + the legacy banner folded in as the top row).
+        _cardDirectBindings = stack.NewCard("", "", DarkTheme.CardGreen);
         RefreshDirectBindingsCard();
 
-        y += 126;
-
-        // ─── Client Launch Delay (header-less, full-width) ───────
-        // Moved from Video → Preferences. Header-less full-width card aligned
-        // with the other sections' left border (x=10). Controls within stay
-        // pushed to the right side of the card so the section reads as an aside.
-        var cardLaunchDelay = DarkTheme.MakeCard(page, "", "",
-            DarkTheme.CardCyan, 10, y, 480, 36);
-        DarkTheme.AddCardLabel(cardLaunchDelay, "Client Launch Delay:", 280, 10);
-        _nudLaunchDelay = DarkTheme.AddCardNumeric(cardLaunchDelay, 408, 8, 40, 3, 2, 30);
-        DarkTheme.AddCardHint(cardLaunchDelay, "sec", 458, 10);
-
-        y += 44;
+        // ─── Client Launch Delay ─────────────────────────────────────
+        var cardLaunchDelay = stack.NewCard("", "", DarkTheme.CardCyan);
+        _nudLaunchDelay = Fields.Numeric(2, 30, 3, 56);
+        cardLaunchDelay.Full(Bars.Split(System.Array.Empty<Control>(), new Control[] { InlineLabel("Client Launch Delay:"), _nudLaunchDelay, InlineLabel("sec") }));
 
         return page;
     }
@@ -1245,130 +1200,78 @@ public class SettingsForm : EqSwitchForm
     private TabPage BuildPathsTab()
     {
         var page = DarkTheme.MakeTabPage("Paths");
-        int y = 8;
-        const int L = 10, I = 120, BRW = 380, IW = 250, R = 32;
+        var stack = new CardStack(page);
 
-        // ─── External Tools card ─────────────────────────────────
-        var cardPaths = DarkTheme.MakeCard(page, "📁", "External Tools", DarkTheme.CardGold, 10, y, 480, 272);
-        int cy = 32;
+        // ─── External Tools ──────────────────────────────────────────
+        var cardPaths = stack.NewCard("📁", "External Tools", DarkTheme.CardGold);
 
-        DarkTheme.AddCardLabel(cardPaths, "GINA Path:", L, cy);
-        _txtGinaPath = DarkTheme.AddCardTextBox(cardPaths, I, cy, IW);
-        var btnBrowseGina = DarkTheme.AddCardButton(cardPaths, "Browse...", BRW, cy - 3, 75);
+        _txtGinaPath = Fields.Text();
+        var btnBrowseGina = Fields.Button("Browse...");
         btnBrowseGina.Click += (_, _) =>
         {
-            using var ofd = new OpenFileDialog
-            {
-                Title = "Select GINA executable",
-                Filter = "Executables|*.exe|All Files|*.*",
-                InitialDirectory = Path.GetDirectoryName(_txtGinaPath.Text) ?? ""
-            };
+            using var ofd = new OpenFileDialog { Title = "Select GINA executable", Filter = "Executables|*.exe|All Files|*.*", InitialDirectory = Path.GetDirectoryName(_txtGinaPath.Text) ?? "" };
             if (ofd.ShowDialog() == DialogResult.OK) _txtGinaPath.Text = ofd.FileName;
         };
-        cy += R;
+        cardPaths.RowWith("GINA Path:", _txtGinaPath, btnBrowseGina);
 
-        DarkTheme.AddCardLabel(cardPaths, "Gamparse:", L, cy);
-        _txtGamparsePath = DarkTheme.AddCardTextBox(cardPaths, I, cy, IW);
-        var btnBrowseGamparse = DarkTheme.AddCardButton(cardPaths, "Browse...", BRW, cy - 3, 75);
+        _txtGamparsePath = Fields.Text();
+        var btnBrowseGamparse = Fields.Button("Browse...");
         btnBrowseGamparse.Click += (_, _) =>
         {
-            using var ofd = new OpenFileDialog
-            {
-                Title = "Select Gamparse executable",
-                Filter = "Executables|*.exe|All Files|*.*",
-                InitialDirectory = Path.GetDirectoryName(_txtGamparsePath.Text) ?? ""
-            };
+            using var ofd = new OpenFileDialog { Title = "Select Gamparse executable", Filter = "Executables|*.exe|All Files|*.*", InitialDirectory = Path.GetDirectoryName(_txtGamparsePath.Text) ?? "" };
             if (ofd.ShowDialog() == DialogResult.OK) _txtGamparsePath.Text = ofd.FileName;
         };
-        cy += R;
+        cardPaths.RowWith("Gamparse:", _txtGamparsePath, btnBrowseGamparse);
 
-        DarkTheme.AddCardLabel(cardPaths, "EQLogParser:", L, cy);
-        _txtEqLogParserPath = DarkTheme.AddCardTextBox(cardPaths, I, cy, IW);
-        var btnBrowseEqLogParser = DarkTheme.AddCardButton(cardPaths, "Browse...", BRW, cy - 3, 75);
+        _txtEqLogParserPath = Fields.Text();
+        var btnBrowseEqLogParser = Fields.Button("Browse...");
         btnBrowseEqLogParser.Click += (_, _) =>
         {
-            using var ofd = new OpenFileDialog
-            {
-                Title = "Select EQLogParser executable",
-                Filter = "Executables|*.exe|All Files|*.*",
-                InitialDirectory = Path.GetDirectoryName(_txtEqLogParserPath.Text) ?? ""
-            };
+            using var ofd = new OpenFileDialog { Title = "Select EQLogParser executable", Filter = "Executables|*.exe|All Files|*.*", InitialDirectory = Path.GetDirectoryName(_txtEqLogParserPath.Text) ?? "" };
             if (ofd.ShowDialog() == DialogResult.OK) _txtEqLogParserPath.Text = ofd.FileName;
         };
-        cy += R;
+        cardPaths.RowWith("EQLogParser:", _txtEqLogParserPath, btnBrowseEqLogParser);
 
-        DarkTheme.AddCardLabel(cardPaths, "Notes File:", L, cy);
-        _txtNotesPath = DarkTheme.AddCardTextBox(cardPaths, I, cy, IW);
-        var btnBrowseNotes = DarkTheme.AddCardButton(cardPaths, "Browse...", BRW, cy - 3, 75);
+        _txtNotesPath = Fields.Text();
+        var btnBrowseNotes = Fields.Button("Browse...");
         btnBrowseNotes.Click += (_, _) =>
         {
-            using var ofd = new OpenFileDialog
-            {
-                Title = "Select notes file",
-                Filter = "Text Files|*.txt|All Files|*.*",
-                InitialDirectory = Path.GetDirectoryName(_txtNotesPath.Text) ?? ""
-            };
+            using var ofd = new OpenFileDialog { Title = "Select notes file", Filter = "Text Files|*.txt|All Files|*.*", InitialDirectory = Path.GetDirectoryName(_txtNotesPath.Text) ?? "" };
             if (ofd.ShowDialog() == DialogResult.OK) _txtNotesPath.Text = ofd.FileName;
         };
-        DarkTheme.AddCardHint(cardPaths, "Leave blank to auto-create eqnotes.txt next to EQSwitch", L, cy + 26);
-        cy += 52;
+        cardPaths.RowWith("Notes File:", _txtNotesPath, btnBrowseNotes);
+        cardPaths.Hint("Leave blank to auto-create eqnotes.txt next to EQSwitch");
 
-        DarkTheme.AddCardLabel(cardPaths, "Dalaya Patcher:", L, cy);
-        _txtDalayaPatcherPath = DarkTheme.AddCardTextBox(cardPaths, I, cy, IW);
-        var btnBrowsePatcher = DarkTheme.AddCardButton(cardPaths, "Browse...", BRW, cy - 3, 75);
+        _txtDalayaPatcherPath = Fields.Text();
+        var btnBrowsePatcher = Fields.Button("Browse...");
         btnBrowsePatcher.Click += (_, _) =>
         {
-            using var ofd = new OpenFileDialog
-            {
-                Title = "Select Dalaya patcher executable",
-                Filter = "Executables|*.exe|All Files|*.*",
-                InitialDirectory = Path.GetDirectoryName(_txtDalayaPatcherPath.Text) ?? ""
-            };
+            using var ofd = new OpenFileDialog { Title = "Select Dalaya patcher executable", Filter = "Executables|*.exe|All Files|*.*", InitialDirectory = Path.GetDirectoryName(_txtDalayaPatcherPath.Text) ?? "" };
             if (ofd.ShowDialog() == DialogResult.OK) _txtDalayaPatcherPath.Text = ofd.FileName;
         };
-        DarkTheme.AddCardHint(cardPaths, "Patcher may be deleted by antivirus — re-download from Dalaya if missing.", L, cy + 26);
-        cy += 52;
+        cardPaths.RowWith("Dalaya Patcher:", _txtDalayaPatcherPath, btnBrowsePatcher);
+        cardPaths.Hint("Patcher may be deleted by antivirus — re-download from Dalaya if missing.");
 
-        DarkTheme.AddCardLabel(cardPaths, "Custom Icon:", L, cy);
-        _txtCustomIconPath = DarkTheme.AddCardTextBox(cardPaths, I, cy, IW);
-        var btnBrowseIcon = DarkTheme.AddCardButton(cardPaths, "Browse...", BRW, cy - 3, 75);
+        _txtCustomIconPath = Fields.Text();
+        var btnBrowseIcon = Fields.Button("Browse...");
         btnBrowseIcon.Click += (_, _) =>
         {
-            using var dlg = new OpenFileDialog
-            {
-                Title = "Select Tray Icon",
-                Filter = "Icon Files (*.ico)|*.ico",
-                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures)
-            };
-            if (dlg.ShowDialog() == DialogResult.OK)
-                _txtCustomIconPath.Text = dlg.FileName;
+            using var dlg = new OpenFileDialog { Title = "Select Tray Icon", Filter = "Icon Files (*.ico)|*.ico", InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures) };
+            if (dlg.ShowDialog() == DialogResult.OK) _txtCustomIconPath.Text = dlg.FileName;
         };
+        cardPaths.RowWith("Custom Icon:", _txtCustomIconPath, btnBrowseIcon);
 
-        y += 280;
-
-        // ─── Startup card ───────────────────────────────────────
-        // Single row, original x=47 left padding preserved. Button on the left,
-        // Run at Startup mid-right with breathing room. Show Tooltips toggle
-        // moved to Video → Preferences (paired with Tooltip Delay).
-        var cardStartup = DarkTheme.MakeCard(page, "🚀", "Startup", DarkTheme.CardGreen, 10, y, 480, 64);
-        cy = 32;
-
+        // ─── Startup ─────────────────────────────────────────────────
+        var cardStartup = stack.NewCard("🚀", "Startup", DarkTheme.CardGreen);
         const string SHORTCUT_LABEL = "Create Desktop Shortcut";
-        var btnShortcut = DarkTheme.AddCardButton(cardStartup, SHORTCUT_LABEL, 47, cy, 180);
+        var btnShortcut = Fields.Button(SHORTCUT_LABEL);
         btnShortcut.Click += (_, _) =>
         {
-            // Re-enable + label-restore are driven by the timer, NOT by the
-            // CreateDesktopShortcut callback — so the button is guaranteed to
-            // recover regardless of which branch (success / already-exists /
-            // exception) fires inside StartupManager. Visible feedback is the
-            // 2s "Created!" flash; the showBalloon delegate is intentionally
-            // a no-op here (parity with prior behavior — the button text IS
-            // the surface).
+            // Re-enable + label restore driven by the timer so the button always recovers
+            // (success / already-exists / exception). The 2s "Created!" flash is the surface.
             btnShortcut.Enabled = false;
             btnShortcut.Text = "Created!";
-
             StartupManager.CreateDesktopShortcut(_ => { });
-
             var reset = new System.Windows.Forms.Timer { Interval = 2000 };
             reset.Tick += (__, ___) =>
             {
@@ -1378,46 +1281,31 @@ public class SettingsForm : EqSwitchForm
             };
             reset.Start();
         };
+        _chkRunAtStartup = Fields.Check("Run at Startup");
+        _chkRunAtStartup.Margin = new Padding(0, 6, 0, 0);
+        cardStartup.Full(Bars.Split(new Control[] { btnShortcut }, new Control[] { _chkRunAtStartup }));
 
-        _chkRunAtStartup = DarkTheme.AddCardCheckBox(cardStartup, "Run at Startup", 320, cy + 5);
-
-        y += 72;
-
-        // ─── eqclient.ini actions card ─────────────────────────────
-        // Taller card so the warning occupies its OWN row above the buttons — the
-        // dynamic-length "not found" text would otherwise overlap Backup/Restore at any
-        // scale (mirrors AutoLoginTeamsDialog's dedicated warning row).
-        var cardIni = DarkTheme.MakeCard(page, "💾", "eqclient.ini", DarkTheme.CardGold, 10, y, 480, 96);
-
+        // ─── eqclient.ini actions ────────────────────────────────────
+        var cardIni = stack.NewCard("💾", "eqclient.ini", DarkTheme.CardGold);
         _lblVideoLoadError = new Label
         {
             Text = "⚠ Failed to read eqclient.ini — values shown are defaults, not your settings.",
-            Location = new Point(L, 28),
-            Size = new Size(460, 18),
+            AutoSize = true,
             ForeColor = DarkTheme.CardWarn,
             Font = TrackFont(new Font("Segoe UI", 7.5f, FontStyle.Bold)),
-            Visible = false
+            Visible = false,
         };
-        cardIni.Controls.Add(_lblVideoLoadError);
-
-        cy = 52;
-        var btnBackup = DarkTheme.AddCardButton(cardIni, "📋 Backup", 47, cy, 110);
+        cardIni.Full(_lblVideoLoadError);
+        var btnBackup = Fields.Button("📋 Backup");
         btnBackup.Click += (_, _) => VideoBackupIni();
-
-        var btnRestore = DarkTheme.AddCardButton(cardIni, "📂 Restore", 340, cy, 110);
+        var btnRestore = Fields.Button("📂 Restore");
         btnRestore.Click += (_, _) => VideoRestoreIni();
+        cardIni.Full(Bars.Split(new Control[] { btnBackup }, new Control[] { btnRestore }));
 
-        y += 104;
-
-        // ─── Help button ─────────────────────────────────────────
-        var btnHelp = DarkTheme.MakeButton("❓ Help", DarkTheme.BgMedium, 10, y);
-        btnHelp.Size = new Size(100, 30);
+        // ─── Help / Reset / Uninstall (loose button bar) ─────────────
+        var btnHelp = Fields.Button("❓ Help");
         btnHelp.Click += (_, _) => HelpForm.Show(_config);
-        page.Controls.Add(btnHelp);
-
-        // ─── Reset Defaults button (Nuclear) ────────────────────
-        var btnReset = DarkTheme.MakeButton("⚠ Reset", DarkTheme.BgMedium, 195, y);
-        btnReset.Size = new Size(100, 30);
+        var btnReset = Fields.Button("⚠ Reset");
         btnReset.ForeColor = DarkTheme.CardWarn;
         btnReset.Click += (_, _) =>
         {
@@ -1439,13 +1327,9 @@ public class SettingsForm : EqSwitchForm
                 Close();
             }
         };
-        page.Controls.Add(btnReset);
-
-        // ─── Uninstall button (right-aligned) ───────────────────
-        var btnUninstall = DarkTheme.MakeButton("🗑 Uninstall", DarkTheme.CardWarn, 380, y);
-        btnUninstall.Size = new Size(110, 30);
+        var btnUninstall = Fields.Button("🗑 Uninstall", DarkTheme.CardWarn);
         btnUninstall.Click += (_, _) => RunUninstall();
-        page.Controls.Add(btnUninstall);
+        stack.AddFullWidth(Bars.Spread(btnHelp, btnReset, btnUninstall));
 
         return page;
     }
@@ -1453,22 +1337,18 @@ public class SettingsForm : EqSwitchForm
     private TabPage BuildPipTab()
     {
         var page = DarkTheme.MakeTabPage("PiP");
-        int y = 8;
-        const int L = 10, I = 120, R = 28;
+        var stack = new CardStack(page);
 
-        // ─── PiP Overlay card ────────────────────────────────────
-        var cardPip = DarkTheme.MakeCard(page, "👁", "Picture in Picture Overlay", DarkTheme.CardCyan, 10, y, 480, 120);
-        int cy = 32;
+        // ─── Picture in Picture Overlay ──────────────────────────────
+        var cardPip = stack.NewCard("👁", "Picture in Picture Overlay", DarkTheme.CardCyan);
 
-        _chkPipEnabled = DarkTheme.AddCardCheckBox(cardPip, "Enable PiP Overlay", L, cy);
-        DarkTheme.AddCardHint(cardPip, "DWM thumbnail — zero CPU, GPU composited", 170, cy + 2);
-        cy += R;
+        _chkPipEnabled = Fields.Check("Enable PiP Overlay");
+        cardPip.Check(_chkPipEnabled, "DWM thumbnail — zero CPU, GPU composited");
 
-        DarkTheme.AddCardLabel(cardPip, "Size Preset:", L, cy);
-        _cboPipSize = DarkTheme.AddCardComboBox(cardPip, I, cy, 170, new[] {
-            "Small (256x144)", "Medium (384x216)", "Large (512x288)",
-            "XL (768x432)", "XXL (1024x576)", "XXXL (1600x900)", "Custom"
-        });
+        _cboPipSize = Fields.Combo(210, "Small (256x144)", "Medium (384x216)", "Large (512x288)",
+            "XL (768x432)", "XXL (1024x576)", "XXXL (1600x900)", "Custom");
+        _nudPipMaxWindows = Fields.Numeric(1, 3, 3, 48);
+        _nudPipMaxWindows.TextAlign = HorizontalAlignment.Center;
         _cboPipSize.SelectedIndexChanged += (_, _) =>
         {
             var selected = _cboPipSize.SelectedItem?.ToString() ?? "";
@@ -1494,47 +1374,35 @@ public class SettingsForm : EqSwitchForm
                 _nudPipMaxWindows.Maximum = 3;
             }
         };
-        DarkTheme.AddCardLabel(cardPip, "Max", 338, cy - 12);
-        DarkTheme.AddCardLabel(cardPip, "Windows:", 323, cy + 2);
-        _nudPipMaxWindows = DarkTheme.AddCardNumeric(cardPip, 393, cy, 40, 3, 1, 3);
-        _nudPipMaxWindows.TextAlign = HorizontalAlignment.Center;
-        cy += R;
+        cardPip.FlowRow("Size Preset:", _cboPipSize, InlineLabel("Max Windows:"), _nudPipMaxWindows);
 
-        DarkTheme.AddCardLabel(cardPip, "Custom W:", L, cy);
-        _nudPipWidth = DarkTheme.AddCardNumeric(cardPip, I, cy, 55, 320, 100, 1920);
+        _nudPipWidth = Fields.Numeric(100, 1920, 320, 64);
         _nudPipWidth.Enabled = false;
-        DarkTheme.AddCardLabel(cardPip, "H:", 185, cy);
-        _nudPipHeight = DarkTheme.AddCardNumeric(cardPip, 205, cy, 55, 240, 75, 1080);
+        _nudPipHeight = Fields.Numeric(75, 1080, 240, 64);
         _nudPipHeight.Enabled = false;
-        DarkTheme.AddCardLabel(cardPip, "Layout:", 323, cy);
-        _cboPipOrientation = DarkTheme.AddCardComboBox(cardPip, 385, cy, 85, new[] { "Vertical", "Horizontal" });
+        _cboPipOrientation = Fields.Combo(100, "Vertical", "Horizontal");
+        cardPip.FlowRow("Custom W:", _nudPipWidth, InlineLabel("H:"), _nudPipHeight, InlineLabel("Layout:"), _cboPipOrientation);
 
-        y += 128;
+        // ─── Appearance ──────────────────────────────────────────────
+        var cardLook = stack.NewCard("🎨", "Appearance", DarkTheme.CardPurple);
 
-        // ─── Appearance card ─────────────────────────────────────
-        var cardLook = DarkTheme.MakeCard(page, "🎨", "Appearance", DarkTheme.CardPurple, 10, y, 480, 90);
-        cy = 32;
-
-        DarkTheme.AddCardLabel(cardLook, "Opacity:", L, cy);
-        _nudPipOpacity = DarkTheme.AddCardNumeric(cardLook, I, cy, 60, 245, 0, 255);
+        _nudPipOpacity = Fields.Numeric(0, 255, 245, 64);
         _nudPipOpacity.Increment = 5;
-        DarkTheme.AddCardHint(cardLook, "0-255", I + 65, cy + 2);
+        cardLook.FlowRow("Opacity:", _nudPipOpacity, TrailingHint("0-255"));
 
-        _chkPipBorder = DarkTheme.AddCardCheckBox(cardLook, "Show Border", 230, cy);
+        _chkPipBorder = Fields.Check("Show Border");
         _chkPipBorder.CheckedChanged += (_, _) =>
         {
             _cboPipBorderColor.Enabled = _chkPipBorder.Checked;
             _nudPipBorderThickness.Enabled = _chkPipBorder.Checked;
         };
-        cy += R;
+        cardLook.Check(_chkPipBorder);
 
-        DarkTheme.AddCardLabel(cardLook, "Border Color:", L, cy);
-        _cboPipBorderColor = DarkTheme.AddCardComboBox(cardLook, I, cy, 100, new[] { "Blue", "Green", "Red" });
-        DarkTheme.AddCardLabel(cardLook, "Thickness:", 230, cy);
-        _nudPipBorderThickness = DarkTheme.AddCardNumeric(cardLook, 310, cy, 50, 3, 1, 10);
+        _cboPipBorderColor = Fields.Combo(110, "Blue", "Green", "Red");
+        _nudPipBorderThickness = Fields.Numeric(1, 10, 3, 56);
+        cardLook.FlowRow("Border Color:", _cboPipBorderColor, InlineLabel("Thickness:"), _nudPipBorderThickness);
 
-        y += 95;
-        DarkTheme.AddHint(page, "Hold Ctrl + Left Click to drag PiP window to a new position", 20, y);
+        cardLook.Hint("Hold Ctrl + Left Click to drag PiP window to a new position");
 
         return page;
     }
@@ -2388,196 +2256,114 @@ public class SettingsForm : EqSwitchForm
     private TabPage BuildAccountsTab()
     {
         var page = DarkTheme.MakeTabPage("Accounts");
-        int y = 8;
+        var stack = new CardStack(page);
 
-        page.AutoScroll = true;
-        // Default AutoScrollMargin is (0,0), so the scrollbar stops right at the
-        // last child's bottom edge — that ate the Autologin Teams card's bottom
-        // gold border at any DPI/form size that didn't have spare headroom.
-        // 20px margin gives the scroll area room past the last card.
-        page.AutoScrollMargin = new Size(0, 20);
-
-        // ─── Accounts card ───────────────────────────────────────────
-        // Card height 216: the DPAPI note + Flag legend share one hint row (legend
-        // moved up beside the note, v3.22.91). Was 234 when the legend had its own row.
-        var accountsCard = DarkTheme.MakeCard(page, "\uD83D\uDD11", "Accounts", DarkTheme.CardOrange, 10, y, 480, 216);
+        // ─── Accounts ────────────────────────────────────────────────
+        var accountsCard = stack.NewCard("🔑", "Accounts", DarkTheme.CardOrange);
 
         _dgvAccounts = MakeDualSectionGrid();
         _dgvAccounts.Columns.Add("Num", "#");
-        _dgvAccounts.Columns["Num"]!.Width = 30;
+        _dgvAccounts.Columns["Num"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells;
         _dgvAccounts.Columns.Add("Username", "Username");
-        _dgvAccounts.Columns["Username"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-        _dgvAccounts.Columns["Username"]!.FillWeight = 30;
-        // "Notes" column = the Account.Notes model property — free-form
-        // metadata only. Username is the pinning identity; Account.Name is an
-        // internal FK shadow of Username (since v3.14.8) and never surfaces
-        // in the grid.
+        _dgvAccounts.Columns["Username"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells;
+        _dgvAccounts.Columns["Username"]!.MinimumWidth = 90;
+        // "Notes" = the Account.Notes property (free-form). Username is the pinning identity;
+        // Account.Name is an internal FK shadow of Username and never surfaces in the grid.
         _dgvAccounts.Columns.Add("Notes", "Notes");
         _dgvAccounts.Columns["Notes"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
         _dgvAccounts.Columns["Notes"]!.FillWeight = 30;
         _dgvAccounts.Columns.Add("Server", "Server");
-        _dgvAccounts.Columns["Server"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-        _dgvAccounts.Columns["Server"]!.FillWeight = 20;
-        // "Flag" column — last-autologin outcome glyph. ✓ = transitioned to
-        // charselect, ✗ = AutoLoginManager-owned timeout, — = untried. Populated
-        // in RefreshAccountsGrid from Account.LastLoginResult; written by
-        // AutoLoginManager at the WaitForScreenTransition success/failure
-        // boundary.
+        _dgvAccounts.Columns["Server"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells;
+        _dgvAccounts.Columns["Server"]!.MinimumWidth = 70;
+        // "Flag" = last-autologin outcome glyph (✓/✗/—), populated in RefreshAccountsGrid.
         _dgvAccounts.Columns.Add("Flag", "Flag");
-        _dgvAccounts.Columns["Flag"]!.Width = 42;
+        _dgvAccounts.Columns["Flag"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells;
         _dgvAccounts.DoubleClick += (_, _) =>
         {
             if (_dgvAccounts.SelectedRows.Count > 0)
                 OnEditAccount(_dgvAccounts.SelectedRows[0].Index);
         };
-        accountsCard.Controls.Add(_dgvAccounts);
+        accountsCard.Full(_dgvAccounts);
 
-        int btnY = 160;
-        var btnAddAccount = DarkTheme.AddCardButton(accountsCard, "+ Add", 10, btnY, 70);
+        var btnAddAccount = Fields.Button("+ Add");
         btnAddAccount.Click += (_, _) => OnAddAccount();
-
-        var btnEditAccount = DarkTheme.AddCardButton(accountsCard, "Edit", 85, btnY, 60);
-        btnEditAccount.Click += (_, _) =>
-        {
-            if (_dgvAccounts.SelectedRows.Count > 0)
-                OnEditAccount(_dgvAccounts.SelectedRows[0].Index);
-        };
-
-        var btnDeleteAccount = DarkTheme.AddCardButton(accountsCard, "Delete", 150, btnY, 65);
-        btnDeleteAccount.Click += (_, _) =>
-        {
-            if (_dgvAccounts.SelectedRows.Count > 0)
-                OnDeleteAccount(_dgvAccounts.SelectedRows[0].Index);
-        };
-
-        var btnBackup = DarkTheme.AddCardButton(accountsCard, "\uD83D\uDCE4 Backup", 225, btnY, 75);
-        btnBackup.Click += (_, _) => ExportAccounts();
-
-        var btnImport = DarkTheme.AddCardButton(accountsCard, "\uD83D\uDCE5 Import", 305, btnY, 75);
+        var btnEditAccount = Fields.Button("Edit");
+        btnEditAccount.Click += (_, _) => { if (_dgvAccounts.SelectedRows.Count > 0) OnEditAccount(_dgvAccounts.SelectedRows[0].Index); };
+        var btnDeleteAccount = Fields.Button("Delete");
+        btnDeleteAccount.Click += (_, _) => { if (_dgvAccounts.SelectedRows.Count > 0) OnDeleteAccount(_dgvAccounts.SelectedRows[0].Index); };
+        var btnBackupAcct = Fields.Button("📤 Backup");
+        btnBackupAcct.Click += (_, _) => ExportAccounts();
+        var btnImport = Fields.Button("📥 Import");
         btnImport.Click += (_, _) => ImportAccounts();
-
-        // Login delay — compact, right side of button row.
-        // Label at 380 (was 388) + input at 430 (was 425) gives ~17px between
-        // the colon and the input's left edge. FixedSingle border on dark
-        // backgrounds drops its left pixel (see DarkTheme.WrapWithBorder
-        // comment) — the extra gap keeps the colon from masking that visible
-        // ambiguity into "the input has no left border."
-        DarkTheme.AddCardLabel(accountsCard, "Delay:", 380, btnY + 3);
-        _nudLoginScreenDelay = DarkTheme.AddNumeric(accountsCard, 430, btnY, 45,
-            _config.LoginScreenDelayMs / 1000m, 5, 10);
+        _nudLoginScreenDelay = Fields.Numeric(5, 10, _config.LoginScreenDelayMs / 1000m, 64);
         _nudLoginScreenDelay.DecimalPlaces = 1;
         _nudLoginScreenDelay.Increment = 0.5m;
+        accountsCard.Full(Bars.Split(new Control[] { btnAddAccount, btnEditAccount, btnDeleteAccount }, new Control[] { btnBackupAcct, btnImport }));
+        accountsCard.Full(Bars.Split(System.Array.Empty<Control>(), new Control[] { InlineLabel("Login delay:"), _nudLoginScreenDelay, InlineLabel("sec") }));
+        accountsCard.Hint("DPAPI-encrypted — same Windows user only.      Flag: ✓ ok   ✗ failed   — untried");
 
-        // v3.22.91 (Nate): DPAPI note + Flag legend share one row now (legend moved
-        // up beside the note). Shortened "passwords" off the note so both fit 480.
-        DarkTheme.AddCardHint(accountsCard, "DPAPI-encrypted — same Windows user only.", 10, 196);
-        DarkTheme.AddCardHint(accountsCard, "Flag: ✓ ok   ✗ failed   — untried", 250, 196);
-
-        y += 224;
-
-        // ─── Characters card ─────────────────────────────────────────
-        var charactersCard = DarkTheme.MakeCard(page, "\uD83E\uDDD9", "Characters", DarkTheme.FgCharacterBlue, 10, y, 480, 196);
+        // ─── Characters ──────────────────────────────────────────────
+        var charactersCard = stack.NewCard("🧙", "Characters", DarkTheme.FgCharacterBlue);
 
         _dgvCharacters = MakeDualSectionGrid();
         _dgvCharacters.Columns.Add("Num", "#");
-        _dgvCharacters.Columns["Num"]!.Width = 30;
+        _dgvCharacters.Columns["Num"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells;
         _dgvCharacters.Columns.Add("Name", "Name");
-        _dgvCharacters.Columns["Name"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
-        _dgvCharacters.Columns["Name"]!.FillWeight = 30;
+        _dgvCharacters.Columns["Name"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells;
+        _dgvCharacters.Columns["Name"]!.MinimumWidth = 110;
         _dgvCharacters.Columns.Add("Account", "Account");
         _dgvCharacters.Columns["Account"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
         _dgvCharacters.Columns["Account"]!.FillWeight = 30;
         _dgvCharacters.Columns.Add("Slot", "Slot");
-        _dgvCharacters.Columns["Slot"]!.Width = 50;
+        _dgvCharacters.Columns["Slot"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells;
         _dgvCharacters.Columns.Add("HK", "Hotkey");
-        _dgvCharacters.Columns["HK"]!.Width = 60;
+        _dgvCharacters.Columns["HK"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells;
         _dgvCharacters.Columns["HK"]!.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleCenter;
         _dgvCharacters.DoubleClick += (_, _) =>
         {
             if (_dgvCharacters.SelectedRows.Count > 0)
                 OnEditCharacter(_dgvCharacters.SelectedRows[0].Index);
         };
-        charactersCard.Controls.Add(_dgvCharacters);
+        charactersCard.Full(_dgvCharacters);
 
-        var btnAddChar = DarkTheme.AddCardButton(charactersCard, "+ Add Character", 10, btnY, 120);
+        var btnAddChar = Fields.Button("+ Add Character");
         btnAddChar.Click += (_, _) => OnAddCharacter();
-
-        var btnEditChar = DarkTheme.AddCardButton(charactersCard, "Edit", 135, btnY, 60);
-        btnEditChar.Click += (_, _) =>
-        {
-            if (_dgvCharacters.SelectedRows.Count > 0)
-                OnEditCharacter(_dgvCharacters.SelectedRows[0].Index);
-        };
-
-        var btnDeleteChar = DarkTheme.AddCardButton(charactersCard, "Delete", 200, btnY, 65);
-        btnDeleteChar.Click += (_, _) =>
-        {
-            if (_dgvCharacters.SelectedRows.Count > 0)
-                OnDeleteCharacter(_dgvCharacters.SelectedRows[0].Index);
-        };
-
-        // v3.23.0: assign the four "AutoLogin 1-4" Quick Login slots. Right-aligned to the
-        // 480-wide card edge (480 − 10 margin − 135 width = 335).
-        var btnQuickLogin = DarkTheme.AddCardButton(charactersCard, "⚡ Quick Login…", 335, btnY, 135);
+        var btnEditChar = Fields.Button("Edit");
+        btnEditChar.Click += (_, _) => { if (_dgvCharacters.SelectedRows.Count > 0) OnEditCharacter(_dgvCharacters.SelectedRows[0].Index); };
+        var btnDeleteChar = Fields.Button("Delete");
+        btnDeleteChar.Click += (_, _) => { if (_dgvCharacters.SelectedRows.Count > 0) OnDeleteCharacter(_dgvCharacters.SelectedRows[0].Index); };
+        var btnQuickLogin = Fields.Button("⚡ Quick Login…");
         btnQuickLogin.Click += (_, _) => OnConfigureQuickLogin();
-
-        y += 204;
+        charactersCard.Full(Bars.Split(new Control[] { btnAddChar, btnEditChar, btnDeleteChar }, new Control[] { btnQuickLogin }));
 
         // ─── Autologin Teams ─────────────────────────────────────────
-        // v3.22.58: card height grew 84\u2192174 to fit 6-row \u00D7 2-col summary
-        // for 12 teams (2-col gives each cell ~159px \u2014 wide enough for
-        // typical "T3: raistlin + Natedogg" without wrapping). Hint text
-        // moved out of AddCardHint (FgDimGray on medium-gray card bg \u2014
-        // low contrast) into a BgDark inset panel with FgWhite text \u2014
-        // the "black box" treatment Nate requested for at-a-glance readability.
-        // v3.22.60: font bumped 7.5pt \u2192 9pt to fill the panel width (the 7.5pt
-        // text only used ~70% of available horizontal space \u2014 the empty band
-        // looked unfinished). Panel + label heights grown ~10px each for 9pt
-        // line-height headroom. TextAlign=MiddleLeft centers the row block
-        // vertically inside the taller label.
-        var teamsCard = DarkTheme.MakeCard(page, "\uD83D\uDC65", "Autologin Teams", DarkTheme.CardGold, 10, y, 480, 174);
-        var btnTeams = DarkTheme.AddCardButton(teamsCard, "Configure Teams...", 10, 32, 120);
+        var teamsCard = stack.NewCard("👥", "Autologin Teams", DarkTheme.CardGold);
+        var btnTeams = Fields.Button("Configure Teams...");
         btnTeams.Click += (_, _) => ShowTeamsDialog();
+        teamsCard.Buttons(rightAlign: false, btnTeams);
+
+        // Inset "black box" readout of the 12 team assignments (owner-draw TeamSummaryLabel
+        // paints Account names orange / Character names white / the " | " boundary red).
         var summaryPanel = new Panel
         {
-            Location = new Point(140, 28),
-            Size = new Size(330, 134),
+            Height = 150,
             BackColor = DarkTheme.BgDark,
             BorderStyle = BorderStyle.FixedSingle,
         };
-        teamsCard.Controls.Add(summaryPanel);
         _lblTeamSummary = new TeamSummaryLabel
         {
-            Location = new Point(6, 4),
-            Size = new Size(318, 124),
+            Dock = DockStyle.Fill,
             ForeColor = DarkTheme.FgWhite,
             Font = DarkTheme.FontUI9,
             BackColor = Color.Transparent,
             AutoSize = false,
-            // v3.22.68: was MiddleLeft. 6 rows at 9pt ≈ 96px inside a 124px label
-            // — vertical centering produced a ~14px blank band above T1 that
-            // looked like awkward unowned padding. TopLeft anchors the row block
-            // to the panel's top edge so T1 sits right under the inset border;
-            // remaining headroom collects at the bottom where it reads as
-            // intentional breathing room instead of dead space.
             TextAlign = ContentAlignment.TopLeft,
-            // AutoEllipsis applies only to the mirrored base Text used by
-            // Narrator / fallback; owner-paint controls visible truncation
-            // via Clip(MaxNameLen) in BuildTeamSummaryRows.
             AutoEllipsis = true,
+            Padding = new Padding(6, 4, 6, 4),
         };
         _lblTeamSummary.Rows = BuildTeamSummaryRows();
         summaryPanel.Controls.Add(_lblTeamSummary);
-
-        // Phase 5b: removed "Auto Enter World (legacy default)" checkbox.
-        // It was a one-shot v3→v4 migration trigger consumed by AppConfig.Validate
-        // (clears itself after migrating LegacyAccounts). v4 paths don't read it:
-        //   • Character hotkeys → always enter world (hardcoded in FireCharacterLogin)
-        //   • Account hotkeys → always stop at charselect (hardcoded in FireAccountLogin)
-        //   • Per-team AutoEnter → still active via Team{N}AutoEnter on AppConfig
-        // The migration code in AppConfig.Validate is preserved — anyone who
-        // hand-edits the config to set AutoEnterWorld=true still triggers it.
-        // BuildAppConfig now passes _config.AutoEnterWorld through unchanged.
+        teamsCard.Full(summaryPanel);
 
         RefreshAccountsGrid();
         RefreshCharactersGrid();
@@ -3444,64 +3230,37 @@ public class SettingsForm : EqSwitchForm
     private TabPage BuildVideoTab()
     {
         var page = DarkTheme.MakeTabPage("Video");
-        int y = 8;
-        const int L = 10;
+        var stack = new CardStack(page);
 
-        // ─── Resolution card ──────────────────────────────────────
-        var cardRes = DarkTheme.MakeCard(page, "📺", "EQ Resolution", DarkTheme.CardPurple, 10, y, 480, 96);
-        int cy = 32;
+        // ─── EQ Resolution ───────────────────────────────────────────
+        var cardRes = stack.NewCard("📺", "EQ Resolution", DarkTheme.CardPurple);
 
-        DarkTheme.AddLabel(cardRes, "Preset:", L, cy + 2);
-        _cboVideoPreset = new ComboBox
-        {
-            Location = new Point(80, cy),
-            Size = new Size(150, 25),
-            BackColor = DarkTheme.BgInput,
-            ForeColor = DarkTheme.FgWhite,
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            FlatStyle = FlatStyle.Flat
-        };
+        _cboVideoPreset = Fields.Combo(160);
         PopulateVideoPresets();
         _cboVideoPreset.SelectedIndexChanged += CboVideoPreset_SelectedIndexChanged;
-        cardRes.Controls.Add(_cboVideoPreset);
-        DarkTheme.WrapWithBorder(_cboVideoPreset);
-
-        var btnOffsets = DarkTheme.MakeButton("📐 Offsets...", DarkTheme.BgInput, 370, cy - 2);
-        btnOffsets.Size = new Size(95, 26);
-        btnOffsets.Font = DarkTheme.FontUI85;
-        cardRes.Controls.Add(btnOffsets);
+        var btnOffsets = Fields.Button("📐 Offsets...", DarkTheme.BgInput);
         btnOffsets.Click += (_, _) => ShowOffsetsDialog();
+        cardRes.RowWith("Preset:", _cboVideoPreset, btnOffsets);
 
-        cy += 30;
-        DarkTheme.AddLabel(cardRes, "Width:", L, cy + 2);
-        _nudVideoWidth = DarkTheme.AddNumeric(cardRes, 80, cy, 70, 1920, 320, 7680);
+        _nudVideoWidth = Fields.Numeric(320, 7680, 1920, 72);
         _nudVideoWidth.ValueChanged += (_, _) => SyncVideoPresetToCustom();
-
-        DarkTheme.AddLabel(cardRes, "Height:", 160, cy + 2);
-        _nudVideoHeight = DarkTheme.AddNumeric(cardRes, 210, cy, 70, 1080, 200, 4320);
+        _nudVideoHeight = Fields.Numeric(200, 4320, 1080, 72);
         _nudVideoHeight.ValueChanged += (_, _) => SyncVideoPresetToCustom();
+        var btnResetRes = Fields.Button("🔄 Reset");
+        btnResetRes.Click += (_, _) => VideoResetDefaults();
+        cardRes.FlowRow("Width:", _nudVideoWidth, InlineLabel("Height:"), _nudVideoHeight, btnResetRes);
 
-        // Offset controls live in a popup dialog behind this button
+        // Offset / nudge holders — edited via the Offsets dialog, never shown on the tab.
         _nudVideoOffsetX = new NumericUpDown { Minimum = -5000, Maximum = 5000, Value = 0 };
         _nudVideoOffsetY = new NumericUpDown { Minimum = -5000, Maximum = 5000, Value = 0 };
         _nudVideoTopOffset = new NumericUpDown { Minimum = -100, Maximum = 200, Value = _config.Layout.TopOffset };
         _nudHorizontalNudge = new NumericUpDown { Minimum = -10, Maximum = 10, Value = _config.Layout.HorizontalNudgePx };
 
-        var btnReset = DarkTheme.AddCardButton(cardRes, "🔄 Reset", 370, cy, 95);
-        btnReset.Click += (_, _) => VideoResetDefaults();
+        // ─── Monitor Selection ───────────────────────────────────────
+        var cardMon = stack.NewCard("🖥", "Monitor Selection", DarkTheme.CardBlue);
+        _chkVideoMultiMon = Fields.Check("Multi-Monitor Mode");
+        cardMon.Check(_chkVideoMultiMon);
 
-        y += 104;
-
-        // ─── Monitor card ─────────────────────────────────────────
-        var cardMon = DarkTheme.MakeCard(page, "🖥", "Monitor Selection", DarkTheme.CardBlue, 10, y, 480, 128);
-        cy = 32;
-
-        _chkVideoMultiMon = DarkTheme.AddCheckBox(cardMon, "Multi-Monitor Mode", L, cy);
-        // v3.24.15: the "Show taskbars (multi-mon)" toggle was removed — multimonitor now always
-        // shows the 2nd taskbar (ShowTaskbars), the validated working state. The mode is pinned in
-        // ApplySettings + the AppConfig default/Validate; there is no user-facing knob anymore.
-
-        cy += 26;
         var screens = Screen.AllScreens.OrderBy(s => s.Bounds.Left).ToArray();
         var monItems = new string[screens.Length];
         for (int i = 0; i < screens.Length; i++)
@@ -3509,94 +3268,52 @@ public class SettingsForm : EqSwitchForm
             var primary = screens[i].Primary ? " (primary)" : "";
             monItems[i] = $"{i + 1}: {screens[i].Bounds.Width}x{screens[i].Bounds.Height}{primary}";
         }
-
-        DarkTheme.AddLabel(cardMon, "Primary:", L + 10, cy + 2);
-        _cboVideoPrimaryMon = new ComboBox
-        {
-            Location = new Point(80, cy), Size = new Size(155, 25),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat
-        };
-        _cboVideoPrimaryMon.Items.AddRange(monItems);
+        _cboVideoPrimaryMon = Fields.Combo(155, monItems);
         _cboVideoPrimaryMon.SelectedIndex = Math.Clamp(_config.Layout.TargetMonitor, 0, screens.Length - 1);
-        cardMon.Controls.Add(_cboVideoPrimaryMon);
-        DarkTheme.WrapWithBorder(_cboVideoPrimaryMon);
 
         var secItems = new string[screens.Length + 1];
-        // v3.22.68: was "Auto (first non-primary)" — stale label. The smart-pick
-        // logic at WindowManager.ResolveSecondaryMonitorIdx (v3.22.19) walks all
-        // non-primary monitors and picks the widest landscape one that's wide
-        // enough for EQ, skipping tiny / portrait panels. The literal "first
-        // non-primary" rule only fires as a last-resort fallback when no
-        // monitor meets the suitability bar.
+        // "Auto (best size)" maps the smart-pick (WindowManager.ResolveSecondaryMonitorIdx): the widest
+        // landscape monitor wide enough for EQ; literal "first non-primary" only as a last resort.
         secItems[0] = "Auto (best size)";
         for (int i = 0; i < monItems.Length; i++) secItems[i + 1] = monItems[i];
-
-        DarkTheme.AddLabel(cardMon, "Secondary:", 250, cy + 2);
-        _cboVideoSecondaryMon = new ComboBox
-        {
-            Location = new Point(325, cy), Size = new Size(145, 25),
-            BackColor = DarkTheme.BgInput, ForeColor = DarkTheme.FgWhite,
-            DropDownStyle = ComboBoxStyle.DropDownList, FlatStyle = FlatStyle.Flat
-        };
-        _cboVideoSecondaryMon.Items.AddRange(secItems);
+        _cboVideoSecondaryMon = Fields.Combo(155, secItems);
         var secIdx = _config.Layout.SecondaryMonitor < 0 ? 0 : _config.Layout.SecondaryMonitor + 1;
         _cboVideoSecondaryMon.SelectedIndex = Math.Clamp(secIdx, 0, secItems.Length - 1);
-        cardMon.Controls.Add(_cboVideoSecondaryMon);
-        DarkTheme.WrapWithBorder(_cboVideoSecondaryMon);
 
-        cy += 36;
-        var btnIdentify = DarkTheme.AddCardButton(cardMon, "🔍 Identify", L, cy - 3, 90);
+        cardMon.Full(MakeTwoFieldRow("Primary:", _cboVideoPrimaryMon, "Secondary:", _cboVideoSecondaryMon));
+
+        var btnIdentify = Fields.Button("🔍 Identify");
         btnIdentify.Click += (_, _) => ShowMonitorIdentifiers();
-        DarkTheme.AddCardHint(cardMon, "Primary = active client. Secondary = background client (multimonitor mode).", 110, cy);
+        cardMon.FlowRow("", btnIdentify, TrailingHint("Primary = active client. Secondary = background client (multimonitor mode)."));
 
-        y += 136;
+        // ─── Window Style ────────────────────────────────────────────
+        // Header-less card so the title shares its row with the Advanced button (title left,
+        // Advanced top-right). The accent bar still paints from the titleColor argument.
+        var cardStyle = stack.NewCard("", "", DarkTheme.CardPurple);
 
-        // ─── Window Style card ───────────────────────────────────
-        // v3.22.80: two-mode model. Card holds Windowed Mode (disabled until
-        // Phase 2), Fullscreen mode (the current WS_POPUP borderless look), and
-        // Dark Titlebar. The WindowedMode=TRUE plumbing + Maximize on Launch
-        // moved to the ⚙ Advanced dialog. 3 checkbox rows → height 130.
-        var cardStyle = DarkTheme.MakeCard(page, "🪟", "Window Style", DarkTheme.CardPurple, 10, y, 480, 130);
-        cy = 32;
-
-        const int hintX = 260;
-
-        var btnWrapper = DarkTheme.MakeButton("⚙ Advanced...", DarkTheme.BgInput, 385, 5);
-        btnWrapper.Size = new Size(80, 26);
-        btnWrapper.Font = DarkTheme.FontUI85;
-        cardStyle.Controls.Add(btnWrapper);
-
-        _chkWindowedMode = DarkTheme.AddCardCheckBox(cardStyle, "Windowed Mode", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "slim titlebar + covers taskbar", hintX, cy + 2);
-        cy += 26;
-
-        _chkSlimTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Fullscreen mode", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "borderless, flush all sides", hintX, cy + 2);
-        cy += 26;
-
-        // v3.22.54: DarkTitlebar promoted from the Advanced wrapper dialog up
-        // to the main Window Style card per Nate 2026-05-26 — it's a regular
-        // visual preference that shouldn't be buried two clicks deep.
-        _chkDarkTitlebar = DarkTheme.AddCardCheckBox(cardStyle, "Dark Titlebar", L, cy);
-        DarkTheme.AddCardHint(cardStyle, "dark title bar instead of the default white", hintX, cy + 2);
-        cy += 22;
-
-        // Wrapper dialog backing fields — titlebar offset, bottom margin, DLL
-        // hook. Advanced settings most users don't touch. v3.22.80: Maximize on
-        // Launch is a detached field surfaced only via the ⚙ Advanced dialog.
-        // (v3.22.91: Force-Windowed is no longer a field — ForceWindowedMode is a
-        // pinned invariant written literally by VideoSaveToIni.)
-        _nudTitlebarOffset = new NumericUpDown { Value = 13, Minimum = 0, Maximum = 40 };  // transient; overwritten by PopulateFromConfig (default 13 — v3.22.86)
-        _nudBottomOffset = new NumericUpDown { Value = 21, Minimum = 0, Maximum = 100 };  // transient; overwritten by PopulateFromConfig (default 21 — matches WindowLayout.BottomOffset)
-        _chkUseHook = new CheckBox();
-        _chkMaximizeWindow = new CheckBox();   // v3.22.80: Advanced-only
-        btnWrapper.Enabled = true;              // Advanced is always reachable now
+        var btnWrapper = Fields.Button("⚙ Advanced...", DarkTheme.BgInput);
         btnWrapper.Click += (_, _) => ShowWrapperDialog();
+        var lblStyleTitle = new Label
+        {
+            Text = "🪟  Window Style", AutoSize = true,
+            ForeColor = DarkTheme.CardPurple, Font = DarkTheme.FontSemibold95,
+        };
+        cardStyle.Full(Bars.Split(new Control[] { lblStyleTitle }, new Control[] { btnWrapper }));
 
-        // v3.22.80: Fullscreen and Windowed are mutually exclusive; exactly one
-        // is always selected. Windowed is disabled in Phase 1, so Fullscreen is
-        // effectively pinned on.
+        _chkWindowedMode = Fields.Check("Windowed Mode");
+        cardStyle.Check(_chkWindowedMode, "slim titlebar + covers taskbar");
+        _chkSlimTitlebar = Fields.Check("Fullscreen mode");
+        cardStyle.Check(_chkSlimTitlebar, "borderless, flush all sides");
+        _chkDarkTitlebar = Fields.Check("Dark Titlebar");
+        cardStyle.Check(_chkDarkTitlebar, "dark title bar instead of the default white");
+
+        // Advanced-dialog backing fields — titlebar peek, bottom margin, DLL hook, maximize.
+        _nudTitlebarOffset = new NumericUpDown { Value = 13, Minimum = 0, Maximum = 40 };  // transient; overwritten by PopulateFromConfig
+        _nudBottomOffset = new NumericUpDown { Value = 21, Minimum = 0, Maximum = 100 };  // transient; overwritten by PopulateFromConfig
+        _chkUseHook = new CheckBox();
+        _chkMaximizeWindow = new CheckBox();   // Advanced-only
+
+        // Fullscreen and Windowed are mutually exclusive; exactly one is always on.
         bool syncingModes = false;
         _chkSlimTitlebar.CheckedChanged += (_, _) =>
         {
@@ -3608,7 +3325,6 @@ public class SettingsForm : EqSwitchForm
                 _chkSlimTitlebar.Checked = true;   // can't have neither mode on
             syncingModes = false;
         };
-
         _chkWindowedMode.CheckedChanged += (_, _) =>
         {
             if (syncingModes) return;
@@ -3618,30 +3334,54 @@ public class SettingsForm : EqSwitchForm
             syncingModes = false;
         };
 
-        // v3.22.80: card shrank 152 → 130 (4 rows → 3 rows after Maximize on
-        // Launch moved to the Advanced dialog). Advance tracked 160 → 138 to
-        // keep the historical 8 px gap to the Preferences card below (130 + 8).
-        y += 138;
-
-        // ─── Preferences card ────────────────────────────────────
-        // Left: Show Tooltips toggle (moved from Paths → Startup card — pairs
-        // logically with the Tooltip Delay knob it gates).
-        // Right: Tooltip Delay (slid over from where Client Launch Delay was;
-        // Client Launch Delay moved to a header-less section on the Hotkeys tab).
-        var cardPrefs = DarkTheme.MakeCard(page, "⚙", "Preferences", DarkTheme.CardCyan, 10, y, 480, 68);
-        cy = 32;
-        _chkShowTooltips = DarkTheme.AddCardCheckBox(cardPrefs, "Show Tooltips", L, cy + 1);
-        // "Duration" not "Delay": this is the auto-dismiss interval for the
-        // post-action FloatingTooltip toast (and gates menu hover tooltips
-        // through ShowTooltips). Range 100..5000ms — on/off lives in the
-        // ShowTooltips checkbox, not in this numeric. 100ms floor avoids
-        // sub-perceptual flashes; 5000ms ceiling avoids sticky popups.
-        DarkTheme.AddCardLabel(cardPrefs, "Tooltip Duration:", 240, cy);
-        _nudTooltipDuration = DarkTheme.AddCardNumeric(cardPrefs, 360, cy, 55, 700, 300, 5000);
+        // ─── Preferences ─────────────────────────────────────────────
+        var cardPrefs = stack.NewCard("⚙", "Preferences", DarkTheme.CardCyan);
+        _chkShowTooltips = Fields.Check("Show Tooltips");
+        // "Duration" = auto-dismiss interval for the post-action toast (300..5000ms); on/off is the
+        // ShowTooltips checkbox, not this numeric. One row: toggle left, duration hugging the right
+        // (the duration label+nud+unit live in their own flow so Bars.Split's group margin-reset
+        // doesn't clobber InlineLabel's baseline nudge).
+        _nudTooltipDuration = Fields.Numeric(300, 5000, 700, 64);
         _nudTooltipDuration.Increment = 100;
-        DarkTheme.AddCardHint(cardPrefs, "ms", 425, cy);
+        _nudTooltipDuration.Margin = new Padding(0, 2, 4, 2);
+        var durationFlow = new FlowLayoutPanel
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
+            Margin = Padding.Empty, Padding = Padding.Empty,
+        };
+        durationFlow.Controls.Add(InlineLabel("Tooltip Duration:"));
+        durationFlow.Controls.Add(_nudTooltipDuration);
+        durationFlow.Controls.Add(InlineLabel("ms"));
+        cardPrefs.Full(Bars.Split(new Control[] { _chkShowTooltips }, new Control[] { durationFlow }));
 
         return page;
+    }
+
+    /// <summary>A single row holding two label:field pairs whose fields FILL (Percent) so they grow
+    /// with the DPI-scaled window — e.g. the Primary / Secondary monitor combos.</summary>
+    private TableLayoutPanel MakeTwoFieldRow(string l1, Control f1, string l2, Control f2)
+    {
+        var g = new TableLayoutPanel
+        {
+            ColumnCount = 4,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Top,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = Color.Transparent,
+        };
+        g.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        g.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+        g.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        g.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+        g.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        Label Lbl(string t, int left) => new() { Text = t, AutoSize = true, ForeColor = DarkTheme.FgGray, Font = DarkTheme.FontUI9, Margin = new Padding(left, 6, 10, 2) };
+        g.Controls.Add(Lbl(l1, 0), 0, 0);
+        f1.Dock = DockStyle.Fill; f1.Margin = new Padding(0, 2, 14, 2); g.Controls.Add(f1, 1, 0);
+        g.Controls.Add(Lbl(l2, 0), 2, 0);
+        f2.Dock = DockStyle.Fill; f2.Margin = new Padding(0, 2, 0, 2); g.Controls.Add(f2, 3, 0);
+        return g;
     }
 
     private void ShowOffsetsDialog()

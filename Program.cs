@@ -169,6 +169,17 @@ static class Program
             return;
         }
 
+        // --diag-render-form <Name> [--out dir] [--tab N] [--scale F] [--hold] — DEBUG-only
+        // DPI verification harness: render ONE form in isolation + screenshot it to a PNG so a
+        // high-DPI Sandbox (or scaled display) captures how it looks at 125%/150% without a human
+        // driving the live tray app. The layout-container rebuild is verified through this — see
+        // UI/DiagRender.cs. Returns (doesn't Environment.Exit) — it runs its own Application loop.
+        if (args.Length >= 1 && args[0] == "--diag-render-form")
+        {
+            UI.DiagRender.Run(args);
+            return;
+        }
+
         // --test-config-validate — run Core/AppConfigValidateTests.RunAll() and
         // exit with its return code.
         if (args.Length >= 1 && args[0] == "--test-config-validate")

@@ -8,11 +8,16 @@ using EQSwitch.Models;
 namespace EQSwitch.UI;
 
 /// <summary>
-/// Consolidated process manager with three clear settings sections:
+/// Consolidated process manager with clear settings sections:
 /// 1. Windows Priority — keeps EQ from getting starved (prevents VD crashes, enables autofollow)
-/// 2. Core Assignment — spreads EQ across cores so it doesn't single-thread on core 0
-/// 3. FPS Limits — MaxFPS / MaxBGFPS from eqclient.ini
-/// Plus the live process grid for per-process overrides.
+/// 2. Running Clients — the live process grid for per-process kill / status
+/// 3. Core Assignment — spreads EQ across cores so it doesn't single-thread on core 0
+/// 4. FPS Limits — MaxFPS / MaxBGFPS from eqclient.ini
+///
+/// DPI: rebuilt on the <see cref="CardStack"/>/<see cref="Card"/>/<see cref="Fields"/>/<see cref="Bars"/>
+/// layout containers (the v3.24.33 SettingsForm pattern) — correct-by-construction at 100% and 150%
+/// with no absolute pixel coordinates. The only Bounds literal is the grid's Height (scaled ×f in Load,
+/// since AutoScaleMode.Dpi leaves it alone); fixed-width fit fields are sized once by DpiScale.SizeFitFields.
 /// </summary>
 public class ProcessManagerForm : EqSwitchForm
 {
@@ -22,11 +27,7 @@ public class ProcessManagerForm : EqSwitchForm
     // Process lifetime only; cross-session persistence would need config.
     private static Point? _lastLocation;
 
-
     private const int RefreshIntervalMs = 2000;
-    private const int FormW = 600;
-    private const int GridW = 560;
-    private const int Pad = 15;
 
     private static readonly string[] Priorities = { "High", "AboveNormal", "Normal", "BelowNormal" };
 
@@ -43,16 +44,15 @@ public class ProcessManagerForm : EqSwitchForm
     private System.Windows.Forms.Timer _refreshTimer = null!;
     private bool _isRefreshing;
 
-
     // Card 1: Priority preset (applies to all clients, or "None" for per-row manual)
     private ComboBox _cboPriority = null!;
     private NumericUpDown _nudLaunchRetries = null!;
     private NumericUpDown _nudLaunchRetryDelay = null!;
 
-    // Card 2: Core Assignment (6 slots matching eqclient.ini CPUAffinity0-5)
+    // Card 3: Core Assignment (6 slots matching eqclient.ini CPUAffinity0-5)
     private NumericUpDown[] _slotPickers = null!;
 
-    // Card 3: FPS
+    // Card 4: FPS
     private NumericUpDown _nudMaxFPS = null!;
     private NumericUpDown _nudMaxBGFPS = null!;
     private Font _ghostFont = null!;
@@ -93,7 +93,7 @@ public class ProcessManagerForm : EqSwitchForm
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
-        // Restore last-open position if available; otherwise CenterScreen.
+        // Restore last-open position if available; otherwise center in Load (once Width is final).
         if (_lastLocation.HasValue)
         {
             StartPosition = FormStartPosition.Manual;
@@ -110,24 +110,29 @@ public class ProcessManagerForm : EqSwitchForm
 
         _tooltip = new ToolTip { InitialDelay = 300, ReshowDelay = 200 };
 
-        var (coreCount, systemMask) = AffinityManager.DetectCores();
-        int y = 10;
+        var (coreCount, _) = AffinityManager.DetectCores();
 
-        // ─── Card 1: CPU Affinity Handling ───────────────────────
-        var cardPriority = DarkTheme.MakeCard(this, "\u26A1", "CPU Priority Handling", DarkTheme.CardGold, Pad, y, GridW, 105);
+        // ─── Card stack (scrolls if it outgrows the window) ──────────────
+        // Added to the form FIRST so it sits at the bottom of the z-order → the footer
+        // (added last, Dock=Bottom) docks first and the stack Fills the remaining area.
+        var stack = new CardStack(this);
+
+        // ─── Card 1: CPU Priority Handling ───────────────────────────────
+        var cardPriority = stack.NewCard("⚡", "CPU Priority Handling", DarkTheme.CardGold);
 
         _chkAffinityEnabled = new CheckBox
         {
             Text = "  Enable CPU Priority Handling",
-            Location = new Point(15, 26),
             AutoSize = true,
             ForeColor = _config.Affinity.Enabled ? DarkTheme.CardGreen : DarkTheme.FgGray,
             Font = new Font("Segoe UI", 10f, FontStyle.Bold),
-            BackColor = Color.Transparent,
+            BackColor = DarkTheme.BgPanel,   // match the card body so the owner-draw g.Clear blends
             Checked = _config.Affinity.Enabled,
-            Appearance = Appearance.Normal
+            Appearance = Appearance.Normal,
         };
-        // Owner-draw a 16x16 checkbox with contrast: gray border, white checkmark
+        // Owner-draw a DPI-scaled 16dp checkbox: gray/green border, white checkmark. Paint geometry
+        // is NOT auto-scaled — every literal is derived from the control's device DPI so the glyph
+        // tracks the (already-scaled) control.
         _chkAffinityEnabled.Paint += (sender, e) =>
         {
             var cb = (CheckBox)sender!;
@@ -135,19 +140,15 @@ public class ProcessManagerForm : EqSwitchForm
             g.Clear(cb.BackColor);
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
-            // Paint geometry is NOT auto-scaled — derive every literal from the
-            // control's device DPI so the glyph tracks the (already-scaled) control.
             int boxSize = cb.LogicalToDeviceUnits(16);
             int boxY = (cb.Height - boxSize) / 2;
             var boxRect = new Rectangle(0, boxY, boxSize, boxSize);
 
-            // Box: dark fill with subtle border
             using var fillBrush = new SolidBrush(cb.Checked ? Color.FromArgb(30, 70, 40) : Color.FromArgb(40, 40, 45));
             g.FillRectangle(fillBrush, boxRect);
             using var borderPen = new Pen(cb.Checked ? DarkTheme.CardGreen : DarkTheme.FgGray, 1.5f);
             g.DrawRectangle(borderPen, boxRect);
 
-            // Checkmark: bright white for contrast
             if (cb.Checked)
             {
                 using var checkPen = new Pen(Color.White, cb.LogicalToDeviceUnits(2));
@@ -157,7 +158,6 @@ public class ProcessManagerForm : EqSwitchForm
                                      cb.LogicalToDeviceUnits(13), boxY + cb.LogicalToDeviceUnits(4));
             }
 
-            // Draw text
             int textGap = cb.LogicalToDeviceUnits(6);
             var textRect = new Rectangle(boxSize + textGap, 0, cb.Width - boxSize - textGap, cb.Height);
             TextRenderer.DrawText(g, cb.Text, cb.Font, textRect, cb.ForeColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
@@ -169,149 +169,96 @@ public class ProcessManagerForm : EqSwitchForm
                 ? DarkTheme.CardGreen : DarkTheme.FgGray;
             _chkAffinityEnabled.Invalidate();
         };
-        cardPriority.Controls.Add(_chkAffinityEnabled);
+        cardPriority.Check(_chkAffinityEnabled);
 
-        // Priority preset — right-aligned, prominent
-        DarkTheme.AddCardLabel(cardPriority, "Priority Preset:", 320, 32);
-        var priorityOptions = new[] { "None", "High", "AboveNormal", "Normal", "BelowNormal" };
-        _cboPriority = DarkTheme.AddCardComboBox(cardPriority, 420, 30, 125, priorityOptions);
+        // Priority preset
+        _cboPriority = Fields.Combo(125, "None", "High", "AboveNormal", "Normal", "BelowNormal");
         _cboPriority.SelectedItem = Priorities.Contains(_config.Affinity.ActivePriority)
             ? _config.Affinity.ActivePriority : "None";
+        cardPriority.RowFit("Priority Preset:", _cboPriority);
+        cardPriority.Hint("Enforces a CPU priority on every client — High is recommended.");
 
-        DarkTheme.AddCardHint(cardPriority, "Enforces CPU preference on clients, High is recommended", 10, 50);
-
-        // Retry on launch — EQ resets its own priority after starting
-        DarkTheme.AddCardHint(cardPriority, "On launch: EQ resets priority to Normal — Try", 10, 74);
-        _nudLaunchRetries = DarkTheme.AddCardNumeric(cardPriority, 248, 70, 40, _config.Affinity.LaunchRetryCount, 3, 7);
-        DarkTheme.AddCardHint(cardPriority, "times, rest", 293, 74);
+        // Launch retry — EQ resets its own priority shortly after starting.
+        cardPriority.Hint("On launch EQ resets its priority to Normal — EQSwitch re-applies it:");
+        _nudLaunchRetries = Fields.Numeric(3, 7, _config.Affinity.LaunchRetryCount, 40);
         // Shown in seconds; stored as ms in LaunchRetryDelayMs (schema/validator unchanged).
-        _nudLaunchRetryDelay = DarkTheme.AddCardNumeric(cardPriority, 348, 70, 60, _config.Affinity.LaunchRetryDelayMs / 1000m, 0.5m, 10m);
+        _nudLaunchRetryDelay = Fields.Numeric(0.5m, 10m, _config.Affinity.LaunchRetryDelayMs / 1000m, 60);
         _nudLaunchRetryDelay.DecimalPlaces = 1;
         _nudLaunchRetryDelay.Increment = 0.5m;
-        DarkTheme.AddCardHint(cardPriority, "sec after launch", 413, 74);
+        cardPriority.FlowRow("Retry:", _nudLaunchRetries, Inline("times,"), _nudLaunchRetryDelay, Inline("sec apart"));
 
-        y += 113;
-
-        // ─── Process grid ────────────────────────────────────────
-        _grid = BuildProcessGrid(y);
-        Controls.Add(_grid);
-        y += 30 + 28 * 4 + 2 + 8;  // grid height + padding
-
-        // ─── Status bar ──────────────────────────────────────────
+        // ─── Card 2: Running Clients (live grid + status) ────────────────
+        var cardClients = stack.NewCard("🖥", "Running Clients", DarkTheme.CardBlue);
+        _grid = BuildProcessGrid();
+        cardClients.Full(_grid);
         _statusLabel = new Label
         {
             Text = "No clients detected",
-            Location = new Point(Pad + 2, y),
             AutoSize = true,
             ForeColor = DarkTheme.FgDimGray,
-            Font = new Font("Consolas", 8.25f)
+            Font = new Font("Consolas", 8.25f),
         };
-        Controls.Add(_statusLabel);
-        y += 22;
+        cardClients.Full(_statusLabel);
 
-        // ─── Card 2: Core Assignment ─────────────────────────────
-        // 6 slots matching eqclient.ini CPUAffinity0-5
-        var cardCores = DarkTheme.MakeCard(this, "\uD83E\uDDE0", "CPU Affinity Thread Mapping", DarkTheme.CardCyan, Pad, y, GridW, 125);
-
-        DarkTheme.AddCardHint(cardCores, "EQ uses 6 internal threads — assign each to a CPU core to spread the load", 10, 28);
+        // ─── Card 3: CPU Affinity Thread Mapping ─────────────────────────
+        // 6 slots matching eqclient.ini CPUAffinity0-5 — a 3×2 grid of "Thread N → [core]" pairs.
+        var cardCores = stack.NewCard("🧠", "CPU Affinity Thread Mapping", DarkTheme.CardCyan);
+        cardCores.Hint("EQ uses 6 internal threads — assign each to a CPU core to spread the load.");
 
         var slots = _config.EQClientIni.CPUAffinitySlots;
         _slotPickers = new NumericUpDown[6];
+        var coreGrid = new TableLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 6,
+            RowCount = 2,
+            Dock = DockStyle.Top,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            BackColor = Color.Transparent,
+        };
+        for (int c = 0; c < 6; c++) coreGrid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        coreGrid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        coreGrid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         for (int i = 0; i < 6; i++)
         {
-            int col = i % 3;
-            int row = i / 3;
-            int lx = 10 + col * 185;
-            int ly = 48 + row * 30;
-
-            DarkTheme.AddCardLabel(cardCores, $"Thread {i + 1}  \u2192", lx, ly + 2);
+            int col = i % 3, row = i / 3;
+            var lbl = new Label
+            {
+                Text = $"Thread {i + 1} →",
+                AutoSize = true,
+                ForeColor = DarkTheme.FgGray,
+                Font = DarkTheme.FontUI9,
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(col == 0 ? 0 : 18, 5, 6, 3),
+            };
             int coreVal = i < slots.Length ? Math.Clamp(slots[i], 0, coreCount - 1) : i;
-            _slotPickers[i] = DarkTheme.AddCardNumeric(cardCores, lx + 75, ly, 55, coreVal, 0, coreCount - 1);
+            _slotPickers[i] = Fields.Numeric(0, coreCount - 1, coreVal, 55);
+            _slotPickers[i].Anchor = AnchorStyles.Left;
+            _slotPickers[i].Margin = new Padding(0, 2, 6, 3);
             _tooltip.SetToolTip(_slotPickers[i], $"CPU core for EQ thread {i + 1} (CPUAffinity{i} in eqclient.ini)");
+            coreGrid.Controls.Add(lbl, col * 2, row);
+            coreGrid.Controls.Add(_slotPickers[i], col * 2 + 1, row);
         }
+        cardCores.Full(coreGrid);
+        cardCores.Hint($"{coreCount} cores detected  ·  shared by all EQ clients  ·  core 0 = first");
 
-        DarkTheme.AddCardHint(cardCores, $"{coreCount} cores detected  |  Shared by all EQ clients  |  Core 0 = first", 10, 108);
-
-        y += 133;
-
-        // ─── Card 3: FPS Limits ──────────────────────────────────
-        var cardFps = DarkTheme.MakeCard(this, "\uD83C\uDFAE", "FPS Limits", DarkTheme.CardGreen, Pad, y, GridW, 85);
-
-        DarkTheme.AddCardLabel(cardFps, "Active FPS:", 10, 32);
-        _nudMaxFPS = DarkTheme.AddCardNumeric(cardFps, 85, 30, 55, FpsForDisplay(_config.EQClientIni.MaxFPS), 10, 99);
+        // ─── Card 4: FPS Limits ──────────────────────────────────────────
+        var cardFps = stack.NewCard("🎮", "FPS Limits", DarkTheme.CardGreen);
+        _nudMaxFPS = Fields.Numeric(10, 99, FpsForDisplay(_config.EQClientIni.MaxFPS), 55);
         _nudMaxFPS.Increment = 5;
-        _nudMaxFPS.ReadOnly = true;   // spinner-only: no free typing, stays on the 10-99 step-5 grid
-
-        DarkTheme.AddCardLabel(cardFps, "Background FPS:", 165, 32);
-        _nudMaxBGFPS = DarkTheme.AddCardNumeric(cardFps, 275, 30, 55, FpsForDisplay(_config.EQClientIni.MaxBGFPS), 10, 99);
+        _nudMaxFPS.ReadOnly = true;   // spinner-only: stays on the 10-99 step-5 grid
+        _nudMaxBGFPS = Fields.Numeric(10, 99, FpsForDisplay(_config.EQClientIni.MaxBGFPS), 55);
         _nudMaxBGFPS.Increment = 5;
         _nudMaxBGFPS.ReadOnly = true;
+        cardFps.FlowRow("Active FPS:", _nudMaxFPS, Inline("Background FPS:"), _nudMaxBGFPS);
 
-        // Default + a bolded save-warning: opening this page and clicking Save
-        // rewrites the user's local eqclient.ini, so make that consequence loud.
-        _boldHintFont = new Font(DarkTheme.FontUI75, FontStyle.Bold);
-        var fpsHintFlow = new FlowLayoutPanel
-        {
-            Location = new Point(10, 56),
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            WrapContents = false,
-            FlowDirection = FlowDirection.LeftToRight,
-            BackColor = Color.Transparent,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        };
-        fpsHintFlow.Controls.Add(new Label
-        {
-            Text = "Default 80     ",
-            AutoSize = true,
-            ForeColor = DarkTheme.FgDimGray,
-            Font = DarkTheme.FontUI75,
-            BackColor = Color.Transparent,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        });
-        fpsHintFlow.Controls.Add(new Label
-        {
-            Text = "Written to eqclient.ini on Save",
-            AutoSize = true,
-            ForeColor = DarkTheme.FgGray,
-            Font = _boldHintFont,
-            BackColor = Color.Transparent,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        });
-        cardFps.Controls.Add(fpsHintFlow);
-
-        // Read current values from eqclient.ini and show as ghost hint
+        // Ghost line: current eqclient.ini values (dim label + green value, monospace) — built as
+        // tight adjacent segments so it reads as continuous text at any DPI.
         var (iniFps, iniBgFps) = ReadIniFpsValues();
-        var iniLabel = new Label
-        {
-            Text = "Current Settings:",
-            Location = new Point(340, 30),
-            AutoSize = true,
-            ForeColor = DarkTheme.FgDimGray,
-            Font = DarkTheme.FontUI75,
-            BackColor = Color.Transparent
-        };
-        cardFps.Controls.Add(iniLabel);
-        // Ghost line: dim labels with the live values highlighted green to match
-        // the card accent. Built as adjacent segments in an auto-sizing
-        // FlowLayoutPanel so it positions/scales correctly under high DPI
-        // (no manual pixel math).
         _ghostFont = new Font("Consolas", 7.5f, FontStyle.Italic);
-        var ghostFlow = new FlowLayoutPanel
-        {
-            Location = new Point(340, 42),
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            WrapContents = false,
-            FlowDirection = FlowDirection.LeftToRight,
-            BackColor = Color.Transparent,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty
-        };
-        Label GhostSeg(string text, Color color) => new Label
+        Label GhostSeg(string text, Color color) => new()
         {
             Text = text,
             AutoSize = true,
@@ -319,18 +266,39 @@ public class ProcessManagerForm : EqSwitchForm
             Font = _ghostFont,
             BackColor = Color.Transparent,
             Margin = Padding.Empty,
-            Padding = Padding.Empty
+            Padding = Padding.Empty,
         };
-        ghostFlow.Controls.Add(GhostSeg("eqclient.ini: MaxFPS=", DarkTheme.FgDimGray));
+        var ghostFlow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+        };
+        ghostFlow.Controls.Add(GhostSeg("MaxFPS=", DarkTheme.FgDimGray));
         ghostFlow.Controls.Add(GhostSeg(iniFps, DarkTheme.CardGreen));
-        ghostFlow.Controls.Add(GhostSeg("  MaxBGFPS=", DarkTheme.FgDimGray));
+        ghostFlow.Controls.Add(GhostSeg("   MaxBGFPS=", DarkTheme.FgDimGray));
         ghostFlow.Controls.Add(GhostSeg(iniBgFps, DarkTheme.CardGreen));
-        cardFps.Controls.Add(ghostFlow);
+        cardFps.FlowRow("Current ini:", ghostFlow);
 
-        y += 93;
+        // Bold the consequence: opening this page and clicking Save rewrites the user's local
+        // eqclient.ini, so make that loud.
+        _boldHintFont = new Font(DarkTheme.FontUI75, FontStyle.Bold);
+        var warnFlow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+        };
+        warnFlow.Controls.Add(new Label { Text = "Default 80.  ", AutoSize = true, ForeColor = DarkTheme.FgDimGray, Font = DarkTheme.FontUI75, Margin = Padding.Empty });
+        warnFlow.Controls.Add(new Label { Text = "Written to eqclient.ini on Save.", AutoSize = true, ForeColor = DarkTheme.FgGray, Font = _boldHintFont, Margin = Padding.Empty });
+        cardFps.FlowRow("", warnFlow);
 
-        // ─── Bottom buttons ──────────────────────────────────────
-        var btnSave = DarkTheme.MakePrimaryButton("Save", Pad, y);
+        // ─── Footer (Save / Apply / Reset / Close) — docked bottom, always visible ───
+        var btnSave = Fields.Primary("Save");
         btnSave.Click += (_, _) =>
         {
             ApplyAllSettings();
@@ -338,11 +306,7 @@ public class ProcessManagerForm : EqSwitchForm
             ConfigManager.FlushSave();
             Close();
         };
-        Controls.Add(btnSave);
-
-        var btnApply = DarkTheme.MakeButton("Apply", DarkTheme.BgMedium, Pad + 100, y);
-        btnApply.FlatAppearance.BorderColor = DarkTheme.Border;
-        btnApply.FlatAppearance.BorderSize = 1;
+        var btnApply = Fields.Button("Apply");
         btnApply.Click += (_, _) =>
         {
             ApplyAllSettings();
@@ -350,46 +314,78 @@ public class ProcessManagerForm : EqSwitchForm
             ConfigManager.FlushSave();
             RefreshList();
         };
-        Controls.Add(btnApply);
-
-        var btnReset = DarkTheme.MakeButton("Reset", DarkTheme.BgMedium, Pad + 200, y);
-        btnReset.FlatAppearance.BorderColor = DarkTheme.Border;
-        btnReset.FlatAppearance.BorderSize = 1;
+        var btnReset = Fields.Button("Reset");
         btnReset.Click += (_, _) => ResetToInitial();
-        Controls.Add(btnReset);
-
-        var btnClose = DarkTheme.MakeButton("Close", DarkTheme.BgMedium, FormW - Pad - 90 - 12, y);
-        btnClose.FlatAppearance.BorderColor = DarkTheme.Border;
-        btnClose.FlatAppearance.BorderSize = 1;
+        var btnClose = Fields.Button("Close");
         btnClose.Click += (_, _) => Close();
-        Controls.Add(btnClose);
 
-        y += 45;
-        ClientSize = new Size(FormW - 16, y);
+        var footer = new Panel
+        {
+            Dock = DockStyle.Bottom,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = DarkTheme.BgDark,
+            Padding = new Padding(12, 6, 12, 8),
+        };
+        footer.Controls.Add(Bars.Split(
+            new Control[] { btnSave, btnApply, btnReset },
+            new Control[] { btnClose }));
+        Controls.Add(footer);
 
-        // ─── Timer ───────────────────────────────────────────────
+        // ─── Refresh timer ───────────────────────────────────────────────
         _refreshTimer = new System.Windows.Forms.Timer { Interval = RefreshIntervalMs };
         _refreshTimer.Tick += (_, _) => RefreshList();
         _refreshTimer.Start();
-
         FormClosed += (_, _) =>
         {
             _refreshTimer.Stop();
             _refreshTimer.Dispose();
         };
 
-        RefreshList();
+        // ─── DPI sizing (layout-container rebuild) ───────────────────────
+        // Everything else is font-driven AutoSize → correct by construction. Two things the
+        // framework won't derive: fixed-width fit numerics/combo (SizeFitFields, once) and the
+        // DataGridView's Height (a Bounds dim AutoScale leaves alone → ×f manually). Then fit the
+        // window to its content width+height, clamped to the work area (the stack scrolls the rest).
+        Load += (_, _) =>
+        {
+            DpiScale.SizeFitFields(this);
+            double f = DeviceDpi / 96.0;
+            var wa = Screen.FromControl(this).WorkingArea;
+            if (f > 1.001)
+                _grid.Height = (int)Math.Round(_grid.Height * f);
+
+            var inner = stack.Host.Controls.Count > 0 ? stack.Host.Controls[0] : stack.Host;
+            int width = Math.Min(
+                Math.Max((int)Math.Round(520 * f), inner.PreferredSize.Width + LogicalToDeviceUnits(28)),
+                wa.Width);
+            ClientSize = new Size(width, ClientSize.Height);   // set width first so PreferredSize reflects it
+            int contentH = inner.PreferredSize.Height + footer.Height + LogicalToDeviceUnits(6);
+            ClientSize = new Size(width, Math.Min(contentH, wa.Height - LogicalToDeviceUnits(48)));
+
+            if (!_lastLocation.HasValue)
+                Location = new Point(
+                    wa.Left + Math.Max(0, (wa.Width - Width) / 2),
+                    wa.Top + Math.Max(0, (wa.Height - Height) / 2));
+
+            RefreshList();
+        };
     }
 
-    private DataGridView BuildProcessGrid(int y)
+    private DataGridView BuildProcessGrid()
     {
         var grid = new DataGridView
         {
-            Location = new Point(Pad, y),
-            Size = new Size(GridW, 30 + 28 * 4 + 2),  // header + 4 rows + border
+            // No absolute Location/Size — the card docks it (Full → Dock.Top) full-width; its Height
+            // is the one Bounds dim the rebuild can't font-derive, so it's a base value ×f'd in Load.
+            // No explicit cell Font / RowTemplate.Height / ColumnHeadersHeight: cells inherit the
+            // (AutoScale-grown) grid font and rows/header auto-size to it → DPI-correct. Columns use
+            // AllCells (DPI-independent header+content fit); the Character name column Fills the slack.
+            Height = 130,   // ~header + 4 rows @96; ×f in Load
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
             AllowUserToResizeRows = false,
+            AllowUserToResizeColumns = false,
             RowHeadersVisible = false,
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
             MultiSelect = false,
@@ -398,21 +394,21 @@ public class ProcessManagerForm : EqSwitchForm
             CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
             GridColor = DarkTheme.Border,
             BackgroundColor = DarkTheme.BgDark,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
             DefaultCellStyle = new DataGridViewCellStyle
             {
                 BackColor = DarkTheme.BgDark,
                 ForeColor = DarkTheme.FgWhite,
                 SelectionBackColor = DarkTheme.GridSelection,
                 SelectionForeColor = DarkTheme.FgWhite,
-                Font = new Font("Consolas", 9),
-                Padding = new Padding(6, 3, 6, 3)
+                Padding = new Padding(6, 3, 6, 3),
             },
             AlternatingRowsDefaultCellStyle = new DataGridViewCellStyle
             {
                 BackColor = DarkTheme.BgPanel,
                 ForeColor = DarkTheme.FgWhite,
                 SelectionBackColor = DarkTheme.GridSelection,
-                SelectionForeColor = DarkTheme.FgWhite
+                SelectionForeColor = DarkTheme.FgWhite,
             },
             ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
             {
@@ -420,42 +416,38 @@ public class ProcessManagerForm : EqSwitchForm
                 ForeColor = DarkTheme.CardCyan,
                 Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
                 Alignment = DataGridViewContentAlignment.MiddleLeft,
-                Padding = new Padding(6, 0, 0, 0)
+                Padding = new Padding(6, 0, 0, 0),
             },
             ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.Single,
-            ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
-            ColumnHeadersHeight = 30,
-            RowTemplate = { Height = 28 },
+            ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize,
             EnableHeadersVisualStyles = false,
-            ScrollBars = ScrollBars.Vertical
+            ScrollBars = ScrollBars.Vertical,
         };
 
-        // Columns
-        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Slot", HeaderText = "#", ReadOnly = true, Width = 32 });
-        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "PID", HeaderText = "PID", ReadOnly = true, Width = 60 });
-        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Character", HeaderText = "Character", ReadOnly = true, Width = 140 });
-        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Priority", HeaderText = "Priority", ReadOnly = true, Width = 105 });
-        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Affinity", HeaderText = "Affinity", ReadOnly = true, Width = 80 });
-
-        // Kill button column
-        var killCol = new DataGridViewButtonColumn
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Slot", HeaderText = "#", ReadOnly = true });
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "PID", HeaderText = "PID", ReadOnly = true });
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Character", HeaderText = "Character", ReadOnly = true });
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Priority", HeaderText = "Priority", ReadOnly = true });
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Affinity", HeaderText = "Affinity", ReadOnly = true });
+        grid.Columns.Add(new DataGridViewButtonColumn
         {
             Name = "Kill",
             HeaderText = "Kill",
-            Text = "\u2716",
+            Text = "✖",
             UseColumnTextForButtonValue = true,
-            Width = 45,
-            FlatStyle = FlatStyle.Flat
-        };
-        grid.Columns.Add(killCol);
+            FlatStyle = FlatStyle.Flat,
+        });
 
+        // DPI-independent column sizing: fixed columns fit header+content at any scale; the Character
+        // name column Fills the remaining width so the grid spans the card. Do NOT hand-scale widths.
         foreach (DataGridViewColumn col in grid.Columns)
         {
             col.SortMode = DataGridViewColumnSortMode.NotSortable;
             col.Resizable = DataGridViewTriState.False;
+            col.AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells;
         }
-
-        // Priority is read-only — use the Preset dropdown + Apply to change
+        grid.Columns["Character"]!.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+        grid.Columns["Character"]!.MinimumWidth = 120;
 
         // Handle Kill button click
         grid.CellContentClick += (_, e) =>
@@ -481,7 +473,6 @@ public class ProcessManagerForm : EqSwitchForm
             FileLogger.Warn($"Grid data error at [{e.RowIndex},{e.ColumnIndex}]: {e.Exception?.Message}");
             e.ThrowException = false;
         };
-
 
         return grid;
     }
@@ -584,7 +575,7 @@ public class ProcessManagerForm : EqSwitchForm
         for (int i = 0; i < 6; i++)
             _config.EQClientIni.CPUAffinitySlots[i] = (int)_slotPickers[i].Value;
 
-        // Card 3: FPS
+        // Card 4: FPS
         _config.EQClientIni.MaxFPS = (int)_nudMaxFPS.Value;
         _config.EQClientIni.MaxBGFPS = (int)_nudMaxBGFPS.Value;
 
@@ -636,6 +627,10 @@ public class ProcessManagerForm : EqSwitchForm
         _nudMaxBGFPS.Value = FpsForDisplay(_initialMaxBGFPS);
     }
 
+    /// <summary>A plain inline label for FlowRow sentences (FlowRow re-sets its Margin + Anchor).</summary>
+    private static Label Inline(string text) => new()
+    { Text = text, AutoSize = true, ForeColor = DarkTheme.FgGray, Font = DarkTheme.FontUI9 };
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
@@ -643,11 +638,16 @@ public class ProcessManagerForm : EqSwitchForm
             _refreshTimer?.Stop();
             _refreshTimer?.Dispose();
             _tooltip?.Dispose();
-            // Dispose GDI Font handles — WinForms doesn't own control fonts
+            // Dispose GDI Font handles — WinForms doesn't own control fonts.
+            // _ghostFont is shared across the 4 ghost-readout labels, so dispose it once here as the
+            // explicit owner (the tree walk below would otherwise hit it once per sharing label).
+            // Single-owner control fonts — the Enable checkbox, the status label, and the bold warn
+            // label that owns _boldHintFont — are NOT disposed here: DarkTheme.DisposeControlFonts(this)
+            // walks the control tree and disposes each non-shared Control.Font once (it skips DarkTheme's
+            // shared statics; this form never detaches a control via Card.Clear, so the walk reaches all).
+            // DataGridViewCellStyle.Font is NOT a Control.Font, so the grid header cell-style font is
+            // unreachable by that walk and is disposed directly.
             _ghostFont?.Dispose();
-            _boldHintFont?.Dispose();
-            _chkAffinityEnabled?.Font?.Dispose();
-            _statusLabel?.Font?.Dispose();
             _grid?.DefaultCellStyle?.Font?.Dispose();
             _grid?.ColumnHeadersDefaultCellStyle?.Font?.Dispose();
             DarkTheme.DisposeControlFonts(this);
