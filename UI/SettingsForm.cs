@@ -586,6 +586,7 @@ public class SettingsForm : EqSwitchForm
         // Replaces the absolute new Point/Size + hand-tuned card heights that clipped at 125%+.
         var page = DarkTheme.MakeTabPage("General");
         var stack = new CardStack(page);
+        stack.BeginBatch();   // batch the nested-TLP relayout cascade; Commit() below = one layout pass
 
         // ─── EverQuest Setup ─────────────────────────────────────────
         var cardEQ = stack.NewCard("⚔", "EverQuest Setup", DarkTheme.CardGreen);
@@ -723,6 +724,7 @@ public class SettingsForm : EqSwitchForm
         // Indent the field 12px from both card edges so it reads as centered in the section.
         cardTitle.Full(_txtWindowTitleTemplate).Margin = new Padding(12, 4, 12, 4);
 
+        stack.Commit();
         return page;
     }
 
@@ -1100,6 +1102,7 @@ public class SettingsForm : EqSwitchForm
     {
         var page = DarkTheme.MakeTabPage("Hotkeys");
         var stack = new CardStack(page);
+        stack.BeginBatch();   // batch the nested-TLP relayout cascade; Commit() below = one layout pass
 
         // ─── Window Switching ────────────────────────────────────────
         var cardSwitch = stack.NewCard("⚔", "Window Switching", DarkTheme.CardGreen);
@@ -1152,6 +1155,7 @@ public class SettingsForm : EqSwitchForm
         _nudLaunchDelay = Fields.Numeric(2, 30, 3, 56);
         cardLaunchDelay.Full(Bars.Split(System.Array.Empty<Control>(), new Control[] { InlineLabel("Client Launch Delay:"), _nudLaunchDelay, InlineLabel("sec") }));
 
+        stack.Commit();
         return page;
     }
 
@@ -1247,6 +1251,7 @@ public class SettingsForm : EqSwitchForm
     {
         var page = DarkTheme.MakeTabPage("Paths");
         var stack = new CardStack(page);
+        stack.BeginBatch();   // batch the nested-TLP relayout cascade; Commit() below = one layout pass
 
         // ─── External Tools ──────────────────────────────────────────
         var cardPaths = stack.NewCard("📁", "External Tools", DarkTheme.CardGold);
@@ -1381,6 +1386,7 @@ public class SettingsForm : EqSwitchForm
         btnUninstall.Click += (_, _) => RunUninstall();
         stack.AddFullWidth(Bars.Spread(btnHelp, btnReset, btnUninstall));
 
+        stack.Commit();
         return page;
     }
 
@@ -1388,6 +1394,7 @@ public class SettingsForm : EqSwitchForm
     {
         var page = DarkTheme.MakeTabPage("PiP");
         var stack = new CardStack(page);
+        stack.BeginBatch();   // batch the nested-TLP relayout cascade; Commit() below = one layout pass
 
         // ─── Picture in Picture Overlay ──────────────────────────────
         var cardPip = stack.NewCard("👁", "Picture in Picture Overlay", DarkTheme.CardCyan);
@@ -1454,6 +1461,7 @@ public class SettingsForm : EqSwitchForm
 
         cardLook.Hint("Hold Ctrl + Left Click to drag PiP window to a new position");
 
+        stack.Commit();
         return page;
     }
 
@@ -1699,6 +1707,10 @@ public class SettingsForm : EqSwitchForm
         var page = _tabShells[index];
         if (page == null || _tabBuilt[index]) return;   // eager tab (no shell) or already built
         _tabBuilt[index] = true;                         // set BEFORE building so a re-entrant event can't loop
+        // v3.24.45: suspend the (visible) page during the build so the lazy tab paints ONCE on resume
+        // instead of drawing card-by-card top-to-bottom (the "tear"). The per-tab CardStack.BeginBatch()
+        // inside the builders batches the stack's internal relayout; this batches the page's repaint.
+        page.SuspendLayout();
         try
         {
             switch (index)
@@ -1718,6 +1730,10 @@ public class SettingsForm : EqSwitchForm
             _tabBuilt[index] = false;
             try { page.Controls.Clear(); } catch { /* best effort cleanup */ }
             throw;
+        }
+        finally
+        {
+            page.ResumeLayout(true);   // one layout + paint for the whole tab (paired with SuspendLayout above)
         }
 
         // A tab built AFTER the one-time Load DPI pass must size its own fields — Load's
@@ -2412,6 +2428,7 @@ public class SettingsForm : EqSwitchForm
     private void BuildAccountsTab(TabPage page)
     {
         var stack = new CardStack(page);
+        stack.BeginBatch();   // batch the nested-TLP relayout cascade; Commit() below = one layout pass
 
         // ─── Accounts ────────────────────────────────────────────────
         var accountsCard = stack.NewCard("🔑", "Accounts", DarkTheme.CardOrange);
@@ -2521,6 +2538,7 @@ public class SettingsForm : EqSwitchForm
         _lblTeamSummary.Rows = BuildTeamSummaryRows();
         summaryPanel.Controls.Add(_lblTeamSummary);
         teamsCard.Full(summaryPanel);
+        stack.Commit();   // one relayout pass for the whole Accounts tab (see CardStack.BeginBatch)
 
         RefreshAccountsGrid();
         RefreshCharactersGrid();
@@ -3390,6 +3408,7 @@ public class SettingsForm : EqSwitchForm
     private void BuildVideoTab(TabPage page)
     {
         var stack = new CardStack(page);
+        stack.BeginBatch();   // batch the nested-TLP relayout cascade; Commit() below = one layout pass
 
         // ─── EQ Resolution ───────────────────────────────────────────
         var cardRes = stack.NewCard("📺", "EQ Resolution", DarkTheme.CardPurple);
@@ -3512,6 +3531,7 @@ public class SettingsForm : EqSwitchForm
         durationFlow.Controls.Add(_nudTooltipDuration);
         durationFlow.Controls.Add(InlineLabel("ms"));
         cardPrefs.Full(Bars.Split(new Control[] { _chkShowTooltips }, new Control[] { durationFlow }));
+        stack.Commit();   // one relayout pass for the whole Video tab (see CardStack.BeginBatch)
     }
 
     /// <summary>A single row holding two label:field pairs whose fields FILL (Percent) so they grow
@@ -4354,6 +4374,7 @@ internal sealed class TeamSummaryLabel : Label
         // on both sides. Long left cells ellipsize at the divider (rare; names are already clipped
         // to MaxNameLen in BuildTeamSummaryRows).
         int gap = LogicalToDeviceUnits(10);              // padding each side of the divider
+        int leftPad = LogicalToDeviceUnits(6);           // small indent so column 1 doesn't hug the left border
         const string sepText = "|";
         int sepWidth = TextRenderer.MeasureText(e.Graphics, sepText, Font,
             new Size(int.MaxValue, lineH), format).Width;
@@ -4385,7 +4406,7 @@ internal sealed class TeamSummaryLabel : Label
 
         foreach (var row in _rows)
         {
-            DrawCell(row.Left, ClientRectangle.X, leftClipRight, y);
+            DrawCell(row.Left, ClientRectangle.X + leftPad, leftClipRight, y);
             TextRenderer.DrawText(e.Graphics, sepText, Font,
                 new Rectangle(sepX, y, sepWidth, lineH), DarkTheme.FgTeamSeparatorRed, format);
             DrawCell(row.Right, col2X, ClientRectangle.Right, y);

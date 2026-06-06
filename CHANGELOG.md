@@ -1,5 +1,19 @@
 # Changelog
 
+## v3.24.45 — Settings opens faster, no tab-tear; Trim-Logs dialog + teams polish (2026-06-06)
+
+**Perf — Settings construction was O(n²) ever since the DPI rebuild**
+
+The v3.24.33+ DPI rebuild moved every settings control into nested `AutoSize` `TableLayoutPanel`s (`CardStack` → `Card` → 2-col body → sub-TLPs), all `Dock=Fill`, with **no layout suspension during construction** — so adding N controls re-ran the whole tree's AutoSize layout per add (the classic O(n²) WinForms trap, confirmed against MS Learn + field reports). That's why it only got slow *after* the DPI fix (the prior absolute `Point`/`Size` layout never relaid out). Added an opt-in `CardStack.BeginBatch()`/`Commit()` that `SuspendLayout`s the stack TLP + every card during construction and does ONE relayout at `Commit()`; each SettingsForm tab wraps its build in it. **Opt-in ⇒ zero effect on other forms** (ProcessManager etc. don't call it). `EnsureTabBuilt` also `SuspendLayout`s the visible page during a lazy build so it paints once.
+
+Measured (headless `--test-lazy-save`): lazy Video+Accounts build **~1.7s → ~0.4s (≈4×)**; first-open of the 4 eager tabs **~3.5s → ~2.5s (≈30%)**. This also eliminates the top-to-bottom **"tear"** when first opening the Video/Accounts tab (the lazy build now batches + paints in one frame). Layout is unchanged — all six tabs render at identical dimensions at 100% + 150%; `DpiBaselineTests` + `--test-lazy-save` pass.
+
+**UI — Trim Logs (`ThemedMessageDialog`) made professional**
+
+Replaced the multicolor OS emoji status icon (ℹ️/⚠️/⛔/❓) — which clashed with the dark dialog — with the crisp monochrome **Segoe MDL2 Assets** system icons tinted by the theme (info=blue, warning=gold, error=red). Added a minimum content width so a short message ("nothing to trim") gets a standard dialog proportion instead of a cramped box. Verified at 100% + 150% DPI.
+
+**UI — Autologin Teams** column 1 now carries a small left indent so it no longer hugs the panel border.
+
 ## v3.24.44 — PiP overlay no longer dismisses the right-click menu (2026-06-05)
 
 **Fix — opening the Alt+Ctrl+M tray menu while a single client was up dismissed it (needed two presses)**

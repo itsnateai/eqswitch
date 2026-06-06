@@ -29,6 +29,7 @@ public sealed class CardStack
 
     private readonly TableLayoutPanel _stack;
     private readonly List<Card> _cards = new();
+    private bool _batching;
 
     /// <summary>Every card added to this stack, in order. Used for content-driven window sizing —
     /// see <see cref="Card.ContentWidth"/> (the plain Panel can't report content width because its
@@ -78,6 +79,7 @@ public sealed class CardStack
         var card = new Card(emoji, title, titleColor);
         AddRowControl(card.Panel);
         _cards.Add(card);
+        if (_batching) card.SuspendForBatch();   // defer this card's per-row relayout until Commit()
         return card;
     }
 
@@ -96,6 +98,31 @@ public sealed class CardStack
         control.Dock = DockStyle.Fill;
         _stack.Controls.Add(control, 0, row);
     }
+
+    /// <summary>
+    /// Opt-in layout batching for bulk construction. Between BeginBatch() and Commit() the stack TLP
+    /// (and every card) is SuspendLayout'd, so adding N cards/rows costs ONE relayout at Commit() instead
+    /// of the O(N²) AutoSize-TableLayoutPanel relayout-per-add cascade. Callers that never call BeginBatch
+    /// are unaffected (purely additive). ALWAYS pair with Commit() — a stack left batching renders blank.
+    /// </summary>
+    public void BeginBatch()
+    {
+        if (_batching) return;
+        _batching = true;
+        _stack.SuspendLayout();
+        if (!ReferenceEquals(Host, _stack)) Host.SuspendLayout();
+        foreach (var c in _cards) c.SuspendForBatch();
+    }
+
+    /// <summary>Resume layout after BeginBatch(): one relayout pass for the whole stack. Idempotent.</summary>
+    public void Commit()
+    {
+        if (!_batching) return;
+        _batching = false;
+        foreach (var c in _cards) c.ResumeFromBatch();
+        if (!ReferenceEquals(Host, _stack)) Host.ResumeLayout(true);
+        _stack.ResumeLayout(true);
+    }
 }
 
 /// <summary>
@@ -108,6 +135,7 @@ public sealed class Card
     public Panel Panel { get; }
     private readonly TableLayoutPanel _body;
     private readonly Color _titleColor;
+    private bool _batchSuspended;
 
     /// <summary>The card's true content width = its body's preferred width + the card's own padding.
     /// Use this (not <see cref="Panel"/>.PreferredSize.Width) for content-driven window sizing: the
@@ -156,6 +184,24 @@ public sealed class Card
             };
             AddSpanning(lbl);
         }
+    }
+
+    /// <summary>Suspend this card's layout for a CardStack.BeginBatch() window. Pair with ResumeFromBatch.</summary>
+    internal void SuspendForBatch()
+    {
+        if (_batchSuspended) return;
+        _batchSuspended = true;
+        Panel.SuspendLayout();
+        _body.SuspendLayout();
+    }
+
+    /// <summary>Resume after a batch — one relayout of the card. No-op if not batch-suspended.</summary>
+    internal void ResumeFromBatch()
+    {
+        if (!_batchSuspended) return;
+        _batchSuspended = false;
+        _body.ResumeLayout(true);
+        Panel.ResumeLayout(true);
     }
 
     // ─── Row builders ───────────────────────────────────────────────

@@ -11,8 +11,8 @@ namespace EQSwitch.UI;
 /// <summary>
 /// A dark-themed replacement for <see cref="MessageBox"/> that matches the EQSwitch palette
 /// (a native MessageBox is an OS dialog and can't be themed). Same dark body / FgWhite / FontUI9
-/// tokens as <see cref="DarkTheme.StyleForm"/>, themed <see cref="Fields.Button"/>s, and an emoji
-/// status glyph. Inherits <see cref="EqSwitchForm"/> so it carries the 96-DPI AutoScale baseline
+/// tokens as <see cref="DarkTheme.StyleForm"/>, themed <see cref="Fields.Button"/>s, and a themed
+/// status glyph (Segoe MDL2 Assets system icons, with an OS-emoji fallback). Inherits <see cref="EqSwitchForm"/> so it carries the 96-DPI AutoScale baseline
 /// (and is covered by <c>DpiBaselineTests</c>); AutoSizes to its content so any message fits at
 /// 100 / 125 / 150%. Use the static <see cref="Show"/> exactly like <c>MessageBox.Show</c>.
 /// </summary>
@@ -54,17 +54,19 @@ internal sealed class ThemedMessageDialog : EqSwitchForm
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        string glyph = Glyph(icon);
+        string glyph = _mdl2Available ? Glyph(icon) : EmojiGlyph(icon);
         if (glyph.Length > 0)
         {
             var iconLbl = new Label
             {
                 Text = glyph,
                 AutoSize = true,
-                // Owned per-dialog font — DisposeControlFonts (in Dispose) frees it; it's a distinct
-                // instance from the inherited FontUI9, so the ownership guard disposes it exactly once.
-                Font = new Font("Segoe UI Emoji", 18f),
-                Margin = new Padding(0, 0, 12, 0),
+                ForeColor = GlyphColor(icon),   // MDL2 glyphs tint; OS emoji ignore ForeColor (multicolor)
+                // Owned per-dialog font — DisposeControlFonts (in Dispose) frees it; a distinct instance
+                // from the inherited FontUI9, so the ownership guard disposes it exactly once. Segoe MDL2
+                // Assets = crisp system icon font (Win10 1507+/Win11); emoji fallback on stripped SKUs.
+                Font = new Font(_mdl2Available ? "Segoe MDL2 Assets" : "Segoe UI Emoji", _mdl2Available ? 20f : 18f),
+                Margin = new Padding(0, 1, 12, 0),
                 Anchor = AnchorStyles.Top | AnchorStyles.Left,
             };
             root.Controls.Add(iconLbl, 0, 0);
@@ -79,9 +81,14 @@ internal sealed class ThemedMessageDialog : EqSwitchForm
             Margin = new Padding(0, 2, 0, 0),
             Anchor = AnchorStyles.Top | AnchorStyles.Left,
         };
-        // Wrap very long lines (e.g. a full EQ path) — set at the device DPI in the handle so it
-        // scales; short pre-newlined messages are unaffected (they're already under the cap).
-        HandleCreated += (_, _) => msgLbl.MaximumSize = new Size(LogicalToDeviceUnits(380), 0);
+        // Wrap long lines (e.g. a full EQ path) at a MAX width, and hold a sensible MIN width so a short
+        // message ("nothing to trim") still gets a standard dialog proportion instead of a cramped box.
+        // Both at device DPI in the handle so they scale at 125/150%.
+        HandleCreated += (_, _) =>
+        {
+            msgLbl.MaximumSize = new Size(LogicalToDeviceUnits(380), 0);
+            msgLbl.MinimumSize = new Size(LogicalToDeviceUnits(210), 0);
+        };
         root.Controls.Add(msgLbl, 1, 0);
 
         var btnBar = new FlowLayoutPanel
@@ -150,12 +157,43 @@ internal sealed class ThemedMessageDialog : EqSwitchForm
         return b;
     }
 
+    // Segoe MDL2 Assets glyphs (built into Win10 1507+ / Win11) — crisp monochrome icons we tint with
+    // the theme palette, instead of multicolor OS emoji that clash with the dark dialog. Codepoints:
+    // Info=E946, Warning=E7BA, ErrorBadge=EA39, Help(question)=E897.
     private static string Glyph(MessageBoxIcon icon) => icon switch
     {
-        MessageBoxIcon.Warning => "⚠️",
-        MessageBoxIcon.Error => "⛔",
-        MessageBoxIcon.Information => "ℹ️",
-        MessageBoxIcon.Question => "❓",
+        MessageBoxIcon.Warning     => "",
+        MessageBoxIcon.Error       => "",
+        MessageBoxIcon.Information  => "",
+        MessageBoxIcon.Question     => "",
+        _ => "",
+    };
+
+    private static Color GlyphColor(MessageBoxIcon icon) => icon switch
+    {
+        MessageBoxIcon.Warning     => DarkTheme.CardWarn,
+        MessageBoxIcon.Error       => DarkTheme.FgTeamSeparatorRed,
+        MessageBoxIcon.Information  => DarkTheme.FgCharacterBlue,
+        MessageBoxIcon.Question     => DarkTheme.FgCharacterBlue,
+        _ => DarkTheme.FgWhite,
+    };
+
+    // The crisp MDL2 icons need the system icon font; if a stripped SKU lacks it, fall back to OS emoji
+    // so the status glyph is never a missing-glyph box ("tofu"). Win10 1507+/Win11 always have it.
+    private static readonly bool _mdl2Available = FontInstalled("Segoe MDL2 Assets");
+
+    private static bool FontInstalled(string family)
+    {
+        try { using var f = new Font(family, 9f); return string.Equals(f.Name, family, StringComparison.OrdinalIgnoreCase); }
+        catch { return false; }
+    }
+
+    private static string EmojiGlyph(MessageBoxIcon icon) => icon switch
+    {
+        MessageBoxIcon.Warning     => "⚠️",
+        MessageBoxIcon.Error       => "⛔",
+        MessageBoxIcon.Information  => "ℹ️",
+        MessageBoxIcon.Question     => "❓",
         _ => "",
     };
 
@@ -177,10 +215,7 @@ internal sealed class ThemedMessageDialog : EqSwitchForm
 #if DEBUG
     /// <summary>DEBUG-only sample for the DiagRender preview harness (built, not shown modally).</summary>
     internal static Form Preview() => new ThemedMessageDialog(
-        "⚠️ NUCLEAR OPTION ⚠️\n\n" +
-        "This will reset ALL settings to factory defaults.\n" +
-        "Your current config will be lost forever.\n\n" +
-        "Are you absolutely sure?",
-        "Reset to Defaults", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+        "All 7 log file(s) under 50MB — nothing to trim.",
+        "Trim Logs", MessageBoxButtons.OK, MessageBoxIcon.Information, MessageBoxDefaultButton.Button1);
 #endif
 }
