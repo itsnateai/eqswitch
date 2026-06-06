@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.24.41 — Fix: Restore eqclient.ini crashed if the Video tab was never opened (2026-06-05)
+
+**Fix — `VideoRestoreIni` NullReferenceException on the lazy Video tab (regression from v3.24.40)**
+
+v3.24.40 made the Video tab build lazily, but the **Restore** button (eqclient.ini backup/restore) lives on the eager **Paths** tab and calls `PopulateVideoFromIni`, which dereferences Video-tab controls. Restoring a backup without having opened the Video tab first threw `NullReferenceException`. Fixed by building the Video tab (`EnsureTabBuilt(TabVideo)`) at the top of `PopulateVideoFromIni` — idempotent, so the normal Video-tab build path no-ops (the `_tabBuilt` flag is set before building, making the re-entrant call return immediately). Caught by adversarial review of the v3.24.40 diff.
+
+The `--test-lazy-save` guard is now non-vacuous: it no longer pre-builds the tabs (so deleting the `EnsureAllTabsBuilt()` inside `ApplySettings` turns it red), and a new check invokes `PopulateVideoFromIni` with the Video tab unbuilt (guarding the Restore crash). Both fixes red→green verified.
+
 ## v3.24.40 — Settings opens fast: Video + Accounts tabs build on first view (2026-06-05)
 
 **Perf — Settings no longer builds all six tabs (or reads `eqclient.ini`) at open**

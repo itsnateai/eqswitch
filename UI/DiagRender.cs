@@ -280,11 +280,11 @@ internal static class DiagRender
             return 2;
         }
 
-        // Time the deferred build (what first-open USED to pay) in isolation, then run the real Save.
+        // Run the REAL Save with Video + Accounts STILL UNBUILT — ApplySettings must build + populate them
+        // itself (EnsureAllTabsBuilt is its first statement). Do NOT pre-build here: pre-building would make
+        // this test pass vacuously — it could no longer tell "ApplySettings builds the tabs" from "the
+        // harness pre-built them", so deleting the guard inside ApplySettings would stay green.
         sw.Restart();
-        typeof(SettingsForm).GetMethod("EnsureAllTabsBuilt", flags)!.Invoke(form, null);
-        long tDeferredMs = sw.ElapsedMilliseconds;
-
         bool applied;
         try
         {
@@ -293,7 +293,19 @@ internal static class DiagRender
         catch (Exception ex)
         {
             var inner = ex.InnerException ?? ex;
-            Console.Error.WriteLine($"LazySave: FAIL — ApplySettings threw {inner.GetType().Name}: {inner.Message}");
+            Console.Error.WriteLine($"LazySave: FAIL — ApplySettings threw {inner.GetType().Name}: {inner.Message} (did it stop building the lazy tabs before reading their controls?)");
+            form.Dispose();
+            return 1;
+        }
+        long tSaveMs = sw.ElapsedMilliseconds;   // Save now includes the deferred Video+Accounts build
+
+        // Prove ApplySettings ITSELF built the lazy tabs (not the harness): this is what makes the test a
+        // real guard for the EnsureAllTabsBuilt() call inside ApplySettings — remove that call and either
+        // these flags stay false or the reflection-invoke above throws NRE.
+        var builtAfter = (bool[])typeof(SettingsForm).GetField("_tabBuilt", flags)!.GetValue(form)!;
+        if (!builtAfter[1] || !builtAfter[2])
+        {
+            Console.Error.WriteLine($"LazySave: FAIL — after Save the lazy tabs are still unbuilt (Video={builtAfter[1]}, Accounts={builtAfter[2]}); ApplySettings did not build them.");
             form.Dispose();
             return 1;
         }
@@ -337,8 +349,40 @@ internal static class DiagRender
             return 1;
         }
 
-        Console.WriteLine($"LazySave: PASS — Save without opening Video/Accounts preserved all 18 of their config fields. " +
-                          $"new first-open (ctor+Show, 4 eager tabs) = {tOpenMs}ms; the deferred Video+Accounts build = {tDeferredMs}ms now runs on first view of those tabs, not at every open.");
+        // Part B — guard the VideoRestoreIni crash class (the gap a static review caught post-ship): the
+        // eqclient.ini "Restore" button on the EAGER Paths tab calls PopulateVideoFromIni, which dereferences
+        // Video-tab controls. On a fresh form shown on General (Video an unbuilt shell), invoking it must
+        // NOT throw — PopulateVideoFromIni now builds the Video tab first.
+        var form2 = new SettingsForm(input, _ => { }, 0, () => { }, () => { }, null, false);
+        form2.StartPosition = FormStartPosition.Manual;
+        form2.Location = new Point(-32000, -32000);
+        form2.ShowInTaskbar = false;
+        form2.Show();
+        Application.DoEvents();
+        var built2 = (bool[])typeof(SettingsForm).GetField("_tabBuilt", flags)!.GetValue(form2)!;
+        if (built2[1]) { Console.Error.WriteLine("LazySave: SETUP INVALID — Video already built on the Restore-path form."); form2.Dispose(); return 2; }
+        try
+        {
+            typeof(SettingsForm).GetMethod("PopulateVideoFromIni", flags)!.Invoke(form2, null);
+        }
+        catch (Exception ex)
+        {
+            var inner = ex.InnerException ?? ex;
+            Console.Error.WriteLine($"LazySave: FAIL — PopulateVideoFromIni threw {inner.GetType().Name} with the Video tab unbuilt (the Paths-tab Restore crash): {inner.Message}");
+            form2.Dispose();
+            return 1;
+        }
+        var built2After = (bool[])typeof(SettingsForm).GetField("_tabBuilt", flags)!.GetValue(form2)!;
+        form2.Close();
+        form2.Dispose();
+        if (!built2After[1])
+        {
+            Console.Error.WriteLine("LazySave: FAIL — PopulateVideoFromIni did not build the Video tab when called with it unbuilt.");
+            return 1;
+        }
+
+        Console.WriteLine($"LazySave: PASS — ApplySettings built the unopened Video/Accounts tabs and preserved all 18 of their config fields; PopulateVideoFromIni is safe with Video unbuilt (the Paths-tab Restore path). " +
+                          $"lazy first-open (ctor+Show, 4 eager tabs) = {tOpenMs}ms; Save incl. the deferred build = {tSaveMs}ms.");
         return 0;
     }
 

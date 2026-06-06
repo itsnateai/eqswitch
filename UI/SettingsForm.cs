@@ -3708,6 +3708,13 @@ public class SettingsForm : EqSwitchForm
 
     private void PopulateVideoFromIni()
     {
+        // This dereferences Video-tab controls (_cboVideoPreset / _nudVideoWidth / ...), which are null
+        // until the Video tab is built. It has two callers: PopulateVideoTab (Video just built — the call
+        // below no-ops) and VideoRestoreIni, whose "Restore eqclient.ini" button lives on the EAGER Paths
+        // tab and can fire while Video was never viewed. Build Video first so neither path NREs.
+        // EnsureTabBuilt is idempotent — its _tabBuilt set-before-build makes the PopulateVideoTab
+        // re-entrant call return immediately, so this is free on the normal path.
+        EnsureTabBuilt(TabVideo);
         var iniPath = Path.Combine(_config.EQPath, "eqclient.ini");
         if (!File.Exists(iniPath))
         {
