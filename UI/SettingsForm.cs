@@ -1696,10 +1696,25 @@ public class SettingsForm : EqSwitchForm
         var page = _tabShells[index];
         if (page == null || _tabBuilt[index]) return;   // eager tab (no shell) or already built
         _tabBuilt[index] = true;                         // set BEFORE building so a re-entrant event can't loop
-        switch (index)
+        try
         {
-            case TabVideo:    BuildVideoTab(page);    PopulateVideoTab(); break;
-            case TabAccounts: BuildAccountsTab(page);                     break; // grids self-populate; _nudLoginScreenDelay inline
+            switch (index)
+            {
+                case TabVideo:    BuildVideoTab(page);    PopulateVideoTab(); break;
+                case TabAccounts: BuildAccountsTab(page);                     break; // grids self-populate; _nudLoginScreenDelay inline
+            }
+        }
+        catch
+        {
+            // A builder threw mid-construction. Without this reset the tab stays flagged built-but-half-built:
+            // every later EnsureTabBuilt/EnsureAllTabsBuilt would no-op, and ApplySettings would then read the
+            // controls that never got created (NRE / silent default on Save) — a transient failure turned
+            // permanent. Reset so a later attempt rebuilds, and clear the half-built page first so the rebuild
+            // doesn't stack duplicate controls. Re-throw (a builder failure should be loud). Re-entrancy is
+            // still safe: the flag was true for the duration of the failed attempt, so no recursion occurred.
+            _tabBuilt[index] = false;
+            try { page.Controls.Clear(); } catch { /* best effort cleanup */ }
+            throw;
         }
 
         // A tab built AFTER the one-time Load DPI pass must size its own fields — Load's

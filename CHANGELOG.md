@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.24.42 — Harden: a tab whose build throws no longer stays permanently half-built (2026-06-05)
+
+**Hardening — `EnsureTabBuilt` resets its built-flag if a builder throws**
+
+The lazy-tab machinery sets `_tabBuilt[index] = true` *before* running the builder (so a re-entrant call short-circuits instead of looping). If a builder threw mid-construction, the tab stayed flagged built — so every later `EnsureTabBuilt`/`EnsureAllTabsBuilt` no-oped, and a subsequent Save read controls that were never created (NRE or silent default). The build now runs under a `try/catch` that, on failure, resets the flag and clears the half-built page so a later attempt rebuilds cleanly; the exception still propagates (a builder failure is loud), and re-entrancy stays safe (the flag is set for the duration of the attempt). Low-probability trigger — the builders are deterministic over validated config — but a bad failure mode; flagged by adversarial review of the v3.24.41 diff.
+
+Also: the `--test-lazy-save` harness now pins `Launch.Arguments = "patchme"` so the Args-change confirmation modal can never fire and hang the headless run if a default ever changes.
+
 ## v3.24.41 — Fix: Restore eqclient.ini crashed if the Video tab was never opened (2026-06-05)
 
 **Fix — `VideoRestoreIni` NullReferenceException on the lazy Video tab (regression from v3.24.40)**

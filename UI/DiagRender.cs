@@ -238,6 +238,7 @@ internal static class DiagRender
         // clobber to a class default is detectable.
         var input = new AppConfig { IsFirstRun = false, EQPath = eqDir };
         input.Launch.ExeName = "eqgame.exe";                 // matches the stub above so the Exe guard stays quiet
+        input.Launch.Arguments = "patchme";                  // == PopulateFromConfig's loaded value so the Args-change modal never fires (headless-hang guard)
         input.Layout.WindowMode = WindowMode.Windowed;       // Video: _chkWindowedMode
         input.Layout.DarkTitlebar = true;                    // Video: _chkDarkTitlebar
         input.Layout.TitlebarOffset = 17;                    // Video: _nudTitlebarOffset
