@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.24.44 — PiP overlay no longer dismisses the right-click menu (2026-06-05)
+
+**Fix — opening the Alt+Ctrl+M tray menu while a single client was up dismissed it (needed two presses)**
+
+v3.24.43 made the PiP overlay appear whenever an EQ client isn't the foreground window — so a lone client previews when minimized **or** covered by another window (both intended). But opening EQSwitch's own right-click menu foregrounds EQSwitch, dropping the client out of foreground; ~50ms later the overlay did a hidden→shown `Show()`, and a new `WS_EX_NOACTIVATE | WS_EX_TOPMOST` window appearing in the menu's z-band cancels the menu — `ContextMenuStrip`'s modal pump treats it as a dismiss regardless of `NOACTIVATE` (the same bug class as the v3.22.72 `FloatingTooltip` fix). So the menu flashed shut; a second press worked only because the overlay was already shown.
+
+Fix: the foreground-change and client-list PiP-sync paths now skip while our context menu is visible (`_contextMenu?.Visible`), and the menu's `Closed` handler re-syncs the overlay. **The show-logic itself is unchanged** — a client still previews when minimized, when covered by another app (e.g. a browser), or when behind another EQ client (multibox). The Start menu is a different process (not our menu), so it isn't suppressed — popping the overlay there is acceptable (it's also a common escape-from-fullscreen path to reach the tray).
+
 ## v3.24.43 — PiP shows for a single minimized client; team table + log-trim readability (2026-06-05)
 
 **Fix — Picture-in-Picture never appeared for a lone client until you clicked Apply**

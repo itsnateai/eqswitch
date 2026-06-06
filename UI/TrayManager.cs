@@ -599,7 +599,9 @@ public class TrayManager : IDisposable
             // Create/update/tear-down the PiP overlay to match config + client count.
             // Single authority (SyncPipOverlay): >=1 client so a lone minimized client
             // previews, and NO TogglePip() here — that would invert Pip.Enabled.
-            SyncPipOverlay();
+            // Suppressed while the context menu is open (see OnForegroundChangedCore);
+            // the menu's Closed handler re-syncs.
+            if (_contextMenu?.Visible != true) SyncPipOverlay();
         };
         _processManager.ClientDiscovered += (_, c) =>
         {
@@ -2296,10 +2298,13 @@ public class TrayManager : IDisposable
 
         }
 
-        // Create/show/hide the PiP overlay on foreground change. This is what makes a lone
-        // client's overlay APPEAR when it's minimized — previously this path only updated an
-        // already-existing overlay, so a single client never spawned one until Settings -> Apply.
-        SyncPipOverlay();
+        // Create/show/hide the PiP overlay on foreground change — what makes a lone client's
+        // overlay APPEAR when it's minimized or covered by another window. SKIP while our own
+        // context menu is visible: the overlay's Show() puts a new WS_EX_NOACTIVATE|TOPMOST window
+        // in the menu's z-band, which ContextMenuStrip's modal pump treats as a cancel trigger
+        // (same bug class as the v3.22.72 tooltip fix). The menu's Closed handler re-syncs. The
+        // Start menu is a different process, not our menu, so it isn't suppressed — acceptable.
+        if (_contextMenu?.Visible != true) SyncPipOverlay();
     }
 
     private void StartRetryTimer()
@@ -2582,6 +2587,10 @@ public class TrayManager : IDisposable
             // deferred while the menu was open. Now safe to surface the toast
             // without cancelling a menu the user is actively interacting with.
             TryDispatchLostClientBalloon();
+            // v3.24.44: re-sync the PiP overlay — its show was suppressed while the menu
+            // was open (a new TOPMOST window cancels the menu), so reflect the real
+            // foreground/client state now that showing is safe again.
+            SyncPipOverlay();
         };
 
         // v3.22.27 Item 1: BuildContextMenu is reached from non-ReloadConfigCore
