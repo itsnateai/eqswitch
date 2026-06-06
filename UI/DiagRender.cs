@@ -124,6 +124,93 @@ internal static class DiagRender
         }
     }
 
+    /// <summary>
+    /// Reproduces the disposed-font crash class at the FORM level (what the static
+    /// FontDisposeOwnershipTests can't reach): build a real form, Show it (so child handles + grid
+    /// cell-styles materialize), Dispose it, then create a fresh TextBox + ComboBox and force their
+    /// handle creation — the exact site that throws "ArgumentException: Parameter is not valid" when
+    /// a shared/default font was freed on close. Also checks Control.DefaultFont and the DarkTheme
+    /// shared statics directly. Returns 0 if the cycle is clean, 1 if the crash reproduces.
+    /// Invoked via <c>--test-dispose-cycle [FormName]</c> (default ProcessManagerForm).
+    /// </summary>
+    public static int RunDisposeCycle(string formName)
+    {
+        try { Application.SetDefaultFont(new Font("Segoe UI", 9f)); } catch { /* best effort */ }
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        try { Application.SetHighDpiMode(HighDpiMode.SystemAware); } catch { }
+
+        var def = Control.DefaultFont;
+        // Must mirror DarkTheme.SharedFonts exactly — a regression that frees ANY shared static must
+        // be caught. (Missing entries = blind spots: TabFontBold/TabFontRegular were omitted at first.)
+        var sharedNames = new (string name, Font f)[]
+        {
+            ("FontUI9", DarkTheme.FontUI9), ("FontUI85", DarkTheme.FontUI85), ("FontUI75", DarkTheme.FontUI75),
+            ("FontUI75Italic", DarkTheme.FontUI75Italic), ("FontSemibold9", DarkTheme.FontSemibold9),
+            ("FontSemibold95", DarkTheme.FontSemibold95),
+            ("TabFontBold", DarkTheme.TabFontBold), ("TabFontRegular", DarkTheme.TabFontRegular),
+        };
+
+        bool bad = false;
+        try
+        {
+            var form = BuildForm(formName, 0);
+            form.StartPosition = FormStartPosition.Manual;
+            form.Location = new Point(-32000, -32000);
+            form.ShowInTaskbar = false;
+            form.Show();
+            Application.DoEvents();
+            form.Close();
+            form.Dispose();
+            Application.DoEvents();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"DisposeCycle({formName}): build/dispose threw — {ex.GetType().Name}: {ex.Message}");
+            return 2;
+        }
+
+        if (FontDisposed(def))
+        {
+            Console.Error.WriteLine($"DisposeCycle({formName}): FAIL — Control.DefaultFont was disposed on close (process-wide brick).");
+            bad = true;
+        }
+        foreach (var (name, f) in sharedNames)
+            if (FontDisposed(f))
+            {
+                Console.Error.WriteLine($"DisposeCycle({formName}): FAIL — DarkTheme.{name} (shared) was disposed on close.");
+                bad = true;
+            }
+
+        // The literal reported crash: a fresh control's handle creation calls SetWindowFont→ToHfont.
+        try
+        {
+            using var probe = new Form { StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), ShowInTaskbar = false };
+            probe.Controls.Add(new TextBox());
+            probe.Controls.Add(new ComboBox());
+            probe.Show();
+            Application.DoEvents();
+            probe.Close();
+        }
+        catch (ArgumentException ex)
+        {
+            Console.Error.WriteLine($"DisposeCycle({formName}): FAIL — fresh control crashed after close: {ex.Message}");
+            bad = true;
+        }
+
+        Console.WriteLine(bad
+            ? $"DisposeCycle({formName}): FAIL — closing this form bricks fonts for later forms."
+            : $"DisposeCycle({formName}): PASS — no shared/default font disposed; later forms create cleanly.");
+        return bad ? 1 : 0;
+    }
+
+    private static bool FontDisposed(Font f)
+    {
+        if (f == null) return false;
+        try { f.GetHeight(); return false; }
+        catch (ArgumentException) { return true; }
+    }
+
     /// <summary>Construct a form in isolation with stub data. Add a case per form as it's converted.</summary>
     private static Form BuildForm(string name, int tab)
     {

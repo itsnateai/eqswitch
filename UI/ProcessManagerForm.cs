@@ -46,8 +46,6 @@ public class ProcessManagerForm : EqSwitchForm
 
     // Card 1: Priority preset (applies to all clients, or "None" for per-row manual)
     private ComboBox _cboPriority = null!;
-    private NumericUpDown _nudLaunchRetries = null!;
-    private NumericUpDown _nudLaunchRetryDelay = null!;
 
     // Card 3: Core Assignment (6 slots matching eqclient.ini CPUAffinity0-5)
     private NumericUpDown[] _slotPickers = null!;
@@ -178,14 +176,11 @@ public class ProcessManagerForm : EqSwitchForm
         cardPriority.RowFit("Priority Preset:", _cboPriority);
         cardPriority.Hint("Enforces a CPU priority on every client — High is recommended.");
 
-        // Launch retry — EQ resets its own priority shortly after starting.
-        cardPriority.Hint("On launch EQ resets its priority to Normal — EQSwitch re-applies it:");
-        _nudLaunchRetries = Fields.Numeric(3, 7, _config.Affinity.LaunchRetryCount, 40);
-        // Shown in seconds; stored as ms in LaunchRetryDelayMs (schema/validator unchanged).
-        _nudLaunchRetryDelay = Fields.Numeric(0.5m, 10m, _config.Affinity.LaunchRetryDelayMs / 1000m, 60);
-        _nudLaunchRetryDelay.DecimalPlaces = 1;
-        _nudLaunchRetryDelay.Increment = 0.5m;
-        cardPriority.FlowRow("Retry:", _nudLaunchRetries, Inline("times,"), _nudLaunchRetryDelay, Inline("sec apart"));
+        // EQ resets its own priority shortly after starting; EQSwitch re-applies it on a fixed
+        // retry schedule (LaunchRetryCount/LaunchRetryDelayMs config defaults: 3× @ 2s). The
+        // tuning knobs were pulled from the UI — the defaults have proven solid and need no
+        // exposure. The values still live in config and are clamped by AppConfig.Validate().
+        cardPriority.Hint("On launch EQ resets its priority to Normal — EQSwitch re-applies it automatically.");
 
         // ─── Card 2: Running Clients (live grid + status) ────────────────
         var cardClients = stack.NewCard("🖥", "Running Clients", DarkTheme.CardBlue);
@@ -252,7 +247,6 @@ public class ProcessManagerForm : EqSwitchForm
         _nudMaxBGFPS = Fields.Numeric(10, 99, FpsForDisplay(_config.EQClientIni.MaxBGFPS), 55);
         _nudMaxBGFPS.Increment = 5;
         _nudMaxBGFPS.ReadOnly = true;
-        cardFps.FlowRow("Active FPS:", _nudMaxFPS, Inline("Background FPS:"), _nudMaxBGFPS);
 
         // Ghost line: current eqclient.ini values (dim label + green value, monospace) — built as
         // tight adjacent segments so it reads as continuous text at any DPI.
@@ -280,22 +274,75 @@ public class ProcessManagerForm : EqSwitchForm
         ghostFlow.Controls.Add(GhostSeg(iniFps, DarkTheme.CardGreen));
         ghostFlow.Controls.Add(GhostSeg("   MaxBGFPS=", DarkTheme.FgDimGray));
         ghostFlow.Controls.Add(GhostSeg(iniBgFps, DarkTheme.CardGreen));
-        cardFps.FlowRow("Current ini:", ghostFlow);
+        // FPS readout layout — editable spinners on the LEFT, read-only current-ini values on the
+        // RIGHT:
+        //   [ Active FPS [##]  Background FPS [##] ]      [    Current ini:    ]
+        //   [ Written to eqclient.ini on Save.    ]      [ MaxFPS=## MaxBGFPS=## ]
+        // Built from FlowLayoutPanels (+ one AutoSize TableLayoutPanel for the readout) — NO Percent
+        // columns and NO Anchor=None: both make a panel under-report its width, which collapses the
+        // readout and mis-sizes the window. FlowLayoutPanels sum their children's widths reliably,
+        // so inner.PreferredSize is honest and the window sizes to fit. Pure AutoSize/Margin (margins
+        // DPI-scale) → 100% and 150% render identically. (Default 80 is implied by the spinner.)
+
+        // Left stack: spinner row over the bold save-consequence note.
+        var lblActive = Inline("Active FPS:");          lblActive.Margin = new Padding(0, 6, 6, 0);
+        var lblBackground = Inline("Background FPS:");   lblBackground.Margin = new Padding(12, 6, 6, 0);
+        _nudMaxFPS.Margin = new Padding(0, 2, 0, 2);
+        _nudMaxBGFPS.Margin = new Padding(0, 2, 0, 2);
+        var fpsControls = new FlowLayoutPanel
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
+            Margin = Padding.Empty, Padding = Padding.Empty,
+        };
+        fpsControls.Controls.Add(lblActive);
+        fpsControls.Controls.Add(_nudMaxFPS);
+        fpsControls.Controls.Add(lblBackground);
+        fpsControls.Controls.Add(_nudMaxBGFPS);
 
         // Bold the consequence: opening this page and clicking Save rewrites the user's local
         // eqclient.ini, so make that loud.
         _boldHintFont = new Font(DarkTheme.FontUI75, FontStyle.Bold);
-        var warnFlow = new FlowLayoutPanel
+        var lblFpsWritten = new Label
         {
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            WrapContents = false,
-            Margin = Padding.Empty,
-            Padding = Padding.Empty,
+            Text = "Written to eqclient.ini on Save.", AutoSize = true,
+            ForeColor = DarkTheme.FgGray, Font = _boldHintFont, Margin = new Padding(0, 6, 0, 2),
         };
-        warnFlow.Controls.Add(new Label { Text = "Default 80.  ", AutoSize = true, ForeColor = DarkTheme.FgDimGray, Font = DarkTheme.FontUI75, Margin = Padding.Empty });
-        warnFlow.Controls.Add(new Label { Text = "Written to eqclient.ini on Save.", AutoSize = true, ForeColor = DarkTheme.FgGray, Font = _boldHintFont, Margin = Padding.Empty });
-        cardFps.FlowRow("", warnFlow);
+
+        var leftPanel = new FlowLayoutPanel
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, FlowDirection = FlowDirection.TopDown,
+            WrapContents = false, Margin = Padding.Empty, Padding = Padding.Empty,
+        };
+        leftPanel.Controls.Add(fpsControls);
+        leftPanel.Controls.Add(lblFpsWritten);
+
+        // Right stack: "Current ini:" centered over the live "MaxFPS=## MaxBGFPS=##" readout. The
+        // values keep their default anchor (so they size the column); only the header is Anchor.Top,
+        // which H-centers it in the column without collapsing the cell.
+        var lblCurrentIni = new Label
+        {
+            Text = "Current ini:", AutoSize = true, ForeColor = DarkTheme.FgGray, Font = DarkTheme.FontUI9,
+            Anchor = AnchorStyles.Top, Margin = new Padding(0, 0, 0, 2),
+        };
+        var readoutPanel = new TableLayoutPanel
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, ColumnCount = 1, RowCount = 2,
+            Margin = new Padding(30, 2, 6, 0), Padding = Padding.Empty, BackColor = Color.Transparent,
+        };
+        readoutPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        readoutPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        readoutPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        readoutPanel.Controls.Add(lblCurrentIni, 0, 0);   // H-centered over the values (Anchor.Top)
+        readoutPanel.Controls.Add(ghostFlow, 0, 1);       // default anchor → sizes the column
+
+        var fpsRow = new FlowLayoutPanel
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
+            Margin = Padding.Empty, Padding = Padding.Empty,
+        };
+        fpsRow.Controls.Add(leftPanel);
+        fpsRow.Controls.Add(readoutPanel);
+        cardFps.Full(fpsRow);
 
         // ─── Footer (Save / Apply / Reset / Close) — docked bottom, always visible ───
         var btnSave = Fields.Primary("Save");
@@ -319,17 +366,28 @@ public class ProcessManagerForm : EqSwitchForm
         var btnClose = Fields.Button("Close");
         btnClose.Click += (_, _) => Close();
 
+        // These are primary dialog actions, not compact in-card buttons — give them real
+        // presence. Fields' default 8/2 padding looks tiny at 100%. Logical 96-dpi units;
+        // AutoScaleMode.Dpi scales Padding/MinimumSize/Margin, so 150% stays correct.
+        foreach (var b in new[] { btnSave, btnApply, btnReset, btnClose })
+        {
+            b.Padding = new Padding(18, 7, 18, 7);
+            b.MinimumSize = new Size(72, 0);   // uniform width floor; height stays font+padding derived
+        }
+
         var footer = new Panel
         {
             Dock = DockStyle.Bottom,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             BackColor = DarkTheme.BgDark,
-            Padding = new Padding(12, 6, 12, 8),
+            // NewBar inside adds 6 top / 2 bottom, so 8+6=14 above ≈ 12+2=14 below → symmetric.
+            Padding = new Padding(12, 8, 12, 12),
         };
         footer.Controls.Add(Bars.Split(
             new Control[] { btnSave, btnApply, btnReset },
-            new Control[] { btnClose }));
+            new Control[] { btnClose },
+            gap: 14));
         Controls.Add(footer);
 
         // ─── Refresh timer ───────────────────────────────────────────────
@@ -355,9 +413,19 @@ public class ProcessManagerForm : EqSwitchForm
             if (f > 1.001)
                 _grid.Height = (int)Math.Round(_grid.Height * f);
 
+            // Size to actual content, NOT an inflated floor. The old 520-logical floor left dead
+            // horizontal space that only the Running Clients grid's Fill column soaked up, making the
+            // table look oversized (and far worse at 150%). We can't use inner.PreferredSize.Width:
+            // every card's Panel wraps a Dock=Top body, so the plain Panel reports only its padding
+            // (the docked body contributes no width). Measure each card's body directly via
+            // Card.ContentWidth (a TableLayoutPanel reports real column width regardless of dock); the
+            // widest card (the FPS readout row) drives the window. +stack padding + a small gutter.
+            // 360 is just a sane minimum; content drives at both 100% and 150%.
             var inner = stack.Host.Controls.Count > 0 ? stack.Host.Controls[0] : stack.Host;
+            int contentW = 0;
+            foreach (var c in stack.Cards) contentW = Math.Max(contentW, c.ContentWidth);
             int width = Math.Min(
-                Math.Max((int)Math.Round(520 * f), inner.PreferredSize.Width + LogicalToDeviceUnits(28)),
+                Math.Max((int)Math.Round(360 * f), contentW + LogicalToDeviceUnits(20)),
                 wa.Width);
             ClientSize = new Size(width, ClientSize.Height);   // set width first so PreferredSize reflects it
             int contentH = inner.PreferredSize.Height + footer.Height + LogicalToDeviceUnits(6);
@@ -567,9 +635,8 @@ public class ProcessManagerForm : EqSwitchForm
             }
         }
 
-        // Launch retry settings
-        _config.Affinity.LaunchRetryCount = (int)_nudLaunchRetries.Value;
-        _config.Affinity.LaunchRetryDelayMs = (int)(_nudLaunchRetryDelay.Value * 1000m);
+        // Launch retry settings (LaunchRetryCount / LaunchRetryDelayMs) are no longer editable
+        // here — they stay at their config defaults (3× @ 2s), so nothing is written back.
 
         // Core Assignment — write slot values to config
         for (int i = 0; i < 6; i++)
@@ -638,17 +705,21 @@ public class ProcessManagerForm : EqSwitchForm
             _refreshTimer?.Stop();
             _refreshTimer?.Dispose();
             _tooltip?.Dispose();
-            // Dispose GDI Font handles — WinForms doesn't own control fonts.
-            // _ghostFont is shared across the 4 ghost-readout labels, so dispose it once here as the
-            // explicit owner (the tree walk below would otherwise hit it once per sharing label).
-            // Single-owner control fonts — the Enable checkbox, the status label, and the bold warn
-            // label that owns _boldHintFont — are NOT disposed here: DarkTheme.DisposeControlFonts(this)
-            // walks the control tree and disposes each non-shared Control.Font once (it skips DarkTheme's
-            // shared statics; this form never detaches a control via Card.Clear, so the walk reaches all).
-            // DataGridViewCellStyle.Font is NOT a Control.Font, so the grid header cell-style font is
-            // unreachable by that walk and is disposed directly.
+            // Dispose GDI Font handles — WinForms doesn't own control fonts. Dispose our field-owned
+            // fonts explicitly (both are `new Font(...)` we created): _ghostFont (shared across the 4
+            // ghost-readout labels) and _boldHintFont (the bold warn label). Explicit disposal is
+            // robust even if the owning control is ever reparented/removed; the tree walk below also
+            // reaches them, but Font.Dispose is idempotent so the double-hit is harmless. Per-control
+            // owned fonts not held in a field (Enable checkbox, status label) are freed by the walk.
+            // Grid cell-style fonts are NOT Control.Font (the tree walk can't reach them). Dispose
+            // ONLY the header style's font — we created it (new Font in BuildProcessGrid). Do NOT
+            // touch DefaultCellStyle.Font: we never set it, so it resolves to the grid's INHERITED
+            // font (DarkTheme.FontUI9, shared app-wide — the form sets Font = FontUI9). Disposing it
+            // freed that shared handle and bricked every later form's controls ("Parameter is not
+            // valid" on the next TextBox/ComboBox handle creation). Regression-guarded by
+            // --test-dispose-cycle (Program.cs / DiagRender.RunDisposeCycle).
             _ghostFont?.Dispose();
-            _grid?.DefaultCellStyle?.Font?.Dispose();
+            _boldHintFont?.Dispose();
             _grid?.ColumnHeadersDefaultCellStyle?.Font?.Dispose();
             DarkTheme.DisposeControlFonts(this);
         }

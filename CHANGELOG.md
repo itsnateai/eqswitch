@@ -1,5 +1,42 @@
 # Changelog
 
+## v3.24.39 — Hardening: explicit font ownership + complete dispose-cycle guard (2026-06-05)
+
+Follow-up to the v3.24.38 crash fix (first release since v3.24.36 — it bundles the v3.24.37 Process Manager layout work and the v3.24.38 disposed-font fix below).
+
+- **`ProcessManagerForm` now disposes its field-owned `_boldHintFont` explicitly** (it previously relied on the control-tree walk — correct today, but fragile if the owning label were ever reparented/removed). Matches how `_ghostFont` is handled; `Font.Dispose` is idempotent so the walk's second hit is harmless.
+- **The `--test-dispose-cycle` regression guard now checks all 8 `DarkTheme` shared fonts** (`TabFontBold`/`TabFontRegular` were missing) — a regression that freed either would now be caught.
+
+## v3.24.38 — Fix: Process Manager close bricked all dialogs (disposed shared font) (2026-06-05)
+
+**Fix — opening any dialog after closing Process Manager crashed with "Parameter is not valid"**
+
+Opening the Process Manager, closing it, then opening it (or Settings, or any other dialog) again threw a cascade of `ArgumentException: Parameter is not valid` from `System.Drawing.Font.ToLogFont` (during a `TextBox`/`ComboBox` `OnHandleCreated → SetWindowFont`). Root cause (introduced by the v3.24.34 layout rebuild): `ProcessManagerForm.Dispose` called `_grid.DefaultCellStyle.Font.Dispose()`. We never set that cell-style font, so it resolves to the **grid's inherited font** — `DarkTheme.FontUI9`, the shared app-wide instance the form assigns as its `Font`. Disposing it freed the GDI handle for the whole process, so the next control created anywhere crashed. Fixed by disposing only the header cell-style font (which we *do* create); `DefaultCellStyle.Font` is left alone. Distinct from the v3.24.36 dialog-font fix — that guarded the control-tree walk; this was a *direct* disposal that bypassed the guard.
+
+New regression guard: `--test-dispose-cycle [FormName]` builds a real form, shows + disposes it, then creates a fresh control — failing if any shared/default font was freed. The static `--test-font-dispose` couldn't reach grid/dialog-level disposal; this can.
+
+## v3.24.37 — Process Manager layout polish + completed font-disposer fix (2026-06-05)
+
+**Process Manager — FPS Limits redesigned**
+
+The FPS card is now a two-column layout: the editable **Active FPS / Background FPS** spinners and the bold **"Written to eqclient.ini on Save."** note sit on the left, and the read-only **"Current ini:"** header — centered over its live **`MaxFPS=## MaxBGFPS=##`** values — sits on the right. The old standalone "Default 80." text is removed (the spinner's own value makes the default obvious), and the previous arrangement that made "Written…" read as "Default 80 is saved" is gone. Built entirely from AutoSize FlowLayout/TableLayout panels (no Percent columns, no `Anchor=None`) so it renders proportionally identically at 100% and 150%.
+
+**Process Manager — footer buttons**
+
+Save / Apply / Reset / Close are larger (more padding, a uniform width floor) with even spacing and symmetric top/bottom padding — they no longer look cramped at 100%. All in logical units so `AutoScaleMode.Dpi` scales them correctly at 150%.
+
+**Process Manager — CPU Priority Handling**
+
+The **Retry** tuning row (count / delay) is removed from the UI — the defaults (3× @ 2s) have proven solid and stay in config, just no longer surfaced. The card explains the auto re-apply in one line.
+
+**Process Manager — window width**
+
+The window now sizes to its actual content instead of a fixed minimum, removing the dead horizontal space (most noticeable at 150%) that only the Running Clients table was stretching into. Measured via a new `Card.ContentWidth` (the card's `Panel` reports only padding because its body is `Dock=Top`).
+
+**Fix — completed the v3.24.36 font-disposer guard**
+
+v3.24.36 added the ownership guard to `DarkTheme.DisposeControlFonts`, but `SettingsForm` carried its own *unguarded* `DisposeControlFonts` copy — the same disposed-`Control.DefaultFont` crash class, still latent. Removed it (the fonts it touched are already freed via the tracked `_inlineFonts` list), so no unguarded font disposal remains.
+
 ## v3.24.36 — Dark-themed dialogs + dialog-crash fix + Settings polish (2026-06-05)
 
 **Fix — settings dialogs crashed with "Parameter is not valid"**

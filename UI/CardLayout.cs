@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // © itsnateai
 
+using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
 
@@ -27,6 +28,12 @@ public sealed class CardStack
     public Panel Host { get; }
 
     private readonly TableLayoutPanel _stack;
+    private readonly List<Card> _cards = new();
+
+    /// <summary>Every card added to this stack, in order. Used for content-driven window sizing —
+    /// see <see cref="Card.ContentWidth"/> (the plain Panel can't report content width because its
+    /// body is Dock=Top).</summary>
+    public IReadOnlyList<Card> Cards => _cards;
 
     /// <param name="scroll">true (default) wraps the card stack in an AutoScroll panel so grown
     /// content scrolls instead of clipping when the form can't grow further. false adds the stack
@@ -70,6 +77,7 @@ public sealed class CardStack
     {
         var card = new Card(emoji, title, titleColor);
         AddRowControl(card.Panel);
+        _cards.Add(card);
         return card;
     }
 
@@ -100,6 +108,12 @@ public sealed class Card
     public Panel Panel { get; }
     private readonly TableLayoutPanel _body;
     private readonly Color _titleColor;
+
+    /// <summary>The card's true content width = its body's preferred width + the card's own padding.
+    /// Use this (not <see cref="Panel"/>.PreferredSize.Width) for content-driven window sizing: the
+    /// body is Dock=Top inside the plain <see cref="Panel"/>, so the Panel reports only its padding —
+    /// the body, a TableLayoutPanel, reports the real column-based width regardless of its dock.</summary>
+    public int ContentWidth => _body.PreferredSize.Width + Panel.Padding.Horizontal;
 
     internal Card(string emoji, string title, Color titleColor)
     {
@@ -543,13 +557,13 @@ public static class DpiScale
 /// </summary>
 public static class Bars
 {
-    public static TableLayoutPanel Split(Control[] left, Control[] right)
+    public static TableLayoutPanel Split(Control[] left, Control[] right, int gap = 8)
     {
         var g = NewBar(2);
         g.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f)); // left group + spacer
         g.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // right group hugs right
-        g.Controls.Add(Group(left, AnchorStyles.Left), 0, 0);
-        g.Controls.Add(Group(right, AnchorStyles.Right), 1, 0);
+        g.Controls.Add(Group(left, AnchorStyles.Left, gap), 0, 0);
+        g.Controls.Add(Group(right, AnchorStyles.Right, gap), 1, 0);
         return g;
     }
 
@@ -602,7 +616,7 @@ public static class Bars
         RowStyles = { new RowStyle(SizeType.AutoSize) },
     };
 
-    private static FlowLayoutPanel Group(Control[] items, AnchorStyles anchor)
+    private static FlowLayoutPanel Group(Control[] items, AnchorStyles anchor, int gap = 8)
     {
         var f = new FlowLayoutPanel
         {
@@ -616,7 +630,7 @@ public static class Bars
         };
         for (int i = 0; i < items.Length; i++)
         {
-            items[i].Margin = new Padding(0, 0, i < items.Length - 1 ? 8 : 0, 0);
+            items[i].Margin = new Padding(0, 0, i < items.Length - 1 ? gap : 0, 0);
             f.Controls.Add(items[i]);
         }
         return f;

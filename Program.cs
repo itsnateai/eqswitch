@@ -200,6 +200,24 @@ static class Program
             return;
         }
 
+        // --test-dispose-cycle [FormName] — DEBUG-only: build a real form, Show+Dispose it, then
+        // create a fresh TextBox/ComboBox — reproduces the "Parameter is not valid" disposed-font
+        // crash at the form level (a direct grid/dialog font dispose freeing a shared/default font).
+        // The static FontDisposeOwnershipTests can't reach this; default form = ProcessManagerForm.
+        if (args.Length >= 1 && args[0] == "--test-dispose-cycle")
+        {
+            int exitCode;
+            try { exitCode = UI.DiagRender.RunDisposeCycle(args.Length >= 2 ? args[1] : "ProcessManagerForm"); }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"DisposeCycle CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
         // --test-config-validate — run Core/AppConfigValidateTests.RunAll() and
         // exit with its return code.
         if (args.Length >= 1 && args[0] == "--test-config-validate")

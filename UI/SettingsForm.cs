@@ -4053,15 +4053,18 @@ public class SettingsForm : EqSwitchForm
             _openTeamsDialog?.Close();
             _openTeamsDialog = null;
             DismissMonitorOverlays();
-            // Dispose inline Font objects on hotkey TextBoxes and other controls
-            // that were created with new Font() — base.Dispose doesn't clean these up
-            DisposeControlFonts(_txtSwitchKeyGeneral, _txtSwitchKey, _txtGlobalSwitchKey,
-                _txtArrangeWindows, _txtToggleMultiMon, _txtLaunchOne, _txtLaunchAll,
-                _txtShowMenuGeneral, _txtShowMenu);
+            // Every per-control Font we created went through TrackFont() → _inlineFonts, so disposing
+            // that list frees all of them (the hotkey TextBoxes' Consolas fonts included). Do NOT add
+            // an unguarded per-control Font dispose here: an unstyled control's Font getter returns
+            // the INHERITED font (ultimately the app-wide Control.DefaultFont), and freeing that
+            // bricks the process — the next dialog's TextBox crashes in SetWindowFont→ToHfont
+            // ("ArgumentException: Parameter is not valid"). That was the v3.24.35 Settings-open crash;
+            // v3.24.36 added the ownership guard to DarkTheme.DisposeControlFonts but a local unguarded
+            // copy lingered here. See Core/FontDisposeOwnershipTests + reference_winforms_dispose_inherited_font_crash.
             foreach (var f in _inlineFonts)
                 f.Dispose();
             _inlineFonts.Clear();
-            DarkTheme.DisposeControlFonts(this);
+            DarkTheme.DisposeControlFonts(this);   // guarded: frees owned fonts only, never shared/inherited
         }
         base.Dispose(disposing);
     }
@@ -4070,12 +4073,6 @@ public class SettingsForm : EqSwitchForm
     {
         _inlineFonts.Add(font);
         return font;
-    }
-
-    private static void DisposeControlFonts(params Control?[] controls)
-    {
-        foreach (var c in controls)
-            c?.Font?.Dispose();
     }
 
     // ─── Tray Action Display ↔ Config Mapping ───────────────────
