@@ -241,10 +241,10 @@ public class ProcessManagerForm : EqSwitchForm
 
         // ─── Card 4: FPS Limits ──────────────────────────────────────────
         var cardFps = stack.NewCard("🎮", "FPS Limits", DarkTheme.CardGreen);
-        _nudMaxFPS = Fields.Numeric(10, 99, FpsForDisplay(_config.EQClientIni.MaxFPS), 55);
+        _nudMaxFPS = Fields.Numeric(10, EqClientIniSchema.MaxFpsCap, FpsForDisplay(_config.EQClientIni.MaxFPS), 55);
         _nudMaxFPS.Increment = 5;
-        _nudMaxFPS.ReadOnly = true;   // spinner-only: stays on the 10-99 step-5 grid
-        _nudMaxBGFPS = Fields.Numeric(10, 99, FpsForDisplay(_config.EQClientIni.MaxBGFPS), 55);
+        _nudMaxFPS.ReadOnly = true;   // spinner-only: stays on the 10..MaxFpsCap step-5 grid
+        _nudMaxBGFPS = Fields.Numeric(10, EqClientIniSchema.MaxFpsCap, FpsForDisplay(_config.EQClientIni.MaxBGFPS), 55);
         _nudMaxBGFPS.Increment = 5;
         _nudMaxBGFPS.ReadOnly = true;
 
@@ -608,14 +608,14 @@ public class ProcessManagerForm : EqSwitchForm
     }
 
     /// <summary>
-    /// Maps a stored FPS value onto the Process Manager's displayable 10-99 range.
+    /// Maps a stored FPS value onto the Process Manager's displayable 10..MaxFpsCap range.
     /// A stored 0 (legacy "don't set / leave eqclient.ini alone") falls back to the
     /// 80 default — never the 10 floor — so a prior "don't set" config doesn't
     /// silently become an unplayable 10 FPS; other out-of-range values clamp into
-    /// 10-99. The "leave eqclient.ini alone" (0 = don't set) escape hatch still
+    /// 10..MaxFpsCap. The "leave eqclient.ini alone" (0 = don't set) escape hatch still
     /// lives in the advanced EQ Client Settings form.
     /// </summary>
-    private static int FpsForDisplay(int stored) => stored <= 0 ? 80 : Math.Clamp(stored, 10, 99);
+    private static int FpsForDisplay(int stored) => stored <= 0 ? 80 : Math.Clamp(stored, 10, EqClientIniSchema.MaxFpsCap);
 
     /// <summary>
     /// Writes all card settings back to config and eqclient.ini.

@@ -666,12 +666,13 @@ public class AppConfig
         if (EQClientIni.CPUAffinitySlots is not { Length: 6 }) EQClientIni.CPUAffinitySlots = new[] { 1, 2, 3, 1, 2, 3 };
         for (int i = 0; i < 6; i++)
             EQClientIni.CPUAffinitySlots[i] = Math.Clamp(EQClientIni.CPUAffinitySlots[i], 0, 31);
-        // v3.24.28: cap FPS authoritatively. Both UI forms cap at 99 but the JSON
-        // config path was unclamped — a hand-edited/legacy MaxFPS>=100 would write to
-        // eqclient.ini despite the UI showing 99 (UI-vs-backend drift the verifier
-        // pass flagged). 0 = "don't set" sentinel preserved (clamp floor is 0).
-        EQClientIni.MaxFPS = Math.Clamp(EQClientIni.MaxFPS, 0, 99);
-        EQClientIni.MaxBGFPS = Math.Clamp(EQClientIni.MaxBGFPS, 0, 99);
+        // v3.24.49: cap FPS authoritatively against the single schema ceiling. Fresh EQ ships
+        // MaxFPS=100; the historical 99 here (and in ProcessManager + SeedFromIni) silently snapped
+        // the stock value back to 99 on every load — even after v3.24.48 raised the EQ-Client NUD +
+        // schema to 999. All cap sites now reference EqClientIniSchema.MaxFpsCap (one source, no drift).
+        // 0 = "don't set" sentinel preserved (clamp floor is 0).
+        EQClientIni.MaxFPS = Math.Clamp(EQClientIni.MaxFPS, 0, EqClientIniSchema.MaxFpsCap);
+        EQClientIni.MaxBGFPS = Math.Clamp(EQClientIni.MaxBGFPS, 0, EqClientIniSchema.MaxFpsCap);
 
         // LoginAccount field validation (legacy — operates on v3 LegacyAccounts list).
         // v4 Account type has no CharacterSlot field; per-character slot moves to
@@ -1730,7 +1731,7 @@ public class EQClientIniConfig
                             cfg.RaidInviteConfirm = val == "1";
                             break;
                         case "aanoconfirm":
-                            cfg.AANoConfirm = val == "0";
+                            cfg.AANoConfirm = val == "1";  // 1 = no-confirm (schema-aligned; was inverted "0")
                             break;
                         case "chatserverport":
                             cfg.DisableChatServer = val == "0";
@@ -1756,11 +1757,11 @@ public class EQClientIniConfig
                             break;
                         case "maxfps":
                             if (int.TryParse(val, out int fps))
-                                cfg.MaxFPS = Math.Clamp(fps, 0, 99);
+                                cfg.MaxFPS = Math.Clamp(fps, 0, EqClientIniSchema.MaxFpsCap);
                             break;
                         case "maxbgfps":
                             if (int.TryParse(val, out int bgfps))
-                                cfg.MaxBGFPS = Math.Clamp(bgfps, 0, 99);
+                                cfg.MaxBGFPS = Math.Clamp(bgfps, 0, EqClientIniSchema.MaxFpsCap);
                             break;
                         case "maximized":
                             cfg.MaximizeWindow = val == "1";
@@ -1805,11 +1806,11 @@ public class EQClientIniConfig
                             break;
                         case "maxfps":
                             if (int.TryParse(val, out int optFps))
-                                cfg.MaxFPS = Math.Clamp(optFps, 0, 99);
+                                cfg.MaxFPS = Math.Clamp(optFps, 0, EqClientIniSchema.MaxFpsCap);
                             break;
                         case "maxbgfps":
                             if (int.TryParse(val, out int optBgfps))
-                                cfg.MaxBGFPS = Math.Clamp(optBgfps, 0, 99);
+                                cfg.MaxBGFPS = Math.Clamp(optBgfps, 0, EqClientIniSchema.MaxFpsCap);
                             break;
                         case "lootallconfirm":
                             cfg.DisableLootAllConfirm = val == "0";
@@ -1818,7 +1819,7 @@ public class EQClientIniConfig
                             cfg.RaidInviteConfirm = val == "1";
                             break;
                         case "aanoconfirm":
-                            cfg.AANoConfirm = val == "0";
+                            cfg.AANoConfirm = val == "1";  // 1 = no-confirm (schema-aligned; was inverted "0")
                             break;
                         case "chatserverport":
                             cfg.DisableChatServer = val == "0";

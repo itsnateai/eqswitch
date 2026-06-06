@@ -554,6 +554,7 @@ internal static class DiagRender
                 "WindowedMode=FALSE",    // Operational: must be flipped to TRUE
                 "[Options]",
                 "Sky=1",                 // Bucket-2: must NOT be re-stamped
+                "MaxFPS=123",            // Bucket-2 numeric STRIPPED from launch enforce — must survive untouched
                 "[VideoMode]",
                 "WindowedMode=FALSE",
             };
@@ -583,6 +584,10 @@ internal static class DiagRender
             // Bucket-2 keys NOT re-stamped (eqgame-wins) despite being in ConfiguredKeys:
             Eq("Defaults", "Sound", "TRUE");
             Eq("Options", "Sky", "1");
+            // Bucket-2 numeric (MaxFPS) was REMOVED from EnforceOverrides in Phase 1 — prove a
+            // regression that re-adds it would be caught: config default is 80, fixture is 123,
+            // so a re-stamp would flip 123→80. It must stay 123.
+            Eq("Options", "MaxFPS", "123");
         }
         catch (Exception ex)
         {

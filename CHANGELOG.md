@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.24.49 — EQ Client Settings: MaxFPS=100 actually sticks now (FPS cap unified) (2026-06-06)
+
+**Fix — the v3.24.48 MaxFPS/MaxBGFPS cap raise was incomplete; now it's complete.** v3.24.48 lifted the FPS cap 99→999 in the EQ Client Settings field and the descriptor schema, but four *other* places still clamped at 99: `AppConfig` validation (runs on every load), the first-run `eqclient.ini` import, and the Process Manager's FPS spinner + its display mapping. So setting `MaxFPS=100` (EQ's stock default) looked like it worked, then silently snapped back to 99 on the next app start — or the instant you opened Process Manager. Every FPS-cap site now reads a single `EqClientIniSchema.MaxFpsCap` constant, so the "Process Manager vs. main settings diverge" hazard (§F) can't recreate this.
+
+**Hardening** — the launch-enforce self-test now also proves a Bucket-2 numeric (`MaxFPS`) left in the INI survives a relaunch untouched (the "eqgame wins" guarantee), locking the Phase-1 win against regression; and the now-vestigial `AANoConfirm` first-run import was aligned to the corrected polarity.
+
+Verified: clean build; `--test-eqclient-schema` / `-inidoc` / `-save` / `-enforce` all pass.
+
 ## v3.24.48 — EQ Client Settings overhaul Phase 1: main window on a single descriptor engine (2026-06-06)
 
 **The 6-window EQ Client Settings subsystem is being rebuilt onto one declarative descriptor table so the UI can't drift from `eqclient.ini`, leave ghost (duplicate) keys, or clobber settings you changed in-game. This release lands the foundation + the main window. The five sub-forms (Models, Chat Spam, Particles, Video Mode, Keymaps) are unchanged and fully functional — their rebuild is Phases 2–6 — and all six window titles now read "— EXPERIMENTAL" while the rebuild is in progress.**

@@ -133,6 +133,15 @@ public sealed class IniSetting
 /// </summary>
 public static class EqClientIniSchema
 {
+    /// <summary>
+    /// The ONE FPS ceiling for MaxFPS/MaxBGFPS — referenced by the schema rows below, both UI NUDs
+    /// (EQ Client Settings + Process Manager), AppConfig.Validate, and SeedFromIni. Fresh EQ ships
+    /// MaxFPS=100, so the historical 99 cap mis-clamped the stock default; v3.24.48 raised it in only
+    /// 2 of 6 places, so a round-trip still snapped 100→99. One definition kills that §8-F drift class.
+    /// EQ tolerates far higher; 999 is a sane UI ceiling.
+    /// </summary>
+    public const int MaxFpsCap = 999;
+
     /// <summary>Sentinel used for the dual-section MaxFPS/MaxBGFPS (canonical [Options], mirror [Defaults]).</summary>
     private static readonly string[] MirrorDefaults = { "Defaults" };
 
@@ -174,8 +183,8 @@ public static class EqClientIniSchema
 
         // ───────────────────────── MAIN FORM — Performance (6) ─────────────────────────
         // MaxFPS/MaxBGFPS: canonical [Options] (EQ runtime), mirror [Defaults] (legacy). Also edited in ProcessManager (§8 F).
-        IniSetting.Number("MaxFPS", "Options", Bucket.UserPref, min: 0m, max: 999m, decimals: 0, def: "80", "MaxFPS", skipBelow: 1m, meaning: "foreground FPS cap; 0 = don't set. Max 999 — fresh EQ ships MaxFPS=100, so a 99 cap mis-displayed the ship default.", mirrors: MirrorDefaults),
-        IniSetting.Number("MaxBGFPS", "Options", Bucket.UserPref, min: 0m, max: 999m, decimals: 0, def: "80", "MaxBGFPS", skipBelow: 1m, meaning: "background FPS cap; 0 = don't set. Max 999 (was 99).", mirrors: MirrorDefaults),
+        IniSetting.Number("MaxFPS", "Options", Bucket.UserPref, min: 0m, max: MaxFpsCap, decimals: 0, def: "80", "MaxFPS", skipBelow: 1m, meaning: "foreground FPS cap; 0 = don't set. Cap = MaxFpsCap — fresh EQ ships MaxFPS=100, so a 99 cap mis-displayed the ship default.", mirrors: MirrorDefaults),
+        IniSetting.Number("MaxBGFPS", "Options", Bucket.UserPref, min: 0m, max: MaxFpsCap, decimals: 0, def: "80", "MaxBGFPS", skipBelow: 1m, meaning: "background FPS cap; 0 = don't set. Cap = MaxFpsCap (was 99).", mirrors: MirrorDefaults),
         IniSetting.Number("MouseSensitivity", "Options", Bucket.UserPref, min: -1m, max: 100m, decimals: 0, def: "5", "Mouse", skipBelow: 0m, meaning: "-1 = don't set"),
         IniSetting.Number("ClipPlane", "Options", Bucket.UserPref, min: 0m, max: 999m, decimals: 0, def: "14", "Clip", skipBelow: 1m, meaning: "view distance; EQ default 14"),
         IniSetting.Number("ShadowClipPlane", "Options", Bucket.UserPref, min: 0m, max: 999m, decimals: 0, def: "35", "Shadow", skipBelow: 1m, meaning: "EQ default 35"),
