@@ -557,6 +557,21 @@ public static class DpiScale
     /// at 100% and 150% without a scale factor (but NOT idempotent for textboxes — call once).</summary>
     public static void SizeFitFields(Control root)
     {
+        // v3.24.46: each `c.Width = …` below mutates a control that lives inside an AutoSize
+        // TableLayoutPanel, so without batching every single width-set cascades a relayout up the deep
+        // card→body→stack tree — dozens of full passes that dominated the Settings open (~500ms, measured).
+        // Suspending each container while its OWN direct children are resized defers those cascades; the
+        // single ResumeLayout(true) at the root then does ONE coherent top-down pass. Final widths are
+        // byte-identical — the measurement (MeasureText/LogicalToDeviceUnits) is independent of layout
+        // state; only the *application* of the widths is coalesced. Idempotent + safe to nest (a caller
+        // that already suspended `root`, e.g. EnsureTabBuilt, just adds a refcount).
+        root.SuspendLayout();
+        try { SizeFitFieldsWalk(root); }
+        finally { root.ResumeLayout(true); }
+    }
+
+    private static void SizeFitFieldsWalk(Control root)
+    {
         foreach (Control c in root.Controls)
         {
             if (c.Dock == DockStyle.None && !c.Anchor.HasFlag(AnchorStyles.Right))
@@ -587,9 +602,15 @@ public static class DpiScale
                 }
             }
             // Don't descend into leaf fields' own internals (a NumericUpDown's inner edit/buttons,
-            // a ComboBox's edit) — only walk container children.
+            // a ComboBox's edit) — only walk container children. Suspend the container while ITS direct
+            // children are resized (so their width-sets defer the container's relayout); ResumeLayout(false)
+            // leaves the single forced pass to the root SuspendLayout/ResumeLayout(true) wrapper above.
             if (c is not (NumericUpDown or ComboBox or TextBox))
-                SizeFitFields(c);
+            {
+                c.SuspendLayout();
+                try { SizeFitFieldsWalk(c); }
+                finally { c.ResumeLayout(false); }
+            }
         }
     }
 }

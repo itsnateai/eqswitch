@@ -253,7 +253,7 @@ public class SettingsForm : EqSwitchForm
     private readonly bool[] _tabBuilt = new bool[6];
     private bool _loaded;   // set after the one-time Load DPI pass; gates per-tab DPI sizing for lazy tabs
 
-    public SettingsForm(AppConfig config, Action<AppConfig> onApply, int initialTab = 0, Action? openProcessManager = null, Action? onVideoSaved = null, AutoLoginManager? autoLogin = null, bool openTeamsDialog = false)
+    public SettingsForm(AppConfig config, Action<AppConfig> onApply, int initialTab = 0, Action? openProcessManager = null, Action? onVideoSaved = null, AutoLoginManager? autoLogin = null, bool openTeamsDialog = false, bool prewarmLazyTabs = true)
     {
         _config = config;
         _onApply = onApply;
@@ -318,10 +318,72 @@ public class SettingsForm : EqSwitchForm
             }
             Shown += shownHandler;
         }
+
+        // v3.24.46: pre-warm the lazy tabs (Video, Accounts) right after the window is shown + painted,
+        // so the user's first click lands on an ALREADY-BUILT tab. The lazy tabs "flickered" on first view
+        // — the cold, un-JITted build + layout ran ON-SCREEN, so the content visibly disappeared/reappeared
+        // as the tab materialized and the window resized to fit it. The EAGER tabs (PiP/Hotkeys/Paths) never
+        // did, because they're built before the window ever paints; PiP resizes cleanly on click despite a
+        // bigger size delta than Video — proof it's the build, not the resize. Building the lazy ones here,
+        // off the click path while they're NOT the selected tab, keeps that transient invisible (a non-
+        // selected TabPage doesn't paint) → first click then gets a clean height-fit resize with no on-
+        // screen build flash, exactly like an already-built eager tab (the per-tab height fit on selection
+        // is unchanged — eager tabs resize on click too). BeginInvoke
+        // drains the open's paint first so the fast open is preserved; the build runs in the background
+        // before the user navigates. Single UI thread ⇒ a fast click just queues behind it (or no-ops via
+        // the _tabBuilt gate) — no race. Pre-warm also warms the JIT for the build/layout path.
+        // Opt-out (prewarmLazyTabs:false) only for the --test-lazy-save / diag harnesses, which must
+        // observe the genuinely-unbuilt state to verify ApplySettings' defensive EnsureAllTabsBuilt
+        // (the safety net for the rare Save-before-prewarm race). Production always pre-warms.
+        //
+        // SKIP when deep-linking to the Teams dialog (_openTeamsOnShown): that flow builds the Accounts
+        // tab itself behind its own visible busy-cursor "ready beat" (OpenTeamsWithVisibleBusy), and
+        // pre-warming would both steal that build (defeating the deliberate cursor UX) and, on a builder
+        // throw, leave the Teams path's own EnsureTabBuilt to fault. Normal opens pre-warm; the Teams
+        // deep-link keeps its bespoke UX untouched.
+        //   Trade-off (accepted): this also leaves the VIDEO tab un-pre-warmed in the Teams flow — nothing
+        //   builds it until clicked, so a Video click while opened-to-Teams can still cold-build/flicker
+        //   once. The Teams deep-link is a rare entry point and lazy-build-on-click still works, so it's
+        //   not worth complicating the busy-cursor Teams sequence to pre-warm Video there.
+        if (prewarmLazyTabs && !_openTeamsOnShown)
+        {
+            // One BeginInvoke PER tab (not one for both): each build is a SHORTER UI-thread block, so
+            // queued input is processed between the Video and Accounts builds (the form stays responsive
+            // right after open), and a throw building one tab can't strand the other — each has its own
+            // guard + a per-tab log line. EnsureTabBuilt already resets _tabBuilt on failure, so a skipped
+            // pre-warm just falls back to lazy-build-on-click — never a silent half-state.
+            void prewarm(int tabIndex)
+            {
+                if (IsDisposed) return;
+                BeginInvoke(new Action(() =>
+                {
+                    if (IsDisposed) return;
+                    try { EnsureTabBuilt(tabIndex); }
+                    catch (Exception ex) { FileLogger.Warn($"Lazy-tab pre-warm skipped (tab {tabIndex}): {ex.Message}"); }
+                }));
+            }
+            void prewarmHandler(object? s, EventArgs e)
+            {
+                Shown -= prewarmHandler;
+                prewarm(TabVideo);      // the tab the user clicks first — build it first
+                prewarm(TabAccounts);
+            }
+            Shown += prewarmHandler;
+        }
     }
 
     private void InitializeForm()
     {
+        // v3.24.46: perf canary \u2014 attribute the Settings open cost to a phase instead of guessing at
+        // the reported ~6s first-open. Lap() returns ms since the previous Lap (local-fn mutates the
+        // captured _openT0). All phase vars are declared up-front so the Load lambda (assigned below,
+        // runs at Show) can capture them; they're filled in as construction proceeds, then logged once
+        // at the end of Load. Pure instrumentation \u2014 no behavior change.
+        var _openSw = System.Diagnostics.Stopwatch.StartNew();
+        long _openT0 = 0;
+        long Lap() { long now = _openSw.ElapsedMilliseconds; long d = now - _openT0; _openT0 = now; return d; }
+        long msPreamble = 0, msGeneral = 0, msPip = 0, msHotkeys = 0, msPaths = 0, msButtons = 0, msPopulate = 0, msCtorTotal = 0;
+
         DarkTheme.StyleForm(this, "\u2694  Dalaya Settings  \u2694", new Size(530, 660));
 
         // Restore last window position
@@ -428,12 +490,17 @@ public class SettingsForm : EqSwitchForm
         // dominated first-open lag — build them LAZILY: add empty titled shells now (so the tab headers
         // + indices are stable) and materialize their content on first view / before Save. The four
         // light tabs stay eager. Tab ORDER is preserved: General, Video, Accounts, PiP, Hotkeys, Paths.
+        msPreamble = Lap();   // StyleForm + config snapshot + pending-field copy (pre-build)
         tabs.TabPages.Add(BuildGeneralTab());                                            // 0
+        msGeneral = Lap();
         tabs.TabPages.Add(_tabShells[TabVideo]    = DarkTheme.MakeTabPage("Video"));     // 1 (lazy)
         tabs.TabPages.Add(_tabShells[TabAccounts] = DarkTheme.MakeTabPage("Accounts"));  // 2 (lazy)
         tabs.TabPages.Add(BuildPipTab());                                                // 3
+        msPip = Lap();
         tabs.TabPages.Add(BuildHotkeysTab());                                            // 4
+        msHotkeys = Lap();
         tabs.TabPages.Add(BuildPathsTab());                                              // 5
+        msPaths = Lap();
 
         if (_initialTab > 0 && _initialTab < tabs.TabCount)
             tabs.SelectedIndex = _initialTab;
@@ -544,7 +611,9 @@ public class SettingsForm : EqSwitchForm
 
         Load += (_, _) =>
         {
+            long msShowRealize = Lap();     // ctor-return → Load start = handle realization + initial layout of the whole tree
             DpiScale.SizeFitFields(this);   // content-size numerics/combos/fit-textboxes (once)
+            long msSizeFit = Lap();         // cost of measuring every combo/numeric across the realized tree
             double f = DeviceDpi / 96.0;
             var wa = Screen.FromControl(this).WorkingArea;
             if (f > 1.001)
@@ -566,7 +635,9 @@ public class SettingsForm : EqSwitchForm
             SizeToSelectedTab();   // window height = selected tab content (no dead band)
             if (_config.SettingsWindowPos.Length < 2)
                 Location = new Point(wa.Left + Math.Max(0, (wa.Width - Width) / 2), wa.Top + Math.Max(0, (wa.Height - Height) / 2));
+            long msLoadRest = Lap();        // the ClientSize/Height/ItemSize mutations + SizeToSelectedTab
             _loaded = true;   // from here on, a lazily-built tab must size its own fields (see EnsureTabBuilt)
+            FileLogger.Info($"SettingsForm open: preamble={msPreamble}ms general={msGeneral}ms pip={msPip}ms hotkeys={msHotkeys}ms paths={msPaths}ms buttons={msButtons}ms populate={msPopulate}ms | ctorTotal={msCtorTotal}ms | showRealize={msShowRealize}ms sizeFit={msSizeFit}ms loadRest={msLoadRest}ms | TOTAL={_openSw.ElapsedMilliseconds}ms");
         };
         tabs.SelectedIndexChanged += (_, _) =>
         {
@@ -574,7 +645,10 @@ public class SettingsForm : EqSwitchForm
             SizeToSelectedTab();
         };
 
+        msButtons = Lap();   // footer button panels + event wiring (post-build, pre-populate)
         PopulateFromConfig();   // populates the EAGER tabs; the lazy tabs populate when first built
+        msPopulate = Lap();
+        msCtorTotal = _openSw.ElapsedMilliseconds;
     }
 
     // ─── Tab Builders ─────────────────────────────────────────────
@@ -1718,6 +1792,39 @@ public class SettingsForm : EqSwitchForm
                 case TabVideo:    BuildVideoTab(page);    PopulateVideoTab(); break;
                 case TabAccounts: BuildAccountsTab(page);                     break; // grids self-populate; _nudLoginScreenDelay inline
             }
+
+            // v3.24.46: size the fit-fields (combos→longest item, numerics→max value) WHILE the page is
+            // still suspended, so the single ResumeLayout(true) below performs ONE layout + paint at the
+            // FINAL widths. Previously this ran AFTER ResumeLayout, so the lazy tab painted once at the
+            // literal design widths and then visibly reflowed when the combos shrank to fit — the "tear"
+            // where the dropdowns and the card's right edge jump size on first view. Eager tabs never tore
+            // because Load's SizeFitFields(this) runs before their first paint; a lazy tab must do the
+            // same before ITS first paint, i.e. here, inside the suspended region. Content-derived +
+            // idempotent, so this reproduces exactly what Load did to the eager tabs (a no-op-equivalent
+            // at 100% scale). Mirrors the per-control scaling in the Load handler.
+            //
+            // Isolated in its OWN try/catch: a measurement failure here (near-impossible for the freshly-
+            // built, parented controls above — but defensively) must NOT fall through to the outer catch,
+            // which CLEARS the already-successfully-built tab and resets _tabBuilt. That would turn a
+            // cosmetic sizing glitch into a destroyed tab (and the pre-warm caller would swallow the
+            // throw, leaving the tab silently unbuilt). A sizing failure instead leaves the tab built —
+            // it paints at design widths (a no-op at 100%, possibly slightly off at 150%) — and logs.
+            // The outer catch stays reserved for genuine BUILDER failures (its original purpose).
+            if (_loaded)
+            {
+                try
+                {
+                    DpiScale.SizeFitFields(page);
+                    double f = DeviceDpi / 96.0;
+                    if (f > 1.001 && index == TabAccounts)
+                    {
+                        if (_dgvAccounts != null) _dgvAccounts.Height = (int)Math.Round(_dgvAccounts.Height * f);
+                        if (_dgvCharacters != null) _dgvCharacters.Height = (int)Math.Round(_dgvCharacters.Height * f);
+                        if (_lblTeamSummary?.Parent is { } teamPanel) teamPanel.Height = (int)Math.Round(teamPanel.Height * f);
+                    }
+                }
+                catch (Exception ex) { FileLogger.Warn($"Tab {index} fit-sizing skipped (tab kept, may be unsized): {ex.Message}"); }
+            }
         }
         catch
         {
@@ -1733,27 +1840,12 @@ public class SettingsForm : EqSwitchForm
         }
         finally
         {
-            page.ResumeLayout(true);   // one layout + paint for the whole tab (paired with SuspendLayout above)
+            page.ResumeLayout(true);   // one layout + paint for the whole tab, at final field widths (paired with SuspendLayout above)
         }
 
-        // A tab built AFTER the one-time Load DPI pass must size its own fields — Load's
-        // SizeFitFields(this) already covered a tab built before it (e.g. a deep-link initial tab).
-        // Content-derived + idempotent, so this reproduces exactly what Load did to the eager tabs
-        // (a no-op-equivalent at 100% scale). Mirrors the per-control scaling in the Load handler.
-        if (_loaded)
-        {
-            DpiScale.SizeFitFields(page);
-            double f = DeviceDpi / 96.0;
-            if (f > 1.001 && index == TabAccounts)
-            {
-                if (_dgvAccounts != null) _dgvAccounts.Height = (int)Math.Round(_dgvAccounts.Height * f);
-                if (_dgvCharacters != null) _dgvCharacters.Height = (int)Math.Round(_dgvCharacters.Height * f);
-                if (_lblTeamSummary?.Parent is { } teamPanel) teamPanel.Height = (int)Math.Round(teamPanel.Height * f);
-            }
-            // The SelectedIndexChanged handler calls SizeToSelectedTab() right after this returns, so
-            // the window refits to the now-sized content on the click path; non-click builds (Save,
-            // Teams deep-link) don't change the shown tab, so no resize is needed here.
-        }
+        // The SelectedIndexChanged handler calls SizeToSelectedTab() right after this returns, so the
+        // window refits (height only) to the now-sized content on the click path; non-click builds (Save,
+        // Teams deep-link) don't change the shown tab, so no resize is needed here.
     }
 
     /// <summary>

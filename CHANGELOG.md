@@ -1,5 +1,28 @@
 # Changelog
 
+## v3.24.46 — Settings open: the *real* bottleneck found + fixed; Video-tab tear gone (2026-06-06)
+
+**Perf — v3.24.45 batched the wrong phase; this fixes the two that actually dominated**
+
+v3.24.45 added `BeginBatch`/`Commit` to batch **construction** — correct, but a per-phase Stopwatch (new perf canary, logged once per open as `SettingsForm open: …` in `eqswitch.log`) proved construction was never the bottleneck: building all four eager tabs is only **~340 ms**. The open time was dominated by two *other* phases:
+
+- **`SizeFitFields` ≈ 600 ms → ≈ 12 ms.** The Load-time pass that sizes every numeric/combo/fit-textbox to its content set `Width`/`MinimumSize` on each field individually — and each set, on a control nested inside an `AutoSize` `TableLayoutPanel`, cascaded a full relayout up the `card → body → stack` tree. Dozens of fields ⇒ dozens of whole-tree passes. Fix: `SizeFitFields` now `SuspendLayout`s each container while *its own* direct children are resized, so all the width-sets coalesce into **one** layout pass at the root. The computed widths are byte-identical (the `MeasureText`/`LogicalToDeviceUnits` math is untouched — only *when* the widths are applied changed), verified by real-150 % renders of the General + Video tabs (DeviceDpi=144) showing every field sized exactly as before.
+- **Show-realize ≈ 800 ms** — raw handle creation + initial layout of the deep nested-control tree when the window is first shown. This is the architectural floor (it scales with control count); ruled out `WS_EX_COMPOSITED` as the cause by measurement (toggling it changed nothing). Left as-is for now — cutting it means deferring more tabs, which touches the hotkey-dialog / `UpdateSwitchKeyColor` read-paths and isn't worth the risk in a point release.
+
+Net: first-open ≈ **40 % faster** purely from the `SizeFitFields` batch (headless `--test-lazy-save`: ~1.9 s → ~1.2 s in Debug), with the bigger config-scaled win on real installs.
+
+**Fix — Video/Accounts tab no longer "tears" (draws wide, then visibly shrinks to fit) on first view**
+
+v3.24.45 suspended the page during a lazy build, but `SizeFitFields(page)` still ran *after* `page.ResumeLayout(true)` — so the tab painted **once** at the literal design widths, then `SizeFitFields` rewrote every combo/numeric width and triggered a **second** layout+paint: the visible right-edge shrink + dropdown resize. The fit-sizing now runs *inside* the suspended region, before `ResumeLayout`, so the single resume paints once at final widths. Eager tabs never tore because their `SizeFitFields` runs at `Load` before the first paint; the lazy tabs now do the same before *their* first paint.
+
+**Fix — first-view flicker on the lazy Video/Accounts tabs ("disappear and reappear")**
+
+Even with the width-tear fixed, the *first* click on Video/Accounts flickered: the lazy tab's whole content was still being **built on-screen at click time** (cold, un-JITted), so it visibly materialized as the window height-fit to it. The eager tabs (PiP/Hotkeys/Paths) never did this — they're built before the window paints — which is why a *smaller* tab like PiP resized cleanly while Video flickered: it's the on-screen **build**, not the resize. Fix: **pre-warm** — right after the window is shown and painted, the Video + Accounts tabs are built in the background (one `BeginInvoke` per tab, off the click path, while they're not the selected tab, so the build is never visible). The first click then lands on an already-built tab and behaves like an eager one. Skipped for the "Manage Teams" deep-link (that flow builds Accounts behind its own busy-cursor beat); opt-out (`prewarmLazyTabs:false`) only in the test harnesses so `--test-lazy-save` still exercises the unbuilt-Save safety net.
+
+Trade-off (honest): the lazy build cost doesn't vanish — it moves from the click to a brief background pass right after the window appears (chunked per tab so the form stays responsive). It's most noticeable on the *first* Settings open of a session (cold JIT) and negligible after. The window still height-fits per tab on selection, same as the eager tabs always have.
+
+Verified: `DpiBaselineTests`, `--test-lazy-save`, `--test-dispose-cycle SettingsForm` all pass; General + Video tabs render identically at 100 % and a real 150 % (Tiny11 lab, DeviceDpi=144), **including the pre-warm path** (a non-selected tab built by pre-warm then selected — confirms `SystemAware` DeviceDpi is correct without a per-page handle).
+
 ## v3.24.45 — Settings opens faster, no tab-tear; Trim-Logs dialog + teams polish (2026-06-06)
 
 **Perf — Settings construction was O(n²) ever since the DPI rebuild**

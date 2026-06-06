@@ -41,6 +41,7 @@ internal static class DiagRender
             NumberStyles.Float, CultureInfo.InvariantCulture, out var s) ? s : 1f;
         bool hold = Array.IndexOf(args, "--hold") >= 0;
         bool offscreen = Array.IndexOf(args, "--offscreen") >= 0;
+        bool prewarm = Array.IndexOf(args, "--prewarm") >= 0;   // build SettingsForm's lazy tabs via the PRODUCTION pre-warm path (offscreen, non-selected), THEN select `tab` — verifies pre-warm computes correct DPI widths
 
         // Mirror Program.Main's display setup exactly so the render matches production.
         Application.SetHighDpiMode(HighDpiMode.SystemAware);
@@ -51,7 +52,9 @@ internal static class DiagRender
         Form form;
         try
         {
-            form = BuildForm(formName, tab);
+            // In pre-warm mode open on tab 0 so the target tab is built by the pre-warm path (not the
+            // initialTab path), then selected below — the exact production sequence under test.
+            form = BuildForm(formName, prewarm ? 0 : tab, prewarm);
         }
         catch (Exception ex)
         {
@@ -75,6 +78,27 @@ internal static class DiagRender
                     form.ClientSize = new Size(
                         (int)Math.Round(form.ClientSize.Width * simScale),
                         (int)Math.Round(form.ClientSize.Height * simScale));
+            }
+            if (prewarm)
+            {
+                // Pump the message loop UNTIL the pre-warm BeginInvokes have actually built the target tab,
+                // then assert it — this guarantees the capture is of the PRE-WARM build (tab built while
+                // NON-selected), not the on-click build that SelectedIndex would otherwise trigger. A single
+                // DoEvents isn't enough: the two per-tab BeginInvokes + the builds' own layout messages can
+                // span more than one drain. The printed flag is the proof the --prewarm verification is valid.
+                var builtField = typeof(SettingsForm).GetField("_tabBuilt",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                bool prewarmBuilt = false;
+                for (int i = 0; i < 100 && !prewarmBuilt; i++)
+                {
+                    Application.DoEvents();
+                    if (builtField?.GetValue(form) is bool[] tb && tab >= 0 && tab < tb.Length) prewarmBuilt = tb[tab];
+                    if (!prewarmBuilt) System.Threading.Thread.Sleep(10);
+                }
+                Console.WriteLine($"[--prewarm] tab {tab} built by pre-warm while NON-selected (before any select): {prewarmBuilt}");
+                foreach (Control c in form.Controls)
+                    if (c is TabControl tc) { tc.SelectedIndex = Math.Min(tab, tc.TabCount - 1); break; }
+                Application.DoEvents();   // let the now-selected, pre-built tab lay out + size
             }
             // One tick after Shown so owner-draw tabs + DWM caption have painted + layout settled.
             var capture = new System.Windows.Forms.Timer { Interval = 1000 };
@@ -218,6 +242,7 @@ internal static class DiagRender
     /// </summary>
     public static int RunLazySave()
     {
+        EQSwitch.Core.FileLogger.Initialize();   // so SettingsForm's perf-canary Info line lands in eqswitch.log (the --test path skips Program's Initialize)
         try { Application.SetDefaultFont(new Font("Segoe UI", 9f)); } catch { /* best effort */ }
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
@@ -261,7 +286,7 @@ internal static class DiagRender
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         AppConfig? captured = null;
-        var form = new SettingsForm(input, c => captured = c, 0 /* initial tab = General */, () => { }, () => { }, null, false);
+        var form = new SettingsForm(input, c => captured = c, 0 /* initial tab = General */, () => { }, () => { }, null, false, prewarmLazyTabs: false);
         form.StartPosition = FormStartPosition.Manual;
         form.Location = new Point(-32000, -32000);
         form.ShowInTaskbar = false;
@@ -354,7 +379,7 @@ internal static class DiagRender
         // eqclient.ini "Restore" button on the EAGER Paths tab calls PopulateVideoFromIni, which dereferences
         // Video-tab controls. On a fresh form shown on General (Video an unbuilt shell), invoking it must
         // NOT throw — PopulateVideoFromIni now builds the Video tab first.
-        var form2 = new SettingsForm(input, _ => { }, 0, () => { }, () => { }, null, false);
+        var form2 = new SettingsForm(input, _ => { }, 0, () => { }, () => { }, null, false, prewarmLazyTabs: false);
         form2.StartPosition = FormStartPosition.Manual;
         form2.Location = new Point(-32000, -32000);
         form2.ShowInTaskbar = false;
@@ -395,14 +420,14 @@ internal static class DiagRender
     }
 
     /// <summary>Construct a form in isolation with stub data. Add a case per form as it's converted.</summary>
-    private static Form BuildForm(string name, int tab)
+    private static Form BuildForm(string name, int tab, bool prewarm = false)
     {
         var config = StubConfig();
         return name switch
         {
             "PilotCard" => BuildPilot(),
             "ThemedMessageDialog" => ThemedMessageDialog.Preview(),
-            "SettingsForm" => new SettingsForm(config, _ => { }, tab, () => { }, () => { }, null, false),
+            "SettingsForm" => new SettingsForm(config, _ => { }, tab, () => { }, () => { }, null, false, prewarmLazyTabs: prewarm),
             "ProcessManagerForm" => new ProcessManagerForm(
                 () => Array.Empty<EQClient>(), () => null, () => { }, _ => { }, config),
             _ => throw new ArgumentException($"DiagRender: unknown form '{name}'"),
