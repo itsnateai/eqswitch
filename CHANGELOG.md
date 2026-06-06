@@ -1,5 +1,21 @@
 # Changelog
 
+## v3.24.43 — PiP shows for a single minimized client; team table + log-trim readability (2026-06-05)
+
+**Fix — Picture-in-Picture never appeared for a lone client until you clicked Apply**
+
+Launching a single client and minimizing it left the PiP overlay invisible even with PiP enabled — only opening Settings and clicking **Apply** made it appear. Root cause: the overlay was created by three paths with inconsistent client-count thresholds. The `ClientListChanged` auto-show required **2+** clients *and* routed through `TogglePip()`, which flips the enabled flag (so on a cold-start 2-client launch it would *disable* PiP and pop a "PiP overlay disabled" balloon — a latent sibling bug); the foreground/minimize tick only *updated* an existing overlay, never created one; and only `ReloadConfig` (the Apply path) created it, at **≥1** client. So with a single client, nothing ever spawned the overlay until an Apply. All three now route through one `SyncPipOverlay()` authority: it creates the overlay whenever PiP is enabled and ≥1 client exists, tears it down otherwise, and leaves show/hide (by background-client count) to `PipOverlay.UpdateSources`. A lone client's overlay is created hidden while it's foreground and appears the instant it's minimized — no Apply needed. `ReloadConfig` passes `forceRecreate: true` so changed size/orientation/border config still takes effect on Apply.
+
+**UI — Autologin Teams readout is easier to scan**
+
+The two-column team list (12 teams, 6 rows) now uses full `Team1:`…`Team12:` labels, pins column 2 at the panel's horizontal midpoint so every row's second team starts at the same x (the owner-draw painter previously free-flowed, so column 2 wandered with name length), pads the red `|` divider on both sides, and trims the inset panel to fit exactly six rows (no dead space below row 12). The `--diag-render-form` stub config now seeds a few varying-length teams so the two-column render is observable.
+
+**UI — Log File Trimming hint moved inline**
+
+"Async trim + archive old logs" moved from its own row to the right edge of the Threshold row (via `Bars.Split`), reclaiming the empty right-side space and dropping a row.
+
+Verified: clean build (0 warnings); `--test-dpi-baseline`, `--test-lazy-save`, `--test-team-slot-resolver`, `--test-dispose-cycle SettingsForm` all pass; General + Accounts tabs rendered via `--diag-render-form` at 100% (and column-2 alignment confirmed under the 150% font-growth sim).
+
 ## v3.24.42 — Harden: a tab whose build throws no longer stays permanently half-built (2026-06-05)
 
 **Hardening — `EnsureTabBuilt` resets its built-flag if a builder throws**

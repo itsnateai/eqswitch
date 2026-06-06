@@ -106,6 +106,9 @@ dist/
 # rendered screenshots), strictly local — never publish
 _suzy-dpi-check*
 
+# Internal — --diag-render-form PNG output (form-render verification screenshots), local-only
+.diag-render/
+
 # Internal — CodeRabbit cloud-review config kept local-only (review is now the
 # local verifier swarm; config retained on disk for reference, not published)
 .coderabbit.yaml

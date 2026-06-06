@@ -711,8 +711,11 @@ public class SettingsForm : EqSwitchForm
         // The result callback is marshaled back to the UI thread by TrimLogFiles, but the trim is async
         // — if Settings was closed meanwhile, own the popup to nothing (ownerless) instead of a disposed form.
         btnTrimNow.Click += (_, _) => FileOperations.TrimLogFiles(_config, (int)_nudLogTrimThreshold.Value, msg => ThemedMessageDialog.Show(IsDisposed ? null : this, msg, "Trim Logs", MessageBoxButtons.OK, MessageBoxIcon.Information));
-        cardLog.FlowRow("Threshold:", _nudLogTrimThreshold, InlineLabel("MB"), btnTrimNow);
-        cardLog.Hint("Async trim + archive old logs");
+        // Threshold controls on the left; the dim hint pushed to the right edge (same line) via a
+        // Bars.Split spacer — reclaims the empty right-side space and drops the separate hint row.
+        cardLog.Full(Bars.Split(
+            new Control[] { InlineLabel("Threshold:"), _nudLogTrimThreshold, InlineLabel("MB"), btnTrimNow },
+            new Control[] { TrailingHint("Async trim + archive old logs") }));
 
         // ─── Window Title ────────────────────────────────────────────
         var cardTitle = stack.NewCard("📝", "Window Title", DarkTheme.CardGreen);
@@ -2498,7 +2501,9 @@ public class SettingsForm : EqSwitchForm
         // paints Account names orange / Character names white / the " | " boundary red).
         var summaryPanel = new Panel
         {
-            Height = 150,
+            // Fits exactly the 6 owner-drawn rows (Font.Height each) + small slack — no dead
+            // space below row 6. Logical value; AutoScaleMode.Dpi scales it like any other bound.
+            Height = DarkTheme.FontUI9.Height * 6 + 10,
             BackColor = DarkTheme.BgDark,
             BorderStyle = BorderStyle.FixedSingle,
         };
@@ -2947,9 +2952,15 @@ public class SettingsForm : EqSwitchForm
             return new TeamSummarySegment(Clip(QuickLoginSlot.DisplayName(targetName), MaxNameLen - 1) + "?", SummarySegmentKind.Unresolved);
         }
 
-        void AppendTeamCell(List<TeamSummarySegment> segs, int teamNum, string u1, string u2)
+        // Build ONE team's cell (label + resolved slot names). Each row holds two such cells
+        // (Left + Right); the divider and column-2 alignment are painted by TeamSummaryLabel, so
+        // no separator segment is added here.
+        List<TeamSummarySegment> BuildCell(int teamNum, string u1, string u2)
         {
-            segs.Add(new TeamSummarySegment($"T{teamNum}: ", SummarySegmentKind.Plain));
+            var segs = new List<TeamSummarySegment>(4)
+            {
+                new TeamSummarySegment($"Team{teamNum}: ", SummarySegmentKind.Plain)
+            };
             var s1 = ResolveSegment(u1);
             var s2 = ResolveSegment(u2);
             bool hasS1 = !string.IsNullOrEmpty(s1.Text);
@@ -2963,17 +2974,12 @@ public class SettingsForm : EqSwitchForm
             else if (hasS1) segs.Add(s1);
             else if (hasS2) segs.Add(s2);
             else segs.Add(new TeamSummarySegment("(none)", SummarySegmentKind.Plain));
+            return segs;
         }
 
         TeamSummaryRow Pair(int leftNum, string lU1, string lU2,
                             int rightNum, string rU1, string rU2)
-        {
-            var segs = new List<TeamSummarySegment>(16);
-            AppendTeamCell(segs, leftNum, lU1, lU2);
-            segs.Add(new TeamSummarySegment(" | ", SummarySegmentKind.TeamSeparator));
-            AppendTeamCell(segs, rightNum, rU1, rU2);
-            return new TeamSummaryRow(segs);
-        }
+            => new TeamSummaryRow(BuildCell(leftNum, lU1, lU2), BuildCell(rightNum, rU1, rU2));
 
         // 12 teams laid out as 6 rows × 2 cols (matches v3.22.58 layout
         // budget: ~159px per cell at 318px label width).
@@ -4296,7 +4302,8 @@ internal sealed class TeamSummaryLabel : Label
             // Mirror to base Text for accessibility + AutoEllipsis fallback.
             // SuspendLayout coalesces the two Invalidate signals (Text-set + our explicit) into one paint.
             SuspendLayout();
-            base.Text = string.Join("\n", _rows.Select(r => string.Concat(r.Segments.Select(s => s.Text))));
+            base.Text = string.Join("\n", _rows.Select(r =>
+                string.Concat(r.Left.Select(s => s.Text)) + "  |  " + string.Concat(r.Right.Select(s => s.Text))));
             ResumeLayout(performLayout: false);
             Invalidate();
         }
@@ -4341,13 +4348,25 @@ internal sealed class TeamSummaryLabel : Label
         // each row starts ~3px left of where a standard Label would draw —
         // acceptable here since the whole owner-paint surface is consistent.
         const TextFormatFlags format = TextFormatFlags.NoPadding;
-        foreach (var row in _rows)
+
+        // Two fixed columns: column 2 is pinned at the label's horizontal midpoint so every row's
+        // 2nd team starts at the same x. A red "|" divider sits just left of column 2 with padding
+        // on both sides. Long left cells ellipsize at the divider (rare; names are already clipped
+        // to MaxNameLen in BuildTeamSummaryRows).
+        int gap = LogicalToDeviceUnits(10);              // padding each side of the divider
+        const string sepText = "|";
+        int sepWidth = TextRenderer.MeasureText(e.Graphics, sepText, Font,
+            new Size(int.MaxValue, lineH), format).Width;
+        int col2X = ClientRectangle.X + ClientRectangle.Width / 2;
+        int sepX = col2X - gap - sepWidth;               // divider x (trailing gap before col 2)
+        int leftClipRight = sepX - gap;                  // column 1 ends a gap before the divider
+
+        void DrawCell(IReadOnlyList<TeamSummarySegment> cell, int startX, int clipRight, int rowY)
         {
-            int x = ClientRectangle.X;
-            int remaining = ClientRectangle.Width;
-            foreach (var seg in row.Segments)
+            int x = startX;
+            foreach (var seg in cell)
             {
-                if (string.IsNullOrEmpty(seg.Text) || remaining <= 0) continue;
+                if (string.IsNullOrEmpty(seg.Text) || x >= clipRight) continue;
                 var color = seg.Kind switch
                 {
                     SummarySegmentKind.AccountName    => DarkTheme.FgAccountOrange,
@@ -4355,21 +4374,30 @@ internal sealed class TeamSummaryLabel : Label
                     SummarySegmentKind.TeamSeparator  => DarkTheme.FgTeamSeparatorRed,
                     _                                 => ForeColor,
                 };
-                var size = TextRenderer.MeasureText(
-                    e.Graphics, seg.Text, Font, new Size(remaining, lineH), format);
-                int drawWidth = Math.Min(size.Width, remaining);
+                int avail = clipRight - x;
+                var size = TextRenderer.MeasureText(e.Graphics, seg.Text, Font, new Size(avail, lineH), format);
+                int drawWidth = Math.Min(size.Width, avail);
                 TextRenderer.DrawText(e.Graphics, seg.Text, Font,
-                    new Rectangle(x, y, drawWidth, lineH), color, format);
+                    new Rectangle(x, rowY, drawWidth, lineH), color, format);
                 x += drawWidth;
-                remaining -= drawWidth;
             }
+        }
+
+        foreach (var row in _rows)
+        {
+            DrawCell(row.Left, ClientRectangle.X, leftClipRight, y);
+            TextRenderer.DrawText(e.Graphics, sepText, Font,
+                new Rectangle(sepX, y, sepWidth, lineH), DarkTheme.FgTeamSeparatorRed, format);
+            DrawCell(row.Right, col2X, ClientRectangle.Right, y);
             y += lineH;
         }
     }
 }
 
 /// <summary>One visible row of the team summary (e.g. "T1: …  |  T2: …").</summary>
-internal sealed record TeamSummaryRow(IReadOnlyList<TeamSummarySegment> Segments);
+internal sealed record TeamSummaryRow(
+    IReadOnlyList<TeamSummarySegment> Left,
+    IReadOnlyList<TeamSummarySegment> Right);
 
 /// <summary>One color-tinted segment of a team-summary row.</summary>
 internal sealed record TeamSummarySegment(string Text, SummarySegmentKind Kind);

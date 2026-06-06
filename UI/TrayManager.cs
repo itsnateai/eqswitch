@@ -596,17 +596,10 @@ public class TrayManager : IDisposable
             // Update shared memory config for all injected processes
             UpdateHookConfig();
 
-            // Auto-show PiP overlay when enabled and 2+ clients are present
-            if (_config.Pip.Enabled && _processManager.Clients.Count >= 2
-                && (_pipOverlay == null || _pipOverlay.IsDisposed))
-            {
-                TogglePip();
-            }
-            // Update PiP sources when client list changes
-            else if (_pipOverlay != null && !_pipOverlay.IsDisposed)
-            {
-                _pipOverlay.UpdateSources(_processManager.Clients, _processManager.GetActiveClient());
-            }
+            // Create/update/tear-down the PiP overlay to match config + client count.
+            // Single authority (SyncPipOverlay): >=1 client so a lone minimized client
+            // previews, and NO TogglePip() here — that would invert Pip.Enabled.
+            SyncPipOverlay();
         };
         _processManager.ClientDiscovered += (_, c) =>
         {
@@ -2303,20 +2296,10 @@ public class TrayManager : IDisposable
 
         }
 
-        // Update PiP sources when foreground changes
-        if (_pipOverlay != null && !_pipOverlay.IsDisposed)
-        {
-            if (clients.Count < 1)
-            {
-                _pipOverlay.Close();
-                _pipOverlay.Dispose();
-                _pipOverlay = null;
-            }
-            else
-            {
-                _pipOverlay.UpdateSources(clients, active);
-            }
-        }
+        // Create/show/hide the PiP overlay on foreground change. This is what makes a lone
+        // client's overlay APPEAR when it's minimized — previously this path only updated an
+        // already-existing overlay, so a single client never spawned one until Settings -> Apply.
+        SyncPipOverlay();
     }
 
     private void StartRetryTimer()
@@ -3108,37 +3091,48 @@ public class TrayManager : IDisposable
         }
     }
 
-    private void TogglePip()
+    /// <summary>
+    /// Single authority for the PiP overlay lifecycle — call from any path (client-list change,
+    /// foreground change, config reload). Creates the overlay when PiP is enabled and at least one
+    /// client exists; tears it down otherwise. Visibility (show when a background/non-active client
+    /// exists, hide at zero) is owned by <see cref="PipOverlay.UpdateSources"/> — we deliberately do
+    /// NOT call Show() here, so a lone foreground client never flashes an empty overlay
+    /// (UpdateSources shows it the moment the client is backgrounded, e.g. minimized). Threshold is
+    /// &gt;=1, not &gt;=2: a single minimized client IS a background client and should preview.
+    /// <paramref name="forceRecreate"/> rebuilds the overlay so changed size/orientation/border
+    /// config (read in PipOverlay's ctor) takes effect on Settings -> Apply.
+    /// </summary>
+    private void SyncPipOverlay(bool forceRecreate = false)
     {
-        FileLogger.Info($"TogglePip: called, clients={_processManager.Clients.Count}, overlay={_pipOverlay != null}, enabled={_config.Pip.Enabled}");
+        bool shouldExist = _config.Pip.Enabled && _processManager.Clients.Count >= 1;
 
-        // Toggle the enabled state
-        _config.Pip.Enabled = !_config.Pip.Enabled;
-        ConfigManager.Save(_config);
-
-        if (!_config.Pip.Enabled)
+        if (!shouldExist || forceRecreate)
         {
-            // Disable — destroy overlay if showing
             if (_pipOverlay != null && !_pipOverlay.IsDisposed)
             {
                 _pipOverlay.Close();
                 _pipOverlay.Dispose();
                 _pipOverlay = null;
             }
-            ShowBalloon("PiP overlay disabled");
+            if (!shouldExist) return;
         }
-        else
-        {
-            // Enable — create overlay if clients exist, otherwise auto-show will handle it later
-            var clients = _processManager.Clients;
-            if (clients.Count >= 1)
-            {
-                _pipOverlay = new PipOverlay(_config);
-                _pipOverlay.Show();
-                _pipOverlay.UpdateSources(clients, _processManager.GetActiveClient());
-            }
-            ShowBalloon("PiP overlay enabled");
-        }
+
+        if (_pipOverlay == null || _pipOverlay.IsDisposed)
+            _pipOverlay = new PipOverlay(_config);
+
+        _pipOverlay.UpdateSources(_processManager.Clients, _processManager.GetActiveClient());
+    }
+
+    private void TogglePip()
+    {
+        FileLogger.Info($"TogglePip: called, clients={_processManager.Clients.Count}, overlay={_pipOverlay != null}, enabled={_config.Pip.Enabled}");
+
+        // Flip + persist, then let SyncPipOverlay create/tear-down the overlay to match.
+        // (SyncPipOverlay reads _config.Pip.Enabled, so flip BEFORE calling it.)
+        _config.Pip.Enabled = !_config.Pip.Enabled;
+        ConfigManager.Save(_config);
+        SyncPipOverlay();
+        ShowBalloon(_config.Pip.Enabled ? "PiP overlay enabled" : "PiP overlay disabled");
 
         // Refresh tray menu so the Picture-in-Picture item's checkbox glyph (\u25A3 vs \u25A1)
         // reflects the new state. All call paths benefit: hotkey (ExecuteTrayAction), middle-click
@@ -4490,20 +4484,11 @@ public class TrayManager : IDisposable
         BuildContextMenu();
         UpdateClientMenu();
 
-        // Sync PiP overlay with config
-        if (_pipOverlay != null && !_pipOverlay.IsDisposed)
-        {
-            _pipOverlay.Close();
-            _pipOverlay.Dispose();
-            _pipOverlay = null;
-        }
-
-        if (_config.Pip.Enabled && _processManager.Clients.Count >= 1)
-        {
-            _pipOverlay = new PipOverlay(_config);
-            _pipOverlay.Show();
-            _pipOverlay.UpdateSources(_processManager.Clients, _processManager.GetActiveClient());
-        }
+        // Rebuild the PiP overlay so changed size/orientation/border config takes effect
+        // (PipOverlay reads config in its ctor). forceRecreate mirrors the prior
+        // always-dispose-then-recreate behavior; SyncPipOverlay then shows it only if a
+        // background client exists.
+        SyncPipOverlay(forceRecreate: true);
 
         // Re-install foreground hook (in case it was lost) and restart retry timer
         StopForegroundHook();

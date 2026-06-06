@@ -506,6 +506,12 @@ internal static class DiagRender
         c.Accounts.Add(new Account { Name = "alt", Username = "acct-alt", Server = "dalaya", Notes = "box 2", LastLoginResult = "fail" });
         c.Characters.Add(new Character { Name = "Raistlin", AccountUsername = "acct-main", AccountServer = "dalaya", CharacterSlot = 1 });
         c.Characters.Add(new Character { Name = "Natedogg", AccountUsername = "acct-alt", AccountServer = "dalaya", CharacterSlot = 2 });
+        // A few teams with VARYING-length cells so the team-summary render exercises the
+        // two-column layout (fixed col-2 alignment + divider) with real data, not all "(none)".
+        c.Team1Account1 = "char:Raistlin"; c.Team1Account2 = "acct:main";
+        c.Team2Account1 = "char:Natedogg";
+        c.Team5Account1 = "acct:alt"; c.Team5Account2 = "char:Raistlin";
+        c.Team6Account1 = "char:Raistlin";
         return c;
     }
 
