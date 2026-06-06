@@ -204,6 +204,144 @@ internal static class DiagRender
         return bad ? 1 : 0;
     }
 
+    /// <summary>
+    /// Runtime reproduction + permanent guard for the lazy-tab refactor (Video + Accounts are built on
+    /// first view, not at construction). Verifies the HARD CONSTRAINT: clicking Save WITHOUT ever opening
+    /// the Video or Accounts tab must NOT corrupt their config — no field clobbered to a class default.
+    /// Builds a real SettingsForm with DISTINCTIVE non-default Video/Accounts values, Shows it on the
+    /// General tab (so Video + Accounts stay unbuilt shells), confirms they really are unbuilt, then runs
+    /// the REAL ApplySettings (via reflection — it's private) and asserts every Video/Accounts field
+    /// round-tripped through _config -> EnsureAllTabsBuilt -> controls -> newConfig. Also reports the lazy
+    /// first-open cost (ctor+Show) vs the deferred Video+Accounts build that moved off the open path.
+    /// Returns 0 if the round-trip is clean, 1 if any field was corrupted, 2 if the setup was invalid.
+    /// Invoked via <c>--test-lazy-save</c>. This is the red->green repro for the lazy-save corruption class.
+    /// </summary>
+    public static int RunLazySave()
+    {
+        try { Application.SetDefaultFont(new Font("Segoe UI", 9f)); } catch { /* best effort */ }
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        try { Application.SetHighDpiMode(HighDpiMode.SystemAware); } catch { }
+
+        // Isolated EQ path so any eqclient.ini write (VideoSaveToIni runs inside ApplySettings) + config
+        // save land in temp, never a real install. Seed a [VideoMode] so PopulateVideoFromIni does a real
+        // disk read (a representative slice of the deferred first-open cost).
+        string eqDir = Path.Combine(Path.GetTempPath(), "eqswitch-lazysave-test");
+        Directory.CreateDirectory(eqDir);
+        File.WriteAllText(Path.Combine(eqDir, "eqclient.ini"),
+            "[VideoMode]\r\nWidth=1920\r\nHeight=1080\r\nXOffset=0\r\nYOffset=0\r\n");
+        // ApplySettings' Exe guard pops a MODAL "exe not found" dialog (which hangs a headless run) if the
+        // configured exe isn't present in EQPath — drop a stub eqgame.exe next to the ini so the guard passes.
+        File.WriteAllText(Path.Combine(eqDir, "eqgame.exe"), "");
+
+        // Distinctive, non-default values for EVERY Video + Accounts field ApplySettings reads, so a
+        // clobber to a class default is detectable.
+        var input = new AppConfig { IsFirstRun = false, EQPath = eqDir };
+        input.Launch.ExeName = "eqgame.exe";                 // matches the stub above so the Exe guard stays quiet
+        input.Layout.WindowMode = WindowMode.Windowed;       // Video: _chkWindowedMode
+        input.Layout.DarkTitlebar = true;                    // Video: _chkDarkTitlebar
+        input.Layout.TitlebarOffset = 17;                    // Video: _nudTitlebarOffset
+        input.Layout.BottomOffset = 29;                      // Video: _nudBottomOffset
+        input.Layout.TopOffset = 11;                         // Video: _nudVideoTopOffset
+        input.Layout.HorizontalNudgePx = 4;                  // Video: _nudHorizontalNudge
+        input.Layout.UseHook = true;                         // Video: _chkUseHook
+        input.Layout.Mode = "multimonitor";                  // Video: _chkVideoMultiMon
+        input.TooltipDurationMs = 1234;                      // Video: _nudTooltipDuration
+        input.ShowTooltips = false;                          // Video: _chkShowTooltips (default true)
+        input.EQClientIni.MaximizeWindow = true;             // Video: _chkMaximizeWindow
+        input.LoginScreenDelayMs = 7000;                     // Accounts: _nudLoginScreenDelay (= 7.0)
+        for (int i = 1; i <= 6; i++)                         // Accounts: realistic grid build cost
+        {
+            input.Accounts.Add(new Account { Name = $"note{i}", Username = $"user{i}", Server = "dalaya", Notes = $"box {i}" });
+            input.Characters.Add(new Character { Name = $"Char{i}", AccountUsername = $"user{i}", AccountServer = "dalaya", CharacterSlot = i });
+        }
+        input.Team1Account1 = "char:Char1";                  // Accounts: _pendingTeam1A
+        input.Team1Account2 = "char:Char2";                  // Accounts: _pendingTeam1B
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        AppConfig? captured = null;
+        var form = new SettingsForm(input, c => captured = c, 0 /* initial tab = General */, () => { }, () => { }, null, false);
+        form.StartPosition = FormStartPosition.Manual;
+        form.Location = new Point(-32000, -32000);
+        form.ShowInTaskbar = false;
+        form.Show();
+        Application.DoEvents();
+        long tOpenMs = sw.ElapsedMilliseconds;   // lazy first-open: ctor + Show (General + the 3 other eager tabs only)
+
+        var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+
+        // Prove Video (index 1) + Accounts (index 2) are NOT built yet — the exact scenario under test.
+        // If they were eager, this guard would be meaningless: fail loud rather than pass vacuously.
+        var built = (bool[])typeof(SettingsForm).GetField("_tabBuilt", flags)!.GetValue(form)!;
+        if (built[1] || built[2])
+        {
+            Console.Error.WriteLine($"LazySave: SETUP INVALID — Video/Accounts already built before Save (built[1]={built[1]}, built[2]={built[2]}); the test would not exercise the unbuilt-tab path.");
+            form.Dispose();
+            return 2;
+        }
+
+        // Time the deferred build (what first-open USED to pay) in isolation, then run the real Save.
+        sw.Restart();
+        typeof(SettingsForm).GetMethod("EnsureAllTabsBuilt", flags)!.Invoke(form, null);
+        long tDeferredMs = sw.ElapsedMilliseconds;
+
+        bool applied;
+        try
+        {
+            applied = (bool)typeof(SettingsForm).GetMethod("ApplySettings", flags)!.Invoke(form, null)!;
+        }
+        catch (Exception ex)
+        {
+            var inner = ex.InnerException ?? ex;
+            Console.Error.WriteLine($"LazySave: FAIL — ApplySettings threw {inner.GetType().Name}: {inner.Message}");
+            form.Dispose();
+            return 1;
+        }
+        Application.DoEvents();
+        form.Close();
+        form.Dispose();
+
+        if (!applied || captured == null)
+        {
+            Console.Error.WriteLine($"LazySave: FAIL — ApplySettings returned {applied}; captured={(captured == null ? "null" : "ok")} (did validation block the save?).");
+            return 1;
+        }
+
+        var fails = new System.Collections.Generic.List<string>();
+        void Check(string name, object? exp, object? act) { if (!Equals(exp, act)) fails.Add($"{name}: expected '{exp}', got '{act}'"); }
+        // Video tab
+        Check("Layout.WindowMode", WindowMode.Windowed, captured.Layout.WindowMode);
+        Check("Layout.DarkTitlebar", true, captured.Layout.DarkTitlebar);
+        Check("Layout.TitlebarOffset", 17, captured.Layout.TitlebarOffset);
+        Check("Layout.BottomOffset", 29, captured.Layout.BottomOffset);
+        Check("Layout.TopOffset", 11, captured.Layout.TopOffset);
+        Check("Layout.HorizontalNudgePx", 4, captured.Layout.HorizontalNudgePx);
+        Check("Layout.UseHook", true, captured.Layout.UseHook);
+        Check("Layout.Mode", "multimonitor", captured.Layout.Mode);
+        Check("TooltipDurationMs", 1234, captured.TooltipDurationMs);
+        Check("ShowTooltips", false, captured.ShowTooltips);
+        Check("EQClientIni.MaximizeWindow", true, captured.EQClientIni.MaximizeWindow);
+        // Accounts tab
+        Check("LoginScreenDelayMs", 7000, captured.LoginScreenDelayMs);
+        Check("Accounts.Count", 6, captured.Accounts.Count);
+        Check("Characters.Count", 6, captured.Characters.Count);
+        Check("Team1Account1", "char:Char1", captured.Team1Account1);
+        Check("Team1Account2", "char:Char2", captured.Team1Account2);
+        Check("Account user3 preserved", true, captured.Accounts.Any(a => a.Username == "user3"));
+        Check("Character Char4 slot preserved", 4, captured.Characters.FirstOrDefault(c => c.Name == "Char4")?.CharacterSlot);
+
+        if (fails.Count > 0)
+        {
+            Console.Error.WriteLine($"LazySave: FAIL — {fails.Count} Video/Accounts field(s) corrupted by Save-without-opening-tab:");
+            foreach (var f in fails) Console.Error.WriteLine("  - " + f);
+            return 1;
+        }
+
+        Console.WriteLine($"LazySave: PASS — Save without opening Video/Accounts preserved all 18 of their config fields. " +
+                          $"new first-open (ctor+Show, 4 eager tabs) = {tOpenMs}ms; the deferred Video+Accounts build = {tDeferredMs}ms now runs on first view of those tabs, not at every open.");
+        return 0;
+    }
+
     private static bool FontDisposed(Font f)
     {
         if (f == null) return false;

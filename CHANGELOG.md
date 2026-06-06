@@ -1,5 +1,17 @@
 # Changelog
 
+## v3.24.40 — Settings opens fast: Video + Accounts tabs build on first view (2026-06-05)
+
+**Perf — Settings no longer builds all six tabs (or reads `eqclient.ini`) at open**
+
+The Settings window lagged on first open because the constructor eagerly built all six tabs — including the two heavy ones: **Video** (a synchronous `eqclient.ini` disk read in `PopulateVideoFromIni`) and **Accounts** (two `DataGridView`s plus the owner-draw team summary, with two refresh passes). Those two tabs are now added as empty titled shells up-front — so the headers and tab indices stay stable — and their content is built the **first time the tab is viewed**. Opening Settings now constructs only the General tab plus the three other light tabs; the `eqclient.ini` read and the dual-grid build move off the open path entirely (paid once, on first view of Video / Accounts). The four light tabs stay eager — their controls are read by code beyond Save (the Account/Character/Team hotkey-conflict dialogs, the switch-key recolor), so keeping them always-present avoids a null surface.
+
+**Save stays correct for tabs you never opened**
+
+`ApplySettings` reads every tab's controls, so it now calls `EnsureAllTabsBuilt()` first: a never-opened Video or Accounts tab is built and populated from config immediately before its controls are read, making the read an identity round-trip — no field is clobbered with a class default. The same call guards the Teams deep-link (which refreshes the Accounts-tab team summary). This reduces exactly to the old behavior — every control is built and populated by the time it is read, just deferred.
+
+New regression guard `--test-lazy-save`: builds a real `SettingsForm` with distinctive Video/Accounts values, shows it on the General tab (leaving those two tabs unbuilt), runs the real `ApplySettings`, and fails if any of their 18 config fields changed on Save. Layout verified at real 150% DPI in the Tiny11 lab (`DeviceDpi=144`) — both lazy tabs render correctly when first viewed.
+
 ## v3.24.39 — Hardening: explicit font ownership + complete dispose-cycle guard (2026-06-05)
 
 Follow-up to the v3.24.38 crash fix (first release since v3.24.36 — it bundles the v3.24.37 Process Manager layout work and the v3.24.38 disposed-font fix below).

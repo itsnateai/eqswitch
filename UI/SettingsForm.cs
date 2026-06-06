@@ -240,6 +240,19 @@ public class SettingsForm : EqSwitchForm
     private int _initialTab;
     private readonly bool _openTeamsOnShown;
 
+    // ─── Lazy tab construction (Video + Accounts only) ───────────────
+    // The two heavy tabs — Video (synchronous eqclient.ini disk read) and Accounts (dual DataGridView +
+    // owner-draw team summary) — dominated first-open lag, so their content is built the first time the
+    // tab is viewed (not at construction). Shells are titled-but-empty TabPages added up-front so the tab
+    // HEADERS + indices stay stable; _tabBuilt tracks which shells have had their content materialized.
+    // The other four tabs stay EAGER: their controls are read by methods beyond Save (the hotkey-conflict
+    // dialogs, UpdateSwitchKeyColor), so keeping them always-present avoids a null surface. See
+    // EnsureTabBuilt / EnsureAllTabsBuilt.
+    private const int TabGeneral = 0, TabVideo = 1, TabAccounts = 2, TabPip = 3, TabHotkeys = 4, TabPaths = 5;
+    private readonly TabPage?[] _tabShells = new TabPage?[6];
+    private readonly bool[] _tabBuilt = new bool[6];
+    private bool _loaded;   // set after the one-time Load DPI pass; gates per-tab DPI sizing for lazy tabs
+
     public SettingsForm(AppConfig config, Action<AppConfig> onApply, int initialTab = 0, Action? openProcessManager = null, Action? onVideoSaved = null, AutoLoginManager? autoLogin = null, bool openTeamsDialog = false)
     {
         _config = config;
@@ -411,15 +424,20 @@ public class SettingsForm : EqSwitchForm
 
         // Team{N}AutoEnter removed — kind alone dictates destination.
 
-        tabs.TabPages.Add(BuildGeneralTab());      // 0
-        tabs.TabPages.Add(BuildVideoTab());        // 1
-        tabs.TabPages.Add(BuildAccountsTab());     // 2
-        tabs.TabPages.Add(BuildPipTab());          // 3
-        tabs.TabPages.Add(BuildHotkeysTab());      // 4
-        tabs.TabPages.Add(BuildPathsTab());        // 5
+        // Video (eqclient.ini disk read) and Accounts (dual DataGridView) are the two heavy tabs that
+        // dominated first-open lag — build them LAZILY: add empty titled shells now (so the tab headers
+        // + indices are stable) and materialize their content on first view / before Save. The four
+        // light tabs stay eager. Tab ORDER is preserved: General, Video, Accounts, PiP, Hotkeys, Paths.
+        tabs.TabPages.Add(BuildGeneralTab());                                            // 0
+        tabs.TabPages.Add(_tabShells[TabVideo]    = DarkTheme.MakeTabPage("Video"));     // 1 (lazy)
+        tabs.TabPages.Add(_tabShells[TabAccounts] = DarkTheme.MakeTabPage("Accounts"));  // 2 (lazy)
+        tabs.TabPages.Add(BuildPipTab());                                                // 3
+        tabs.TabPages.Add(BuildHotkeysTab());                                            // 4
+        tabs.TabPages.Add(BuildPathsTab());                                              // 5
 
         if (_initialTab > 0 && _initialTab < tabs.TabCount)
             tabs.SelectedIndex = _initialTab;
+        EnsureTabBuilt(_initialTab);   // build the initially-shown tab if it's a lazy one (no-op for eager/0)
 
         // Button panel at bottom \u2014 two docked FlowLayoutPanels for uniform, DPI-correct
         // spacing. Replaces hand-placed absolute-x that drifted at scale: uneven gaps
@@ -548,10 +566,15 @@ public class SettingsForm : EqSwitchForm
             SizeToSelectedTab();   // window height = selected tab content (no dead band)
             if (_config.SettingsWindowPos.Length < 2)
                 Location = new Point(wa.Left + Math.Max(0, (wa.Width - Width) / 2), wa.Top + Math.Max(0, (wa.Height - Height) / 2));
+            _loaded = true;   // from here on, a lazily-built tab must size its own fields (see EnsureTabBuilt)
         };
-        tabs.SelectedIndexChanged += (_, _) => SizeToSelectedTab();
+        tabs.SelectedIndexChanged += (_, _) =>
+        {
+            EnsureTabBuilt(tabs.SelectedIndex);   // first view of Video/Accounts builds its content (lazy)
+            SizeToSelectedTab();
+        };
 
-        PopulateFromConfig();
+        PopulateFromConfig();   // populates the EAGER tabs; the lazy tabs populate when first built
     }
 
     // ─── Tab Builders ─────────────────────────────────────────────
@@ -1581,6 +1604,10 @@ public class SettingsForm : EqSwitchForm
 
     // ─── Config I/O ───────────────────────────────────────────────
 
+    // Populates the EAGER tabs (General, Hotkeys, PiP, Paths) from config. The two LAZY tabs are
+    // populated when first built: Video via PopulateVideoTab() (its eqclient.ini disk read is the
+    // deferred first-open cost); Accounts by its self-populating grids (RefreshAccountsGrid /
+    // RefreshCharactersGrid in the builder; _nudLoginScreenDelay seeded inline).
     private void PopulateFromConfig()
     {
         // General
@@ -1589,7 +1616,6 @@ public class SettingsForm : EqSwitchForm
         _txtArgs.Text = _config.Launch.Arguments;
         _argsAtLoad = (_config.Launch.Arguments ?? "").Trim();
         _lastWarnedArgs = _argsAtLoad;   // the loaded value is pre-acknowledged — only NEW edits warn
-        _nudTooltipDuration.Value = Math.Clamp(_config.TooltipDurationMs, (int)_nudTooltipDuration.Minimum, (int)_nudTooltipDuration.Maximum);
         _txtCustomIconPath.Text = _config.CustomIconPath;
 
         // Tray Click Actions — map config values to display names
@@ -1623,23 +1649,9 @@ public class SettingsForm : EqSwitchForm
         // before this function populated them.
         if (_cardDirectBindings != null) RefreshDirectBindingsCard();
 
-        // Layout
-        // v3.22.80: checkbox states derive from WindowMode (the source of truth).
-        _chkSlimTitlebar.Checked = _config.Layout.WindowMode == WindowMode.Fullscreen;
-        _chkWindowedMode.Checked = _config.Layout.WindowMode == WindowMode.Windowed;
-        _chkDarkTitlebar.Checked = _config.Layout.DarkTitlebar;
-        _nudTitlebarOffset.Value = DarkTheme.ClampNud(_nudTitlebarOffset, _config.Layout.TitlebarOffset);
-        _nudBottomOffset.Value = DarkTheme.ClampNud(_nudBottomOffset, _config.Layout.BottomOffset);
-        _chkUseHook.Checked = _config.Layout.UseHook;
-        _chkUseHook.Enabled = _config.Layout.SlimTitlebar;
-        _chkMaximizeWindow.Checked = _config.EQClientIni.MaximizeWindow;
+        // Window Title lives on the General tab. The rest of the Window Style group lives on the
+        // (lazy) Video tab and is populated by PopulateVideoTab() when that tab is first built.
         _txtWindowTitleTemplate.Text = _config.Layout.WindowTitleTemplate;
-        _nudTitlebarOffset.Enabled = _config.Layout.SlimTitlebar;
-        _nudBottomOffset.Enabled = _config.Layout.SlimTitlebar;
-        // v3.22.80: _chkMaximizeWindow is now an Advanced-only detached control;
-        // its .Enabled is read nowhere, so the old slim-gated enable is removed.
-
-        // Performance
 
         // Launch
         _nudLaunchDelay.Value = DarkTheme.ClampNud(_nudLaunchDelay, _config.Launch.LaunchDelayMs / 1000);
@@ -1651,7 +1663,6 @@ public class SettingsForm : EqSwitchForm
         _txtNotesPath.Text = _config.NotesPath;
         _txtDalayaPatcherPath.Text = _config.DalayaPatcherPath;
         _chkRunAtStartup.Checked = _config.RunAtStartup;
-        _chkShowTooltips.Checked = _config.ShowTooltips;
 
         // PiP
         _chkPipEnabled.Checked = _config.Pip.Enabled;
@@ -1669,6 +1680,84 @@ public class SettingsForm : EqSwitchForm
         _nudPipBorderThickness.Value = Math.Clamp(_config.Pip.BorderThickness, 1, 10);
         _cboPipBorderColor.Enabled = _config.Pip.ShowBorder;
         _nudPipBorderThickness.Enabled = _config.Pip.ShowBorder;
+    }
+
+    // ─── Lazy tab construction (Video + Accounts) ────────────────────
+
+    /// <summary>
+    /// Build + populate a lazy tab's content the first time it's needed — on first SelectedIndexChanged,
+    /// on the initially-selected tab in the ctor, before Save (EnsureAllTabsBuilt), or before the Teams
+    /// dialog. Only Video (eqclient.ini disk read) and Accounts (dual DataGridView) are lazy; the other
+    /// four tabs are built eagerly and have no shell here. Idempotent — the _tabBuilt gate no-ops repeats.
+    /// </summary>
+    private void EnsureTabBuilt(int index)
+    {
+        if (index < 0 || index >= _tabShells.Length) return;
+        var page = _tabShells[index];
+        if (page == null || _tabBuilt[index]) return;   // eager tab (no shell) or already built
+        _tabBuilt[index] = true;                         // set BEFORE building so a re-entrant event can't loop
+        switch (index)
+        {
+            case TabVideo:    BuildVideoTab(page);    PopulateVideoTab(); break;
+            case TabAccounts: BuildAccountsTab(page);                     break; // grids self-populate; _nudLoginScreenDelay inline
+        }
+
+        // A tab built AFTER the one-time Load DPI pass must size its own fields — Load's
+        // SizeFitFields(this) already covered a tab built before it (e.g. a deep-link initial tab).
+        // Content-derived + idempotent, so this reproduces exactly what Load did to the eager tabs
+        // (a no-op-equivalent at 100% scale). Mirrors the per-control scaling in the Load handler.
+        if (_loaded)
+        {
+            DpiScale.SizeFitFields(page);
+            double f = DeviceDpi / 96.0;
+            if (f > 1.001 && index == TabAccounts)
+            {
+                if (_dgvAccounts != null) _dgvAccounts.Height = (int)Math.Round(_dgvAccounts.Height * f);
+                if (_dgvCharacters != null) _dgvCharacters.Height = (int)Math.Round(_dgvCharacters.Height * f);
+                if (_lblTeamSummary?.Parent is { } teamPanel) teamPanel.Height = (int)Math.Round(teamPanel.Height * f);
+            }
+            // The SelectedIndexChanged handler calls SizeToSelectedTab() right after this returns, so
+            // the window refits to the now-sized content on the click path; non-click builds (Save,
+            // Teams deep-link) don't change the shown tab, so no resize is needed here.
+        }
+    }
+
+    /// <summary>
+    /// Build the lazy tabs (Video, Accounts) if not already built, so ApplySettings can read EVERY
+    /// control unconditionally. A never-opened lazy tab is built + populated from _config here, so the
+    /// read is an identity round-trip — no field is clobbered with a default. This is why ApplySettings
+    /// needs no per-tab guards: by the time it reads a control, the control exists holding either the
+    /// user's edit (tab opened) or the unchanged config value (tab built here).
+    /// </summary>
+    private void EnsureAllTabsBuilt()
+    {
+        EnsureTabBuilt(TabVideo);
+        EnsureTabBuilt(TabAccounts);
+    }
+
+    /// <summary>
+    /// Populate the Video tab from config. Includes the Window Style group (which physically lives on
+    /// this tab) and the eqclient.ini disk read (PopulateVideoFromIni) — the deferred first-open cost.
+    /// Line order is preserved from the original PopulateFromConfig (the Fullscreen/Windowed mutual-
+    /// exclusion sync depends on Fullscreen being set before Windowed).
+    /// </summary>
+    private void PopulateVideoTab()
+    {
+        _nudTooltipDuration.Value = Math.Clamp(_config.TooltipDurationMs, (int)_nudTooltipDuration.Minimum, (int)_nudTooltipDuration.Maximum);
+
+        // Window Style — v3.22.80: checkbox states derive from WindowMode (the source of truth).
+        _chkSlimTitlebar.Checked = _config.Layout.WindowMode == WindowMode.Fullscreen;
+        _chkWindowedMode.Checked = _config.Layout.WindowMode == WindowMode.Windowed;
+        _chkDarkTitlebar.Checked = _config.Layout.DarkTitlebar;
+        _nudTitlebarOffset.Value = DarkTheme.ClampNud(_nudTitlebarOffset, _config.Layout.TitlebarOffset);
+        _nudBottomOffset.Value = DarkTheme.ClampNud(_nudBottomOffset, _config.Layout.BottomOffset);
+        _chkUseHook.Checked = _config.Layout.UseHook;
+        _chkUseHook.Enabled = _config.Layout.SlimTitlebar;
+        _chkMaximizeWindow.Checked = _config.EQClientIni.MaximizeWindow;
+        _nudTitlebarOffset.Enabled = _config.Layout.SlimTitlebar;
+        _nudBottomOffset.Enabled = _config.Layout.SlimTitlebar;
+
+        _chkShowTooltips.Checked = _config.ShowTooltips;
 
         // Video (reads from eqclient.ini). WindowedMode=TRUE is a hard requirement
         // (AppConfig.Validate pins ForceWindowedMode=true) and VideoSaveToIni writes it
@@ -1723,6 +1812,12 @@ public class SettingsForm : EqSwitchForm
 
     private bool ApplySettings()
     {
+        // Lazy tabs (Video, Accounts) may never have been opened — build + populate them now so every
+        // control read below exists holding either the user's edits or the unchanged config value (an
+        // identity round-trip for never-opened tabs; no field clobbered to a default). This is the
+        // load-bearing reason ApplySettings itself needs no per-tab guards.
+        EnsureAllTabsBuilt();
+
         // Exe guard — the EQ Path is now Browse-only (can't be typo'd), but the Exe field stays
         // typeable for dev / custom MQ builds. If the named exe isn't actually in the EQ folder,
         // surface it on save: a misnamed exe (e.g. "eqgame.exellll") silently breaks launch and
@@ -2296,9 +2391,8 @@ public class SettingsForm : EqSwitchForm
         return result;
     }
 
-    private TabPage BuildAccountsTab()
+    private void BuildAccountsTab(TabPage page)
     {
-        var page = DarkTheme.MakeTabPage("Accounts");
         var stack = new CardStack(page);
 
         // ─── Accounts ────────────────────────────────────────────────
@@ -2410,8 +2504,6 @@ public class SettingsForm : EqSwitchForm
 
         RefreshAccountsGrid();
         RefreshCharactersGrid();
-
-        return page;
     }
 
     /// <summary>
@@ -2924,6 +3016,10 @@ public class SettingsForm : EqSwitchForm
     private void OpenTeamsWithVisibleBusy()
     {
         if (IsDisposed) return;
+        // The Teams dialog's close-callback refreshes _lblTeamSummary, which lives on the (lazy)
+        // Accounts tab — make sure it's built first. The re-entry path (OpenTeamsDialogNow) can fire
+        // while another tab is shown; the deep-link path already builds Accounts as its initial tab.
+        EnsureTabBuilt(TabAccounts);
         try
         {
             Cursor.Current = Cursors.WaitCursor;
@@ -3270,9 +3366,8 @@ public class SettingsForm : EqSwitchForm
 
     // ─── Video Tab (eqclient.ini) ───────────────────────────────────
 
-    private TabPage BuildVideoTab()
+    private void BuildVideoTab(TabPage page)
     {
-        var page = DarkTheme.MakeTabPage("Video");
         var stack = new CardStack(page);
 
         // ─── EQ Resolution ───────────────────────────────────────────
@@ -3396,8 +3491,6 @@ public class SettingsForm : EqSwitchForm
         durationFlow.Controls.Add(_nudTooltipDuration);
         durationFlow.Controls.Add(InlineLabel("ms"));
         cardPrefs.Full(Bars.Split(new Control[] { _chkShowTooltips }, new Control[] { durationFlow }));
-
-        return page;
     }
 
     /// <summary>A single row holding two label:field pairs whose fields FILL (Percent) so they grow

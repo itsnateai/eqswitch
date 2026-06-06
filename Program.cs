@@ -218,6 +218,25 @@ static class Program
             return;
         }
 
+        // --test-lazy-save — DEBUG-only: runtime repro + guard for the lazy-tab refactor (Video + Accounts
+        // build on first view). Verifies that clicking Save WITHOUT opening Video/Accounts preserves all
+        // their config fields — the unbuilt tabs are built + populated from _config by EnsureAllTabsBuilt
+        // before ApplySettings reads them (an identity round-trip, no clobber-to-default). Red->green repro
+        // for the lazy-save corruption class; see UI/DiagRender.cs RunLazySave.
+        if (args.Length >= 1 && args[0] == "--test-lazy-save")
+        {
+            int exitCode;
+            try { exitCode = UI.DiagRender.RunLazySave(); }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"LazySave CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
         // --test-config-validate — run Core/AppConfigValidateTests.RunAll() and
         // exit with its return code.
         if (args.Length >= 1 && args[0] == "--test-config-validate")
