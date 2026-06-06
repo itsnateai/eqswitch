@@ -250,6 +250,27 @@ static class Program
             return;
         }
 
+        // --test-eqclient-chatspam-save — run UI/DiagRender.RunEqChatSpamSaveRoundtrip(): constructs
+        // the Chat Spam window against a temp INI and proves Phase 2's touch-gated Save (only changed
+        // filters written; absent/untouched keys NOT inserted — i.e. no write-all; unmanaged preserved;
+        // no ghost). Phase 2 of the EQ Client Settings overhaul.
+        if (args.Length >= 1 && args[0] == "--test-eqclient-chatspam-save")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = UI.DiagRender.RunEqChatSpamSaveRoundtrip();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"EqChatSpamSaveRoundtrip CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
         // --test-font-dispose — run Core/FontDisposeOwnershipTests.RunAll(): asserts
         // DisposeControlFonts frees only owned fonts, never inherited/Control.DefaultFont.
         // Guards the button-click "Parameter is not valid" crash class from regressing.

@@ -609,6 +609,101 @@ internal static class DiagRender
         return 1;
     }
 
+    /// <summary>
+    /// Phase 2 save round-trip guard: construct EQChatSpamForm against a temp eqclient.ini, assert the
+    /// live-read display matches the file, flip ONE filter, Save, then assert ONLY that key was written
+    /// (to [Options]), untouched managed filters were NOT rewritten, a filter ABSENT from the file was
+    /// NOT inserted (proves touch-gating vs the old write-all), an unmanaged key survived, and no ghost
+    /// copy leaked into [Defaults]. CLI: --test-eqclient-chatspam-save.
+    /// </summary>
+    public static int RunEqChatSpamSaveRoundtrip()
+    {
+        Application.SetHighDpiMode(HighDpiMode.SystemAware);
+        Application.EnableVisualStyles();
+        var errors = new System.Collections.Generic.List<string>();
+        string tempDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "eqswitch-p2-chatspam");
+        try
+        {
+            System.IO.Directory.CreateDirectory(tempDir);
+            string iniPath = System.IO.Path.Combine(tempDir, "eqclient.ini");
+            string[] fixture =
+            {
+                "[Defaults]",
+                "Sound=FALSE",
+                "[Options]",
+                "PetMisses=1",          // managed filter, will be toggled OFF -> 0
+                "Spam=1",               // managed filter, untouched -> preserved
+                "ChatSpamUnmanaged=7",  // EQSwitch does not manage this key -> must survive a Save
+            };
+            System.IO.File.WriteAllLines(iniPath, fixture, System.Text.Encoding.Default);
+
+            var config = new AppConfig { IsFirstRun = false, EQPath = tempDir };
+            var form = new EQChatSpamForm(config);   // ctor runs InitializeForm + LoadFromIni
+
+            const System.Reflection.BindingFlags BF = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            const System.Reflection.BindingFlags PF = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance;
+            var bindings = (System.Collections.IEnumerable)typeof(EQChatSpamForm).GetField("_bindings", BF)!.GetValue(form)!;
+
+            CheckBox? Chk(string key)
+            {
+                foreach (var b in bindings)
+                {
+                    var setting = (IniSetting)b.GetType().GetField("Setting", PF)!.GetValue(b)!;
+                    if (setting.Key == key) return (CheckBox?)b.GetType().GetField("Check", PF)!.GetValue(b);
+                }
+                return null;
+            }
+
+            var petMisses = Chk("PetMisses");
+            var spam = Chk("Spam");
+            if (petMisses == null || spam == null)
+            {
+                errors.Add("could not resolve PetMisses/Spam bindings via reflection");
+            }
+            else
+            {
+                // Display-vs-disk: both shipped as 1 in the fixture -> both CHECKED.
+                if (!petMisses.Checked) errors.Add("display: 'Pet Misses' should be CHECKED when PetMisses=1");
+                if (!spam.Checked) errors.Add("display: 'Spam Filter' should be CHECKED when Spam=1");
+
+                // Change ONE filter, then Save.
+                petMisses.Checked = false;     // 'Pet Misses' off -> PetMisses=0
+                typeof(EQChatSpamForm).GetMethod("SaveSettings", BF)!.Invoke(form, null);
+
+                var doc = EqClientIniDocument.Load(iniPath);
+                void Eq(string section, string key, string? expect)
+                {
+                    var got = doc.Get(section, key);
+                    if (got != expect) errors.Add($"save: [{section}] {key} expected '{expect ?? "<absent>"}', got '{got ?? "<absent>"}'");
+                }
+                Eq("Options", "PetMisses", "0");          // changed
+                Eq("Options", "Spam", "1");               // untouched managed -> preserved
+                Eq("Options", "ChatSpamUnmanaged", "7");  // unmanaged -> never clobbered
+                Eq("Options", "CriticalSpells", null);    // absent + untouched -> NOT inserted (touch-gated, was write-all)
+                Eq("Defaults", "PetMisses", null);        // no ghost copy in another section
+            }
+            form.Dispose();
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"CRASH: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            try { System.IO.Directory.Delete(tempDir, true); } catch { }
+        }
+
+        if (errors.Count == 0)
+        {
+            Console.WriteLine("EqChatSpamSaveRoundtrip: PASS — display matches disk; Save wrote only the changed filter; "
+                + "untouched + absent + unmanaged keys preserved (no write-all, no ghost).");
+            return 0;
+        }
+        Console.Error.WriteLine($"EqChatSpamSaveRoundtrip: FAIL — {errors.Count} problem(s):");
+        foreach (var e in errors) Console.Error.WriteLine("  - " + e);
+        return 1;
+    }
+
     /// <summary>Construct a form in isolation with stub data. Add a case per form as it's converted.</summary>
     private static Form BuildForm(string name, int tab, bool prewarm = false)
     {

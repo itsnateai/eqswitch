@@ -1,60 +1,36 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // © itsnateai
 
-using System.Text;
 using EQSwitch.Config;
 using EQSwitch.Core;
 
 namespace EQSwitch.UI;
 
 /// <summary>
-/// Manages eqclient.ini chat spam filter settings.
-/// All settings are in [Options] section, values are 0 or 1.
+/// Chat spam filter settings (all [Options], 1/0). Phase 2 of the EQ Client Settings overhaul: this
+/// form is now on the shared schema engine — display is a LIVE read of eqclient.ini, Save writes ONLY
+/// the boxes the user changed (touch-gated; it used to write all 22 every save), and it is no longer
+/// re-stamped at launch (eqgame wins after first set). The grouped key-lists below are display layout
+/// only; each key's label, polarity, and default live once in EqClientIniSchema.
 /// </summary>
 public class EQChatSpamForm : EqSwitchForm
 {
     private readonly AppConfig _config;
     private readonly string _iniPath;
-    private readonly Dictionary<string, CheckBox> _checkBoxes = new();
+    private readonly List<EqClientBinding> _bindings = new();
 
-    // Grouped settings for card layout
-    private static readonly (string Key, string Label, int DefaultValue)[] CombatSettings =
-    {
-        ("CriticalSpells", "Critical Spells", 0),
-        ("CriticalMelee", "Critical Melee", 0),
-        ("SpellDamage", "Spell Damage", 0),
-        ("DotDamage", "DoT Damage", 0),
-        ("HideDamageShield", "Hide Damage Shield", 1),
-        ("Strikethrough", "Strikethrough", 0),
-        ("Stun", "Stun Messages", 0),
-    };
+    private static readonly Dictionary<string, IniSetting> SchemaByKey =
+        EqClientIniSchema.All.ToDictionary(s => s.Key, StringComparer.OrdinalIgnoreCase);
 
-    private static readonly (string Key, string Label, int DefaultValue)[] PetSettings =
-    {
-        ("PetAttacks", "Pet Attacks", 0),
-        ("PetMisses", "Pet Misses", 1),
-        ("PetSpells", "Pet Spells", 0),
-        ("SwarmPetDeath", "Swarm Pet Death", 0),
-    };
-
-    private static readonly (string Key, string Label, int DefaultValue)[] SpellSettings =
-    {
-        ("PCSpells", "PC Spells", 0),
-        ("NPCSpells", "NPC Spells", 0),
-        ("FocusEffects", "Focus Effects", 0),
-        ("HealOverTimeSpells", "Heal Over Time", 0),
-    };
-
-    private static readonly (string Key, string Label, int DefaultValue)[] SocialSettings =
-    {
-        ("BadWord", "Bad Word Filter", 1),
-        ("Spam", "Spam Filter", 1),
-        ("FellowshipChat", "Fellowship Chat", 0),
-        ("MercenaryMessages", "Mercenary Messages", 1),
-        ("ItemSpeech", "Item Speech", 0),
-        ("Achievements", "Achievements", 0),
-        ("PvPMessages", "PvP Messages", 1),
-    };
+    // Display grouping + order only (4 cards × 2 columns). Labels/defaults/polarity come from the schema.
+    private static readonly string[] CombatKeys =
+        { "CriticalSpells", "CriticalMelee", "SpellDamage", "DotDamage", "HideDamageShield", "Strikethrough", "Stun" };
+    private static readonly string[] PetKeys =
+        { "PetAttacks", "PetMisses", "PetSpells", "SwarmPetDeath" };
+    private static readonly string[] SpellKeys =
+        { "PCSpells", "NPCSpells", "FocusEffects", "HealOverTimeSpells" };
+    private static readonly string[] SocialKeys =
+        { "BadWord", "Spam", "FellowshipChat", "MercenaryMessages", "ItemSpeech", "Achievements", "PvPMessages" };
 
     public EQChatSpamForm(AppConfig config)
     {
@@ -66,23 +42,17 @@ public class EQChatSpamForm : EqSwitchForm
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 Chat Spam Filters \u2014 EXPERIMENTAL", new Size(480, 530));
+        DarkTheme.StyleForm(this, "EQSwitch — Chat Spam Filters — EXPERIMENTAL", new Size(480, 530));
         StartPosition = FormStartPosition.CenterParent;
         AutoScroll = true;
 
         int y = 8;
 
-        // ─── Combat card ──────────────────────────────────────────
-        y = AddFilterCard(this, "\u2694", "Combat & Melee", DarkTheme.CardRed, y, CombatSettings);
-
-        // ─── Pets card ────────────────────────────────────────────
-        y = AddFilterCard(this, "\uD83D\uDC3E", "Pets", DarkTheme.CardGreen, y, PetSettings);
-
-        // ─── Spells card ──────────────────────────────────────────
-        y = AddFilterCard(this, "\u2728", "Spells & Effects", DarkTheme.CardPurple, y, SpellSettings);
-
-        // ─── Social card ──────────────────────────────────────────
-        y = AddFilterCard(this, "\uD83D\uDCAC", "Social & Misc", DarkTheme.CardGold, y, SocialSettings);
+        // ─── Filter cards (grouping/order only — schema owns label/default/polarity) ──────────────
+        y = AddFilterCard(this, "⚔", "Combat & Melee", DarkTheme.CardRed, y, CombatKeys);
+        y = AddFilterCard(this, "🐾", "Pets", DarkTheme.CardGreen, y, PetKeys);
+        y = AddFilterCard(this, "✨", "Spells & Effects", DarkTheme.CardPurple, y, SpellKeys);
+        y = AddFilterCard(this, "💬", "Social & Misc", DarkTheme.CardGold, y, SocialKeys);
 
         // ─── Docked bottom panel with Save/Apply/Cancel ──────────
         var buttonPanel = new Panel
@@ -104,77 +74,44 @@ public class EQChatSpamForm : EqSwitchForm
         buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
         Controls.Add(buttonPanel);
 
-        // Size the form to its content so the button bar sits a consistent gap below the Social card,
-        // instead of the old hand-guessed Size(480,530) that left ~40px of dead space above the buttons.
+        // Size the form to its content so the button bar sits a consistent gap below the Social card.
         FitClientHeightToContent();
     }
 
-    /// <summary>Add a card with two columns of filter checkboxes. Returns next Y.</summary>
-    private int AddFilterCard(Control parent, string emoji, string title, Color titleColor, int y,
-        (string Key, string Label, int DefaultValue)[] settings)
+    /// <summary>Add a card with two columns of schema-bound filter checkboxes. Returns next Y.</summary>
+    private int AddFilterCard(Control parent, string emoji, string title, Color titleColor, int y, string[] keys)
     {
-        int rows = (settings.Length + 1) / 2;
+        int rows = (keys.Length + 1) / 2;
         int cardH = 30 + rows * 22 + 6;
         var card = DarkTheme.MakeCard(parent, emoji, title, titleColor, 10, y, 440, cardH);
         int cy = 30;
 
-        for (int i = 0; i < settings.Length; i += 2)
+        for (int i = 0; i < keys.Length; i += 2)
         {
-            var (key1, label1, def1) = settings[i];
-            var chk1 = DarkTheme.AddCardCheckBox(card, label1, 10, cy);
-            chk1.Checked = _config.EQClientIni.ChatSpamOverrides.TryGetValue(key1, out int val1)
-                ? val1 == 1
-                : def1 == 1;
-            _checkBoxes[key1] = chk1;
-
-            if (i + 1 < settings.Length)
-            {
-                var (key2, label2, def2) = settings[i + 1];
-                var chk2 = DarkTheme.AddCardCheckBox(card, label2, 220, cy);
-                chk2.Checked = _config.EQClientIni.ChatSpamOverrides.TryGetValue(key2, out int val2)
-                    ? val2 == 1
-                    : def2 == 1;
-                _checkBoxes[key2] = chk2;
-            }
-
+            AddBoundCheck(card, keys[i], 10, cy);
+            if (i + 1 < keys.Length)
+                AddBoundCheck(card, keys[i + 1], 220, cy);
             cy += 22;
         }
 
         return y + cardH + 8;
     }
 
+    /// <summary>Create a checkbox labelled from the schema and register it as a touch-gated binding.</summary>
+    private void AddBoundCheck(Panel card, string key, int x, int y)
+    {
+        var setting = SchemaByKey[key];
+        var chk = DarkTheme.AddCardCheckBox(card, setting.Label, x, y);
+        _bindings.Add(new EqClientBinding(setting, chk, null));
+    }
+
     private void LoadFromIni()
     {
-        if (!File.Exists(_iniPath)) return;
-
+        // Live read of eqclient.ini via the shared schema engine; snapshots each value for touch-gating.
         try
         {
-            var lines = File.ReadAllLines(_iniPath, Encoding.Default);
-            string currentSection = "";
-
-            foreach (var line in lines)
-            {
-                var trimmed = line.Trim();
-                if (trimmed.StartsWith("["))
-                {
-                    currentSection = trimmed;
-                    continue;
-                }
-
-                if (!currentSection.Equals("[Options]", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                var parts = trimmed.Split('=', 2);
-                if (parts.Length != 2) continue;
-
-                string key = parts[0].Trim();
-                string val = parts[1].Trim();
-
-                if (_checkBoxes.TryGetValue(key, out var chk))
-                    chk.Checked = val == "1";
-            }
-
-            FileLogger.Info("EQChatSpam: loaded current values from eqclient.ini");
+            EqClientBindings.LoadInto(_bindings, _iniPath);
+            FileLogger.Info("EQChatSpam: loaded current values from eqclient.ini (schema-driven)");
         }
         catch (Exception ex)
         {
@@ -184,36 +121,25 @@ public class EQChatSpamForm : EqSwitchForm
 
     private void SaveSettings()
     {
-        // Save to config
-        foreach (var (key, chk) in _checkBoxes)
-            _config.EQClientIni.ChatSpamOverrides[key] = chk.Checked ? 1 : 0;
-        ConfigManager.Save(_config);
-
-        // Apply to eqclient.ini
-        ApplyToIni();
-    }
-
-    private void ApplyToIni()
-    {
-        if (!File.Exists(_iniPath))
-        {
-            FileLogger.Info($"EQChatSpam: eqclient.ini not found at {_iniPath}");
-            return;
-        }
-
+        // Touch-gated, schema-driven write — only the filters the user changed are written to [Options],
+        // one canonical section per key. Untouched + unmanaged keys are left exactly as eqgame/the user
+        // left them (point D: no clobber). No launch re-stamp — eqgame wins after.
         try
         {
-            var lines = File.ReadAllLines(_iniPath, Encoding.Default).ToList();
+            if (!File.Exists(_iniPath))
+            {
+                FileLogger.Info($"EQChatSpam: eqclient.ini not found at {_iniPath}");
+                return;
+            }
 
-            foreach (var (key, chk) in _checkBoxes)
-                EQClientSettingsForm.SetIniValue(lines, "Options", key, chk.Checked ? "1" : "0");
-
-            File.WriteAllLines(_iniPath, lines, Encoding.Default);
-            FileLogger.Info("EQChatSpam: applied chat spam settings to eqclient.ini");
+            int changed = EqClientBindings.SaveChanged(_bindings, _iniPath);
+            FileLogger.Info(changed > 0
+                ? $"EQChatSpam: wrote {changed} changed filter(s) to eqclient.ini (touch-gated)"
+                : "EQChatSpam: no changes to save");
         }
         catch (Exception ex)
         {
-            FileLogger.Error("EQChatSpam: apply error", ex);
+            FileLogger.Error("EQChatSpam: save error", ex);
             ThemedMessageDialog.Show(this, $"Failed to update eqclient.ini: {ex.Message}", "Error",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
@@ -223,15 +149,5 @@ public class EQChatSpamForm : EqSwitchForm
     {
         if (disposing) DarkTheme.DisposeControlFonts(this);
         base.Dispose(disposing);
-    }
-
-    /// <summary>
-    /// Static helper: enforce all chat spam overrides in eqclient.ini.
-    /// Called by EnforceOverrides in EQClientSettingsForm.
-    /// </summary>
-    public static void EnforceOverrides(AppConfig config, List<string> lines)
-    {
-        foreach (var (key, value) in config.EQClientIni.ChatSpamOverrides)
-            EQClientSettingsForm.SetIniValue(lines, "Options", key, value != 0 ? "1" : "0");
     }
 }

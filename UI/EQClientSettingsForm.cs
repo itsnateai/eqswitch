@@ -59,42 +59,17 @@ public class EQClientSettingsForm : EqSwitchForm
     private NumericUpDown _nudShadowClipPlane = null!;
     private NumericUpDown _nudActorClipPlane = null!;
 
-    // ── Phase 1: schema-driven binding (control ↔ IniSetting). The window reads/writes through
-    // Config/EqClientIniSchema (single source of truth) + EqClientIniDocument (surgical, section-
-    // aware ini I/O) instead of the old per-control switch statements. Polarity, section, and
-    // sentinel live in the descriptor — never duplicated here.
-    private readonly List<Binding> _bindings = new();
+    // ── Schema-driven binding (control ↔ IniSetting) on the shared EqClientBindings engine (Phase 2
+    // extraction). Read/write go through Config/EqClientIniSchema (single source of truth) +
+    // EqClientIniDocument (surgical, section-aware I/O). Polarity, section, and sentinel live in the
+    // descriptor — never duplicated here. The 5 sub-forms bind onto the SAME engine (Phases 2-6).
+    private readonly List<EqClientBinding> _bindings = new();
 
     private static readonly Dictionary<string, IniSetting> SchemaByKey =
         EqClientIniSchema.All.ToDictionary(s => s.Key, StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>A control bound to its descriptor + the canonical INI value loaded for it. The
-    /// snapshot is what makes Save write ONLY keys the user actually changed (touch-gating).</summary>
-    private sealed class Binding
-    {
-        public IniSetting Setting;
-        public CheckBox? Check;
-        public NumericUpDown? Numeric;
-        public string LoadedValue = "";
-        public Binding(IniSetting setting, CheckBox? chk, NumericUpDown? nud)
-        { Setting = setting; Check = chk; Numeric = nud; }
-    }
-
-    private void Bind(CheckBox chk, string key) => _bindings.Add(new Binding(SchemaByKey[key], chk, null));
-    private void Bind(NumericUpDown nud, string key) => _bindings.Add(new Binding(SchemaByKey[key], null, nud));
-
-    /// <summary>Current control state expressed as its canonical INI string.</summary>
-    private static string ReadControl(Binding b) =>
-        b.Check != null ? b.Setting.ToggleToIni(b.Check.Checked) : b.Setting.NumberToIni(b.Numeric!.Value);
-
-    /// <summary>Set the control from an INI string via the descriptor's conversion (clamped to the control's range).</summary>
-    private static void ApplyControl(Binding b, string iniValue)
-    {
-        if (b.Check != null)
-            b.Check.Checked = b.Setting.ToggleFromIni(iniValue);
-        else
-            b.Numeric!.Value = Math.Clamp(b.Setting.ParseNumber(iniValue), b.Numeric.Minimum, b.Numeric.Maximum);
-    }
+    private void Bind(CheckBox chk, string key) => _bindings.Add(new EqClientBinding(SchemaByKey[key], chk, null));
+    private void Bind(NumericUpDown nud, string key) => _bindings.Add(new EqClientBinding(SchemaByKey[key], null, nud));
 
     public EQClientSettingsForm(AppConfig config)
     {
@@ -296,19 +271,13 @@ public class EQClientSettingsForm : EqSwitchForm
     /// </summary>
     private void LoadFromIni()
     {
-        // Phase 1: display is a LIVE read of eqclient.ini, schema-driven. Every control reflects
-        // the actual on-disk value (so in-game/eqgame changes always show); a key absent from the
-        // INI falls back to the descriptor's Default. The loaded value is snapshotted per binding
-        // so Save writes ONLY what the user changes (touch-gating).
+        // Display is a LIVE read of eqclient.ini via the shared schema engine. Every control reflects
+        // the actual on-disk value (so in-game/eqgame changes always show); a key absent from the INI
+        // falls back to the descriptor's Default. Each value is snapshotted per binding so Save writes
+        // ONLY what the user changes (touch-gating).
         try
         {
-            var doc = EqClientIniDocument.Load(_iniPath);
-            foreach (var b in _bindings)
-            {
-                string value = doc.Get(b.Setting) ?? b.Setting.Default;
-                ApplyControl(b, value);
-                b.LoadedValue = ReadControl(b);
-            }
+            EqClientBindings.LoadInto(_bindings, _iniPath);
             FileLogger.Info("EQClientSettings: loaded current values from eqclient.ini (schema-driven)");
         }
         catch (Exception ex)
@@ -338,31 +307,10 @@ public class EQClientSettingsForm : EqSwitchForm
                 return;
             }
 
-            var doc = EqClientIniDocument.Load(_iniPath);
-            int changed = 0;
-            foreach (var b in _bindings)
-            {
-                // Numeric sentinel (e.g. SoundVolume -1, ClipPlane 0) means "don't set" — never write.
-                if (b.Numeric != null && !b.Setting.ShouldWriteNumber(b.Numeric.Value))
-                    continue;
-
-                string current = ReadControl(b);
-                if (current == b.LoadedValue) continue;   // untouched — leave it alone
-
-                doc.Write(b.Setting, current);            // canonical section (+ any mirror sections)
-                b.LoadedValue = current;                  // refresh snapshot so Apply doesn't re-write
-                changed++;
-            }
-
-            if (changed > 0)
-            {
-                doc.Save(_iniPath);
-                FileLogger.Info($"EQClientSettings: wrote {changed} changed setting(s) to eqclient.ini (touch-gated)");
-            }
-            else
-            {
-                FileLogger.Info("EQClientSettings: no changes to save");
-            }
+            int changed = EqClientBindings.SaveChanged(_bindings, _iniPath);
+            FileLogger.Info(changed > 0
+                ? $"EQClientSettings: wrote {changed} changed setting(s) to eqclient.ini (touch-gated)"
+                : "EQClientSettings: no changes to save");
         }
         catch (Exception ex)
         {
@@ -669,9 +617,10 @@ public class EQClientSettingsForm : EqSwitchForm
             // Phase 1: MaxFPS/MaxBGFPS/Shadow/Actor/Log no longer enforced at launch (Bucket-2,
             // save-time only). ProcessManager still writes FPS + affinity via ApplyProcessManagerToIni.
 
-            // Enforce sub-form overrides (dictionary-based — already only write what user saved)
+            // Enforce remaining sub-form overrides at launch (dictionary-based — pending their phases).
+            // ChatSpam migrated to the schema engine in Phase 2 → no longer re-stamped here (eqgame
+            // wins after first set); Models/Particles/VideoMode follow in Phases 3-5.
             EQModelsForm.EnforceOverrides(config, lines);
-            EQChatSpamForm.EnforceOverrides(config, lines);
             EQParticlesForm.EnforceOverrides(config, lines);
             EQVideoModeForm.EnforceOverrides(config, lines);
 
