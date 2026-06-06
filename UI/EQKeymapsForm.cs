@@ -98,7 +98,7 @@ public class EQKeymapsForm : EqSwitchForm
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 Key Mappings", new Size(480, 520));
+        DarkTheme.StyleForm(this, "EQSwitch \u2014 Key Mappings \u2014 EXPERIMENTAL", new Size(480, 520));
         StartPosition = FormStartPosition.CenterParent;
         AutoScroll = true;
 

@@ -53,7 +53,7 @@ public class EQVideoModeForm : EqSwitchForm
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 Video Mode", new Size(480, 480));
+        DarkTheme.StyleForm(this, "EQSwitch \u2014 Video Mode \u2014 EXPERIMENTAL", new Size(480, 480));
         StartPosition = FormStartPosition.CenterParent;
 
         int y = 8;

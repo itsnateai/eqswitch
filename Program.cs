@@ -169,6 +169,27 @@ static class Program
             return;
         }
 
+        // --test-eqclient-schema — run Core/EqClientSchemaTests.RunAll(): validates the
+        // eqclient.ini SettingDescriptor table (no duplicate (section,key), toggle polarity,
+        // numeric range, default round-trip). Phase 0 of the EQ Client Settings overhaul
+        // (docs/specs/2026-06-06-eqclient-settings-overhaul.md).
+        if (args.Length >= 1 && args[0] == "--test-eqclient-schema")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = Core.EqClientSchemaTests.RunAll();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"EqClientSchemaTests CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
         // --test-font-dispose — run Core/FontDisposeOwnershipTests.RunAll(): asserts
         // DisposeControlFonts frees only owned fonts, never inherited/Control.DefaultFont.
         // Guards the button-click "Parameter is not valid" crash class from regressing.

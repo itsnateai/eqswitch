@@ -67,7 +67,7 @@ public class EQParticlesForm : EqSwitchForm
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 Particles & Opacity", new Size(480, 700));
+        DarkTheme.StyleForm(this, "EQSwitch \u2014 Particles & Opacity \u2014 EXPERIMENTAL", new Size(480, 700));
         StartPosition = FormStartPosition.CenterParent;
         AutoScroll = true;
 

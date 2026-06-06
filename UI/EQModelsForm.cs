@@ -73,7 +73,7 @@ public class EQModelsForm : EqSwitchForm
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 Luclin Model Settings", new Size(480, 620));
+        DarkTheme.StyleForm(this, "EQSwitch \u2014 Luclin Model Settings \u2014 EXPERIMENTAL", new Size(480, 620));
         StartPosition = FormStartPosition.CenterParent;
 
         // Scrollable content panel

@@ -80,7 +80,7 @@ public class EQClientSettingsForm : EqSwitchForm
             Location = _lastLocation.Value;
         }
         FormClosing += (_, _) => _lastLocation = Location;
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 EQ Client Settings", new Size(750, 680));
+        DarkTheme.StyleForm(this, "EQSwitch \u2014 EQ Client Settings \u2014 EXPERIMENTAL", new Size(750, 680));
 
         int y = 8;
         const int C1 = 10, C2 = 245, C3 = 480, RH = 22;

@@ -66,7 +66,7 @@ public class EQChatSpamForm : EqSwitchForm
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 Chat Spam Filters", new Size(480, 530));
+        DarkTheme.StyleForm(this, "EQSwitch \u2014 Chat Spam Filters \u2014 EXPERIMENTAL", new Size(480, 530));
         StartPosition = FormStartPosition.CenterParent;
         AutoScroll = true;
 
