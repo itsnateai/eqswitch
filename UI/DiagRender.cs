@@ -526,6 +526,78 @@ internal static class DiagRender
         return 1;
     }
 
+    /// <summary>
+    /// Phase 1 launch-writer smoke (docs/specs/2026-06-06-eqclient-settings-overhaul.md): proves the
+    /// NARROWED EQClientSettingsForm.EnforceOverrides still enforces Operational keys at launch
+    /// (WindowedMode/Maximized) but no longer re-stamps Bucket-2 keys — even when the legacy
+    /// ConfiguredKeys gate is populated (the old code would have rewritten them). This is the
+    /// eqgame-wins guarantee. CLI: --test-eqclient-enforce.
+    /// </summary>
+    public static int RunEnforceOverridesSmoke()
+    {
+        var errors = new System.Collections.Generic.List<string>();
+        string tempDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "eqswitch-p1-enforce");
+        try
+        {
+            System.IO.Directory.CreateDirectory(tempDir);
+            string iniPath = System.IO.Path.Combine(tempDir, "eqclient.ini");
+            string[] fixture =
+            {
+                "[Defaults]",
+                "Sound=TRUE",            // Bucket-2: must NOT be re-stamped at launch
+                "WindowedMode=FALSE",    // Operational: must be flipped to TRUE
+                "[Options]",
+                "Sky=1",                 // Bucket-2: must NOT be re-stamped
+                "[VideoMode]",
+                "WindowedMode=FALSE",
+            };
+            System.IO.File.WriteAllLines(iniPath, fixture, System.Text.Encoding.Default);
+
+            var config = new AppConfig { IsFirstRun = false, EQPath = tempDir };
+            config.Layout.SlimTitlebar = false;   // skip the monitor-geometry block; test the always-run operational + the narrowing
+            // Simulate a legacy "user saved these" state — the OLD EnforceOverrides would re-stamp
+            // them from config; the narrowed one must ignore ConfiguredKeys entirely.
+            config.EQClientIni.ConfiguredKeys.Add("Sound");
+            config.EQClientIni.ConfiguredKeys.Add("Sky");
+            config.EQClientIni.DisableSound = true;   // old code -> would write Sound=FALSE
+            config.EQClientIni.DisableSky = true;     // old code -> would write Sky=0
+
+            EQClientSettingsForm.EnforceOverrides(config);
+
+            var doc = EqClientIniDocument.Load(iniPath);
+            void Eq(string section, string key, string expect)
+            {
+                var got = doc.Get(section, key);
+                if (got != expect) errors.Add($"[{section}] {key} expected '{expect}', got '{got ?? "<absent>"}'");
+            }
+            // Operational keys enforced at launch:
+            Eq("Defaults", "WindowedMode", "TRUE");
+            Eq("VideoMode", "WindowedMode", "TRUE");
+            Eq("Defaults", "Maximized", "0");
+            // Bucket-2 keys NOT re-stamped (eqgame-wins) despite being in ConfiguredKeys:
+            Eq("Defaults", "Sound", "TRUE");
+            Eq("Options", "Sky", "1");
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"CRASH: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            try { System.IO.Directory.Delete(tempDir, true); } catch { }
+        }
+
+        if (errors.Count == 0)
+        {
+            Console.WriteLine("EnforceOverridesSmoke: PASS — Operational keys (WindowedMode/Maximized) enforced at launch; "
+                + "Bucket-2 keys NOT re-stamped even with ConfiguredKeys populated (eqgame-wins).");
+            return 0;
+        }
+        Console.Error.WriteLine($"EnforceOverridesSmoke: FAIL — {errors.Count} problem(s):");
+        foreach (var e in errors) Console.Error.WriteLine("  - " + e);
+        return 1;
+    }
+
     /// <summary>Construct a form in isolation with stub data. Add a case per form as it's converted.</summary>
     private static Form BuildForm(string name, int tab, bool prewarm = false)
     {

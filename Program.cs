@@ -230,6 +230,26 @@ static class Program
             return;
         }
 
+        // --test-eqclient-enforce — run UI/DiagRender.RunEnforceOverridesSmoke(): proves the narrowed
+        // launch writer enforces Operational keys (WindowedMode/Maximized) but no longer re-stamps
+        // Bucket-2 keys (eqgame-wins). Closes Phase 1's launch-path residual.
+        if (args.Length >= 1 && args[0] == "--test-eqclient-enforce")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = UI.DiagRender.RunEnforceOverridesSmoke();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"EnforceOverridesSmoke CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
         // --test-font-dispose — run Core/FontDisposeOwnershipTests.RunAll(): asserts
         // DisposeControlFonts frees only owned fonts, never inherited/Control.DefaultFont.
         // Guards the button-click "Parameter is not valid" crash class from regressing.

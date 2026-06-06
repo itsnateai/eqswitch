@@ -1,5 +1,20 @@
 # Changelog
 
+## v3.24.48 — EQ Client Settings overhaul Phase 1: main window on a single descriptor engine (2026-06-06)
+
+**The 6-window EQ Client Settings subsystem is being rebuilt onto one declarative descriptor table so the UI can't drift from `eqclient.ini`, leave ghost (duplicate) keys, or clobber settings you changed in-game. This release lands the foundation + the main window. The five sub-forms (Models, Chat Spam, Particles, Video Mode, Keymaps) are unchanged and fully functional — their rebuild is Phases 2–6 — and all six window titles now read "— EXPERIMENTAL" while the rebuild is in progress.**
+
+**Foundation** — `Config/EqClientIniSchema.cs` declares all 125 settings across the 6 windows exactly once (key, canonical section, on/off polarity, default, bucket); `Config/EqClientIniDocument.cs` is a section-aware INI engine that reads from / writes to that one canonical section per key. Because polarity lives in one place, a setting can no longer be read one way and written another.
+
+**Main window** (`EQClientSettingsForm`) now:
+- reads **live from `eqclient.ini` every time it opens**, so changes you make in-game are always reflected;
+- writes **only the keys you actually change**, each to a single section — no duplicate or ghost entries;
+- **no longer re-stamps your settings at every launch** — settings you change in-game now survive.
+
+**Fixes** — "AA No Confirm" was inverted (showed checked when AA confirmations were still on); corrected. MaxFPS/MaxBGFPS were capped at 99, but EQ ships `MaxFPS=100` by default — the cap is now 999 so the field shows your real value.
+
+Verified: clean Release build; four self-tests (`--test-eqclient-schema` / `-inidoc` / `-save` / `-enforce`) pass; the main window rendered against a real `eqclient.ini` shows all 34 controls matching the file (and "AA No Confirm" now correctly unchecked).
+
 ## v3.24.47 — EQ Client Settings: uniform Save/Apply/Cancel padding across all sub-forms (2026-06-06)
 
 **Fix — the button bar now sits a consistent gap below the content on every EQ Client Settings form**
