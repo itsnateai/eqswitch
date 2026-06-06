@@ -634,6 +634,24 @@ public static class Bars
         return g;
     }
 
+    /// <summary>Three-section bar: <paramref name="left"/> hugs the left edge, <paramref name="right"/>
+    /// hugs the right edge, and <paramref name="center"/> floats in the CENTRE of the gap between them —
+    /// equal padding on both sides of the centre group. Only the middle column stretches (Percent 100%);
+    /// the outer two AutoSize to their content, so the centre group lands at <c>(gap − groupWidth) / 2</c>
+    /// from each neighbour. Like <see cref="Centered"/> it uses <see cref="AnchorStyles.None"/> centring,
+    /// so it is zero-pixel-literal and renders proportionally identical at 100 / 125 / 150%.</summary>
+    public static TableLayoutPanel SplitCentered(Control[] left, Control[] center, Control[] right, int gap = 8)
+    {
+        var g = NewBar(3);
+        g.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // left group hugs left
+        g.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f)); // centre group floats in the slack
+        g.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));      // right group hugs right
+        g.Controls.Add(Group(left, AnchorStyles.Left, gap), 0, 0);
+        g.Controls.Add(Group(center, AnchorStyles.None, gap), 1, 0);
+        g.Controls.Add(Group(right, AnchorStyles.Right, gap), 2, 0);
+        return g;
+    }
+
     public static TableLayoutPanel Spread(params Control[] items)
     {
         int n = items.Length;

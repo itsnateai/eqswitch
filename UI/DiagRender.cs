@@ -298,12 +298,18 @@ internal static class DiagRender
 
         var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
 
-        // Prove Video (index 1) + Accounts (index 2) are NOT built yet — the exact scenario under test.
+        // Tab positions are READ from SettingsForm's private Tab* constants (not hardcoded) so this guard
+        // tracks any future tab reorder automatically — a literal [1]/[2] silently mislabels after a swap.
+        var sflags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
+        int idxVideo    = (int)typeof(SettingsForm).GetField("TabVideo", sflags)!.GetRawConstantValue()!;
+        int idxAccounts = (int)typeof(SettingsForm).GetField("TabAccounts", sflags)!.GetRawConstantValue()!;
+
+        // Prove the two lazy tabs (Video + Accounts) are NOT built yet — the exact scenario under test.
         // If they were eager, this guard would be meaningless: fail loud rather than pass vacuously.
         var built = (bool[])typeof(SettingsForm).GetField("_tabBuilt", flags)!.GetValue(form)!;
-        if (built[1] || built[2])
+        if (built[idxVideo] || built[idxAccounts])
         {
-            Console.Error.WriteLine($"LazySave: SETUP INVALID — Video/Accounts already built before Save (built[1]={built[1]}, built[2]={built[2]}); the test would not exercise the unbuilt-tab path.");
+            Console.Error.WriteLine($"LazySave: SETUP INVALID — Video/Accounts already built before Save (Video={built[idxVideo]}, Accounts={built[idxAccounts]}); the test would not exercise the unbuilt-tab path.");
             form.Dispose();
             return 2;
         }
@@ -331,9 +337,9 @@ internal static class DiagRender
         // real guard for the EnsureAllTabsBuilt() call inside ApplySettings — remove that call and either
         // these flags stay false or the reflection-invoke above throws NRE.
         var builtAfter = (bool[])typeof(SettingsForm).GetField("_tabBuilt", flags)!.GetValue(form)!;
-        if (!builtAfter[1] || !builtAfter[2])
+        if (!builtAfter[idxVideo] || !builtAfter[idxAccounts])
         {
-            Console.Error.WriteLine($"LazySave: FAIL — after Save the lazy tabs are still unbuilt (Video={builtAfter[1]}, Accounts={builtAfter[2]}); ApplySettings did not build them.");
+            Console.Error.WriteLine($"LazySave: FAIL — after Save the lazy tabs are still unbuilt (Video={builtAfter[idxVideo]}, Accounts={builtAfter[idxAccounts]}); ApplySettings did not build them.");
             form.Dispose();
             return 1;
         }
@@ -388,7 +394,7 @@ internal static class DiagRender
         form2.Show();
         Application.DoEvents();
         var built2 = (bool[])typeof(SettingsForm).GetField("_tabBuilt", flags)!.GetValue(form2)!;
-        if (built2[1]) { Console.Error.WriteLine("LazySave: SETUP INVALID — Video already built on the Restore-path form."); form2.Dispose(); return 2; }
+        if (built2[idxVideo]) { Console.Error.WriteLine("LazySave: SETUP INVALID — Video already built on the Restore-path form."); form2.Dispose(); return 2; }
         try
         {
             typeof(SettingsForm).GetMethod("PopulateVideoFromIni", flags)!.Invoke(form2, null);
@@ -403,7 +409,7 @@ internal static class DiagRender
         var built2After = (bool[])typeof(SettingsForm).GetField("_tabBuilt", flags)!.GetValue(form2)!;
         form2.Close();
         form2.Dispose();
-        if (!built2After[1])
+        if (!built2After[idxVideo])
         {
             Console.Error.WriteLine("LazySave: FAIL — PopulateVideoFromIni did not build the Video tab when called with it unbuilt.");
             return 1;

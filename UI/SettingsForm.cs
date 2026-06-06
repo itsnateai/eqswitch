@@ -248,7 +248,11 @@ public class SettingsForm : EqSwitchForm
     // The other four tabs stay EAGER: their controls are read by methods beyond Save (the hotkey-conflict
     // dialogs, UpdateSwitchKeyColor), so keeping them always-present avoids a null surface. See
     // EnsureTabBuilt / EnsureAllTabsBuilt.
-    private const int TabGeneral = 0, TabVideo = 1, TabAccounts = 2, TabPip = 3, TabHotkeys = 4, TabPaths = 5;
+    // Tab order (left→right): General, Accounts, Video, PiP, Hotkeys, Paths. Accounts sits next to General
+    // so the common General→Accounts hop is one tab over. These constants ARE the tab positions — every
+    // _tabShells[]/_tabBuilt[]/EnsureTabBuilt switch keys off them, so reordering = swap the values here AND
+    // the matching TabPages.Add order below; the literal indices in TrayManager.ShowSettings(...) mirror them.
+    private const int TabGeneral = 0, TabAccounts = 1, TabVideo = 2, TabPip = 3, TabHotkeys = 4, TabPaths = 5;
     private readonly TabPage?[] _tabShells = new TabPage?[6];
     private readonly bool[] _tabBuilt = new bool[6];
     private bool _loaded;   // set after the one-time Load DPI pass; gates per-tab DPI sizing for lazy tabs
@@ -365,8 +369,8 @@ public class SettingsForm : EqSwitchForm
             void prewarmHandler(object? s, EventArgs e)
             {
                 Shown -= prewarmHandler;
-                prewarm(TabVideo);      // the tab the user clicks first — build it first
-                prewarm(TabAccounts);
+                prewarm(TabAccounts);   // the tab the user clicks first (now next to General) — build it first
+                prewarm(TabVideo);
             }
             Shown += prewarmHandler;
         }
@@ -489,12 +493,13 @@ public class SettingsForm : EqSwitchForm
         // Video (eqclient.ini disk read) and Accounts (dual DataGridView) are the two heavy tabs that
         // dominated first-open lag — build them LAZILY: add empty titled shells now (so the tab headers
         // + indices are stable) and materialize their content on first view / before Save. The four
-        // light tabs stay eager. Tab ORDER is preserved: General, Video, Accounts, PiP, Hotkeys, Paths.
+        // light tabs stay eager. Tab ORDER: General, Accounts, Video, PiP, Hotkeys, Paths (Accounts next
+        // to General — the add order below MUST match the Tab* constant values).
         msPreamble = Lap();   // StyleForm + config snapshot + pending-field copy (pre-build)
         tabs.TabPages.Add(BuildGeneralTab());                                            // 0
         msGeneral = Lap();
-        tabs.TabPages.Add(_tabShells[TabVideo]    = DarkTheme.MakeTabPage("Video"));     // 1 (lazy)
-        tabs.TabPages.Add(_tabShells[TabAccounts] = DarkTheme.MakeTabPage("Accounts"));  // 2 (lazy)
+        tabs.TabPages.Add(_tabShells[TabAccounts] = DarkTheme.MakeTabPage("Accounts"));  // 1 (lazy)
+        tabs.TabPages.Add(_tabShells[TabVideo]    = DarkTheme.MakeTabPage("Video"));     // 2 (lazy)
         tabs.TabPages.Add(BuildPipTab());                                                // 3
         msPip = Lap();
         tabs.TabPages.Add(BuildHotkeysTab());                                            // 4
@@ -735,10 +740,11 @@ public class SettingsForm : EqSwitchForm
         };
         var btnProcessMgr = Fields.Button("Process Manager...");
         btnProcessMgr.Click += (_, _) => _openProcessManager?.Invoke();
-        // EQ Client Settings hugs the left, Process Manager the right — both indented 12px from
-        // the card edges so they don't sit flush in the corners.
+        // EQ Client Settings hugs the left, Process Manager the right — both indented 24px from the card
+        // edges (doubled from 12px per Nate) so they sit well clear of the corners. The bar AutoSizes and
+        // the buttons anchor to the card edges, so this margin scales the inset proportionally at any DPI.
         cardPrefs.Full(Bars.Split(new Control[] { btnEQSettings }, new Control[] { btnProcessMgr }))
-            .Margin = new Padding(12, 4, 12, 4);
+            .Margin = new Padding(24, 4, 24, 4);
 
         // ─── Tray Click Actions ──────────────────────────────────────
         // Display strings. "Launch One"/"Launch Two" are display-only (stored values stay
@@ -786,10 +792,12 @@ public class SettingsForm : EqSwitchForm
         // The result callback is marshaled back to the UI thread by TrimLogFiles, but the trim is async
         // — if Settings was closed meanwhile, own the popup to nothing (ownerless) instead of a disposed form.
         btnTrimNow.Click += (_, _) => FileOperations.TrimLogFiles(_config, (int)_nudLogTrimThreshold.Value, msg => ThemedMessageDialog.Show(IsDisposed ? null : this, msg, "Trim Logs", MessageBoxButtons.OK, MessageBoxIcon.Information));
-        // Threshold controls on the left; the dim hint pushed to the right edge (same line) via a
-        // Bars.Split spacer — reclaims the empty right-side space and drops the separate hint row.
-        cardLog.Full(Bars.Split(
-            new Control[] { InlineLabel("Threshold:"), _nudLogTrimThreshold, InlineLabel("MB"), btnTrimNow },
+        // Threshold cluster hugs the left, the dim hint hugs the right, and the Trim Now button floats in
+        // the CENTRE of the gap between them — equal padding from the "MB" label and the hint (the middle
+        // column is the only stretchy one, so Anchor.None centres the button at (gap − btnWidth)/2 each side).
+        cardLog.Full(Bars.SplitCentered(
+            new Control[] { InlineLabel("Threshold:"), _nudLogTrimThreshold, InlineLabel("MB") },
+            new Control[] { btnTrimNow },
             new Control[] { TrailingHint("Async trim + archive old logs") }));
 
         // ─── Window Title ────────────────────────────────────────────
