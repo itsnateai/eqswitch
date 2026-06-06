@@ -618,9 +618,8 @@ public class EQClientSettingsForm : EqSwitchForm
             // save-time only). ProcessManager still writes FPS + affinity via ApplyProcessManagerToIni.
 
             // Enforce remaining sub-form overrides at launch (dictionary-based — pending their phases).
-            // ChatSpam migrated to the schema engine in Phase 2 → no longer re-stamped here (eqgame
-            // wins after first set); Models/Particles/VideoMode follow in Phases 3-5.
-            EQModelsForm.EnforceOverrides(config, lines);
+            // ChatSpam + Models migrated to the schema engine (Phases 2-3) → no longer re-stamped here
+            // (eqgame wins after first set); Particles/VideoMode follow in Phases 4-5.
             EQParticlesForm.EnforceOverrides(config, lines);
             EQVideoModeForm.EnforceOverrides(config, lines);
 

@@ -1,67 +1,41 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // © itsnateai
 
-using System.Text;
 using EQSwitch.Config;
 using EQSwitch.Core;
 
 namespace EQSwitch.UI;
 
 /// <summary>
-/// Manages Luclin model settings in eqclient.ini [Defaults] section.
-/// Allows toggling individual race/gender models on/off.
+/// Luclin model settings (all [Defaults], TRUE/FALSE). Phase 3 of the EQ Client Settings overhaul:
+/// on the shared schema engine — live-read display, touch-gated save (only the models the user
+/// changed), and no launch re-stamp (eqgame wins after first set). The grouped key-lists below are
+/// display layout only; each key's label, polarity, and default live once in EqClientIniSchema.
 /// </summary>
 public class EQModelsForm : EqSwitchForm
 {
     private readonly AppConfig _config;
     private readonly string _iniPath;
-    private readonly Dictionary<string, CheckBox> _checkboxes = new();
-    // Snapshot of values loaded from INI — only write keys that changed
-    private readonly Dictionary<string, bool> _initialValues = new();
+    private readonly List<EqClientBinding> _bindings = new();
 
-    /// <summary>
-    /// Model settings with display names and INI key names.
-    /// Grouped: global toggles first, then by race.
-    /// </summary>
-    private static readonly (string Key, string Label)[] GlobalSettings =
+    private static readonly Dictionary<string, IniSetting> SchemaByKey =
+        EqClientIniSchema.All.ToDictionary(s => s.Key, StringComparer.OrdinalIgnoreCase);
+
+    private static readonly string[] GlobalKeys =
+        { "LoadSocialAnimations", "AllLuclinPcModelsOff", "LoadVeliousArmorsWithLuclin", "UseLuclinElementals" };
+
+    private static readonly string[] RaceKeys =
     {
-        ("LoadSocialAnimations", "Load Social Animations"),
-        ("AllLuclinPcModelsOff", "All Luclin PC Models Off"),
-        ("LoadVeliousArmorsWithLuclin", "Load Velious Armors with Luclin"),
-        ("UseLuclinElementals", "Use Luclin Elementals"),
+        "UseLuclinHumanMale", "UseLuclinHumanFemale", "UseLuclinBarbarianMale", "UseLuclinBarbarianFemale",
+        "UseLuclinEruditeMale", "UseLuclinEruditeFemale", "UseLuclinWoodElfMale", "UseLuclinWoodElfFemale",
+        "UseLuclinHighElfMale", "UseLuclinHighElfFemale", "UseLuclinDarkElfMale", "UseLuclinDarkElfFemale",
+        "UseLuclinHalfElfMale", "UseLuclinHalfElfFemale", "UseLuclinDwarfMale", "UseLuclinDwarfFemale",
+        "UseLuclinTrollMale", "UseLuclinTrollFemale", "UseLuclinOgreMale", "UseLuclinOgreFemale",
+        "UseLuclinHalflingMale", "UseLuclinHalflingFemale", "UseLuclinGnomeMale", "UseLuclinGnomeFemale",
+        "UseLuclinIksarMale", "UseLuclinIksarFemale", "UseLuclinVahShirMale", "UseLuclinVahShirFemale",
     };
 
-    private static readonly (string Key, string Label)[] RaceSettings =
-    {
-        ("UseLuclinHumanMale", "Human Male"),
-        ("UseLuclinHumanFemale", "Human Female"),
-        ("UseLuclinBarbarianMale", "Barbarian Male"),
-        ("UseLuclinBarbarianFemale", "Barbarian Female"),
-        ("UseLuclinEruditeMale", "Erudite Male"),
-        ("UseLuclinEruditeFemale", "Erudite Female"),
-        ("UseLuclinWoodElfMale", "Wood Elf Male"),
-        ("UseLuclinWoodElfFemale", "Wood Elf Female"),
-        ("UseLuclinHighElfMale", "High Elf Male"),
-        ("UseLuclinHighElfFemale", "High Elf Female"),
-        ("UseLuclinDarkElfMale", "Dark Elf Male"),
-        ("UseLuclinDarkElfFemale", "Dark Elf Female"),
-        ("UseLuclinHalfElfMale", "Half Elf Male"),
-        ("UseLuclinHalfElfFemale", "Half Elf Female"),
-        ("UseLuclinDwarfMale", "Dwarf Male"),
-        ("UseLuclinDwarfFemale", "Dwarf Female"),
-        ("UseLuclinTrollMale", "Troll Male"),
-        ("UseLuclinTrollFemale", "Troll Female"),
-        ("UseLuclinOgreMale", "Ogre Male"),
-        ("UseLuclinOgreFemale", "Ogre Female"),
-        ("UseLuclinHalflingMale", "Halfling Male"),
-        ("UseLuclinHalflingFemale", "Halfling Female"),
-        ("UseLuclinGnomeMale", "Gnome Male"),
-        ("UseLuclinGnomeFemale", "Gnome Female"),
-        ("UseLuclinIksarMale", "Iksar Male"),
-        ("UseLuclinIksarFemale", "Iksar Female"),
-        ("UseLuclinVahShirMale", "Vah Shir Male"),
-        ("UseLuclinVahShirFemale", "Vah Shir Female"),
-    };
+    private static readonly HashSet<string> RaceKeySet = new(RaceKeys, StringComparer.OrdinalIgnoreCase);
 
     public EQModelsForm(AppConfig config)
     {
@@ -73,7 +47,7 @@ public class EQModelsForm : EqSwitchForm
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 Luclin Model Settings \u2014 EXPERIMENTAL", new Size(480, 620));
+        DarkTheme.StyleForm(this, "EQSwitch — Luclin Model Settings — EXPERIMENTAL", new Size(480, 620));
         StartPosition = FormStartPosition.CenterParent;
 
         // Scrollable content panel
@@ -88,25 +62,22 @@ public class EQModelsForm : EqSwitchForm
         int y = 8;
 
         // ─── Global Toggles card ──────────────────────────────────
-        int globalH = 30 + GlobalSettings.Length * 22 + 8;
-        var cardGlobal = DarkTheme.MakeCard(scrollPanel, "\u2699", "Global Toggles", DarkTheme.CardGold, 10, y, 430, globalH);
+        int globalH = 30 + GlobalKeys.Length * 22 + 8;
+        var cardGlobal = DarkTheme.MakeCard(scrollPanel, "⚙", "Global Toggles", DarkTheme.CardGold, 10, y, 430, globalH);
         int cy = 30;
 
-        foreach (var (key, label) in GlobalSettings)
+        foreach (var key in GlobalKeys)
         {
-            bool savedValue = _config.EQClientIni.ModelOverrides.TryGetValue(key, out bool v) && v;
-            var chk = DarkTheme.AddCardCheckBox(cardGlobal, label, 10, cy);
-            chk.Checked = savedValue;
-            _checkboxes[key] = chk;
+            AddBoundCheck(cardGlobal, key, 10, cy);
             cy += 22;
         }
 
         y += globalH + 8;
 
         // ─── Race Models card ─────────────────────────────────────
-        int raceRows = (RaceSettings.Length + 1) / 2;
+        int raceRows = (RaceKeys.Length + 1) / 2;
         int raceH = 30 + raceRows * 22 + 38; // extra space for quick buttons
-        var cardRace = DarkTheme.MakeCard(scrollPanel, "\uD83C\uDFAD", "Race Models", DarkTheme.CardPurple, 10, y, 430, raceH);
+        var cardRace = DarkTheme.MakeCard(scrollPanel, "🎭", "Race Models", DarkTheme.CardPurple, 10, y, 430, raceH);
         cy = 30;
 
         // Quick buttons
@@ -120,23 +91,11 @@ public class EQModelsForm : EqSwitchForm
         cy += 30;
 
         // Two columns of checkboxes
-        for (int i = 0; i < RaceSettings.Length; i += 2)
+        for (int i = 0; i < RaceKeys.Length; i += 2)
         {
-            var (key1, label1) = RaceSettings[i];
-            bool saved1 = _config.EQClientIni.ModelOverrides.TryGetValue(key1, out bool v1) && v1;
-            var chk1 = DarkTheme.AddCardCheckBox(cardRace, label1, 10, cy);
-            chk1.Checked = saved1;
-            _checkboxes[key1] = chk1;
-
-            if (i + 1 < RaceSettings.Length)
-            {
-                var (key2, label2) = RaceSettings[i + 1];
-                bool saved2 = _config.EQClientIni.ModelOverrides.TryGetValue(key2, out bool v2) && v2;
-                var chk2 = DarkTheme.AddCardCheckBox(cardRace, label2, 220, cy);
-                chk2.Checked = saved2;
-                _checkboxes[key2] = chk2;
-            }
-
+            AddBoundCheck(cardRace, RaceKeys[i], 10, cy);
+            if (i + 1 < RaceKeys.Length)
+                AddBoundCheck(cardRace, RaceKeys[i + 1], 220, cy);
             cy += 22;
         }
 
@@ -163,102 +122,55 @@ public class EQModelsForm : EqSwitchForm
         Controls.Add(buttonPanel);
 
         // Size the form to the scroll panel's content so the button bar sits a consistent gap below
-        // the Race Models card, instead of the old hand-guessed Size(480,620) gap. Content lives in
-        // scrollPanel (Dock=Fill), so it — not `this` — is the host to measure.
+        // the Race Models card. Content lives in scrollPanel (Dock=Fill), so it — not `this` — is the host.
         FitClientHeightToContent(scrollPanel);
+    }
+
+    /// <summary>Create a checkbox labelled from the schema and register it as a touch-gated binding.</summary>
+    private void AddBoundCheck(Panel card, string key, int x, int y)
+    {
+        var setting = SchemaByKey[key];
+        var chk = DarkTheme.AddCardCheckBox(card, setting.Label, x, y);
+        _bindings.Add(new EqClientBinding(setting, chk, null));
     }
 
     private void SetAllRaceModels(bool value)
     {
-        foreach (var (key, _) in RaceSettings)
-        {
-            if (_checkboxes.TryGetValue(key, out var chk))
-                chk.Checked = value;
-        }
+        foreach (var b in _bindings)
+            if (b.Check != null && RaceKeySet.Contains(b.Setting.Key))
+                b.Check.Checked = value;
     }
 
-    /// <summary>
-    /// Read current values from eqclient.ini [Defaults] section.
-    /// </summary>
     private void LoadFromIni()
     {
-        if (File.Exists(_iniPath))
+        // Live read of eqclient.ini [Defaults] via the shared schema engine; snapshots each value for touch-gating.
+        try
         {
-            try
-            {
-                var lines = File.ReadAllLines(_iniPath, Encoding.Default);
-                string currentSection = "";
-
-                foreach (var line in lines)
-                {
-                    var trimmed = line.Trim();
-                    if (trimmed.StartsWith("["))
-                    {
-                        currentSection = trimmed;
-                        continue;
-                    }
-
-                    if (!currentSection.Equals("[Defaults]", StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    var parts = trimmed.Split('=', 2);
-                    if (parts.Length != 2) continue;
-
-                    string key = parts[0].Trim();
-                    string val = parts[1].Trim();
-
-                    if (_checkboxes.TryGetValue(key, out var chk))
-                        chk.Checked = val.Equals("TRUE", StringComparison.OrdinalIgnoreCase);
-                }
-            }
-            catch (Exception ex)
-            {
-                FileLogger.Error("EQModels: load error", ex);
-            }
+            EqClientBindings.LoadInto(_bindings, _iniPath);
+            FileLogger.Info("EQModels: loaded current values from eqclient.ini (schema-driven)");
         }
-
-        // Snapshot initial state unconditionally — runs even if file missing or load failed
-        foreach (var (key, chk) in _checkboxes)
-            _initialValues[key] = chk.Checked;
+        catch (Exception ex)
+        {
+            FileLogger.Error("EQModels: load error", ex);
+        }
     }
 
     private void SaveSettings()
     {
-        // Find which keys the user actually changed
-        var changedKeys = new List<string>();
-        foreach (var (key, chk) in _checkboxes)
-        {
-            bool initial = _initialValues.TryGetValue(key, out bool v) && v;
-            if (chk.Checked != initial)
-                changedKeys.Add(key);
-        }
-
-        if (changedKeys.Count == 0)
-        {
-            FileLogger.Info("EQModels: no changes to save");
-            return;
-        }
-
-        // Save to config — only store explicitly changed values
-        foreach (var key in changedKeys)
-            _config.EQClientIni.ModelOverrides[key] = _checkboxes[key].Checked;
-        ConfigManager.Save(_config);
-
-        // Apply only changed keys to eqclient.ini
-        if (!File.Exists(_iniPath)) return;
-
+        // Touch-gated, schema-driven write — only the models the user changed are written to [Defaults].
+        // Untouched + unmanaged keys are left exactly as eqgame/the user left them. No launch re-stamp.
         try
         {
-            var lines = File.ReadAllLines(_iniPath, Encoding.Default).ToList();
-
-            foreach (var key in changedKeys)
+            if (!File.Exists(_iniPath))
             {
-                string value = _checkboxes[key].Checked ? "TRUE" : "FALSE";
-                EQClientSettingsForm.SetIniValue(lines, "Defaults", key, value);
+                FileLogger.Info($"EQModels: eqclient.ini not found at {_iniPath}");
+                return;
             }
 
-            File.WriteAllLines(_iniPath, lines, Encoding.Default);
-            FileLogger.Info($"EQModels: saved {changedKeys.Count} changed model setting(s) to eqclient.ini");
+            int changed = EqClientBindings.SaveChanged(_bindings, _iniPath);
+            FileLogger.Info(changed > 0
+                ? $"EQModels: wrote {changed} changed model setting(s) to eqclient.ini (touch-gated)"
+                : "EQModels: no changes to save");
         }
         catch (Exception ex)
         {
@@ -266,16 +178,6 @@ public class EQModelsForm : EqSwitchForm
             ThemedMessageDialog.Show(this, $"Failed to save: {ex.Message}", "Error",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
-    }
-
-    /// <summary>
-    /// Static helper: enforce all model overrides in eqclient.ini.
-    /// Called by EnforceOverrides in EQClientSettingsForm.
-    /// </summary>
-    public static void EnforceOverrides(AppConfig config, List<string> lines)
-    {
-        foreach (var (key, value) in config.EQClientIni.ModelOverrides)
-            EQClientSettingsForm.SetIniValue(lines, "Defaults", key, value ? "TRUE" : "FALSE");
     }
 
     protected override void Dispose(bool disposing)
