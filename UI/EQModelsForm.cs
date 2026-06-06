@@ -161,6 +161,11 @@ public class EQModelsForm : EqSwitchForm
 
         buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
         Controls.Add(buttonPanel);
+
+        // Size the form to the scroll panel's content so the button bar sits a consistent gap below
+        // the Race Models card, instead of the old hand-guessed Size(480,620) gap. Content lives in
+        // scrollPanel (Dock=Fill), so it — not `this` — is the host to measure.
+        FitClientHeightToContent(scrollPanel);
     }
 
     private void SetAllRaceModels(bool value)

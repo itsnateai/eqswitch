@@ -139,7 +139,7 @@ public class EQKeymapsForm : EqSwitchForm
         }
 
         DarkTheme.AddHint(this, "Edit the scan code — the key name updates live. 0 = unbound.", 15, y);
-        y += 22;
+        // (no y advance needed — FitClientHeightToContent measures the hint's own Bottom, not y.)
 
         // ─── Docked bottom panel with Save/Apply/Cancel ──────────
         var buttonPanel = new Panel
@@ -160,6 +160,11 @@ public class EQKeymapsForm : EqSwitchForm
 
         buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
         Controls.Add(buttonPanel);
+
+        // Size the form to its content (the hint line is the lowest element) so the button bar sits a
+        // consistent gap below it, instead of the old hand-guessed Size(480,520) that left ~88px of
+        // dead space between the hint and the buttons.
+        FitClientHeightToContent();
     }
 
     /// <summary>

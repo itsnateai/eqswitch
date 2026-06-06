@@ -1,5 +1,17 @@
 # Changelog
 
+## v3.24.47 — EQ Client Settings: uniform Save/Apply/Cancel padding across all sub-forms (2026-06-06)
+
+**Fix — the button bar now sits a consistent gap below the content on every EQ Client Settings form**
+
+The "EQ Client Settings" window and its five sub-forms (Models, Chat Spam, Particles, Video Mode, Keymaps) each hard-coded their `ClientSize` height while laying content out at absolute Y and docking a fixed Save/Apply/Cancel panel to the bottom. The leftover gap was therefore a hand-guessed number — too large on five forms (≈40–88 px of dead space above the buttons) and *negative* on Video Mode (the Fullscreen card overlapped the buttons). Replaced the six guesses with one additive base-class helper, `EqSwitchForm.FitClientHeightToContent()`, that sizes each form to its actual content + a uniform 8 px gap + the bottom-docked bar. Because it computes the height in 96-DPI design coordinates at construction (before `AutoScaleMode.Dpi` runs), the result scales uniformly with the content at 125/150 % — so the gap is correct at every display scale, not just 100 %.
+
+**Fix — Particles › Particle Opacity card no longer clips its hint**
+
+The "0% = no particles, 100% = full" hint under the opacity sliders was drawn past the card's bottom edge (the card height left no row for it). Bumped the card height so the hint shows in full.
+
+Verified: clean build, `dpi-lint` (0 findings on the touched files), `--test-dpi-baseline`, and off-screen renders of all six forms at 100 % (consistent gap, no overlap, hint visible). The fix is DPI-correct by construction; 150 % follows from the same `AutoScaleMode.Dpi` path the app already uses.
+
 ## v3.24.46 — Settings open: the *real* bottleneck found + fixed; Video-tab tear gone (2026-06-06)
 
 **Perf — v3.24.45 batched the wrong phase; this fixes the two that actually dominated**

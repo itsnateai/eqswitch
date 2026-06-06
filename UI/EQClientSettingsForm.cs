@@ -214,6 +214,10 @@ public class EQClientSettingsForm : EqSwitchForm
 
         buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
         Controls.Add(buttonPanel);
+
+        // Size the form to its content so the button bar sits a consistent gap below the last card,
+        // instead of the old hand-guessed Size(750,680) that left ~87px of dead space above the buttons.
+        FitClientHeightToContent();
     }
 
     /// <summary>

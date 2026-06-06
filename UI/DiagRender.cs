@@ -26,7 +26,9 @@ namespace EQSwitch.UI;
 ///                  onto the active desktop). Default captures real composited pixels on-screen.
 ///     --hold       leave the window open after capture instead of exiting
 ///
-/// Known forms: "PilotCard" (layout-primitive proof), "SettingsForm", "ProcessManagerForm".
+/// Known forms: "PilotCard" (layout-primitive proof), "SettingsForm", "ProcessManagerForm",
+/// "ThemedMessageDialog", and the EQ Client Settings family ("EQClientSettingsForm",
+/// "EQModelsForm", "EQChatSpamForm", "EQParticlesForm", "EQVideoModeForm", "EQKeymapsForm").
 /// Writes &lt;FormName&gt;[-tabN][-simF].png + a diag-render.log line (size + DeviceDpi) to --out.
 /// </summary>
 internal static class DiagRender
@@ -430,6 +432,16 @@ internal static class DiagRender
             "SettingsForm" => new SettingsForm(config, _ => { }, tab, () => { }, () => { }, null, false, prewarmLazyTabs: prewarm),
             "ProcessManagerForm" => new ProcessManagerForm(
                 () => Array.Empty<EQClient>(), () => null, () => { }, _ => { }, config),
+            // EQ Client Settings + its 5 sub-forms — all take (AppConfig) and only READ the ini on
+            // construction (writes are button-click only), so rendering them with a stub config is safe.
+            // Added to verify the FitClientHeightToContent gap fix (button bar sits a uniform gap below
+            // the last card at any DPI; previously a hand-guessed ClientSize left dead space or overlap).
+            "EQClientSettingsForm" => new EQClientSettingsForm(config),
+            "EQModelsForm" => new EQModelsForm(config),
+            "EQChatSpamForm" => new EQChatSpamForm(config),
+            "EQParticlesForm" => new EQParticlesForm(config),
+            "EQVideoModeForm" => new EQVideoModeForm(config),
+            "EQKeymapsForm" => new EQKeymapsForm(config),
             _ => throw new ArgumentException($"DiagRender: unknown form '{name}'"),
         };
     }

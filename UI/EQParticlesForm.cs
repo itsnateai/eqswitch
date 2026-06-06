@@ -74,7 +74,9 @@ public class EQParticlesForm : EqSwitchForm
         int y = 8;
 
         // ─── Opacity card ─────────────────────────────────────────
-        var cardOpacity = DarkTheme.MakeCard(this, "\u2728", "Particle Opacity", DarkTheme.CardPurple, 10, y, 440, 30 + OpacitySettings.Length * 30 + 4);
+        // +22 (not +4) leaves a row for the trailing "0% = no particles, 100% = full" hint below the
+        // last slider \u2014 the +4 clipped it at the card's bottom edge (pre-existing, fixed this pass).
+        var cardOpacity = DarkTheme.MakeCard(this, "\u2728", "Particle Opacity", DarkTheme.CardPurple, 10, y, 440, 30 + OpacitySettings.Length * 30 + 22);
         int cy = 30;
 
         foreach (var (key, label) in OpacitySettings)
@@ -196,6 +198,10 @@ public class EQParticlesForm : EqSwitchForm
 
         buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
         Controls.Add(buttonPanel);
+
+        // Size the form to its content so the button bar sits a consistent gap below the Misc card,
+        // instead of the old hand-guessed Size(480,700) gap above the buttons.
+        FitClientHeightToContent();
     }
 
     private void LoadFromIni()

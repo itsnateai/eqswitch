@@ -103,6 +103,10 @@ public class EQChatSpamForm : EqSwitchForm
 
         buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
         Controls.Add(buttonPanel);
+
+        // Size the form to its content so the button bar sits a consistent gap below the Social card,
+        // instead of the old hand-guessed Size(480,530) that left ~40px of dead space above the buttons.
+        FitClientHeightToContent();
     }
 
     /// <summary>Add a card with two columns of filter checkboxes. Returns next Y.</summary>

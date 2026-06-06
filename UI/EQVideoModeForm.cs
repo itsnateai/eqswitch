@@ -114,6 +114,11 @@ public class EQVideoModeForm : EqSwitchForm
 
         buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
         Controls.Add(buttonPanel);
+
+        // Size the form to its content. The old hand-guessed Size(480,480) was UNDER the content
+        // height, so the Fullscreen card overlapped the buttons; fitting to content restores a
+        // proper gap above them.
+        FitClientHeightToContent();
     }
 
     private void LoadFromIni()
