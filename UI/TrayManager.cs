@@ -2378,7 +2378,7 @@ public class TrayManager : IDisposable
             }
         }
         menu.DropDownItems.Add(new ToolStripSeparator());
-        menu.DropDownItems.Add("\u2699  Manage Accounts...", null, (_, _) => ShowSettings(2));
+        menu.DropDownItems.Add("\u2699  Manage Accounts...", null, (_, _) => ShowSettings(1)); // Accounts tab (SettingsForm.TabAccounts)
         return menu;
     }
 
@@ -2452,7 +2452,7 @@ public class TrayManager : IDisposable
             }
         }
         menu.DropDownItems.Add(new ToolStripSeparator());
-        menu.DropDownItems.Add("\u2699  Manage Characters...", null, (_, _) => ShowSettings(2));
+        menu.DropDownItems.Add("\u2699  Manage Characters...", null, (_, _) => ShowSettings(1)); // Accounts tab (SettingsForm.TabAccounts)
         return menu;
     }
 
@@ -2564,7 +2564,7 @@ public class TrayManager : IDisposable
             }
         }
         menu.DropDownItems.Add(new ToolStripSeparator());
-        menu.DropDownItems.Add("\u2699  Manage Teams...", null, (_, _) => ShowSettings(2, openTeamsDialog: true));
+        menu.DropDownItems.Add("\u2699  Manage Teams...", null, (_, _) => ShowSettings(1, openTeamsDialog: true)); // Accounts tab (SettingsForm.TabAccounts)
         return menu;
     }
 
@@ -2714,7 +2714,7 @@ public class TrayManager : IDisposable
         var videoMenu = new ToolStripMenuItem("\uD83D\uDCFA  Video Settings") { DropDownDirection = ToolStripDropDownDirection.Right };
         videoMenu.DropDownItems.Add("\uD83D\uDCDD  Video Settings...", null, (_, _) =>
         {
-            ShowSettings(1); // Video tab
+            ShowSettings(2); // Video tab (SettingsForm.TabVideo)
         });
         videoMenu.DropDownItems.Add(new ToolStripSeparator());
 
