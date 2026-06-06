@@ -210,6 +210,26 @@ static class Program
             return;
         }
 
+        // --test-eqclient-save — run UI/DiagRender.RunEqClientSaveRoundtrip(): constructs the EQ
+        // Client Settings main window against a temp INI and proves the Save path (touch-gated write,
+        // correct section + mirror, no clobber of untouched/unmanaged keys, no ghost). Phase 1.
+        if (args.Length >= 1 && args[0] == "--test-eqclient-save")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = UI.DiagRender.RunEqClientSaveRoundtrip();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"EqClientSaveRoundtrip CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
         // --test-font-dispose — run Core/FontDisposeOwnershipTests.RunAll(): asserts
         // DisposeControlFonts frees only owned fonts, never inherited/Control.DefaultFont.
         // Guards the button-click "Parameter is not valid" crash class from regressing.

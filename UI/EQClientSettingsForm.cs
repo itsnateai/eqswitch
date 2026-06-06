@@ -187,9 +187,9 @@ public class EQClientSettingsForm : EqSwitchForm
 
         // Row 1: MaxFPS | MaxBGFPS | Mouse Sensitivity
         DarkTheme.AddCardLabel(cardPerf, "MaxFPS:", 10, cy + 2);
-        _nudMaxFPS = DarkTheme.AddCardNumeric(cardPerf, 78, cy, 50, Math.Clamp(_config.EQClientIni.MaxFPS, 0, 99), 0, 99);
+        _nudMaxFPS = DarkTheme.AddCardNumeric(cardPerf, 78, cy, 50, Math.Clamp(_config.EQClientIni.MaxFPS, 0, 999), 0, 999);
         DarkTheme.AddCardLabel(cardPerf, "MaxBGFPS:", 245, cy + 2);
-        _nudMaxBGFPS = DarkTheme.AddCardNumeric(cardPerf, 325, cy, 50, Math.Clamp(_config.EQClientIni.MaxBGFPS, 0, 99), 0, 99);
+        _nudMaxBGFPS = DarkTheme.AddCardNumeric(cardPerf, 325, cy, 50, Math.Clamp(_config.EQClientIni.MaxBGFPS, 0, 999), 0, 999);
         DarkTheme.AddCardHint(cardPerf, "(0 = don't set)", 380, cy + 4);
         DarkTheme.AddCardLabel(cardPerf, "Mouse:", 500, cy + 2);
         _nudMouseSensitivity = DarkTheme.AddCardNumeric(cardPerf, 555, cy, 50, Math.Clamp(_config.EQClientIni.MouseSensitivity, -1, 100), -1, 100);

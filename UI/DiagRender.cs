@@ -421,6 +421,111 @@ internal static class DiagRender
         catch (ArgumentException) { return true; }
     }
 
+    /// <summary>
+    /// Phase 1 save round-trip guard (docs/specs/2026-06-06-eqclient-settings-overhaul.md): construct
+    /// EQClientSettingsForm against a temp eqclient.ini, assert the live-read display matches the file,
+    /// flip a checkbox + a numeric, invoke SaveSettings, then assert ONLY the changed keys were written
+    /// (right section + value, incl. the MaxFPS [Defaults] mirror), untouched managed keys were NOT
+    /// rewritten, an unmanaged key survived, and no ghost copy leaked into another section.
+    /// CLI: --test-eqclient-save.
+    /// </summary>
+    public static int RunEqClientSaveRoundtrip()
+    {
+        Application.SetHighDpiMode(HighDpiMode.SystemAware);
+        Application.EnableVisualStyles();
+        var errors = new System.Collections.Generic.List<string>();
+        string tempDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "eqswitch-p1-save");
+        try
+        {
+            System.IO.Directory.CreateDirectory(tempDir);
+            string iniPath = System.IO.Path.Combine(tempDir, "eqclient.ini");
+            string[] fixture =
+            {
+                "[Defaults]",
+                "Sound=FALSE",
+                "ShowGrass=TRUE",
+                "UnmanagedKeepMe=42",   // EQSwitch does not manage this key — must survive a Save
+                "[Options]",
+                "Sky=1",                 // Disable Sky should load UNCHECKED (sky on)
+                "MaxFPS=100",
+                "Anonymous=1",
+            };
+            System.IO.File.WriteAllLines(iniPath, fixture, System.Text.Encoding.Default);
+
+            var config = new AppConfig { IsFirstRun = false, EQPath = tempDir };
+            var form = new EQClientSettingsForm(config);   // ctor runs InitializeForm + LoadFromIni
+
+            const System.Reflection.BindingFlags BF = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            const System.Reflection.BindingFlags PF = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance;
+            var bindings = (System.Collections.IEnumerable)typeof(EQClientSettingsForm).GetField("_bindings", BF)!.GetValue(form)!;
+
+            object? FindBinding(string key)
+            {
+                foreach (var b in bindings)
+                {
+                    var setting = (IniSetting)b.GetType().GetField("Setting", PF)!.GetValue(b)!;
+                    if (setting.Key == key) return b;
+                }
+                return null;
+            }
+            CheckBox? Chk(string key) => FindBinding(key) is { } b ? (CheckBox?)b.GetType().GetField("Check", PF)!.GetValue(b) : null;
+            NumericUpDown? Nud(string key) => FindBinding(key) is { } b ? (NumericUpDown?)b.GetType().GetField("Numeric", PF)!.GetValue(b) : null;
+
+            var skyChk = Chk("Sky");
+            var soundChk = Chk("Sound");
+            var maxNud = Nud("MaxFPS");
+            if (skyChk == null || soundChk == null || maxNud == null)
+            {
+                errors.Add("could not resolve Sky/Sound/MaxFPS bindings via reflection");
+            }
+            else
+            {
+                // Display-vs-disk.
+                if (skyChk.Checked) errors.Add("display: 'Disable Sky' should be UNCHECKED when Sky=1");
+                if (!soundChk.Checked) errors.Add("display: 'Disable Sound' should be CHECKED when Sound=FALSE");
+                if (maxNud.Value != 100) errors.Add($"display: MaxFPS should be 100, got {maxNud.Value}");
+
+                // Change two settings, then Save.
+                skyChk.Checked = true;     // 'Disable Sky' on -> Sky=0
+                maxNud.Value = 60;
+                typeof(EQClientSettingsForm).GetMethod("SaveSettings", BF)!.Invoke(form, null);
+
+                var doc = EqClientIniDocument.Load(iniPath);
+                void Eq(string section, string key, string? expect)
+                {
+                    var got = doc.Get(section, key);
+                    if (got != expect) errors.Add($"save: [{section}] {key} expected '{expect ?? "<absent>"}', got '{got ?? "<absent>"}'");
+                }
+                Eq("Options", "Sky", "0");            // changed
+                Eq("Options", "MaxFPS", "60");        // changed (canonical)
+                Eq("Defaults", "MaxFPS", "60");       // changed (mirror)
+                Eq("Defaults", "ShowGrass", "TRUE");  // untouched managed -> not rewritten, preserved
+                Eq("Options", "Anonymous", "1");      // untouched managed -> preserved
+                Eq("Defaults", "UnmanagedKeepMe", "42"); // unmanaged -> never clobbered
+                Eq("Defaults", "Sky", null);          // no ghost copy in the other section
+            }
+            form.Dispose();
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"CRASH: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            try { System.IO.Directory.Delete(tempDir, true); } catch { }
+        }
+
+        if (errors.Count == 0)
+        {
+            Console.WriteLine("EqClientSaveRoundtrip: PASS — display matches disk; Save wrote only the changed keys "
+                + "(right section + mirror); untouched + unmanaged keys preserved; no ghost.");
+            return 0;
+        }
+        Console.Error.WriteLine($"EqClientSaveRoundtrip: FAIL — {errors.Count} problem(s):");
+        foreach (var e in errors) Console.Error.WriteLine("  - " + e);
+        return 1;
+    }
+
     /// <summary>Construct a form in isolation with stub data. Add a case per form as it's converted.</summary>
     private static Form BuildForm(string name, int tab, bool prewarm = false)
     {
