@@ -271,6 +271,27 @@ static class Program
             return;
         }
 
+        // --test-eqclient-particles-save — run UI/DiagRender.RunEqParticlesSaveRoundtrip(): constructs
+        // the Particles window against a temp INI and proves Phase 4's touch-gated Save incl. the new
+        // engine slider↔float path (drag a slider -> 6-decimal write; absent/untouched NOT inserted;
+        // unmanaged preserved; no ghost). Phase 4 of the EQ Client Settings overhaul.
+        if (args.Length >= 1 && args[0] == "--test-eqclient-particles-save")
+        {
+            int exitCode;
+            try
+            {
+                exitCode = UI.DiagRender.RunEqParticlesSaveRoundtrip();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"EqParticlesSaveRoundtrip CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
+                exitCode = 2;
+            }
+            Environment.Exit(exitCode);
+            return;
+        }
+
         // --test-font-dispose — run Core/FontDisposeOwnershipTests.RunAll(): asserts
         // DisposeControlFonts frees only owned fonts, never inherited/Control.DefaultFont.
         // Guards the button-click "Parameter is not valid" crash class from regressing.

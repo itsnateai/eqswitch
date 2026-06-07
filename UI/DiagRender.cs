@@ -704,6 +704,99 @@ internal static class DiagRender
         return 1;
     }
 
+    /// <summary>
+    /// Phase 4 save round-trip guard: construct EQParticlesForm against a temp eqclient.ini, assert the
+    /// opacity slider loaded to the right notch (the engine's slider↔float path), drag it, Save, then
+    /// assert the changed slider wrote a 6-decimal float to [Defaults], an untouched numeric was
+    /// preserved exactly, an absent managed key was NOT inserted (touch-gated, not write-all), an
+    /// unmanaged key survived, and an [Options] key was untouched. CLI: --test-eqclient-particles-save.
+    /// </summary>
+    public static int RunEqParticlesSaveRoundtrip()
+    {
+        Application.SetHighDpiMode(HighDpiMode.SystemAware);
+        Application.EnableVisualStyles();
+        var errors = new System.Collections.Generic.List<string>();
+        string tempDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "eqswitch-p4-particles");
+        try
+        {
+            System.IO.Directory.CreateDirectory(tempDir);
+            string iniPath = System.IO.Path.Combine(tempDir, "eqclient.ini");
+            string[] fixture =
+            {
+                "[Defaults]",
+                "SpellParticleOpacity=0.500000",        // slider should load to 50
+                "ActorParticleNearClipPlane=2.000000",  // untouched numeric -> preserved exactly
+                "ParticleUnmanaged=keepme",             // EQSwitch does not manage this -> must survive
+                "[Options]",
+                "FogScale=2.800000",                    // untouched -> preserved
+            };
+            System.IO.File.WriteAllLines(iniPath, fixture, System.Text.Encoding.Default);
+
+            var config = new AppConfig { IsFirstRun = false, EQPath = tempDir };
+            var form = new EQParticlesForm(config);   // ctor runs InitializeForm + LoadFromIni
+
+            const System.Reflection.BindingFlags BF = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            const System.Reflection.BindingFlags PF = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance;
+            var bindings = (System.Collections.IEnumerable)typeof(EQParticlesForm).GetField("_bindings", BF)!.GetValue(form)!;
+
+            TrackBar? Slider(string key)
+            {
+                foreach (var b in bindings)
+                {
+                    var setting = (IniSetting)b.GetType().GetField("Setting", PF)!.GetValue(b)!;
+                    if (setting.Key == key) return (TrackBar?)b.GetType().GetField("Slider", PF)!.GetValue(b);
+                }
+                return null;
+            }
+
+            var opacity = Slider("SpellParticleOpacity");
+            if (opacity == null)
+            {
+                errors.Add("could not resolve SpellParticleOpacity slider via reflection");
+            }
+            else
+            {
+                // Display-vs-disk: 0.500000 -> slider notch 50.
+                if (opacity.Value != 50) errors.Add($"display: SpellParticleOpacity slider should be 50, got {opacity.Value}");
+
+                // Drag the slider, then Save.
+                opacity.Value = 75;     // -> 0.750000
+                typeof(EQParticlesForm).GetMethod("SaveSettings", BF)!.Invoke(form, null);
+
+                var doc = EqClientIniDocument.Load(iniPath);
+                void Eq(string section, string key, string? expect)
+                {
+                    var got = doc.Get(section, key);
+                    if (got != expect) errors.Add($"save: [{section}] {key} expected '{expect ?? "<absent>"}', got '{got ?? "<absent>"}'");
+                }
+                Eq("Defaults", "SpellParticleOpacity", "0.750000");      // changed slider -> 6-decimal float
+                Eq("Defaults", "ActorParticleNearClipPlane", "2.000000"); // untouched numeric -> preserved
+                Eq("Defaults", "ParticleUnmanaged", "keepme");           // unmanaged -> never clobbered
+                Eq("Defaults", "SpellParticleDensity", null);            // absent + untouched -> NOT inserted (touch-gated)
+                Eq("Options", "FogScale", "2.800000");                   // untouched [Options] -> preserved
+            }
+            form.Dispose();
+        }
+        catch (Exception ex)
+        {
+            errors.Add($"CRASH: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            try { System.IO.Directory.Delete(tempDir, true); } catch { }
+        }
+
+        if (errors.Count == 0)
+        {
+            Console.WriteLine("EqParticlesSaveRoundtrip: PASS — slider->float round-trip; Save wrote only the changed control; "
+                + "absent + untouched + unmanaged keys preserved (no write-all, no ghost).");
+            return 0;
+        }
+        Console.Error.WriteLine($"EqParticlesSaveRoundtrip: FAIL — {errors.Count} problem(s):");
+        foreach (var e in errors) Console.Error.WriteLine("  - " + e);
+        return 1;
+    }
+
     /// <summary>Construct a form in isolation with stub data. Add a case per form as it's converted.</summary>
     private static Form BuildForm(string name, int tab, bool prewarm = false)
     {

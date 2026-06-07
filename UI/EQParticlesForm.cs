@@ -1,25 +1,29 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // © itsnateai
 
-using System.Text;
 using EQSwitch.Config;
 using EQSwitch.Core;
 
 namespace EQSwitch.UI;
 
 /// <summary>
-/// Manages particle/opacity settings in eqclient.ini.
-/// Most settings are in [Defaults]; FogScale, LODBias, SameResolution are in [Options].
+/// Particle / opacity settings. Phase 4 of the EQ Client Settings overhaul: on the shared schema
+/// engine — live-read display, touch-gated save (only the controls the user changed), and no launch
+/// re-stamp (eqgame wins after first set). Opacity/density TrackBars bind through the engine's slider
+/// path (slider 0-100 ↔ the schema's 0..1 float, scale 100). Most keys are [Defaults];
+/// FogScale/LODBias/SameResolution are [Options] — each key's section/polarity/default lives once in
+/// EqClientIniSchema. Display labels stay short here (the card title supplies the context).
 /// </summary>
 public class EQParticlesForm : EqSwitchForm
 {
     private readonly AppConfig _config;
     private readonly string _iniPath;
-    private readonly Dictionary<string, TrackBar> _sliders = new();
-    private readonly Dictionary<string, NumericUpDown> _numerics = new();
-    private readonly Dictionary<string, string> _initialValues = new();
+    private readonly List<EqClientBinding> _bindings = new();
 
-    // Opacity sliders (0.0 - 1.0 as 0-100%)
+    private static readonly Dictionary<string, IniSetting> SchemaByKey =
+        EqClientIniSchema.All.ToDictionary(s => s.Key, StringComparer.OrdinalIgnoreCase);
+
+    // Short display labels (the card title gives context); key+section+default live in the schema.
     private static readonly (string Key, string Label)[] OpacitySettings =
     {
         ("SpellParticleOpacity", "Spell Particles"),
@@ -27,7 +31,6 @@ public class EQParticlesForm : EqSwitchForm
         ("ActorParticleOpacity", "Actor"),
     };
 
-    // Density sliders (0.0 - 1.0 as 0-100%)
     private static readonly (string Key, string Label)[] DensitySettings =
     {
         ("SpellParticleDensity", "Spell Particles"),
@@ -35,27 +38,20 @@ public class EQParticlesForm : EqSwitchForm
         ("ActorParticleDensity", "Actor"),
     };
 
-    // Near clip plane numerics (float values)
-    private static readonly (string Key, string Label, decimal Default)[] ClipSettings =
+    private static readonly (string Key, string Label)[] ClipSettings =
     {
-        ("SpellParticleNearClipPlane", "Spell Near Clip", 2.0m),
-        ("EnvironmentParticleNearClipPlane", "Env Near Clip", 2.0m),
-        ("ActorParticleNearClipPlane", "Actor Near Clip", 2.0m),
+        ("SpellParticleNearClipPlane", "Spell Near Clip"),
+        ("EnvironmentParticleNearClipPlane", "Env Near Clip"),
+        ("ActorParticleNearClipPlane", "Actor Near Clip"),
     };
 
-    // Cast filter numerics (int values)
-    private static readonly (string Key, string Label, int Default)[] FilterSettings =
+    private static readonly (string Key, string Label)[] FilterSettings =
     {
-        ("SpellParticleCastFilter", "Spell Cast Filter", 1),
-        ("EnvironmentParticleCastFilter", "Env Cast Filter", 24),
-        ("ActorParticleCastFilter", "Actor Cast Filter", 1),
-        ("ActorNewArmorFilter", "Actor Armor Filter", 24),
+        ("SpellParticleCastFilter", "Spell Cast Filter"),
+        ("EnvironmentParticleCastFilter", "Env Cast Filter"),
+        ("ActorParticleCastFilter", "Actor Cast Filter"),
+        ("ActorNewArmorFilter", "Actor Armor Filter"),
     };
-
-    // Misc settings
-    private NumericUpDown _nudFogScale = null!;
-    private NumericUpDown _nudLODBias = null!;
-    private CheckBox _chkSameResolution = null!;
 
     public EQParticlesForm(AppConfig config)
     {
@@ -67,114 +63,69 @@ public class EQParticlesForm : EqSwitchForm
 
     private void InitializeForm()
     {
-        DarkTheme.StyleForm(this, "EQSwitch \u2014 Particles & Opacity \u2014 EXPERIMENTAL", new Size(480, 700));
+        DarkTheme.StyleForm(this, "EQSwitch — Particles & Opacity — EXPERIMENTAL", new Size(480, 700));
         StartPosition = FormStartPosition.CenterParent;
         AutoScroll = true;
 
         int y = 8;
 
         // ─── Opacity card ─────────────────────────────────────────
-        // +22 (not +4) leaves a row for the trailing "0% = no particles, 100% = full" hint below the
-        // last slider \u2014 the +4 clipped it at the card's bottom edge (pre-existing, fixed this pass).
-        var cardOpacity = DarkTheme.MakeCard(this, "\u2728", "Particle Opacity", DarkTheme.CardPurple, 10, y, 440, 30 + OpacitySettings.Length * 30 + 22);
+        // +22 leaves a row for the trailing "0% = no particles, 100% = full" hint below the last slider.
+        var cardOpacity = DarkTheme.MakeCard(this, "✨", "Particle Opacity", DarkTheme.CardPurple, 10, y, 440, 30 + OpacitySettings.Length * 30 + 22);
         int cy = 30;
-
         foreach (var (key, label) in OpacitySettings)
         {
-            DarkTheme.AddCardLabel(cardOpacity, label, 10, cy + 2);
-            var pctLabel = DarkTheme.AddCardHint(cardOpacity, "100%", 370, cy + 2);
-            pctLabel.AutoSize = false;
-            pctLabel.Size = new Size(45, 16);
-
-            var slider = new TrackBar
-            {
-                Location = new Point(140, cy - 3),
-                Size = new Size(220, 30),
-                Minimum = 0,
-                Maximum = 100,
-                Value = 100,
-                TickFrequency = 25,
-                BackColor = DarkTheme.BgPanel
-            };
-            var pct = pctLabel;
-            slider.ValueChanged += (_, _) => pct.Text = $"{slider.Value}%";
-            cardOpacity.Controls.Add(slider);
-            _sliders[key] = slider;
+            AddBoundSlider(cardOpacity, key, label, cy);
             cy += 30;
         }
-
         DarkTheme.AddCardHint(cardOpacity, "0% = no particles, 100% = full", 10, cy);
         y += cardOpacity.Height + 8;
 
         // ─── Density card ─────────────────────────────────────────
-        var cardDensity = DarkTheme.MakeCard(this, "\uD83C\uDF2B", "Particle Density", DarkTheme.CardBlue, 10, y, 440, 30 + DensitySettings.Length * 30 + 4);
+        var cardDensity = DarkTheme.MakeCard(this, "🌫", "Particle Density", DarkTheme.CardBlue, 10, y, 440, 30 + DensitySettings.Length * 30 + 4);
         cy = 30;
-
         foreach (var (key, label) in DensitySettings)
         {
-            DarkTheme.AddCardLabel(cardDensity, label, 10, cy + 2);
-            var pctLabel = DarkTheme.AddCardHint(cardDensity, "0%", 370, cy + 2);
-            pctLabel.AutoSize = false;
-            pctLabel.Size = new Size(45, 16);
-
-            var slider = new TrackBar
-            {
-                Location = new Point(140, cy - 3),
-                Size = new Size(220, 30),
-                Minimum = 0,
-                Maximum = 100,
-                Value = 0,
-                TickFrequency = 25,
-                BackColor = DarkTheme.BgPanel
-            };
-            var pct = pctLabel;
-            slider.ValueChanged += (_, _) => pct.Text = $"{slider.Value}%";
-            cardDensity.Controls.Add(slider);
-            _sliders[key] = slider;
+            AddBoundSlider(cardDensity, key, label, cy);
             cy += 30;
         }
-
         y += cardDensity.Height + 8;
 
         // ─── Clip Planes & Filters card ───────────────────────────
         int clipCardH = 30 + (ClipSettings.Length + FilterSettings.Length) * 26 + 8;
-        var cardClip = DarkTheme.MakeCard(this, "\u2702", "Clip Planes & Filters", DarkTheme.CardGreen, 10, y, 440, clipCardH);
+        var cardClip = DarkTheme.MakeCard(this, "✂", "Clip Planes & Filters", DarkTheme.CardGreen, 10, y, 440, clipCardH);
         cy = 30;
-
-        foreach (var (key, label, def) in ClipSettings)
+        foreach (var (key, label) in ClipSettings)
         {
             DarkTheme.AddCardLabel(cardClip, label, 10, cy + 2);
-            var nud = DarkTheme.AddCardNumeric(cardClip, 180, cy, 70, def, 0, 999);
+            var nud = AddBoundNumeric(cardClip, key, 180, cy, 70);
             nud.DecimalPlaces = 1;
             nud.Increment = 0.5m;
-            _numerics[key] = nud;
             cy += 26;
         }
-
-        foreach (var (key, label, def) in FilterSettings)
+        foreach (var (key, label) in FilterSettings)
         {
             DarkTheme.AddCardLabel(cardClip, label, 10, cy + 2);
-            var nud = DarkTheme.AddCardNumeric(cardClip, 180, cy, 70, def, 0, 999);
-            _numerics[key] = nud;
+            AddBoundNumeric(cardClip, key, 180, cy, 70);
             cy += 26;
         }
-
         y += cardClip.Height + 8;
 
         // ─── Misc card ────────────────────────────────────────────
-        var cardMisc = DarkTheme.MakeCard(this, "\u2699", "Misc", DarkTheme.CardCyan, 10, y, 440, 100);
+        var cardMisc = DarkTheme.MakeCard(this, "⚙", "Misc", DarkTheme.CardCyan, 10, y, 440, 100);
         cy = 30;
 
         DarkTheme.AddCardLabel(cardMisc, "FogScale:", 10, cy + 2);
-        _nudFogScale = DarkTheme.AddCardNumeric(cardMisc, 120, cy, 80, 2.80m, 0, 100);
-        _nudFogScale.DecimalPlaces = 2;
-        _nudFogScale.Increment = 0.1m;
+        var nudFog = AddBoundNumeric(cardMisc, "FogScale", 120, cy, 80);
+        nudFog.DecimalPlaces = 2;
+        nudFog.Increment = 0.1m;
 
         DarkTheme.AddCardLabel(cardMisc, "LODBias:", 230, cy + 2);
-        _nudLODBias = DarkTheme.AddCardNumeric(cardMisc, 310, cy, 70, 10, 0, 100);
+        AddBoundNumeric(cardMisc, "LODBias", 310, cy, 70);
 
         cy += 28;
-        _chkSameResolution = DarkTheme.AddCardCheckBox(cardMisc, "Same Resolution", 10, cy);
+        var chkSameRes = DarkTheme.AddCardCheckBox(cardMisc, "Same Resolution", 10, cy);
+        _bindings.Add(new EqClientBinding(SchemaByKey["SameResolution"], chkSameRes, null));
         DarkTheme.AddCardHint(cardMisc, "[Options] SameResolution=1", 160, cy + 2);
 
         y += cardMisc.Height + 8;
@@ -199,159 +150,77 @@ public class EQParticlesForm : EqSwitchForm
         buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
         Controls.Add(buttonPanel);
 
-        // Size the form to its content so the button bar sits a consistent gap below the Misc card,
-        // instead of the old hand-guessed Size(480,700) gap above the buttons.
+        // Size the form to its content so the button bar sits a consistent gap below the Misc card.
         FitClientHeightToContent();
+    }
+
+    /// <summary>Add a label + a 0-100 TrackBar (with live % readout) bound to a schema float (scale 100).</summary>
+    private void AddBoundSlider(Panel card, string key, string label, int cy)
+    {
+        var setting = SchemaByKey[key];
+        DarkTheme.AddCardLabel(card, label, 10, cy + 2);
+
+        var pctLabel = DarkTheme.AddCardHint(card, "", 370, cy + 2);
+        pctLabel.AutoSize = false;
+        pctLabel.Size = new Size(45, 16);
+
+        var slider = new TrackBar
+        {
+            Location = new Point(140, cy - 3),
+            Size = new Size(220, 30),
+            Minimum = 0,
+            Maximum = 100,
+            Value = Math.Clamp((int)(setting.DefaultNumber * 100m), 0, 100),
+            TickFrequency = 25,
+            BackColor = DarkTheme.BgPanel
+        };
+        pctLabel.Text = $"{slider.Value}%";
+        slider.ValueChanged += (_, _) => pctLabel.Text = $"{slider.Value}%";
+        card.Controls.Add(slider);
+
+        _bindings.Add(new EqClientBinding(setting, slider, 100m));
+    }
+
+    /// <summary>Add a NumericUpDown bound to a schema numeric (def/min/max from the descriptor). Returns it for per-field tuning.</summary>
+    private NumericUpDown AddBoundNumeric(Panel card, string key, int x, int cy, int w)
+    {
+        var setting = SchemaByKey[key];
+        var nud = DarkTheme.AddCardNumeric(card, x, cy, w, setting.DefaultNumber, setting.Min, setting.Max);
+        _bindings.Add(new EqClientBinding(setting, null, nud));
+        return nud;
     }
 
     private void LoadFromIni()
     {
-        if (File.Exists(_iniPath))
+        // Live read of eqclient.ini via the shared schema engine; snapshots each value for touch-gating.
+        try
         {
-            try
-            {
-                var lines = File.ReadAllLines(_iniPath, Encoding.Default);
-                string currentSection = "";
-
-                foreach (var line in lines)
-                {
-                    var trimmed = line.Trim();
-                    if (trimmed.StartsWith("["))
-                    {
-                        currentSection = trimmed;
-                        continue;
-                    }
-
-                    bool isDefaults = currentSection.Equals("[Defaults]", StringComparison.OrdinalIgnoreCase);
-                    bool isOptions = currentSection.Equals("[Options]", StringComparison.OrdinalIgnoreCase);
-                    if (!isDefaults && !isOptions)
-                        continue;
-
-                    var parts = trimmed.Split('=', 2);
-                    if (parts.Length != 2) continue;
-
-                    string key = parts[0].Trim();
-                    string val = parts[1].Trim();
-
-                    // [Defaults] — opacity/density sliders and clip/filter numerics
-                    if (isDefaults)
-                    {
-                        if (_sliders.TryGetValue(key, out var slider))
-                        {
-                            if (double.TryParse(val, System.Globalization.NumberStyles.Float,
-                                System.Globalization.CultureInfo.InvariantCulture, out double d))
-                                slider.Value = Math.Clamp((int)(d * 100), 0, 100);
-                        }
-
-                        if (_numerics.TryGetValue(key, out var nud))
-                        {
-                            if (decimal.TryParse(val, System.Globalization.NumberStyles.Float,
-                                System.Globalization.CultureInfo.InvariantCulture, out decimal dec))
-                                nud.Value = Math.Clamp(dec, nud.Minimum, nud.Maximum);
-                        }
-                    }
-
-                    // [Options] — FogScale, LODBias, SameResolution
-                    if (isOptions)
-                    {
-                        switch (key)
-                        {
-                            case "FogScale":
-                                if (decimal.TryParse(val, System.Globalization.NumberStyles.Float,
-                                    System.Globalization.CultureInfo.InvariantCulture, out decimal fog))
-                                    _nudFogScale.Value = Math.Clamp(fog, 0, 100);
-                                break;
-                            case "LODBias":
-                                if (int.TryParse(val, out int lod))
-                                    _nudLODBias.Value = Math.Clamp(lod, 0, 100);
-                                break;
-                            case "SameResolution":
-                                _chkSameResolution.Checked = val == "1";
-                                break;
-                        }
-                    }
-                }
-
-                FileLogger.Info("EQParticles: loaded current values from eqclient.ini");
-            }
-            catch (Exception ex)
-            {
-                FileLogger.Error("EQParticles: load error", ex);
-            }
+            EqClientBindings.LoadInto(_bindings, _iniPath);
+            FileLogger.Info("EQParticles: loaded current values from eqclient.ini (schema-driven)");
         }
-
-        // Snapshot unconditionally — runs even if file missing or load failed
-        SnapshotValues();
-    }
-
-    private void SnapshotValues()
-    {
-        foreach (var (key, slider) in _sliders)
-            _initialValues[key] = (slider.Value / 100.0).ToString("F6", System.Globalization.CultureInfo.InvariantCulture);
-        foreach (var (key, nud) in _numerics)
-            _initialValues[key] = nud.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        _initialValues["FogScale"] = _nudFogScale.Value.ToString("F6", System.Globalization.CultureInfo.InvariantCulture);
-        _initialValues["LODBias"] = ((int)_nudLODBias.Value).ToString();
-        _initialValues["SameResolution"] = _chkSameResolution.Checked ? "1" : "0";
-    }
-
-    private Dictionary<string, string> GetCurrentValues()
-    {
-        var values = new Dictionary<string, string>();
-        foreach (var (key, slider) in _sliders)
-            values[key] = (slider.Value / 100.0).ToString("F6", System.Globalization.CultureInfo.InvariantCulture);
-        foreach (var (key, nud) in _numerics)
+        catch (Exception ex)
         {
-            // Clip planes are float, filters are int
-            if (nud.DecimalPlaces > 0)
-                values[key] = nud.Value.ToString("F6", System.Globalization.CultureInfo.InvariantCulture);
-            else
-                values[key] = ((int)nud.Value).ToString();
+            FileLogger.Error("EQParticles: load error", ex);
         }
-        values["FogScale"] = _nudFogScale.Value.ToString("F6", System.Globalization.CultureInfo.InvariantCulture);
-        values["LODBias"] = ((int)_nudLODBias.Value).ToString();
-        values["SameResolution"] = _chkSameResolution.Checked ? "1" : "0";
-        return values;
     }
 
     private void SaveSettings()
     {
-        var current = GetCurrentValues();
-
-        // Find changed keys
-        var changed = new Dictionary<string, string>();
-        foreach (var (key, val) in current)
-        {
-            if (!_initialValues.TryGetValue(key, out string? init) || init != val)
-                changed[key] = val;
-        }
-
-        if (changed.Count == 0)
-        {
-            FileLogger.Info("EQParticles: no changes to save");
-            return;
-        }
-
-        // Save to config
-        foreach (var (key, val) in changed)
-            _config.EQClientIni.ParticleOverrides[key] = val;
-        ConfigManager.Save(_config);
-
-        // Apply to eqclient.ini
-        if (!File.Exists(_iniPath)) return;
-
+        // Touch-gated, schema-driven write — only the controls the user changed are written, each to
+        // its canonical section. Untouched + unmanaged keys are left exactly as eqgame/the user left
+        // them (point D: no clobber). No launch re-stamp — eqgame wins after.
         try
         {
-            var lines = File.ReadAllLines(_iniPath, Encoding.Default).ToList();
+            if (!File.Exists(_iniPath))
+            {
+                FileLogger.Info($"EQParticles: eqclient.ini not found at {_iniPath}");
+                return;
+            }
 
-            foreach (var (key, val) in changed)
-                EQClientSettingsForm.SetIniValue(lines, GetSection(key), key, val);
-
-            File.WriteAllLines(_iniPath, lines, Encoding.Default);
-            FileLogger.Info($"EQParticles: saved {changed.Count} changed setting(s) to eqclient.ini");
-
-            // Update snapshot so Apply doesn't re-write
-            SnapshotValues();
+            int changed = EqClientBindings.SaveChanged(_bindings, _iniPath);
+            FileLogger.Info(changed > 0
+                ? $"EQParticles: wrote {changed} changed setting(s) to eqclient.ini (touch-gated)"
+                : "EQParticles: no changes to save");
         }
         catch (Exception ex)
         {
@@ -360,20 +229,6 @@ public class EQParticlesForm : EqSwitchForm
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
-
-    /// <summary>
-    /// Static helper: enforce all particle overrides in eqclient.ini.
-    /// Called by EnforceOverrides in EQClientSettingsForm.
-    /// </summary>
-    public static void EnforceOverrides(AppConfig config, List<string> lines)
-    {
-        foreach (var (key, value) in config.EQClientIni.ParticleOverrides)
-            EQClientSettingsForm.SetIniValue(lines, GetSection(key), key, value);
-    }
-
-    /// <summary>FogScale, LODBias, SameResolution live in [Options]; everything else in [Defaults].</summary>
-    private static string GetSection(string key) =>
-        key is "FogScale" or "LODBias" or "SameResolution" ? "Options" : "Defaults";
 
     protected override void Dispose(bool disposing)
     {

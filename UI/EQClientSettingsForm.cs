@@ -617,10 +617,9 @@ public class EQClientSettingsForm : EqSwitchForm
             // Phase 1: MaxFPS/MaxBGFPS/Shadow/Actor/Log no longer enforced at launch (Bucket-2,
             // save-time only). ProcessManager still writes FPS + affinity via ApplyProcessManagerToIni.
 
-            // Enforce remaining sub-form overrides at launch (dictionary-based — pending their phases).
-            // ChatSpam + Models migrated to the schema engine (Phases 2-3) → no longer re-stamped here
-            // (eqgame wins after first set); Particles/VideoMode follow in Phases 4-5.
-            EQParticlesForm.EnforceOverrides(config, lines);
+            // Enforce remaining sub-form overrides at launch. ChatSpam + Models + Particles migrated to
+            // the schema engine (Phases 2-4) → no longer re-stamped here (eqgame wins after first set).
+            // Only VideoMode's dict remains (Phase 5 — it carries the slim-titlebar geometry collision).
             EQVideoModeForm.EnforceOverrides(config, lines);
 
             File.WriteAllLines(iniPath, lines, Encoding.Default);

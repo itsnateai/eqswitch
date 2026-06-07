@@ -16,9 +16,14 @@ internal sealed class EqClientBinding
     public IniSetting Setting;
     public CheckBox? Check;
     public NumericUpDown? Numeric;
+    public TrackBar? Slider;
+    /// <summary>For a slider only: INI value = Slider.Value / SliderScale (e.g. 100 for a 0-100 slider over a 0..1 float).</summary>
+    public decimal SliderScale = 1m;
     public string LoadedValue = "";
     public EqClientBinding(IniSetting setting, CheckBox? chk, NumericUpDown? nud)
     { Setting = setting; Check = chk; Numeric = nud; }
+    public EqClientBinding(IniSetting setting, TrackBar slider, decimal sliderScale)
+    { Setting = setting; Slider = slider; SliderScale = sliderScale; }
 }
 
 /// <summary>
@@ -31,16 +36,32 @@ internal sealed class EqClientBinding
 internal static class EqClientBindings
 {
     /// <summary>Current control state expressed as its canonical INI string.</summary>
-    public static string ReadControl(EqClientBinding b) =>
-        b.Check != null ? b.Setting.ToggleToIni(b.Check.Checked) : b.Setting.NumberToIni(b.Numeric!.Value);
+    public static string ReadControl(EqClientBinding b)
+    {
+        if (b.Check != null) return b.Setting.ToggleToIni(b.Check.Checked);
+        if (b.Slider != null) return b.Setting.NumberToIni(b.Slider.Value / b.SliderScale);
+        return b.Setting.NumberToIni(b.Numeric!.Value);
+    }
 
     /// <summary>Set the control from an INI string via the descriptor's conversion (clamped to the control's range).</summary>
     public static void ApplyControl(EqClientBinding b, string iniValue)
     {
         if (b.Check != null)
+        {
             b.Check.Checked = b.Setting.ToggleFromIni(iniValue);
+        }
+        else if (b.Slider != null)
+        {
+            // Slider is a coarse int (e.g. 0-100) over the schema's float range; truncate like the
+            // pre-engine code did. A finer on-disk value snapshots to the slider's resolution and so
+            // is left untouched on save (touch-gate) unless the user actually drags it.
+            int v = (int)(b.Setting.ParseNumber(iniValue) * b.SliderScale);
+            b.Slider.Value = Math.Clamp(v, b.Slider.Minimum, b.Slider.Maximum);
+        }
         else
+        {
             b.Numeric!.Value = Math.Clamp(b.Setting.ParseNumber(iniValue), b.Numeric.Minimum, b.Numeric.Maximum);
+        }
     }
 
     /// <summary>
