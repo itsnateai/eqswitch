@@ -1,12 +1,19 @@
 # Changelog
 
-## v3.24.49 — EQ Client Settings: MaxFPS=100 actually sticks now (FPS cap unified) (2026-06-06)
+## v3.24.49 — EQ Client Settings overhaul (Phases 2–4, 6): four more sub-windows on the shared engine + MaxFPS fix (2026-06-06)
 
-**Fix — the v3.24.48 MaxFPS/MaxBGFPS cap raise was incomplete; now it's complete.** v3.24.48 lifted the FPS cap 99→999 in the EQ Client Settings field and the descriptor schema, but four *other* places still clamped at 99: `AppConfig` validation (runs on every load), the first-run `eqclient.ini` import, and the Process Manager's FPS spinner + its display mapping. So setting `MaxFPS=100` (EQ's stock default) looked like it worked, then silently snapped back to 99 on the next app start — or the instant you opened Process Manager. Every FPS-cap site now reads a single `EqClientIniSchema.MaxFpsCap` constant, so the "Process Manager vs. main settings diverge" hazard (§F) can't recreate this.
+**Continues the v3.24.48 overhaul. Four of the five EQ Client Settings sub-windows — Chat Spam, Luclin Models, Particles, and Key Mappings — now read and write `eqclient.ini` through the same single descriptor engine as the main window.** So they show your real current values (including changes you made in-game), save only the controls you actually change, and no longer overwrite your settings on every launch. (Video Mode is the last window still on its own code — it follows next; all six windows stay labelled "— EXPERIMENTAL" until the rebuild finishes. Nothing is broken in the meantime.)
 
-**Hardening** — the launch-enforce self-test now also proves a Bucket-2 numeric (`MaxFPS`) left in the INI survives a relaunch untouched (the "eqgame wins" guarantee), locking the Phase-1 win against regression; and the now-vestigial `AANoConfirm` first-run import was aligned to the corrected polarity.
+**Chat Spam / Models / Particles / Keymaps — now well-behaved:**
+- **Display = a live read** of `eqclient.ini` every time the window opens, so in-game changes are always reflected.
+- **Save = only the controls you changed**, each written to one section — no duplicate/ghost entries, no clobbering settings you didn't touch.
+- **No more launch re-stamp** — settings you change in-game survive (eqgame wins). Chat Spam in particular used to rewrite all 22 filters on every save *and* every launch; that's fixed.
 
-Verified: clean build; `--test-eqclient-schema` / `-inidoc` / `-save` / `-enforce` all pass.
+**Under the hood:** the read / save / touch-gate logic is now one shared engine (`EqClientBindings`) that every window binds onto, instead of five hand-synced copies that could silently drift — the entire point of the overhaul. Net result is roughly 400 fewer lines across the forms.
+
+**MaxFPS fix completed:** v3.24.48 raised the MaxFPS/MaxBGFPS cap 99→999 in only two of six places, so `MaxFPS=100` (EQ's stock default) silently snapped back to 99 on the next app start — or the instant you opened the Process Manager. Every cap site now reads one `EqClientIniSchema.MaxFpsCap` constant, so the value sticks. (Also: the now-vestigial `AANoConfirm` first-run import was aligned to the corrected polarity.)
+
+Verified: clean build; six self-tests pass (`--test-eqclient-schema` / `-inidoc` / `-save` / `-enforce` / `-chatspam-save` / `-particles-save`); the DPI-baseline guard passes; all six EQ Client Settings windows render correctly off-screen.
 
 ## v3.24.48 — EQ Client Settings overhaul Phase 1: main window on a single descriptor engine (2026-06-06)
 
