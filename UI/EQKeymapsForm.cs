@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // © itsnateai
 
-using System.Text;
 using EQSwitch.Config;
 using EQSwitch.Core;
 
@@ -17,30 +16,27 @@ public class EQKeymapsForm : EqSwitchForm
 {
     private readonly AppConfig _config;
     private readonly string _iniPath;
-    private readonly Dictionary<string, NumericUpDown> _nudValues = new();
-    private readonly Dictionary<string, Label> _keyLabels = new();
-    private readonly Dictionary<string, long> _initialValues = new();
+    private readonly List<EqClientBinding> _bindings = new();
+    private readonly Dictionary<string, Label> _keyLabels = new();   // decoded key-name display (cosmetic)
 
-    // Grouped key mappings: (IniKey, DisplayLabel, DefaultCode)
-    private static readonly (string Header, string Emoji, (string Key, string Label, long DefaultCode)[] Entries)[] Groups =
+    private static readonly Dictionary<string, IniSetting> SchemaByKey =
+        EqClientIniSchema.All.ToDictionary(s => s.Key, StringComparer.OrdinalIgnoreCase);
+
+    // Display grouping + order only (label + default live once in EqClientIniSchema).
+    private static readonly (string Header, string Emoji, string[] Keys)[] Groups =
     {
         ("Targeting", "⚔", new[]
         {
-            ("KEYMAPPING_TARGETNPC_2", "Target NPC (Alt)", 209L),
-            ("KEYMAPPING_CONSIDER_2", "Consider (Alt)", 83L),
-            ("KEYMAPPING_CYCLENPCTARGETS_2", "Cycle NPC Targets (Alt)", 79L),
-            ("KEYMAPPING_TOGGLETWOTARGETS_1", "Toggle Two Targets", 82L),
-            ("KEYMAPPING_TOGGLETWOTARGETS_2", "Toggle Two Targets (Alt)", 0L),
+            "KEYMAPPING_TARGETNPC_2", "KEYMAPPING_CONSIDER_2", "KEYMAPPING_CYCLENPCTARGETS_2",
+            "KEYMAPPING_TOGGLETWOTARGETS_1", "KEYMAPPING_TOGGLETWOTARGETS_2",
         }),
         ("Combat & Items", "\uD83D\uDEE1", new[]
         {
-            ("KEYMAPPING_AUTOPRIM_2", "Auto-Primary (Alt)", 211L),
-            ("KEYMAPPING_POTION_SLOT_3_1", "Potion Slot 3", 0L),
+            "KEYMAPPING_AUTOPRIM_2", "KEYMAPPING_POTION_SLOT_3_1",
         }),
         ("Utility", "\uD83D\uDD27", new[]
         {
-            ("KEYMAPPING_CMD_CLIPBOARD_PASTE_1", "Clipboard Paste", 536870959L),
-            ("KEYMAPPING_CMD_TOGGLE_AUDIO_TRIGGER_WINDOW_1", "Audio Triggers", 268435486L),
+            "KEYMAPPING_CMD_CLIPBOARD_PASTE_1", "KEYMAPPING_CMD_TOGGLE_AUDIO_TRIGGER_WINDOW_1",
         }),
     };
 
@@ -104,15 +100,18 @@ public class EQKeymapsForm : EqSwitchForm
 
         int y = 8;
 
-        foreach (var (header, emoji, entries) in Groups)
+        foreach (var (header, emoji, keys) in Groups)
         {
-            int cardHeight = 30 + entries.Length * 26 + 4;
+            int cardHeight = 30 + keys.Length * 26 + 4;
             var card = DarkTheme.MakeCard(this, emoji, header, DarkTheme.CardGold, 10, y, 440, cardHeight);
             int cy = 30;
 
-            foreach (var (key, label, def) in entries)
+            foreach (var key in keys)
             {
-                DarkTheme.AddCardLabel(card, label, 10, cy + 2);
+                var setting = SchemaByKey[key];
+                long def = (long)setting.DefaultNumber;
+
+                DarkTheme.AddCardLabel(card, setting.Label, 10, cy + 2);
 
                 // Decoded key name (right-aligned before numeric)
                 var keyLabel = DarkTheme.AddCardLabel(card, GetKeyName(def), 195, cy + 2);
@@ -122,15 +121,12 @@ public class EQKeymapsForm : EqSwitchForm
                 keyLabel.ForeColor = DarkTheme.FgWhite;
                 _keyLabels[key] = keyLabel;
 
-                // Scan code numeric (small, secondary)
-                var nud = DarkTheme.AddCardNumeric(card, 335, cy, 95, def, 0, 2000000000);
+                // Scan code numeric (small, secondary) — bound to the shared schema engine.
+                var nud = DarkTheme.AddCardNumeric(card, 335, cy, 95, setting.DefaultNumber, setting.Min, setting.Max);
                 nud.ForeColor = DarkTheme.FgGray;
                 nud.Font = DarkTheme.FontUI85;
-                _nudValues[key] = nud;
-
-                // Live update decoded label
-                var lbl = keyLabel;
-                nud.ValueChanged += (_, _) => lbl.Text = GetKeyName((long)nud.Value);
+                nud.ValueChanged += (_, _) => keyLabel.Text = GetKeyName((long)nud.Value);
+                _bindings.Add(new EqClientBinding(setting, null, nud));
 
                 cy += 26;
             }
@@ -194,86 +190,38 @@ public class EQKeymapsForm : EqSwitchForm
 
     private void LoadFromIni()
     {
-        if (File.Exists(_iniPath))
+        // Live read of eqclient.ini [KeyMaps] via the shared schema engine; snapshots each value for touch-gating.
+        try
         {
-            try
-            {
-                var lines = File.ReadAllLines(_iniPath, Encoding.Default);
-                string currentSection = "";
-
-                foreach (var line in lines)
-                {
-                    var trimmed = line.Trim();
-                    if (trimmed.StartsWith("["))
-                    {
-                        currentSection = trimmed;
-                        continue;
-                    }
-
-                    if (!currentSection.Equals("[KeyMaps]", StringComparison.OrdinalIgnoreCase))
-                        continue;
-
-                    var parts = trimmed.Split('=', 2);
-                    if (parts.Length != 2) continue;
-
-                    string key = parts[0].Trim();
-                    string val = parts[1].Trim();
-
-                    if (_nudValues.TryGetValue(key, out var nud))
-                    {
-                        if (long.TryParse(val, out long code))
-                        {
-                            nud.Value = Math.Clamp(code, 0, 2000000000);
-                            if (_keyLabels.TryGetValue(key, out var lbl))
-                                lbl.Text = GetKeyName(code);
-                        }
-                    }
-                }
-
-                FileLogger.Info("EQKeymaps: loaded current values from eqclient.ini");
-            }
-            catch (Exception ex)
-            {
-                FileLogger.Error("EQKeymaps: load error", ex);
-            }
+            EqClientBindings.LoadInto(_bindings, _iniPath);
+            // Refresh decoded labels: ApplyControl only fires ValueChanged when the value actually
+            // changes, so a key that loads to its construction value needs an explicit label sync.
+            foreach (var b in _bindings)
+                if (b.Numeric != null && _keyLabels.TryGetValue(b.Setting.Key, out var lbl))
+                    lbl.Text = GetKeyName((long)b.Numeric.Value);
+            FileLogger.Info("EQKeymaps: loaded current values from eqclient.ini (schema-driven)");
         }
-
-        // Snapshot unconditionally — runs even if file missing or load failed
-        foreach (var (key, nud) in _nudValues)
-            _initialValues[key] = (long)nud.Value;
+        catch (Exception ex)
+        {
+            FileLogger.Error("EQKeymaps: load error", ex);
+        }
     }
 
     private void SaveSettings()
     {
-        var changed = new Dictionary<string, long>();
-        foreach (var (key, nud) in _nudValues)
-        {
-            long val = (long)nud.Value;
-            if (!_initialValues.TryGetValue(key, out long init) || init != val)
-                changed[key] = val;
-        }
-
-        if (changed.Count == 0)
-        {
-            FileLogger.Info("EQKeymaps: no changes to save");
-            return;
-        }
-
-        if (!File.Exists(_iniPath)) return;
-
+        // Touch-gated, schema-driven write — only the keymaps the user changed are written to [KeyMaps].
         try
         {
-            var lines = File.ReadAllLines(_iniPath, Encoding.Default).ToList();
+            if (!File.Exists(_iniPath))
+            {
+                FileLogger.Info($"EQKeymaps: eqclient.ini not found at {_iniPath}");
+                return;
+            }
 
-            foreach (var (key, val) in changed)
-                EQClientSettingsForm.SetIniValue(lines, "KeyMaps", key, val.ToString());
-
-            File.WriteAllLines(_iniPath, lines, Encoding.Default);
-            FileLogger.Info($"EQKeymaps: saved {changed.Count} changed keymap(s) to eqclient.ini");
-
-            // Update snapshot
-            foreach (var (key, nud) in _nudValues)
-                _initialValues[key] = (long)nud.Value;
+            int changed = EqClientBindings.SaveChanged(_bindings, _iniPath);
+            FileLogger.Info(changed > 0
+                ? $"EQKeymaps: wrote {changed} changed keymap(s) to eqclient.ini (touch-gated)"
+                : "EQKeymaps: no changes to save");
         }
         catch (Exception ex)
         {
