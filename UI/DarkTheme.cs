@@ -540,6 +540,7 @@ public static class DarkTheme
     public static readonly Color CardWarn = Color.FromArgb(200, 100, 100);
 
     public static readonly Color FgWarn = Color.FromArgb(230, 190, 60);
+    public static readonly Color FgDanger = Color.FromArgb(224, 78, 78);   // bright red — "at your own risk" warnings
 
     // Status pill colors for AutoLoginTeamsDialog resolution indicators.
     public static readonly Color StatusOk = Color.FromArgb(28, 110, 56);     // green — resolves to Character

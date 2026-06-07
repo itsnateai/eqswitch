@@ -221,7 +221,18 @@ public class EQClientSettingsForm : EqSwitchForm
         var btnCancel = DarkTheme.MakeButton("Cancel", DarkTheme.BgMedium, 440, 10);
         btnCancel.Click += (_, _) => Close();
 
-        buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel });
+        // Red heads-up beside the buttons — the EQ Client Settings subsystem is mid-rebuild
+        // (sub-windows being migrated onto the shared descriptor engine; Phases 5-10 pending).
+        var lblExperimental = new Label
+        {
+            Text = "EXPERIMENTAL - SAVE AT OWN RISK",
+            Location = new Point(528, 17),
+            AutoSize = true,
+            ForeColor = DarkTheme.FgDanger,
+            Font = DarkTheme.FontSemibold9
+        };
+
+        buttonPanel.Controls.AddRange(new Control[] { btnSave, btnApply, btnCancel, lblExperimental });
         Controls.Add(buttonPanel);
 
         // ── Phase 1: register every control against its schema descriptor (single source of truth).

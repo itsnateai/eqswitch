@@ -1,5 +1,9 @@
 # Changelog
 
+## v3.24.50 — EQ Client Settings: "EXPERIMENTAL — save at own risk" notice (2026-06-06)
+
+**Added a red `EXPERIMENTAL - SAVE AT OWN RISK` notice** next to the Save/Apply/Cancel buttons on the main EQ Client Settings window. The six-window subsystem is still mid-rebuild (the windows are being migrated onto one shared descriptor engine — see v3.24.48/49), so this is a clear heads-up that saving from these experimental forms is at your own risk until the rebuild and final DPI pass land.
+
 ## v3.24.49 — EQ Client Settings overhaul (Phases 2–4, 6): four more sub-windows on the shared engine + MaxFPS fix (2026-06-06)
 
 **Continues the v3.24.48 overhaul. Four of the five EQ Client Settings sub-windows — Chat Spam, Luclin Models, Particles, and Key Mappings — now read and write `eqclient.ini` through the same single descriptor engine as the main window.** So they show your real current values (including changes you made in-game), save only the controls you actually change, and no longer overwrite your settings on every launch. (Video Mode is the last window still on its own code — it follows next; all six windows stay labelled "— EXPERIMENTAL" until the rebuild finishes. Nothing is broken in the meantime.)
